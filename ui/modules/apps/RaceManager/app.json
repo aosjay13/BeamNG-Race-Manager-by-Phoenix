@@ -1,0 +1,12 @@
+{
+  "name": "Race Manager",
+  "author": "Phoenix",
+  "version": "1.0.0",
+  "description": "Live multi-vehicle race timing, sector splits, and leaderboard standings.",
+  "directive": "raceManager",
+  "domElement": "race-manager",
+  "template": "app.html",
+  "js": ["app.js"],
+  "singleInstance": true,
+  "types": ["standalone", "freeroam"]
+}

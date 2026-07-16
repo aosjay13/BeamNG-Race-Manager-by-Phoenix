@@ -1,0 +1,32 @@
+<div class="bngApp race-manager-app" ng-class="{paused: vm.paused}">
+  <div class="race-manager-header">
+    <span class="title">Race Manager</span>
+    <span class="race-time">{{ vm.raceDurationFormatted }}</span>
+  </div>
+
+  <table class="race-manager-table">
+    <thead>
+      <tr>
+        <th>Pos</th>
+        <th>Driver</th>
+        <th>Lap</th>
+        <th>Best</th>
+        <th>Last</th>
+        <th>Gap</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr ng-repeat="row in vm.vehicles track by row.id">
+        <td>{{ row.pos }}</td>
+        <td>{{ row.driverName || row.id }}</td>
+        <td>{{ row.currentLap }}</td>
+        <td>{{ row.bestLapFormatted }}</td>
+        <td>{{ row.lastLapFormatted }}</td>
+        <td>{{ row.gapToLeader }}</td>
+      </tr>
+      <tr ng-if="!vm.vehicles.length">
+        <td colspan="6">Waiting for race trigger data...</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
