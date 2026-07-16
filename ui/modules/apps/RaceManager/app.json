@@ -1,0 +1,15 @@
+{
+  "name": "Race Manager",
+  "author": "Phoenix",
+  "version": "1.0.0",
+  "description": "Live multi-vehicle race leaderboard: positions, lap counts, best/last laps and real-time gaps.",
+  "directive": "raceManager",
+  "domElement": "<race-manager></race-manager>",
+  "css": {
+    "top": "20px",
+    "left": "20px",
+    "width": "460px",
+    "height": "320px"
+  },
+  "types": ["ui.apps.categories.gameplay"]
+}
