@@ -3,9 +3,10 @@ angular.module('beamng.apps')
 /**
  * Race Manager UI app.
  *
- * Receives leaderboard state from lua/ge/extensions/raceManager.lua via the
- * native guihooks bridge ('RaceManagerUpdate') and renders a live standings
- * table. Reactive updates are driven by $scope.$evalAsync (a safe digest
+ * Receives leaderboard state via the native guihooks bridge
+ * ('RaceManagerUpdate') and renders a live standings table. The data
+ * originates on the BeamMP server (server/RaceManager/main.lua) and is
+ * relayed by the client bridge extension lua/ge/extensions/raceManager.lua. Reactive updates are driven by $scope.$evalAsync (a safe digest
  * trigger; guihooks events arrive outside Angular's digest cycle).
  */
 .directive('raceManager', [function () {
