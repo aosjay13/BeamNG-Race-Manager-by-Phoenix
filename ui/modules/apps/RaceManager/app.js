@@ -1,14 +1,17 @@
 angular.module('beamng.apps')
 
 /**
- * Race Manager UI app.
+ * Race Manager UI app (circuit edition).
  *
- * Receives race state via the native guihooks bridge ('RaceManagerUpdate',
- * 'RaceManagerCountdown') and renders host controls plus a live driver table.
- * The data originates on the BeamMP server (server/RaceManager/main.lua) and
- * is relayed by the client bridge extension lua/ge/extensions/raceManager.lua.
- * Reactive updates use $scope.$evalAsync (guihooks events arrive outside
- * Angular's digest cycle).
+ * Receives session state via the native guihooks bridge ('RaceManagerUpdate',
+ * 'RaceManagerCountdown', 'RaceManagerRoute') and renders host session
+ * controls (Qualifying -> Generate Grid -> Race -> Countdown), race settings
+ * (total laps, checkpoint gate width) and a driver table that switches
+ * between a Qualifying view (Best Lap + provisional grid) and a Race view
+ * (grid, current lap, best lap, laps led). The data originates on the BeamMP
+ * server (server/RaceManager/main.lua) and is relayed by the client bridge
+ * extension lua/ge/extensions/raceManager.lua. Reactive updates use
+ * $scope.$evalAsync (guihooks events arrive outside Angular's digest cycle).
  */
 .directive('raceManager', [function () {
   return {
@@ -21,12 +24,17 @@ angular.module('beamng.apps')
       // ------------------------------------------------------------------
       // State
       // ------------------------------------------------------------------
-      $scope.phase = 'waiting';   // waiting | grid | countdown | racing | finished
+      $scope.phase = 'waiting';   // waiting | qualifying | grid | countdown | racing | finished
       $scope.raceTime = 0;
+      $scope.totalLaps = 5;
       $scope.countdown = null;    // null = hidden, 3..1 = number, 0 = GO!
       $scope.drivers = [];
 
-      // Waypoint editor state
+      // Settings inputs (host)
+      $scope.lapsInput = 5;
+      $scope.widthInput = 20;
+
+      // Checkpoint editor state
       $scope.showEditor = false;
       $scope.routeWaypoints = [];
       $scope.nextWp = 1;
@@ -34,22 +42,35 @@ angular.module('beamng.apps')
       $scope.editorMsg = null;
 
       var PHASE_LABELS = {
-        waiting:   'Waiting',
-        grid:      'Grid Set',
-        countdown: 'Countdown',
-        racing:    'Racing',
-        finished:  'Race Over'
+        waiting:    'Waiting',
+        qualifying: 'Qualifying',
+        grid:       'Grid Locked',
+        countdown:  'Countdown',
+        racing:     'Racing',
+        finished:   'Race Over'
       };
       var STATUS_LABELS = {
-        waiting:  'Waiting',
-        gridded:  'On Grid',
-        racing:   'Racing',
-        finished: 'Finished',
-        dnf:      'DNF'
+        waiting:    'Waiting',
+        qualifying: 'On Track',
+        gridded:    'On Grid',
+        racing:     'Racing',
+        finished:   'Finished',
+        dnf:        'DNF'
       };
 
       $scope.phaseLabel = function () { return PHASE_LABELS[$scope.phase] || $scope.phase; };
       $scope.statusLabel = function (s) { return STATUS_LABELS[s] || s; };
+
+      // Qualifying view while the quali session runs (and in waiting, where a
+      // closed quali's provisional order is still the useful thing to show if
+      // any times exist); Race view from Grid Locked onward.
+      $scope.isQualiView = function () {
+        if ($scope.phase === 'qualifying') { return true; }
+        if ($scope.phase === 'waiting') {
+          return $scope.drivers.some(function (d) { return d.qualiBest != null; });
+        }
+        return false;
+      };
 
       // ------------------------------------------------------------------
       // Formatting helpers
@@ -63,13 +84,19 @@ angular.module('beamng.apps')
         return pad2(m) + ':' + pad2(s);
       };
 
-      $scope.formatFinishTime = function (row) {
-        if (row.status === 'dnf') { return 'DNF'; }
-        var t = row.finishTime;
+      $scope.formatLap = function (t) {
         if (t === null || t === undefined) { return '—'; }
         var m = Math.floor(t / 60);
         var s = t - m * 60;
         return m + ':' + (s < 10 ? '0' : '') + s.toFixed(3);
+      };
+
+      $scope.formatFinish = function (row) {
+        if (row.status === 'dnf') { return 'DNF'; }
+        if (row.finishTime === null || row.finishTime === undefined) {
+          return row.currentLap ? ('Lap ' + row.currentLap + '/' + $scope.totalLaps) : '—';
+        }
+        return $scope.formatLap(row.finishTime);
       };
 
       // ------------------------------------------------------------------
@@ -81,6 +108,10 @@ angular.module('beamng.apps')
           $scope.phase = data.phase || 'waiting';
           $scope.raceTime = data.raceTime || 0;
           $scope.drivers = data.drivers || [];
+          if (typeof data.totalLaps === 'number') {
+            if ($scope.totalLaps !== data.totalLaps) { $scope.lapsInput = data.totalLaps; }
+            $scope.totalLaps = data.totalLaps;
+          }
           if ($scope.phase !== 'countdown') { $scope.countdown = null; }
         });
       });
@@ -99,6 +130,7 @@ angular.module('beamng.apps')
           $scope.routeWaypoints = data.waypoints || [];
           $scope.nextWp = data.nextWp || 1;
           $scope.visualize = data.visualize !== false;
+          if (typeof data.width === 'number') { $scope.widthInput = data.width; }
         });
       });
 
@@ -114,10 +146,13 @@ angular.module('beamng.apps')
       });
 
       // ------------------------------------------------------------------
-      // UI -> LUA commands (host controls)
+      // UI -> LUA commands (session controls)
       // ------------------------------------------------------------------
-      $scope.setGrid = function () {
-        bngApi.engineLua('extensions.load("raceManager"); raceManager.setGrid()');
+      $scope.startQualifying = function () {
+        bngApi.engineLua('extensions.load("raceManager"); raceManager.startQualifying()');
+      };
+      $scope.generateGrid = function () {
+        bngApi.engineLua('raceManager.generateGrid()');
       };
       $scope.startCountdown = function () {
         bngApi.engineLua('raceManager.startCountdown()');
@@ -130,7 +165,21 @@ angular.module('beamng.apps')
       };
 
       // ------------------------------------------------------------------
-      // UI -> LUA commands (waypoint editor)
+      // UI -> LUA commands (race settings)
+      // ------------------------------------------------------------------
+      $scope.applyTotalLaps = function () {
+        var n = parseInt($scope.lapsInput, 10);
+        if (!n || n < 1) { return; }
+        bngApi.engineLua('raceManager.setTotalLaps(' + n + ')');
+      };
+      $scope.applyWidth = function () {
+        var w = parseFloat($scope.widthInput);
+        if (!w || w <= 0) { return; }
+        bngApi.engineLua('raceManager.setCheckpointWidth(' + w + ')');
+      };
+
+      // ------------------------------------------------------------------
+      // UI -> LUA commands (checkpoint editor)
       // ------------------------------------------------------------------
       $scope.editorAdd = function () {
         bngApi.engineLua('raceManager.editorAdd()');

@@ -1,14 +1,14 @@
 {
   "name": "Race Manager",
   "author": "Phoenix",
-  "version": "1.0.0",
-  "description": "Multiplayer race control: set the grid, run the countdown, and track driver status and finish times live.",
+  "version": "2.0.0",
+  "description": "Multiplayer circuit race control: qualifying sessions, grid generation from best laps, two-pole checkpoint gates with adjustable width, lap counts, and live telemetry (best lap, laps led).",
   "directive": "raceManager",
   "domElement": "<race-manager></race-manager>",
   "css": {
     "top": "20px",
     "left": "20px",
-    "width": "460px",
+    "width": "560px",
     "height": "320px"
   },
   "types": ["ui.apps.categories.racing", "ui.apps.categories.info"]
