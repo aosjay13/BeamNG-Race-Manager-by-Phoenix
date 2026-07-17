@@ -1,10 +1,18 @@
--- Race Manager - client GE extension (BeamMP bridge)
+-- Race Manager - client GE extension (BeamMP bridge + waypoint editor)
 --
--- Multiplayer-only. The BeamMP server (server/RaceManager/main.lua) owns the
--- race state; this extension does the two things only a client can do:
---   1. Detect waypoint trigger hits for the LOCAL player's vehicle (the
---      server has no physics access) and report them upstream.
---   2. Receive the server's standings broadcast and hand it to the UI app.
+-- Multiplayer-only for racing. The BeamMP server (server/RaceManager/main.lua)
+-- owns the race state; this extension does what only a client can do:
+--   1. Waypoint editor: place/undo/clear waypoints at the local vehicle's
+--      position, save/load them as a route file, draw them in-world.
+--   2. Detect the LOCAL player's vehicle passing route waypoints in order
+--      (the server has no physics access); the last waypoint is the finish
+--      line and is reported upstream.
+--   3. Receive the server's state broadcasts and hand them to the UI app
+--      via guihooks.
+--
+-- Finish detection works two ways, either is sufficient:
+--   a. A route created with the editor (last waypoint = finish).
+--   b. A BeamNGTrigger object on the map named 'race_finish'.
 --
 -- Runs in BeamNG's GE Lua (LuaJIT / Lua 5.1 semantics) and talks to the
 -- server through BeamMP's client bridge (TriggerServerEvent / AddEventHandler).
@@ -16,149 +24,240 @@ local M = {}
 -- ---------------------------------------------------------------------------
 -- Tunables
 -- ---------------------------------------------------------------------------
-local TRIGGER_DEBOUNCE = 1.0   -- seconds; ignore duplicate trigger hits
-local MIN_LAP_TIME     = 5.0   -- seconds; shorter laps are glitches, not sent
+local FINISH_DEBOUNCE = 3.0      -- seconds; ignore repeat finish crossings
+local DEFAULT_RADIUS  = 10       -- meters; capture radius for new waypoints
+local ROUTE_FILE      = 'settings/raceManager/route.json'
 
 -- ---------------------------------------------------------------------------
--- Local state (own vehicle only -- everyone else's progress comes from the server)
+-- State
 -- ---------------------------------------------------------------------------
-local raceActive       = false  -- mirrored from server broadcasts
-local localTime        = 0      -- local clock for lap timing (high resolution)
-local lapStartTime     = nil
-local lastWaypoint     = -1
-local lastTriggerStamp = -math.huge
-local knownWaypoints   = 0      -- highest waypoint index seen + 1
+local phase           = 'waiting'  -- mirrored from server broadcasts
+local localFinished   = false
+local localTime       = 0
+local lastFinishStamp = -math.huge
+
+local route     = {}     -- ordered list of { x, y, z, radius }
+local nextWp    = 1      -- next route waypoint the local car must hit
+local visualize = true   -- draw route markers in-world
 
 local function inMultiplayer()
   return MPGameNetwork ~= nil and TriggerServerEvent ~= nil
 end
 
+local function playerPos()
+  local veh = be:getPlayerVehicle(0)
+  if not veh then return nil end
+  return veh:getPosition()
+end
+
 -- ---------------------------------------------------------------------------
--- Waypoint detection (local vehicle only)
+-- UI push helpers
 -- ---------------------------------------------------------------------------
-local function handleWaypoint(vehId, wpIndex)
-  if not raceActive then return end
-  if vehId ~= be:getPlayerVehicleID(0) then return end
+local function pushRouteState()
+  guihooks.trigger('RaceManagerRoute', {
+    waypoints = route,
+    nextWp    = nextWp,
+    visualize = visualize,
+  })
+end
 
-  -- Debounce: physics can fire the same trigger several times as the
-  -- vehicle's bounding box crosses it.
-  if localTime - lastTriggerStamp < TRIGGER_DEBOUNCE and wpIndex == lastWaypoint then
-    return
-  end
-  lastTriggerStamp = localTime
-
-  if wpIndex + 1 > knownWaypoints then
-    knownWaypoints = wpIndex + 1
-  end
-
-  -- Reject out-of-order hits (spun backwards through a gate, clipped a
-  -- different sector). Allowed: next sequential waypoint, or 0 to close a lap.
-  local expected = (lastWaypoint + 1) % math.max(knownWaypoints, 1)
-  if wpIndex ~= expected and wpIndex ~= 0 then return end
-
-  local payload = { wp = wpIndex }
-  if wpIndex == 0 then
-    if lapStartTime then
-      local lapTime = localTime - lapStartTime
-      if lapTime < MIN_LAP_TIME then return end  -- duplicate start-line hit
-      payload.lapTime = lapTime
-    end
-    lapStartTime = localTime
-  end
-
-  lastWaypoint = wpIndex
+-- ---------------------------------------------------------------------------
+-- Finish + waypoint detection
+-- ---------------------------------------------------------------------------
+local function reportFinish()
+  if phase ~= 'racing' or localFinished then return end
+  if localTime - lastFinishStamp < FINISH_DEBOUNCE then return end
+  lastFinishStamp = localTime
+  localFinished = true
   if inMultiplayer() then
-    TriggerServerEvent('RM_WaypointHit', jsonEncode(payload))
+    TriggerServerEvent('RM_Finish', '')
   end
 end
 
--- ---------------------------------------------------------------------------
--- Game engine hooks
--- ---------------------------------------------------------------------------
-
--- Scenario/track waypoint hook (BeamNG scenario system).
-function M.onRaceWaypointReached(data)
-  if not data then return end
-  local vehId = data.vehId or data.vehicleId
-  if not vehId then return end
-  handleWaypoint(vehId, data.index or 0)
+-- Route a: editor waypoints, enforced in order; last one is the finish.
+local function checkRoute()
+  if #route == 0 or phase ~= 'racing' or localFinished then return end
+  local pos = playerPos()
+  if not pos then return end
+  local wp = route[nextWp]
+  if not wp then return end
+  local dx, dy, dz = pos.x - wp.x, pos.y - wp.y, pos.z - wp.z
+  if dx * dx + dy * dy + dz * dz <= wp.radius * wp.radius then
+    if nextWp >= #route then
+      reportFinish()
+    else
+      nextWp = nextWp + 1
+    end
+    pushRouteState()
+  end
 end
 
--- BeamNGTrigger objects placed on the track. Trigger names must follow the
--- convention 'race_wp_<index>' (race_wp_0 = start/finish line).
+-- Route b: BeamNGTrigger object named 'race_finish' placed on the map.
 function M.onBeamNGTrigger(data)
   if not data or data.event ~= 'enter' then return end
-  local idx = tonumber(string.match(data.triggerName or '', '^race_wp_(%d+)$'))
-  if not idx then return end
-  handleWaypoint(data.subjectID, idx)
+  if data.triggerName ~= 'race_finish' then return end
+  if data.subjectID ~= be:getPlayerVehicleID(0) then return end
+  reportFinish()
 end
 
--- Own vehicle recovered/reset: invalidate the lap in progress so a recovery
--- can't produce an impossibly fast lap.
-function M.onVehicleResetted(vehId)
-  if vehId == be:getPlayerVehicleID(0) then
-    lapStartTime = nil
+-- ---------------------------------------------------------------------------
+-- In-world route visualization
+-- ---------------------------------------------------------------------------
+local function drawRoute()
+  if not visualize or #route == 0 or not debugDrawer then return end
+  for i, wp in ipairs(route) do
+    local pos = vec3(wp.x, wp.y, wp.z)
+    local color
+    if i == #route then
+      color = ColorF(1, 1, 1, 0.35)          -- finish: white
+    elseif phase == 'racing' and i == nextWp then
+      color = ColorF(0.2, 0.85, 0.35, 0.4)   -- next target: green
+    else
+      color = ColorF(1, 0.4, 0, 0.25)        -- rest of route: orange
+    end
+    debugDrawer:drawSphere(pos, wp.radius, color)
+    local label = (i == #route) and (i .. ' FINISH') or tostring(i)
+    debugDrawer:drawTextAdvanced(pos + vec3(0, 0, wp.radius + 1), String(label),
+      ColorF(1, 1, 1, 1), true, false, ColorI(0, 0, 0, 160))
   end
 end
 
 function M.onUpdate(dt)
   localTime = localTime + dt
+  checkRoute()
+  drawRoute()
 end
 
 -- ---------------------------------------------------------------------------
--- Server -> client: standings broadcast, forwarded straight to the UI app
+-- Waypoint editor API (called by the UI app)
+-- ---------------------------------------------------------------------------
+function M.editorAdd(radius)
+  local pos = playerPos()
+  if not pos then
+    log('W', 'raceManager', 'Editor: no player vehicle, cannot place waypoint')
+    return
+  end
+  route[#route + 1] = { x = pos.x, y = pos.y, z = pos.z, radius = radius or DEFAULT_RADIUS }
+  pushRouteState()
+end
+
+function M.editorUndo()
+  if #route > 0 then
+    route[#route] = nil
+    if nextWp > #route then nextWp = math.max(#route, 1) end
+    pushRouteState()
+  end
+end
+
+function M.editorClear()
+  route = {}
+  nextWp = 1
+  pushRouteState()
+end
+
+function M.editorSave()
+  if #route == 0 then
+    log('W', 'raceManager', 'Editor: nothing to save')
+    return
+  end
+  jsonWriteFile(ROUTE_FILE, { version = 1, waypoints = route }, true)
+  log('I', 'raceManager', 'Editor: saved ' .. #route .. ' waypoints to ' .. ROUTE_FILE)
+  guihooks.trigger('RaceManagerEditorMsg', { msg = 'Saved ' .. #route .. ' waypoints' })
+end
+
+function M.editorLoad()
+  local data = jsonReadFile(ROUTE_FILE)
+  if type(data) ~= 'table' or type(data.waypoints) ~= 'table' or #data.waypoints == 0 then
+    log('W', 'raceManager', 'Editor: no saved route at ' .. ROUTE_FILE)
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'No saved route found' })
+    return
+  end
+  route = data.waypoints
+  nextWp = 1
+  pushRouteState()
+  guihooks.trigger('RaceManagerEditorMsg', { msg = 'Loaded ' .. #route .. ' waypoints' })
+end
+
+function M.editorToggleVisualize()
+  visualize = not visualize
+  pushRouteState()
+end
+
+-- Console helper kept for compatibility: creates a one-waypoint route
+-- (a bare finish line). raceManager.setFinishLine(x, y, z [, radius])
+function M.setFinishLine(x, y, z, radius)
+  route = { { x = x, y = y, z = z, radius = radius or DEFAULT_RADIUS } }
+  nextWp = 1
+  pushRouteState()
+end
+
+-- ---------------------------------------------------------------------------
+-- Server -> client
 -- ---------------------------------------------------------------------------
 local function onServerUpdate(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
 
-  local wasActive = raceActive
-  raceActive = data.raceActive == true
-  if raceActive and not wasActive then
-    -- Fresh race: reset local lap tracking.
-    lapStartTime = nil
-    lastWaypoint = -1
-    lastTriggerStamp = -math.huge
-    knownWaypoints = 0
+  local wasRacing = (phase == 'racing')
+  phase = data.phase or 'waiting'
+  if phase == 'racing' and not wasRacing then
+    -- Fresh race start: re-arm local detection at the top of the route.
+    localFinished = false
+    lastFinishStamp = -math.huge
+    nextWp = 1
+    pushRouteState()
   end
 
   guihooks.trigger('RaceManagerUpdate', data)
 end
 
--- ---------------------------------------------------------------------------
--- Public API (called by the UI app) -- all commands go to the server
--- ---------------------------------------------------------------------------
-function M.startRace()
-  if inMultiplayer() then TriggerServerEvent('RM_Start', '') end
+local function onServerCountdown(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  guihooks.trigger('RaceManagerCountdown', data)
 end
 
-function M.stopRace()
-  if inMultiplayer() then TriggerServerEvent('RM_Stop', '') end
+-- ---------------------------------------------------------------------------
+-- Race commands (called by the UI app) -- all go to the server
+-- ---------------------------------------------------------------------------
+function M.setGrid()
+  if inMultiplayer() then TriggerServerEvent('RM_SetGrid', '') end
 end
 
-function M.resetRace()
-  if inMultiplayer() then TriggerServerEvent('RM_Reset', '') end
+function M.startCountdown()
+  if inMultiplayer() then TriggerServerEvent('RM_StartCountdown', '') end
+end
+
+function M.endRace()
+  if inMultiplayer() then TriggerServerEvent('RM_EndRace', '') end
+end
+
+function M.resetLeaderboard()
+  if inMultiplayer() then TriggerServerEvent('RM_ResetLeaderboard', '') end
 end
 
 function M.requestState()
+  pushRouteState()
   if inMultiplayer() then
     TriggerServerEvent('RM_RequestState', '')
   else
-    -- Not on a BeamMP server: tell the UI there's nothing to show.
-    guihooks.trigger('RaceManagerUpdate', { raceActive = false, raceTime = 0, standings = {} })
-    log('W', 'raceManager', 'Race Manager is multiplayer-only; join a BeamMP server running the RaceManager plugin')
+    -- Not on a BeamMP server: still push a state so the UI renders, and the
+    -- editor remains fully usable for building routes offline.
+    guihooks.trigger('RaceManagerUpdate', { phase = 'waiting', raceTime = 0, drivers = {} })
+    log('W', 'raceManager', 'Racing is multiplayer-only; the waypoint editor works offline')
   end
 end
 
 function M.onExtensionLoaded()
   if inMultiplayer() and AddEventHandler then
     AddEventHandler('RM_Update', onServerUpdate)
+    AddEventHandler('RM_Countdown', onServerCountdown)
   end
   log('I', 'raceManager', 'Race Manager client bridge loaded (multiplayer=' .. tostring(inMultiplayer()) .. ')')
 end
 
 function M.onExtensionUnloaded()
-  raceActive = false
+  phase = 'waiting'
 end
 
 return M

@@ -1,41 +1,41 @@
 -- Race Manager - BeamMP server plugin (Lua 5.3)
 --
--- Authoritative race state. Clients (lua/ge/extensions/raceManager.lua)
--- detect waypoint trigger hits locally -- the server has no physics access --
--- and report them here. The server validates progression, computes standings
--- and gaps, and broadcasts the leaderboard to every connected client.
+-- Authoritative race state machine:
+--   waiting -> grid -> countdown -> racing -> finished -> (reset) -> waiting
+--
+-- Clients (lua/ge/extensions/raceManager.lua) detect finish-line crossings
+-- locally -- the server has no physics access -- and report them here. The
+-- server assigns grid positions, runs the countdown, timestamps finishes on
+-- its own clock (one clock for everyone = fair gaps), and broadcasts the
+-- driver table to every connected client.
 --
 -- Author: Phoenix
 
 -- ---------------------------------------------------------------------------
 -- Tunables
 -- ---------------------------------------------------------------------------
-local TICK_MS          = 100   -- server clock resolution (also gap resolution)
-local PUSH_EVERY_TICKS = 5     -- broadcast standings every N ticks (500 ms)
-local MIN_LAP_TIME     = 5.0   -- seconds; client-reported laps below this are rejected
+local TICK_MS          = 100   -- server clock resolution
+local PUSH_EVERY_TICKS = 5     -- broadcast state every N ticks (500 ms)
+local COUNTDOWN_FROM   = 3     -- 3, 2, 1, GO!
 
 -- ---------------------------------------------------------------------------
 -- State
 -- ---------------------------------------------------------------------------
 local race = {
-  active         = false,
-  time           = 0.0,   -- seconds since race start (advanced by RM_Tick)
-  totalWaypoints = 0,     -- learned from highest waypoint index reported
+  phase = 'waiting',  -- waiting | grid | countdown | racing | finished
+  time  = 0.0,        -- seconds since GO (advanced by RM_Tick)
 }
-local players = {}        -- [playerID] = per-player record
+local players = {}          -- [playerID] = per-player record
 local tickCounter = 0
+local countdownValue = nil  -- current countdown number while phase == 'countdown'
 
 local function newRecord(pid)
   return {
-    id               = pid,
-    name             = MP.GetPlayerName(pid) or ('Player ' .. pid),
-    currentLap       = 0,
-    lastLap          = nil,
-    bestLap          = nil,
-    lastWaypoint     = -1,
-    lastWaypointTime = 0,      -- race.time at last accepted waypoint hit
-    finished         = false,
-    dnf              = false,
+    id         = pid,
+    name       = MP.GetPlayerName(pid) or ('Player ' .. pid),
+    status     = 'waiting',  -- waiting | gridded | racing | finished | dnf
+    gridPos    = nil,
+    finishTime = nil,
   }
 end
 
@@ -47,145 +47,141 @@ local function ensurePlayer(pid)
 end
 
 -- ---------------------------------------------------------------------------
--- Standings
+-- Broadcast
 -- ---------------------------------------------------------------------------
-local function progressScore(rec)
-  local wpPerLap = math.max(race.totalWaypoints, 1)
-  return rec.currentLap * wpPerLap + (rec.lastWaypoint + 1)
-end
-
-local function compareStandings(a, b)
-  if a.dnf ~= b.dnf then return not a.dnf end
-  local pa, pb = progressScore(a), progressScore(b)
-  if pa ~= pb then return pa > pb end
-  return a.lastWaypointTime < b.lastWaypointTime
-end
-
-local function lapsDown(front, behind)
-  return math.max(front.currentLap - behind.currentLap, 0)
-end
-
-local function buildStandings()
+local function buildDrivers()
   local list = {}
   for _, rec in pairs(players) do
     list[#list + 1] = rec
   end
-  table.sort(list, compareStandings)
-
-  local standings = {}
-  local leader = list[1]
-  for pos, rec in ipairs(list) do
-    local gapLeader, gapAhead = nil, nil
-    if pos > 1 and leader and not rec.dnf then
-      local ahead = list[pos - 1]
-      local ldLeader = lapsDown(leader, rec)
-      if ldLeader > 0 then
-        gapLeader = string.format('+%d L', ldLeader)
-      else
-        gapLeader = rec.lastWaypointTime - leader.lastWaypointTime
-      end
-      local ldAhead = lapsDown(ahead, rec)
-      if ldAhead > 0 then
-        gapAhead = string.format('+%d L', ldAhead)
-      else
-        gapAhead = rec.lastWaypointTime - ahead.lastWaypointTime
-      end
-    end
-    standings[#standings + 1] = {
-      pos        = pos,
-      id         = rec.id,
-      name       = rec.name,
-      currentLap = rec.currentLap + 1,   -- show lap in progress, 1-based
-      lastLap    = rec.lastLap,
-      bestLap    = rec.bestLap,
-      gapLeader  = gapLeader,
-      gapAhead   = gapAhead,
-      dnf        = rec.dnf,
-      finished   = rec.finished,
-    }
-  end
-  return standings
+  -- Finished drivers first (by finish time), then racers/gridded by grid
+  -- position, DNFs last.
+  table.sort(list, function (a, b)
+    local ra = a.status == 'dnf' and 2 or (a.finishTime and 0 or 1)
+    local rb = b.status == 'dnf' and 2 or (b.finishTime and 0 or 1)
+    if ra ~= rb then return ra < rb end
+    if ra == 0 then return a.finishTime < b.finishTime end
+    return (a.gridPos or math.huge) < (b.gridPos or math.huge)
+  end)
+  return list
 end
 
 local function broadcastState(targetPid)
   local payload = Util.JsonEncode({
-    raceActive = race.active,
-    raceTime   = race.time,
-    standings  = buildStandings(),
+    phase    = race.phase,
+    raceTime = race.time,
+    drivers  = buildDrivers(),
   })
   MP.TriggerClientEvent(targetPid or -1, 'RM_Update', payload)
 end
 
+local function broadcastCountdown(count)
+  MP.TriggerClientEvent(-1, 'RM_Countdown', Util.JsonEncode({ count = count }))
+end
+
 -- ---------------------------------------------------------------------------
--- Event handlers (registered in onInit)
+-- UI commands (relayed by the client bridge)
 -- ---------------------------------------------------------------------------
 
--- Client reports a validated waypoint hit.
--- data: JSON { wp = <index>, lapTime = <seconds, only when wp 0 closes a lap> }
-function RM_onWaypointHit(pid, data)
-  if not race.active then return end
-  local rec = ensurePlayer(pid)
-  if rec.finished or rec.dnf then return end
-
-  local ok, msg = pcall(Util.JsonDecode, data)
-  if not ok or type(msg) ~= 'table' then return end
-  local wpIndex = math.tointeger(msg.wp)
-  if not wpIndex or wpIndex < 0 then return end
-
-  -- Learn track size from the highest index any client reports.
-  if wpIndex + 1 > race.totalWaypoints then
-    race.totalWaypoints = wpIndex + 1
+-- Set Grid: snapshot connected players and assign starting positions in
+-- join order. Allowed from waiting/grid/finished (re-gridding is fine).
+function RM_onSetGrid(pid)
+  if race.phase == 'countdown' or race.phase == 'racing' then return end
+  players = {}
+  race.time = 0.0
+  local ids = {}
+  for id in pairs(MP.GetPlayers()) do ids[#ids + 1] = id end
+  table.sort(ids)
+  for gridPos, id in ipairs(ids) do
+    local rec = ensurePlayer(id)
+    rec.gridPos = gridPos
+    rec.status = 'gridded'
   end
+  race.phase = 'grid'
+  broadcastState()
+  print('[RaceManager] Grid set by ' .. (MP.GetPlayerName(pid) or pid) .. ' (' .. #ids .. ' drivers)')
+end
 
-  -- Server-side progression check (clients also validate, but never trust
-  -- a single client for ordering): next sequential waypoint or lap close.
-  local expected = (rec.lastWaypoint + 1) % math.max(race.totalWaypoints, 1)
-  if wpIndex ~= expected and wpIndex ~= 0 then return end
+function RM_onStartCountdown(pid)
+  if race.phase ~= 'grid' then return end
+  race.phase = 'countdown'
+  countdownValue = COUNTDOWN_FROM
+  broadcastState()
+  broadcastCountdown(countdownValue)
+  MP.CreateEventTimer('RM_CountdownTick', 1000)
+  print('[RaceManager] Countdown started by ' .. (MP.GetPlayerName(pid) or pid))
+end
 
-  if wpIndex == 0 then
-    -- Lap closed. Lap time is measured client-side (only the client has a
-    -- high-resolution clock aligned with its own physics).
-    local lapTime = tonumber(msg.lapTime)
-    if lapTime and lapTime >= MIN_LAP_TIME then
-      rec.currentLap = rec.currentLap + 1
-      rec.lastLap = lapTime
-      if not rec.bestLap or lapTime < rec.bestLap then
-        rec.bestLap = lapTime
-      end
-    elseif rec.lastWaypoint ~= -1 then
-      -- Lap close without a plausible time: count progress, drop the time.
-      rec.currentLap = rec.currentLap + 1
+function RM_CountdownTick()
+  if race.phase ~= 'countdown' then
+    MP.CancelEventTimer('RM_CountdownTick')
+    return
+  end
+  countdownValue = countdownValue - 1
+  if countdownValue > 0 then
+    broadcastCountdown(countdownValue)
+    return
+  end
+  -- GO!
+  MP.CancelEventTimer('RM_CountdownTick')
+  broadcastCountdown(0)
+  race.phase = 'racing'
+  race.time = 0.0
+  for _, rec in pairs(players) do
+    if rec.status == 'gridded' then rec.status = 'racing' end
+  end
+  broadcastState()
+  print('[RaceManager] GO!')
+end
+
+-- End Race: anyone still on track becomes DNF.
+function RM_onEndRace(pid)
+  if race.phase ~= 'racing' and race.phase ~= 'countdown' then return end
+  MP.CancelEventTimer('RM_CountdownTick')
+  broadcastCountdown(-1)  -- hide any countdown overlay
+  race.phase = 'finished'
+  for _, rec in pairs(players) do
+    if rec.status == 'racing' or rec.status == 'gridded' then
+      rec.status = 'dnf'
     end
   end
-
-  rec.lastWaypoint = wpIndex
-  rec.lastWaypointTime = race.time
+  broadcastState()
+  print('[RaceManager] Race ended by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
-function RM_onStart(pid)
+function RM_onResetLeaderboard(pid)
+  MP.CancelEventTimer('RM_CountdownTick')
+  broadcastCountdown(-1)
   players = {}
+  race.phase = 'waiting'
   race.time = 0.0
-  race.totalWaypoints = 0
-  race.active = true
-  for id, name in pairs(MP.GetPlayers()) do
-    ensurePlayer(id).name = name
+  for id in pairs(MP.GetPlayers()) do
+    ensurePlayer(id)
   end
   broadcastState()
-  print('[RaceManager] Race started by ' .. (MP.GetPlayerName(pid) or pid))
+  print('[RaceManager] Leaderboard reset by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
-function RM_onStop(pid)
-  race.active = false
-  broadcastState()
-  print('[RaceManager] Race stopped by ' .. (MP.GetPlayerName(pid) or pid))
-end
+-- Client reports its vehicle crossed the finish line. Timestamp on the
+-- server clock so every driver is measured against the same GO.
+function RM_onFinish(pid)
+  if race.phase ~= 'racing' then return end
+  local rec = ensurePlayer(pid)
+  if rec.status ~= 'racing' then return end
+  rec.status = 'finished'
+  rec.finishTime = race.time
+  print(string.format('[RaceManager] %s finished at %.3fs', rec.name, race.time))
 
-function RM_onReset(pid)
-  players = {}
-  race.time = 0.0
-  race.totalWaypoints = 0
-  race.active = false
+  -- Everyone done (finished or dnf)? Close the race.
+  for _, r in pairs(players) do
+    if r.status == 'racing' then
+      broadcastState()
+      return
+    end
+  end
+  race.phase = 'finished'
   broadcastState()
+  print('[RaceManager] All drivers finished')
 end
 
 -- Client asks for current state (UI app just opened).
@@ -193,8 +189,11 @@ function RM_onRequestState(pid)
   broadcastState(pid)
 end
 
+-- ---------------------------------------------------------------------------
+-- Clock + lifecycle
+-- ---------------------------------------------------------------------------
 function RM_Tick()
-  if not race.active then return end
+  if race.phase ~= 'racing' then return end
   race.time = race.time + TICK_MS / 1000.0
   tickCounter = tickCounter + 1
   if tickCounter >= PUSH_EVERY_TICKS then
@@ -204,28 +203,32 @@ function RM_Tick()
 end
 
 function RM_onPlayerJoin(pid)
-  if race.active then
-    ensurePlayer(pid)
-  end
-  broadcastState(pid)
+  ensurePlayer(pid)  -- joins mid-race as 'waiting'; gridded next Set Grid
+  broadcastState()
 end
 
 function RM_onPlayerDisconnect(pid)
   local rec = players[pid]
-  if rec and race.active then
-    rec.dnf = true
+  if not rec then return end
+  if rec.status == 'racing' or rec.status == 'gridded' then
+    rec.status = 'dnf'
+  elseif rec.status == 'waiting' then
+    players[pid] = nil
   end
+  broadcastState()
 end
 
 function onInit()
-  MP.RegisterEvent('RM_WaypointHit',  'RM_onWaypointHit')
-  MP.RegisterEvent('RM_Start',        'RM_onStart')
-  MP.RegisterEvent('RM_Stop',         'RM_onStop')
-  MP.RegisterEvent('RM_Reset',        'RM_onReset')
-  MP.RegisterEvent('RM_RequestState', 'RM_onRequestState')
-  MP.RegisterEvent('onPlayerJoin',       'RM_onPlayerJoin')
-  MP.RegisterEvent('onPlayerDisconnect', 'RM_onPlayerDisconnect')
-  MP.RegisterEvent('RM_Tick', 'RM_Tick')
+  MP.RegisterEvent('RM_SetGrid',          'RM_onSetGrid')
+  MP.RegisterEvent('RM_StartCountdown',   'RM_onStartCountdown')
+  MP.RegisterEvent('RM_EndRace',          'RM_onEndRace')
+  MP.RegisterEvent('RM_ResetLeaderboard', 'RM_onResetLeaderboard')
+  MP.RegisterEvent('RM_Finish',           'RM_onFinish')
+  MP.RegisterEvent('RM_RequestState',     'RM_onRequestState')
+  MP.RegisterEvent('onPlayerJoin',        'RM_onPlayerJoin')
+  MP.RegisterEvent('onPlayerDisconnect',  'RM_onPlayerDisconnect')
+  MP.RegisterEvent('RM_Tick',             'RM_Tick')
+  MP.RegisterEvent('RM_CountdownTick',    'RM_CountdownTick')
   MP.CreateEventTimer('RM_Tick', TICK_MS)
   print('[RaceManager] Server plugin loaded')
 end

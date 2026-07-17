@@ -2,7 +2,7 @@
   "name": "Race Manager",
   "author": "Phoenix",
   "version": "1.0.0",
-  "description": "Live multi-vehicle race leaderboard: positions, lap counts, best/last laps and real-time gaps.",
+  "description": "Multiplayer race control: set the grid, run the countdown, and track driver status and finish times live.",
   "directive": "raceManager",
   "domElement": "<race-manager></race-manager>",
   "css": {
