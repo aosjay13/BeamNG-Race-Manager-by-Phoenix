@@ -14,8 +14,9 @@ The BeamMP server has no physics access, so the mod is split in three:
 | Client bridge | `lua/ge/extensions/raceManager.lua` | In-game GE Lua (LuaJIT / 5.1) | Waypoint editor, local finish-line detection (the server has no physics), relays server broadcasts to the UI |
 | UI app | `ui/modules/apps/RaceManager/` | In-game UI (Angular) | Race controls, live driver table, waypoint editor panel |
 
-Event flow: local car hits the finish → `RM_Finish` to server → server
-timestamps it on its own clock → `RM_Update` broadcast to all clients → UI.
+Event flow: local car crosses the start/finish gate → `RM_QualiLap`/`RM_Lap`
+to server → server scores it on its own clock → `RM_Update` broadcast to all
+clients → UI.
 
 Client and server obey **different rules**:
 
@@ -55,13 +56,6 @@ Resources/Client/RaceManager_Client.zip
 For offline testing (waypoint editor only — racing needs BeamMP), drop the
 same zip into your BeamNG user folder's `mods/` directory instead.
 
-### Track setup
-
-Open the app, press **Editor**, drive the route and drop a waypoint at each
-gate with **+ Waypoint Here** — the last one placed is the finish line. Save
-persists to `settings/raceManager/route.json`. Alternatively, a
-`BeamNGTrigger` object named `race_finish` on the map works as the finish.
-
 ### Track layouts (persistent, per-map)
 
 The **Track Layouts** panel at the bottom of the editor stores named
@@ -80,13 +74,92 @@ and can be prepped days before an event:
   once; everyone's gates rebuild instantly. Loading is locked during a
   countdown or an active race.
 
-## Usage
+## Tutorial: running a race night
 
-1. Join the server, add the **Race Manager** app from the UI app menu
-   (Racing / Info categories).
-2. **Set Grid** snapshots connected players, then **Start Countdown** runs
-   3-2-1-GO for everyone; **End Race** DNFs anyone still out; **Reset
-   Leaderboard** clears state. Disconnecting mid-race marks a driver as DNF.
+Everything below happens inside the **Race Manager** window in game. The
+session flow is always the same:
+
+```
+Build/Load a track  →  Start Quali  →  Generate Grid  →  Start Countdown  →  Race  →  Results
+```
+
+### Step 1 — Open the app
+
+Join the BeamMP server, open the UI app menu, and add **Race Manager** (it's
+listed under the *Racing* and *Info* categories). The header shows the
+current session phase (Waiting / Qualifying / Grid Locked / Countdown /
+Racing / Race Over), the race clock, and your checkpoint progress (`CP 2/5`)
+while you're on track.
+
+### Step 2 — Build a track
+
+Press **Editor** in the header to open the checkpoint editor, then drive the
+course you want to race:
+
+1. At each place you want a timing gate, drive through it **in the direction
+   of travel** and press **+ Checkpoint Here**. A gate is two vertical poles
+   spanning a line perpendicular to your heading — cars must pass between
+   them.
+2. **The last gate you place is the start/finish line** (drawn white in the
+   world; earlier gates are orange, and your next target turns green during
+   a session).
+3. Use the **Gate width** slider to widen or narrow every gate live —
+   2–120 m. Wide gates are forgiving; narrow ones force a precise line.
+4. **Undo** removes the last gate, **Clear** wipes the route,
+   **Hide/Show Gates** toggles the in-world drawing.
+5. **Save** / **Load** keep a personal scratch copy on your own machine
+   (`settings/raceManager/route.json`) — handy while iterating on a design.
+
+### Step 3 — Save it as a layout (so it survives the night)
+
+Scratch saves are local to you; **Track Layouts** (bottom of the editor
+panel) live on the server and persist across server restarts:
+
+1. Type a name in the **Layout name** field and press **Save Current
+   Layout**. The server stores it tagged with the map it is hosting and
+   announces it in chat.
+2. To race a prepped track later, pick it from the dropdown — the list only
+   ever shows layouts saved **for the current map** — and check the 2D
+   preview: gate dots, the connecting track shape, and the start/finish line
+   in green.
+3. Press **Load Layout**. Every connected player's gates rebuild instantly;
+   nobody has to load anything manually. (Loading is locked while a
+   countdown or race is running.)
+
+### Step 4 — Qualifying
+
+Press **Start Quali**. Every driver's first crossing of the start/finish
+line starts their flying lap (the out-lap is free), and each full lap
+through all gates posts to the server — the table shows everyone's **Best
+Lap** and live provisional grid order, fastest on top. Run as many laps as
+you like; only your best counts. **End Session** closes qualifying but
+keeps the times.
+
+### Step 5 — Grid and race
+
+1. Set the race distance with the **Laps** field + **Set** (visible to
+   everyone as `race: N`).
+2. Press **Generate Grid** — starting positions lock in fastest-first from
+   quali bests; drivers without a time go to the back. (With no quali at
+   all, the grid falls back to join order.) Line the cars up on track.
+3. Press **Start Countdown**: everyone gets a synchronized 3‑2‑1‑**GO!**
+   overlay and the race clock starts.
+4. Race. The table now shows current lap, best race lap, **Led** (laps led),
+   and live positions. Positions and finish order are decided by the
+   server's single clock, so they're fair for every client.
+5. The race ends when everyone has finished (or you press **End Session**,
+   which DNFs anyone still out). Disconnecting mid-race is an automatic DNF.
+
+### Step 6 — Results
+
+When the race closes, the server automatically writes a results file
+(qualifying classification + race classification, pole and winner tagged) to
+`Resources/Server/RaceManager/results/` and announces the path in chat —
+ready for league standings or a broadcast overlay. Housekeeping:
+
+- **Reset** wipes the session back to Waiting with fresh driver records.
+- **Clear Results Cache** deletes all saved result `.txt` files on the
+  server (chat confirms how many were removed).
 
 ## Troubleshooting: the app doesn't show up
 
