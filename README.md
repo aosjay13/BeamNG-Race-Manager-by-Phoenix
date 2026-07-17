@@ -62,6 +62,24 @@ gate with **+ Waypoint Here** — the last one placed is the finish line. Save
 persists to `settings/raceManager/route.json`. Alternatively, a
 `BeamNGTrigger` object named `race_finish` on the map works as the finish.
 
+### Track layouts (persistent, per-map)
+
+The **Track Layouts** panel at the bottom of the editor stores named
+checkpoint configurations **on the BeamMP server** in
+`Resources/Server/RaceManager/layouts.json`, so they survive server restarts
+and can be prepped days before an event:
+
+- **Save Current Layout** bundles the currently placed gates (positions,
+  headings, gate width) under a name, tagged with the level the server is
+  hosting. Saving the same name on the same map overwrites it.
+- The dropdown is **strictly filtered by map** — the server only lists
+  layouts saved for the level it is currently hosting.
+- Selecting a layout draws a top-down **2D track preview** (checkpoints,
+  connecting lines, start/finish gate in green) scaled to fit the minimap.
+- **Load Layout** broadcasts the checkpoints to every connected client at
+  once; everyone's gates rebuild instantly. Loading is locked during a
+  countdown or an active race.
+
 ## Usage
 
 1. Join the server, add the **Race Manager** app from the UI app menu

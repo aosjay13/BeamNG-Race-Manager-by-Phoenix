@@ -19,7 +19,7 @@ angular.module('beamng.apps')
     replace: true,
     restrict: 'EA',
     scope: true,
-    controller: ['$scope', function ($scope) {
+    controller: ['$scope', '$element', function ($scope, $element) {
 
       // ------------------------------------------------------------------
       // State
@@ -40,6 +40,12 @@ angular.module('beamng.apps')
       $scope.nextWp = 1;
       $scope.visualize = true;
       $scope.editorMsg = null;
+
+      // Track layout state (server-side persistent layouts, current map only)
+      $scope.layouts = [];              // [{ name, map, width, checkpoints }]
+      $scope.layoutMap = '';            // map the server filtered the list by
+      $scope.layoutNameInput = '';
+      $scope.selectedLayoutName = '';
 
       var PHASE_LABELS = {
         waiting:    'Waiting',
@@ -134,6 +140,20 @@ angular.module('beamng.apps')
         });
       });
 
+      $scope.$on('RaceManagerLayouts', function (event, data) {
+        if (!data) { return; }
+        $scope.$evalAsync(function () {
+          $scope.layouts = data.layouts || [];
+          $scope.layoutMap = data.map || '';
+          // Keep the selection if the layout still exists after a refresh.
+          var stillThere = $scope.layouts.some(function (l) {
+            return l.name === $scope.selectedLayoutName;
+          });
+          if (!stillThere) { $scope.selectedLayoutName = ''; }
+          schedulePreview();
+        });
+      });
+
       var editorMsgTimer = null;
       $scope.$on('RaceManagerEditorMsg', function (event, data) {
         $scope.$evalAsync(function () {
@@ -203,10 +223,133 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.editorToggleVisualize()');
       };
 
+      $scope.toggleEditor = function () {
+        $scope.showEditor = !$scope.showEditor;
+        if ($scope.showEditor) { schedulePreview(); }  // canvas re-enters the DOM
+      };
+
+      // ------------------------------------------------------------------
+      // UI -> LUA commands (track layouts)
+      // ------------------------------------------------------------------
+      // Layout names go through engineLua as Lua string literals.
+      function luaStr(s) {
+        return "'" + String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, ' ') + "'";
+      }
+
+      $scope.saveLayout = function () {
+        var name = ($scope.layoutNameInput || '').trim();
+        if (!name || !$scope.routeWaypoints.length) { return; }
+        bngApi.engineLua('raceManager.saveLayout(' + luaStr(name) + ')');
+      };
+
+      $scope.loadLayout = function () {
+        if (!$scope.selectedLayoutName) { return; }
+        bngApi.engineLua('raceManager.loadLayout(' + luaStr($scope.selectedLayoutName) + ')');
+      };
+
+      $scope.onLayoutSelect = function () {
+        schedulePreview();
+      };
+
+      // ------------------------------------------------------------------
+      // 2D track preview (top-down minimap of the selected layout)
+      // ------------------------------------------------------------------
+      function selectedLayout() {
+        for (var i = 0; i < $scope.layouts.length; i++) {
+          if ($scope.layouts[i].name === $scope.selectedLayoutName) { return $scope.layouts[i]; }
+        }
+        return null;
+      }
+
+      // The canvas lives inside the ng-if editor panel, so drawing is deferred
+      // a tick to run after Angular has (re)inserted it into the DOM.
+      function schedulePreview() {
+        setTimeout(drawPreview, 0);
+      }
+
+      function drawPreview() {
+        var canvas = $element[0].querySelector('.rm-preview-canvas');
+        if (!canvas) { return; }
+        var ctx = canvas.getContext('2d');
+        var W = canvas.width, H = canvas.height;
+        ctx.clearRect(0, 0, W, H);
+
+        var layout = selectedLayout();
+        var cps = layout && layout.checkpoints;
+        if (!cps || !cps.length) {
+          ctx.fillStyle = 'rgba(154, 160, 166, 0.7)';
+          ctx.font = '11px "Noto Sans", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText($scope.layouts.length ? 'Select a layout to preview' : 'No saved layouts', W / 2, H / 2);
+          return;
+        }
+
+        // Normalize world X/Y into the canvas: fit the track's bounding box,
+        // preserve aspect ratio, center it, and flip Y (world north = up).
+        var pad = 16;
+        var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        cps.forEach(function (p) {
+          if (p.x < minX) { minX = p.x; }
+          if (p.x > maxX) { maxX = p.x; }
+          if (p.y < minY) { minY = p.y; }
+          if (p.y > maxY) { maxY = p.y; }
+        });
+        var spanX = (maxX - minX) || 1;
+        var spanY = (maxY - minY) || 1;
+        var scale = Math.min((W - 2 * pad) / spanX, (H - 2 * pad) / spanY);
+        var ox = (W - spanX * scale) / 2;
+        var oy = (H - spanY * scale) / 2;
+        function px(p) { return ox + (p.x - minX) * scale; }
+        function py(p) { return H - (oy + (p.y - minY) * scale); }
+
+        // Track outline: connect the gates in driving order and close the lap
+        // (the route is a circuit — after the last gate you cross gate 1 again).
+        if (cps.length > 1) {
+          ctx.beginPath();
+          ctx.moveTo(px(cps[0]), py(cps[0]));
+          for (var i = 1; i < cps.length; i++) { ctx.lineTo(px(cps[i]), py(cps[i])); }
+          ctx.closePath();
+          ctx.strokeStyle = 'rgba(232, 234, 237, 0.75)';
+          ctx.lineWidth = 2;
+          ctx.lineJoin = 'round';
+          ctx.stroke();
+        }
+
+        // Regular checkpoints: orange dots. Last checkpoint = start/finish.
+        for (var j = 0; j < cps.length - 1; j++) {
+          ctx.beginPath();
+          ctx.arc(px(cps[j]), py(cps[j]), 3, 0, Math.PI * 2);
+          ctx.fillStyle = '#ff6600';
+          ctx.fill();
+        }
+
+        // Start/finish gate: green line drawn perpendicular to the stored
+        // heading, using the layout's real gate width (min length so it stays
+        // visible on huge tracks). World-Y flip also mirrors the perpendicular.
+        var sf = cps[cps.length - 1];
+        var hx = sf.hx || 0, hy = sf.hy || 1;
+        var half = Math.max(((layout.width || 20) / 2) * scale, 6);
+        var rx = hy, ry = -hx;  // right-hand perpendicular in world XY
+        ctx.beginPath();
+        ctx.moveTo(px(sf) - rx * half, py(sf) + ry * half);
+        ctx.lineTo(px(sf) + rx * half, py(sf) - ry * half);
+        ctx.strokeStyle = '#34a853';
+        ctx.lineWidth = 4;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+
+        // Gate count caption in the corner.
+        ctx.fillStyle = 'rgba(154, 160, 166, 0.8)';
+        ctx.font = '10px "Noto Sans", sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(cps.length + ' gates · ' + (layout.map || ''), 6, H - 6);
+      }
+
       // ------------------------------------------------------------------
       // Lifecycle: load the backend and pull current state immediately so the
       // window is never blank, even before the first server broadcast.
       // ------------------------------------------------------------------
+      // requestState also pulls the map-filtered layout list from the server.
       bngApi.engineLua('extensions.load("raceManager"); raceManager.requestState()');
     }]
   };

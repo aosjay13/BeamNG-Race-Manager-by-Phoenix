@@ -490,6 +490,318 @@ function RM_onRequestState(pid)
 end
 
 -- ---------------------------------------------------------------------------
+-- Track layouts: persistent, per-map checkpoint configurations
+-- ---------------------------------------------------------------------------
+-- Admins build a gate route with the in-game editor, then save it here under a
+-- name. Layouts persist in layouts.json across server restarts and are keyed
+-- by the BeamNG level name; the UI only ever sees layouts for the map this
+-- server is currently hosting. Loading a layout broadcasts the checkpoints to
+-- every connected client at once so the whole grid races the same track.
+local LAYOUTS_DIR  = 'Resources/Server/RaceManager'
+local LAYOUTS_FILE = LAYOUTS_DIR .. '/layouts.json'
+local MAX_LAYOUT_NAME = 40
+local layouts = nil  -- lazy-loaded array of { name, map, width, checkpoints }
+
+-- Self-contained JSON encode/decode for the layouts file. Util.JsonEncode is
+-- still used for network payloads, but persistence gets its own (strict,
+-- mock-independent) codec so the headless tests exercise the real file format.
+local function jsonStringify(v)
+  local t = type(v)
+  if v == nil then return 'null' end
+  if t == 'boolean' then return v and 'true' or 'false' end
+  if t == 'number' then return string.format('%.10g', v) end
+  if t == 'string' then
+    return '"' .. v:gsub('[%c"\\]', function (c)
+      if c == '"' then return '\\"' end
+      if c == '\\' then return '\\\\' end
+      if c == '\n' then return '\\n' end
+      if c == '\r' then return '\\r' end
+      if c == '\t' then return '\\t' end
+      return string.format('\\u%04x', c:byte())
+    end) .. '"'
+  end
+  if t == 'table' then
+    local parts = {}
+    if #v > 0 or next(v) == nil then  -- array (empty tables encode as [])
+      for _, item in ipairs(v) do parts[#parts + 1] = jsonStringify(item) end
+      return '[' .. table.concat(parts, ',') .. ']'
+    end
+    for k, item in pairs(v) do
+      if type(k) == 'string' then
+        parts[#parts + 1] = jsonStringify(k) .. ':' .. jsonStringify(item)
+      end
+    end
+    return '{' .. table.concat(parts, ',') .. '}'
+  end
+  return 'null'
+end
+
+local function jsonParse(text)
+  local pos = 1
+  local function err(msg) error(('json: %s at %d'):format(msg, pos), 0) end
+  local function ws() pos = text:match('^[ \t\r\n]*()', pos) end
+  local parseValue
+  local function parseString()
+    pos = pos + 1
+    local out = {}
+    while true do
+      local c = text:sub(pos, pos)
+      if c == '' then err('unterminated string') end
+      if c == '"' then pos = pos + 1; break end
+      if c == '\\' then
+        local e = text:sub(pos + 1, pos + 1)
+        if e == 'u' then
+          local hex = text:sub(pos + 2, pos + 5)
+          local cp = tonumber(hex, 16) or err('bad \\u escape')
+          out[#out + 1] = cp < 128 and string.char(cp) or '?'
+          pos = pos + 6
+        else
+          local map = { n = '\n', r = '\r', t = '\t', b = '\b', f = '\f' }
+          out[#out + 1] = map[e] or e
+          pos = pos + 2
+        end
+      else
+        out[#out + 1] = c
+        pos = pos + 1
+      end
+    end
+    return table.concat(out)
+  end
+  parseValue = function ()
+    ws()
+    local c = text:sub(pos, pos)
+    if c == '"' then return parseString() end
+    if c == '{' then
+      pos = pos + 1
+      local obj = {}
+      ws()
+      if text:sub(pos, pos) == '}' then pos = pos + 1; return obj end
+      while true do
+        ws()
+        if text:sub(pos, pos) ~= '"' then err('expected key') end
+        local k = parseString()
+        ws()
+        if text:sub(pos, pos) ~= ':' then err('expected :') end
+        pos = pos + 1
+        obj[k] = parseValue()
+        ws()
+        local sep = text:sub(pos, pos)
+        pos = pos + 1
+        if sep == '}' then return obj end
+        if sep ~= ',' then err('expected , or }') end
+      end
+    end
+    if c == '[' then
+      pos = pos + 1
+      local arr = {}
+      ws()
+      if text:sub(pos, pos) == ']' then pos = pos + 1; return arr end
+      while true do
+        arr[#arr + 1] = parseValue()
+        ws()
+        local sep = text:sub(pos, pos)
+        pos = pos + 1
+        if sep == ']' then return arr end
+        if sep ~= ',' then err('expected , or ]') end
+      end
+    end
+    local lit = text:match('^true', pos) or text:match('^false', pos) or text:match('^null', pos)
+    if lit then
+      pos = pos + #lit
+      if lit == 'true' then return true elseif lit == 'false' then return false end
+      return nil
+    end
+    local num, nextPos = text:match('^(%-?%d+%.?%d*[eE]?[%+%-]?%d*)()', pos)
+    if num then pos = nextPos; return tonumber(num) or err('bad number') end
+    err('unexpected character')
+  end
+  local v = parseValue()
+  ws()
+  return v
+end
+
+-- The BeamMP server config names the hosted level as "/levels/<name>/info.json";
+-- everything is normalized down to the bare level name ("gridmap_v2") so saved
+-- layouts compare cleanly no matter which form the API returns.
+local function normalizeMapName(raw)
+  if type(raw) ~= 'string' then return nil end
+  local name = raw:match('/?[Ll]evels/([^/]+)') or raw
+  name = name:gsub('%.json$', ''):gsub('/info$', ''):gsub('^%s+', ''):gsub('%s+$', '')
+  if name == '' then return nil end
+  return name
+end
+
+local function getCurrentMap()
+  -- Primary: the BeamMP settings API.
+  if MP.Get and MP.Settings and MP.Settings.Map ~= nil then
+    local ok, raw = pcall(MP.Get, MP.Settings.Map)
+    local name = ok and normalizeMapName(raw)
+    if name then return name end
+  end
+  -- Fallback: parse ServerConfig.toml in the server's working directory.
+  local f = io.open('ServerConfig.toml', 'r')
+  if f then
+    for line in f:lines() do
+      local raw = line:match('^%s*Map%s*=%s*"([^"]*)"')
+      if raw then
+        f:close()
+        return normalizeMapName(raw) or 'unknown'
+      end
+    end
+    f:close()
+  end
+  return 'unknown'
+end
+
+local function ensureLayoutsDir()
+  if FS and FS.CreateDirectory then
+    FS.CreateDirectory(LAYOUTS_DIR)
+  else
+    os.execute('mkdir -p "' .. LAYOUTS_DIR .. '"')
+  end
+end
+
+local function loadLayoutsFromDisk()
+  local f = io.open(LAYOUTS_FILE, 'r')
+  if not f then return {} end
+  local text = f:read('*a')
+  f:close()
+  local ok, data = pcall(jsonParse, text)
+  if not ok or type(data) ~= 'table' or type(data.layouts) ~= 'table' then
+    print('[RaceManager] Could not parse ' .. LAYOUTS_FILE .. ', starting with no layouts')
+    return {}
+  end
+  local out = {}
+  for _, l in ipairs(data.layouts) do
+    if type(l) == 'table' and type(l.name) == 'string' and type(l.map) == 'string'
+        and type(l.checkpoints) == 'table' and #l.checkpoints > 0 then
+      out[#out + 1] = l
+    end
+  end
+  return out
+end
+
+local function getLayouts()
+  if not layouts then
+    layouts = loadLayoutsFromDisk()
+    print('[RaceManager] Loaded ' .. #layouts .. ' saved layout(s) from ' .. LAYOUTS_FILE)
+  end
+  return layouts
+end
+
+local function saveLayoutsToDisk()
+  ensureLayoutsDir()
+  local f, ferr = io.open(LAYOUTS_FILE, 'w')
+  if not f then return false, tostring(ferr) end
+  f:write(jsonStringify({ version = 1, layouts = getLayouts() }))
+  f:close()
+  return true
+end
+
+-- Checkpoints as the client editor stores them: position + normalized travel
+-- heading (the gate's rotation) + the shared gate width saved per layout.
+local function sanitizeCheckpoints(raw)
+  if type(raw) ~= 'table' then return nil end
+  local out = {}
+  for i, cp in ipairs(raw) do
+    if type(cp) ~= 'table' then return nil end
+    local x, y, z = tonumber(cp.x), tonumber(cp.y), tonumber(cp.z)
+    if not (x and y and z) then return nil end
+    out[i] = { x = x, y = y, z = z, hx = tonumber(cp.hx) or 0, hy = tonumber(cp.hy) or 1 }
+  end
+  if #out == 0 then return nil end
+  return out
+end
+
+-- Strict map filter: the UI only ever sees layouts saved for the map this
+-- server is hosting right now.
+local function layoutsForCurrentMap()
+  local map = getCurrentMap()
+  local list = {}
+  for _, l in ipairs(getLayouts()) do
+    if l.map == map then list[#list + 1] = l end
+  end
+  table.sort(list, function (a, b) return a.name:lower() < b.name:lower() end)
+  return list, map
+end
+
+local function sendLayoutList(targetPid)
+  local list, map = layoutsForCurrentMap()
+  MP.TriggerClientEvent(targetPid or -1, 'RM_Layouts',
+    Util.JsonEncode({ map = map, layouts = list }))
+end
+
+function RM_onRequestLayouts(pid)
+  sendLayoutList(pid)
+end
+
+-- Save the checkpoints the client bundled up as a named layout for the current
+-- map. Same name on the same map overwrites (that's the edit workflow); the
+-- refreshed list goes to every client so all open UIs stay in sync.
+function RM_onSaveLayout(pid, rawData)
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+
+  local name = type(data.name) == 'string'
+    and data.name:gsub('^%s+', ''):gsub('%s+$', ''):sub(1, MAX_LAYOUT_NAME) or ''
+  local checkpoints = sanitizeCheckpoints(data.checkpoints)
+  if name == '' or not checkpoints then return end
+
+  local map = getCurrentMap()
+  local entry = {
+    name        = name,
+    map         = map,
+    width       = tonumber(data.width) or 20,
+    checkpoints = checkpoints,
+  }
+  local all = getLayouts()
+  local replaced = false
+  for i, l in ipairs(all) do
+    if l.map == map and l.name:lower() == name:lower() then
+      all[i] = entry
+      replaced = true
+      break
+    end
+  end
+  if not replaced then all[#all + 1] = entry end
+
+  local wrote, werr = saveLayoutsToDisk()
+  if not wrote then
+    print('[RaceManager] Failed to write ' .. LAYOUTS_FILE .. ': ' .. tostring(werr))
+    return
+  end
+  local msg = string.format('[RaceManager] Layout "%s" (%d gates, %s) %s by %s',
+    name, #checkpoints, map, replaced and 'updated' or 'saved', MP.GetPlayerName(pid) or pid)
+  MP.SendChatMessage(-1, msg)
+  print(msg)
+  sendLayoutList(-1)
+end
+
+-- Load a saved layout: look it up under the current map only and broadcast the
+-- checkpoint set to every connected client, which instantly rebuilds its gates.
+-- Locked once a countdown/race is under way — nobody swaps the track mid-race.
+function RM_onLoadLayout(pid, rawData)
+  if race.phase == 'countdown' or race.phase == 'racing' then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' or type(data.name) ~= 'string' then return end
+
+  local list, map = layoutsForCurrentMap()
+  for _, l in ipairs(list) do
+    if l.name:lower() == data.name:lower() then
+      MP.TriggerClientEvent(-1, 'RM_ApplyLayout', Util.JsonEncode(l))
+      local msg = string.format('[RaceManager] Layout "%s" loaded on %s by %s (%d gates)',
+        l.name, map, MP.GetPlayerName(pid) or pid, #l.checkpoints)
+      MP.SendChatMessage(-1, msg)
+      print(msg)
+      return
+    end
+  end
+  print(string.format('[RaceManager] Load failed: no layout "%s" for map %s', data.name, map))
+end
+
+-- ---------------------------------------------------------------------------
 -- Clock + lifecycle
 -- ---------------------------------------------------------------------------
 function RM_Tick()
@@ -542,10 +854,14 @@ function onInit()
   MP.RegisterEvent('RM_ClearResults',     'RM_onClearResults')
   MP.RegisterEvent('RM_Lap',              'RM_onLap')
   MP.RegisterEvent('RM_RequestState',     'RM_onRequestState')
+  MP.RegisterEvent('RM_RequestLayouts',   'RM_onRequestLayouts')
+  MP.RegisterEvent('RM_SaveLayout',       'RM_onSaveLayout')
+  MP.RegisterEvent('RM_LoadLayout',       'RM_onLoadLayout')
   MP.RegisterEvent('onPlayerJoin',        'RM_onPlayerJoin')
   MP.RegisterEvent('onPlayerDisconnect',  'RM_onPlayerDisconnect')
   MP.RegisterEvent('RM_Tick',             'RM_Tick')
   MP.RegisterEvent('RM_CountdownTick',    'RM_CountdownTick')
   MP.CreateEventTimer('RM_Tick', TICK_MS)
-  print('[RaceManager] Server plugin loaded (circuit edition)')
+  getLayouts()  -- warm the layout cache so saved tracks survive the restart visibly
+  print('[RaceManager] Server plugin loaded (circuit edition, map: ' .. getCurrentMap() .. ')')
 end

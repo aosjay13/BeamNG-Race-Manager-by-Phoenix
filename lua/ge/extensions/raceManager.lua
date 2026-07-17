@@ -303,6 +303,52 @@ function M.editorToggleVisualize()
   pushRouteState()
 end
 
+-- ---------------------------------------------------------------------------
+-- Track layouts (server-side, persistent, per-map)
+-- ---------------------------------------------------------------------------
+-- Unlike editorSave/editorLoad (a single local scratch file), named layouts
+-- live on the BeamMP server in layouts.json, keyed by map, and survive server
+-- restarts. Saving bundles the currently placed checkpoints; loading is pushed
+-- by the server to every client at once via RM_ApplyLayout.
+local function editorMsg(msg)
+  guihooks.trigger('RaceManagerEditorMsg', { msg = msg })
+end
+
+function M.saveLayout(name)
+  name = tostring(name or ''):gsub('^%s+', ''):gsub('%s+$', '')
+  if name == '' then
+    editorMsg('Enter a layout name first')
+    return
+  end
+  if #route == 0 then
+    editorMsg('Place checkpoints before saving a layout')
+    return
+  end
+  if not inMultiplayer() then
+    editorMsg('Layouts need a BeamMP server (use Save/Load for offline routes)')
+    return
+  end
+  TriggerServerEvent('RM_SaveLayout', jsonEncode({
+    name        = name,
+    width       = checkpointWidth,
+    checkpoints = route,
+  }))
+end
+
+function M.requestLayouts()
+  if inMultiplayer() then TriggerServerEvent('RM_RequestLayouts', '') end
+end
+
+function M.loadLayout(name)
+  name = tostring(name or '')
+  if name == '' then return end
+  if not inMultiplayer() then
+    editorMsg('Layouts need a BeamMP server')
+    return
+  end
+  TriggerServerEvent('RM_LoadLayout', jsonEncode({ name = name }))
+end
+
 -- Console helper: creates a one-gate circuit (a bare start/finish line).
 -- raceManager.setFinishLine(x, y, z [, headingX, headingY])
 function M.setFinishLine(x, y, z, hx, hy)
@@ -336,6 +382,34 @@ local function onServerCountdown(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
   guihooks.trigger('RaceManagerCountdown', data)
+end
+
+-- Map-filtered layout list from the server (includes checkpoint arrays so the
+-- UI can draw the 2D track preview before anything is loaded).
+local function onLayoutList(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  guihooks.trigger('RaceManagerLayouts', data)
+end
+
+-- Server pushed a layout to everyone: throw away the current gates and spawn
+-- the saved ones immediately.
+local function onApplyLayout(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' or type(data.checkpoints) ~= 'table' then return end
+  local cps = {}
+  for i, cp in ipairs(data.checkpoints) do
+    local x, y, z = tonumber(cp.x), tonumber(cp.y), tonumber(cp.z)
+    if not (x and y and z) then return end
+    cps[i] = { x = x, y = y, z = z, hx = tonumber(cp.hx) or 0, hy = tonumber(cp.hy) or 1 }
+  end
+  if #cps == 0 then return end
+  route = cps
+  checkpointWidth = clampWidth(data.width or checkpointWidth)
+  resetLapTracking()
+  editorMsg('Loaded layout "' .. tostring(data.name) .. '" (' .. #route .. ' gates)')
+  log('I', 'raceManager', 'Applied server layout "' .. tostring(data.name)
+    .. '" with ' .. #route .. ' checkpoints')
 end
 
 -- ---------------------------------------------------------------------------
@@ -378,6 +452,7 @@ function M.requestState()
   pushRouteState()
   if inMultiplayer() then
     TriggerServerEvent('RM_RequestState', '')
+    TriggerServerEvent('RM_RequestLayouts', '')
   else
     -- Not on a BeamMP server: still push a state so the UI renders, and the
     -- editor remains fully usable for building circuits offline.
@@ -390,6 +465,8 @@ function M.onExtensionLoaded()
   if inMultiplayer() and AddEventHandler then
     AddEventHandler('RM_Update', onServerUpdate)
     AddEventHandler('RM_Countdown', onServerCountdown)
+    AddEventHandler('RM_Layouts', onLayoutList)
+    AddEventHandler('RM_ApplyLayout', onApplyLayout)
   end
   log('I', 'raceManager', 'Race Manager client bridge loaded (multiplayer=' .. tostring(inMultiplayer()) .. ')')
 end

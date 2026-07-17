@@ -7,7 +7,10 @@
 local connected = { [1] = 'Alice', [2] = 'Bob', [3] = 'Cara' }
 local lastState = nil     -- last decoded RM_Update payload
 local lastChat = nil      -- last broadcast chat message
+local lastLayouts = nil   -- last RM_Layouts payload
+local lastApplied = nil   -- last RM_ApplyLayout payload
 local timers = {}
+local hostedMap = '/levels/gridmap_v2/info.json'  -- what MP.Get(Map) reports
 
 MP = {
   GetPlayerName = function (pid) return connected[pid] end,
@@ -18,19 +21,24 @@ MP = {
     return t
   end,
   TriggerClientEvent = function (target, event, payload)
-    if event == 'RM_Update' then lastState = payload end
+    if event == 'RM_Update'      then lastState   = payload end
+    if event == 'RM_Layouts'     then lastLayouts = payload end
+    if event == 'RM_ApplyLayout' then lastApplied = payload end
   end,
   RegisterEvent = function () end,
   CreateEventTimer = function (name) timers[name] = true end,
   CancelEventTimer = function (name) timers[name] = nil end,
+  Settings = { Map = 0 },
+  Get = function (setting) return hostedMap end,
 }
 
 Util = {
   -- Passthrough: the tests inspect the table directly.
   JsonEncode = function (t) return t end,
-  -- Naive flat-object decoder, enough for {"lapTime":93.2} / {"laps":2}.
+  -- Naive decoder: JSON object/array syntax mapped onto Lua table literals,
+  -- enough for {"lapTime":93.2} and the nested layout save payloads.
   JsonDecode = function (s)
-    local body = s:gsub('"([%w_]+)"%s*:', '%1='):gsub('^%s*{', '{')
+    local body = s:gsub('"([%w_]+)"%s*:', '%1='):gsub('%[', '{'):gsub('%]', '}')
     return load('return ' .. body)()
   end,
 }
@@ -173,6 +181,64 @@ connected[1] = 'Alice'
 RM_onResetLeaderboard(2)
 check(lastState.phase == 'waiting', 'reset returns to waiting')
 check(driver('Bob').lapsLed == 0 and driver('Bob').qualiBest == nil, 'reset wipes records')
+
+-- ---------------------------------------------------------------------------
+-- Track layouts: save, strict map filter, load broadcast, persistence
+-- ---------------------------------------------------------------------------
+local cpJson = '[{"x":100.5,"y":200.25,"z":50,"hx":0,"hy":1},'
+  .. '{"x":150,"y":260,"z":51,"hx":1,"hy":0},'
+  .. '{"x":90,"y":300,"z":50,"hx":0,"hy":-1}]'
+
+-- Save the currently placed checkpoints as a named layout
+lastChat = nil
+RM_onSaveLayout(1, '{"name":"GP Circuit","width":24,"checkpoints":' .. cpJson .. '}')
+check(type(lastChat) == 'string' and lastChat:find('GP Circuit', 1, true)
+  and lastChat:find('gridmap_v2', 1, true), 'chat announces layout save with map name')
+check(io.open('Resources/Server/RaceManager/layouts.json', 'r') ~= nil,
+  'layouts.json written to disk')
+check(lastLayouts ~= nil and lastLayouts.map == 'gridmap_v2'
+  and #lastLayouts.layouts == 1, 'save broadcasts refreshed layout list')
+check(lastLayouts.layouts[1].width == 24
+  and #lastLayouts.layouts[1].checkpoints == 3, 'saved layout keeps width and gates')
+
+-- Same name on the same map overwrites instead of duplicating
+RM_onSaveLayout(1, '{"name":"gp circuit","width":30,"checkpoints":' .. cpJson .. '}')
+check(#lastLayouts.layouts == 1 and lastLayouts.layouts[1].width == 30,
+  'same-name save overwrites the existing layout')
+
+-- Strict map filter: hosting another map hides gridmap layouts entirely
+hostedMap = '/levels/east_coast_usa/info.json'
+RM_onRequestLayouts(1)
+check(lastLayouts.map == 'east_coast_usa' and #lastLayouts.layouts == 0,
+  'layouts strictly filtered to the hosted map')
+RM_onSaveLayout(2, '{"name":"Coast Run","width":18,"checkpoints":' .. cpJson .. '}')
+check(#lastLayouts.layouts == 1 and lastLayouts.layouts[1].name == 'Coast Run',
+  'second map keeps its own separate layout list')
+hostedMap = '/levels/gridmap_v2/info.json'
+RM_onRequestLayouts(1)
+check(#lastLayouts.layouts == 1 and lastLayouts.layouts[1].name == 'gp circuit',
+  'switching back restores the first map\'s layouts')
+
+-- Load broadcasts the checkpoints to every client
+lastApplied = nil
+RM_onLoadLayout(2, '{"name":"GP CIRCUIT"}')
+check(lastApplied ~= nil and #lastApplied.checkpoints == 3
+  and lastApplied.checkpoints[1].x == 100.5 and lastApplied.width == 30,
+  'load broadcasts RM_ApplyLayout with saved checkpoints (case-insensitive)')
+lastApplied = nil
+RM_onLoadLayout(2, '{"name":"Coast Run"}')
+check(lastApplied == nil, 'layout from another map cannot be loaded')
+
+-- Persistence: simulated server restart must re-read layouts.json from disk
+-- (this also round-trips the real JSON encoder/parser).
+dofile('server/RaceManager/main.lua')
+onInit()
+lastLayouts = nil
+RM_onRequestLayouts(1)
+check(lastLayouts ~= nil and #lastLayouts.layouts == 1
+  and lastLayouts.layouts[1].name == 'gp circuit'
+  and lastLayouts.layouts[1].checkpoints[1].y == 200.25,
+  'layouts survive a server restart via layouts.json')
 
 -- Clean up the directory tree the test created in the repo root
 os.execute('rm -rf Resources')

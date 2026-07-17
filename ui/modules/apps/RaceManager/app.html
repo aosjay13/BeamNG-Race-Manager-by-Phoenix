@@ -5,7 +5,7 @@
     <span class="rm-phase" ng-class="'rm-phase-' + phase">{{ phaseLabel() }}</span>
     <span class="rm-wp-progress" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">CP {{ nextWp }}/{{ routeWaypoints.length }}</span>
     <span class="rm-clock" ng-if="phase === 'racing' || phase === 'finished'">{{ formatRaceTime(raceTime) }}</span>
-    <button class="rm-btn rm-btn-tab" ng-class="{'rm-btn-tab-active': showEditor}" ng-click="showEditor = !showEditor">Editor</button>
+    <button class="rm-btn rm-btn-tab" ng-class="{'rm-btn-tab-active': showEditor}" ng-click="toggleEditor()">Editor</button>
   </div>
 
   <!-- ================= Session controls ================= -->
@@ -58,6 +58,37 @@
       Drive through each checkpoint location <b>in the direction of travel</b> and press
       <b>+ Checkpoint Here</b>. Each checkpoint becomes a two-pole gate perpendicular to your
       heading; the last one placed is the <b>start/finish line</b>.
+    </div>
+
+    <!-- ===== Track layouts: persistent, per-map, server-side ===== -->
+    <div class="rm-layouts">
+      <div class="rm-layouts-left">
+        <div class="rm-layouts-title">Track Layouts <span class="rm-layouts-map" ng-if="layoutMap">— {{ layoutMap }}</span></div>
+        <div class="rm-layouts-row">
+          <input type="text" class="rm-layout-name" placeholder="Layout name…" maxlength="40"
+                 ng-model="layoutNameInput">
+          <button class="rm-btn rm-btn-start" ng-click="saveLayout()"
+                  ng-disabled="!routeWaypoints.length || !layoutNameInput"
+                  title="Save the currently placed checkpoints on the server under this name">
+            Save Current Layout
+          </button>
+        </div>
+        <div class="rm-layouts-row">
+          <select class="rm-layout-select" ng-model="selectedLayoutName" ng-change="onLayoutSelect()"
+                  ng-options="l.name as (l.name + ' (' + l.checkpoints.length + ' gates)') for l in layouts">
+            <option value="">{{ layouts.length ? 'Select a layout…' : 'No layouts saved for this map' }}</option>
+          </select>
+          <button class="rm-btn rm-btn-grid" ng-click="loadLayout()"
+                  ng-disabled="!selectedLayoutName || phase === 'countdown' || phase === 'racing'"
+                  title="Broadcast this layout's checkpoints to every connected player">
+            Load Layout
+          </button>
+        </div>
+        <div class="rm-layouts-hint">
+          Layouts are stored on the server and only listed for the map currently hosted.
+        </div>
+      </div>
+      <canvas class="rm-preview-canvas" width="200" height="130"></canvas>
     </div>
   </div>
 
@@ -247,6 +278,46 @@
   .rm-editor-finish { color: #e8eaed; }
   .rm-editor-coords { color: #bdc1c6; }
   .rm-editor-radius { color: #9aa0a6; }
+
+  /* Track layouts */
+  .rm-layouts {
+    display: flex;
+    gap: 10px;
+    margin-top: 7px;
+    padding-top: 7px;
+    border-top: 1px dashed rgba(255, 102, 0, 0.35);
+    align-items: flex-start;
+  }
+  .rm-layouts-left { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+  .rm-layouts-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #ffb380;
+    font-weight: 700;
+  }
+  .rm-layouts-map { color: #9aa0a6; font-weight: 400; text-transform: none; }
+  .rm-layouts-row { display: flex; gap: 5px; align-items: center; }
+  .rm-layout-name, .rm-layout-select {
+    flex: 1;
+    min-width: 0;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: #e8eaed;
+    border-radius: 3px;
+    padding: 3px 6px;
+    font-size: 11px;
+  }
+  .rm-layout-select option { background: #1a1d24; color: #e8eaed; }
+  .rm-layouts-hint { font-size: 10px; color: #9aa0a6; }
+  .rm-preview-canvas {
+    width: 200px;
+    height: 130px;
+    flex-shrink: 0;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+  }
 
   /* Countdown overlay */
   .rm-countdown {
