@@ -11,5 +11,5 @@
     "width": "460px",
     "height": "320px"
   },
-  "types": ["ui.apps.categories.gameplay"]
+  "types": ["ui.apps.categories.racing", "ui.apps.categories.info"]
 }
