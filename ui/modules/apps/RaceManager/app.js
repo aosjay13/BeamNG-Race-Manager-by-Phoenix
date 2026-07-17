@@ -163,6 +163,9 @@ angular.module('beamng.apps')
       $scope.resetLeaderboard = function () {
         bngApi.engineLua('raceManager.resetLeaderboard()');
       };
+      $scope.clearResults = function () {
+        bngApi.engineLua('raceManager.clearResults()');
+      };
 
       // ------------------------------------------------------------------
       // UI -> LUA commands (race settings)

@@ -118,6 +118,162 @@ local function broadcastCountdown(count)
 end
 
 -- ---------------------------------------------------------------------------
+-- Results logging
+-- ---------------------------------------------------------------------------
+-- Written automatically when a race session ends; one .txt per session so
+-- league standings / broadcast scripts can pick them up.
+local RESULTS_DIR = 'Resources/Server/RaceManager/results'
+
+local function fmtLap(t)
+  if not t then return 'no time' end
+  local m = math.floor(t / 60)
+  return string.format('%d:%06.3f', m, t - m * 60)
+end
+
+-- BeamMP ships an FS API; the io/os fallback keeps headless tests runnable.
+local function ensureResultsDir()
+  if FS and FS.CreateDirectory then
+    FS.CreateDirectory(RESULTS_DIR)
+  else
+    os.execute('mkdir -p "' .. RESULTS_DIR .. '"')
+  end
+end
+
+local function listResultFiles()
+  local names = {}
+  if FS and FS.ListFiles then
+    for _, entry in pairs(FS.ListFiles(RESULTS_DIR) or {}) do
+      local name = tostring(entry):match('[^/\\]+$')
+      if name and name:match('%.txt$') then names[#names + 1] = name end
+    end
+  else
+    local p = io.popen('ls -1 "' .. RESULTS_DIR .. '" 2>/dev/null')
+    if p then
+      for name in p:lines() do
+        if name:match('%.txt$') then names[#names + 1] = name end
+      end
+      p:close()
+    end
+  end
+  return names
+end
+
+local function clearResultsCache()
+  local removed = 0
+  for _, name in ipairs(listResultFiles()) do
+    local path = RESULTS_DIR .. '/' .. name
+    local ok
+    if FS and FS.Remove then
+      ok = FS.Remove(path) ~= false
+    else
+      ok = os.remove(path) ~= nil
+    end
+    if ok then removed = removed + 1 end
+  end
+  return removed
+end
+
+-- Qualifying classification: the locked grid if one exists, otherwise best
+-- quali lap. This is deliberately independent of the race outcome so the
+-- pole sitter and the race winner stay distinct in the output.
+local function qualiClassification()
+  local list = {}
+  for _, rec in pairs(players) do list[#list + 1] = rec end
+  table.sort(list, function (a, b)
+    if a.gridPos and b.gridPos then return a.gridPos < b.gridPos end
+    if (a.gridPos ~= nil) ~= (b.gridPos ~= nil) then return a.gridPos ~= nil end
+    local ta, tb = a.qualiBest, b.qualiBest
+    if ta and tb then
+      if ta ~= tb then return ta < tb end
+    elseif ta ~= tb then
+      return ta ~= nil
+    end
+    return a.id < b.id
+  end)
+  return list
+end
+
+-- Race classification: finishers by finish time, then unclassified by laps
+-- completed, DNFs last (same ordering the live table uses).
+local function raceClassification()
+  local list = {}
+  for _, rec in pairs(players) do list[#list + 1] = rec end
+  table.sort(list, function (a, b)
+    local ra = a.status == 'dnf' and 2 or (a.finishTime and 0 or 1)
+    local rb = b.status == 'dnf' and 2 or (b.finishTime and 0 or 1)
+    if ra ~= rb then return ra < rb end
+    if ra == 0 then return a.finishTime < b.finishTime end
+    if a.currentLap ~= b.currentLap then return a.currentLap > b.currentLap end
+    if a.lapsLed ~= b.lapsLed then return a.lapsLed > b.lapsLed end
+    return (a.gridPos or math.huge) < (b.gridPos or math.huge)
+  end)
+  return list
+end
+
+local function buildResultsText()
+  local quali = qualiClassification()
+  local final = raceClassification()
+  local lines = {}
+  local function add(s) lines[#lines + 1] = s end
+
+  add('==================================================')
+  add(' RACE MANAGER - SESSION RESULTS')
+  add(' ' .. os.date('%Y-%m-%d %H:%M:%S'))
+  add(string.format(' Race distance: %d lap%s | Drivers: %d',
+    race.totalLaps, race.totalLaps == 1 and '' or 's', #final))
+  add('==================================================')
+  add('')
+  add('--- QUALIFYING RESULTS ---')
+  add(string.format('%-5s %-22s %s', 'Pos', 'Driver', 'Best Lap'))
+  for i, rec in ipairs(quali) do
+    local tag = (i == 1 and rec.qualiBest) and '  << POLE POSITION' or ''
+    add(string.format('P%-4d %-22s %-10s%s', i, rec.name, fmtLap(rec.qualiBest), tag))
+  end
+  if #quali == 0 then add('(no drivers)') end
+  add('')
+  add('--- RACE RESULTS ---')
+  add(string.format('%-5s %-22s %-10s %-9s %s', 'Pos', 'Driver', 'Best Lap', 'Laps Led', 'Finish'))
+  for i, rec in ipairs(final) do
+    local classified = rec.finishTime ~= nil
+    local pos = classified and ('P' .. i) or 'DNF'
+    local finish = classified and fmtLap(rec.finishTime) or 'DNF'
+    local tag = (i == 1 and classified) and '  << RACE WINNER' or ''
+    add(string.format('%-5s %-22s %-10s %-9d %-10s%s',
+      pos, rec.name, fmtLap(rec.raceBest), rec.lapsLed or 0, finish, tag))
+  end
+  if #final == 0 then add('(no drivers)') end
+  add('')
+  return table.concat(lines, '\n') .. '\n'
+end
+
+local function writeResults()
+  ensureResultsDir()
+  local path = RESULTS_DIR .. '/' .. os.date('results_%Y-%m-%d_%H-%M-%S.txt')
+  local text = buildResultsText()
+  local f, err = io.open(path, 'w')
+  if not f then return false, tostring(err) end
+  f:write(text)
+  f:close()
+  return true, path
+end
+
+-- Single exit point for every way a race ends (all finished, admin ended,
+-- last racer disconnected): flip the phase, log the results file, announce
+-- it in chat.
+local function finishRace(reason)
+  race.phase = 'finished'
+  broadcastState()
+  print('[RaceManager] Race over: ' .. reason)
+  local ok, wrote, pathOrErr = pcall(writeResults)
+  if ok and wrote then
+    MP.SendChatMessage(-1, '[RaceManager] Session complete! Results saved on the server: ' .. pathOrErr)
+    print('[RaceManager] Results written to ' .. pathOrErr)
+  else
+    print('[RaceManager] Failed to write results: ' .. tostring(ok and pathOrErr or wrote))
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- Session state machine (UI commands relayed by the client bridge)
 -- ---------------------------------------------------------------------------
 
@@ -232,14 +388,12 @@ function RM_onEndRace(pid)
   if race.phase == 'racing' or race.phase == 'countdown' then
     MP.CancelEventTimer('RM_CountdownTick')
     broadcastCountdown(-1)  -- hide any countdown overlay
-    race.phase = 'finished'
     for _, rec in pairs(players) do
       if rec.status == 'racing' or rec.status == 'gridded' then
         rec.status = 'dnf'
       end
     end
-    broadcastState()
-    print('[RaceManager] Race ended by ' .. (MP.GetPlayerName(pid) or pid))
+    finishRace('ended by ' .. (MP.GetPlayerName(pid) or pid))
   elseif race.phase == 'qualifying' then
     race.phase = 'waiting'
     broadcastState()
@@ -309,12 +463,25 @@ function RM_onLap(pid, rawData)
         return
       end
     end
-    race.phase = 'finished'
-    print('[RaceManager] All drivers finished')
+    finishRace('all drivers finished')
+    return
   else
     rec.currentLap = completed + 1
   end
   broadcastState()
+end
+
+-- Clear Results Cache: delete every saved .txt in the results folder.
+function RM_onClearResults(pid)
+  local ok, removed = pcall(clearResultsCache)
+  if not ok then
+    print('[RaceManager] Failed to clear results cache: ' .. tostring(removed))
+    return
+  end
+  local msg = string.format('[RaceManager] Results cache cleared by %s (%d file%s removed from %s)',
+    MP.GetPlayerName(pid) or pid, removed, removed == 1 and '' or 's', RESULTS_DIR)
+  MP.SendChatMessage(-1, msg)
+  print(msg)
 end
 
 -- Client asks for current state (UI app just opened).
@@ -350,6 +517,17 @@ function RM_onPlayerDisconnect(pid)
   elseif rec.status == 'waiting' or (rec.status == 'qualifying' and not rec.qualiBest) then
     players[pid] = nil
   end
+  -- If the last active racer just dropped, the race is over.
+  if race.phase == 'racing' then
+    for _, r in pairs(players) do
+      if r.status == 'racing' then
+        broadcastState()
+        return
+      end
+    end
+    finishRace('no racers left on track')
+    return
+  end
   broadcastState()
 end
 
@@ -361,6 +539,7 @@ function onInit()
   MP.RegisterEvent('RM_EndRace',          'RM_onEndRace')
   MP.RegisterEvent('RM_ResetLeaderboard', 'RM_onResetLeaderboard')
   MP.RegisterEvent('RM_QualiLap',         'RM_onQualiLap')
+  MP.RegisterEvent('RM_ClearResults',     'RM_onClearResults')
   MP.RegisterEvent('RM_Lap',              'RM_onLap')
   MP.RegisterEvent('RM_RequestState',     'RM_onRequestState')
   MP.RegisterEvent('onPlayerJoin',        'RM_onPlayerJoin')

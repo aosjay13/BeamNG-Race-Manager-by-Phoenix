@@ -369,6 +369,11 @@ function M.resetLeaderboard()
   if inMultiplayer() then TriggerServerEvent('RM_ResetLeaderboard', '') end
 end
 
+-- Clear the server-side results cache (deletes the saved .txt result files).
+function M.clearResults()
+  if inMultiplayer() then TriggerServerEvent('RM_ClearResults', '') end
+end
+
 function M.requestState()
   pushRouteState()
   if inMultiplayer() then

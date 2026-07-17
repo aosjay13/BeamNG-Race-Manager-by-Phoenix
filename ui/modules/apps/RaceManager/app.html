@@ -15,6 +15,7 @@
     <button class="rm-btn rm-btn-start" ng-click="startCountdown()"  ng-disabled="phase !== 'grid'">Start Countdown</button>
     <button class="rm-btn rm-btn-end"   ng-click="endRace()"         ng-disabled="phase !== 'racing' && phase !== 'countdown' && phase !== 'qualifying'">End Session</button>
     <button class="rm-btn rm-btn-reset" ng-click="resetLeaderboard()">Reset</button>
+    <button class="rm-btn rm-btn-reset" ng-click="clearResults()" title="Delete all saved result .txt files on the server">Clear Results Cache</button>
   </div>
 
   <!-- ================= Race settings ================= -->
