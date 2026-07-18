@@ -136,6 +136,31 @@ local function resetLapTracking()
   pushRouteState()
 end
 
+-- Strict track-state purge: throw away every checkpoint table and reset lap
+-- tracking to a virgin state. The 3D gate poles are immediate-mode
+-- debugDrawer shapes redrawn from `route` every frame, so emptying the table
+-- removes them from the world on the next update tick — nothing else holds a
+-- reference to them. Runs before any new layout is applied and whenever the
+-- server broadcasts RM_ClearTrack, so ghost checkpoints from an earlier
+-- session cannot survive.
+local function clearTrackState(reason)
+  route        = {}
+  armedWp      = 1
+  timingActive = false
+  localLap     = 1
+  lapStart     = localTime
+  prevPos      = nil
+  pushRouteState()
+  log('I', 'raceManager', 'Track state cleared (' .. tostring(reason or 'local') .. ')')
+end
+
+-- UI/console entry point: purge locally and, when on a BeamMP server, ask the
+-- server to broadcast the purge to every client.
+function M.clearTrackState()
+  clearTrackState('ui request')
+  if inMultiplayer() then TriggerServerEvent('RM_ClearTrackState', '') end
+end
+
 local function onLapCompleted()
   local lapTime = localTime - lapStart
   if timingActive and lapTime < LAP_DEBOUNCE then return end  -- double-fire guard
@@ -244,9 +269,7 @@ function M.editorUndo()
 end
 
 function M.editorClear()
-  route = {}
-  armedWp = 1
-  pushRouteState()
+  clearTrackState('editor clear')
 end
 
 function M.setCheckpointWidth(w)
@@ -316,23 +339,42 @@ end
 
 function M.saveLayout(name)
   name = tostring(name or ''):gsub('^%s+', ''):gsub('%s+$', '')
+  print('[raceManager] saveLayout("' .. name .. '") with ' .. #route .. ' checkpoint(s)')
   if name == '' then
+    log('W', 'raceManager', 'saveLayout: no layout name given, nothing sent')
     editorMsg('Enter a layout name first')
     return
   end
   if #route == 0 then
+    log('W', 'raceManager', 'saveLayout: no checkpoints placed, nothing sent')
     editorMsg('Place checkpoints before saving a layout')
     return
   end
   if not inMultiplayer() then
+    log('W', 'raceManager', 'saveLayout: not connected to a BeamMP server, nothing sent')
     editorMsg('Layouts need a BeamMP server (use Save/Load for offline routes)')
     return
   end
-  TriggerServerEvent('RM_SaveLayout', jsonEncode({
+  -- Bundle a sanitized copy of the route: plain numeric fields only, so the
+  -- payload always JSON-encodes as the flat checkpoint array the server's
+  -- sanitizeCheckpoints expects (never vec3 userdata or stray keys).
+  local cps = {}
+  for i, wp in ipairs(route) do
+    local x, y, z = tonumber(wp.x), tonumber(wp.y), tonumber(wp.z)
+    if not (x and y and z) then
+      log('E', 'raceManager', 'saveLayout: checkpoint ' .. i .. ' has non-numeric coordinates, aborting')
+      editorMsg('Save failed: checkpoint ' .. i .. ' is invalid')
+      return
+    end
+    cps[i] = { x = x, y = y, z = z, hx = tonumber(wp.hx) or 0, hy = tonumber(wp.hy) or 1 }
+  end
+  local payload = jsonEncode({
     name        = name,
-    width       = checkpointWidth,
-    checkpoints = route,
-  }))
+    width       = clampWidth(checkpointWidth),
+    checkpoints = cps,
+  })
+  print('[raceManager] saveLayout: sending RM_SaveLayout (' .. #payload .. ' bytes) to server')
+  TriggerServerEvent('RM_SaveLayout', payload)
 end
 
 function M.requestLayouts()
@@ -388,28 +430,55 @@ end
 -- UI can draw the 2D track preview before anything is loaded).
 local function onLayoutList(rawData)
   local ok, data = pcall(jsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  if not ok or type(data) ~= 'table' then
+    log('E', 'raceManager', 'RM_Layouts: undecodable payload: ' .. tostring(rawData):sub(1, 120))
+    return
+  end
+  -- An empty list can arrive JSON-encoded as {} instead of []; hand the UI a
+  -- real array either way so its iteration/preview code never breaks.
+  if type(data.layouts) ~= 'table' or #data.layouts == 0 then data.layouts = {} end
+  log('I', 'raceManager', 'RM_Layouts: ' .. #data.layouts .. ' layout(s) for map ' .. tostring(data.map))
   guihooks.trigger('RaceManagerLayouts', data)
 end
 
--- Server pushed a layout to everyone: throw away the current gates and spawn
--- the saved ones immediately.
+-- Server pushed a layout to everyone: purge the current track state, then
+-- spawn the saved gates immediately.
 local function onApplyLayout(rawData)
   local ok, data = pcall(jsonDecode, rawData)
-  if not ok or type(data) ~= 'table' or type(data.checkpoints) ~= 'table' then return end
+  if not ok or type(data) ~= 'table' or type(data.checkpoints) ~= 'table' then
+    log('E', 'raceManager', 'RM_ApplyLayout: undecodable payload: ' .. tostring(rawData):sub(1, 120))
+    return
+  end
   local cps = {}
   for i, cp in ipairs(data.checkpoints) do
     local x, y, z = tonumber(cp.x), tonumber(cp.y), tonumber(cp.z)
-    if not (x and y and z) then return end
+    if not (x and y and z) then
+      log('E', 'raceManager', 'RM_ApplyLayout: checkpoint ' .. i .. ' has invalid coordinates, layout rejected')
+      return
+    end
     cps[i] = { x = x, y = y, z = z, hx = tonumber(cp.hx) or 0, hy = tonumber(cp.hy) or 1 }
   end
-  if #cps == 0 then return end
+  if #cps == 0 then
+    log('E', 'raceManager', 'RM_ApplyLayout: empty checkpoint list, layout rejected')
+    return
+  end
+  local width = clampWidth(data.width or checkpointWidth)
+  clearTrackState('applying layout "' .. tostring(data.name) .. '"')
   route = cps
-  checkpointWidth = clampWidth(data.width or checkpointWidth)
+  checkpointWidth = width
   resetLapTracking()
   editorMsg('Loaded layout "' .. tostring(data.name) .. '" (' .. #route .. ' gates)')
   log('I', 'raceManager', 'Applied server layout "' .. tostring(data.name)
     .. '" with ' .. #route .. ' checkpoints')
+end
+
+-- Server ordered a full purge (server startup, pre-layout-load, or an
+-- explicit clear): delete every checkpoint and its 3D poles right now.
+local function onClearTrack(rawData)
+  local reason = 'server'
+  local ok, data = pcall(jsonDecode, rawData)
+  if ok and type(data) == 'table' and data.reason then reason = tostring(data.reason) end
+  clearTrackState('server: ' .. reason)
 end
 
 -- ---------------------------------------------------------------------------
@@ -467,12 +536,16 @@ function M.onExtensionLoaded()
     AddEventHandler('RM_Countdown', onServerCountdown)
     AddEventHandler('RM_Layouts', onLayoutList)
     AddEventHandler('RM_ApplyLayout', onApplyLayout)
+    AddEventHandler('RM_ClearTrack', onClearTrack)
   end
   log('I', 'raceManager', 'Race Manager client bridge loaded (multiplayer=' .. tostring(inMultiplayer()) .. ')')
 end
 
 function M.onExtensionUnloaded()
   phase = 'waiting'
+  -- The extension stays resident across sessions (manual unload mode), so an
+  -- explicit purge here is what stops checkpoints leaking into the next one.
+  clearTrackState('extension unloaded')
 end
 
 return M

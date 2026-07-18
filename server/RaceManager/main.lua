@@ -727,6 +727,10 @@ end
 
 local function sendLayoutList(targetPid)
   local list, map = layoutsForCurrentMap()
+  local gates = 0
+  for _, l in ipairs(list) do gates = gates + #l.checkpoints end
+  print(string.format('[RaceManager] Sending layout list to %s: %d layout(s), %d gate(s) total, map %s',
+    targetPid and tostring(targetPid) or 'all', #list, gates, map))
   MP.TriggerClientEvent(targetPid or -1, 'RM_Layouts',
     Util.JsonEncode({ map = map, layouts = list }))
 end
@@ -735,18 +739,51 @@ function RM_onRequestLayouts(pid)
   sendLayoutList(pid)
 end
 
+-- Strict track-state purge. Drops the in-memory layout cache (the next access
+-- re-reads layouts.json from disk, so nothing stale survives in a global) and
+-- orders every client to delete its checkpoint arrays and 3D gate visuals.
+-- Broadcast on server boot and immediately before a new layout is applied, so
+-- ghost checkpoints from an earlier session can never leak into a new one.
+local function clearTrackState(reason)
+  layouts = nil
+  MP.TriggerClientEvent(-1, 'RM_ClearTrack', Util.JsonEncode({ reason = reason or 'clear' }))
+  print('[RaceManager] Track state cleared: ' .. (reason or 'clear'))
+end
+
+-- Client/UI asked for an explicit full clear (also refreshes everyone's list).
+function RM_onClearTrackState(pid)
+  clearTrackState('requested by ' .. (MP.GetPlayerName(pid) or pid))
+  sendLayoutList(-1)
+end
+
 -- Save the checkpoints the client bundled up as a named layout for the current
 -- map. Same name on the same map overwrites (that's the edit workflow); the
 -- refreshed list goes to every client so all open UIs stay in sync.
+-- Every rejection branch logs its reason so a dropped save is diagnosable.
 function RM_onSaveLayout(pid, rawData)
-  if type(rawData) ~= 'string' or rawData == '' then return end
+  print(string.format('[RaceManager] RM_SaveLayout from %s: %s byte(s)',
+    MP.GetPlayerName(pid) or pid, type(rawData) == 'string' and #rawData or 'non-string'))
+  if type(rawData) ~= 'string' or rawData == '' then
+    print('[RaceManager] Save rejected: empty payload')
+    return
+  end
   local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  if not ok or type(data) ~= 'table' then
+    print('[RaceManager] Save rejected: JSON decode failed (' .. tostring(data) .. ')')
+    return
+  end
 
   local name = type(data.name) == 'string'
     and data.name:gsub('^%s+', ''):gsub('%s+$', ''):sub(1, MAX_LAYOUT_NAME) or ''
   local checkpoints = sanitizeCheckpoints(data.checkpoints)
-  if name == '' or not checkpoints then return end
+  if name == '' then
+    print('[RaceManager] Save rejected: missing/empty layout name')
+    return
+  end
+  if not checkpoints then
+    print('[RaceManager] Save rejected: checkpoint array missing or malformed')
+    return
+  end
 
   local map = getCurrentMap()
   local entry = {
@@ -790,6 +827,11 @@ function RM_onLoadLayout(pid, rawData)
   local list, map = layoutsForCurrentMap()
   for _, l in ipairs(list) do
     if l.name:lower() == data.name:lower() then
+      -- Purge first: every client must drop its existing gates before the new
+      -- set arrives, so no checkpoint from a previous layout can survive.
+      clearTrackState('loading layout "' .. l.name .. '"')
+      print(string.format('[RaceManager] Broadcasting RM_ApplyLayout: "%s", %d checkpoint(s), width %s',
+        l.name, #l.checkpoints, tostring(l.width)))
       MP.TriggerClientEvent(-1, 'RM_ApplyLayout', Util.JsonEncode(l))
       local msg = string.format('[RaceManager] Layout "%s" loaded on %s by %s (%d gates)',
         l.name, map, MP.GetPlayerName(pid) or pid, #l.checkpoints)
@@ -857,11 +899,15 @@ function onInit()
   MP.RegisterEvent('RM_RequestLayouts',   'RM_onRequestLayouts')
   MP.RegisterEvent('RM_SaveLayout',       'RM_onSaveLayout')
   MP.RegisterEvent('RM_LoadLayout',       'RM_onLoadLayout')
+  MP.RegisterEvent('RM_ClearTrackState',  'RM_onClearTrackState')
   MP.RegisterEvent('onPlayerJoin',        'RM_onPlayerJoin')
   MP.RegisterEvent('onPlayerDisconnect',  'RM_onPlayerDisconnect')
   MP.RegisterEvent('RM_Tick',             'RM_Tick')
   MP.RegisterEvent('RM_CountdownTick',    'RM_CountdownTick')
   MP.CreateEventTimer('RM_Tick', TICK_MS)
+  -- Boot from a clean slate: any client still connected across a plugin
+  -- reload drops its stale gates, then the layout cache is re-warmed from disk.
+  clearTrackState('server startup')
   getLayouts()  -- warm the layout cache so saved tracks survive the restart visibly
   print('[RaceManager] Server plugin loaded (circuit edition, map: ' .. getCurrentMap() .. ')')
 end

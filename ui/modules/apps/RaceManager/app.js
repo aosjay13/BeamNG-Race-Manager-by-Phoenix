@@ -140,12 +140,32 @@ angular.module('beamng.apps')
         });
       });
 
+      // The Lua JSON encoder serializes EMPTY tables as {} rather than [],
+      // so "no layouts" / "no checkpoints" can arrive as an object. Normalize
+      // to a real array so .some/.length/ng-options and the canvas never
+      // explode on a non-array. (Previously this threw a TypeError here,
+      // which killed the handler before the preview was ever scheduled.)
+      function toArray(v) {
+        if (Array.isArray(v)) { return v; }
+        if (v && typeof v === 'object') {
+          return Object.keys(v).map(function (k) { return v[k]; });
+        }
+        return [];
+      }
+
       $scope.$on('RaceManagerLayouts', function (event, data) {
-        if (!data) { return; }
+        if (!data) {
+          console.warn('[RaceManager] RaceManagerLayouts event with no data');
+          return;
+        }
         $scope.$evalAsync(function () {
-          $scope.layouts = data.layouts || [];
+          $scope.layouts = toArray(data.layouts);
+          $scope.layouts.forEach(function (l) { l.checkpoints = toArray(l.checkpoints); });
           $scope.layoutMap = data.map || '';
+          console.log('[RaceManager] Layout list received: ' + $scope.layouts.length
+            + ' layout(s) for map "' + $scope.layoutMap + '"');
           // Keep the selection if the layout still exists after a refresh.
+          if (!Array.isArray($scope.layouts)) { $scope.layouts = []; }
           var stillThere = $scope.layouts.some(function (l) {
             return l.name === $scope.selectedLayoutName;
           });
@@ -238,12 +258,22 @@ angular.module('beamng.apps')
 
       $scope.saveLayout = function () {
         var name = ($scope.layoutNameInput || '').trim();
-        if (!name || !$scope.routeWaypoints.length) { return; }
+        if (!name) {
+          console.warn('[RaceManager] Save Layout: no name entered, nothing sent');
+          return;
+        }
+        if (!$scope.routeWaypoints.length) {
+          console.warn('[RaceManager] Save Layout: no checkpoints placed, nothing sent');
+          return;
+        }
+        console.log('[RaceManager] Save Layout "' + name + '": handing '
+          + $scope.routeWaypoints.length + ' checkpoint(s) to client Lua');
         bngApi.engineLua('raceManager.saveLayout(' + luaStr(name) + ')');
       };
 
       $scope.loadLayout = function () {
         if (!$scope.selectedLayoutName) { return; }
+        console.log('[RaceManager] Load Layout "' + $scope.selectedLayoutName + '" requested');
         bngApi.engineLua('raceManager.loadLayout(' + luaStr($scope.selectedLayoutName) + ')');
       };
 
@@ -264,19 +294,43 @@ angular.module('beamng.apps')
       // The canvas lives inside the ng-if editor panel, so drawing is deferred
       // a tick to run after Angular has (re)inserted it into the DOM.
       function schedulePreview() {
-        setTimeout(drawPreview, 0);
+        setTimeout(function () {
+          try {
+            drawPreview();
+          } catch (e) {
+            console.error('[RaceManager] Track preview draw failed:', e);
+          }
+        }, 0);
       }
 
       function drawPreview() {
         var canvas = $element[0].querySelector('.rm-preview-canvas');
-        if (!canvas) { return; }
+        if (!canvas) {
+          console.log('[RaceManager] Preview: canvas not in the DOM (editor panel closed), skipping');
+          return;
+        }
         var ctx = canvas.getContext('2d');
         var W = canvas.width, H = canvas.height;
         ctx.clearRect(0, 0, W, H);
 
         var layout = selectedLayout();
-        var cps = layout && layout.checkpoints;
-        if (!cps || !cps.length) {
+        var raw = layout ? toArray(layout.checkpoints) : [];
+        // Coerce and validate every coordinate: a single null/undefined/NaN
+        // point would otherwise poison the bounding box and blank the map.
+        var cps = [];
+        raw.forEach(function (p, i) {
+          var x = p && Number(p.x), y = p && Number(p.y);
+          if (p == null || !isFinite(x) || !isFinite(y)) {
+            console.warn('[RaceManager] Preview: checkpoint ' + (i + 1)
+              + ' has invalid coordinates, skipping it:', p);
+            return;
+          }
+          cps.push({ x: x, y: y, hx: Number(p.hx) || 0, hy: Number(p.hy) || 0 });
+        });
+        console.log('[RaceManager] Preview: layout "' + (layout ? layout.name : '(none selected)')
+          + '", ' + cps.length + '/' + raw.length + ' drawable checkpoint(s)');
+
+        if (!cps.length) {
           ctx.fillStyle = 'rgba(154, 160, 166, 0.7)';
           ctx.font = '11px "Noto Sans", sans-serif';
           ctx.textAlign = 'center';
@@ -297,6 +351,11 @@ angular.module('beamng.apps')
         var spanX = (maxX - minX) || 1;
         var spanY = (maxY - minY) || 1;
         var scale = Math.min((W - 2 * pad) / spanX, (H - 2 * pad) / spanY);
+        if (!isFinite(scale) || scale <= 0) {
+          console.error('[RaceManager] Preview: degenerate scale (' + scale
+            + ') from bounds x[' + minX + ',' + maxX + '] y[' + minY + ',' + maxY + ']');
+          return;
+        }
         var ox = (W - spanX * scale) / 2;
         var oy = (H - spanY * scale) / 2;
         function px(p) { return ox + (p.x - minX) * scale; }

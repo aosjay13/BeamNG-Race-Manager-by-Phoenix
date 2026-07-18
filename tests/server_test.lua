@@ -9,6 +9,8 @@ local lastState = nil     -- last decoded RM_Update payload
 local lastChat = nil      -- last broadcast chat message
 local lastLayouts = nil   -- last RM_Layouts payload
 local lastApplied = nil   -- last RM_ApplyLayout payload
+local lastCleared = nil   -- last RM_ClearTrack payload
+local eventSeq = {}       -- ordered names of broadcast client events
 local timers = {}
 local hostedMap = '/levels/gridmap_v2/info.json'  -- what MP.Get(Map) reports
 
@@ -21,9 +23,11 @@ MP = {
     return t
   end,
   TriggerClientEvent = function (target, event, payload)
+    eventSeq[#eventSeq + 1] = event
     if event == 'RM_Update'      then lastState   = payload end
     if event == 'RM_Layouts'     then lastLayouts = payload end
     if event == 'RM_ApplyLayout' then lastApplied = payload end
+    if event == 'RM_ClearTrack'  then lastCleared = payload end
   end,
   RegisterEvent = function () end,
   CreateEventTimer = function (name) timers[name] = true end,
@@ -219,15 +223,41 @@ RM_onRequestLayouts(1)
 check(#lastLayouts.layouts == 1 and lastLayouts.layouts[1].name == 'gp circuit',
   'switching back restores the first map\'s layouts')
 
--- Load broadcasts the checkpoints to every client
+-- Load broadcasts a state purge first, then the checkpoints, to every client
 lastApplied = nil
+lastCleared = nil
+eventSeq = {}
 RM_onLoadLayout(2, '{"name":"GP CIRCUIT"}')
 check(lastApplied ~= nil and #lastApplied.checkpoints == 3
   and lastApplied.checkpoints[1].x == 100.5 and lastApplied.width == 30,
   'load broadcasts RM_ApplyLayout with saved checkpoints (case-insensitive)')
+check(lastCleared ~= nil, 'load broadcasts RM_ClearTrack purge')
+local clearIdx, applyIdx
+for i, ev in ipairs(eventSeq) do
+  if ev == 'RM_ClearTrack' and not clearIdx then clearIdx = i end
+  if ev == 'RM_ApplyLayout' and not applyIdx then applyIdx = i end
+end
+check(clearIdx and applyIdx and clearIdx < applyIdx,
+  'RM_ClearTrack is sent before RM_ApplyLayout')
 lastApplied = nil
 RM_onLoadLayout(2, '{"name":"Coast Run"}')
 check(lastApplied == nil, 'layout from another map cannot be loaded')
+
+-- Explicit clear-state command: purges clients and re-reads layouts from disk
+lastCleared = nil
+lastLayouts = nil
+RM_onClearTrackState(1)
+check(lastCleared ~= nil, 'RM_ClearTrackState broadcasts RM_ClearTrack')
+check(lastLayouts ~= nil and #lastLayouts.layouts == 1
+  and lastLayouts.layouts[1].name == 'gp circuit',
+  'clear state re-reads persisted layouts from disk and rebroadcasts the list')
+
+-- Malformed save payloads are rejected without touching the stored layouts
+RM_onSaveLayout(1, 'not json at all {{{')
+RM_onSaveLayout(1, '{"name":"","width":10,"checkpoints":' .. cpJson .. '}')
+RM_onSaveLayout(1, '{"name":"Bad CPs","width":10,"checkpoints":[{"x":1,"y":2}]}')
+RM_onRequestLayouts(1)
+check(#lastLayouts.layouts == 1, 'malformed saves rejected, layout list unchanged')
 
 -- Persistence: simulated server restart must re-read layouts.json from disk
 -- (this also round-trips the real JSON encoder/parser).
