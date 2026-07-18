@@ -44,8 +44,9 @@ angular.module('beamng.apps')
       // Track layout state (server-side persistent layouts, current map only)
       $scope.layouts = [];              // [{ name, map, width, checkpoints }]
       $scope.layoutMap = '';            // map the server filtered the list by
-      $scope.layoutNameInput = '';
-      $scope.selectedLayoutName = '';
+      // Bound as an object ("dot rule") because these inputs live inside the
+      // ng-if editor panel, whose child scope would shadow primitive bindings.
+      $scope.layoutUi = { name: '', selected: '' };
 
       var PHASE_LABELS = {
         waiting:    'Waiting',
@@ -167,9 +168,9 @@ angular.module('beamng.apps')
           // Keep the selection if the layout still exists after a refresh.
           if (!Array.isArray($scope.layouts)) { $scope.layouts = []; }
           var stillThere = $scope.layouts.some(function (l) {
-            return l.name === $scope.selectedLayoutName;
+            return l.name === $scope.layoutUi.selected;
           });
-          if (!stillThere) { $scope.selectedLayoutName = ''; }
+          if (!stillThere) { $scope.layoutUi.selected = ''; }
           schedulePreview();
         });
       });
@@ -257,7 +258,8 @@ angular.module('beamng.apps')
       }
 
       $scope.saveLayout = function () {
-        var name = ($scope.layoutNameInput || '').trim();
+        var name = ($scope.layoutUi.name || '').trim();
+        console.log('Current layout name in scope:', $scope.layoutUi.name);
         if (!name) {
           console.warn('[RaceManager] Save Layout: no name entered, nothing sent');
           return;
@@ -272,9 +274,9 @@ angular.module('beamng.apps')
       };
 
       $scope.loadLayout = function () {
-        if (!$scope.selectedLayoutName) { return; }
-        console.log('[RaceManager] Load Layout "' + $scope.selectedLayoutName + '" requested');
-        bngApi.engineLua('raceManager.loadLayout(' + luaStr($scope.selectedLayoutName) + ')');
+        if (!$scope.layoutUi.selected) { return; }
+        console.log('[RaceManager] Load Layout "' + $scope.layoutUi.selected + '" requested');
+        bngApi.engineLua('raceManager.loadLayout(' + luaStr($scope.layoutUi.selected) + ')');
       };
 
       $scope.onLayoutSelect = function () {
@@ -286,7 +288,7 @@ angular.module('beamng.apps')
       // ------------------------------------------------------------------
       function selectedLayout() {
         for (var i = 0; i < $scope.layouts.length; i++) {
-          if ($scope.layouts[i].name === $scope.selectedLayoutName) { return $scope.layouts[i]; }
+          if ($scope.layouts[i].name === $scope.layoutUi.selected) { return $scope.layouts[i]; }
         }
         return null;
       }

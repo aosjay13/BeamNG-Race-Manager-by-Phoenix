@@ -66,20 +66,20 @@
         <div class="rm-layouts-title">Track Layouts <span class="rm-layouts-map" ng-if="layoutMap">— {{ layoutMap }}</span></div>
         <div class="rm-layouts-row">
           <input type="text" class="rm-layout-name" placeholder="Layout name…" maxlength="40"
-                 ng-model="layoutNameInput">
+                 ng-model="layoutUi.name">
           <button class="rm-btn rm-btn-start" ng-click="saveLayout()"
-                  ng-disabled="!routeWaypoints.length || !layoutNameInput"
+                  ng-disabled="!routeWaypoints.length || !layoutUi.name"
                   title="Save the currently placed checkpoints on the server under this name">
             Save Current Layout
           </button>
         </div>
         <div class="rm-layouts-row">
-          <select class="rm-layout-select" ng-model="selectedLayoutName" ng-change="onLayoutSelect()"
+          <select class="rm-layout-select" ng-model="layoutUi.selected" ng-change="onLayoutSelect()"
                   ng-options="l.name as (l.name + ' (' + l.checkpoints.length + ' gates)') for l in layouts">
             <option value="">{{ layouts.length ? 'Select a layout…' : 'No layouts saved for this map' }}</option>
           </select>
           <button class="rm-btn rm-btn-grid" ng-click="loadLayout()"
-                  ng-disabled="!selectedLayoutName || phase === 'countdown' || phase === 'racing'"
+                  ng-disabled="!layoutUi.selected || phase === 'countdown' || phase === 'racing'"
                   title="Broadcast this layout's checkpoints to every connected player">
             Load Layout
           </button>
