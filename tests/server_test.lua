@@ -270,6 +270,47 @@ check(lastLayouts ~= nil and #lastLayouts.layouts == 1
   and lastLayouts.layouts[1].checkpoints[1].y == 200.25,
   'layouts survive a server restart via layouts.json')
 
+-- ---------------------------------------------------------------------------
+-- Ghost drivers: a driver who disconnected mid-race is kept as DNF for the
+-- results file, but must be purged by the next Generate Grid — otherwise the
+-- ghost turns 'racing' at GO, never laps, and blocks the auto-finish forever.
+-- (State is fresh here: the file was just re-dofile'd + onInit'd above.)
+-- ---------------------------------------------------------------------------
+RM_onPlayerJoin(1); RM_onPlayerJoin(2); RM_onPlayerJoin(3)
+RM_onSetTotalLaps(1, '{"laps":1}')
+RM_onGenerateGrid(1)
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+connected[3] = nil
+RM_onPlayerDisconnect(3)                -- Cara drops mid-race -> DNF
+lastChat = nil
+RM_onLap(1, '{"lapTime":90}')
+RM_onLap(2, '{"lapTime":91}')
+check(lastState.phase == 'finished', 'ghost setup: race 1 finished')
+check(driver('Cara') ~= nil and driver('Cara').status == 'dnf',
+  'ghost setup: Cara kept as DNF for the race 1 results')
+local ghostPath1 = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
+
+RM_onGenerateGrid(1)                    -- next race, no Reset in between
+check(#lastState.drivers == 2, 'Generate Grid purges disconnected ghost records')
+check(driver('Cara') == nil, 'ghost driver no longer listed')
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+lastChat = nil
+RM_onLap(1, '{"lapTime":90}')
+RM_onLap(2, '{"lapTime":91}')
+check(lastState.phase == 'finished', 'race 2 auto-finishes without the ghost')
+connected[3] = 'Cara'
+
+-- Two sessions ending within the same second must not overwrite each other's
+-- results file: the second one gets a _2 suffix.
+local ghostPath2 = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
+check(ghostPath1 and ghostPath2 and ghostPath1 ~= ghostPath2,
+  'same-second sessions write distinct results files')
+check(ghostPath1 and io.open(ghostPath1, 'r') ~= nil
+  and ghostPath2 and io.open(ghostPath2, 'r') ~= nil,
+  'both results files exist on disk')
+
 -- Clean up the directory tree the test created in the repo root
 os.execute('rm -rf Resources')
 

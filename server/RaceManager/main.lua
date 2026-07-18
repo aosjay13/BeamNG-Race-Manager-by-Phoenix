@@ -139,6 +139,21 @@ local function ensureResultsDir()
   end
 end
 
+-- Timestamped result path that never overwrites: sessions ending within the
+-- same second get a _2, _3, ... suffix instead of clobbering the previous file.
+local function uniqueResultsPath(prefix)
+  local base = RESULTS_DIR .. '/' .. os.date(prefix .. '_%Y-%m-%d_%H-%M-%S')
+  local path = base .. '.txt'
+  local n = 1
+  while true do
+    local f = io.open(path, 'r')
+    if not f then return path end
+    f:close()
+    n = n + 1
+    path = base .. '_' .. n .. '.txt'
+  end
+end
+
 local function listResultFiles()
   local names = {}
   if FS and FS.ListFiles then
@@ -248,7 +263,7 @@ end
 
 local function writeResults()
   ensureResultsDir()
-  local path = RESULTS_DIR .. '/' .. os.date('results_%Y-%m-%d_%H-%M-%S.txt')
+  local path = uniqueResultsPath('results')
   local text = buildResultsText()
   local f, err = io.open(path, 'w')
   if not f then return false, tostring(err) end
@@ -302,8 +317,16 @@ function RM_onGenerateGrid(pid)
   if race.phase == 'countdown' or race.phase == 'racing' then return end
   race.time = 0.0
   lapFirsts = {}
+  -- Purge ghost records first: drivers kept after disconnecting (DNF/finished,
+  -- so the previous results file could list them) must not be re-gridded — a
+  -- ghost would be flipped to 'racing' at GO, never report a lap, and block
+  -- the "all drivers finished" auto-finish forever.
+  local online = MP.GetPlayers()
+  for id in pairs(players) do
+    if online[id] == nil then players[id] = nil end
+  end
   -- Make sure every connected player has a record so nobody is left off grid.
-  for id in pairs(MP.GetPlayers()) do ensurePlayer(id) end
+  for id in pairs(online) do ensurePlayer(id) end
   local ordered = {}
   for _, rec in pairs(players) do ordered[#ordered + 1] = rec end
   table.sort(ordered, function (a, b)
@@ -950,7 +973,7 @@ end
 
 local function writeDerbyResults()
   ensureResultsDir()
-  local path = RESULTS_DIR .. '/' .. os.date('derby_results_%Y-%m-%d_%H-%M-%S.txt')
+  local path = uniqueResultsPath('derby_results')
   local f, err = io.open(path, 'w')
   if not f then return false, tostring(err) end
   f:write(buildDerbyResultsText())

@@ -32,7 +32,10 @@ local MAX_WIDTH      = 120
 local POLE_HEIGHT    = 4        -- meters
 local POLE_RADIUS    = 0.15    -- meters
 local Z_TOLERANCE    = 6        -- max height difference between car and gate at crossing
-local LAP_DEBOUNCE   = 5.0      -- seconds; minimum plausible lap, ignores double-fires
+local LAP_DEBOUNCE   = 2.0      -- seconds; double-fire guard on the S/F gate.
+                                -- Kept low so even very short circuits report:
+                                -- this only needs to swallow same-crossing
+                                -- re-fires, not bound real lap times.
 local ROUTE_FILE     = 'settings/raceManager/route.json'
 
 -- ---------------------------------------------------------------------------
@@ -258,6 +261,9 @@ end
 
 local DERBY_STOP_SPEED    = 0.7   -- m/s; below this the car counts as stopped
                                   -- (generous enough to swallow physics jiggle)
+local DERBY_START_GRACE   = 5     -- s after Start Derby before the stopped-vehicle
+                                  -- check arms, so drivers waiting for the GO
+                                  -- announcement aren't instantly on the clock
 local DERBY_POLE_HEIGHT   = 6     -- boundary poles are taller than gate poles
 local DERBY_POLE_RADIUS   = 0.2
 
@@ -268,6 +274,8 @@ local derbyDemoLimit = 10
 local derbyOobLeft   = nil        -- active out-of-bounds countdown, nil = inside
 local derbyDemoLeft  = nil        -- active stopped countdown, nil = moving
 local derbyOut       = false      -- true once we reported our own elimination
+                                  -- (or we're a spectator, not a participant)
+local derbyRunTime   = 0          -- local seconds since this derby went running
 local derbyWarnShown = false      -- whether the UI currently shows a warning
 
 local function derbyPushWarning()
@@ -315,6 +323,7 @@ local function derbyUpdate(dt)
     derbyClearWarnings()
     return
   end
+  derbyRunTime = derbyRunTime + dt
   local veh = playerVehicle()
   if not veh then
     derbyClearWarnings()
@@ -344,10 +353,12 @@ local function derbyUpdate(dt)
     end
   end
 
-  -- Stopped-vehicle ("demolished") check.
+  -- Stopped-vehicle ("demolished") check. Held off for the start grace
+  -- period so a grid of cars parked for the start isn't counting down
+  -- before anyone has had a chance to move.
   local vel = veh:getVelocity()
   local speed = math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z)
-  if speed > DERBY_STOP_SPEED then
+  if speed > DERBY_STOP_SPEED or derbyRunTime < DERBY_START_GRACE then
     if derbyDemoLeft then derbyDemoLeft = nil; changed = true end
   else
     if not derbyDemoLeft then
@@ -450,6 +461,7 @@ local function onDerbyUpdate(rawData)
   if newPhase == 'running' and derbyPhase ~= 'running' then
     -- Fresh derby: re-arm local detection from a clean slate.
     derbyOut = false
+    derbyRunTime = 0
     derbyClearWarnings()
   elseif newPhase ~= 'running' then
     derbyClearWarnings()
@@ -468,11 +480,20 @@ local function onDerbyUpdate(rawData)
   end
   derbyBoundary = boundary
 
-  -- If the server already knows we're out (e.g. reconnect race), stop policing.
+  -- If the server already knows we're out (e.g. reconnect race), stop
+  -- policing. Same if we're not in the participant list at all: we joined
+  -- after Start Derby and are a spectator — a parked spectator must not get
+  -- OUT OF BOUNDS / VEHICLE STOPPED overlays for a derby they aren't in.
   local myId = derbyLocalServerId()
   if myId and type(data.players) == 'table' then
+    local mine = nil
     for _, p in ipairs(data.players) do
-      if tonumber(p.id) == myId and p.status ~= 'alive' then derbyOut = true end
+      if tonumber(p.id) == myId then mine = p; break end
+    end
+    if mine then
+      if mine.status ~= 'alive' then derbyOut = true end
+    elseif derbyPhase == 'running' then
+      derbyOut = true
     end
   end
 

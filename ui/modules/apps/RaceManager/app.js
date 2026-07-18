@@ -62,6 +62,10 @@ angular.module('beamng.apps')
       };
       // Dot rule again: these inputs live inside the ng-if derby panel.
       $scope.derbyUi = { oob: 5, demo: 10 };
+      // Last timer values mirrored from the server. Broadcasts only overwrite
+      // an input while it still shows the previous server value; an edit in
+      // progress (field differs) survives marker drops and other rebroadcasts.
+      var derbyCfgSeen = { oob: null, demo: null };
       $scope.derbyWarning = null;  // { type: 'oob'|'stopped', remaining } or null
 
       var PHASE_LABELS = {
@@ -203,10 +207,16 @@ angular.module('beamng.apps')
           $scope.derby.boundaryCount = toArray(data.boundary).length;
           $scope.derby.players = toArray(data.players);
           if (typeof data.oobLimit === 'number' && $scope.derby.phase !== 'running') {
-            $scope.derbyUi.oob = data.oobLimit;
+            if (derbyCfgSeen.oob === null || Number($scope.derbyUi.oob) === derbyCfgSeen.oob) {
+              $scope.derbyUi.oob = data.oobLimit;
+            }
+            derbyCfgSeen.oob = data.oobLimit;
           }
           if (typeof data.demoLimit === 'number' && $scope.derby.phase !== 'running') {
-            $scope.derbyUi.demo = data.demoLimit;
+            if (derbyCfgSeen.demo === null || Number($scope.derbyUi.demo) === derbyCfgSeen.demo) {
+              $scope.derbyUi.demo = data.demoLimit;
+            }
+            derbyCfgSeen.demo = data.demoLimit;
           }
           if ($scope.derby.phase !== 'running') { $scope.derbyWarning = null; }
         });
