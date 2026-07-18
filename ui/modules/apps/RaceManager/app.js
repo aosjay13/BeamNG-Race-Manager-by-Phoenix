@@ -48,6 +48,22 @@ angular.module('beamng.apps')
       // ng-if editor panel, whose child scope would shadow primitive bindings.
       $scope.layoutUi = { name: '', selected: '' };
 
+      // ----------------------------------------------------------------
+      // DEMO DERBY (isolated module) — separate state, events and commands;
+      // nothing here touches the circuit racing scope above.
+      // ----------------------------------------------------------------
+      $scope.showDerby = false;
+      $scope.derby = {
+        phase: 'idle',        // idle | running | finished (server authoritative)
+        time: 0,
+        boundaryCount: 0,
+        winner: null,
+        players: []           // { id, name, status, reason, elimTime }
+      };
+      // Dot rule again: these inputs live inside the ng-if derby panel.
+      $scope.derbyUi = { oob: 5, demo: 10 };
+      $scope.derbyWarning = null;  // { type: 'oob'|'stopped', remaining } or null
+
       var PHASE_LABELS = {
         waiting:    'Waiting',
         qualifying: 'Qualifying',
@@ -174,6 +190,83 @@ angular.module('beamng.apps')
           schedulePreview();
         });
       });
+
+      // ------------------------------------------------------------------
+      // DEMO DERBY bridge + commands (isolated from the racing handlers)
+      // ------------------------------------------------------------------
+      $scope.$on('RaceManagerDerby', function (event, data) {
+        if (!data) { return; }
+        $scope.$evalAsync(function () {
+          $scope.derby.phase = data.derbyPhase || 'idle';
+          $scope.derby.time = data.derbyTime || 0;
+          $scope.derby.winner = data.winner || null;
+          $scope.derby.boundaryCount = toArray(data.boundary).length;
+          $scope.derby.players = toArray(data.players);
+          if (typeof data.oobLimit === 'number' && $scope.derby.phase !== 'running') {
+            $scope.derbyUi.oob = data.oobLimit;
+          }
+          if (typeof data.demoLimit === 'number' && $scope.derby.phase !== 'running') {
+            $scope.derbyUi.demo = data.demoLimit;
+          }
+          if ($scope.derby.phase !== 'running') { $scope.derbyWarning = null; }
+        });
+      });
+
+      // Flashing full-screen warnings pushed every frame by the client Lua
+      // while a countdown is active; { oob: null, stopped: null } clears them.
+      $scope.$on('RaceManagerDerbyWarning', function (event, data) {
+        $scope.$evalAsync(function () {
+          if (data && typeof data.oob === 'number' && data.oob > 0) {
+            $scope.derbyWarning = { type: 'oob', remaining: data.oob };
+          } else if (data && typeof data.stopped === 'number' && data.stopped > 0) {
+            $scope.derbyWarning = { type: 'stopped', remaining: data.stopped };
+          } else {
+            $scope.derbyWarning = null;
+          }
+        });
+      });
+
+      $scope.toggleDerby = function () {
+        $scope.showDerby = !$scope.showDerby;
+        if ($scope.showDerby) {
+          bngApi.engineLua('raceManager.derbyRequestState()');
+        }
+      };
+
+      $scope.derbyStatusLabel = function (p) {
+        if (p.status === 'winner') { return 'WINNER'; }
+        if (p.status === 'alive') { return 'In Arena'; }
+        return p.reason || 'Eliminated';
+      };
+
+      $scope.formatDerbyTime = function (t) {
+        if (t === null || t === undefined) { return '—'; }
+        var m = Math.floor(t / 60);
+        var s = Math.floor(t % 60);
+        return m + ':' + pad2(s);
+      };
+
+      $scope.derbyApplyConfig = function () {
+        var oob = parseFloat($scope.derbyUi.oob);
+        var demo = parseFloat($scope.derbyUi.demo);
+        if (!isFinite(oob) || oob <= 0 || !isFinite(demo) || demo <= 0) { return; }
+        bngApi.engineLua('raceManager.derbySetConfig(' + oob + ', ' + demo + ')');
+      };
+      $scope.derbyAddMarker = function () {
+        bngApi.engineLua('raceManager.derbyAddMarker()');
+      };
+      $scope.derbyClearBoundary = function () {
+        bngApi.engineLua('raceManager.derbyClearBoundary()');
+      };
+      $scope.derbyStart = function () {
+        // Push the current timer inputs first so the derby always starts with
+        // what the admin sees in the two fields.
+        $scope.derbyApplyConfig();
+        bngApi.engineLua('raceManager.derbyStart()');
+      };
+      $scope.derbyEnd = function () {
+        bngApi.engineLua('raceManager.derbyEnd()');
+      };
 
       var editorMsgTimer = null;
       $scope.$on('RaceManagerEditorMsg', function (event, data) {
@@ -412,6 +505,8 @@ angular.module('beamng.apps')
       // ------------------------------------------------------------------
       // requestState also pulls the map-filtered layout list from the server.
       bngApi.engineLua('extensions.load("raceManager"); raceManager.requestState()');
+      // Demo Derby module: pull its state separately (isolated channel).
+      bngApi.engineLua('raceManager.derbyRequestState()');
     }]
   };
 }]);

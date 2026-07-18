@@ -236,10 +236,259 @@ local function drawGates()
   end
 end
 
+-- ===========================================================================
+-- DEMO DERBY (isolated module)
+-- ===========================================================================
+-- Fully independent of the circuit racing logic above: separate state, its
+-- own server events (RM_Derby*), its own guihooks channels and its own
+-- update/draw functions. It never touches `route`, `phase`, `armedWp` or any
+-- other racing variable, so a derby can never disturb qualifying/racing.
+--
+-- Client responsibilities (only the client has physics access):
+--   * Place boundary markers at the local vehicle's position (admin action;
+--     the server owns the ordered marker list and broadcasts it to everyone).
+--   * Ray-casting point-in-polygon test of the local vehicle against the
+--     arena polygon every frame; leaving it starts the out-of-bounds
+--     countdown and a flashing full-screen warning. Re-entering clears it;
+--     reaching zero reports RM_DerbyDisqualified.
+--   * Track the local vehicle's speed; sitting below the jiggle threshold
+--     starts the demolished countdown ("keep moving or you're out");
+--     reaching zero reports RM_DerbyDemolished.
+--   * Draw the boundary poles + perimeter rope in the 3D world.
+
+local DERBY_STOP_SPEED    = 0.7   -- m/s; below this the car counts as stopped
+                                  -- (generous enough to swallow physics jiggle)
+local DERBY_POLE_HEIGHT   = 6     -- boundary poles are taller than gate poles
+local DERBY_POLE_RADIUS   = 0.2
+
+local derbyPhase     = 'idle'     -- idle | running | finished (mirrored from server)
+local derbyBoundary  = {}         -- ordered polygon vertices { x, y, z }
+local derbyOobLimit  = 5          -- seconds (mirrored from server config)
+local derbyDemoLimit = 10
+local derbyOobLeft   = nil        -- active out-of-bounds countdown, nil = inside
+local derbyDemoLeft  = nil        -- active stopped countdown, nil = moving
+local derbyOut       = false      -- true once we reported our own elimination
+local derbyWarnShown = false      -- whether the UI currently shows a warning
+
+local function derbyPushWarning()
+  guihooks.trigger('RaceManagerDerbyWarning', {
+    oob     = derbyOobLeft,
+    stopped = derbyDemoLeft,
+  })
+  derbyWarnShown = (derbyOobLeft ~= nil) or (derbyDemoLeft ~= nil)
+end
+
+local function derbyClearWarnings()
+  derbyOobLeft, derbyDemoLeft = nil, nil
+  if derbyWarnShown then derbyPushWarning() end
+end
+
+-- Standard ray-casting point-in-polygon test on the XY plane (the arena is a
+-- 2D perimeter; height is ignored so jumps/ramps don't false-positive).
+local function derbyPointInPolygon(px, py, poly)
+  local inside = false
+  local n = #poly
+  local j = n
+  for i = 1, n do
+    local xi, yi = poly[i].x, poly[i].y
+    local xj, yj = poly[j].x, poly[j].y
+    if ((yi > py) ~= (yj > py))
+        and (px < (xj - xi) * (py - yi) / (yj - yi) + xi) then
+      inside = not inside
+    end
+    j = i
+  end
+  return inside
+end
+
+-- Local pid, so we can tell whether the server already eliminated us.
+local function derbyLocalServerId()
+  if MPConfig and MPConfig.getPlayerServerID then
+    local ok, id = pcall(MPConfig.getPlayerServerID)
+    if ok then return tonumber(id) end
+  end
+  return nil
+end
+
+local function derbyUpdate(dt)
+  if derbyPhase ~= 'running' or derbyOut then
+    derbyClearWarnings()
+    return
+  end
+  local veh = playerVehicle()
+  if not veh then
+    derbyClearWarnings()
+    return
+  end
+  local changed = false
+
+  -- Out-of-bounds check (needs a real polygon: at least 3 markers).
+  if #derbyBoundary >= 3 then
+    local pos = veh:getPosition()
+    if derbyPointInPolygon(pos.x, pos.y, derbyBoundary) then
+      if derbyOobLeft then derbyOobLeft = nil; changed = true end
+    else
+      if not derbyOobLeft then
+        derbyOobLeft = derbyOobLimit
+      else
+        derbyOobLeft = derbyOobLeft - dt
+      end
+      changed = true
+      if derbyOobLeft <= 0 then
+        derbyOut = true
+        derbyClearWarnings()
+        if inMultiplayer() then TriggerServerEvent('RM_DerbyDisqualified', '') end
+        log('I', 'raceManager', 'Derby: out-of-bounds timer expired, reported disqualification')
+        return
+      end
+    end
+  end
+
+  -- Stopped-vehicle ("demolished") check.
+  local vel = veh:getVelocity()
+  local speed = math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z)
+  if speed > DERBY_STOP_SPEED then
+    if derbyDemoLeft then derbyDemoLeft = nil; changed = true end
+  else
+    if not derbyDemoLeft then
+      derbyDemoLeft = derbyDemoLimit
+    else
+      derbyDemoLeft = derbyDemoLeft - dt
+    end
+    changed = true
+    if derbyDemoLeft <= 0 then
+      derbyOut = true
+      derbyClearWarnings()
+      if inMultiplayer() then TriggerServerEvent('RM_DerbyDemolished', '') end
+      log('I', 'raceManager', 'Derby: stopped timer expired, reported demolition')
+      return
+    end
+  end
+
+  if changed then derbyPushWarning() end
+end
+
+-- Boundary visualization: red poles at each marker, a rope along the
+-- perimeter (closed loop), and a label above marker 1.
+local function derbyDrawBoundary()
+  if #derbyBoundary == 0 or not debugDrawer then return end
+  local color = (derbyPhase == 'running')
+    and ColorF(0.9, 0.15, 0.15, 0.9)   -- live arena: red
+    or  ColorF(0.9, 0.6, 0.1, 0.8)     -- setup/finished: amber
+  local up = vec3(0, 0, DERBY_POLE_HEIGHT)
+  for i, m in ipairs(derbyBoundary) do
+    local base = vec3(m.x, m.y, m.z)
+    debugDrawer:drawCylinder(base, base + up, DERBY_POLE_RADIUS, color)
+    local nxt = derbyBoundary[i % #derbyBoundary + 1]
+    if nxt and #derbyBoundary > 1 then
+      local a = base + vec3(0, 0, DERBY_POLE_HEIGHT * 0.5)
+      local b = vec3(nxt.x, nxt.y, nxt.z) + vec3(0, 0, DERBY_POLE_HEIGHT * 0.5)
+      debugDrawer:drawCylinder(a, b, DERBY_POLE_RADIUS * 0.35, color)
+    end
+  end
+  local first = derbyBoundary[1]
+  debugDrawer:drawTextAdvanced(
+    vec3(first.x, first.y, first.z + DERBY_POLE_HEIGHT + 0.8),
+    String('DERBY BOUNDARY (' .. #derbyBoundary .. ')'),
+    ColorF(1, 1, 1, 1), true, false, ColorI(120, 0, 0, 180))
+end
+
+-- --- Derby UI commands (called by the UI app) ------------------------------
+
+function M.derbyAddMarker()
+  local veh = playerVehicle()
+  if not veh then
+    log('W', 'raceManager', 'Derby: no player vehicle, cannot place boundary marker')
+    return
+  end
+  if not inMultiplayer() then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Demo Derby needs a BeamMP server' })
+    return
+  end
+  local pos = veh:getPosition()
+  TriggerServerEvent('RM_DerbyAddMarker', jsonEncode({ x = pos.x, y = pos.y, z = pos.z }))
+end
+
+function M.derbyClearBoundary()
+  if inMultiplayer() then TriggerServerEvent('RM_DerbyClearBoundary', '') end
+end
+
+function M.derbySetConfig(oobLimit, demoLimit)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_DerbySetConfig', jsonEncode({
+      oobLimit = tonumber(oobLimit), demoLimit = tonumber(demoLimit),
+    }))
+  end
+end
+
+function M.derbyStart()
+  if inMultiplayer() then TriggerServerEvent('RM_DerbyStart', '') end
+end
+
+function M.derbyEnd()
+  if inMultiplayer() then TriggerServerEvent('RM_DerbyEnd', '') end
+end
+
+function M.derbyRequestState()
+  if inMultiplayer() then
+    TriggerServerEvent('RM_DerbyRequestState', '')
+  else
+    guihooks.trigger('RaceManagerDerby', {
+      derbyPhase = 'idle', oobLimit = derbyOobLimit, demoLimit = derbyDemoLimit,
+      derbyTime = 0, boundary = {}, players = {},
+    })
+  end
+end
+
+-- --- Derby server -> client ------------------------------------------------
+
+local function onDerbyUpdate(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+
+  local newPhase = data.derbyPhase or 'idle'
+  if newPhase == 'running' and derbyPhase ~= 'running' then
+    -- Fresh derby: re-arm local detection from a clean slate.
+    derbyOut = false
+    derbyClearWarnings()
+  elseif newPhase ~= 'running' then
+    derbyClearWarnings()
+  end
+  derbyPhase = newPhase
+
+  derbyOobLimit  = tonumber(data.oobLimit)  or derbyOobLimit
+  derbyDemoLimit = tonumber(data.demoLimit) or derbyDemoLimit
+
+  local boundary = {}
+  if type(data.boundary) == 'table' then
+    for i, m in ipairs(data.boundary) do
+      local x, y, z = tonumber(m.x), tonumber(m.y), tonumber(m.z)
+      if x and y and z then boundary[#boundary + 1] = { x = x, y = y, z = z } end
+    end
+  end
+  derbyBoundary = boundary
+
+  -- If the server already knows we're out (e.g. reconnect race), stop policing.
+  local myId = derbyLocalServerId()
+  if myId and type(data.players) == 'table' then
+    for _, p in ipairs(data.players) do
+      if tonumber(p.id) == myId and p.status ~= 'alive' then derbyOut = true end
+    end
+  end
+
+  guihooks.trigger('RaceManagerDerby', data)
+end
+
+-- ===========================================================================
+-- End of DEMO DERBY module
+-- ===========================================================================
+
 function M.onUpdate(dt)
   localTime = localTime + dt
   checkGates()
   drawGates()
+  derbyUpdate(dt)
+  derbyDrawBoundary()
 end
 
 -- ---------------------------------------------------------------------------
@@ -537,6 +786,7 @@ function M.onExtensionLoaded()
     AddEventHandler('RM_Layouts', onLayoutList)
     AddEventHandler('RM_ApplyLayout', onApplyLayout)
     AddEventHandler('RM_ClearTrack', onClearTrack)
+    AddEventHandler('RM_DerbyUpdate', onDerbyUpdate)  -- Demo Derby module
   end
   log('I', 'raceManager', 'Race Manager client bridge loaded (multiplayer=' .. tostring(inMultiplayer()) .. ')')
 end
@@ -546,6 +796,12 @@ function M.onExtensionUnloaded()
   -- The extension stays resident across sessions (manual unload mode), so an
   -- explicit purge here is what stops checkpoints leaking into the next one.
   clearTrackState('extension unloaded')
+  -- Same purge for the isolated derby module: markers and warnings must not
+  -- survive into the next session.
+  derbyPhase    = 'idle'
+  derbyBoundary = {}
+  derbyOut      = false
+  derbyClearWarnings()
 end
 
 return M

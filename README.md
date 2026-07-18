@@ -161,6 +161,36 @@ ready for league standings or a broadcast overlay. Housekeeping:
 - **Clear Results Cache** deletes all saved result `.txt` files on the
   server (chat confirms how many were removed).
 
+## Demo Derby (parallel game mode)
+
+A completely separate last-man-standing mode, isolated from the circuit
+racing systems above (own server events, own UI panel, own results files —
+running a derby never touches qualifying/race state). Open it with the
+**Derby** tab in the app header.
+
+1. **Set the timers**: *OOB timer* (seconds allowed outside the arena,
+   default 5) and *Demolished timer* (seconds a car may sit stopped before
+   elimination, default 10), then **Set Timers**.
+2. **Build the arena**: drive to each corner of your intended arena and press
+   **+ Boundary Marker** — each press drops a red pole at your vehicle's
+   position, and the poles connect in order into a closed perimeter polygon
+   (3+ markers required; **Clear Boundary** starts over). Any shape works,
+   including non-convex ones.
+3. **Start Derby**: every connected player becomes a participant. Each client
+   checks its own vehicle against the arena polygon (ray-casting
+   point-in-polygon) and its own speed:
+   - Leaving the arena flashes **OUT OF BOUNDS! RETURN IN X.Xs** — return in
+     time or you're **Disqualified**.
+   - Sitting still flashes **VEHICLE STOPPED! DEMOLISHED IN X.Xs** — get
+     moving or you're **Demolished**. Disconnecting counts as Disqualified.
+4. The driver table shows who's still in, who's out (with reason and
+   elimination time) and the winner. When exactly one driver remains the
+   server ends the derby, announces the **winner** in chat, and writes
+   `derby_results_YYYY-MM-DD_HH-MM-SS.txt` to
+   `Resources/Server/RaceManager/results/` (winner first, then everyone else
+   in reverse elimination order). **End Derby** force-ends a running derby;
+   pressing it again after the finish resets the mode for the next round.
+
 ## Troubleshooting: the app doesn't show up
 
 - The game only scans mods at startup — **restart BeamNG** after

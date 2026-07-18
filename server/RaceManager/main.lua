@@ -843,6 +843,301 @@ function RM_onLoadLayout(pid, rawData)
   print(string.format('[RaceManager] Load failed: no layout "%s" for map %s', data.name, map))
 end
 
+-- ===========================================================================
+-- DEMO DERBY (isolated module)
+-- ===========================================================================
+-- Completely independent of the circuit racing state machine above: its own
+-- state tables, its own event names (RM_Derby*), its own broadcast channel
+-- (RM_DerbyUpdate), its own tick timer and its own results file. Nothing in
+-- this section reads or writes `race`, `players`, `lapFirsts` or the layout
+-- store, so derby sessions can never disturb qualifying/racing and vice versa.
+--
+-- Flow: admin tunes the two timers and drops boundary markers (clients send
+-- their vehicle position via RM_DerbyAddMarker), then Start Derby snapshots
+-- every connected player as an active participant. Clients police themselves
+-- (point-in-polygon + stopped-vehicle detection happen client-side, where the
+-- physics live) and report RM_DerbyDisqualified / RM_DerbyDemolished; the
+-- server is authoritative for the participant list, elimination order, the
+-- last-man-standing win condition and the results .txt export.
+
+local DERBY_DEFAULT_OOB_LIMIT  = 5    -- seconds allowed outside the boundary
+local DERBY_DEFAULT_DEMO_LIMIT = 10   -- seconds stopped before demolished
+local DERBY_MIN_LIMIT          = 1
+local DERBY_MAX_LIMIT          = 120
+local DERBY_TICK_MS            = 1000 -- derby clock resolution (1 s is plenty)
+local DERBY_MAX_MARKERS        = 64
+
+local derby = {
+  phase     = 'idle',   -- idle | running | finished
+  oobLimit  = DERBY_DEFAULT_OOB_LIMIT,
+  demoLimit = DERBY_DEFAULT_DEMO_LIMIT,
+  time      = 0,        -- seconds since Start Derby (advanced by RM_DerbyTick)
+  boundary  = {},       -- ordered polygon vertices { x, y, z }
+  winner    = nil,      -- winner's name once decided
+}
+local derbyPlayers = {} -- [pid] = { id, name, status, reason, elimTime }
+                        -- status: alive | eliminated | winner
+
+local function derbyClampLimit(n, default)
+  n = tonumber(n)
+  if not n then return default end
+  if n < DERBY_MIN_LIMIT then return DERBY_MIN_LIMIT end
+  if n > DERBY_MAX_LIMIT then return DERBY_MAX_LIMIT end
+  return n
+end
+
+-- Participants ordered for display/results: winner first, then survivors,
+-- then eliminated players latest-out first (2nd place = last one eliminated).
+local function derbyClassification()
+  local list = {}
+  for _, rec in pairs(derbyPlayers) do list[#list + 1] = rec end
+  table.sort(list, function (a, b)
+    local rank = { winner = 0, alive = 1, eliminated = 2 }
+    local ra, rb = rank[a.status] or 3, rank[b.status] or 3
+    if ra ~= rb then return ra < rb end
+    if ra == 2 and a.elimTime ~= b.elimTime then return a.elimTime > b.elimTime end
+    return a.id < b.id
+  end)
+  return list
+end
+
+local function broadcastDerbyState(targetPid)
+  MP.TriggerClientEvent(targetPid or -1, 'RM_DerbyUpdate', Util.JsonEncode({
+    derbyPhase = derby.phase,
+    oobLimit   = derby.oobLimit,
+    demoLimit  = derby.demoLimit,
+    derbyTime  = derby.time,
+    boundary   = derby.boundary,
+    winner     = derby.winner,
+    players    = derbyClassification(),
+  }))
+end
+
+local function derbyFmtTime(t)
+  if not t then return '--:--' end
+  local m = math.floor(t / 60)
+  return string.format('%d:%02d', m, math.floor(t - m * 60))
+end
+
+local function buildDerbyResultsText()
+  local list = derbyClassification()
+  local lines = {}
+  local function add(s) lines[#lines + 1] = s end
+  add('==================================================')
+  add(' RACE MANAGER - DEMO DERBY RESULTS')
+  add(' ' .. os.date('%Y-%m-%d %H:%M:%S'))
+  add(string.format(' Duration: %s | Drivers: %d | OOB limit: %gs | Stop limit: %gs',
+    derbyFmtTime(derby.time), #list, derby.oobLimit, derby.demoLimit))
+  add('==================================================')
+  add('')
+  add(string.format('%-5s %-22s %-14s %s', 'Pos', 'Driver', 'Result', 'Eliminated At'))
+  for i, rec in ipairs(list) do
+    local result, elimAt
+    if rec.status == 'winner' then
+      result, elimAt = 'WINNER', 'survived'
+    elseif rec.status == 'alive' then
+      result, elimAt = 'Still running', '-'
+    else
+      result, elimAt = rec.reason or 'Eliminated', derbyFmtTime(rec.elimTime)
+    end
+    local tag = rec.status == 'winner' and '  << LAST MAN STANDING' or ''
+    add(string.format('P%-4d %-22s %-14s %-13s%s', i, rec.name, result, elimAt, tag))
+  end
+  if #list == 0 then add('(no drivers)') end
+  add('')
+  return table.concat(lines, '\n') .. '\n'
+end
+
+local function writeDerbyResults()
+  ensureResultsDir()
+  local path = RESULTS_DIR .. '/' .. os.date('derby_results_%Y-%m-%d_%H-%M-%S.txt')
+  local f, err = io.open(path, 'w')
+  if not f then return false, tostring(err) end
+  f:write(buildDerbyResultsText())
+  f:close()
+  return true, path
+end
+
+-- Single exit point for every way a derby ends (last man standing, admin
+-- ended, everyone eliminated): stop the clock, export results, announce.
+local function finishDerby(reason)
+  derby.phase = 'finished'
+  MP.CancelEventTimer('RM_DerbyTick')
+  broadcastDerbyState()
+  print('[RaceManager] Derby over: ' .. reason)
+  local ok, wrote, pathOrErr = pcall(writeDerbyResults)
+  if ok and wrote then
+    local msg = derby.winner
+      and ('[RaceManager] DEMO DERBY WINNER: ' .. derby.winner .. '! Results saved: ' .. pathOrErr)
+      or  ('[RaceManager] Demo derby over (' .. reason .. '). Results saved: ' .. pathOrErr)
+    MP.SendChatMessage(-1, msg)
+    print('[RaceManager] Derby results written to ' .. pathOrErr)
+  else
+    print('[RaceManager] Failed to write derby results: ' .. tostring(ok and pathOrErr or wrote))
+  end
+end
+
+-- Eliminate one participant; when exactly one is left standing the derby ends
+-- itself and crowns the survivor.
+local function derbyEliminate(pid, reason)
+  if derby.phase ~= 'running' then return end
+  local rec = derbyPlayers[pid]
+  if not rec or rec.status ~= 'alive' then return end  -- duplicate reports are no-ops
+  rec.status   = 'eliminated'
+  rec.reason   = reason
+  rec.elimTime = derby.time
+  print(string.format('[RaceManager] Derby: %s eliminated (%s) at %s',
+    rec.name, reason, derbyFmtTime(derby.time)))
+
+  local alive, lastAlive = 0, nil
+  for _, r in pairs(derbyPlayers) do
+    if r.status == 'alive' then alive = alive + 1; lastAlive = r end
+  end
+  if alive == 1 then
+    lastAlive.status = 'winner'
+    derby.winner = lastAlive.name
+    finishDerby('last man standing: ' .. lastAlive.name)
+  elseif alive == 0 then
+    finishDerby('no survivors')
+  else
+    broadcastDerbyState()
+  end
+end
+
+-- --- Derby event handlers (admin controls relayed by the client bridge) ----
+
+function RM_onDerbySetConfig(pid, rawData)
+  if derby.phase == 'running' then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  derby.oobLimit  = derbyClampLimit(data.oobLimit,  derby.oobLimit)
+  derby.demoLimit = derbyClampLimit(data.demoLimit, derby.demoLimit)
+  broadcastDerbyState()
+  print(string.format('[RaceManager] Derby config by %s: OOB %gs, stop %gs',
+    MP.GetPlayerName(pid) or pid, derby.oobLimit, derby.demoLimit))
+end
+
+-- Admin dropped a boundary marker at their vehicle's position; the ordered
+-- marker list is the arena polygon every client runs point-in-polygon against.
+function RM_onDerbyAddMarker(pid, rawData)
+  if derby.phase == 'running' then return end
+  if #derby.boundary >= DERBY_MAX_MARKERS then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local x, y, z = tonumber(data.x), tonumber(data.y), tonumber(data.z)
+  if not (x and y and z) then return end
+  derby.boundary[#derby.boundary + 1] = { x = x, y = y, z = z }
+  broadcastDerbyState()
+  print(string.format('[RaceManager] Derby marker %d placed by %s at %.1f, %.1f',
+    #derby.boundary, MP.GetPlayerName(pid) or pid, x, y))
+end
+
+function RM_onDerbyClearBoundary(pid)
+  if derby.phase == 'running' then return end
+  derby.boundary = {}
+  broadcastDerbyState()
+  print('[RaceManager] Derby boundary cleared by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- Start Derby: snapshot every connected player as an active participant and
+-- start the derby clock. A fresh start from 'finished' wipes the last session.
+function RM_onDerbyStart(pid)
+  if derby.phase == 'running' then return end
+  derbyPlayers = {}
+  derby.winner = nil
+  derby.time   = 0
+  for id in pairs(MP.GetPlayers()) do
+    derbyPlayers[id] = {
+      id       = id,
+      name     = MP.GetPlayerName(id) or ('Player ' .. id),
+      status   = 'alive',
+      reason   = nil,
+      elimTime = nil,
+    }
+  end
+  local count = 0
+  for _ in pairs(derbyPlayers) do count = count + 1 end
+  if count == 0 then
+    print('[RaceManager] Derby start ignored: no players connected')
+    return
+  end
+  derby.phase = 'running'
+  MP.CreateEventTimer('RM_DerbyTick', DERBY_TICK_MS)
+  broadcastDerbyState()
+  MP.SendChatMessage(-1, string.format(
+    '[RaceManager] DEMO DERBY STARTED! %d drivers. Stay inside the arena and keep moving!', count))
+  print('[RaceManager] Derby started by ' .. (MP.GetPlayerName(pid) or pid)
+    .. ' (' .. count .. ' drivers, ' .. #derby.boundary .. ' boundary markers)')
+end
+
+-- End Derby (admin): if exactly one driver is still alive they take the win,
+-- otherwise the derby closes with no winner.
+function RM_onDerbyEnd(pid)
+  if derby.phase ~= 'running' then
+    -- Allow clearing a finished derby back to idle from the UI.
+    if derby.phase == 'finished' then
+      derby.phase = 'idle'
+      derby.winner = nil
+      derby.time = 0
+      derbyPlayers = {}
+      broadcastDerbyState()
+      print('[RaceManager] Derby reset to idle by ' .. (MP.GetPlayerName(pid) or pid))
+    end
+    return
+  end
+  local alive, lastAlive = 0, nil
+  for _, r in pairs(derbyPlayers) do
+    if r.status == 'alive' then alive = alive + 1; lastAlive = r end
+  end
+  if alive == 1 then
+    lastAlive.status = 'winner'
+    derby.winner = lastAlive.name
+  end
+  finishDerby('ended by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- Client self-reports: out-of-bounds timer expired.
+function RM_onDerbyDisqualified(pid)
+  derbyEliminate(pid, 'Disqualified')
+end
+
+-- Client self-reports: stopped-vehicle timer expired.
+function RM_onDerbyDemolished(pid)
+  derbyEliminate(pid, 'Demolished')
+end
+
+function RM_onDerbyRequestState(pid)
+  broadcastDerbyState(pid)
+end
+
+-- Registered as an ADDITIONAL handler on onPlayerJoin/onPlayerDisconnect so
+-- the circuit-racing handlers above stay untouched.
+function RM_Derby_onPlayerJoin(pid)
+  broadcastDerbyState(pid)  -- late joiners spectate the running derby
+end
+
+function RM_Derby_onPlayerDisconnect(pid)
+  if derby.phase == 'running' and derbyPlayers[pid]
+      and derbyPlayers[pid].status == 'alive' then
+    derbyEliminate(pid, 'Disqualified')
+  end
+end
+
+function RM_DerbyTick()
+  if derby.phase ~= 'running' then
+    MP.CancelEventTimer('RM_DerbyTick')
+    return
+  end
+  derby.time = derby.time + DERBY_TICK_MS / 1000.0
+  broadcastDerbyState()
+end
+
+-- ===========================================================================
+-- End of DEMO DERBY module
+-- ===========================================================================
+
 -- ---------------------------------------------------------------------------
 -- Clock + lifecycle
 -- ---------------------------------------------------------------------------
@@ -900,6 +1195,18 @@ function onInit()
   MP.RegisterEvent('RM_SaveLayout',       'RM_onSaveLayout')
   MP.RegisterEvent('RM_LoadLayout',       'RM_onLoadLayout')
   MP.RegisterEvent('RM_ClearTrackState',  'RM_onClearTrackState')
+  -- Demo Derby module (isolated event namespace; see the DEMO DERBY section).
+  MP.RegisterEvent('RM_DerbySetConfig',     'RM_onDerbySetConfig')
+  MP.RegisterEvent('RM_DerbyAddMarker',     'RM_onDerbyAddMarker')
+  MP.RegisterEvent('RM_DerbyClearBoundary', 'RM_onDerbyClearBoundary')
+  MP.RegisterEvent('RM_DerbyStart',         'RM_onDerbyStart')
+  MP.RegisterEvent('RM_DerbyEnd',           'RM_onDerbyEnd')
+  MP.RegisterEvent('RM_DerbyDisqualified',  'RM_onDerbyDisqualified')
+  MP.RegisterEvent('RM_DerbyDemolished',    'RM_onDerbyDemolished')
+  MP.RegisterEvent('RM_DerbyRequestState',  'RM_onDerbyRequestState')
+  MP.RegisterEvent('RM_DerbyTick',          'RM_DerbyTick')
+  MP.RegisterEvent('onPlayerJoin',          'RM_Derby_onPlayerJoin')
+  MP.RegisterEvent('onPlayerDisconnect',    'RM_Derby_onPlayerDisconnect')
   MP.RegisterEvent('onPlayerJoin',        'RM_onPlayerJoin')
   MP.RegisterEvent('onPlayerDisconnect',  'RM_onPlayerDisconnect')
   MP.RegisterEvent('RM_Tick',             'RM_Tick')

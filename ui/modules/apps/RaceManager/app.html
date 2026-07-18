@@ -5,6 +5,8 @@
     <span class="rm-phase" ng-class="'rm-phase-' + phase">{{ phaseLabel() }}</span>
     <span class="rm-wp-progress" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">CP {{ nextWp }}/{{ routeWaypoints.length }}</span>
     <span class="rm-clock" ng-if="phase === 'racing' || phase === 'finished'">{{ formatRaceTime(raceTime) }}</span>
+    <span class="rm-derby-badge" ng-if="derby.phase === 'running'">DERBY LIVE {{ formatDerbyTime(derby.time) }}</span>
+    <button class="rm-btn rm-btn-tab rm-btn-tab-derby" ng-class="{'rm-btn-tab-derby-active': showDerby}" ng-click="toggleDerby()">Derby</button>
     <button class="rm-btn rm-btn-tab" ng-class="{'rm-btn-tab-active': showEditor}" ng-click="toggleEditor()">Editor</button>
   </div>
 
@@ -90,6 +92,93 @@
       </div>
       <canvas class="rm-preview-canvas" width="200" height="130"></canvas>
     </div>
+  </div>
+
+  <!-- ================= DEMO DERBY (isolated module) ================= -->
+  <div class="rm-derby" ng-if="showDerby">
+    <div class="rm-derby-title">
+      Demo Derby
+      <span class="rm-derby-phase rm-derby-phase-{{ derby.phase }}">{{ derby.phase === 'running' ? 'LIVE — ' + formatDerbyTime(derby.time) : (derby.phase === 'finished' ? 'Finished' : 'Setup') }}</span>
+      <span class="rm-derby-markers">{{ derby.boundaryCount }} boundary marker{{ derby.boundaryCount === 1 ? '' : 's' }}</span>
+    </div>
+
+    <div class="rm-derby-settings">
+      <span class="rm-setting">
+        <label>OOB timer</label>
+        <input type="number" min="1" max="120" step="0.5" ng-model="derbyUi.oob"
+               ng-disabled="derby.phase === 'running'">
+        <span class="rm-setting-val">s</span>
+      </span>
+      <span class="rm-setting">
+        <label>Demolished timer</label>
+        <input type="number" min="1" max="120" step="0.5" ng-model="derbyUi.demo"
+               ng-disabled="derby.phase === 'running'">
+        <span class="rm-setting-val">s</span>
+      </span>
+      <button class="rm-btn rm-btn-mini" ng-click="derbyApplyConfig()"
+              ng-disabled="derby.phase === 'running'">Set Timers</button>
+    </div>
+
+    <div class="rm-derby-controls">
+      <button class="rm-btn rm-btn-grid" ng-click="derbyAddMarker()"
+              ng-disabled="derby.phase === 'running'"
+              title="Drop a boundary pole at your vehicle's position; markers connect in order into the arena perimeter">
+        + Boundary Marker
+      </button>
+      <button class="rm-btn rm-btn-end" ng-click="derbyClearBoundary()"
+              ng-disabled="derby.phase === 'running' || !derby.boundaryCount">Clear Boundary</button>
+      <button class="rm-btn rm-btn-start" ng-click="derbyStart()"
+              ng-disabled="derby.phase === 'running'">Start Derby</button>
+      <button class="rm-btn rm-btn-end" ng-click="derbyEnd()"
+              ng-disabled="derby.phase === 'idle'"
+              title="Running: end the derby now. Finished: reset back to setup.">
+        {{ derby.phase === 'finished' ? 'Reset Derby' : 'End Derby' }}
+      </button>
+    </div>
+
+    <div class="rm-derby-hint" ng-if="derby.phase === 'idle' && derby.boundaryCount < 3">
+      Drive around the arena edge and press <b>+ Boundary Marker</b> at each corner
+      (3+ markers make a polygon). Leaving it during the derby starts the
+      out-of-bounds countdown; stopping starts the demolished countdown.
+    </div>
+
+    <div class="rm-derby-winner" ng-if="derby.winner">🏆 WINNER: {{ derby.winner }}</div>
+
+    <table class="rm-table rm-derby-table" ng-if="derby.players.length">
+      <thead>
+        <tr>
+          <th class="rm-col-grid">Pos</th>
+          <th class="rm-col-name">Driver</th>
+          <th class="rm-col-status">Status</th>
+          <th class="rm-col-time">Out At</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr ng-repeat="p in derby.players track by p.id"
+            ng-class="{'rm-derby-row-out': p.status === 'eliminated', 'rm-derby-row-winner': p.status === 'winner'}">
+          <td class="rm-col-grid">{{ $index + 1 }}</td>
+          <td class="rm-col-name" title="{{ p.name }}">{{ p.name }}</td>
+          <td class="rm-col-status">
+            <span class="rm-light" ng-class="{'rm-light-racing': p.status === 'alive', 'rm-light-dnf': p.status === 'eliminated', 'rm-light-finished': p.status === 'winner'}"></span>
+            <span class="rm-status-text">{{ derbyStatusLabel(p) }}</span>
+          </td>
+          <td class="rm-col-time">{{ p.status === 'eliminated' ? formatDerbyTime(p.elimTime) : '—' }}</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="rm-derby-hint" ng-if="!derby.players.length && derby.phase !== 'idle'">
+      No participants recorded.
+    </div>
+  </div>
+
+  <!-- ================= Derby warning overlays (hidden by default) ========= -->
+  <div class="rm-derby-warning rm-derby-warning-oob" ng-if="derbyWarning && derbyWarning.type === 'oob'">
+    <div class="rm-derby-warning-title">OUT OF BOUNDS!</div>
+    <div class="rm-derby-warning-timer">RETURN IN {{ derbyWarning.remaining.toFixed(1) }}s</div>
+  </div>
+  <div class="rm-derby-warning rm-derby-warning-stop" ng-if="derbyWarning && derbyWarning.type === 'stopped'">
+    <div class="rm-derby-warning-title">VEHICLE STOPPED!</div>
+    <div class="rm-derby-warning-timer">DEMOLISHED IN {{ derbyWarning.remaining.toFixed(1) }}s</div>
   </div>
 
   <!-- ================= Countdown overlay ================= -->
@@ -387,5 +476,106 @@
   .rm-light-dnf        { background: #ea4335; }
   .rm-flag { margin-right: 3px; }
   .rm-status-text { vertical-align: middle; }
+
+  /* ===================== DEMO DERBY (isolated module) ===================== */
+  .rm-btn-tab-derby { margin-left: auto; }
+  .rm-btn-tab ~ .rm-btn-tab, .rm-btn-tab-derby ~ .rm-btn-tab { margin-left: 0; }
+  .rm-btn-tab-derby-active { background: rgba(234, 67, 53, 0.3); border-color: #ea4335; color: #f28b82; }
+  .rm-derby-badge {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: #f28b82;
+    font-variant-numeric: tabular-nums;
+    animation: rm-derby-blink 1s step-end infinite;
+  }
+
+  .rm-derby {
+    padding: 6px 10px;
+    border-bottom: 1px solid rgba(234, 67, 53, 0.4);
+    background: rgba(234, 67, 53, 0.06);
+  }
+  .rm-derby-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #f28b82;
+    font-weight: 700;
+    margin-bottom: 5px;
+  }
+  .rm-derby-phase {
+    padding: 1px 8px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #9aa0a6;
+  }
+  .rm-derby-phase-running  { background: rgba(234, 67, 53, 0.3);  color: #f28b82; }
+  .rm-derby-phase-finished { background: rgba(255, 255, 255, 0.2); color: #e8eaed; }
+  .rm-derby-markers { color: #9aa0a6; font-weight: 400; text-transform: none; margin-left: auto; }
+  .rm-derby-settings {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 5px;
+  }
+  .rm-derby-settings input[type="number"] { width: 52px; }
+  .rm-derby-controls { display: flex; gap: 5px; flex-wrap: wrap; }
+  .rm-derby-hint { margin-top: 5px; font-size: 11px; color: #9aa0a6; }
+  .rm-derby-winner {
+    margin-top: 6px;
+    padding: 5px 8px;
+    border: 1px solid rgba(251, 188, 5, 0.6);
+    border-radius: 3px;
+    background: rgba(251, 188, 5, 0.12);
+    color: #fdd663;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .rm-derby-table { margin-top: 6px; }
+  .rm-derby-row-out td { opacity: 0.45; }
+  .rm-derby-row-winner td { background: rgba(251, 188, 5, 0.08); }
+
+  /* Full-window flashing warning overlays (hidden unless a countdown runs) */
+  .rm-derby-warning {
+    position: absolute;
+    inset: 0;
+    z-index: 6;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    pointer-events: none;
+    text-align: center;
+    animation: rm-derby-flash 0.5s step-end infinite;
+  }
+  .rm-derby-warning-oob  { background: rgba(180, 15, 15, 0.55); }
+  .rm-derby-warning-stop { background: rgba(190, 110, 0, 0.55); }
+  .rm-derby-warning-title {
+    font-size: 30px;
+    font-weight: 800;
+    letter-spacing: 2px;
+    color: #ffffff;
+    text-shadow: 0 0 16px rgba(0, 0, 0, 0.8);
+  }
+  .rm-derby-warning-timer {
+    font-size: 20px;
+    font-weight: 700;
+    color: #ffe082;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 12px rgba(0, 0, 0, 0.8);
+  }
+  @keyframes rm-derby-flash {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+  }
+  @keyframes rm-derby-blink {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.3; }
+  }
 </style>
 </div>
