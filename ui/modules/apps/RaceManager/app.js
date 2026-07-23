@@ -47,6 +47,12 @@ angular.module('beamng.apps')
       // Bound as an object ("dot rule") because these inputs live inside the
       // ng-if editor panel, whose child scope would shadow primitive bindings.
       $scope.layoutUi = { name: '', selected: '' };
+      // The layout picker is a custom DOM dropdown, not a native <select>:
+      // BeamNG's UI runs in Chromium Embedded Framework (CEF), where a native
+      // <select> popup is a separate OS window that never renders over the game
+      // surface — the box shows a value but clicking it does nothing. We open
+      // and close this menu ourselves so it lives inside the app's own DOM.
+      $scope.layoutDropdownOpen = false;
 
       // ----------------------------------------------------------------
       // DEMO DERBY (isolated module) — separate state, events and commands;
@@ -191,6 +197,8 @@ angular.module('beamng.apps')
             return l.name === $scope.layoutUi.selected;
           });
           if (!stillThere) { $scope.layoutUi.selected = ''; }
+          // Nothing to pick from -> make sure the menu isn't left hanging open.
+          if (!$scope.layouts.length) { $scope.layoutDropdownOpen = false; }
           schedulePreview();
         });
       });
@@ -382,8 +390,27 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.loadLayout(' + luaStr($scope.layoutUi.selected) + ')');
       };
 
-      $scope.onLayoutSelect = function () {
+      // Custom dropdown behaviour (see $scope.layoutDropdownOpen above for why
+      // this isn't a native <select>). Opening only makes sense when there are
+      // layouts to choose from; selecting an option mirrors the old
+      // ng-model + ng-change pair (set the name, redraw the preview).
+      $scope.toggleLayoutDropdown = function () {
+        if (!$scope.layouts.length) { $scope.layoutDropdownOpen = false; return; }
+        $scope.layoutDropdownOpen = !$scope.layoutDropdownOpen;
+      };
+
+      $scope.selectLayoutOption = function (l) {
+        $scope.layoutUi.selected = l.name;
+        $scope.layoutDropdownOpen = false;
         schedulePreview();
+      };
+
+      // Label shown on the closed dropdown button.
+      $scope.selectedLayoutLabel = function () {
+        if (!$scope.layouts.length) { return 'No layouts saved for this map'; }
+        var sel = selectedLayout();
+        if (!sel) { return 'Select a layout…'; }
+        return sel.name + ' (' + toArray(sel.checkpoints).length + ' gates)';
       };
 
       // ------------------------------------------------------------------
