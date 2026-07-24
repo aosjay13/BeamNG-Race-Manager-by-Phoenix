@@ -9,26 +9,32 @@
     <span class="rm-admin-tag" ng-if="isAdmin" title="You are logged in as an admin">ADMIN</span>
     <button class="rm-btn rm-btn-tab rm-btn-tab-derby" ng-if="isAdmin" ng-class="{'rm-btn-tab-derby-active': showDerby}" ng-click="toggleDerby()">Derby</button>
     <button class="rm-btn rm-btn-tab" ng-if="isAdmin" ng-class="{'rm-btn-tab-active': showEditor}" ng-click="toggleEditor()">Editor</button>
+    <button class="rm-btn rm-btn-tab" ng-if="isAdmin" ng-click="logout()" title="Log out and return to spectator view">Log out</button>
+    <!-- Spectators: a way back to the login screen at any time -->
+    <button class="rm-btn rm-btn-tab rm-btn-login-tab" ng-if="!isAdmin && !showLogin" ng-click="openLogin()" title="Log in as an admin">🔒 Login</button>
   </div>
 
-  <!-- ================= Admin login (shown until authenticated) ============= -->
-  <div class="rm-login" ng-if="!isAdmin">
+  <!-- ================= Admin login (dismissable — spectators bypass it) ==== -->
+  <div class="rm-login" ng-if="!isAdmin && showLogin">
     <span class="rm-login-title">🔒 Admin Login</span>
     <input type="password" class="rm-login-input" ng-model="authUi.password"
            placeholder="Password…"
            ng-keydown="$event.keyCode === 13 && login()">
     <button class="rm-btn rm-btn-start" ng-click="login()">Login</button>
+    <button class="rm-btn" ng-click="spectate()" title="Dismiss and just watch the live timing">Spectate »</button>
     <span class="rm-login-error" ng-if="authError">Incorrect password</span>
-    <span class="rm-login-hint" ng-if="!authError">Log in to unlock race, derby &amp; track editor controls.</span>
+    <span class="rm-login-hint" ng-if="!authError &amp;&amp; adminPresent">An admin is running this session — log in to manage, or spectate.</span>
+    <span class="rm-login-hint" ng-if="!authError &amp;&amp; !adminPresent">Log in to unlock race, derby &amp; track editor controls, or spectate.</span>
   </div>
 
   <!-- ================= Admin bar (change master password) ================= -->
   <div class="rm-adminbar" ng-if="isAdmin">
     <span class="rm-adminbar-label">Change password</span>
-    <input type="password" class="rm-login-input" ng-model="authUi.newPassword"
-           placeholder="New password…"
+    <input type="text" class="rm-login-input" ng-model="authUi.newPassword"
+           placeholder="New password (anything)…"
            ng-keydown="$event.keyCode === 13 && changePassword()">
     <button class="rm-btn rm-btn-mini" ng-click="changePassword()" ng-disabled="!authUi.newPassword">Set Password</button>
+    <span class="rm-pw-msg" ng-if="pwMsg">{{ pwMsg }}</span>
   </div>
 
   <!-- ================= Session controls (admin only) ================= -->
@@ -401,6 +407,7 @@
   }
   /* When the ADMIN tag takes the auto margin, the first tab button no longer should. */
   .rm-admin-tag ~ .rm-btn-tab-derby, .rm-admin-tag ~ .rm-btn-tab { margin-left: 0; }
+  .rm-btn-login-tab { border-color: #34a853; color: #7ee2a8; }
 
   /* Admin login + change-password bars */
   .rm-login, .rm-adminbar {
@@ -437,6 +444,7 @@
   }
   .rm-login-error { font-size: 11px; color: #f28b82; font-weight: 600; }
   .rm-login-hint { font-size: 10px; color: #9aa0a6; }
+  .rm-pw-msg { font-size: 11px; color: #7ee2a8; font-weight: 600; }
 
   /* Race settings */
   .rm-settings {

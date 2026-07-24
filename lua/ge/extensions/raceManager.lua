@@ -914,6 +914,9 @@ local function onPasswordChanged(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   local by = (ok and type(data) == 'table' and data.changedBy) and tostring(data.changedBy) or 'an admin'
   editorMsg('Admin password changed by ' .. by)
+  -- Dedicated channel so the admin bar can confirm the change even when the
+  -- editor panel (where editorMsg is shown) isn't open.
+  guihooks.trigger('RaceManagerPasswordChanged', { by = by })
   log('I', 'raceManager', 'Master password changed by ' .. by)
 end
 
@@ -930,6 +933,12 @@ function M.login(password)
     -- meant to stay usable single-player, so grant local admin outright.
     guihooks.trigger('RaceManagerAuth', { success = true, offline = true })
   end
+end
+
+-- Drop admin rights (UI "Log out" / back-to-login). Offline there is no server
+-- session to clear, so this is purely a UI-side action there.
+function M.logout()
+  if inMultiplayer() then TriggerServerEvent('RM_Logout', '') end
 end
 
 -- Authenticated admin rotates the master password on the server.

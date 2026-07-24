@@ -41,6 +41,16 @@ angular.module('beamng.apps')
       $scope.isAdmin = false;
       $scope.authUi = { password: '', newPassword: '' };
       $scope.authError = false;   // true after a rejected login attempt
+      // Non-admins are spectators: they always see the live timing. showLogin
+      // controls whether the login prompt is visible over the top.
+      //   - No admin on the server yet: prompt shows (but can be dismissed).
+      //   - An admin is already running things: auto-dismiss so spectators just
+      //     watch, unless the user has explicitly pinned the login open.
+      // A "Login" button in the header brings the prompt back at any time.
+      $scope.adminPresent = false;   // does the server currently have any admin?
+      $scope.showLogin = true;       // is the login prompt visible?
+      $scope.loginPinned = false;    // user explicitly asked to see login
+      $scope.pwMsg = null;           // transient confirmation after a password change
 
       // Checkpoint editor state
       $scope.showEditor = false;
@@ -158,6 +168,13 @@ angular.module('beamng.apps')
             $scope.totalLaps = data.totalLaps;
           }
           if ($scope.phase !== 'countdown') { $scope.countdown = null; }
+          // Track whether an admin is running the session. When one appears and
+          // we're just a spectator who hasn't pinned the login open, auto-hide
+          // the prompt so the app is fully visible (a header Login button stays).
+          $scope.adminPresent = !!data.adminPresent;
+          if ($scope.adminPresent && !$scope.isAdmin && !$scope.loginPinned) {
+            $scope.showLogin = false;
+          }
         });
       });
 
@@ -186,6 +203,19 @@ angular.module('beamng.apps')
         });
       });
 
+      // Password change confirmed by the server — flash a short note in the
+      // admin bar so the change is acknowledged even outside the editor panel.
+      var pwMsgTimer = null;
+      $scope.$on('RaceManagerPasswordChanged', function (event, data) {
+        $scope.$evalAsync(function () {
+          $scope.pwMsg = '✓ Password updated' + (data && data.by ? ' by ' + data.by : '');
+          if (pwMsgTimer) { clearTimeout(pwMsgTimer); }
+          pwMsgTimer = setTimeout(function () {
+            $scope.$evalAsync(function () { $scope.pwMsg = null; });
+          }, 4000);
+        });
+      });
+
       // Admin auth result from the server (or an offline auto-grant). Success
       // reveals every admin/editor control; failure flags the login box.
       $scope.$on('RaceManagerAuth', function (event, data) {
@@ -193,7 +223,11 @@ angular.module('beamng.apps')
           var ok = !!(data && data.success);
           $scope.isAdmin = ok;
           $scope.authError = !ok;
-          if (ok) { $scope.authUi.password = ''; }
+          if (ok) {
+            $scope.authUi.password = '';
+            $scope.showLogin = false;
+            $scope.loginPinned = false;
+          }
         });
       });
 
@@ -339,6 +373,33 @@ angular.module('beamng.apps')
         $scope.authError = false;
         var p = $scope.authUi.password || '';
         bngApi.engineLua('extensions.load("raceManager"); raceManager.login(' + luaStr(p) + ')');
+      };
+
+      // Dismiss the login prompt and just watch (spectator). Available whether or
+      // not an admin is present, so nobody is ever stuck on the login screen.
+      $scope.spectate = function () {
+        $scope.showLogin = false;
+        $scope.loginPinned = false;
+        $scope.authError = false;
+        $scope.authUi.password = '';
+      };
+
+      // Bring the login prompt back at any time (header "Login" button). Pinned
+      // so a subsequent state broadcast won't auto-hide it again.
+      $scope.openLogin = function () {
+        $scope.showLogin = true;
+        $scope.loginPinned = true;
+        $scope.authError = false;
+      };
+
+      // Admin logs out -> back to spectator + login prompt, and drop server auth.
+      $scope.logout = function () {
+        $scope.isAdmin = false;
+        $scope.showLogin = true;
+        $scope.loginPinned = true;
+        $scope.showEditor = false;
+        $scope.showDerby = false;
+        bngApi.engineLua('raceManager.logout()');
       };
 
       $scope.changePassword = function () {

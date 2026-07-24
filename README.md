@@ -96,7 +96,15 @@ controls are hidden until you log in as an admin**. Type the master password
 into the **Admin Login** bar and press **Login**; on success the controls
 appear and an **ADMIN** badge shows in the header. Because BeamMP guest IDs
 rotate constantly, admin rights are gated by this shared password rather than
-a name/ID whitelist, and they are dropped as soon as you disconnect.
+a name/ID whitelist, and they are dropped as soon as you disconnect (or when
+the admin presses **Log out**).
+
+You never have to log in just to watch: press **Spectate »** on the login bar
+to dismiss it and follow the timing. If an admin is already running the
+session the prompt hides itself automatically. Either way a **🔒 Login**
+button stays in the header so you can bring the login screen back at any time.
+Admins can rotate the master password to **anything they like** from the
+**Change password** bar — it applies on the server immediately.
 
 > The server ships with a **default password of `phoenix`** (set at the top of
 > `server/RaceManager/main.lua`). **Change it before your first public

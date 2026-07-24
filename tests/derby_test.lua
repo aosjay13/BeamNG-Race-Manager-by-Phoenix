@@ -61,6 +61,9 @@ RM_onDerbyStart(1)
 check(lastDerby == nil, 'derby start ignored before authentication')
 RM_onLogin(1, '{"password":"phoenix"}')
 RM_onLogin(2, '{"password":"phoenix"}')
+-- Login broadcasts circuit state (adminPresent); clear it so the isolation
+-- assertion at the end still proves the derby itself never touches RM_Update.
+lastState = nil
 
 -- ---------------------------------------------------------------------------
 -- Point-in-polygon (mirror of the client's derbyPointInPolygon)
