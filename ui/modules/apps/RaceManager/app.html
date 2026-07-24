@@ -6,12 +6,33 @@
     <span class="rm-wp-progress" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">CP {{ nextWp }}/{{ routeWaypoints.length }}</span>
     <span class="rm-clock" ng-if="phase === 'racing' || phase === 'finished'">{{ formatRaceTime(raceTime) }}</span>
     <span class="rm-derby-badge" ng-if="derby.phase === 'running'">DERBY LIVE {{ formatDerbyTime(derby.time) }}</span>
-    <button class="rm-btn rm-btn-tab rm-btn-tab-derby" ng-class="{'rm-btn-tab-derby-active': showDerby}" ng-click="toggleDerby()">Derby</button>
-    <button class="rm-btn rm-btn-tab" ng-class="{'rm-btn-tab-active': showEditor}" ng-click="toggleEditor()">Editor</button>
+    <span class="rm-admin-tag" ng-if="isAdmin" title="You are logged in as an admin">ADMIN</span>
+    <button class="rm-btn rm-btn-tab rm-btn-tab-derby" ng-if="isAdmin" ng-class="{'rm-btn-tab-derby-active': showDerby}" ng-click="toggleDerby()">Derby</button>
+    <button class="rm-btn rm-btn-tab" ng-if="isAdmin" ng-class="{'rm-btn-tab-active': showEditor}" ng-click="toggleEditor()">Editor</button>
   </div>
 
-  <!-- ================= Session controls ================= -->
-  <div class="rm-controls">
+  <!-- ================= Admin login (shown until authenticated) ============= -->
+  <div class="rm-login" ng-if="!isAdmin">
+    <span class="rm-login-title">🔒 Admin Login</span>
+    <input type="password" class="rm-login-input" ng-model="authUi.password"
+           placeholder="Password…"
+           ng-keydown="$event.keyCode === 13 && login()">
+    <button class="rm-btn rm-btn-start" ng-click="login()">Login</button>
+    <span class="rm-login-error" ng-if="authError">Incorrect password</span>
+    <span class="rm-login-hint" ng-if="!authError">Log in to unlock race, derby &amp; track editor controls.</span>
+  </div>
+
+  <!-- ================= Admin bar (change master password) ================= -->
+  <div class="rm-adminbar" ng-if="isAdmin">
+    <span class="rm-adminbar-label">Change password</span>
+    <input type="password" class="rm-login-input" ng-model="authUi.newPassword"
+           placeholder="New password…"
+           ng-keydown="$event.keyCode === 13 && changePassword()">
+    <button class="rm-btn rm-btn-mini" ng-click="changePassword()" ng-disabled="!authUi.newPassword">Set Password</button>
+  </div>
+
+  <!-- ================= Session controls (admin only) ================= -->
+  <div class="rm-controls" ng-if="isAdmin">
     <button class="rm-btn rm-btn-quali" ng-click="startQualifying()" ng-disabled="phase === 'countdown' || phase === 'racing'">Start Quali</button>
     <button class="rm-btn rm-btn-grid"  ng-click="generateGrid()"    ng-disabled="phase === 'countdown' || phase === 'racing'">Generate Grid</button>
     <button class="rm-btn rm-btn-start" ng-click="startCountdown()"  ng-disabled="phase !== 'grid'">Start Countdown</button>
@@ -20,8 +41,8 @@
     <button class="rm-btn rm-btn-reset" ng-click="clearResults()" title="Delete all saved result .txt files on the server">Clear Results Cache</button>
   </div>
 
-  <!-- ================= Race settings ================= -->
-  <div class="rm-settings">
+  <!-- ================= Race settings (admin only) ================= -->
+  <div class="rm-settings" ng-if="isAdmin">
     <span class="rm-setting">
       <label>Laps</label>
       <input type="number" min="1" max="500" ng-model="lapsInput"
@@ -36,10 +57,20 @@
       <input type="number" class="rm-width-num" min="2" max="120" ng-model="widthInput" ng-change="applyWidth()">
       <span class="rm-setting-val">m</span>
     </span>
+    <span class="rm-setting" title="How far the checkpoint trigger extends up and down — raise it to cover high banking">
+      <label>Def. height</label>
+      <input type="number" class="rm-width-num" min="1" max="100" step="1" ng-model="heightInput" ng-change="applyHeight()">
+      <span class="rm-setting-val">m</span>
+    </span>
+    <span class="rm-setting" title="Forward thickness of the checkpoint trigger line">
+      <label>Def. depth</label>
+      <input type="number" class="rm-width-num" min="0.5" max="100" step="0.5" ng-model="depthInput" ng-change="applyDepth()">
+      <span class="rm-setting-val">m</span>
+    </span>
   </div>
 
   <!-- ================= Checkpoint editor ================= -->
-  <div class="rm-editor" ng-if="showEditor">
+  <div class="rm-editor" ng-if="showEditor && isAdmin">
     <div class="rm-editor-controls">
       <button class="rm-btn rm-btn-grid"  ng-click="editorAdd()">+ Checkpoint Here</button>
       <button class="rm-btn"              ng-click="editorUndo()"  ng-disabled="!routeWaypoints.length">Undo</button>
@@ -50,16 +81,36 @@
     </div>
     <div class="rm-editor-msg" ng-if="editorMsg">{{ editorMsg }}</div>
     <div class="rm-editor-list" ng-if="routeWaypoints.length">
-      <div class="rm-editor-wp" ng-repeat="wp in routeWaypoints track by $index">
-        <span class="rm-editor-idx" ng-class="{'rm-editor-finish': $last}">{{ $last ? '🏁' : ($index + 1) }}</span>
-        <span class="rm-editor-coords">{{ wp.x.toFixed(1) }}, {{ wp.y.toFixed(1) }}, {{ wp.z.toFixed(1) }}</span>
-        <span class="rm-editor-radius">w{{ widthInput }}</span>
+      <div class="rm-editor-wp-wrap" ng-repeat="wp in routeWaypoints track by $index">
+        <div class="rm-editor-wp" ng-class="{'rm-editor-wp-sel': selectedCp === $index + 1}"
+             ng-click="selectCheckpoint($index + 1)"
+             title="Click to override this checkpoint's Width / Height / Depth">
+          <span class="rm-editor-idx" ng-class="{'rm-editor-finish': $last}">{{ $last ? '🏁' : ($index + 1) }}</span>
+          <span class="rm-editor-coords">{{ wp.x.toFixed(1) }}, {{ wp.y.toFixed(1) }}, {{ wp.z.toFixed(1) }}</span>
+          <span class="rm-editor-dims">
+            <span ng-class="{'rm-dim-set': wp.width != null}">W{{ cpDim(wp, 'width') }}</span>
+            <span ng-class="{'rm-dim-set': wp.height != null}">H{{ cpDim(wp, 'height') }}</span>
+            <span ng-class="{'rm-dim-set': wp.depth != null}">D{{ cpDim(wp, 'depth') }}</span>
+          </span>
+        </div>
+        <!-- Per-checkpoint override editor (expands under the selected gate) -->
+        <div class="rm-cp-edit" ng-if="selectedCp === $index + 1">
+          <span class="rm-setting"><label>W</label>
+            <input type="number" min="2" max="120" ng-model="cpEdit.width" placeholder="{{ widthInput }}"></span>
+          <span class="rm-setting"><label>H</label>
+            <input type="number" min="1" max="100" ng-model="cpEdit.height" placeholder="{{ heightInput }}"></span>
+          <span class="rm-setting"><label>D</label>
+            <input type="number" min="0.5" max="100" step="0.5" ng-model="cpEdit.depth" placeholder="{{ depthInput }}"></span>
+          <button class="rm-btn rm-btn-mini rm-btn-start" ng-click="applyCheckpointOverride()">Apply</button>
+          <button class="rm-btn rm-btn-mini" ng-click="resetCheckpointOverride()">Reset</button>
+        </div>
       </div>
     </div>
     <div class="rm-editor-hint" ng-if="!routeWaypoints.length">
       Drive through each checkpoint location <b>in the direction of travel</b> and press
-      <b>+ Checkpoint Here</b>. Each checkpoint becomes a two-pole gate perpendicular to your
-      heading; the last one placed is the <b>start/finish line</b>.
+      <b>+ Checkpoint Here</b>. Each checkpoint becomes a 3D gate box perpendicular to your
+      heading; the last one placed is the <b>start/finish line</b>. Click a placed checkpoint
+      to override its <b>Width / Height / Depth</b>.
     </div>
 
     <!-- ===== Track layouts: persistent, per-map, server-side ===== -->
@@ -110,7 +161,7 @@
   </div>
 
   <!-- ================= DEMO DERBY (isolated module) ================= -->
-  <div class="rm-derby" ng-if="showDerby">
+  <div class="rm-derby" ng-if="showDerby && isAdmin">
     <div class="rm-derby-title">
       Demo Derby
       <span class="rm-derby-phase rm-derby-phase-{{ derby.phase }}">{{ derby.phase === 'running' ? 'LIVE — ' + formatDerbyTime(derby.time) : (derby.phase === 'finished' ? 'Finished' : 'Setup') }}</span>
@@ -337,6 +388,55 @@
   .rm-wp-progress { font-size: 10px; color: #7ee2a8; font-variant-numeric: tabular-nums; }
   .rm-btn-tab { margin-left: auto; }
   .rm-btn-tab-active { background: rgba(255, 102, 0, 0.3); border-color: #ff6600; color: #ffb380; }
+  .rm-admin-tag {
+    margin-left: auto;
+    padding: 1px 7px;
+    border-radius: 8px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    background: rgba(52, 168, 83, 0.25);
+    color: #7ee2a8;
+    border: 1px solid rgba(52, 168, 83, 0.5);
+  }
+  /* When the ADMIN tag takes the auto margin, the first tab button no longer should. */
+  .rm-admin-tag ~ .rm-btn-tab-derby, .rm-admin-tag ~ .rm-btn-tab { margin-left: 0; }
+
+  /* Admin login + change-password bars */
+  .rm-login, .rm-adminbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .rm-login { background: rgba(52, 168, 83, 0.06); }
+  .rm-adminbar { background: rgba(255, 255, 255, 0.03); }
+  .rm-login-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: #7ee2a8;
+    text-transform: uppercase;
+  }
+  .rm-adminbar-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #9aa0a6;
+  }
+  .rm-login-input {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: #e8eaed;
+    border-radius: 3px;
+    padding: 3px 8px;
+    font-size: 11px;
+    min-width: 130px;
+  }
+  .rm-login-error { font-size: 11px; color: #f28b82; font-weight: 600; }
+  .rm-login-hint { font-size: 10px; color: #9aa0a6; }
 
   /* Race settings */
   .rm-settings {
@@ -370,18 +470,36 @@
   .rm-editor-controls { display: flex; gap: 5px; flex-wrap: wrap; }
   .rm-editor-msg { margin-top: 5px; font-size: 11px; color: #fdd663; }
   .rm-editor-hint { margin-top: 5px; font-size: 11px; color: #9aa0a6; }
-  .rm-editor-list { margin-top: 5px; max-height: 90px; overflow-y: auto; }
+  .rm-editor-list { margin-top: 5px; max-height: 150px; overflow-y: auto; }
   .rm-editor-wp {
     display: flex;
     gap: 8px;
-    padding: 1px 0;
+    padding: 2px 4px;
     font-size: 11px;
     font-variant-numeric: tabular-nums;
+    cursor: pointer;
+    border-radius: 3px;
+    align-items: center;
   }
+  .rm-editor-wp:hover { background: rgba(255, 255, 255, 0.06); }
+  .rm-editor-wp-sel { background: rgba(255, 102, 0, 0.15); }
   .rm-editor-idx { width: 22px; text-align: right; color: #ff6600; font-weight: 700; }
   .rm-editor-finish { color: #e8eaed; }
-  .rm-editor-coords { color: #bdc1c6; }
-  .rm-editor-radius { color: #9aa0a6; }
+  .rm-editor-coords { color: #bdc1c6; flex: 1; }
+  .rm-editor-dims { color: #9aa0a6; display: flex; gap: 6px; }
+  .rm-editor-dims .rm-dim-set { color: #ffb380; font-weight: 700; }
+  /* Per-checkpoint override editor */
+  .rm-cp-edit {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 5px 6px 6px 26px;
+    margin-bottom: 3px;
+    border-left: 2px solid rgba(255, 102, 0, 0.5);
+    background: rgba(255, 102, 0, 0.05);
+  }
+  .rm-cp-edit .rm-setting input[type="number"] { width: 52px; }
 
   /* Track layouts */
   .rm-layouts {

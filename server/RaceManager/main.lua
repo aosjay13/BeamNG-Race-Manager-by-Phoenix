@@ -39,6 +39,31 @@ local tickCounter = 0
 local countdownValue = nil  -- current countdown number while phase == 'countdown'
 local lapFirsts = {}        -- [lapNumber] = pid of the first driver to complete that lap
 
+-- ---------------------------------------------------------------------------
+-- Admin authentication
+-- ---------------------------------------------------------------------------
+-- BeamMP guest account IDs rotate constantly, so admin rights are gated by a
+-- shared password rather than a name/ID whitelist. A player sends RM_Login with
+-- the current master password; on a match their session ID is recorded in
+-- authenticatedPlayers and every admin-level event checks that table before
+-- acting. The default below is meant to be rotated on the fly (RM_ChangePassword)
+-- once an admin is logged in -- change it before the first public session.
+local DEFAULT_ADMIN_PASSWORD = 'phoenix'
+local adminPassword = DEFAULT_ADMIN_PASSWORD
+local authenticatedPlayers = {}   -- [playerID] = true while that session is an admin
+
+local function isAuthenticated(pid)
+  return authenticatedPlayers[pid] == true
+end
+
+-- Guard placed at the top of every admin-level event handler. Any command from
+-- a session that has not logged in is dropped (and logged so it's diagnosable).
+local function requireAuth(pid)
+  if authenticatedPlayers[pid] then return true end
+  print('[RaceManager] Ignored admin command from unauthenticated player ' .. tostring(pid))
+  return false
+end
+
 local function newRecord(pid)
   return {
     id         = pid,
@@ -66,6 +91,15 @@ local function decodeNumber(rawData, field)
   if not ok or type(data) ~= 'table' then return nil end
   local n = tonumber(data[field])
   return n
+end
+
+local function decodeString(rawData, field)
+  if type(rawData) ~= 'string' or rawData == '' then return nil end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return nil end
+  local v = data[field]
+  if v == nil then return nil end
+  return tostring(v)
 end
 
 -- ---------------------------------------------------------------------------
@@ -115,6 +149,40 @@ end
 
 local function broadcastCountdown(count)
   MP.TriggerClientEvent(-1, 'RM_Countdown', Util.JsonEncode({ count = count }))
+end
+
+-- ---------------------------------------------------------------------------
+-- Admin authentication events
+-- ---------------------------------------------------------------------------
+-- A client submits the master password. On a match the session is marked as an
+-- admin and told to reveal its editor/admin controls; on a miss any prior
+-- admin flag for that session is cleared and a failure is reported.
+function RM_onLogin(pid, rawData)
+  local pass = decodeString(rawData, 'password')
+  if pass ~= nil and pass == adminPassword then
+    authenticatedPlayers[pid] = true
+    MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({ success = true }))
+    print('[RaceManager] Admin login OK: ' .. (MP.GetPlayerName(pid) or pid))
+  else
+    authenticatedPlayers[pid] = nil
+    MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({ success = false }))
+    print('[RaceManager] Admin login FAILED: ' .. (MP.GetPlayerName(pid) or pid))
+  end
+end
+
+-- An already-authenticated admin rotates the master password. The new password
+-- takes effect immediately for future logins; sessions already logged in stay
+-- logged in. The password itself is never broadcast -- only a notice that it
+-- changed (and by whom) goes to the server state so every open UI can reflect it.
+function RM_onChangePassword(pid, rawData)
+  if not requireAuth(pid) then return end
+  local newPass = decodeString(rawData, 'password')
+  if not newPass or newPass == '' then return end
+  adminPassword = newPass
+  MP.TriggerClientEvent(-1, 'RM_PasswordChanged', Util.JsonEncode({
+    changedBy = MP.GetPlayerName(pid) or ('Player ' .. pid),
+  }))
+  print('[RaceManager] Admin password changed by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
 -- ---------------------------------------------------------------------------
@@ -295,6 +363,7 @@ end
 -- Start Qualifying: snapshot connected players and wipe all session data.
 -- Allowed any time outside an active countdown/race.
 function RM_onStartQualifying(pid)
+  if not requireAuth(pid) then return end
   if race.phase == 'countdown' or race.phase == 'racing' then return end
   MP.CancelEventTimer('RM_CountdownTick')
   players = {}
@@ -314,6 +383,7 @@ end
 -- the next Generate Grid. Also usable from waiting/finished: with no quali
 -- times everyone ties and the grid falls back to join order.
 function RM_onGenerateGrid(pid)
+  if not requireAuth(pid) then return end
   if race.phase == 'countdown' or race.phase == 'racing' then return end
   race.time = 0.0
   lapFirsts = {}
@@ -355,6 +425,7 @@ end
 
 -- Host sets the race distance. Locked once the countdown/race is under way.
 function RM_onSetTotalLaps(pid, rawData)
+  if not requireAuth(pid) then return end
   if race.phase == 'countdown' or race.phase == 'racing' then return end
   local n = decodeNumber(rawData, 'laps')
   if not n then return end
@@ -366,6 +437,7 @@ function RM_onSetTotalLaps(pid, rawData)
 end
 
 function RM_onStartCountdown(pid)
+  if not requireAuth(pid) then return end
   if race.phase ~= 'grid' then return end
   race.phase = 'countdown'
   countdownValue = COUNTDOWN_FROM
@@ -408,6 +480,7 @@ end
 -- qualifying the session closes but Best Laps are kept so the grid can
 -- still be generated.
 function RM_onEndRace(pid)
+  if not requireAuth(pid) then return end
   if race.phase == 'racing' or race.phase == 'countdown' then
     MP.CancelEventTimer('RM_CountdownTick')
     broadcastCountdown(-1)  -- hide any countdown overlay
@@ -425,6 +498,7 @@ function RM_onEndRace(pid)
 end
 
 function RM_onResetLeaderboard(pid)
+  if not requireAuth(pid) then return end
   MP.CancelEventTimer('RM_CountdownTick')
   broadcastCountdown(-1)
   players = {}
@@ -496,6 +570,7 @@ end
 
 -- Clear Results Cache: delete every saved .txt in the results folder.
 function RM_onClearResults(pid)
+  if not requireAuth(pid) then return end
   local ok, removed = pcall(clearResultsCache)
   if not ok then
     print('[RaceManager] Failed to clear results cache: ' .. tostring(removed))
@@ -722,7 +797,9 @@ local function saveLayoutsToDisk()
 end
 
 -- Checkpoints as the client editor stores them: position + normalized travel
--- heading (the gate's rotation) + the shared gate width saved per layout.
+-- heading (the gate's rotation) + the shared gate dimensions saved per layout.
+-- Per-checkpoint width/height/depth overrides are optional and only kept when
+-- present, so a gate with no override inherits the layout-wide defaults.
 local function sanitizeCheckpoints(raw)
   if type(raw) ~= 'table' then return nil end
   local out = {}
@@ -731,6 +808,9 @@ local function sanitizeCheckpoints(raw)
     local x, y, z = tonumber(cp.x), tonumber(cp.y), tonumber(cp.z)
     if not (x and y and z) then return nil end
     out[i] = { x = x, y = y, z = z, hx = tonumber(cp.hx) or 0, hy = tonumber(cp.hy) or 1 }
+    if tonumber(cp.width)  then out[i].width  = tonumber(cp.width)  end
+    if tonumber(cp.height) then out[i].height = tonumber(cp.height) end
+    if tonumber(cp.depth)  then out[i].depth  = tonumber(cp.depth)  end
   end
   if #out == 0 then return nil end
   return out
@@ -775,6 +855,7 @@ end
 
 -- Client/UI asked for an explicit full clear (also refreshes everyone's list).
 function RM_onClearTrackState(pid)
+  if not requireAuth(pid) then return end
   clearTrackState('requested by ' .. (MP.GetPlayerName(pid) or pid))
   sendLayoutList(-1)
 end
@@ -784,6 +865,7 @@ end
 -- refreshed list goes to every client so all open UIs stay in sync.
 -- Every rejection branch logs its reason so a dropped save is diagnosable.
 function RM_onSaveLayout(pid, rawData)
+  if not requireAuth(pid) then return end
   print(string.format('[RaceManager] RM_SaveLayout from %s: %s byte(s)',
     MP.GetPlayerName(pid) or pid, type(rawData) == 'string' and #rawData or 'non-string'))
   if type(rawData) ~= 'string' or rawData == '' then
@@ -812,7 +894,9 @@ function RM_onSaveLayout(pid, rawData)
   local entry = {
     name        = name,
     map         = map,
-    width       = tonumber(data.width) or 20,
+    width       = tonumber(data.width)  or 20,
+    height      = tonumber(data.height) or 10,
+    depth       = tonumber(data.depth)  or 4,
     checkpoints = checkpoints,
   }
   local all = getLayouts()
@@ -842,6 +926,7 @@ end
 -- checkpoint set to every connected client, which instantly rebuilds its gates.
 -- Locked once a countdown/race is under way — nobody swaps the track mid-race.
 function RM_onLoadLayout(pid, rawData)
+  if not requireAuth(pid) then return end
   if race.phase == 'countdown' or race.phase == 'racing' then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
@@ -1030,6 +1115,7 @@ end
 -- --- Derby event handlers (admin controls relayed by the client bridge) ----
 
 function RM_onDerbySetConfig(pid, rawData)
+  if not requireAuth(pid) then return end
   if derby.phase == 'running' then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
@@ -1044,6 +1130,7 @@ end
 -- Admin dropped a boundary marker at their vehicle's position; the ordered
 -- marker list is the arena polygon every client runs point-in-polygon against.
 function RM_onDerbyAddMarker(pid, rawData)
+  if not requireAuth(pid) then return end
   if derby.phase == 'running' then return end
   if #derby.boundary >= DERBY_MAX_MARKERS then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
@@ -1058,6 +1145,7 @@ function RM_onDerbyAddMarker(pid, rawData)
 end
 
 function RM_onDerbyClearBoundary(pid)
+  if not requireAuth(pid) then return end
   if derby.phase == 'running' then return end
   derby.boundary = {}
   broadcastDerbyState()
@@ -1067,6 +1155,7 @@ end
 -- Start Derby: snapshot every connected player as an active participant and
 -- start the derby clock. A fresh start from 'finished' wipes the last session.
 function RM_onDerbyStart(pid)
+  if not requireAuth(pid) then return end
   if derby.phase == 'running' then return end
   derbyPlayers = {}
   derby.winner = nil
@@ -1098,6 +1187,7 @@ end
 -- End Derby (admin): if exactly one driver is still alive they take the win,
 -- otherwise the derby closes with no winner.
 function RM_onDerbyEnd(pid)
+  if not requireAuth(pid) then return end
   if derby.phase ~= 'running' then
     -- Allow clearing a finished derby back to idle from the UI.
     if derby.phase == 'finished' then
@@ -1182,6 +1272,9 @@ function RM_onPlayerJoin(pid)
 end
 
 function RM_onPlayerDisconnect(pid)
+  -- Session IDs are reused, so a disconnecting admin must drop its auth flag;
+  -- the next player to inherit this ID starts with no admin rights.
+  authenticatedPlayers[pid] = nil
   local rec = players[pid]
   if not rec then return end
   if rec.status == 'racing' or rec.status == 'gridded' then
@@ -1204,6 +1297,8 @@ function RM_onPlayerDisconnect(pid)
 end
 
 function onInit()
+  MP.RegisterEvent('RM_Login',            'RM_onLogin')
+  MP.RegisterEvent('RM_ChangePassword',   'RM_onChangePassword')
   MP.RegisterEvent('RM_StartQualifying',  'RM_onStartQualifying')
   MP.RegisterEvent('RM_GenerateGrid',     'RM_onGenerateGrid')
   MP.RegisterEvent('RM_SetTotalLaps',     'RM_onSetTotalLaps')

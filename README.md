@@ -91,6 +91,18 @@ current session phase (Waiting / Qualifying / Grid Locked / Countdown /
 Racing / Race Over), the race clock, and your checkpoint progress (`CP 2/5`)
 while you're on track.
 
+Everyone can watch the live timing, but the **editor and all race/derby
+controls are hidden until you log in as an admin**. Type the master password
+into the **Admin Login** bar and press **Login**; on success the controls
+appear and an **ADMIN** badge shows in the header. Because BeamMP guest IDs
+rotate constantly, admin rights are gated by this shared password rather than
+a name/ID whitelist, and they are dropped as soon as you disconnect.
+
+> The server ships with a **default password of `phoenix`** (set at the top of
+> `server/RaceManager/main.lua`). **Change it before your first public
+> session:** log in, then use the **Change password** bar to set a new one — it
+> takes effect on the server immediately.
+
 ### Step 2 — Build a track
 
 Press **Editor** in the header to open the checkpoint editor, then drive the
@@ -103,8 +115,14 @@ course you want to race:
 2. **The last gate you place is the start/finish line** (drawn white in the
    world; earlier gates are orange, and your next target turns green during
    a session).
-3. Use the **Gate width** slider to widen or narrow every gate live —
-   2–120 m. Wide gates are forgiving; narrow ones force a precise line.
+3. Every gate is a **3D box**, not a flat line — it has a **width** (between
+   the poles), a **height** (how far it reaches up and down) and a **depth**
+   (how thick the timing line is). Set the live defaults with the **Gate
+   width** slider (2–120 m) and the **Def. height** / **Def. depth** fields.
+   Raise the height on **high-banked tracks** so the box covers the banking;
+   the in-world drawing shows a faint cage of the real hit-volume so you can
+   verify it. Click any placed checkpoint in the list to **override its own
+   Width / Height / Depth** (blank = inherit the default).
 4. **Undo** removes the last gate, **Clear** wipes the route,
    **Hide/Show Gates** toggles the in-world drawing.
 5. **Save** / **Load** keep a personal scratch copy on your own machine
