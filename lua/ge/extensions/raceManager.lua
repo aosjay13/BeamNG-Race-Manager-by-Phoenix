@@ -26,12 +26,17 @@ local M = {}
 -- ---------------------------------------------------------------------------
 -- Tunables
 -- ---------------------------------------------------------------------------
-local DEFAULT_WIDTH  = 20       -- meters between the two poles
+local DEFAULT_WIDTH  = 20       -- meters between the two poles (lateral span)
 local MIN_WIDTH      = 2
 local MAX_WIDTH      = 120
+local DEFAULT_HEIGHT = 10       -- meters the trigger extends up/down (vertical)
+local MIN_HEIGHT     = 1
+local MAX_HEIGHT     = 100
+local DEFAULT_DEPTH  = 4        -- meters of forward thickness (along heading)
+local MIN_DEPTH      = 0.5
+local MAX_DEPTH      = 100
 local POLE_HEIGHT    = 4        -- meters
 local POLE_RADIUS    = 0.15    -- meters
-local Z_TOLERANCE    = 6        -- max height difference between car and gate at crossing
 local LAP_DEBOUNCE   = 2.0      -- seconds; double-fire guard on the S/F gate.
                                 -- Kept low so even very short circuits report:
                                 -- this only needs to swallow same-crossing
@@ -46,10 +51,16 @@ local totalLaps = 5          -- mirrored from server broadcasts
 
 -- Checkpoints: ordered list of { x, y, z, hx, hy } where (hx, hy) is the
 -- normalized direction of travel captured at placement. The gate line runs
--- perpendicular to it; the last checkpoint is the start/finish line.
-local route           = {}
-local checkpointWidth = DEFAULT_WIDTH
-local visualize       = true
+-- perpendicular to it; the last checkpoint is the start/finish line. A gate may
+-- also carry per-checkpoint width/height/depth overrides; absent, it inherits
+-- the global defaults below. Each checkpoint is a 3D oriented bounding box:
+-- width = lateral span (between the poles), height = vertical extent (covers
+-- banking), depth = forward thickness (how "thick" the timing line is).
+local route            = {}
+local checkpointWidth  = DEFAULT_WIDTH
+local checkpointHeight = DEFAULT_HEIGHT
+local checkpointDepth  = DEFAULT_DEPTH
+local visualize        = true
 
 -- Local lap tracking (reset on every session change)
 local armedWp      = 1           -- next gate the local car must cross
@@ -73,6 +84,27 @@ local function clampWidth(w)
   return w
 end
 
+local function clampHeight(h)
+  h = tonumber(h) or DEFAULT_HEIGHT
+  if h < MIN_HEIGHT then h = MIN_HEIGHT elseif h > MAX_HEIGHT then h = MAX_HEIGHT end
+  return h
+end
+
+local function clampDepth(d)
+  d = tonumber(d) or DEFAULT_DEPTH
+  if d < MIN_DEPTH then d = MIN_DEPTH elseif d > MAX_DEPTH then d = MAX_DEPTH end
+  return d
+end
+
+-- Effective box dimensions for a checkpoint: a per-gate override wins, otherwise
+-- the global default. Always returned clamped so bad stored data can't produce
+-- a degenerate (zero/negative) trigger volume.
+local function gateDims(wp)
+  return clampWidth(wp.width   or checkpointWidth),
+         clampHeight(wp.height or checkpointHeight),
+         clampDepth(wp.depth   or checkpointDepth)
+end
+
 -- ---------------------------------------------------------------------------
 -- UI push helpers
 -- ---------------------------------------------------------------------------
@@ -81,6 +113,8 @@ local function pushRouteState()
     waypoints = route,
     nextWp    = armedWp,
     width     = checkpointWidth,
+    height    = checkpointHeight,
+    depth     = checkpointDepth,
     visualize = visualize,
   })
 end
@@ -89,35 +123,67 @@ end
 -- Gate geometry
 -- ---------------------------------------------------------------------------
 -- Pole positions: center point offset left/right along the line perpendicular
--- to the stored heading, by half the current gate width.
+-- to the stored heading, by half the gate's (possibly overridden) width.
 local function gatePoles(wp)
-  local half = checkpointWidth * 0.5
+  local w = gateDims(wp)
+  local half = w * 0.5
   local rx, ry = wp.hy, -wp.hx  -- right-hand perpendicular of the heading
   return vec3(wp.x - rx * half, wp.y - ry * half, wp.z),
          vec3(wp.x + rx * half, wp.y + ry * half, wp.z)
 end
 
--- True if the movement segment prev -> cur crosses the gate's vertical plane
--- between the poles, travelling in the gate's forward direction.
-local function segmentCrossesGate(wp, prev, cur)
-  -- Signed distance of both endpoints to the plane through the gate center
-  -- with normal = heading (XY only; the poles are vertical).
-  local dPrev = (prev.x - wp.x) * wp.hx + (prev.y - wp.y) * wp.hy
-  local dCur  = (cur.x  - wp.x) * wp.hx + (cur.y  - wp.y) * wp.hy
-  if not (dPrev < 0 and dCur >= 0) then return false end  -- no forward crossing
+-- 3D Oriented Bounding Box crossing test. A checkpoint is a box centered on
+-- (wp.x, wp.y, wp.z), oriented by the stored heading, with local axes:
+--   forward f = (hx, hy)      thickness = depth   (why banked lines still hit)
+--   lateral r = (hy, -hx)     span      = width   (between the poles)
+--   up      z                 span      = height  (covers the banking)
+-- The car registers a forward pass through the box in one of two ways, both of
+-- which require it to be moving in the gate's forward direction so a reversing
+-- car never scores a gate:
+--   (1) the current position lands inside the box -- catches slow, steep and
+--       high-banked crossings the old flat plane missed; or
+--   (2) the frame-to-frame segment crosses the box's center plane in the
+--       forward direction and the crossing point is within the width/height
+--       half-extents -- a tunnel guard for a car too fast to be sampled inside
+--       the (thin, depth-deep) box on any single frame.
+-- Dimensions are passed in so the same math can be unit-tested headlessly
+-- (see tests/gate_test.lua); the live caller feeds gateDims(wp).
+local function obbCrossesGate(wp, prev, cur, w, h, d)
+  local fx, fy = wp.hx, wp.hy
 
-  -- Intersection point of the segment with the plane.
+  -- Forward component of this frame's displacement. Non-negative == the car is
+  -- travelling in (or along) the gate's forward direction.
+  local moveF = (cur.x - prev.x) * fx + (cur.y - prev.y) * fy
+  if moveF < 0 then return false end
+
+  -- (1) point-in-OBB on the current position (local box coordinates).
+  local dx, dy, dz = cur.x - wp.x, cur.y - wp.y, cur.z - wp.z
+  local lf = dx * fx + dy * fy          -- along forward (depth) axis
+  local lr = dx * fy - dy * fx          -- along lateral (width) axis
+  if math.abs(lf) <= d * 0.5 and math.abs(lr) <= w * 0.5
+      and math.abs(dz) <= h * 0.5 then
+    return true
+  end
+
+  -- (2) forward crossing of the center plane, bounded by width & height.
+  local dPrev = (prev.x - wp.x) * fx + (prev.y - wp.y) * fy
+  local dCur  = lf
+  if not (dPrev < 0 and dCur >= 0) then return false end
   local t  = dPrev / (dPrev - dCur)
   local ix = prev.x + (cur.x - prev.x) * t
   local iy = prev.y + (cur.y - prev.y) * t
   local iz = prev.z + (cur.z - prev.z) * t
-
-  -- Must pass between the poles (lateral offset within half the width)...
-  local lateral = (ix - wp.x) * wp.hy - (iy - wp.y) * wp.hx
-  if math.abs(lateral) > checkpointWidth * 0.5 then return false end
-  -- ...and roughly at gate height (rules out bridges/overpasses).
-  if math.abs(iz - wp.z) > Z_TOLERANCE then return false end
+  local lateral = (ix - wp.x) * fy - (iy - wp.y) * fx
+  if math.abs(lateral) > w * 0.5 then return false end
+  if math.abs(iz - wp.z) > h * 0.5 then return false end
   return true
+end
+
+-- Live wrapper: resolve the gate's effective box dimensions, then run the OBB
+-- test. Keeps the crossing check callers unchanged (segmentCrossesGate(wp, a, b)).
+local function segmentCrossesGate(wp, prev, cur)
+  local w, h, d = gateDims(wp)
+  return obbCrossesGate(wp, prev, cur, w, h, d)
 end
 
 -- ---------------------------------------------------------------------------
@@ -213,6 +279,38 @@ end
 -- ---------------------------------------------------------------------------
 -- In-world gate visualization: two poles per checkpoint + crossbar
 -- ---------------------------------------------------------------------------
+-- Draw the faint edge cage of a checkpoint's true 3D hit-volume (the OBB), so
+-- an admin can eyeball that the box actually covers the banking. Eight corners
+-- built from the gate's forward/lateral/up axes and its width/height/depth,
+-- wired up as the box's 12 edges.
+local function drawGateVolume(wp, color)
+  local w, h, d = gateDims(wp)
+  local hw, hh, hd = w * 0.5, h * 0.5, d * 0.5
+  local fx, fy = wp.hx, wp.hy          -- forward (depth)
+  local rx, ry = wp.hy, -wp.hx         -- lateral (width)
+  -- corner(sr, sd, su): center + r*sr*hw + f*sd*hd + up*su*hh
+  local function corner(sr, sd, su)
+    return vec3(
+      wp.x + rx * sr * hw + fx * sd * hd,
+      wp.y + ry * sr * hw + fy * sd * hd,
+      wp.z + su * hh)
+  end
+  -- Index the 8 corners by (sr, sd, su) in {-1,+1}.
+  local c = {
+    corner(-1, -1, -1), corner(1, -1, -1), corner(1, 1, -1), corner(-1, 1, -1),  -- bottom
+    corner(-1, -1,  1), corner(1, -1,  1), corner(1, 1,  1), corner(-1, 1,  1),  -- top
+  }
+  local edges = {
+    {1,2},{2,3},{3,4},{4,1},   -- bottom rectangle
+    {5,6},{6,7},{7,8},{8,5},   -- top rectangle
+    {1,5},{2,6},{3,7},{4,8},   -- vertical pillars
+  }
+  local faint = ColorF(color.r or 1, color.g or 1, color.b or 1, 0.28)
+  for _, e in ipairs(edges) do
+    debugDrawer:drawCylinder(c[e[1]], c[e[2]], POLE_RADIUS * 0.35, faint)
+  end
+end
+
 local function drawGates()
   if not visualize or #route == 0 or not debugDrawer then return end
   local active = (phase == 'qualifying' or phase == 'racing')
@@ -231,6 +329,8 @@ local function drawGates()
     debugDrawer:drawCylinder(pR, pR + up, POLE_RADIUS, color)
     -- Crossbar between the pole tops so the gate reads as one line.
     debugDrawer:drawCylinder(pL + up, pR + up, POLE_RADIUS * 0.5, color)
+    -- Faint 3D cage showing the real width x height x depth trigger volume.
+    drawGateVolume(wp, color)
 
     local mid = (pL + pR) * 0.5 + vec3(0, 0, POLE_HEIGHT + 0.8)
     local label = (i == #route) and (i .. ' START/FINISH') or ('CP ' .. i)
@@ -547,12 +647,49 @@ function M.setCheckpointWidth(w)
   pushRouteState()
 end
 
+function M.setCheckpointHeight(h)
+  checkpointHeight = clampHeight(h)
+  pushRouteState()
+end
+
+function M.setCheckpointDepth(d)
+  checkpointDepth = clampDepth(d)
+  pushRouteState()
+end
+
+-- Per-checkpoint override editor. index is 1-based into the placed route; a
+-- nil/blank/non-positive value for a dimension clears that override so the gate
+-- falls back to the global default. Pass all three blank to fully reset a gate.
+function M.setCheckpointOverride(index, w, h, d)
+  index = math.floor(tonumber(index) or 0)
+  local wp = route[index]
+  if not wp then
+    log('W', 'raceManager', 'setCheckpointOverride: no checkpoint at index ' .. tostring(index))
+    return
+  end
+  local function opt(v, clamp)
+    v = tonumber(v)
+    if not v or v <= 0 then return nil end
+    return clamp(v)
+  end
+  wp.width  = opt(w, clampWidth)
+  wp.height = opt(h, clampHeight)
+  wp.depth  = opt(d, clampDepth)
+  pushRouteState()
+end
+
 function M.editorSave()
   if #route == 0 then
     log('W', 'raceManager', 'Editor: nothing to save')
     return
   end
-  jsonWriteFile(ROUTE_FILE, { version = 2, width = checkpointWidth, waypoints = route }, true)
+  jsonWriteFile(ROUTE_FILE, {
+    version = 3,
+    width   = checkpointWidth,
+    height  = checkpointHeight,
+    depth   = checkpointDepth,
+    waypoints = route,
+  }, true)
   log('I', 'raceManager', 'Editor: saved ' .. #route .. ' checkpoints to ' .. ROUTE_FILE)
   guihooks.trigger('RaceManagerEditorMsg', { msg = 'Saved ' .. #route .. ' checkpoints' })
 end
@@ -580,9 +717,11 @@ function M.editorLoad()
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'No saved route found' })
     return
   end
-  if data.version == 2 then
+  if data.version == 2 or data.version == 3 then
     route = data.waypoints
-    checkpointWidth = clampWidth(data.width or DEFAULT_WIDTH)
+    checkpointWidth  = clampWidth(data.width or DEFAULT_WIDTH)
+    checkpointHeight = clampHeight(data.height or DEFAULT_HEIGHT)
+    checkpointDepth  = clampDepth(data.depth or DEFAULT_DEPTH)
   else
     route = migrateV1(data.waypoints)
   end
@@ -637,10 +776,16 @@ function M.saveLayout(name)
       return
     end
     cps[i] = { x = x, y = y, z = z, hx = tonumber(wp.hx) or 0, hy = tonumber(wp.hy) or 1 }
+    -- Carry per-checkpoint overrides through only when set.
+    if tonumber(wp.width)  then cps[i].width  = clampWidth(wp.width)   end
+    if tonumber(wp.height) then cps[i].height = clampHeight(wp.height) end
+    if tonumber(wp.depth)  then cps[i].depth  = clampDepth(wp.depth)   end
   end
   local payload = jsonEncode({
     name        = name,
     width       = clampWidth(checkpointWidth),
+    height      = clampHeight(checkpointHeight),
+    depth       = clampDepth(checkpointDepth),
     checkpoints = cps,
   })
   print('[raceManager] saveLayout: sending RM_SaveLayout (' .. #payload .. ' bytes) to server')
@@ -727,15 +872,19 @@ local function onApplyLayout(rawData)
       return
     end
     cps[i] = { x = x, y = y, z = z, hx = tonumber(cp.hx) or 0, hy = tonumber(cp.hy) or 1 }
+    if tonumber(cp.width)  then cps[i].width  = clampWidth(cp.width)   end
+    if tonumber(cp.height) then cps[i].height = clampHeight(cp.height) end
+    if tonumber(cp.depth)  then cps[i].depth  = clampDepth(cp.depth)   end
   end
   if #cps == 0 then
     log('E', 'raceManager', 'RM_ApplyLayout: empty checkpoint list, layout rejected')
     return
   end
-  local width = clampWidth(data.width or checkpointWidth)
   clearTrackState('applying layout "' .. tostring(data.name) .. '"')
   route = cps
-  checkpointWidth = width
+  checkpointWidth  = clampWidth(data.width or checkpointWidth)
+  checkpointHeight = clampHeight(data.height or checkpointHeight)
+  checkpointDepth  = clampDepth(data.depth or checkpointDepth)
   resetLapTracking()
   editorMsg('Loaded layout "' .. tostring(data.name) .. '" (' .. #route .. ' gates)')
   log('I', 'raceManager', 'Applied server layout "' .. tostring(data.name)
@@ -749,6 +898,50 @@ local function onClearTrack(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if ok and type(data) == 'table' and data.reason then reason = tostring(data.reason) end
   clearTrackState('server: ' .. reason)
+end
+
+-- Server replied to a login attempt: forward the success flag to the UI, which
+-- reveals the admin controls on success and shows a rejection otherwise.
+local function onLoginResult(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  guihooks.trigger('RaceManagerAuth', { success = data.success == true })
+  log('I', 'raceManager', 'Login result: ' .. tostring(data.success == true))
+end
+
+-- Server broadcast that an admin rotated the master password (never the value).
+local function onPasswordChanged(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  local by = (ok and type(data) == 'table' and data.changedBy) and tostring(data.changedBy) or 'an admin'
+  editorMsg('Admin password changed by ' .. by)
+  log('I', 'raceManager', 'Master password changed by ' .. by)
+end
+
+-- ---------------------------------------------------------------------------
+-- Admin authentication (called by the UI app)
+-- ---------------------------------------------------------------------------
+-- Submit the master password to the server. The reply (RM_LoginResult) drives
+-- the UI show/hide of the admin controls via the RaceManagerAuth guihook.
+function M.login(password)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_Login', jsonEncode({ password = tostring(password or '') }))
+  else
+    -- Offline: no server to authenticate against, but the checkpoint editor is
+    -- meant to stay usable single-player, so grant local admin outright.
+    guihooks.trigger('RaceManagerAuth', { success = true, offline = true })
+  end
+end
+
+-- Authenticated admin rotates the master password on the server.
+function M.changePassword(newPassword)
+  newPassword = tostring(newPassword or '')
+  if newPassword == '' then
+    editorMsg('Enter a new password first')
+    return
+  end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_ChangePassword', jsonEncode({ password = newPassword }))
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -794,8 +987,10 @@ function M.requestState()
     TriggerServerEvent('RM_RequestLayouts', '')
   else
     -- Not on a BeamMP server: still push a state so the UI renders, and the
-    -- editor remains fully usable for building circuits offline.
+    -- editor remains fully usable for building circuits offline. Grant local
+    -- admin so the (offline) editor controls are visible without a password.
     guihooks.trigger('RaceManagerUpdate', { phase = 'waiting', raceTime = 0, totalLaps = totalLaps, drivers = {} })
+    guihooks.trigger('RaceManagerAuth', { success = true, offline = true })
     log('W', 'raceManager', 'Racing is multiplayer-only; the checkpoint editor works offline')
   end
 end
@@ -807,6 +1002,8 @@ function M.onExtensionLoaded()
     AddEventHandler('RM_Layouts', onLayoutList)
     AddEventHandler('RM_ApplyLayout', onApplyLayout)
     AddEventHandler('RM_ClearTrack', onClearTrack)
+    AddEventHandler('RM_LoginResult', onLoginResult)
+    AddEventHandler('RM_PasswordChanged', onPasswordChanged)
     AddEventHandler('RM_DerbyUpdate', onDerbyUpdate)  -- Demo Derby module
   end
   log('I', 'raceManager', 'Race Manager client bridge loaded (multiplayer=' .. tostring(inMultiplayer()) .. ')')

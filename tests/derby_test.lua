@@ -55,6 +55,13 @@ end
 
 onInit()
 
+-- Derby admin events now require authentication too. Confirm an unauthenticated
+-- session is rejected, then log in the admin sessions the suite drives with.
+RM_onDerbyStart(1)
+check(lastDerby == nil, 'derby start ignored before authentication')
+RM_onLogin(1, '{"password":"phoenix"}')
+RM_onLogin(2, '{"password":"phoenix"}')
+
 -- ---------------------------------------------------------------------------
 -- Point-in-polygon (mirror of the client's derbyPointInPolygon)
 -- ---------------------------------------------------------------------------

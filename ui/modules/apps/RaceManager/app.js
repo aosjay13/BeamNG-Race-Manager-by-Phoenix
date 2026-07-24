@@ -33,6 +33,14 @@ angular.module('beamng.apps')
       // Settings inputs (host)
       $scope.lapsInput = 5;
       $scope.widthInput = 20;
+      $scope.heightInput = 10;   // 3D checkpoint volume: vertical extent
+      $scope.depthInput = 4;     // 3D checkpoint volume: forward thickness
+
+      // Admin authentication. Every editor/admin control stays hidden until the
+      // server confirms a login (RaceManagerAuth). authUi holds the two inputs.
+      $scope.isAdmin = false;
+      $scope.authUi = { password: '', newPassword: '' };
+      $scope.authError = false;   // true after a rejected login attempt
 
       // Checkpoint editor state
       $scope.showEditor = false;
@@ -40,6 +48,10 @@ angular.module('beamng.apps')
       $scope.nextWp = 1;
       $scope.visualize = true;
       $scope.editorMsg = null;
+      // Per-checkpoint override editor: which gate (1-based) is selected, plus
+      // its edit fields. Blank fields mean "use the global default".
+      $scope.selectedCp = null;
+      $scope.cpEdit = { width: '', height: '', depth: '' };
 
       // Track layout state (server-side persistent layouts, current map only)
       $scope.layouts = [];              // [{ name, map, width, checkpoints }]
@@ -164,6 +176,24 @@ angular.module('beamng.apps')
           $scope.nextWp = data.nextWp || 1;
           $scope.visualize = data.visualize !== false;
           if (typeof data.width === 'number') { $scope.widthInput = data.width; }
+          if (typeof data.height === 'number') { $scope.heightInput = data.height; }
+          if (typeof data.depth === 'number') { $scope.depthInput = data.depth; }
+          // Keep the override editor in sync (a gate may have been removed, or
+          // its stored overrides changed by the last command).
+          if ($scope.selectedCp != null && !$scope.routeWaypoints[$scope.selectedCp - 1]) {
+            $scope.selectedCp = null;
+          }
+        });
+      });
+
+      // Admin auth result from the server (or an offline auto-grant). Success
+      // reveals every admin/editor control; failure flags the login box.
+      $scope.$on('RaceManagerAuth', function (event, data) {
+        $scope.$evalAsync(function () {
+          var ok = !!(data && data.success);
+          $scope.isAdmin = ok;
+          $scope.authError = !ok;
+          if (ok) { $scope.authUi.password = ''; }
         });
       });
 
@@ -298,6 +328,27 @@ angular.module('beamng.apps')
       });
 
       // ------------------------------------------------------------------
+      // UI -> LUA commands (admin authentication)
+      // ------------------------------------------------------------------
+      // Layout/password strings go through engineLua as Lua string literals.
+      function luaStr(s) {
+        return "'" + String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, ' ') + "'";
+      }
+
+      $scope.login = function () {
+        $scope.authError = false;
+        var p = $scope.authUi.password || '';
+        bngApi.engineLua('extensions.load("raceManager"); raceManager.login(' + luaStr(p) + ')');
+      };
+
+      $scope.changePassword = function () {
+        var p = ($scope.authUi.newPassword || '').trim();
+        if (!p) { return; }
+        bngApi.engineLua('raceManager.changePassword(' + luaStr(p) + ')');
+        $scope.authUi.newPassword = '';
+      };
+
+      // ------------------------------------------------------------------
       // UI -> LUA commands (session controls)
       // ------------------------------------------------------------------
       $scope.startQualifying = function () {
@@ -332,6 +383,16 @@ angular.module('beamng.apps')
         if (!w || w <= 0) { return; }
         bngApi.engineLua('raceManager.setCheckpointWidth(' + w + ')');
       };
+      $scope.applyHeight = function () {
+        var h = parseFloat($scope.heightInput);
+        if (!h || h <= 0) { return; }
+        bngApi.engineLua('raceManager.setCheckpointHeight(' + h + ')');
+      };
+      $scope.applyDepth = function () {
+        var d = parseFloat($scope.depthInput);
+        if (!d || d <= 0) { return; }
+        bngApi.engineLua('raceManager.setCheckpointDepth(' + d + ')');
+      };
 
       // ------------------------------------------------------------------
       // UI -> LUA commands (checkpoint editor)
@@ -360,14 +421,51 @@ angular.module('beamng.apps')
         if ($scope.showEditor) { schedulePreview(); }  // canvas re-enters the DOM
       };
 
+      // Per-checkpoint override editing: pick a placed gate (1-based) and load
+      // its current overrides (blank = inheriting the global default) into the
+      // edit fields. Clicking the selected gate again collapses the editor.
+      $scope.selectCheckpoint = function (index) {
+        if ($scope.selectedCp === index) { $scope.selectedCp = null; return; }
+        $scope.selectedCp = index;
+        var wp = $scope.routeWaypoints[index - 1] || {};
+        $scope.cpEdit = {
+          width:  (typeof wp.width === 'number') ? wp.width : '',
+          height: (typeof wp.height === 'number') ? wp.height : '',
+          depth:  (typeof wp.depth === 'number') ? wp.depth : ''
+        };
+      };
+
+      // Push the edit fields to the client. A blank field clears that override
+      // (the gate falls back to the global default). 0 stands in for "blank".
+      $scope.applyCheckpointOverride = function () {
+        if (!$scope.selectedCp) { return; }
+        var w = parseFloat($scope.cpEdit.width)  || 0;
+        var h = parseFloat($scope.cpEdit.height) || 0;
+        var d = parseFloat($scope.cpEdit.depth)  || 0;
+        bngApi.engineLua('raceManager.setCheckpointOverride('
+          + $scope.selectedCp + ', ' + w + ', ' + h + ', ' + d + ')');
+      };
+
+      // Reset the selected gate back to the global defaults (clear all overrides).
+      $scope.resetCheckpointOverride = function () {
+        if (!$scope.selectedCp) { return; }
+        $scope.cpEdit = { width: '', height: '', depth: '' };
+        bngApi.engineLua('raceManager.setCheckpointOverride(' + $scope.selectedCp + ', 0, 0, 0)');
+      };
+
+      // Effective (displayed) dimension for a gate row: its override or the
+      // global default the box will actually use.
+      $scope.cpDim = function (wp, field) {
+        if (wp && typeof wp[field] === 'number') { return wp[field]; }
+        if (field === 'width')  { return $scope.widthInput; }
+        if (field === 'height') { return $scope.heightInput; }
+        return $scope.depthInput;
+      };
+
       // ------------------------------------------------------------------
       // UI -> LUA commands (track layouts)
       // ------------------------------------------------------------------
-      // Layout names go through engineLua as Lua string literals.
-      function luaStr(s) {
-        return "'" + String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, ' ') + "'";
-      }
-
+      // (luaStr defined above in the admin-authentication section.)
       $scope.saveLayout = function () {
         var name = ($scope.layoutUi.name || '').trim();
         console.log('Current layout name in scope:', $scope.layoutUi.name);

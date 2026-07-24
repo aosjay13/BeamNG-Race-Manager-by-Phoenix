@@ -62,6 +62,30 @@ end
 
 onInit()
 
+-- ---------------------------------------------------------------------------
+-- Admin authentication: admin events now require a prior RM_Login with the
+-- master password. Verify rejection, grant, and password rotation before the
+-- rest of the suite logs in and drives the session.
+-- ---------------------------------------------------------------------------
+local function adminLogin(pid) RM_onLogin(pid, '{"password":"phoenix"}') end
+
+RM_onLogin(1, '{"password":"wrong"}')          -- bad password: no admin rights
+RM_onStartQualifying(1)
+check(lastState == nil, 'admin command ignored before authentication')
+adminLogin(1); adminLogin(2)                    -- correct password: pids 1 & 2 admin
+
+-- Change the master password (authed admin only): the old password then fails
+-- and the new one works. pid 7 is a fresh session used to probe the change.
+RM_onChangePassword(1, '{"password":"newpass"}')
+RM_onLogin(7, '{"password":"phoenix"}')         -- old password now invalid
+RM_onSetTotalLaps(7, '{"laps":9}')
+check(lastState == nil, 'login with the old password fails after a change')
+RM_onLogin(7, '{"password":"newpass"}')         -- new password accepted
+RM_onSetTotalLaps(7, '{"laps":9}')
+check(lastState ~= nil and lastState.totalLaps == 9, 'login with the new password works')
+RM_onChangePassword(7, '{"password":"phoenix"}')  -- restore default for the suite
+lastState = nil
+
 -- Players join
 RM_onPlayerJoin(1); RM_onPlayerJoin(2); RM_onPlayerJoin(3)
 check(#lastState.drivers == 3, 'three drivers after join')
@@ -189,6 +213,9 @@ check(driver('Bob').lapsLed == 0 and driver('Bob').qualiBest == nil, 'reset wipe
 -- ---------------------------------------------------------------------------
 -- Track layouts: save, strict map filter, load broadcast, persistence
 -- ---------------------------------------------------------------------------
+-- Alice (pid 1) disconnected mid-race above, which cleared her admin flag;
+-- re-authenticate before the layout admin commands below.
+adminLogin(1)
 local cpJson = '[{"x":100.5,"y":200.25,"z":50,"hx":0,"hy":1},'
   .. '{"x":150,"y":260,"z":51,"hx":1,"hy":0},'
   .. '{"x":90,"y":300,"z":50,"hx":0,"hy":-1}]'
@@ -204,6 +231,8 @@ check(lastLayouts ~= nil and lastLayouts.map == 'gridmap_v2'
   and #lastLayouts.layouts == 1, 'save broadcasts refreshed layout list')
 check(lastLayouts.layouts[1].width == 24
   and #lastLayouts.layouts[1].checkpoints == 3, 'saved layout keeps width and gates')
+check(lastLayouts.layouts[1].height == 10 and lastLayouts.layouts[1].depth == 4,
+  'saved layout gets default height/depth when the client omits them')
 
 -- Same name on the same map overwrites instead of duplicating
 RM_onSaveLayout(1, '{"name":"gp circuit","width":30,"checkpoints":' .. cpJson .. '}')
@@ -263,12 +292,34 @@ check(#lastLayouts.layouts == 1, 'malformed saves rejected, layout list unchange
 -- (this also round-trips the real JSON encoder/parser).
 dofile('server/RaceManager/main.lua')
 onInit()
+adminLogin(1); adminLogin(2)  -- restart reset auth state; re-authenticate admins
 lastLayouts = nil
 RM_onRequestLayouts(1)
 check(lastLayouts ~= nil and #lastLayouts.layouts == 1
   and lastLayouts.layouts[1].name == 'gp circuit'
   and lastLayouts.layouts[1].checkpoints[1].y == 200.25,
   'layouts survive a server restart via layouts.json')
+
+-- 3D dimensions + per-checkpoint overrides round-trip through save/persist.
+-- (Added after the count assertions above so this second layout doesn't skew
+-- them; the whole Resources tree is deleted at the end of the suite.)
+local cpOvr = '[{"x":1,"y":2,"z":3,"hx":0,"hy":1,"width":40,"height":25,"depth":6},'
+  .. '{"x":4,"y":5,"z":6,"hx":1,"hy":0}]'
+RM_onSaveLayout(1, '{"name":"Banked Oval","width":30,"height":20,"depth":8,"checkpoints":' .. cpOvr .. '}')
+local saved
+for _, l in ipairs(lastLayouts.layouts) do if l.name == 'Banked Oval' then saved = l end end
+check(saved ~= nil and saved.height == 20 and saved.depth == 8,
+  'saved layout keeps explicit layout-wide height/depth')
+check(saved and saved.checkpoints[1].width == 40 and saved.checkpoints[1].height == 25
+  and saved.checkpoints[1].depth == 6, 'per-checkpoint override round-trips through save')
+check(saved and saved.checkpoints[2].width == nil and saved.checkpoints[2].height == nil,
+  'a checkpoint without an override stays override-free')
+-- Load broadcasts the override fields to clients too.
+lastApplied = nil
+RM_onLoadLayout(1, '{"name":"Banked Oval"}')
+check(lastApplied ~= nil and lastApplied.height == 20 and lastApplied.depth == 8
+  and lastApplied.checkpoints[1].width == 40,
+  'ApplyLayout broadcast carries height/depth and gate overrides')
 
 -- ---------------------------------------------------------------------------
 -- Ghost drivers: a driver who disconnected mid-race is kept as DNF for the
