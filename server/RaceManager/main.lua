@@ -139,10 +139,14 @@ end
 
 local function broadcastState(targetPid)
   local payload = Util.JsonEncode({
-    phase     = race.phase,
-    raceTime  = race.time,
-    totalLaps = race.totalLaps,
-    drivers   = buildDrivers(),
+    phase        = race.phase,
+    raceTime     = race.time,
+    totalLaps    = race.totalLaps,
+    -- True when at least one session is currently logged in as an admin. Lets
+    -- non-admin clients auto-spectate (skip the login prompt) when someone is
+    -- already running the session, while still exposing a way back to login.
+    adminPresent = next(authenticatedPlayers) ~= nil,
+    drivers      = buildDrivers(),
   })
   MP.TriggerClientEvent(targetPid or -1, 'RM_Update', payload)
 end
@@ -162,12 +166,23 @@ function RM_onLogin(pid, rawData)
   if pass ~= nil and pass == adminPassword then
     authenticatedPlayers[pid] = true
     MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({ success = true }))
+    -- Tell every client an admin is now present (updates their adminPresent).
+    broadcastState()
     print('[RaceManager] Admin login OK: ' .. (MP.GetPlayerName(pid) or pid))
   else
     authenticatedPlayers[pid] = nil
     MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({ success = false }))
     print('[RaceManager] Admin login FAILED: ' .. (MP.GetPlayerName(pid) or pid))
   end
+end
+
+-- An admin voluntarily drops their admin rights (the UI "Log out"/back-to-login
+-- action). Broadcasts state so every client's adminPresent flag stays accurate.
+function RM_onLogout(pid)
+  if authenticatedPlayers[pid] == nil then return end
+  authenticatedPlayers[pid] = nil
+  broadcastState()
+  print('[RaceManager] Admin logged out: ' .. (MP.GetPlayerName(pid) or pid))
 end
 
 -- An already-authenticated admin rotates the master password. The new password
@@ -1274,9 +1289,14 @@ end
 function RM_onPlayerDisconnect(pid)
   -- Session IDs are reused, so a disconnecting admin must drop its auth flag;
   -- the next player to inherit this ID starts with no admin rights.
+  local wasAdmin = authenticatedPlayers[pid] ~= nil
   authenticatedPlayers[pid] = nil
   local rec = players[pid]
-  if not rec then return end
+  if not rec then
+    -- Non-racer admin (e.g. a spectating host) left: still refresh adminPresent.
+    if wasAdmin then broadcastState() end
+    return
+  end
   if rec.status == 'racing' or rec.status == 'gridded' then
     rec.status = 'dnf'
   elseif rec.status == 'waiting' or (rec.status == 'qualifying' and not rec.qualiBest) then
@@ -1298,6 +1318,7 @@ end
 
 function onInit()
   MP.RegisterEvent('RM_Login',            'RM_onLogin')
+  MP.RegisterEvent('RM_Logout',           'RM_onLogout')
   MP.RegisterEvent('RM_ChangePassword',   'RM_onChangePassword')
   MP.RegisterEvent('RM_StartQualifying',  'RM_onStartQualifying')
   MP.RegisterEvent('RM_GenerateGrid',     'RM_onGenerateGrid')

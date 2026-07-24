@@ -72,18 +72,29 @@ local function adminLogin(pid) RM_onLogin(pid, '{"password":"phoenix"}') end
 RM_onLogin(1, '{"password":"wrong"}')          -- bad password: no admin rights
 RM_onStartQualifying(1)
 check(lastState == nil, 'admin command ignored before authentication')
-adminLogin(1); adminLogin(2)                    -- correct password: pids 1 & 2 admin
 
--- Change the master password (authed admin only): the old password then fails
--- and the new one works. pid 7 is a fresh session used to probe the change.
-RM_onChangePassword(1, '{"password":"newpass"}')
+adminLogin(1)                                   -- correct password: pid 1 admin
+check(lastState ~= nil and lastState.adminPresent == true,
+  'successful login broadcasts adminPresent=true to everyone')
+adminLogin(2)
+
+-- Change the master password (authed admin only) to an arbitrary value: the old
+-- password then fails and the new one works. pid 7 probes the change.
+RM_onChangePassword(1, '{"password":"n3w P@ss!"}')
+lastState = nil
 RM_onLogin(7, '{"password":"phoenix"}')         -- old password now invalid
 RM_onSetTotalLaps(7, '{"laps":9}')
 check(lastState == nil, 'login with the old password fails after a change')
-RM_onLogin(7, '{"password":"newpass"}')         -- new password accepted
+RM_onLogin(7, '{"password":"n3w P@ss!"}')       -- new (arbitrary) password accepted
 RM_onSetTotalLaps(7, '{"laps":9}')
-check(lastState ~= nil and lastState.totalLaps == 9, 'login with the new password works')
+check(lastState ~= nil and lastState.totalLaps == 9,
+  'admin can set the password to an arbitrary value and log in with it')
 RM_onChangePassword(7, '{"password":"phoenix"}')  -- restore default for the suite
+
+-- Logout drops one admin's rights but adminPresent stays true while others
+-- remain; it only flips false once the last admin logs out.
+RM_onLogout(7)
+check(lastState.adminPresent == true, 'adminPresent stays true while pids 1 & 2 are admin')
 lastState = nil
 
 -- Players join
@@ -361,6 +372,13 @@ check(ghostPath1 and ghostPath2 and ghostPath1 ~= ghostPath2,
 check(ghostPath1 and io.open(ghostPath1, 'r') ~= nil
   and ghostPath2 and io.open(ghostPath2, 'r') ~= nil,
   'both results files exist on disk')
+
+-- adminPresent flips false only once every admin has logged out (so non-admin
+-- clients know they can bypass the login and just spectate).
+RM_onLogout(1); RM_onLogout(2)
+lastState = nil
+RM_onRequestState(1)
+check(lastState.adminPresent == false, 'adminPresent is false after all admins log out')
 
 -- Clean up the directory tree the test created in the repo root
 os.execute('rm -rf Resources')
