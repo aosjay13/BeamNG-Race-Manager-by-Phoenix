@@ -49,7 +49,7 @@ jobs:
       - name: Copy server files
         run: |
           mkdir -p package/server/RaceManager
-          cp server/RaceManager/raceManager.lua package/server/RaceManager/main.lua
+          cp server/RaceManager/main.lua package/server/RaceManager/
 
       # --- Create the main downloadable zip ---
       - name: Create main zip
