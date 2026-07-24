@@ -1,8 +1,17 @@
 name: Build RaceManager Package
 
 on:
-  push:
-    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump'
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+          - none
 
 permissions:
   contents: write
@@ -14,15 +23,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0          # tag action needs full history
+          fetch-depth: 0
 
-      # --- Optional: auto-increment version ---
+      # --- Optional: version bump (choose size when triggering) ---
       - name: Bump version
         id: version
         uses: anothrNick/github-tag-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DEFAULT_BUMP: patch
+          DEFAULT_BUMP: ${{ inputs.bump }}
           WITH_V: true
 
       # --- Build client/RaceManager.zip (stays zipped) ---
@@ -36,11 +45,11 @@ jobs:
             ui/modules/apps/RaceManager/app.js \
             ui/modules/apps/RaceManager/app.json
 
-      # --- Copy server folder (stays unzipped) ---
+      # --- Copy server file, renamed to main.lua ---
       - name: Copy server files
         run: |
           mkdir -p package/server/RaceManager
-          cp server/RaceManager/main.lua package/server/RaceManager/
+          cp server/RaceManager/raceManager.lua package/server/RaceManager/main.lua
 
       # --- Create the main downloadable zip ---
       - name: Create main zip
@@ -48,7 +57,7 @@ jobs:
           cd package
           zip -r ../RaceManager-${{ steps.version.outputs.new_tag }}.zip .
 
-      # --- Publish as a Release (permanent download link) ---
+      # --- Publish as a Release ---
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
