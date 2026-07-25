@@ -53,7 +53,7 @@
   <div class="rm-settings" ng-if="isAdmin">
     <span class="rm-setting">
       <label>Laps</label>
-      <input type="number" min="1" max="500" ng-model="lapsInput"
+      <input type="number" min="1" max="500" ng-model="settingsUi.laps"
              ng-disabled="phase === 'countdown' || phase === 'racing'">
       <button class="rm-btn rm-btn-mini" ng-click="applyTotalLaps()"
               ng-disabled="phase === 'countdown' || phase === 'racing'">Set</button>
@@ -62,7 +62,7 @@
     <!-- Module 1: vehicle reset ruleset -->
     <span class="rm-setting" title="How many vehicle resets/repairs each driver gets this session. 0 = no resets at all; -1 (or blank) = unlimited. Going past the limit is an instant DNF and forces the driver into spectator mode.">
       <label>Max resets</label>
-      <input type="number" class="rm-width-num" min="-1" max="99" step="1" ng-model="resetsInput"
+      <input type="number" class="rm-width-num" min="-1" max="99" step="1" ng-model="settingsUi.resets"
              ng-disabled="phase === 'countdown' || phase === 'racing'">
       <button class="rm-btn rm-btn-mini" ng-click="applyMaxResets()"
               ng-disabled="phase === 'countdown' || phase === 'racing'">Set</button>
@@ -80,18 +80,18 @@
     </span>
     <span class="rm-setting">
       <label>Gate width</label>
-      <input type="range" min="2" max="120" step="1" ng-model="widthInput" ng-change="applyWidth()">
-      <input type="number" class="rm-width-num" min="2" max="120" ng-model="widthInput" ng-change="applyWidth()">
+      <input type="range" min="2" max="120" step="1" ng-model="settingsUi.width" ng-change="applyWidth()">
+      <input type="number" class="rm-width-num" min="2" max="120" ng-model="settingsUi.width" ng-change="applyWidth()">
       <span class="rm-setting-val">m</span>
     </span>
     <span class="rm-setting" title="How far the checkpoint trigger extends up and down — raise it to cover high banking">
       <label>Def. height</label>
-      <input type="number" class="rm-width-num" min="1" max="100" step="1" ng-model="heightInput" ng-change="applyHeight()">
+      <input type="number" class="rm-width-num" min="1" max="100" step="1" ng-model="settingsUi.height" ng-change="applyHeight()">
       <span class="rm-setting-val">m</span>
     </span>
     <span class="rm-setting" title="Forward thickness of the checkpoint trigger line">
       <label>Def. depth</label>
-      <input type="number" class="rm-width-num" min="0.5" max="100" step="0.5" ng-model="depthInput" ng-change="applyDepth()">
+      <input type="number" class="rm-width-num" min="0.5" max="100" step="0.5" ng-model="settingsUi.depth" ng-change="applyDepth()">
       <span class="rm-setting-val">m</span>
     </span>
   </div>
@@ -170,11 +170,11 @@
         <!-- Per-checkpoint override editor (expands under the selected gate) -->
         <div class="rm-cp-edit" ng-if="selectedCp === $index + 1">
           <span class="rm-setting"><label>W</label>
-            <input type="number" min="2" max="120" ng-model="cpEdit.width" placeholder="{{ widthInput }}"></span>
+            <input type="number" min="2" max="120" ng-model="cpEdit.width" placeholder="{{ settingsUi.width }}"></span>
           <span class="rm-setting"><label>H</label>
-            <input type="number" min="1" max="100" ng-model="cpEdit.height" placeholder="{{ heightInput }}"></span>
+            <input type="number" min="1" max="100" ng-model="cpEdit.height" placeholder="{{ settingsUi.height }}"></span>
           <span class="rm-setting"><label>D</label>
-            <input type="number" min="0.5" max="100" step="0.5" ng-model="cpEdit.depth" placeholder="{{ depthInput }}"></span>
+            <input type="number" min="0.5" max="100" step="0.5" ng-model="cpEdit.depth" placeholder="{{ settingsUi.depth }}"></span>
           <button class="rm-btn rm-btn-mini rm-btn-start" ng-click="applyCheckpointOverride()">Apply</button>
           <button class="rm-btn rm-btn-mini" ng-click="resetCheckpointOverride()">Reset</button>
         </div>
@@ -350,7 +350,7 @@
   <!-- ================= Driver bar (minimal mode only) ===================== -->
   <!-- The only chrome a non-admin keeps during a live session: leaderboard
        opacity, a size reset, and a way back to the login prompt. -->
-  <div class="rm-driverbar" ng-if="minimalMode()" ng-style="{'background-color': 'rgba(15, 17, 22, ' + (lbOpacity * 0.8) + ')'}">
+  <div class="rm-driverbar" ng-if="minimalMode()" ng-style="{'background-color': 'rgba(15, 17, 22, ' + (lbUi.opacity * 0.8) + ')'}">
     <span class="rm-driverbar-label" ng-if="jokerEnabled">
       JOKER <b ng-class="{'rm-joker-done': jokerTaken}">{{ jokerTaken ? 'DONE (lap ' + jokerLap + ')' : 'PENDING' }}</b>
     </span>
@@ -360,7 +360,7 @@
     <span class="rm-driverbar-spacer"></span>
     <label class="rm-driverbar-op" title="Leaderboard background opacity">
       <span>◑</span>
-      <input type="range" min="0" max="1" step="0.05" ng-model="lbOpacity" ng-change="applyOpacity()">
+      <input type="range" min="0" max="1" step="0.05" ng-model="lbUi.opacity" ng-change="applyOpacity()">
     </label>
     <button class="rm-driverbar-btn" ng-click="resetLeaderboardSize()" title="Reset the leaderboard size">⤢</button>
     <button class="rm-driverbar-btn" ng-click="openLogin()" title="Admin login">🔒</button>

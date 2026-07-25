@@ -30,18 +30,29 @@ angular.module('beamng.apps')
       $scope.countdown = null;    // null = hidden, 3..1 = number, 0 = GO!
       $scope.drivers = [];
 
-      // Settings inputs (host)
-      $scope.lapsInput = 5;
-      $scope.widthInput = 20;
-      $scope.heightInput = 10;   // 3D checkpoint volume: vertical extent
-      $scope.depthInput = 4;     // 3D checkpoint volume: forward thickness
+      // Settings inputs (host).
+      //
+      // These live on an OBJECT, not as bare scope primitives, and that is not
+      // cosmetic: every settings control sits inside `ng-if="isAdmin"`, and an
+      // ng-if creates a child scope. Binding `ng-model="lapsInput"` there would
+      // write the typed value onto the ng-if child scope, shadowing the
+      // controller's own `lapsInput` — so "Set" would post the stale default to
+      // the server and the server's echo back would never reach the input the
+      // admin is looking at. Going through `settingsUi.*` resolves the object on
+      // the controller scope and mutates it in place, so both directions work.
+      $scope.settingsUi = {
+        laps: 5,
+        resets: -1,            // -1 unlimited, 0 none, N per driver per session
+        width: 20,
+        height: 10,            // 3D checkpoint volume: vertical extent
+        depth: 4               // 3D checkpoint volume: forward thickness
+      };
 
       // ----------------------------------------------------------------
       // League regulations (Modules 1, 2 & 4)
       // ----------------------------------------------------------------
       // Vehicle resets: -1 unlimited, 0 none, N per driver per session.
-      $scope.maxResets = -1;
-      $scope.resetsInput = -1;
+      $scope.maxResets = -1;      // authoritative value mirrored from the server
       $scope.resetsUsed = 0;      // what THIS client has spent
       // Rallycross joker lap.
       $scope.jokerEnabled = false;
@@ -302,14 +313,18 @@ angular.module('beamng.apps')
           // Note gains/losses before the table re-renders, so the arrows in the
           // position column reflect this very update.
           trackPositionChanges($scope.drivers);
+          // The server is authoritative for the race distance: whenever the
+          // value it reports moves, re-seed the input box so it shows what the
+          // session is actually running (including a value clamped server-side,
+          // or one another admin set).
           if (typeof data.totalLaps === 'number') {
-            if ($scope.totalLaps !== data.totalLaps) { $scope.lapsInput = data.totalLaps; }
+            if ($scope.totalLaps !== data.totalLaps) { $scope.settingsUi.laps = data.totalLaps; }
             $scope.totalLaps = data.totalLaps;
           }
           if ($scope.phase !== 'countdown') { $scope.countdown = null; }
           // League regulations mirrored from the server (Modules 1, 2 & 4).
           if (typeof data.maxResets === 'number') {
-            if ($scope.maxResets !== data.maxResets) { $scope.resetsInput = data.maxResets; }
+            if ($scope.maxResets !== data.maxResets) { $scope.settingsUi.resets = data.maxResets; }
             $scope.maxResets = data.maxResets;
           }
           $scope.jokerEnabled = !!data.jokerEnabled;
@@ -346,9 +361,9 @@ angular.module('beamng.apps')
           $scope.routeWaypoints = data.waypoints || [];
           $scope.nextWp = data.nextWp || 1;
           $scope.visualize = data.visualize !== false;
-          if (typeof data.width === 'number') { $scope.widthInput = data.width; }
-          if (typeof data.height === 'number') { $scope.heightInput = data.height; }
-          if (typeof data.depth === 'number') { $scope.depthInput = data.depth; }
+          if (typeof data.width === 'number') { $scope.settingsUi.width = data.width; }
+          if (typeof data.height === 'number') { $scope.settingsUi.height = data.height; }
+          if (typeof data.depth === 'number') { $scope.settingsUi.depth = data.depth; }
           // Joker route + reset allowance state pushed by the client Lua.
           $scope.jokerRoute = toArray(data.jokerRoute);
           $scope.jokerNext = data.jokerNext || 1;
@@ -643,13 +658,13 @@ angular.module('beamng.apps')
       // UI -> LUA commands (race settings)
       // ------------------------------------------------------------------
       $scope.applyTotalLaps = function () {
-        var n = parseInt($scope.lapsInput, 10);
+        var n = parseInt($scope.settingsUi.laps, 10);
         if (!n || n < 1) { return; }
         bngApi.engineLua('raceManager.setTotalLaps(' + n + ')');
       };
       // Module 1: reset allowance. Blank or negative = unlimited, 0 = none.
       $scope.applyMaxResets = function () {
-        var n = parseInt($scope.resetsInput, 10);
+        var n = parseInt($scope.settingsUi.resets, 10);
         if (isNaN(n)) { n = -1; }
         if (n < 0) { n = -1; }
         bngApi.engineLua('raceManager.setMaxResets(' + n + ')');
@@ -675,17 +690,17 @@ angular.module('beamng.apps')
       };
 
       $scope.applyWidth = function () {
-        var w = parseFloat($scope.widthInput);
+        var w = parseFloat($scope.settingsUi.width);
         if (!w || w <= 0) { return; }
         bngApi.engineLua('raceManager.setCheckpointWidth(' + w + ')');
       };
       $scope.applyHeight = function () {
-        var h = parseFloat($scope.heightInput);
+        var h = parseFloat($scope.settingsUi.height);
         if (!h || h <= 0) { return; }
         bngApi.engineLua('raceManager.setCheckpointHeight(' + h + ')');
       };
       $scope.applyDepth = function () {
-        var d = parseFloat($scope.depthInput);
+        var d = parseFloat($scope.settingsUi.depth);
         if (!d || d <= 0) { return; }
         bngApi.engineLua('raceManager.setCheckpointDepth(' + d + ')');
       };
@@ -762,9 +777,9 @@ angular.module('beamng.apps')
       // global default the box will actually use.
       $scope.cpDim = function (wp, field) {
         if (wp && typeof wp[field] === 'number') { return wp[field]; }
-        if (field === 'width')  { return $scope.widthInput; }
-        if (field === 'height') { return $scope.heightInput; }
-        return $scope.depthInput;
+        if (field === 'width')  { return $scope.settingsUi.width; }
+        if (field === 'height') { return $scope.settingsUi.height; }
+        return $scope.settingsUi.depth;
       };
 
       // ------------------------------------------------------------------
@@ -959,13 +974,17 @@ angular.module('beamng.apps')
         } catch (e) { /* private mode / storage disabled: preferences are optional */ }
       }
 
-      $scope.lbOpacity = loadPref('opacity', 0.85);   // 0 (invisible) .. 1 (solid)
+      // Opacity is bound with ng-model from inside an ng-if (the driver bar), so
+      // it has to hang off an object for the same reason the settings inputs do:
+      // a bare primitive would be shadowed on the ng-if child scope, leaving the
+      // slider moving a copy nothing else reads.
+      $scope.lbUi = { opacity: loadPref('opacity', 0.85) };   // 0 (invisible) .. 1 (solid)
       $scope.lbWidth   = loadPref('width', null);     // px, null = follow the app window
       $scope.lbHeight  = loadPref('height', null);
 
       // Applied to the leaderboard container in minimal (driver) mode.
       $scope.lbStyle = function () {
-        var style = { 'background-color': 'rgba(15, 17, 22, ' + Number($scope.lbOpacity) + ')' };
+        var style = { 'background-color': 'rgba(15, 17, 22, ' + Number($scope.lbUi.opacity) + ')' };
         if ($scope.lbWidth)  { style.width = $scope.lbWidth + 'px'; }
         if ($scope.lbHeight) {
           style.height = $scope.lbHeight + 'px';
@@ -974,7 +993,7 @@ angular.module('beamng.apps')
         return style;
       };
 
-      $scope.applyOpacity = function () { savePref('opacity', Number($scope.lbOpacity)); };
+      $scope.applyOpacity = function () { savePref('opacity', Number($scope.lbUi.opacity)); };
 
       var resizeFrom = null;
       function onResizeMove(ev) {
