@@ -60,6 +60,10 @@ angular.module('beamng.apps')
       $scope.notice = null;           // { kind, msg }
       $scope.vehicleError = null;     // { message, detail }
 
+      // Live position telemetry for THIS client (pushed by the client Lua at
+      // the same ~3 Hz it reports to the server): distance to the next gate.
+      $scope.progress = null;         // { lap, cp, dist }
+
       // Admin authentication. Every editor/admin control stays hidden until the
       // server confirms a login (RaceManagerAuth). authUi holds the two inputs.
       $scope.isAdmin = false;
@@ -147,6 +151,57 @@ angular.module('beamng.apps')
       $scope.outcomeLabel = function (row) {
         if (row.outReason) { return row.outReason; }
         return $scope.statusLabel(row.status);
+      };
+
+      // ------------------------------------------------------------------
+      // Live positions
+      // ------------------------------------------------------------------
+      // The server sends the driver array already sorted leader-first with a
+      // `position` integer on every row. The table still sorts by that integer
+      // explicitly, so the view is correct even if a payload ever arrives out
+      // of order — and combined with `track by row.id` in the ng-repeat,
+      // Angular MOVES the existing <tr> nodes instead of rebuilding them, which
+      // is what keeps the reordering smooth instead of flickering.
+      $scope.positionOrder = function (row) {
+        return (typeof row.position === 'number') ? row.position : 9999;
+      };
+
+      // Movement indicator: remembers the last position seen for each driver
+      // and flags gains/losses for a few seconds.
+      var POS_FLASH_MS = 2500;
+      var lastPositions = {};   // id -> last position integer
+      var posMoves = {};        // id -> { dir: 'up'|'down', at: timestamp }
+
+      function trackPositionChanges(drivers) {
+        var now = Date.now();
+        drivers.forEach(function (row) {
+          var prev = lastPositions[row.id];
+          if (typeof row.position === 'number') {
+            if (typeof prev === 'number' && prev !== row.position) {
+              posMoves[row.id] = { dir: row.position < prev ? 'up' : 'down', at: now };
+            }
+            lastPositions[row.id] = row.position;
+          }
+        });
+      }
+
+      $scope.posMove = function (row) {
+        var m = posMoves[row.id];
+        if (!m || (Date.now() - m.at) > POS_FLASH_MS) { return ''; }
+        return m.dir;
+      };
+
+      // Position cell text. Finishers keep their classified place; drivers who
+      // are out show a dash rather than a misleading number.
+      $scope.positionLabel = function (row) {
+        if (row.status === 'dnf' || row.status === 'dsq') { return '—'; }
+        return row.position ? ('P' + row.position) : '—';
+      };
+
+      // Metres to this client's next checkpoint, for the header readout.
+      $scope.formatDistance = function (d) {
+        if (d === null || d === undefined) { return ''; }
+        return (d >= 1000) ? ((d / 1000).toFixed(2) + ' km') : (Math.round(d) + ' m');
       };
 
       // Joker cell for the race table.
@@ -244,6 +299,9 @@ angular.module('beamng.apps')
           $scope.phase = data.phase || 'waiting';
           $scope.raceTime = data.raceTime || 0;
           $scope.drivers = data.drivers || [];
+          // Note gains/losses before the table re-renders, so the arrows in the
+          // position column reflect this very update.
+          trackPositionChanges($scope.drivers);
           if (typeof data.totalLaps === 'number') {
             if ($scope.totalLaps !== data.totalLaps) { $scope.lapsInput = data.totalLaps; }
             $scope.totalLaps = data.totalLaps;
@@ -265,6 +323,13 @@ angular.module('beamng.apps')
             $scope.showLogin = false;
           }
         });
+      });
+
+      // This client's own live telemetry (lap / checkpoints / distance to the
+      // next gate), pushed on the same throttle as the server report.
+      $scope.$on('RaceManagerProgress', function (event, data) {
+        if (!data) { return; }
+        $scope.$evalAsync(function () { $scope.progress = data; });
       });
 
       $scope.$on('RaceManagerCountdown', function (event, data) {

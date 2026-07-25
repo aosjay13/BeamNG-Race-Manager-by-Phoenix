@@ -171,9 +171,11 @@ keeps the times.
    all, the grid falls back to join order.) Line the cars up on track.
 3. Press **Start Countdown**: everyone gets a synchronized 3‑2‑1‑**GO!**
    overlay and the race clock starts.
-4. Race. The table now shows current lap, best race lap, **Led** (laps led),
-   and live positions. Positions and finish order are decided by the
-   server's single clock, so they're fair for every client.
+4. Race. The table now shows **Pos** (live position), the starting grid slot,
+   current lap, best race lap and **Led** (laps led), and it re-sorts itself
+   leader-first in real time as places change (see *Live position tracking*
+   below). Finish order is decided by the server's single clock, so it's fair
+   for every client.
 5. The race ends when everyone has finished (or you press **End Session**,
    which DNFs anyone still out). Disconnecting mid-race is an automatic DNF.
 
@@ -187,6 +189,37 @@ ready for league standings or a broadcast overlay. Housekeeping:
 - **Reset** wipes the session back to Waiting with fresh driver records.
 - **Clear Results Cache** deletes all saved result `.txt` files on the
   server (chat confirms how many were removed).
+
+## Live position tracking
+
+The race leaderboard shows the **actual running order**, not the starting
+grid: a **Pos** column (P1, P2, …) sits next to **Start**, and the rows
+re-sort themselves leader-first as places change on track.
+
+Positions are decided by three metrics, in this exact order:
+
+1. **Laps completed** — more laps is ahead. This comes from the server's own
+   lap counter (`RM_Lap`), never from client telemetry, so a client cannot
+   invent a lap.
+2. **Checkpoints cleared** — on the current lap, more gates passed is ahead.
+3. **Distance to the next checkpoint** — straight-line metres from the car to
+   the centre of the gate it is driving towards. Shortest is ahead.
+
+Metrics 2 and 3 can only be measured where the physics live, so each client
+computes its distance to the next gate every frame and reports
+`{ lap, checkpoints, distance }` to the server roughly **3 times a second**
+(and immediately after clearing a gate, which is when places actually change).
+Reports are validated and stored but **never broadcast on their own** — the
+race tick loop re-sorts the field, stamps every driver with their position
+integer and pushes the whole ordered array to all clients every **~300 ms**,
+so a full grid costs a fixed handful of messages per second no matter how many
+cars are running.
+
+Classified finishers hold the top places by finish time, drivers still
+circulating follow in running order, and DNF/disqualified drivers sit at the
+bottom. The leaderboard flashes a green ▲ or red ▼ next to a driver who has
+just gained or lost a place, and your own distance to the next checkpoint is
+shown in the app header while you race.
 
 ## League regulations
 

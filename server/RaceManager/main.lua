@@ -21,7 +21,10 @@
 -- Tunables
 -- ---------------------------------------------------------------------------
 local TICK_MS            = 100   -- server clock resolution
-local PUSH_EVERY_TICKS   = 5     -- broadcast state every N ticks (500 ms)
+-- Broadcast cadence while racing. This is also the live-position refresh rate:
+-- every push re-sorts the running order and re-stamps each driver's position,
+-- so 3 ticks (~300 ms) keeps the leaderboard lively without flooding clients.
+local PUSH_EVERY_TICKS   = 3
 local COUNTDOWN_FROM     = 3     -- 3, 2, 1, GO!
 local DEFAULT_TOTAL_LAPS = 5
 local MAX_TOTAL_LAPS     = 500
@@ -86,7 +89,19 @@ local function newRecord(pid)
     jokerTaken = 0,          -- completed runs of the joker route this race
     jokerLap   = nil,        -- lap the joker route was taken on
     outReason  = nil,        -- why this driver is dnf/dsq (results + UI text)
+    -- Live position tracking (see the "Running order" section below).
+    position   = nil,        -- current place in the running order (1 = leader)
+    cpCleared  = 0,          -- checkpoints passed on the current lap
+    distNext   = nil,        -- metres from the car to the next checkpoint centre
   }
+end
+
+-- Telemetry reported by a client is only meaningful while that driver is
+-- circulating; wipe it whenever their lap state restarts so a stale distance
+-- can never decide a position.
+local function clearProgress(rec)
+  rec.cpCleared = 0
+  rec.distNext  = nil
 end
 
 local function ensurePlayer(pid)
@@ -114,7 +129,7 @@ local function decodeString(rawData, field)
 end
 
 -- ---------------------------------------------------------------------------
--- Broadcast
+-- Running order (live positions)
 -- ---------------------------------------------------------------------------
 -- Classification bucket shared by the live table and the results export:
 -- classified finishers first, then drivers still out on track, then drivers
@@ -126,15 +141,47 @@ local function classRank(rec)
   return 1
 end
 
+-- The live running order between two drivers who are still circulating is
+-- decided by three metrics, in this exact order:
+--
+--   1. Laps completed        -- more laps is ahead. Taken from the SERVER's own
+--                               lap counter (RM_onLap), never from the client
+--                               telemetry, so a client cannot invent a lap.
+--   2. Checkpoints cleared   -- on the current lap; more gates passed is ahead.
+--   3. Distance to the next  -- metres from the car to the next checkpoint's
+--      checkpoint               centre, measured client-side (the server has no
+--                               physics access). Shorter is ahead.
+--
+-- Drivers who have not reported yet share the same defaults (0 checkpoints, no
+-- distance), so the pre-existing laps-led / grid-position tie-breaks still
+-- decide those cases exactly as they did before.
 local function raceOrderLess(a, b)
   local ra, rb = classRank(a), classRank(b)
   if ra ~= rb then return ra < rb end
+  -- Finishers (and drivers excluded after finishing) are ordered by the flag.
   if (ra == 0 or ra == 2) and a.finishTime and b.finishTime and a.finishTime ~= b.finishTime then
     return a.finishTime < b.finishTime
   end
+  -- 1. Laps completed.
   if a.currentLap ~= b.currentLap then return a.currentLap > b.currentLap end
+  -- 2. Checkpoints cleared on the current lap.
+  local ca, cb = a.cpCleared or 0, b.cpCleared or 0
+  if ca ~= cb then return ca > cb end
+  -- 3. Distance to the next checkpoint (a driver who has not reported one is
+  --    treated as infinitely far away, i.e. behind anyone who has).
+  local da, db = a.distNext or math.huge, b.distNext or math.huge
+  if da ~= db then return da < db end
+  -- Stable fallbacks: laps led, then the starting grid.
   if a.lapsLed ~= b.lapsLed then return a.lapsLed > b.lapsLed end
   return (a.gridPos or math.huge) < (b.gridPos or math.huge)
+end
+
+-- Stamp each driver with their place in the order the list is already in.
+-- Called on every broadcast, so `position` is always in sync with the array
+-- the clients receive.
+local function assignPositions(list)
+  for i, rec in ipairs(list) do rec.position = i end
+  return list
 end
 
 local function buildDrivers()
@@ -154,12 +201,14 @@ local function buildDrivers()
       return a.id < b.id
     end)
   else
-    -- Race order: finished first (by finish time), then racers by laps
-    -- completed (laps led breaks ties), then gridded by position, excluded
+    -- Race order: finished first (by finish time), then the live running order
+    -- (laps > checkpoints > distance to the next checkpoint), then excluded
     -- (joker ruling) drivers, DNFs last.
     table.sort(list, raceOrderLess)
   end
-  return list
+  -- The array clients receive is already sorted leader-first, and every driver
+  -- carries the matching position integer.
+  return assignPositions(list)
 end
 
 -- Forward declaration: the garage store lives further down the file (its own
@@ -539,6 +588,7 @@ function RM_onGenerateGrid(pid)
     rec.jokerTaken = 0
     rec.jokerLap   = nil
     rec.outReason  = nil
+    clearProgress(rec)
   end
   race.phase = 'grid'
   releaseSpectators('race')
@@ -700,6 +750,7 @@ function RM_CountdownTick()
       rec.jokerTaken = 0
       rec.jokerLap   = nil
       rec.outReason  = nil
+      clearProgress(rec)
     end
   end
   broadcastState()
@@ -764,6 +815,48 @@ function RM_onQualiLap(pid, rawData)
   broadcastState()
 end
 
+-- ---------------------------------------------------------------------------
+-- Live position telemetry from clients
+-- ---------------------------------------------------------------------------
+-- Every racing client reports its progress a few times a second:
+--   lap  -- the lap it believes it is on (sanity check only; the server's own
+--           counter stays authoritative for metric 1)
+--   cp   -- checkpoints cleared on the current lap (metric 2)
+--   dist -- metres to the centre of the next checkpoint (metric 3)
+--
+-- This deliberately does NOT broadcast: with a full grid reporting at 3 Hz that
+-- would be dozens of broadcasts a second. The values are just stored, and the
+-- race tick loop re-sorts and pushes the running order on its own cadence.
+local MAX_CHECKPOINTS = 500      -- sanity clamp on a reported checkpoint count
+local MAX_REPORT_DIST = 1e6      -- metres; anything beyond this is nonsense
+
+function RM_onProgress(pid, rawData)
+  if race.phase ~= 'racing' then return end
+  local rec = players[pid]
+  if not rec or rec.status ~= 'racing' then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+
+  -- A report from a lap the server has not credited yet (or has already moved
+  -- past) is dropped rather than applied: mixing a stale checkpoint count into
+  -- the comparator would make positions flicker around every lap crossing.
+  local lap = tonumber(data.lap)
+  if lap and math.floor(lap) ~= rec.currentLap then return end
+
+  local cp = tonumber(data.cp)
+  if cp then
+    cp = math.floor(cp)
+    if cp < 0 then cp = 0 elseif cp > MAX_CHECKPOINTS then cp = MAX_CHECKPOINTS end
+    rec.cpCleared = cp
+  end
+
+  local dist = tonumber(data.dist)
+  if dist and dist >= 0 and dist <= MAX_REPORT_DIST then
+    rec.distNext = dist
+  end
+end
+
 -- Race: client crossed the start/finish line after all checkpoints.
 -- Server decides Laps Led (first report per lap number wins — one arrival
 -- order for everyone) and the finish (lap count reached).
@@ -781,6 +874,9 @@ function RM_onLap(pid, rawData)
     lapFirsts[completed] = pid
     rec.lapsLed = rec.lapsLed + 1
   end
+  -- New lap (or the flag): the checkpoint/distance telemetry from the lap just
+  -- completed must not linger and rank this driver against the next one.
+  clearProgress(rec)
 
   if completed >= race.totalLaps then
     rec.status = 'finished'
@@ -1746,6 +1842,10 @@ end
 -- ---------------------------------------------------------------------------
 -- Clock + lifecycle
 -- ---------------------------------------------------------------------------
+-- Race clock + the live-position broadcast loop. Clients feed telemetry in
+-- continuously (RM_Progress) but never trigger a broadcast themselves; this is
+-- the single throttled place where the running order is re-sorted, re-numbered
+-- (buildDrivers -> assignPositions) and pushed to everyone.
 function RM_Tick()
   if race.phase ~= 'racing' then return end
   race.time = race.time + TICK_MS / 1000.0
@@ -1822,6 +1922,7 @@ function onInit()
   MP.RegisterEvent('RM_QualiLap',         'RM_onQualiLap')
   MP.RegisterEvent('RM_ClearResults',     'RM_onClearResults')
   MP.RegisterEvent('RM_Lap',              'RM_onLap')
+  MP.RegisterEvent('RM_Progress',         'RM_onProgress')  -- live position telemetry
   MP.RegisterEvent('RM_RequestState',     'RM_onRequestState')
   MP.RegisterEvent('RM_RequestLayouts',   'RM_onRequestLayouts')
   MP.RegisterEvent('RM_SaveLayout',       'RM_onSaveLayout')

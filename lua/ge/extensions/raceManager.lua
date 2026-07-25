@@ -41,6 +41,10 @@ local LAP_DEBOUNCE   = 2.0      -- seconds; double-fire guard on the S/F gate.
                                 -- Kept low so even very short circuits report:
                                 -- this only needs to swallow same-crossing
                                 -- re-fires, not bound real lap times.
+local PROGRESS_EVERY = 0.3      -- seconds between live-position reports
+                                -- (~3.3 Hz: responsive enough to resolve a
+                                -- side-by-side fight, light enough that a full
+                                -- grid does not flood the server)
 local ROUTE_FILE     = 'settings/raceManager/route.json'
 
 -- ---------------------------------------------------------------------------
@@ -79,6 +83,11 @@ local lapStart     = 0           -- localTime at the start of the current lap
 local localLap     = 1
 local localTime    = 0
 local prevPos      = nil         -- vehicle position last frame (crossing segment)
+
+-- Live position telemetry: metres from the car to the centre of the next
+-- checkpoint, recomputed every frame and reported to the server on a throttle.
+local distToNext   = nil
+local progressLeft = 0           -- seconds until the next report is due
 
 -- Vehicle reset ruleset (Module 1). maxResets mirrors the server: -1 unlimited,
 -- 0 none, N allowed per session. resetsUsed counts what this client has spent.
@@ -241,6 +250,10 @@ local function resetLapTracking()
   jokerTaken   = false
   jokerLapUsed = nil
   resetsUsed   = 0
+  -- Telemetry restarts with the session; report immediately on the next frame
+  -- so the leaderboard has a distance for this driver from the first moments.
+  distToNext   = nil
+  progressLeft = 0
   -- Race: cars launch from the grid at the line, so the first target is
   -- checkpoint 1. Quali: the out-lap ends at the S/F line, so arm the line.
   if phase == 'racing' then
@@ -270,6 +283,8 @@ local function clearTrackState(reason)
   localLap     = 1
   lapStart     = localTime
   prevPos      = nil
+  distToNext   = nil
+  progressLeft = 0
   pushRouteState()
   log('I', 'raceManager', 'Track state cleared (' .. tostring(reason or 'local') .. ')')
 end
@@ -371,11 +386,64 @@ local function checkGates()
       else
         armedWp = armedWp + 1
       end
+      -- Clearing a checkpoint is exactly when a position can change hands, so
+      -- jump the throttle and report the new count on the next frame.
+      progressLeft = 0
       pushRouteState()
     end
     checkJokerGates(prevPos, pos)
   end
   prevPos = vec3(pos.x, pos.y, pos.z)
+end
+
+-- ---------------------------------------------------------------------------
+-- Live position telemetry
+-- ---------------------------------------------------------------------------
+-- The server decides the running order but has no physics access, so the third
+-- tie-break metric — how far a car is from the next checkpoint — can only be
+-- measured here. Every frame the straight-line distance from the vehicle to the
+-- next gate's centre is recomputed; a few times a second that distance goes up
+-- to the server together with the lap and the number of checkpoints already
+-- cleared on it. The send is throttled (PROGRESS_EVERY) so a full grid costs the
+-- server a handful of small events per second, not one per frame per driver.
+local function reportProgress(dt)
+  if phase ~= 'racing' or spectatorLock then
+    distToNext = nil
+    return
+  end
+  local wp = route[armedWp]
+  if not wp then
+    distToNext = nil
+    return
+  end
+  local veh = playerVehicle()
+  if not veh then
+    distToNext = nil
+    return
+  end
+
+  -- Distance from the car to the centre of the next checkpoint, in metres.
+  local pos = veh:getPosition()
+  local dx, dy, dz = pos.x - wp.x, pos.y - wp.y, pos.z - wp.z
+  distToNext = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+  progressLeft = progressLeft - dt
+  if progressLeft > 0 then return end
+  progressLeft = PROGRESS_EVERY
+
+  -- armedWp is the gate we are driving TOWARDS, so the count already cleared on
+  -- this lap is one less (and 0 right after crossing the start/finish line).
+  local payload = {
+    lap  = localLap,
+    cp   = armedWp - 1,
+    dist = distToNext,
+  }
+  if inMultiplayer() then
+    TriggerServerEvent('RM_Progress', jsonEncode(payload))
+  end
+  -- Same cadence to the local UI, so the driver's own header readout ticks
+  -- along with what the server is being told.
+  guihooks.trigger('RaceManagerProgress', payload)
 end
 
 -- ===========================================================================
@@ -1004,6 +1072,7 @@ end
 function M.onUpdate(dt)
   localTime = localTime + dt
   checkGates()
+  reportProgress(dt)        -- live position telemetry (distance to next gate)
   drawGates()
   spectatorUpdate(dt)       -- Module 1: keep a DNF'd driver in freecam
   vehicleConfigUpdate(dt)   -- Module 4: declare setup changes to the server

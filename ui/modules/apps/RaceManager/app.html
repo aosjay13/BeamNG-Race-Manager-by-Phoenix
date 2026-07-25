@@ -4,6 +4,8 @@
     <span class="rm-title">RACE MANAGER</span>
     <span class="rm-phase" ng-class="'rm-phase-' + phase">{{ phaseLabel() }}</span>
     <span class="rm-wp-progress" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">CP {{ nextWp }}/{{ routeWaypoints.length }}</span>
+    <!-- Live distance to your own next checkpoint (the third position metric) -->
+    <span class="rm-dist" ng-if="phase === 'racing' && progress && progress.dist != null">{{ formatDistance(progress.dist) }}</span>
     <span class="rm-clock" ng-if="phase === 'racing' || phase === 'finished'">{{ formatRaceTime(raceTime) }}</span>
     <span class="rm-derby-badge" ng-if="derby.phase === 'running'">DERBY LIVE {{ formatDerbyTime(derby.time) }}</span>
     <span class="rm-admin-tag" ng-if="isAdmin" title="You are logged in as an admin">ADMIN</span>
@@ -429,7 +431,8 @@
     <table class="rm-table">
       <thead>
         <tr>
-          <th class="rm-col-grid">Start</th>
+          <th class="rm-col-pos" title="Live position: laps, then checkpoints cleared, then distance to the next checkpoint">Pos</th>
+          <th class="rm-col-grid" title="Starting grid position">Start</th>
           <th class="rm-col-name">Driver</th>
           <th class="rm-col-lap">Lap</th>
           <th class="rm-col-time">Best Lap</th>
@@ -440,11 +443,18 @@
         </tr>
       </thead>
       <tbody>
-        <tr ng-repeat="row in drivers track by row.id"
+        <!-- Sorted by the server's live position integer. `track by row.id`
+             makes Angular move the existing rows rather than rebuild them, so
+             overtakes reorder the table without flicker. -->
+        <tr ng-repeat="row in drivers | orderBy:positionOrder track by row.id"
             ng-class="{'rm-row-finished': row.status === 'finished', 'rm-row-dnf': row.status === 'dnf', 'rm-row-dsq': row.status === 'dsq'}">
+          <td class="rm-col-pos">
+            <span class="rm-pos" ng-class="{'rm-pos-leader': row.position === 1 && row.status === 'racing'}">{{ positionLabel(row) }}</span>
+            <span class="rm-pos-move" ng-class="'rm-pos-move-' + posMove(row)" ng-if="posMove(row)">{{ posMove(row) === 'up' ? '▲' : '▼' }}</span>
+          </td>
           <td class="rm-col-grid">{{ row.gridPos || '—' }}</td>
           <td class="rm-col-name" title="{{ row.name }}">{{ row.name }}</td>
-          <td class="rm-col-lap">{{ row.currentLap ? row.currentLap + '/' + totalLaps : '—' }}</td>
+          <td class="rm-col-lap" title="{{ row.cpCleared ? row.cpCleared + ' checkpoint(s) cleared this lap' : '' }}">{{ row.currentLap ? row.currentLap + '/' + totalLaps : '—' }}</td>
           <td class="rm-col-time">{{ formatLap(row.raceBest) }}</td>
           <td class="rm-col-led">{{ row.lapsLed || 0 }}</td>
           <td class="rm-col-joker" ng-if="jokerEnabled"
@@ -460,7 +470,7 @@
           </td>
         </tr>
         <tr ng-if="!drivers.length">
-          <td colspan="8" class="rm-empty">
+          <td colspan="9" class="rm-empty">
             No drivers yet — join a BeamMP server running the RaceManager plugin, then press
             <b>Start Quali</b> (or <b>Generate Grid</b> for a join-order grid).
           </td>
@@ -819,6 +829,35 @@
   .rm-light-dnf        { background: #ea4335; }
   .rm-flag { margin-right: 3px; }
   .rm-status-text { vertical-align: middle; }
+
+  /* ============ Live positions =========================================== */
+  .rm-col-pos { width: 54px; text-align: center; }
+  .rm-pos {
+    display: inline-block;
+    min-width: 26px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: #e8eaed;
+  }
+  .rm-pos-leader { color: #fdd663; text-shadow: 0 0 8px rgba(251, 188, 5, 0.45); }
+  /* Gain/loss arrow, faded in for a couple of seconds after a place changes. */
+  .rm-pos-move {
+    font-size: 9px;
+    margin-left: 2px;
+    vertical-align: middle;
+    animation: rm-pos-fade 2.5s ease-out forwards;
+  }
+  .rm-pos-move-up   { color: #7ee2a8; }
+  .rm-pos-move-down { color: #f28b82; }
+  @keyframes rm-pos-fade {
+    0%   { opacity: 1; }
+    70%  { opacity: 1; }
+    100% { opacity: 0; }
+  }
+  /* Rows shift as places change; a short background transition keeps the
+     movement readable instead of abrupt. */
+  .rm-table tbody tr { transition: background-color 0.25s linear; }
+  .rm-dist { font-size: 10px; color: #9aa0a6; font-variant-numeric: tabular-nums; }
 
   /* ============ Module 1/2/4: regulation controls + banners ============== */
   .rm-btn-toggle { border-color: #9aa0a6; color: #bdc1c6; }
