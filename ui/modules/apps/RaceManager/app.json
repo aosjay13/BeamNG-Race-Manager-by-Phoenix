@@ -1,8 +1,8 @@
 {
   "name": "Race Manager",
   "author": "Phoenix",
-  "version": "2.0.0",
-  "description": "Multiplayer circuit race control: qualifying sessions, grid generation from best laps, two-pole checkpoint gates with adjustable width, lap counts, and live telemetry (best lap, laps led).",
+  "version": "3.0.0",
+  "description": "Multiplayer race control with league regulations: qualifying, grid generation, 3D checkpoint gates, rallycross joker laps, vehicle reset limits with forced spectating, a locked vehicle/setup garage list, and a minimalist resizable driver leaderboard.",
   "directive": "raceManager",
   "domElement": "<race-manager></race-manager>",
   "css": {

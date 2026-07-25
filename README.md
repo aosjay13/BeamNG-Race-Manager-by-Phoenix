@@ -64,8 +64,9 @@ checkpoint configurations **on the BeamMP server** in
 and can be prepped days before an event:
 
 - **Save Current Layout** bundles the currently placed gates (positions,
-  headings, gate width) under a name, tagged with the level the server is
-  hosting. Saving the same name on the same map overwrites it.
+  headings, gate width) — including the **joker route**, if one is placed —
+  under a name, tagged with the level the server is hosting. Saving the same
+  name on the same map overwrites it.
 - The dropdown is **strictly filtered by map** — the server only lists
   layouts saved for the level it is currently hosting.
 - Selecting a layout draws a top-down **2D track preview** (checkpoints,
@@ -187,6 +188,96 @@ ready for league standings or a broadcast overlay. Housekeeping:
 - **Clear Results Cache** deletes all saved result `.txt` files on the
   server (chat confirms how many were removed).
 
+## League regulations
+
+Four rule systems layer on top of the session flow above. All of them are
+off by default, so a plain race night behaves exactly as it always did.
+
+### Vehicle reset limits & forced spectating
+
+**Max resets** (Race settings, admin only) decides how many vehicle
+resets/repairs each driver gets per session:
+
+| Value | Meaning |
+|-------|---------|
+| `-1` (or blank) | Unlimited — the default |
+| `0` | No resets at all: the first one ends your race |
+| `N` | `N` resets; the `N+1`st ends your race |
+
+The BeamMP server never sees a reset happen, so the **client** polices it.
+Every reset inside the allowance is counted and reported (the leaderboard
+gains an `Rst` column showing `used/allowed`). The reset that goes past the
+allowance is **invalidated on the spot**: the driver is DNF'd, their vehicle
+is removed, and their camera is pinned to **freecam** — they cannot spawn a
+replacement car until the session ends. The results file records
+`DNF - Reset limit exceeded`.
+
+The same forced-spectator lock is applied to a driver **eliminated in a Demo
+Derby**, using the derby's own event scope so the two modes can never release
+each other's spectators. The limit is locked once a countdown or race starts.
+
+### Rallycross joker laps
+
+A **joker route** is a second, independent set of checkpoint gates describing
+the alternate rallycross line. Build it in the editor with the **Joker Route**
+tab (gates are drawn violet in the world), and it is saved and loaded together
+with the track layout — one layout carries both routes.
+
+Switch **Joker lap** on in Race settings and the rule is enforced:
+
+- The joker route must be completed **exactly once per race**.
+- **Lap 1 is closed**: any joker attempt on the opening lap is invalidated by
+  the client on the spot — the progress is thrown away and nothing is reported.
+- Repeat runs after a valid one are ignored and flagged to the driver.
+- At the flag the **server rules on every finisher**. Anyone who did not take
+  the joker exactly once is reclassified as
+  **`Disqualified - Missed Joker`** (or `Disqualified - Extra Joker`), which
+  goes straight into the results `.txt` alongside a `Joker` column showing the
+  lap each driver used.
+
+### Vehicle & setup locking (the Garage List)
+
+The **Garage** panel (admin only) locks the session down to exact cars *and*
+exact tunes:
+
+1. Drive the car you want to allow, with the setup you want to allow, and
+   press **+ Whitelist Current Vehicle**. The client fingerprints the exact
+   configuration (jbeam model + every part in the part config + every tuning
+   variable) and sends it to the server.
+2. Repeat to build a Garage List of allowed cars. The list persists in
+   `Resources/Server/RaceManager/garage.json` across restarts.
+3. Flip the panel's toggle to **Enforcing**.
+
+Enforcement runs on two layers, because the server has no vehicle
+introspection of its own:
+
+- BeamMP's `onVehicleSpawn` / `onVehicleEdited` hooks cancel any car whose
+  **model** is not on the list before it exists for other players.
+- Each client reports its exact configuration signature on spawn and whenever
+  its setup changes; a signature that is not on the list gets the vehicle
+  **deleted** and pushes **"Vehicle/Setup not allowed in this session."** to
+  that player's UI.
+
+Authenticated admins are exempt (otherwise you could never spawn the car you
+are about to whitelist), and an empty list never enforces anything, so it is
+impossible to lock the whole server out by accident.
+
+### Driver UI (non-admins)
+
+- **Checkpoint gates are drawn for everyone.** During a countdown, qualifying
+  session or race the 3D oriented bounding boxes are visible on every
+  connected client; the Hide/Show Gates toggle now only applies outside a
+  session, where it exists to keep the editor view tidy.
+- **Minimal mode.** A player who is not logged in as an admin sees *only the
+  leaderboard* while a session is live — header, session controls, editor,
+  derby panel, login bar and all panel backgrounds are removed from the DOM.
+  During a derby the leaderboard shows the derby standings instead.
+- **Resize & fade.** Drag the grip in the bottom-right corner of the
+  leaderboard to resize it, and use the slider in the thin driver bar to set
+  its background opacity so it does not obstruct the view. Both settings are
+  remembered in `localStorage`. The driver bar also shows live joker/reset
+  status and keeps a 🔒 button so the login prompt is always reachable.
+
 ## Demo Derby (parallel game mode)
 
 A completely separate last-man-standing mode, isolated from the circuit
@@ -209,6 +300,8 @@ running a derby never touches qualifying/race state). Open it with the
      time or you're **Disqualified**.
    - Sitting still flashes **VEHICLE STOPPED! DEMOLISHED IN X.Xs** — get
      moving or you're **Demolished**. Disconnecting counts as Disqualified.
+   - An eliminated driver's vehicle is removed and their camera is forced into
+     **freecam** until the derby ends; they cannot spawn a replacement car.
 4. The driver table shows who's still in, who's out (with reason and
    elimination time) and the winner. When exactly one driver remains the
    server ends the derby, announces the **winner** in chat, and writes

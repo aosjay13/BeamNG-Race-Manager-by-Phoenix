@@ -36,6 +36,30 @@ angular.module('beamng.apps')
       $scope.heightInput = 10;   // 3D checkpoint volume: vertical extent
       $scope.depthInput = 4;     // 3D checkpoint volume: forward thickness
 
+      // ----------------------------------------------------------------
+      // League regulations (Modules 1, 2 & 4)
+      // ----------------------------------------------------------------
+      // Vehicle resets: -1 unlimited, 0 none, N per driver per session.
+      $scope.maxResets = -1;
+      $scope.resetsInput = -1;
+      $scope.resetsUsed = 0;      // what THIS client has spent
+      // Rallycross joker lap.
+      $scope.jokerEnabled = false;
+      $scope.jokerRoute = [];     // joker gates placed/loaded on this client
+      $scope.jokerNext = 1;
+      $scope.jokerTaken = false;
+      $scope.jokerLap = null;
+      $scope.editorTarget = 'main';   // which route the editor appends to
+      // Garage list (approved vehicles/setups).
+      $scope.garage = [];             // [{ model, label }]
+      $scope.garageEnforce = false;
+      // Forced spectator mode.
+      $scope.spectating = false;
+      $scope.spectatorReason = null;
+      // Transient banners: regulation notices and vehicle rejections.
+      $scope.notice = null;           // { kind, msg }
+      $scope.vehicleError = null;     // { message, detail }
+
       // Admin authentication. Every editor/admin control stays hidden until the
       // server confirms a login (RaceManagerAuth). authUi holds the two inputs.
       $scope.isAdmin = false;
@@ -110,11 +134,68 @@ angular.module('beamng.apps')
         gridded:    'On Grid',
         racing:     'Racing',
         finished:   'Finished',
+        dsq:        'Disqualified',
         dnf:        'DNF'
       };
 
       $scope.phaseLabel = function () { return PHASE_LABELS[$scope.phase] || $scope.phase; };
       $scope.statusLabel = function (s) { return STATUS_LABELS[s] || s; };
+
+      // Full text for a driver's status cell: the server's ruling reason wins
+      // (e.g. "Disqualified - Missed Joker") so the live table matches the
+      // exported results file exactly.
+      $scope.outcomeLabel = function (row) {
+        if (row.outReason) { return row.outReason; }
+        return $scope.statusLabel(row.status);
+      };
+
+      // Joker cell for the race table.
+      $scope.jokerLabel = function (row) {
+        if (!$scope.jokerEnabled) { return '—'; }
+        if (!row.jokerTaken) { return '—'; }
+        if (row.jokerTaken > 1) { return '×' + row.jokerTaken + '!'; }
+        return 'L' + (row.jokerLap || '?');
+      };
+
+      // Reset cell: used/allowed, or a dash when resets are unlimited.
+      // (These helpers also keep raw comparison operators out of the template.)
+      $scope.resetsLimited = function () { return $scope.maxResets >= 0; };
+      $scope.resetLabel = function (row) {
+        if (!$scope.resetsLimited()) { return '∞'; }
+        return (row.resets || 0) + '/' + $scope.maxResets;
+      };
+      $scope.resetsLow = function (row) {
+        return $scope.resetsLimited() && ($scope.maxResets - (row.resets || 0)) <= 0;
+      };
+      $scope.myResetsLow = function () {
+        return $scope.resetsLimited() && ($scope.maxResets - $scope.resetsUsed) <= 0;
+      };
+      // Human-readable summary of the current reset ruleset.
+      $scope.resetRuleLabel = function () {
+        if (!$scope.resetsLimited()) { return 'unlimited'; }
+        return $scope.maxResets === 0 ? 'none' : ($scope.maxResets + ' each');
+      };
+
+      // ------------------------------------------------------------------
+      // Module 3: minimalist driver view
+      // ------------------------------------------------------------------
+      // A live session is anything a driver is actively taking part in.
+      $scope.sessionLive = function () {
+        return $scope.phase === 'qualifying' || $scope.phase === 'countdown'
+          || $scope.phase === 'racing' || $scope.derby.phase === 'running';
+      };
+      // Minimal mode: not logged in as an admin AND a session is live. The
+      // whole chrome (header, session controls, editor, derby panel, login bar)
+      // is removed from the DOM and only the leaderboard is left on screen.
+      // Outside a live session the normal spectator UI comes back, so there is
+      // always a way to reach the login prompt.
+      $scope.minimalMode = function () {
+        return !$scope.isAdmin && $scope.sessionLive();
+      };
+      // While a derby runs, a driver's leaderboard is the derby standings.
+      $scope.derbyBoardOnly = function () {
+        return !$scope.isAdmin && $scope.derby.phase === 'running';
+      };
 
       // Qualifying view while the quali session runs (and in waiting, where a
       // closed quali's provisional order is still the useful thing to show if
@@ -168,6 +249,14 @@ angular.module('beamng.apps')
             $scope.totalLaps = data.totalLaps;
           }
           if ($scope.phase !== 'countdown') { $scope.countdown = null; }
+          // League regulations mirrored from the server (Modules 1, 2 & 4).
+          if (typeof data.maxResets === 'number') {
+            if ($scope.maxResets !== data.maxResets) { $scope.resetsInput = data.maxResets; }
+            $scope.maxResets = data.maxResets;
+          }
+          $scope.jokerEnabled = !!data.jokerEnabled;
+          $scope.garage = toArray(data.garage);
+          $scope.garageEnforce = !!data.garageEnforce;
           // Track whether an admin is running the session. When one appears and
           // we're just a spectator who hasn't pinned the login open, auto-hide
           // the prompt so the app is fully visible (a header Login button stays).
@@ -195,13 +284,67 @@ angular.module('beamng.apps')
           if (typeof data.width === 'number') { $scope.widthInput = data.width; }
           if (typeof data.height === 'number') { $scope.heightInput = data.height; }
           if (typeof data.depth === 'number') { $scope.depthInput = data.depth; }
+          // Joker route + reset allowance state pushed by the client Lua.
+          $scope.jokerRoute = toArray(data.jokerRoute);
+          $scope.jokerNext = data.jokerNext || 1;
+          $scope.jokerTaken = !!data.jokerTaken;
+          $scope.jokerLap = data.jokerLap || null;
+          $scope.editorTarget = data.editorTarget === 'joker' ? 'joker' : 'main';
+          if (typeof data.resetsUsed === 'number') { $scope.resetsUsed = data.resetsUsed; }
+          if (typeof data.spectating === 'boolean') { $scope.spectating = data.spectating; }
           // Keep the override editor in sync (a gate may have been removed, or
           // its stored overrides changed by the last command).
-          if ($scope.selectedCp != null && !$scope.routeWaypoints[$scope.selectedCp - 1]) {
+          if ($scope.selectedCp != null && !$scope.editorWaypoints()[$scope.selectedCp - 1]) {
             $scope.selectedCp = null;
           }
         });
       });
+
+      // The list the editor panel shows: main lap or joker route, whichever
+      // the editor is currently pointed at.
+      $scope.editorWaypoints = function () {
+        return $scope.editorTarget === 'joker' ? $scope.jokerRoute : $scope.routeWaypoints;
+      };
+
+      // ------------------------------------------------------------------
+      // Regulation notices, forced spectating and vehicle rejections
+      // ------------------------------------------------------------------
+      var noticeTimer = null;
+      $scope.$on('RaceManagerNotice', function (event, data) {
+        if (!data || !data.msg) { return; }
+        $scope.$evalAsync(function () {
+          $scope.notice = { kind: data.kind || 'info', msg: data.msg };
+          if (noticeTimer) { clearTimeout(noticeTimer); }
+          noticeTimer = setTimeout(function () {
+            $scope.$evalAsync(function () { $scope.notice = null; });
+          }, 6000);
+        });
+      });
+
+      $scope.$on('RaceManagerSpectator', function (event, data) {
+        $scope.$evalAsync(function () {
+          $scope.spectating = !!(data && data.spectating);
+          $scope.spectatorReason = $scope.spectating ? (data.reason || null) : null;
+        });
+      });
+
+      // "Vehicle/Setup not allowed in this session." — stays until dismissed or
+      // superseded, because it explains why the player has no car.
+      var vehErrTimer = null;
+      $scope.$on('RaceManagerVehicleError', function (event, data) {
+        $scope.$evalAsync(function () {
+          $scope.vehicleError = {
+            message: (data && data.message) || 'Vehicle/Setup not allowed in this session.',
+            detail: (data && data.detail) || ''
+          };
+          if (vehErrTimer) { clearTimeout(vehErrTimer); }
+          vehErrTimer = setTimeout(function () {
+            $scope.$evalAsync(function () { $scope.vehicleError = null; });
+          }, 10000);
+        });
+      });
+
+      $scope.dismissVehicleError = function () { $scope.vehicleError = null; };
 
       // Password change confirmed by the server — flash a short note in the
       // admin bar so the change is acknowledged even outside the editor panel.
@@ -439,6 +582,33 @@ angular.module('beamng.apps')
         if (!n || n < 1) { return; }
         bngApi.engineLua('raceManager.setTotalLaps(' + n + ')');
       };
+      // Module 1: reset allowance. Blank or negative = unlimited, 0 = none.
+      $scope.applyMaxResets = function () {
+        var n = parseInt($scope.resetsInput, 10);
+        if (isNaN(n)) { n = -1; }
+        if (n < 0) { n = -1; }
+        bngApi.engineLua('raceManager.setMaxResets(' + n + ')');
+      };
+
+      // Module 2: arm/disarm the joker lap requirement.
+      $scope.toggleJoker = function () {
+        bngApi.engineLua('raceManager.setJokerEnabled(' + (!$scope.jokerEnabled) + ')');
+      };
+
+      // Module 4: capture the vehicle the admin is driving right now.
+      $scope.whitelistCurrentVehicle = function () {
+        bngApi.engineLua('raceManager.whitelistCurrentVehicle()');
+      };
+      $scope.clearGarage = function () {
+        bngApi.engineLua('raceManager.clearGarage()');
+      };
+      $scope.removeGarageEntry = function (index) {
+        bngApi.engineLua('raceManager.removeGarageEntry(' + (index + 1) + ')');
+      };
+      $scope.toggleGarageEnforce = function () {
+        bngApi.engineLua('raceManager.setGarageEnforce(' + (!$scope.garageEnforce) + ')');
+      };
+
       $scope.applyWidth = function () {
         var w = parseFloat($scope.widthInput);
         if (!w || w <= 0) { return; }
@@ -482,13 +652,22 @@ angular.module('beamng.apps')
         if ($scope.showEditor) { schedulePreview(); }  // canvas re-enters the DOM
       };
 
+      // Switch the editor between the main lap and the joker route. Everything
+      // in the editor panel (+ Checkpoint Here, Undo, Clear, the gate list)
+      // follows this selection.
+      $scope.setEditorTarget = function (target) {
+        $scope.selectedCp = null;
+        bngApi.engineLua('raceManager.setEditorTarget("'
+          + (target === 'joker' ? 'joker' : 'main') + '")');
+      };
+
       // Per-checkpoint override editing: pick a placed gate (1-based) and load
       // its current overrides (blank = inheriting the global default) into the
       // edit fields. Clicking the selected gate again collapses the editor.
       $scope.selectCheckpoint = function (index) {
         if ($scope.selectedCp === index) { $scope.selectedCp = null; return; }
         $scope.selectedCp = index;
-        var wp = $scope.routeWaypoints[index - 1] || {};
+        var wp = $scope.editorWaypoints()[index - 1] || {};
         $scope.cpEdit = {
           width:  (typeof wp.width === 'number') ? wp.width : '',
           height: (typeof wp.height === 'number') ? wp.height : '',
@@ -694,6 +873,90 @@ angular.module('beamng.apps')
         ctx.textAlign = 'left';
         ctx.fillText(cps.length + ' gates · ' + (layout.map || ''), 6, H - 6);
       }
+
+      // ------------------------------------------------------------------
+      // Module 3: driver (non-admin) leaderboard ergonomics
+      // ------------------------------------------------------------------
+      // A driver who is not logged in sees the leaderboard and nothing else.
+      // Because that panel now sits over the windscreen, they get two controls
+      // the admin UI never needed: drag the bottom-right corner to resize it,
+      // and a slider to fade its background out of the way. Both persist in
+      // localStorage so the choice survives a session.
+      function loadPref(key, def) {
+        try {
+          var raw = window.localStorage.getItem('raceManager.lb.' + key);
+          return raw === null ? def : JSON.parse(raw);
+        } catch (e) { return def; }
+      }
+      function savePref(key, value) {
+        try {
+          window.localStorage.setItem('raceManager.lb.' + key, JSON.stringify(value));
+        } catch (e) { /* private mode / storage disabled: preferences are optional */ }
+      }
+
+      $scope.lbOpacity = loadPref('opacity', 0.85);   // 0 (invisible) .. 1 (solid)
+      $scope.lbWidth   = loadPref('width', null);     // px, null = follow the app window
+      $scope.lbHeight  = loadPref('height', null);
+
+      // Applied to the leaderboard container in minimal (driver) mode.
+      $scope.lbStyle = function () {
+        var style = { 'background-color': 'rgba(15, 17, 22, ' + Number($scope.lbOpacity) + ')' };
+        if ($scope.lbWidth)  { style.width = $scope.lbWidth + 'px'; }
+        if ($scope.lbHeight) {
+          style.height = $scope.lbHeight + 'px';
+          style['max-height'] = $scope.lbHeight + 'px';
+        }
+        return style;
+      };
+
+      $scope.applyOpacity = function () { savePref('opacity', Number($scope.lbOpacity)); };
+
+      var resizeFrom = null;
+      function onResizeMove(ev) {
+        if (!resizeFrom) { return; }
+        var w = Math.max(200, resizeFrom.w + (ev.clientX - resizeFrom.x));
+        var h = Math.max(80,  resizeFrom.h + (ev.clientY - resizeFrom.y));
+        $scope.$evalAsync(function () {
+          $scope.lbWidth = Math.round(w);
+          $scope.lbHeight = Math.round(h);
+        });
+      }
+      function onResizeEnd() {
+        document.removeEventListener('mousemove', onResizeMove);
+        document.removeEventListener('mouseup', onResizeEnd);
+        if (resizeFrom) {
+          savePref('width', $scope.lbWidth);
+          savePref('height', $scope.lbHeight);
+        }
+        resizeFrom = null;
+      }
+      // Grip in the bottom-right corner of the leaderboard. Listeners go on the
+      // document so the drag keeps tracking even when the pointer leaves the
+      // (small) grip element.
+      $scope.startLeaderboardResize = function (ev) {
+        var wrap = $element[0].querySelector('.rm-table-wrap');
+        if (!wrap) { return; }
+        ev.preventDefault();
+        ev.stopPropagation();
+        var rect = wrap.getBoundingClientRect();
+        resizeFrom = { x: ev.clientX, y: ev.clientY, w: rect.width, h: rect.height };
+        document.addEventListener('mousemove', onResizeMove);
+        document.addEventListener('mouseup', onResizeEnd);
+      };
+
+      $scope.resetLeaderboardSize = function () {
+        $scope.lbWidth = null;
+        $scope.lbHeight = null;
+        savePref('width', null);
+        savePref('height', null);
+      };
+
+      $scope.$on('$destroy', function () {
+        document.removeEventListener('mousemove', onResizeMove);
+        document.removeEventListener('mouseup', onResizeEnd);
+        if (noticeTimer) { clearTimeout(noticeTimer); }
+        if (vehErrTimer) { clearTimeout(vehErrTimer); }
+      });
 
       // ------------------------------------------------------------------
       // Lifecycle: load the backend and pull current state immediately so the

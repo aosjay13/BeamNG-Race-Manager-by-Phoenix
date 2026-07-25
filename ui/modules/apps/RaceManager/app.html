@@ -1,6 +1,6 @@
-<div class="rm-root">
-  <!-- ================= Header ================= -->
-  <div class="rm-header">
+<div class="rm-root" ng-class="{'rm-minimal': minimalMode()}">
+  <!-- ================= Header (hidden in minimal driver mode) ============= -->
+  <div class="rm-header" ng-if="!minimalMode()">
     <span class="rm-title">RACE MANAGER</span>
     <span class="rm-phase" ng-class="'rm-phase-' + phase">{{ phaseLabel() }}</span>
     <span class="rm-wp-progress" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">CP {{ nextWp }}/{{ routeWaypoints.length }}</span>
@@ -15,7 +15,7 @@
   </div>
 
   <!-- ================= Admin login (dismissable — spectators bypass it) ==== -->
-  <div class="rm-login" ng-if="!isAdmin && showLogin">
+  <div class="rm-login" ng-if="!isAdmin && showLogin && !minimalMode()">
     <span class="rm-login-title">🔒 Admin Login</span>
     <input type="password" class="rm-login-input" ng-model="authUi.password"
            placeholder="Password…"
@@ -57,6 +57,25 @@
               ng-disabled="phase === 'countdown' || phase === 'racing'">Set</button>
       <span class="rm-setting-val">race: {{ totalLaps }}</span>
     </span>
+    <!-- Module 1: vehicle reset ruleset -->
+    <span class="rm-setting" title="How many vehicle resets/repairs each driver gets this session. 0 = no resets at all; -1 (or blank) = unlimited. Going past the limit is an instant DNF and forces the driver into spectator mode.">
+      <label>Max resets</label>
+      <input type="number" class="rm-width-num" min="-1" max="99" step="1" ng-model="resetsInput"
+             ng-disabled="phase === 'countdown' || phase === 'racing'">
+      <button class="rm-btn rm-btn-mini" ng-click="applyMaxResets()"
+              ng-disabled="phase === 'countdown' || phase === 'racing'">Set</button>
+      <span class="rm-setting-val">{{ resetRuleLabel() }}</span>
+    </span>
+    <!-- Module 2: rallycross joker lap -->
+    <span class="rm-setting" title="Rallycross joker lap: every finisher must take the Joker Route exactly once (never on lap 1) or the server disqualifies them at the flag.">
+      <label>Joker lap</label>
+      <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': jokerEnabled}"
+              ng-click="toggleJoker()"
+              ng-disabled="phase === 'countdown' || phase === 'racing'">
+        {{ jokerEnabled ? '✓ Enabled' : 'Disabled' }}
+      </button>
+      <span class="rm-setting-val" ng-if="jokerEnabled">{{ jokerRoute.length }} gates</span>
+    </span>
     <span class="rm-setting">
       <label>Gate width</label>
       <input type="range" min="2" max="120" step="1" ng-model="widthInput" ng-change="applyWidth()">
@@ -75,23 +94,70 @@
     </span>
   </div>
 
+  <!-- ================= Garage list (Module 4: vehicle & setup locking) ==== -->
+  <div class="rm-garage" ng-if="isAdmin">
+    <div class="rm-garage-head">
+      <span class="rm-garage-title">Garage — allowed vehicles &amp; setups</span>
+      <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': garageEnforce}"
+              ng-click="toggleGarageEnforce()"
+              title="When enforced, any player spawning a car or applying a tune that is not on this list has the vehicle deleted and gets an error. Admins are exempt so they can build the list.">
+        {{ garageEnforce ? '✓ Enforcing' : 'Not enforced' }}
+      </button>
+      <span class="rm-garage-count">{{ garage.length }} approved</span>
+    </div>
+    <div class="rm-garage-controls">
+      <button class="rm-btn rm-btn-grid" ng-click="whitelistCurrentVehicle()"
+              title="Capture the exact vehicle + part config you are driving right now and add it to the list">
+        + Whitelist Current Vehicle
+      </button>
+      <button class="rm-btn rm-btn-end" ng-click="clearGarage()" ng-disabled="!garage.length">Clear Garage</button>
+    </div>
+    <div class="rm-garage-list" ng-if="garage.length">
+      <div class="rm-garage-row" ng-repeat="g in garage track by $index">
+        <span class="rm-garage-idx">{{ $index + 1 }}</span>
+        <span class="rm-garage-label" title="{{ g.label }}">{{ g.label }}</span>
+        <span class="rm-garage-model">{{ g.model }}</span>
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="removeGarageEntry($index)">✕</button>
+      </div>
+    </div>
+    <div class="rm-garage-hint" ng-if="!garage.length">
+      Drive the car you want to allow (with the exact tune), then press
+      <b>+ Whitelist Current Vehicle</b>. Repeat for every allowed car. Enforcement
+      only starts once the list has at least one entry and is switched on.
+    </div>
+  </div>
+
   <!-- ================= Checkpoint editor ================= -->
   <div class="rm-editor" ng-if="showEditor && isAdmin">
+    <!-- Which route is being built: the main lap or the rallycross joker -->
+    <div class="rm-route-tabs">
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-route-tab-active': editorTarget === 'main'}"
+              ng-click="setEditorTarget('main')">Main Route ({{ routeWaypoints.length }})</button>
+      <button class="rm-btn rm-btn-mini rm-route-tab-joker"
+              ng-class="{'rm-route-tab-joker-active': editorTarget === 'joker'}"
+              ng-click="setEditorTarget('joker')"
+              title="Place the alternate rallycross route here. It is saved with the layout and must be driven exactly once per race (never on lap 1).">
+        Joker Route ({{ jokerRoute.length }})
+      </button>
+      <span class="rm-route-tab-note" ng-if="editorTarget === 'joker'">
+        Joker gates are drawn violet. Enable the joker lap in Race settings to enforce it.
+      </span>
+    </div>
     <div class="rm-editor-controls">
-      <button class="rm-btn rm-btn-grid"  ng-click="editorAdd()">+ Checkpoint Here</button>
-      <button class="rm-btn"              ng-click="editorUndo()"  ng-disabled="!routeWaypoints.length">Undo</button>
-      <button class="rm-btn rm-btn-end"   ng-click="editorClear()" ng-disabled="!routeWaypoints.length">Clear</button>
+      <button class="rm-btn rm-btn-grid"  ng-click="editorAdd()">+ {{ editorTarget === 'joker' ? 'Joker Gate' : 'Checkpoint' }} Here</button>
+      <button class="rm-btn"              ng-click="editorUndo()"  ng-disabled="!editorWaypoints().length">Undo</button>
+      <button class="rm-btn rm-btn-end"   ng-click="editorClear()" ng-disabled="!editorWaypoints().length">Clear</button>
       <button class="rm-btn rm-btn-start" ng-click="editorSave()"  ng-disabled="!routeWaypoints.length">Save</button>
       <button class="rm-btn"              ng-click="editorLoad()">Load</button>
       <button class="rm-btn" ng-click="editorToggleVisualize()">{{ visualize ? 'Hide' : 'Show' }} Gates</button>
     </div>
     <div class="rm-editor-msg" ng-if="editorMsg">{{ editorMsg }}</div>
-    <div class="rm-editor-list" ng-if="routeWaypoints.length">
-      <div class="rm-editor-wp-wrap" ng-repeat="wp in routeWaypoints track by $index">
+    <div class="rm-editor-list" ng-if="editorWaypoints().length">
+      <div class="rm-editor-wp-wrap" ng-repeat="wp in editorWaypoints() track by $index">
         <div class="rm-editor-wp" ng-class="{'rm-editor-wp-sel': selectedCp === $index + 1}"
              ng-click="selectCheckpoint($index + 1)"
              title="Click to override this checkpoint's Width / Height / Depth">
-          <span class="rm-editor-idx" ng-class="{'rm-editor-finish': $last}">{{ $last ? '🏁' : ($index + 1) }}</span>
+          <span class="rm-editor-idx" ng-class="{'rm-editor-finish': $last && editorTarget === 'main', 'rm-editor-joker': editorTarget === 'joker'}">{{ ($last && editorTarget === 'main') ? '🏁' : ($index + 1) }}</span>
           <span class="rm-editor-coords">{{ wp.x.toFixed(1) }}, {{ wp.y.toFixed(1) }}, {{ wp.z.toFixed(1) }}</span>
           <span class="rm-editor-dims">
             <span ng-class="{'rm-dim-set': wp.width != null}">W{{ cpDim(wp, 'width') }}</span>
@@ -112,11 +178,17 @@
         </div>
       </div>
     </div>
-    <div class="rm-editor-hint" ng-if="!routeWaypoints.length">
+    <div class="rm-editor-hint" ng-if="!editorWaypoints().length && editorTarget === 'main'">
       Drive through each checkpoint location <b>in the direction of travel</b> and press
       <b>+ Checkpoint Here</b>. Each checkpoint becomes a 3D gate box perpendicular to your
       heading; the last one placed is the <b>start/finish line</b>. Click a placed checkpoint
       to override its <b>Width / Height / Depth</b>.
+    </div>
+    <div class="rm-editor-hint" ng-if="!editorWaypoints().length && editorTarget === 'joker'">
+      Drive the <b>alternate rallycross route</b> and drop a gate at its entry, through it,
+      and at its exit. Drivers must complete this route <b>exactly once per race</b> and
+      <b>never on lap 1</b>; the server disqualifies anyone who misses it. The joker route is
+      saved and loaded together with the layout.
     </div>
 
     <!-- ===== Track layouts: persistent, per-map, server-side ===== -->
@@ -258,8 +330,70 @@
     <span ng-class="{'rm-count-go': countdown === 0}">{{ countdown === 0 ? 'GO!' : countdown }}</span>
   </div>
 
+  <!-- ================= Regulation banners (always visible) ================ -->
+  <!-- Forced spectator: shown for as long as the penalty lasts. -->
+  <div class="rm-spectator-bar" ng-if="spectating">
+    <span class="rm-spectator-tag">SPECTATING</span>
+    <span class="rm-spectator-text">{{ spectatorReason || 'You are out of this session' }}</span>
+  </div>
+  <!-- Vehicle/setup rejected by the Garage List. -->
+  <div class="rm-vehicle-error" ng-if="vehicleError" ng-click="dismissVehicleError()"
+       title="Click to dismiss">
+    <span class="rm-vehicle-error-title">{{ vehicleError.message }}</span>
+    <span class="rm-vehicle-error-detail" ng-if="vehicleError.detail">{{ vehicleError.detail }}</span>
+  </div>
+  <!-- Transient regulation notices (reset used/denied, joker rulings). -->
+  <div class="rm-notice" ng-class="'rm-notice-' + notice.kind" ng-if="notice">{{ notice.msg }}</div>
+
+  <!-- ================= Driver bar (minimal mode only) ===================== -->
+  <!-- The only chrome a non-admin keeps during a live session: leaderboard
+       opacity, a size reset, and a way back to the login prompt. -->
+  <div class="rm-driverbar" ng-if="minimalMode()" ng-style="{'background-color': 'rgba(15, 17, 22, ' + (lbOpacity * 0.8) + ')'}">
+    <span class="rm-driverbar-label" ng-if="jokerEnabled">
+      JOKER <b ng-class="{'rm-joker-done': jokerTaken}">{{ jokerTaken ? 'DONE (lap ' + jokerLap + ')' : 'PENDING' }}</b>
+    </span>
+    <span class="rm-driverbar-label" ng-if="resetsLimited()">
+      RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
+    </span>
+    <span class="rm-driverbar-spacer"></span>
+    <label class="rm-driverbar-op" title="Leaderboard background opacity">
+      <span>◑</span>
+      <input type="range" min="0" max="1" step="0.05" ng-model="lbOpacity" ng-change="applyOpacity()">
+    </label>
+    <button class="rm-driverbar-btn" ng-click="resetLeaderboardSize()" title="Reset the leaderboard size">⤢</button>
+    <button class="rm-driverbar-btn" ng-click="openLogin()" title="Admin login">🔒</button>
+  </div>
+
+  <!-- ================= Derby standings for drivers ======================== -->
+  <div class="rm-table-wrap" ng-if="derbyBoardOnly()" ng-style="minimalMode() && lbStyle()">
+    <table class="rm-table">
+      <thead>
+        <tr>
+          <th class="rm-col-grid">Pos</th>
+          <th class="rm-col-name">Driver</th>
+          <th class="rm-col-status">Status</th>
+          <th class="rm-col-time">Out At</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr ng-repeat="p in derby.players track by p.id"
+            ng-class="{'rm-derby-row-out': p.status === 'eliminated', 'rm-derby-row-winner': p.status === 'winner'}">
+          <td class="rm-col-grid">{{ $index + 1 }}</td>
+          <td class="rm-col-name" title="{{ p.name }}">{{ p.name }}</td>
+          <td class="rm-col-status">
+            <span class="rm-light" ng-class="{'rm-light-racing': p.status === 'alive', 'rm-light-dnf': p.status === 'eliminated', 'rm-light-finished': p.status === 'winner'}"></span>
+            <span class="rm-status-text">{{ derbyStatusLabel(p) }}</span>
+          </td>
+          <td class="rm-col-time">{{ p.status === 'eliminated' ? formatDerbyTime(p.elimTime) : '—' }}</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="rm-lb-grip" ng-if="minimalMode()" ng-mousedown="startLeaderboardResize($event)"
+         title="Drag to resize the leaderboard"></div>
+  </div>
+
   <!-- ================= Qualifying table ================= -->
-  <div class="rm-table-wrap" ng-if="isQualiView()">
+  <div class="rm-table-wrap" ng-if="isQualiView() && !derbyBoardOnly()" ng-style="minimalMode() && lbStyle()">
     <table class="rm-table">
       <thead>
         <tr>
@@ -286,10 +420,12 @@
         </tr>
       </tbody>
     </table>
+    <div class="rm-lb-grip" ng-if="minimalMode()" ng-mousedown="startLeaderboardResize($event)"
+         title="Drag to resize the leaderboard"></div>
   </div>
 
   <!-- ================= Race table ================= -->
-  <div class="rm-table-wrap" ng-if="!isQualiView()">
+  <div class="rm-table-wrap" ng-if="!isQualiView() && !derbyBoardOnly()" ng-style="minimalMode() && lbStyle()">
     <table class="rm-table">
       <thead>
         <tr>
@@ -298,31 +434,41 @@
           <th class="rm-col-lap">Lap</th>
           <th class="rm-col-time">Best Lap</th>
           <th class="rm-col-led">Led</th>
+          <th class="rm-col-joker" ng-if="jokerEnabled" title="Joker route: the lap it was taken on">Joker</th>
+          <th class="rm-col-reset" ng-if="resetsLimited()" title="Vehicle resets used / allowed">Rst</th>
           <th class="rm-col-status">Status</th>
         </tr>
       </thead>
       <tbody>
         <tr ng-repeat="row in drivers track by row.id"
-            ng-class="{'rm-row-finished': row.status === 'finished', 'rm-row-dnf': row.status === 'dnf'}">
+            ng-class="{'rm-row-finished': row.status === 'finished', 'rm-row-dnf': row.status === 'dnf', 'rm-row-dsq': row.status === 'dsq'}">
           <td class="rm-col-grid">{{ row.gridPos || '—' }}</td>
           <td class="rm-col-name" title="{{ row.name }}">{{ row.name }}</td>
           <td class="rm-col-lap">{{ row.currentLap ? row.currentLap + '/' + totalLaps : '—' }}</td>
           <td class="rm-col-time">{{ formatLap(row.raceBest) }}</td>
           <td class="rm-col-led">{{ row.lapsLed || 0 }}</td>
+          <td class="rm-col-joker" ng-if="jokerEnabled"
+              ng-class="{'rm-joker-missing': !row.jokerTaken, 'rm-joker-done': row.jokerTaken === 1}">
+            {{ jokerLabel(row) }}
+          </td>
+          <td class="rm-col-reset" ng-if="resetsLimited()"
+              ng-class="{'rm-reset-low': resetsLow(row)}">{{ resetLabel(row) }}</td>
           <td class="rm-col-status">
             <span class="rm-light" ng-class="'rm-light-' + row.status"></span>
             <span ng-if="row.status === 'finished'" class="rm-flag">🏁</span>
-            <span class="rm-status-text">{{ row.finishTime != null ? formatLap(row.finishTime) : statusLabel(row.status) }}</span>
+            <span class="rm-status-text" title="{{ row.outReason }}">{{ (row.finishTime != null && row.status !== 'dsq') ? formatLap(row.finishTime) : outcomeLabel(row) }}</span>
           </td>
         </tr>
         <tr ng-if="!drivers.length">
-          <td colspan="6" class="rm-empty">
+          <td colspan="8" class="rm-empty">
             No drivers yet — join a BeamMP server running the RaceManager plugin, then press
             <b>Start Quali</b> (or <b>Generate Grid</b> for a join-order grid).
           </td>
         </tr>
       </tbody>
     </table>
+    <div class="rm-lb-grip" ng-if="minimalMode()" ng-mousedown="startLeaderboardResize($event)"
+         title="Drag to resize the leaderboard"></div>
   </div>
 
 <style>
@@ -673,6 +819,195 @@
   .rm-light-dnf        { background: #ea4335; }
   .rm-flag { margin-right: 3px; }
   .rm-status-text { vertical-align: middle; }
+
+  /* ============ Module 1/2/4: regulation controls + banners ============== */
+  .rm-btn-toggle { border-color: #9aa0a6; color: #bdc1c6; }
+  .rm-btn-toggle-on {
+    border-color: #34a853;
+    color: #7ee2a8;
+    background: rgba(52, 168, 83, 0.18);
+  }
+
+  /* Editor route tabs (main lap vs joker route) */
+  .rm-route-tabs {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .rm-route-tab-active {
+    background: rgba(255, 102, 0, 0.28);
+    border-color: #ff6600;
+    color: #ffb380;
+  }
+  .rm-route-tab-joker { border-color: #a64dff; color: #d1a8ff; }
+  .rm-route-tab-joker-active {
+    background: rgba(166, 77, 255, 0.28);
+    border-color: #a64dff;
+    color: #e0c4ff;
+  }
+  .rm-route-tab-note { font-size: 10px; color: #9aa0a6; }
+  .rm-editor-joker { color: #d1a8ff; }
+
+  /* Garage list */
+  .rm-garage {
+    padding: 6px 10px;
+    border-bottom: 1px solid rgba(66, 133, 244, 0.3);
+    background: rgba(66, 133, 244, 0.05);
+  }
+  .rm-garage-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 5px;
+  }
+  .rm-garage-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #8ab4f8;
+    font-weight: 700;
+  }
+  .rm-garage-count { color: #9aa0a6; font-size: 10px; margin-left: auto; }
+  .rm-garage-controls { display: flex; gap: 5px; flex-wrap: wrap; }
+  .rm-garage-list { margin-top: 5px; max-height: 110px; overflow-y: auto; }
+  .rm-garage-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 4px;
+    font-size: 11px;
+  }
+  .rm-garage-row:hover { background: rgba(255, 255, 255, 0.05); }
+  .rm-garage-idx { width: 18px; text-align: right; color: #8ab4f8; font-weight: 700; }
+  .rm-garage-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #e8eaed;
+  }
+  .rm-garage-model { color: #9aa0a6; font-size: 10px; }
+  .rm-garage-hint { margin-top: 5px; font-size: 11px; color: #9aa0a6; }
+
+  /* Regulation banners */
+  .rm-spectator-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    background: rgba(234, 67, 53, 0.18);
+    border-bottom: 1px solid rgba(234, 67, 53, 0.5);
+  }
+  .rm-spectator-tag {
+    padding: 1px 7px;
+    border-radius: 8px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    background: rgba(234, 67, 53, 0.35);
+    color: #f28b82;
+  }
+  .rm-spectator-text { font-size: 11px; color: #f6b0aa; }
+  .rm-vehicle-error {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 10px;
+    background: rgba(234, 67, 53, 0.22);
+    border-bottom: 1px solid rgba(234, 67, 53, 0.6);
+    cursor: pointer;
+  }
+  .rm-vehicle-error-title { font-size: 12px; font-weight: 700; color: #f28b82; }
+  .rm-vehicle-error-detail { font-size: 10px; color: #d0a09c; }
+  .rm-notice {
+    padding: 5px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.06);
+    color: #e8eaed;
+  }
+  .rm-notice-joker    { background: rgba(166, 77, 255, 0.18); color: #d1a8ff; }
+  .rm-notice-reset    { background: rgba(251, 188, 5, 0.15);  color: #fdd663; }
+  .rm-notice-spectate { background: rgba(234, 67, 53, 0.18);  color: #f28b82; }
+  .rm-notice-vehicle  { background: rgba(234, 67, 53, 0.18);  color: #f28b82; }
+
+  /* Regulation columns in the race table */
+  .rm-col-joker { width: 54px; text-align: center; }
+  .rm-col-reset { width: 46px; text-align: center; }
+  .rm-joker-done    { color: #7ee2a8; }
+  .rm-joker-missing { color: #fdd663; }
+  .rm-reset-low     { color: #f28b82; font-weight: 700; }
+  .rm-row-dsq td { opacity: 0.6; background: rgba(234, 67, 53, 0.06); }
+  .rm-light-dsq { background: #fbbc05; box-shadow: 0 0 5px rgba(251, 188, 5, 0.7); }
+
+  /* ============ Module 3: minimalist driver view ========================= */
+  /* Not logged in + a live session: the app is nothing but the leaderboard.
+     The root loses its own background and border so only the table's own
+     (opacity-controlled) panel is painted over the driving view. */
+  .rm-minimal {
+    background: transparent !important;
+    overflow: visible;
+  }
+  .rm-minimal .rm-table-wrap {
+    flex: none;
+    align-self: flex-start;
+    position: relative;
+    max-width: 100%;
+    overflow: auto;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 4px;
+    /* Native corner grip as well as the JS one, for mouse-driven resizing in
+       any CEF build that honours it. */
+    resize: both;
+  }
+  .rm-minimal .rm-table th { background: transparent; }
+  .rm-minimal .rm-table td { border-bottom-color: rgba(255, 255, 255, 0.1); }
+  /* Drag grip in the bottom-right corner of the leaderboard. */
+  .rm-lb-grip {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 14px;
+    height: 14px;
+    cursor: nwse-resize;
+    background:
+      linear-gradient(135deg, transparent 45%, rgba(255, 255, 255, 0.5) 45%,
+        rgba(255, 255, 255, 0.5) 55%, transparent 55%),
+      linear-gradient(135deg, transparent 70%, rgba(255, 255, 255, 0.5) 70%,
+        rgba(255, 255, 255, 0.5) 80%, transparent 80%);
+    z-index: 3;
+  }
+  /* The one strip of chrome a driver keeps: opacity, size reset, login. */
+  .rm-driverbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    align-self: flex-start;
+    padding: 2px 6px;
+    margin-bottom: 3px;
+    border-radius: 4px;
+    font-size: 10px;
+    color: #bdc1c6;
+  }
+  .rm-driverbar-label { letter-spacing: 0.5px; }
+  .rm-driverbar-label b { color: #e8eaed; }
+  .rm-driverbar-spacer { flex: 1; min-width: 10px; }
+  .rm-driverbar-op { display: flex; align-items: center; gap: 4px; }
+  .rm-driverbar-op input[type="range"] { width: 70px; accent-color: #ff6600; }
+  .rm-driverbar-btn {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    color: #bdc1c6;
+    border-radius: 3px;
+    padding: 0 5px;
+    font-size: 10px;
+    cursor: pointer;
+  }
+  .rm-driverbar-btn:hover { background: rgba(255, 255, 255, 0.15); }
 
   /* ===================== DEMO DERBY (isolated module) ===================== */
   .rm-btn-tab-derby { margin-left: auto; }
