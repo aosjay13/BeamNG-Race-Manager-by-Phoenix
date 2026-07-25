@@ -21,18 +21,27 @@
 -- Tunables
 -- ---------------------------------------------------------------------------
 local TICK_MS            = 100   -- server clock resolution
-local PUSH_EVERY_TICKS   = 5     -- broadcast state every N ticks (500 ms)
+-- Broadcast cadence while racing. This is also the live-position refresh rate:
+-- every push re-sorts the running order and re-stamps each driver's position,
+-- so 3 ticks (~300 ms) keeps the leaderboard lively without flooding clients.
+local PUSH_EVERY_TICKS   = 3
 local COUNTDOWN_FROM     = 3     -- 3, 2, 1, GO!
 local DEFAULT_TOTAL_LAPS = 5
 local MAX_TOTAL_LAPS     = 500
+-- League regulations. Resets: -1 means unlimited (the historical behaviour and
+-- the default), 0 forbids resets outright, N allows N per session.
+local UNLIMITED_RESETS   = -1
+local MAX_RESET_LIMIT    = 99
 
 -- ---------------------------------------------------------------------------
 -- State
 -- ---------------------------------------------------------------------------
 local race = {
-  phase     = 'waiting',  -- waiting | qualifying | grid | countdown | racing | finished
-  time      = 0.0,        -- seconds since GO (advanced by RM_Tick while racing)
-  totalLaps = DEFAULT_TOTAL_LAPS,
+  phase        = 'waiting',  -- waiting | qualifying | grid | countdown | racing | finished
+  time         = 0.0,        -- seconds since GO (advanced by RM_Tick while racing)
+  totalLaps    = DEFAULT_TOTAL_LAPS,
+  maxResets    = UNLIMITED_RESETS,  -- vehicle resets allowed per driver per session
+  jokerEnabled = false,      -- rallycross joker lap required exactly once per race
 }
 local players = {}          -- [playerID] = per-player record
 local tickCounter = 0
@@ -68,14 +77,31 @@ local function newRecord(pid)
   return {
     id         = pid,
     name       = MP.GetPlayerName(pid) or ('Player ' .. pid),
-    status     = 'waiting',  -- waiting | qualifying | gridded | racing | finished | dnf
+    -- waiting | qualifying | gridded | racing | finished | dsq | dnf
+    status     = 'waiting',
     gridPos    = nil,        -- locked-in starting position (Generate Grid)
     qualiBest  = nil,        -- best qualifying lap (seconds)
     raceBest   = nil,        -- best race lap (seconds)
     currentLap = 0,          -- lap the driver is currently on (1-based once racing)
     lapsLed    = 0,          -- laps this driver crossed the line first on
     finishTime = nil,        -- server race clock at final-lap completion
+    resets     = 0,          -- vehicle resets consumed this session
+    jokerTaken = 0,          -- completed runs of the joker route this race
+    jokerLap   = nil,        -- lap the joker route was taken on
+    outReason  = nil,        -- why this driver is dnf/dsq (results + UI text)
+    -- Live position tracking (see the "Running order" section below).
+    position   = nil,        -- current place in the running order (1 = leader)
+    cpCleared  = 0,          -- checkpoints passed on the current lap
+    distNext   = nil,        -- metres from the car to the next checkpoint centre
   }
+end
+
+-- Telemetry reported by a client is only meaningful while that driver is
+-- circulating; wipe it whenever their lap state restarts so a stale distance
+-- can never decide a position.
+local function clearProgress(rec)
+  rec.cpCleared = 0
+  rec.distNext  = nil
 end
 
 local function ensurePlayer(pid)
@@ -103,8 +129,61 @@ local function decodeString(rawData, field)
 end
 
 -- ---------------------------------------------------------------------------
--- Broadcast
+-- Running order (live positions)
 -- ---------------------------------------------------------------------------
+-- Classification bucket shared by the live table and the results export:
+-- classified finishers first, then drivers still out on track, then drivers
+-- excluded by the regulations (joker ruling), then DNFs.
+local function classRank(rec)
+  if rec.status == 'dnf' then return 3 end
+  if rec.status == 'dsq' then return 2 end
+  if rec.finishTime then return 0 end
+  return 1
+end
+
+-- The live running order between two drivers who are still circulating is
+-- decided by three metrics, in this exact order:
+--
+--   1. Laps completed        -- more laps is ahead. Taken from the SERVER's own
+--                               lap counter (RM_onLap), never from the client
+--                               telemetry, so a client cannot invent a lap.
+--   2. Checkpoints cleared   -- on the current lap; more gates passed is ahead.
+--   3. Distance to the next  -- metres from the car to the next checkpoint's
+--      checkpoint               centre, measured client-side (the server has no
+--                               physics access). Shorter is ahead.
+--
+-- Drivers who have not reported yet share the same defaults (0 checkpoints, no
+-- distance), so the pre-existing laps-led / grid-position tie-breaks still
+-- decide those cases exactly as they did before.
+local function raceOrderLess(a, b)
+  local ra, rb = classRank(a), classRank(b)
+  if ra ~= rb then return ra < rb end
+  -- Finishers (and drivers excluded after finishing) are ordered by the flag.
+  if (ra == 0 or ra == 2) and a.finishTime and b.finishTime and a.finishTime ~= b.finishTime then
+    return a.finishTime < b.finishTime
+  end
+  -- 1. Laps completed.
+  if a.currentLap ~= b.currentLap then return a.currentLap > b.currentLap end
+  -- 2. Checkpoints cleared on the current lap.
+  local ca, cb = a.cpCleared or 0, b.cpCleared or 0
+  if ca ~= cb then return ca > cb end
+  -- 3. Distance to the next checkpoint (a driver who has not reported one is
+  --    treated as infinitely far away, i.e. behind anyone who has).
+  local da, db = a.distNext or math.huge, b.distNext or math.huge
+  if da ~= db then return da < db end
+  -- Stable fallbacks: laps led, then the starting grid.
+  if a.lapsLed ~= b.lapsLed then return a.lapsLed > b.lapsLed end
+  return (a.gridPos or math.huge) < (b.gridPos or math.huge)
+end
+
+-- Stamp each driver with their place in the order the list is already in.
+-- Called on every broadcast, so `position` is always in sync with the array
+-- the clients receive.
+local function assignPositions(list)
+  for i, rec in ipairs(list) do rec.position = i end
+  return list
+end
+
 local function buildDrivers()
   local list = {}
   for _, rec in pairs(players) do
@@ -122,26 +201,33 @@ local function buildDrivers()
       return a.id < b.id
     end)
   else
-    -- Race order: finished first (by finish time), then racers by laps
-    -- completed (laps led breaks ties), then gridded by position, DNFs last.
-    table.sort(list, function (a, b)
-      local ra = a.status == 'dnf' and 2 or (a.finishTime and 0 or 1)
-      local rb = b.status == 'dnf' and 2 or (b.finishTime and 0 or 1)
-      if ra ~= rb then return ra < rb end
-      if ra == 0 then return a.finishTime < b.finishTime end
-      if a.currentLap ~= b.currentLap then return a.currentLap > b.currentLap end
-      if a.lapsLed ~= b.lapsLed then return a.lapsLed > b.lapsLed end
-      return (a.gridPos or math.huge) < (b.gridPos or math.huge)
-    end)
+    -- Race order: finished first (by finish time), then the live running order
+    -- (laps > checkpoints > distance to the next checkpoint), then excluded
+    -- (joker ruling) drivers, DNFs last.
+    table.sort(list, raceOrderLess)
   end
-  return list
+  -- The array clients receive is already sorted leader-first, and every driver
+  -- carries the matching position integer.
+  return assignPositions(list)
 end
 
+-- Forward declaration: the garage store lives further down the file (its own
+-- module), but the state broadcast has to advertise the approved car list.
+local garageSnapshot
+
 local function broadcastState(targetPid)
+  local garageView = garageSnapshot and garageSnapshot() or {}
   local payload = Util.JsonEncode({
     phase        = race.phase,
     raceTime     = race.time,
     totalLaps    = race.totalLaps,
+    -- League regulations (Module 1 + 2): clients enforce these locally, the
+    -- server re-checks and is authoritative for the final classification.
+    maxResets    = race.maxResets,
+    jokerEnabled = race.jokerEnabled,
+    -- Approved vehicle/setup list (Module 4).
+    garage        = garageView.list,
+    garageEnforce = garageView.enforce,
     -- True when at least one session is currently logged in as an admin. Lets
     -- non-admin clients auto-spectate (skip the login prompt) when someone is
     -- already running the session, while still exposing a way back to login.
@@ -149,6 +235,23 @@ local function broadcastState(targetPid)
     drivers      = buildDrivers(),
   })
   MP.TriggerClientEvent(targetPid or -1, 'RM_Update', payload)
+end
+
+-- Forced spectator mode (Module 1). A driver who is out of the session (reset
+-- allowance spent, or eliminated in a derby) gets their vehicle removed and
+-- their camera pinned to freecam until the session ends. `source` scopes the
+-- lock so the racing state machine and the isolated derby module can never
+-- release each other's spectators.
+local function forceSpectate(pid, reason, source)
+  MP.TriggerClientEvent(pid, 'RM_ForceSpectate', Util.JsonEncode({
+    reason = reason or 'You are out of this session',
+    source = source or 'race',
+  }))
+end
+
+local function releaseSpectators(source, targetPid)
+  MP.TriggerClientEvent(targetPid or -1, 'RM_ReleaseSpectate',
+    Util.JsonEncode({ source = source or 'race' }))
 end
 
 local function broadcastCountdown(count)
@@ -292,19 +395,11 @@ local function qualiClassification()
 end
 
 -- Race classification: finishers by finish time, then unclassified by laps
--- completed, DNFs last (same ordering the live table uses).
+-- completed, excluded drivers, DNFs last (same ordering the live table uses).
 local function raceClassification()
   local list = {}
   for _, rec in pairs(players) do list[#list + 1] = rec end
-  table.sort(list, function (a, b)
-    local ra = a.status == 'dnf' and 2 or (a.finishTime and 0 or 1)
-    local rb = b.status == 'dnf' and 2 or (b.finishTime and 0 or 1)
-    if ra ~= rb then return ra < rb end
-    if ra == 0 then return a.finishTime < b.finishTime end
-    if a.currentLap ~= b.currentLap then return a.currentLap > b.currentLap end
-    if a.lapsLed ~= b.lapsLed then return a.lapsLed > b.lapsLed end
-    return (a.gridPos or math.huge) < (b.gridPos or math.huge)
-  end)
+  table.sort(list, raceOrderLess)
   return list
 end
 
@@ -319,6 +414,10 @@ local function buildResultsText()
   add(' ' .. os.date('%Y-%m-%d %H:%M:%S'))
   add(string.format(' Race distance: %d lap%s | Drivers: %d',
     race.totalLaps, race.totalLaps == 1 and '' or 's', #final))
+  add(string.format(' Regulations: resets %s | joker lap %s',
+    race.maxResets < 0 and 'unlimited'
+      or (race.maxResets == 0 and 'not allowed' or tostring(race.maxResets) .. ' per driver'),
+    race.jokerEnabled and 'required exactly once' or 'disabled'))
   add('==================================================')
   add('')
   add('--- QUALIFYING RESULTS ---')
@@ -330,14 +429,32 @@ local function buildResultsText()
   if #quali == 0 then add('(no drivers)') end
   add('')
   add('--- RACE RESULTS ---')
-  add(string.format('%-5s %-22s %-10s %-9s %s', 'Pos', 'Driver', 'Best Lap', 'Laps Led', 'Finish'))
+  -- Optional regulation columns: only present when that regulation is armed,
+  -- so a plain race exports exactly the same table it always did.
+  local jokerCol  = race.jokerEnabled and string.format(' %-7s', 'Joker') or ''
+  local resetCol  = race.maxResets >= 0 and string.format(' %-6s', 'Resets') or ''
+  add(string.format('%-5s %-22s %-10s %-9s %s%s%s',
+    'Pos', 'Driver', 'Best Lap', 'Laps Led', 'Finish', jokerCol, resetCol))
   for i, rec in ipairs(final) do
-    local classified = rec.finishTime ~= nil
-    local pos = classified and ('P' .. i) or 'DNF'
-    local finish = classified and fmtLap(rec.finishTime) or 'DNF'
+    local excluded   = rec.status == 'dsq'
+    local classified = rec.finishTime ~= nil and not excluded
+    local pos, finish
+    if excluded then
+      pos, finish = 'DSQ', rec.outReason or 'Disqualified'
+    elseif classified then
+      pos, finish = 'P' .. i, fmtLap(rec.finishTime)
+    else
+      pos, finish = 'DNF', rec.outReason or 'DNF'
+    end
     local tag = (i == 1 and classified) and '  << RACE WINNER' or ''
-    add(string.format('%-5s %-22s %-10s %-9d %-10s%s',
-      pos, rec.name, fmtLap(rec.raceBest), rec.lapsLed or 0, finish, tag))
+    local jokerVal = race.jokerEnabled
+      and string.format(' %-7s', (rec.jokerTaken or 0) == 0 and 'missed'
+        or ('lap ' .. tostring(rec.jokerLap or '?'))) or ''
+    local resetVal = race.maxResets >= 0
+      and string.format(' %-6s', string.format('%d/%d', rec.resets or 0, race.maxResets)) or ''
+    add(string.format('%-5s %-22s %-10s %-9d %-10s%s%s%s',
+      pos, rec.name, fmtLap(rec.raceBest), rec.lapsLed or 0, finish,
+      jokerVal, resetVal, tag))
   end
   if #final == 0 then add('(no drivers)') end
   add('')
@@ -355,12 +472,46 @@ local function writeResults()
   return true, path
 end
 
+-- ---------------------------------------------------------------------------
+-- Joker lap ruling (Module 2)
+-- ---------------------------------------------------------------------------
+-- Clients police the joker route live (one run per race, never on lap 1) and
+-- report each valid completion with RM_JokerLap. The server is authoritative
+-- at the flag: every driver who completed the race must have taken the joker
+-- route exactly once, or their final result becomes a disqualification that is
+-- written straight into the results .txt.
+local function applyJokerRuling()
+  if not race.jokerEnabled then return 0 end
+  local excluded = 0
+  for _, rec in pairs(players) do
+    if rec.status == 'finished' and (rec.jokerTaken or 0) ~= 1 then
+      rec.status = 'dsq'
+      rec.outReason = (rec.jokerTaken or 0) == 0
+        and 'Disqualified - Missed Joker'
+        or  'Disqualified - Extra Joker'
+      excluded = excluded + 1
+      print(string.format('[RaceManager] Joker ruling: %s %s (took it %d time(s))',
+        rec.name, rec.outReason, rec.jokerTaken or 0))
+    end
+  end
+  return excluded
+end
+
 -- Single exit point for every way a race ends (all finished, admin ended,
--- last racer disconnected): flip the phase, log the results file, announce
--- it in chat.
+-- last racer disconnected): apply the joker ruling, flip the phase, log the
+-- results file, announce it in chat.
 local function finishRace(reason)
+  local excluded = applyJokerRuling()
   race.phase = 'finished'
+  -- The session is over: anyone forced into spectator mode by the reset rule
+  -- gets their camera and vehicle back.
+  releaseSpectators('race')
   broadcastState()
+  if excluded > 0 then
+    MP.SendChatMessage(-1, string.format(
+      '[RaceManager] Joker lap ruling: %d driver%s disqualified for not taking the Joker Route exactly once.',
+      excluded, excluded == 1 and '' or 's'))
+  end
   print('[RaceManager] Race over: ' .. reason)
   local ok, wrote, pathOrErr = pcall(writeResults)
   if ok and wrote then
@@ -389,6 +540,8 @@ function RM_onStartQualifying(pid)
     rec.status = 'qualifying'
   end
   race.phase = 'qualifying'
+  -- Fresh session: nobody is serving a forced-spectator penalty any more.
+  releaseSpectators('race')
   broadcastState()
   print('[RaceManager] Qualifying started by ' .. (MP.GetPlayerName(pid) or pid))
 end
@@ -430,8 +583,15 @@ function RM_onGenerateGrid(pid)
     rec.currentLap = 0
     rec.lapsLed    = 0
     rec.finishTime = nil
+    -- New race: reset allowance and joker credit start over for everyone.
+    rec.resets     = 0
+    rec.jokerTaken = 0
+    rec.jokerLap   = nil
+    rec.outReason  = nil
+    clearProgress(rec)
   end
   race.phase = 'grid'
+  releaseSpectators('race')
   broadcastState()
   print('[RaceManager] Grid generated by ' .. (MP.GetPlayerName(pid) or pid)
     .. ' (' .. #ordered .. ' drivers, pole: '
@@ -449,6 +609,107 @@ function RM_onSetTotalLaps(pid, rawData)
   race.totalLaps = n
   broadcastState()
   print('[RaceManager] Total laps set to ' .. n .. ' by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- ---------------------------------------------------------------------------
+-- Module 1: vehicle reset ruleset
+-- ---------------------------------------------------------------------------
+-- Host sets how many vehicle resets/repairs each driver gets per session.
+--   -1 (or any negative value)  unlimited (default)
+--    0                          no resets at all — the first one ends your race
+--    N                          N resets, the N+1st ends your race
+-- Locked once the countdown/race is under way so the rule can't change under a
+-- driver who has already spent their allowance.
+function RM_onSetMaxResets(pid, rawData)
+  if not requireAuth(pid) then return end
+  if race.phase == 'countdown' or race.phase == 'racing' then return end
+  local n = decodeNumber(rawData, 'maxResets')
+  if not n then return end
+  n = math.floor(n)
+  if n < 0 then n = UNLIMITED_RESETS elseif n > MAX_RESET_LIMIT then n = MAX_RESET_LIMIT end
+  race.maxResets = n
+  broadcastState()
+  print('[RaceManager] Max vehicle resets set to '
+    .. (n < 0 and 'unlimited' or tostring(n)) .. ' by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- Client consumed one of its allowed resets. The client counts locally (it is
+-- the only side that sees the reset happen); the server keeps the tally that
+-- the live table and the results file report.
+function RM_onVehicleReset(pid)
+  local rec = players[pid]
+  if not rec then return end
+  if race.phase ~= 'racing' and race.phase ~= 'countdown' then return end
+  -- Only drivers still in the race spend allowance; a DNF'd/finished driver's
+  -- resets are meaningless and must not keep growing in the results file.
+  if rec.status ~= 'racing' and rec.status ~= 'gridded' then return end
+  rec.resets = (rec.resets or 0) + 1
+  print(string.format('[RaceManager] %s used reset %d/%s',
+    rec.name, rec.resets, race.maxResets < 0 and '∞' or tostring(race.maxResets)))
+  broadcastState()
+end
+
+-- Client attempted a reset it was not entitled to: it blocked the action on its
+-- own side and is reporting the infringement. The driver is DNF'd, forced into
+-- spectator mode, and the race closes if that was the last car running.
+function RM_onResetDenied(pid)
+  local rec = players[pid]
+  if not rec then return end
+  if race.phase ~= 'racing' and race.phase ~= 'countdown' then return end
+  if rec.status ~= 'racing' and rec.status ~= 'gridded' then return end
+  rec.status    = 'dnf'
+  rec.outReason = 'DNF - Reset limit exceeded'
+  forceSpectate(pid, 'Reset limit exceeded — you are out of this race', 'race')
+  MP.SendChatMessage(-1, string.format(
+    '[RaceManager] %s is OUT: vehicle reset limit exceeded (%s allowed).',
+    rec.name, race.maxResets < 0 and 'unlimited' or tostring(race.maxResets)))
+  print('[RaceManager] ' .. rec.name .. ' DNF: reset limit exceeded')
+  if race.phase == 'racing' then
+    for _, r in pairs(players) do
+      if r.status == 'racing' then
+        broadcastState()
+        return
+      end
+    end
+    finishRace('no racers left on track')
+    return
+  end
+  broadcastState()
+end
+
+-- ---------------------------------------------------------------------------
+-- Module 2: rallycross joker lap
+-- ---------------------------------------------------------------------------
+-- Host arms/disarms the joker requirement. The joker route itself is a second
+-- checkpoint set built in the client editor and shipped with the track layout;
+-- the server only needs to know whether the rule is in force. Locked during a
+-- countdown/race so drivers can't be judged against a rule that appeared
+-- mid-race.
+function RM_onSetJokerEnabled(pid, rawData)
+  if not requireAuth(pid) then return end
+  if race.phase == 'countdown' or race.phase == 'racing' then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  race.jokerEnabled = data.enabled == true or data.enabled == 1
+  broadcastState()
+  print('[RaceManager] Joker lap ' .. (race.jokerEnabled and 'ENABLED' or 'disabled')
+    .. ' by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- Client completed the joker route. It already enforced "not on lap 1" and
+-- "only once" locally; the server records the count (and the lap it happened
+-- on) and rules on it when the race ends.
+function RM_onJokerLap(pid, rawData)
+  if race.phase ~= 'racing' then return end
+  local rec = players[pid]
+  if not rec or rec.status ~= 'racing' then return end
+  rec.jokerTaken = (rec.jokerTaken or 0) + 1
+  local lap = decodeNumber(rawData, 'lap')
+  if rec.jokerLap == nil then rec.jokerLap = lap and math.floor(lap) or rec.currentLap end
+  print(string.format('[RaceManager] %s took the joker route on lap %s (total %d)',
+    rec.name, tostring(rec.jokerLap), rec.jokerTaken))
+  broadcastState()
 end
 
 function RM_onStartCountdown(pid)
@@ -485,10 +746,17 @@ function RM_CountdownTick()
       rec.raceBest   = nil
       rec.lapsLed    = 0
       rec.finishTime = nil
+      rec.resets     = 0
+      rec.jokerTaken = 0
+      rec.jokerLap   = nil
+      rec.outReason  = nil
+      clearProgress(rec)
     end
   end
   broadcastState()
-  print('[RaceManager] GO! (' .. race.totalLaps .. ' laps)')
+  print('[RaceManager] GO! (' .. race.totalLaps .. ' laps)'
+    .. (race.jokerEnabled and ' — JOKER LAP REQUIRED' or '')
+    .. (race.maxResets >= 0 and (' — resets limited to ' .. race.maxResets) or ''))
 end
 
 -- End Session: during a race anyone still on track becomes DNF; during
@@ -502,6 +770,7 @@ function RM_onEndRace(pid)
     for _, rec in pairs(players) do
       if rec.status == 'racing' or rec.status == 'gridded' then
         rec.status = 'dnf'
+        rec.outReason = rec.outReason or 'DNF - Session ended'
       end
     end
     finishRace('ended by ' .. (MP.GetPlayerName(pid) or pid))
@@ -523,6 +792,7 @@ function RM_onResetLeaderboard(pid)
   for id in pairs(MP.GetPlayers()) do
     ensurePlayer(id)
   end
+  releaseSpectators('race')
   broadcastState()
   print('[RaceManager] Session reset by ' .. (MP.GetPlayerName(pid) or pid))
 end
@@ -545,6 +815,48 @@ function RM_onQualiLap(pid, rawData)
   broadcastState()
 end
 
+-- ---------------------------------------------------------------------------
+-- Live position telemetry from clients
+-- ---------------------------------------------------------------------------
+-- Every racing client reports its progress a few times a second:
+--   lap  -- the lap it believes it is on (sanity check only; the server's own
+--           counter stays authoritative for metric 1)
+--   cp   -- checkpoints cleared on the current lap (metric 2)
+--   dist -- metres to the centre of the next checkpoint (metric 3)
+--
+-- This deliberately does NOT broadcast: with a full grid reporting at 3 Hz that
+-- would be dozens of broadcasts a second. The values are just stored, and the
+-- race tick loop re-sorts and pushes the running order on its own cadence.
+local MAX_CHECKPOINTS = 500      -- sanity clamp on a reported checkpoint count
+local MAX_REPORT_DIST = 1e6      -- metres; anything beyond this is nonsense
+
+function RM_onProgress(pid, rawData)
+  if race.phase ~= 'racing' then return end
+  local rec = players[pid]
+  if not rec or rec.status ~= 'racing' then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+
+  -- A report from a lap the server has not credited yet (or has already moved
+  -- past) is dropped rather than applied: mixing a stale checkpoint count into
+  -- the comparator would make positions flicker around every lap crossing.
+  local lap = tonumber(data.lap)
+  if lap and math.floor(lap) ~= rec.currentLap then return end
+
+  local cp = tonumber(data.cp)
+  if cp then
+    cp = math.floor(cp)
+    if cp < 0 then cp = 0 elseif cp > MAX_CHECKPOINTS then cp = MAX_CHECKPOINTS end
+    rec.cpCleared = cp
+  end
+
+  local dist = tonumber(data.dist)
+  if dist and dist >= 0 and dist <= MAX_REPORT_DIST then
+    rec.distNext = dist
+  end
+end
+
 -- Race: client crossed the start/finish line after all checkpoints.
 -- Server decides Laps Led (first report per lap number wins — one arrival
 -- order for everyone) and the finish (lap count reached).
@@ -562,6 +874,9 @@ function RM_onLap(pid, rawData)
     lapFirsts[completed] = pid
     rec.lapsLed = rec.lapsLed + 1
   end
+  -- New lap (or the flag): the checkpoint/distance telemetry from the lap just
+  -- completed must not linger and rank this driver against the next one.
+  clearProgress(rec)
 
   if completed >= race.totalLaps then
     rec.status = 'finished'
@@ -913,6 +1228,9 @@ function RM_onSaveLayout(pid, rawData)
     height      = tonumber(data.height) or 10,
     depth       = tonumber(data.depth)  or 4,
     checkpoints = checkpoints,
+    -- Optional rallycross joker route (Module 2): a second, independent gate
+    -- set stored with the layout. Absent on plain circuits.
+    joker       = sanitizeCheckpoints(data.joker),
   }
   local all = getLayouts()
   local replaced = false
@@ -930,8 +1248,10 @@ function RM_onSaveLayout(pid, rawData)
     print('[RaceManager] Failed to write ' .. LAYOUTS_FILE .. ': ' .. tostring(werr))
     return
   end
-  local msg = string.format('[RaceManager] Layout "%s" (%d gates, %s) %s by %s',
-    name, #checkpoints, map, replaced and 'updated' or 'saved', MP.GetPlayerName(pid) or pid)
+  local msg = string.format('[RaceManager] Layout "%s" (%d gates%s, %s) %s by %s',
+    name, #checkpoints,
+    entry.joker and (' + ' .. #entry.joker .. ' joker gates') or '',
+    map, replaced and 'updated' or 'saved', MP.GetPlayerName(pid) or pid)
   MP.SendChatMessage(-1, msg)
   print(msg)
   sendLayoutList(-1)
@@ -964,6 +1284,250 @@ function RM_onLoadLayout(pid, rawData)
     end
   end
   print(string.format('[RaceManager] Load failed: no layout "%s" for map %s', data.name, map))
+end
+
+-- ---------------------------------------------------------------------------
+-- Module 4: "BeamJoy" vehicle & setup locking (the Garage List)
+-- ---------------------------------------------------------------------------
+-- An admin drives the car they want to allow, presses "Whitelist Current
+-- Vehicle", and the client captures that vehicle's exact configuration (model
+-- + full part config + tuning variables) as a signature string. Repeat to build
+-- a Garage List of allowed cars.
+--
+-- Enforcement has two layers, because the server has no physics/vehicle
+-- introspection of its own:
+--   1. BeamMP's onVehicleSpawn / onVehicleEdited hooks: the raw payload carries
+--      the jbeam model name ("jbm"), so a car whose *model* is not on the list
+--      is cancelled outright before it ever exists for other players.
+--   2. RM_VehicleConfig: the client reports the exact signature of every
+--      vehicle it spawns or re-tunes. A signature that is not on the list gets
+--      the vehicle removed and an error pushed to that player's UI.
+-- Authenticated admins are exempt — otherwise an admin could never spawn the
+-- car they are about to whitelist.
+local GARAGE_FILE        = LAYOUTS_DIR .. '/garage.json'
+local MAX_GARAGE_ENTRIES = 60
+local MAX_SIG_LENGTH     = 4000
+
+local garage = {
+  enforce = false,   -- master switch for the whole rule
+  list    = {},      -- { { model = 'etk800', label = 'ETK 800 - Race', sig = '...' } }
+}
+local garageLoaded = false
+
+local function loadGarageFromDisk()
+  local f = io.open(GARAGE_FILE, 'r')
+  if not f then return end
+  local text = f:read('*a')
+  f:close()
+  local ok, data = pcall(jsonParse, text)
+  if not ok or type(data) ~= 'table' then
+    print('[RaceManager] Could not parse ' .. GARAGE_FILE .. ', starting with an empty garage')
+    return
+  end
+  garage.enforce = data.enforce == true
+  garage.list = {}
+  for _, e in ipairs(type(data.list) == 'table' and data.list or {}) do
+    if type(e) == 'table' and type(e.sig) == 'string' and e.sig ~= '' then
+      garage.list[#garage.list + 1] = {
+        model = tostring(e.model or '?'),
+        label = tostring(e.label or e.model or 'Vehicle'),
+        sig   = e.sig,
+      }
+    end
+  end
+end
+
+local function getGarage()
+  if not garageLoaded then
+    garageLoaded = true
+    loadGarageFromDisk()
+    print('[RaceManager] Garage list: ' .. #garage.list .. ' approved vehicle(s), enforcement '
+      .. (garage.enforce and 'ON' or 'off'))
+  end
+  return garage
+end
+
+local function saveGarageToDisk()
+  ensureLayoutsDir()
+  local f, ferr = io.open(GARAGE_FILE, 'w')
+  if not f then return false, tostring(ferr) end
+  f:write(jsonStringify({ version = 1, enforce = getGarage().enforce, list = getGarage().list }))
+  f:close()
+  return true
+end
+
+-- Assigned to the forward-declared local near broadcastState so every state
+-- broadcast can carry the current Garage List without the racing code knowing
+-- how it is stored.
+garageSnapshot = function ()
+  local g = getGarage()
+  -- Signatures can be long; the UI only ever displays model/label, so ship a
+  -- compact view (the signature stays server-side).
+  local list = {}
+  for i, e in ipairs(g.list) do
+    list[i] = { model = e.model, label = e.label }
+  end
+  return { list = list, enforce = g.enforce }
+end
+
+-- Enforcement only bites when it is switched on AND at least one car has been
+-- captured — an empty whitelist would otherwise lock every player out.
+local function garageEnforcing()
+  local g = getGarage()
+  return g.enforce and #g.list > 0
+end
+
+local function garageHasSig(sig)
+  for _, e in ipairs(getGarage().list) do
+    if e.sig == sig then return true end
+  end
+  return false
+end
+
+local function garageHasModel(model)
+  if not model or model == '' then return false end
+  model = model:lower()
+  for _, e in ipairs(getGarage().list) do
+    if tostring(e.model):lower() == model then return true end
+  end
+  return false
+end
+
+local function rejectVehicle(pid, vid, why)
+  if MP.RemoveVehicle and vid then
+    pcall(MP.RemoveVehicle, pid, vid)
+  end
+  MP.TriggerClientEvent(pid, 'RM_VehicleRejected', Util.JsonEncode({
+    message = 'Vehicle/Setup not allowed in this session.',
+    detail  = why or '',
+  }))
+  print(string.format('[RaceManager] Rejected vehicle from %s (%s)',
+    MP.GetPlayerName(pid) or pid, why or 'not on the Garage List'))
+end
+
+-- Admin captured the car they are currently driving.
+function RM_onWhitelistVehicle(pid, rawData)
+  if not requireAuth(pid) then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then
+    print('[RaceManager] Whitelist rejected: undecodable payload')
+    return
+  end
+  local sig = data.sig and tostring(data.sig) or ''
+  if sig == '' or #sig > MAX_SIG_LENGTH then
+    print('[RaceManager] Whitelist rejected: missing or oversized configuration signature')
+    return
+  end
+  local g = getGarage()
+  if garageHasSig(sig) then
+    MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+      added = false, message = 'That exact vehicle/setup is already on the Garage List',
+    }))
+    return
+  end
+  if #g.list >= MAX_GARAGE_ENTRIES then
+    MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+      added = false, message = 'Garage List is full (' .. MAX_GARAGE_ENTRIES .. ' entries)',
+    }))
+    return
+  end
+  local entry = {
+    model = tostring(data.model or '?'),
+    label = tostring(data.label or data.model or 'Vehicle'),
+    sig   = sig,
+  }
+  g.list[#g.list + 1] = entry
+  local wrote, werr = saveGarageToDisk()
+  if not wrote then print('[RaceManager] Failed to write ' .. GARAGE_FILE .. ': ' .. tostring(werr)) end
+  MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+    added = true, message = 'Added "' .. entry.label .. '" to the Garage List',
+  }))
+  local msg = string.format('[RaceManager] "%s" added to the Garage List by %s (%d approved)',
+    entry.label, MP.GetPlayerName(pid) or pid, #g.list)
+  MP.SendChatMessage(-1, msg)
+  print(msg)
+  broadcastState()
+end
+
+function RM_onClearGarage(pid)
+  if not requireAuth(pid) then return end
+  local g = getGarage()
+  local n = #g.list
+  g.list = {}
+  saveGarageToDisk()
+  broadcastState()
+  print('[RaceManager] Garage List cleared by ' .. (MP.GetPlayerName(pid) or pid)
+    .. ' (' .. n .. ' entr' .. (n == 1 and 'y' or 'ies') .. ' removed)')
+end
+
+-- Drop a single approved car by its position in the list.
+function RM_onRemoveGarageEntry(pid, rawData)
+  if not requireAuth(pid) then return end
+  local idx = decodeNumber(rawData, 'index')
+  if not idx then return end
+  idx = math.floor(idx)
+  local g = getGarage()
+  if idx < 1 or idx > #g.list then return end
+  local removed = table.remove(g.list, idx)
+  saveGarageToDisk()
+  broadcastState()
+  print('[RaceManager] "' .. removed.label .. '" removed from the Garage List by '
+    .. (MP.GetPlayerName(pid) or pid))
+end
+
+function RM_onSetGarageEnforce(pid, rawData)
+  if not requireAuth(pid) then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  getGarage().enforce = data.enabled == true or data.enabled == 1
+  saveGarageToDisk()
+  broadcastState()
+  print('[RaceManager] Garage enforcement '
+    .. (garage.enforce and 'ENABLED' or 'disabled') .. ' by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- Client reported the exact configuration of a vehicle it just spawned or
+-- re-tuned. This is the strict check: the signature must be on the list.
+function RM_onVehicleConfig(pid, rawData)
+  if not garageEnforcing() then return end
+  if isAuthenticated(pid) then return end  -- admins build the list, exempt
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local sig = data.sig and tostring(data.sig) or ''
+  if sig ~= '' and garageHasSig(sig) then return end
+  rejectVehicle(pid, tonumber(data.vid), 'setup signature not on the Garage List')
+end
+
+-- BeamMP spawn/edit hooks. The payload is the raw vehicle packet; the jbeam
+-- model name is enough to cancel an obviously-disallowed car immediately
+-- (returning 1 tells BeamMP to drop the spawn). Returning nothing allows it,
+-- and the RM_VehicleConfig check above still has the final word on the setup.
+local function garageModelFromPacket(data)
+  if type(data) ~= 'string' then return nil end
+  return data:match('"jbm"%s*:%s*"([^"]*)"')
+end
+
+function RM_onVehicleSpawn(pid, vid, data)
+  if not garageEnforcing() then return end
+  if isAuthenticated(pid) then return end
+  local model = garageModelFromPacket(data)
+  if model and not garageHasModel(model) then
+    rejectVehicle(pid, vid, 'vehicle "' .. model .. '" is not on the Garage List')
+    return 1  -- cancel the spawn
+  end
+end
+
+function RM_onVehicleEdited(pid, vid, data)
+  if not garageEnforcing() then return end
+  if isAuthenticated(pid) then return end
+  local model = garageModelFromPacket(data)
+  if model and not garageHasModel(model) then
+    rejectVehicle(pid, vid, 'edited into "' .. model .. '", which is not on the Garage List')
+    return 1  -- cancel the edit
+  end
 end
 
 -- ===========================================================================
@@ -1086,6 +1650,9 @@ end
 local function finishDerby(reason)
   derby.phase = 'finished'
   MP.CancelEventTimer('RM_DerbyTick')
+  -- The derby is over: every eliminated driver gets their car and camera back.
+  -- Scoped to the 'derby' source so a racing DNF's spectator lock is untouched.
+  releaseSpectators('derby')
   broadcastDerbyState()
   print('[RaceManager] Derby over: ' .. reason)
   local ok, wrote, pathOrErr = pcall(writeDerbyResults)
@@ -1109,6 +1676,11 @@ local function derbyEliminate(pid, reason)
   rec.status   = 'eliminated'
   rec.reason   = reason
   rec.elimTime = derby.time
+  -- Forced spectator mode (Module 1): an eliminated driver loses their car and
+  -- their camera goes to freecam until the derby ends. This only *sends* a
+  -- client event — no racing state is read or written, so the isolation of this
+  -- module is intact.
+  forceSpectate(pid, reason .. ' — you are out of this derby', 'derby')
   print(string.format('[RaceManager] Derby: %s eliminated (%s) at %s',
     rec.name, reason, derbyFmtTime(derby.time)))
 
@@ -1192,6 +1764,7 @@ function RM_onDerbyStart(pid)
   end
   derby.phase = 'running'
   MP.CreateEventTimer('RM_DerbyTick', DERBY_TICK_MS)
+  releaseSpectators('derby')  -- fresh derby: nobody carries a stale penalty
   broadcastDerbyState()
   MP.SendChatMessage(-1, string.format(
     '[RaceManager] DEMO DERBY STARTED! %d drivers. Stay inside the arena and keep moving!', count))
@@ -1269,6 +1842,10 @@ end
 -- ---------------------------------------------------------------------------
 -- Clock + lifecycle
 -- ---------------------------------------------------------------------------
+-- Race clock + the live-position broadcast loop. Clients feed telemetry in
+-- continuously (RM_Progress) but never trigger a broadcast themselves; this is
+-- the single throttled place where the running order is re-sorted, re-numbered
+-- (buildDrivers -> assignPositions) and pushed to everyone.
 function RM_Tick()
   if race.phase ~= 'racing' then return end
   race.time = race.time + TICK_MS / 1000.0
@@ -1299,6 +1876,7 @@ function RM_onPlayerDisconnect(pid)
   end
   if rec.status == 'racing' or rec.status == 'gridded' then
     rec.status = 'dnf'
+    rec.outReason = rec.outReason or 'DNF - Disconnected'
   elseif rec.status == 'waiting' or (rec.status == 'qualifying' and not rec.qualiBest) then
     players[pid] = nil
   end
@@ -1323,12 +1901,28 @@ function onInit()
   MP.RegisterEvent('RM_StartQualifying',  'RM_onStartQualifying')
   MP.RegisterEvent('RM_GenerateGrid',     'RM_onGenerateGrid')
   MP.RegisterEvent('RM_SetTotalLaps',     'RM_onSetTotalLaps')
+  -- Module 1: vehicle reset ruleset + forced spectator reports
+  MP.RegisterEvent('RM_SetMaxResets',     'RM_onSetMaxResets')
+  MP.RegisterEvent('RM_VehicleReset',     'RM_onVehicleReset')
+  MP.RegisterEvent('RM_ResetDenied',      'RM_onResetDenied')
+  -- Module 2: rallycross joker lap
+  MP.RegisterEvent('RM_SetJokerEnabled',  'RM_onSetJokerEnabled')
+  MP.RegisterEvent('RM_JokerLap',         'RM_onJokerLap')
+  -- Module 4: garage list (vehicle & setup locking)
+  MP.RegisterEvent('RM_WhitelistVehicle', 'RM_onWhitelistVehicle')
+  MP.RegisterEvent('RM_ClearGarage',      'RM_onClearGarage')
+  MP.RegisterEvent('RM_RemoveGarageEntry','RM_onRemoveGarageEntry')
+  MP.RegisterEvent('RM_SetGarageEnforce', 'RM_onSetGarageEnforce')
+  MP.RegisterEvent('RM_VehicleConfig',    'RM_onVehicleConfig')
+  MP.RegisterEvent('onVehicleSpawn',      'RM_onVehicleSpawn')
+  MP.RegisterEvent('onVehicleEdited',     'RM_onVehicleEdited')
   MP.RegisterEvent('RM_StartCountdown',   'RM_onStartCountdown')
   MP.RegisterEvent('RM_EndRace',          'RM_onEndRace')
   MP.RegisterEvent('RM_ResetLeaderboard', 'RM_onResetLeaderboard')
   MP.RegisterEvent('RM_QualiLap',         'RM_onQualiLap')
   MP.RegisterEvent('RM_ClearResults',     'RM_onClearResults')
   MP.RegisterEvent('RM_Lap',              'RM_onLap')
+  MP.RegisterEvent('RM_Progress',         'RM_onProgress')  -- live position telemetry
   MP.RegisterEvent('RM_RequestState',     'RM_onRequestState')
   MP.RegisterEvent('RM_RequestLayouts',   'RM_onRequestLayouts')
   MP.RegisterEvent('RM_SaveLayout',       'RM_onSaveLayout')
@@ -1355,5 +1949,6 @@ function onInit()
   -- reload drops its stale gates, then the layout cache is re-warmed from disk.
   clearTrackState('server startup')
   getLayouts()  -- warm the layout cache so saved tracks survive the restart visibly
+  getGarage()   -- and the approved vehicle list (Module 4)
   print('[RaceManager] Server plugin loaded (circuit edition, map: ' .. getCurrentMap() .. ')')
 end

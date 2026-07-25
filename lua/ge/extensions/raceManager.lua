@@ -41,6 +41,10 @@ local LAP_DEBOUNCE   = 2.0      -- seconds; double-fire guard on the S/F gate.
                                 -- Kept low so even very short circuits report:
                                 -- this only needs to swallow same-crossing
                                 -- re-fires, not bound real lap times.
+local PROGRESS_EVERY = 0.3      -- seconds between live-position reports
+                                -- (~3.3 Hz: responsive enough to resolve a
+                                -- side-by-side fight, light enough that a full
+                                -- grid does not flood the server)
 local ROUTE_FILE     = 'settings/raceManager/route.json'
 
 -- ---------------------------------------------------------------------------
@@ -62,6 +66,16 @@ local checkpointHeight = DEFAULT_HEIGHT
 local checkpointDepth  = DEFAULT_DEPTH
 local visualize        = true
 
+-- Rallycross joker route (Module 2): a second, completely separate gate set
+-- describing the alternate route. Same checkpoint format as `route`; it travels
+-- with the track layout and is only policed when the server arms the rule.
+local jokerRoute   = {}
+local jokerEnabled = false       -- mirrored from the server broadcast
+local jokerArmed   = 1           -- next joker gate the local car must cross
+local jokerTaken   = false       -- joker route already completed this race
+local jokerLapUsed = nil         -- lap the joker was taken on (for the UI)
+local editorTarget = 'main'      -- which route the editor appends to: main | joker
+
 -- Local lap tracking (reset on every session change)
 local armedWp      = 1           -- next gate the local car must cross
 local timingActive = false       -- quali: false until the first S/F crossing (out-lap)
@@ -69,6 +83,24 @@ local lapStart     = 0           -- localTime at the start of the current lap
 local localLap     = 1
 local localTime    = 0
 local prevPos      = nil         -- vehicle position last frame (crossing segment)
+
+-- Live position telemetry: metres from the car to the centre of the next
+-- checkpoint, recomputed every frame and reported to the server on a throttle.
+local distToNext   = nil
+local progressLeft = 0           -- seconds until the next report is due
+
+-- Vehicle reset ruleset (Module 1). maxResets mirrors the server: -1 unlimited,
+-- 0 none, N allowed per session. resetsUsed counts what this client has spent.
+local maxResets    = -1
+local resetsUsed   = 0
+
+-- Forced spectator mode (Module 1). Non-nil while this client is out of the
+-- session: it holds the source ('race' or 'derby') that imposed the penalty, so
+-- the isolated derby module and the racing state machine can never release each
+-- other's spectators.
+local spectatorLock   = nil
+local spectatorReason = nil
+local spectatorRecheck = 0       -- seconds until the camera is re-asserted
 
 local function inMultiplayer()
   return MPGameNetwork ~= nil and TriggerServerEvent ~= nil
@@ -110,13 +142,31 @@ end
 -- ---------------------------------------------------------------------------
 local function pushRouteState()
   guihooks.trigger('RaceManagerRoute', {
-    waypoints = route,
-    nextWp    = armedWp,
-    width     = checkpointWidth,
-    height    = checkpointHeight,
-    depth     = checkpointDepth,
-    visualize = visualize,
+    waypoints    = route,
+    nextWp       = armedWp,
+    width        = checkpointWidth,
+    height       = checkpointHeight,
+    depth        = checkpointDepth,
+    visualize    = visualize,
+    -- Joker route (Module 2)
+    jokerRoute   = jokerRoute,
+    jokerNext    = jokerArmed,
+    jokerTaken   = jokerTaken,
+    jokerLap     = jokerLapUsed,
+    jokerEnabled = jokerEnabled,
+    editorTarget = editorTarget,
+    -- Reset ruleset (Module 1)
+    maxResets    = maxResets,
+    resetsUsed   = resetsUsed,
+    spectating   = spectatorLock ~= nil,
   })
+end
+
+-- Dedicated, dismissable notice channel for regulation events (reset denied,
+-- joker invalidated, vehicle rejected) so they don't get lost among the
+-- editor's transient messages.
+local function pushNotice(kind, msg)
+  guihooks.trigger('RaceManagerNotice', { kind = kind, msg = msg })
 end
 
 -- ---------------------------------------------------------------------------
@@ -194,6 +244,16 @@ local function resetLapTracking()
   lapStart     = localTime
   localLap     = 1
   prevPos      = nil
+  -- Joker credit and the reset allowance are per-session too: a new phase means
+  -- a clean sheet on both.
+  jokerArmed   = 1
+  jokerTaken   = false
+  jokerLapUsed = nil
+  resetsUsed   = 0
+  -- Telemetry restarts with the session; report immediately on the next frame
+  -- so the leaderboard has a distance for this driver from the first moments.
+  distToNext   = nil
+  progressLeft = 0
   -- Race: cars launch from the grid at the line, so the first target is
   -- checkpoint 1. Quali: the out-lap ends at the S/F line, so arm the line.
   if phase == 'racing' then
@@ -214,11 +274,17 @@ end
 -- session cannot survive.
 local function clearTrackState(reason)
   route        = {}
+  jokerRoute   = {}
   armedWp      = 1
+  jokerArmed   = 1
+  jokerTaken   = false
+  jokerLapUsed = nil
   timingActive = false
   localLap     = 1
   lapStart     = localTime
   prevPos      = nil
+  distToNext   = nil
+  progressLeft = 0
   pushRouteState()
   log('I', 'raceManager', 'Track state cleared (' .. tostring(reason or 'local') .. ')')
 end
@@ -255,8 +321,58 @@ local function onLapCompleted()
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- Joker route detection (Module 2)
+-- ---------------------------------------------------------------------------
+-- The joker gates are crossed in their own order, tracked independently of the
+-- main route so a driver diverting onto the alternate loop keeps their main
+-- checkpoint progress. Two rules are enforced here, on the only side that can
+-- see the car move:
+--   * Lap 1 restriction — any joker attempt started on lap 1 is invalidated
+--     outright (progress thrown away, nothing reported to the server).
+--   * Once per race — a completed joker route is reported exactly once; every
+--     later run is ignored and flagged to the driver.
+local function checkJokerGates(prev, cur)
+  if not jokerEnabled or #jokerRoute == 0 then return end
+  if phase ~= 'racing' then return end
+  local wp = jokerRoute[jokerArmed]
+  if not wp or not segmentCrossesGate(wp, prev, cur) then return end
+
+  if localLap <= 1 then
+    -- Lap 1: the attempt never counts. Re-arm from the first joker gate so a
+    -- legal run on a later lap still works.
+    jokerArmed = 1
+    pushNotice('joker', 'JOKER LAP NOT ALLOWED ON LAP 1 — attempt invalidated')
+    log('W', 'raceManager', 'Joker route attempted on lap 1: attempt invalidated')
+    pushRouteState()
+    return
+  end
+
+  if jokerTaken then
+    jokerArmed = 1
+    pushNotice('joker', 'Joker Lap already taken — this run does not count')
+    pushRouteState()
+    return
+  end
+
+  if jokerArmed >= #jokerRoute then
+    jokerTaken   = true
+    jokerLapUsed = localLap
+    jokerArmed   = 1
+    if inMultiplayer() then
+      TriggerServerEvent('RM_JokerLap', jsonEncode({ lap = localLap }))
+    end
+    pushNotice('joker', 'JOKER LAP COMPLETE (lap ' .. localLap .. ')')
+    log('I', 'raceManager', 'Joker route completed on lap ' .. localLap)
+  else
+    jokerArmed = jokerArmed + 1
+  end
+  pushRouteState()
+end
+
 local function checkGates()
-  if #route == 0 then return end
+  if spectatorLock then return end     -- out of the session: no more timing
+  if #route == 0 and #jokerRoute == 0 then return end
   if phase ~= 'qualifying' and phase ~= 'racing' then return end
   local veh = playerVehicle()
   if not veh then return end
@@ -270,10 +386,329 @@ local function checkGates()
       else
         armedWp = armedWp + 1
       end
+      -- Clearing a checkpoint is exactly when a position can change hands, so
+      -- jump the throttle and report the new count on the next frame.
+      progressLeft = 0
       pushRouteState()
     end
+    checkJokerGates(prevPos, pos)
   end
   prevPos = vec3(pos.x, pos.y, pos.z)
+end
+
+-- ---------------------------------------------------------------------------
+-- Live position telemetry
+-- ---------------------------------------------------------------------------
+-- The server decides the running order but has no physics access, so the third
+-- tie-break metric — how far a car is from the next checkpoint — can only be
+-- measured here. Every frame the straight-line distance from the vehicle to the
+-- next gate's centre is recomputed; a few times a second that distance goes up
+-- to the server together with the lap and the number of checkpoints already
+-- cleared on it. The send is throttled (PROGRESS_EVERY) so a full grid costs the
+-- server a handful of small events per second, not one per frame per driver.
+local function reportProgress(dt)
+  if phase ~= 'racing' or spectatorLock then
+    distToNext = nil
+    return
+  end
+  local wp = route[armedWp]
+  if not wp then
+    distToNext = nil
+    return
+  end
+  local veh = playerVehicle()
+  if not veh then
+    distToNext = nil
+    return
+  end
+
+  -- Distance from the car to the centre of the next checkpoint, in metres.
+  local pos = veh:getPosition()
+  local dx, dy, dz = pos.x - wp.x, pos.y - wp.y, pos.z - wp.z
+  distToNext = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+  progressLeft = progressLeft - dt
+  if progressLeft > 0 then return end
+  progressLeft = PROGRESS_EVERY
+
+  -- armedWp is the gate we are driving TOWARDS, so the count already cleared on
+  -- this lap is one less (and 0 right after crossing the start/finish line).
+  local payload = {
+    lap  = localLap,
+    cp   = armedWp - 1,
+    dist = distToNext,
+  }
+  if inMultiplayer() then
+    TriggerServerEvent('RM_Progress', jsonEncode(payload))
+  end
+  -- Same cadence to the local UI, so the driver's own header readout ticks
+  -- along with what the server is being told.
+  guihooks.trigger('RaceManagerProgress', payload)
+end
+
+-- ===========================================================================
+-- Vehicle & setup capture (Module 4)
+-- ===========================================================================
+-- The server cannot see what a player is driving beyond the jbeam model name,
+-- so the exact configuration is fingerprinted here: model + every part in the
+-- part config + every tuning variable, flattened into one deterministic string.
+-- The admin's "Whitelist Current Vehicle" sends that signature to build the
+-- Garage List; every client sends its own signature whenever its vehicle
+-- changes, and the server removes anything that doesn't match.
+
+-- Deterministic flattening: keys sorted, numbers fixed to 4 decimals, so two
+-- identical setups always produce byte-identical signatures.
+local function stableSerialize(tbl)
+  if type(tbl) ~= 'table' then return '' end
+  local entries = {}
+  for k, v in pairs(tbl) do
+    local val
+    if type(v) == 'number' then
+      val = string.format('%.4f', v)
+    elseif type(v) == 'table' then
+      val = 'table'
+    else
+      val = tostring(v)
+    end
+    entries[#entries + 1] = tostring(k) .. '=' .. val
+  end
+  table.sort(entries)
+  return table.concat(entries, ';')
+end
+
+-- Snapshot of the vehicle the local player is currently driving.
+local function localVehicleConfig()
+  local veh = playerVehicle()
+  if not veh then return nil end
+  local model = '?'
+  pcall(function () model = tostring(veh:getJBeamFilename()) end)
+
+  local parts, vars, configName = {}, {}, nil
+  if core_vehicle_partmgmt and core_vehicle_partmgmt.getConfig then
+    local ok, cfg = pcall(core_vehicle_partmgmt.getConfig)
+    if ok and type(cfg) == 'table' then
+      if type(cfg.parts) == 'table' then parts = cfg.parts end
+      if type(cfg.vars)  == 'table' then vars  = cfg.vars  end
+      if type(cfg.partConfigFilename) == 'string' then
+        configName = cfg.partConfigFilename:match('([^/\\]+)%.pc$')
+      end
+    end
+  end
+
+  local sig = 'model=' .. model
+    .. '|parts=' .. stableSerialize(parts)
+    .. '|vars='  .. stableSerialize(vars)
+  local vid
+  pcall(function () vid = veh:getID() end)
+  return {
+    model = model,
+    label = configName and (model .. ' — ' .. configName) or model,
+    sig   = sig,
+    vid   = vid,
+  }
+end
+
+-- Last signature this client told the server about, so the periodic check only
+-- talks when something actually changed (spawn, swap, or a re-tune).
+local lastReportedSig = nil
+local configCheckLeft = 0
+
+local function reportVehicleConfig(force)
+  if not inMultiplayer() then return end
+  local cfg = localVehicleConfig()
+  if not cfg then return end
+  if not force and cfg.sig == lastReportedSig then return end
+  lastReportedSig = cfg.sig
+  TriggerServerEvent('RM_VehicleConfig', jsonEncode({
+    vid = cfg.vid, model = cfg.model, label = cfg.label, sig = cfg.sig,
+  }))
+end
+
+-- Polls the local vehicle configuration. Applying a tune does not raise a
+-- single reliable GE event across BeamNG versions, so the signature is
+-- re-derived on a slow timer and reported the moment it differs — that covers
+-- spawns, vehicle switches and setup changes with one code path.
+local function vehicleConfigUpdate(dt)
+  if not inMultiplayer() then return end
+  configCheckLeft = configCheckLeft - dt
+  if configCheckLeft > 0 then return end
+  configCheckLeft = 2.0
+  reportVehicleConfig(false)
+end
+
+-- Admin action: capture the car being driven right now and add it to the
+-- server's Garage List.
+function M.whitelistCurrentVehicle()
+  if not inMultiplayer() then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'The Garage List needs a BeamMP server' })
+    return
+  end
+  local cfg = localVehicleConfig()
+  if not cfg then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
+    return
+  end
+  TriggerServerEvent('RM_WhitelistVehicle', jsonEncode({
+    model = cfg.model, label = cfg.label, sig = cfg.sig,
+  }))
+  log('I', 'raceManager', 'Whitelisting current vehicle: ' .. cfg.label)
+end
+
+function M.clearGarage()
+  if inMultiplayer() then TriggerServerEvent('RM_ClearGarage', '') end
+end
+
+function M.removeGarageEntry(index)
+  index = math.floor(tonumber(index) or 0)
+  if index < 1 then return end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_RemoveGarageEntry', jsonEncode({ index = index }))
+  end
+end
+
+function M.setGarageEnforce(enabled)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetGarageEnforce', jsonEncode({ enabled = enabled and true or false }))
+  end
+end
+
+-- ===========================================================================
+-- Vehicle reset control & forced spectating (Module 1)
+-- ===========================================================================
+-- The reset allowance is a league regulation the server owns but only the
+-- client can police: BeamNG fires the reset locally and the BeamMP server never
+-- sees it. Every local reset is counted here; the one that goes past the
+-- allowance is invalidated on the spot — the driver is DNF'd, their vehicle is
+-- removed and their camera is pinned to freecam, so a reset can never buy them
+-- anything. The same spectator lock is used when the (isolated) derby module
+-- reports an elimination.
+
+-- Delete the local player's vehicle. BeamNG exposes several ways to do this
+-- depending on version, so try them in order and never let a failure escape.
+local function removeLocalVehicle()
+  local veh = playerVehicle()
+  if not veh then return end
+  if core_vehicles and core_vehicles.removeCurrent then
+    if pcall(core_vehicles.removeCurrent) then return end
+  end
+  pcall(function () veh:delete() end)
+end
+
+-- Put the camera into freecam/spectator. Same story: prefer the documented
+-- command, fall back to the camera module.
+local function forceFreeCamera()
+  if commands and commands.setFreeCamera then
+    if pcall(commands.setFreeCamera) then return true end
+  end
+  if core_camera and core_camera.setByName then
+    if pcall(core_camera.setByName, 0, 'free') then return true end
+  end
+  return false
+end
+
+local function isFreeCamera()
+  if commands and commands.isFreeCamera then
+    local ok, free = pcall(commands.isFreeCamera)
+    if ok then return free == true end
+  end
+  return false
+end
+
+local function enterSpectator(reason, source)
+  spectatorLock   = source or 'race'
+  spectatorReason = reason or 'You are out of this session'
+  spectatorRecheck = 0
+  removeLocalVehicle()
+  forceFreeCamera()
+  guihooks.trigger('RaceManagerSpectator', {
+    spectating = true, reason = spectatorReason, source = spectatorLock,
+  })
+  pushNotice('spectate', spectatorReason)
+  pushRouteState()
+  log('I', 'raceManager', 'Forced spectator mode (' .. tostring(spectatorLock)
+    .. '): ' .. tostring(spectatorReason))
+end
+
+-- Only the source that imposed the lock can lift it, so a derby finishing can
+-- never hand a race DNF their car back (and vice versa).
+local function releaseSpectator(source)
+  if not spectatorLock then return end
+  if source and source ~= spectatorLock then return end
+  spectatorLock   = nil
+  spectatorReason = nil
+  guihooks.trigger('RaceManagerSpectator', { spectating = false })
+  pushRouteState()
+  log('I', 'raceManager', 'Spectator mode released (' .. tostring(source or 'any') .. ')')
+end
+
+-- While the lock is held the camera is re-asserted periodically: leaving
+-- freecam is the one way a DNF'd driver could get back into a car.
+local function spectatorUpdate(dt)
+  if not spectatorLock then return end
+  spectatorRecheck = spectatorRecheck - dt
+  if spectatorRecheck > 0 then return end
+  spectatorRecheck = 1.0
+  if not isFreeCamera() then forceFreeCamera() end
+end
+
+-- The reset allowance only applies while a race session is live; qualifying
+-- out-laps and the setup phases stay free.
+local function resetsEnforced()
+  return maxResets >= 0 and (phase == 'racing' or phase == 'countdown')
+end
+
+-- BeamNG hook: the local player reset/recovered a vehicle. Registered as an
+-- extension hook, so it fires for every vehicle — filter to our own first.
+function M.onVehicleResetted(vehId)
+  local veh = playerVehicle()
+  if not veh or veh:getID() ~= vehId then return end
+  if spectatorLock then
+    -- Already out: a reset must never put a DNF'd driver back on track.
+    removeLocalVehicle()
+    forceFreeCamera()
+    return
+  end
+  if not resetsEnforced() then return end
+
+  if resetsUsed >= maxResets then
+    -- Over the allowance: block it. The reset itself has already happened in
+    -- the physics engine, so "blocking" means invalidating it completely —
+    -- the car goes away, the driver is DNF'd and the server is told.
+    if inMultiplayer() then TriggerServerEvent('RM_ResetDenied', '') end
+    enterSpectator(maxResets == 0
+      and 'Vehicle resets are not allowed in this session — DNF'
+      or  ('Reset limit exceeded (' .. maxResets .. ' allowed) — DNF'), 'race')
+    log('W', 'raceManager', 'Reset blocked: allowance of ' .. maxResets .. ' exhausted')
+    return
+  end
+
+  resetsUsed = resetsUsed + 1
+  if inMultiplayer() then TriggerServerEvent('RM_VehicleReset', '') end
+  local left = maxResets - resetsUsed
+  pushNotice('reset', string.format('Reset %d/%d used — %d left', resetsUsed, maxResets, left))
+  pushRouteState()
+end
+
+-- BeamNG hook: a vehicle appeared. A driver serving a spectator penalty must
+-- not be able to spawn a replacement until the session ends, so their new car
+-- is removed immediately. Other players' vehicles are left alone.
+function M.onVehicleSpawned(vehId)
+  -- Module 4: a new car means a new configuration to declare to the server.
+  reportVehicleConfig(true)
+  if not spectatorLock then return end
+  local mine = true
+  if MPVehicleGE and MPVehicleGE.isOwn then
+    local ok, own = pcall(MPVehicleGE.isOwn, vehId)
+    if ok then mine = own == true end
+  else
+    local veh = playerVehicle()
+    mine = veh ~= nil and veh:getID() == vehId
+  end
+  if not mine then return end
+  removeLocalVehicle()
+  forceFreeCamera()
+  pushNotice('spectate', 'You are spectating until the session ends')
+  log('W', 'raceManager', 'Blocked vehicle spawn while in forced spectator mode')
 end
 
 -- ---------------------------------------------------------------------------
@@ -311,9 +746,32 @@ local function drawGateVolume(wp, color)
   end
 end
 
+-- One gate: two poles, a crossbar, the faint 3D hit-volume cage and a label.
+local function drawGate(wp, color, label)
+  local pL, pR = gatePoles(wp)
+  local up = vec3(0, 0, POLE_HEIGHT)
+  debugDrawer:drawCylinder(pL, pL + up, POLE_RADIUS, color)
+  debugDrawer:drawCylinder(pR, pR + up, POLE_RADIUS, color)
+  -- Crossbar between the pole tops so the gate reads as one line.
+  debugDrawer:drawCylinder(pL + up, pR + up, POLE_RADIUS * 0.5, color)
+  -- Faint 3D cage showing the real width x height x depth trigger volume.
+  drawGateVolume(wp, color)
+
+  local mid = (pL + pR) * 0.5 + vec3(0, 0, POLE_HEIGHT + 0.8)
+  debugDrawer:drawTextAdvanced(mid, String(label),
+    ColorF(1, 1, 1, 1), true, false, ColorI(0, 0, 0, 160))
+end
+
+-- Gate visibility (Module 3). The checkpoint boxes are drawn by every client,
+-- admin or not: during an active session (countdown / qualifying / race) the
+-- drawing is unconditional, because a driver who cannot see the gates cannot
+-- race. The Hide/Show Gates toggle only applies outside a session, where it
+-- exists to keep the editor view clean.
 local function drawGates()
-  if not visualize or #route == 0 or not debugDrawer then return end
-  local active = (phase == 'qualifying' or phase == 'racing')
+  if not debugDrawer then return end
+  local active = (phase == 'qualifying' or phase == 'racing' or phase == 'countdown')
+  if not active and not visualize then return end
+
   for i, wp in ipairs(route) do
     local color
     if i == #route then
@@ -323,19 +781,26 @@ local function drawGates()
     else
       color = ColorF(1, 0.4, 0, 0.7)             -- rest of route: orange
     end
-    local pL, pR = gatePoles(wp)
-    local up = vec3(0, 0, POLE_HEIGHT)
-    debugDrawer:drawCylinder(pL, pL + up, POLE_RADIUS, color)
-    debugDrawer:drawCylinder(pR, pR + up, POLE_RADIUS, color)
-    -- Crossbar between the pole tops so the gate reads as one line.
-    debugDrawer:drawCylinder(pL + up, pR + up, POLE_RADIUS * 0.5, color)
-    -- Faint 3D cage showing the real width x height x depth trigger volume.
-    drawGateVolume(wp, color)
+    drawGate(wp, color, (i == #route) and (i .. ' START/FINISH') or ('CP ' .. i))
+  end
 
-    local mid = (pL + pR) * 0.5 + vec3(0, 0, POLE_HEIGHT + 0.8)
-    local label = (i == #route) and (i .. ' START/FINISH') or ('CP ' .. i)
-    debugDrawer:drawTextAdvanced(mid, String(label),
-      ColorF(1, 1, 1, 1), true, false, ColorI(0, 0, 0, 160))
+  -- Joker route: violet, so it never reads as part of the main lap. The next
+  -- joker gate lights up green like the main route, and the whole set greys out
+  -- once the joker has been used (or while it is still forbidden on lap 1).
+  for i, wp in ipairs(jokerRoute) do
+    local color
+    if jokerTaken then
+      color = ColorF(0.45, 0.45, 0.5, 0.45)      -- already used: dimmed
+    elseif active and jokerEnabled and i == jokerArmed then
+      color = ColorF(0.2, 0.85, 0.35, 0.9)       -- next joker target: green
+    else
+      color = ColorF(0.65, 0.3, 0.95, 0.8)       -- joker route: violet
+    end
+    local label = 'JOKER ' .. i .. '/' .. #jokerRoute
+    if i == #jokerRoute then label = 'JOKER EXIT' end
+    if jokerTaken then label = label .. ' (used)'
+    elseif active and localLap <= 1 then label = label .. ' (lap 1: closed)' end
+    drawGate(wp, color, label)
   end
 end
 
@@ -607,7 +1072,10 @@ end
 function M.onUpdate(dt)
   localTime = localTime + dt
   checkGates()
+  reportProgress(dt)        -- live position telemetry (distance to next gate)
   drawGates()
+  spectatorUpdate(dt)       -- Module 1: keep a DNF'd driver in freecam
+  vehicleConfigUpdate(dt)   -- Module 4: declare setup changes to the server
   derbyUpdate(dt)
   derbyDrawBoundary()
 end
@@ -615,6 +1083,18 @@ end
 -- ---------------------------------------------------------------------------
 -- Checkpoint editor API (called by the UI app)
 -- ---------------------------------------------------------------------------
+-- Which route the editor is currently building: the main lap or the joker
+-- route. Everything below (+ Checkpoint Here, Undo, the list) follows it.
+function M.setEditorTarget(target)
+  editorTarget = (tostring(target or 'main') == 'joker') and 'joker' or 'main'
+  pushRouteState()
+  log('I', 'raceManager', 'Editor target route: ' .. editorTarget)
+end
+
+local function activeEditorRoute()
+  return editorTarget == 'joker' and jokerRoute or route
+end
+
 function M.editorAdd()
   local veh = playerVehicle()
   if not veh then
@@ -626,19 +1106,35 @@ function M.editorAdd()
   local len = math.sqrt(dir.x * dir.x + dir.y * dir.y)
   local hx, hy = 0, 1
   if len > 1e-4 then hx, hy = dir.x / len, dir.y / len end
-  route[#route + 1] = { x = pos.x, y = pos.y, z = pos.z, hx = hx, hy = hy }
+  local target = activeEditorRoute()
+  target[#target + 1] = { x = pos.x, y = pos.y, z = pos.z, hx = hx, hy = hy }
   pushRouteState()
 end
 
 function M.editorUndo()
-  if #route > 0 then
-    route[#route] = nil
-    if armedWp > #route then armedWp = math.max(#route, 1) end
+  local target = activeEditorRoute()
+  if #target > 0 then
+    target[#target] = nil
+    if editorTarget == 'joker' then
+      if jokerArmed > #jokerRoute then jokerArmed = math.max(#jokerRoute, 1) end
+    elseif armedWp > #route then
+      armedWp = math.max(#route, 1)
+    end
     pushRouteState()
   end
 end
 
 function M.editorClear()
+  -- Clearing the joker route on its own must not wipe the main lap.
+  if editorTarget == 'joker' then
+    jokerRoute   = {}
+    jokerArmed   = 1
+    jokerTaken   = false
+    jokerLapUsed = nil
+    pushRouteState()
+    log('I', 'raceManager', 'Joker route cleared')
+    return
+  end
   clearTrackState('editor clear')
 end
 
@@ -662,7 +1158,7 @@ end
 -- falls back to the global default. Pass all three blank to fully reset a gate.
 function M.setCheckpointOverride(index, w, h, d)
   index = math.floor(tonumber(index) or 0)
-  local wp = route[index]
+  local wp = activeEditorRoute()[index]
   if not wp then
     log('W', 'raceManager', 'setCheckpointOverride: no checkpoint at index ' .. tostring(index))
     return
@@ -684,14 +1180,19 @@ function M.editorSave()
     return
   end
   jsonWriteFile(ROUTE_FILE, {
-    version = 3,
+    version = 4,
     width   = checkpointWidth,
     height  = checkpointHeight,
     depth   = checkpointDepth,
     waypoints = route,
+    joker     = jokerRoute,
   }, true)
-  log('I', 'raceManager', 'Editor: saved ' .. #route .. ' checkpoints to ' .. ROUTE_FILE)
-  guihooks.trigger('RaceManagerEditorMsg', { msg = 'Saved ' .. #route .. ' checkpoints' })
+  log('I', 'raceManager', 'Editor: saved ' .. #route .. ' checkpoints ('
+    .. #jokerRoute .. ' joker) to ' .. ROUTE_FILE)
+  guihooks.trigger('RaceManagerEditorMsg', {
+    msg = 'Saved ' .. #route .. ' checkpoints'
+      .. (#jokerRoute > 0 and (' + ' .. #jokerRoute .. ' joker gates') or ''),
+  })
 end
 
 -- v1 route files stored spherical waypoints { x, y, z, radius }. Convert:
@@ -717,17 +1218,23 @@ function M.editorLoad()
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'No saved route found' })
     return
   end
-  if data.version == 2 or data.version == 3 then
+  if data.version == 2 or data.version == 3 or data.version == 4 then
     route = data.waypoints
     checkpointWidth  = clampWidth(data.width or DEFAULT_WIDTH)
     checkpointHeight = clampHeight(data.height or DEFAULT_HEIGHT)
     checkpointDepth  = clampDepth(data.depth or DEFAULT_DEPTH)
+    jokerRoute = (type(data.joker) == 'table') and data.joker or {}
   else
     route = migrateV1(data.waypoints)
+    jokerRoute = {}
   end
-  armedWp = math.max(#route, 1)
+  armedWp    = math.max(#route, 1)
+  jokerArmed = 1
   pushRouteState()
-  guihooks.trigger('RaceManagerEditorMsg', { msg = 'Loaded ' .. #route .. ' checkpoints' })
+  guihooks.trigger('RaceManagerEditorMsg', {
+    msg = 'Loaded ' .. #route .. ' checkpoints'
+      .. (#jokerRoute > 0 and (' + ' .. #jokerRoute .. ' joker gates') or ''),
+  })
 end
 
 function M.editorToggleVisualize()
@@ -767,19 +1274,32 @@ function M.saveLayout(name)
   -- Bundle a sanitized copy of the route: plain numeric fields only, so the
   -- payload always JSON-encodes as the flat checkpoint array the server's
   -- sanitizeCheckpoints expects (never vec3 userdata or stray keys).
-  local cps = {}
-  for i, wp in ipairs(route) do
-    local x, y, z = tonumber(wp.x), tonumber(wp.y), tonumber(wp.z)
-    if not (x and y and z) then
-      log('E', 'raceManager', 'saveLayout: checkpoint ' .. i .. ' has non-numeric coordinates, aborting')
-      editorMsg('Save failed: checkpoint ' .. i .. ' is invalid')
-      return
+  local function bundle(src, what)
+    local out = {}
+    for i, wp in ipairs(src) do
+      local x, y, z = tonumber(wp.x), tonumber(wp.y), tonumber(wp.z)
+      if not (x and y and z) then
+        log('E', 'raceManager', 'saveLayout: ' .. what .. ' checkpoint ' .. i
+          .. ' has non-numeric coordinates, aborting')
+        editorMsg('Save failed: ' .. what .. ' checkpoint ' .. i .. ' is invalid')
+        return nil
+      end
+      out[i] = { x = x, y = y, z = z, hx = tonumber(wp.hx) or 0, hy = tonumber(wp.hy) or 1 }
+      -- Carry per-checkpoint overrides through only when set.
+      if tonumber(wp.width)  then out[i].width  = clampWidth(wp.width)   end
+      if tonumber(wp.height) then out[i].height = clampHeight(wp.height) end
+      if tonumber(wp.depth)  then out[i].depth  = clampDepth(wp.depth)   end
     end
-    cps[i] = { x = x, y = y, z = z, hx = tonumber(wp.hx) or 0, hy = tonumber(wp.hy) or 1 }
-    -- Carry per-checkpoint overrides through only when set.
-    if tonumber(wp.width)  then cps[i].width  = clampWidth(wp.width)   end
-    if tonumber(wp.height) then cps[i].height = clampHeight(wp.height) end
-    if tonumber(wp.depth)  then cps[i].depth  = clampDepth(wp.depth)   end
+    return out
+  end
+  local cps = bundle(route, 'route')
+  if not cps then return end
+  -- The joker route rides along with the layout so a rallycross track is a
+  -- single saved object. Omitted entirely when no joker gates are placed.
+  local jokerCps = nil
+  if #jokerRoute > 0 then
+    jokerCps = bundle(jokerRoute, 'joker')
+    if not jokerCps then return end
   end
   local payload = jsonEncode({
     name        = name,
@@ -787,6 +1307,7 @@ function M.saveLayout(name)
     height      = clampHeight(checkpointHeight),
     depth       = clampDepth(checkpointDepth),
     checkpoints = cps,
+    joker       = jokerCps,
   })
   print('[raceManager] saveLayout: sending RM_SaveLayout (' .. #payload .. ' bytes) to server')
   TriggerServerEvent('RM_SaveLayout', payload)
@@ -823,6 +1344,10 @@ local function onServerUpdate(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
 
+  -- League regulations arrive with every state broadcast (Modules 1 & 2).
+  if type(data.maxResets) == 'number' then maxResets = math.floor(data.maxResets) end
+  jokerEnabled = data.jokerEnabled == true
+
   local newPhase = data.phase or 'waiting'
   if newPhase ~= phase then
     phase = newPhase
@@ -833,6 +1358,39 @@ local function onServerUpdate(rawData)
   totalLaps = data.totalLaps or totalLaps
 
   guihooks.trigger('RaceManagerUpdate', data)
+end
+
+-- --- Module 1: forced spectator mode (server -> client) --------------------
+local function onForceSpectate(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then data = {} end
+  enterSpectator(data.reason and tostring(data.reason) or nil,
+    data.source and tostring(data.source) or 'race')
+end
+
+local function onReleaseSpectate(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  local source = (ok and type(data) == 'table' and data.source) and tostring(data.source) or nil
+  releaseSpectator(source)
+end
+
+-- --- Module 4: the server refused this client's vehicle/setup --------------
+local function onVehicleRejected(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  local msg = (ok and type(data) == 'table' and data.message)
+    and tostring(data.message) or 'Vehicle/Setup not allowed in this session.'
+  local detail = (ok and type(data) == 'table' and data.detail) and tostring(data.detail) or ''
+  guihooks.trigger('RaceManagerVehicleError', { message = msg, detail = detail })
+  pushNotice('vehicle', msg)
+  log('W', 'raceManager', 'Vehicle rejected by the server: ' .. msg .. ' (' .. detail .. ')')
+end
+
+-- Server confirmed (or refused) a Whitelist Current Vehicle capture.
+local function onGarageResult(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  editorMsg(tostring(data.message or ''))
+  guihooks.trigger('RaceManagerGarageResult', data)
 end
 
 local function onServerCountdown(rawData)
@@ -864,31 +1422,42 @@ local function onApplyLayout(rawData)
     log('E', 'raceManager', 'RM_ApplyLayout: undecodable payload: ' .. tostring(rawData):sub(1, 120))
     return
   end
-  local cps = {}
-  for i, cp in ipairs(data.checkpoints) do
-    local x, y, z = tonumber(cp.x), tonumber(cp.y), tonumber(cp.z)
-    if not (x and y and z) then
-      log('E', 'raceManager', 'RM_ApplyLayout: checkpoint ' .. i .. ' has invalid coordinates, layout rejected')
-      return
+  local function unbundle(src, what)
+    local out = {}
+    for i, cp in ipairs(src) do
+      local x, y, z = tonumber(cp.x), tonumber(cp.y), tonumber(cp.z)
+      if not (x and y and z) then
+        log('E', 'raceManager', 'RM_ApplyLayout: ' .. what .. ' checkpoint ' .. i
+          .. ' has invalid coordinates, layout rejected')
+        return nil
+      end
+      out[i] = { x = x, y = y, z = z, hx = tonumber(cp.hx) or 0, hy = tonumber(cp.hy) or 1 }
+      if tonumber(cp.width)  then out[i].width  = clampWidth(cp.width)   end
+      if tonumber(cp.height) then out[i].height = clampHeight(cp.height) end
+      if tonumber(cp.depth)  then out[i].depth  = clampDepth(cp.depth)   end
     end
-    cps[i] = { x = x, y = y, z = z, hx = tonumber(cp.hx) or 0, hy = tonumber(cp.hy) or 1 }
-    if tonumber(cp.width)  then cps[i].width  = clampWidth(cp.width)   end
-    if tonumber(cp.height) then cps[i].height = clampHeight(cp.height) end
-    if tonumber(cp.depth)  then cps[i].depth  = clampDepth(cp.depth)   end
+    return out
   end
-  if #cps == 0 then
-    log('E', 'raceManager', 'RM_ApplyLayout: empty checkpoint list, layout rejected')
+  local cps = unbundle(data.checkpoints, 'route')
+  if not cps or #cps == 0 then
+    log('E', 'raceManager', 'RM_ApplyLayout: empty or invalid checkpoint list, layout rejected')
     return
   end
+  local jokerCps = {}
+  if type(data.joker) == 'table' and #data.joker > 0 then
+    jokerCps = unbundle(data.joker, 'joker') or {}
+  end
   clearTrackState('applying layout "' .. tostring(data.name) .. '"')
-  route = cps
+  route      = cps
+  jokerRoute = jokerCps
   checkpointWidth  = clampWidth(data.width or checkpointWidth)
   checkpointHeight = clampHeight(data.height or checkpointHeight)
   checkpointDepth  = clampDepth(data.depth or checkpointDepth)
   resetLapTracking()
-  editorMsg('Loaded layout "' .. tostring(data.name) .. '" (' .. #route .. ' gates)')
+  editorMsg('Loaded layout "' .. tostring(data.name) .. '" (' .. #route .. ' gates'
+    .. (#jokerRoute > 0 and (' + ' .. #jokerRoute .. ' joker') or '') .. ')')
   log('I', 'raceManager', 'Applied server layout "' .. tostring(data.name)
-    .. '" with ' .. #route .. ' checkpoints')
+    .. '" with ' .. #route .. ' checkpoints and ' .. #jokerRoute .. ' joker gates')
 end
 
 -- Server ordered a full purge (server startup, pre-layout-load, or an
@@ -972,6 +1541,30 @@ function M.setTotalLaps(n)
   end
 end
 
+-- Module 1: how many vehicle resets each driver gets this session.
+-- A negative value (or nil) means unlimited; 0 forbids resets entirely.
+function M.setMaxResets(n)
+  n = math.floor(tonumber(n) or -1)
+  if n < 0 then n = -1 end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetMaxResets', jsonEncode({ maxResets = n }))
+  else
+    maxResets = n
+    pushRouteState()
+  end
+end
+
+-- Module 2: arm/disarm the joker lap requirement for the next race.
+function M.setJokerEnabled(enabled)
+  enabled = enabled and true or false
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetJokerEnabled', jsonEncode({ enabled = enabled }))
+  else
+    jokerEnabled = enabled
+    pushRouteState()
+  end
+end
+
 function M.startCountdown()
   if inMultiplayer() then TriggerServerEvent('RM_StartCountdown', '') end
 end
@@ -1013,6 +1606,12 @@ function M.onExtensionLoaded()
     AddEventHandler('RM_ClearTrack', onClearTrack)
     AddEventHandler('RM_LoginResult', onLoginResult)
     AddEventHandler('RM_PasswordChanged', onPasswordChanged)
+    -- Module 1: forced spectator mode (used by racing and, separately, by derby)
+    AddEventHandler('RM_ForceSpectate', onForceSpectate)
+    AddEventHandler('RM_ReleaseSpectate', onReleaseSpectate)
+    -- Module 4: garage list enforcement feedback
+    AddEventHandler('RM_VehicleRejected', onVehicleRejected)
+    AddEventHandler('RM_GarageResult', onGarageResult)
     AddEventHandler('RM_DerbyUpdate', onDerbyUpdate)  -- Demo Derby module
   end
   log('I', 'raceManager', 'Race Manager client bridge loaded (multiplayer=' .. tostring(inMultiplayer()) .. ')')
@@ -1023,6 +1622,14 @@ function M.onExtensionUnloaded()
   -- The extension stays resident across sessions (manual unload mode), so an
   -- explicit purge here is what stops checkpoints leaking into the next one.
   clearTrackState('extension unloaded')
+  -- Regulation state must not survive either: a stale spectator lock would
+  -- leave the next session's driver stuck in freecam.
+  releaseSpectator(nil)
+  maxResets       = -1
+  resetsUsed      = 0
+  jokerEnabled    = false
+  editorTarget    = 'main'
+  lastReportedSig = nil
   -- Same purge for the isolated derby module: markers and warnings must not
   -- survive into the next session.
   derbyPhase    = 'idle'
