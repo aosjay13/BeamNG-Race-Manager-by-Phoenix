@@ -43,9 +43,10 @@ angular.module('beamng.apps')
       $scope.settingsUi = {
         laps: 5,
         resets: -1,            // -1 unlimited, 0 none, N per driver per session
-        width: 20,
-        height: 10,            // 3D checkpoint volume: vertical extent
-        depth: 4               // 3D checkpoint volume: forward thickness
+        width: 20,             // checkpoint rectangle: lateral span
+        height: 10,            // checkpoint rectangle: vertical extent
+        qualiLaps: 0,          // qualifying lap allowance (0 = unlimited)
+        qualiMins: 0           // qualifying time limit in minutes (0 = none)
       };
 
       // ----------------------------------------------------------------
@@ -64,6 +65,25 @@ angular.module('beamng.apps')
       // Garage list (approved vehicles/setups).
       $scope.garage = [];             // [{ model, label }]
       $scope.garageEnforce = false;
+      // Race entry (opt-in): players add themselves to the field instead of
+      // every session on the server being assumed to be racing.
+      $scope.entryMode = 'join';      // 'join' (opt-in) | 'all' (everyone races)
+      $scope.joined = false;          // is THIS client in the field?
+      $scope.entrants = 0;
+      // Starting grid.
+      $scope.gridMode = 'quali';      // quali | random | custom
+      $scope.startSlots = 0;          // start positions the loaded track has
+      $scope.startPositions = [];     // placed on this client
+      $scope.gridSlot = null;         // the slot this client was given
+      $scope.gridFrozen = false;      // held on the grid for the countdown
+      // Custom grid entry boxes, keyed by driver id. Bound through an object
+      // for the same ng-if child-scope reason every other input here is.
+      $scope.gridUi = { slot: {} };
+      // Qualifying rules.
+      $scope.ghostQuali = false;
+      $scope.qualiLapLimit = 0;
+      $scope.qualiTimeLimit = 0;
+      $scope.qualiLeft = null;        // seconds remaining, null = no limit
       // Forced spectator mode.
       $scope.spectating = false;
       $scope.spectatorReason = null;
@@ -100,7 +120,7 @@ angular.module('beamng.apps')
       // Per-checkpoint override editor: which gate (1-based) is selected, plus
       // its edit fields. Blank fields mean "use the global default".
       $scope.selectedCp = null;
-      $scope.cpEdit = { width: '', height: '', depth: '' };
+      $scope.cpEdit = { width: '', height: '' };
 
       // Track layout state (server-side persistent layouts, current map only)
       $scope.layouts = [];              // [{ name, map, width, checkpoints }]
@@ -128,7 +148,11 @@ angular.module('beamng.apps')
         players: []           // { id, name, status, reason, elimTime }
       };
       // Dot rule again: these inputs live inside the ng-if derby panel.
-      $scope.derbyUi = { oob: 5, demo: 10 };
+      $scope.derbyUi = { oob: 5, demo: 10, name: '', selected: '' };
+      // Saved arenas for the hosted map (same workflow as track layouts).
+      $scope.derbyLayouts = [];
+      $scope.derbyLayoutMap = '';
+      $scope.derbyDropdownOpen = false;
       // Last timer values mirrored from the server. Broadcasts only overwrite
       // an input while it still shows the previous server value; an edit in
       // progress (field differs) survives marker drops and other rebroadcasts.
@@ -226,9 +250,14 @@ angular.module('beamng.apps')
       // Reset cell: used/allowed, or a dash when resets are unlimited.
       // (These helpers also keep raw comparison operators out of the template.)
       $scope.resetsLimited = function () { return $scope.maxResets >= 0; };
+      // "2/3" while allowance is left; "3/3+2" once the driver has had two
+      // further resets BLOCKED, so a persistent offender is visible without
+      // them ever being penalised for it.
       $scope.resetLabel = function (row) {
         if (!$scope.resetsLimited()) { return '∞'; }
-        return (row.resets || 0) + '/' + $scope.maxResets;
+        var label = (row.resets || 0) + '/' + $scope.maxResets;
+        if (row.resetsBlocked) { label += '+' + row.resetsBlocked; }
+        return label;
       };
       $scope.resetsLow = function (row) {
         return $scope.resetsLimited() && ($scope.maxResets - (row.resets || 0)) <= 0;
@@ -328,6 +357,28 @@ angular.module('beamng.apps')
             $scope.maxResets = data.maxResets;
           }
           $scope.jokerEnabled = !!data.jokerEnabled;
+          // Race entry + starting grid.
+          $scope.entryMode = data.entryMode === 'all' ? 'all' : 'join';
+          $scope.entrants = data.entrants || 0;
+          $scope.gridMode = data.gridMode || 'quali';
+          $scope.startSlots = data.startSlots || 0;
+          // Qualifying rules. The inputs are re-seeded the same way the laps
+          // and resets fields are: only when the server's value actually moved,
+          // so an edit in progress is never yanked out from under the admin.
+          $scope.ghostQuali = !!data.ghostQuali;
+          if (typeof data.qualiLapLimit === 'number') {
+            if ($scope.qualiLapLimit !== data.qualiLapLimit) {
+              $scope.settingsUi.qualiLaps = data.qualiLapLimit;
+            }
+            $scope.qualiLapLimit = data.qualiLapLimit;
+          }
+          if (typeof data.qualiTimeLimit === 'number') {
+            if ($scope.qualiTimeLimit !== data.qualiTimeLimit) {
+              $scope.settingsUi.qualiMins = Math.round(data.qualiTimeLimit / 60);
+            }
+            $scope.qualiTimeLimit = data.qualiTimeLimit;
+          }
+          $scope.qualiLeft = (typeof data.qualiLeft === 'number') ? data.qualiLeft : null;
           $scope.garage = toArray(data.garage);
           $scope.garageEnforce = !!data.garageEnforce;
           // Track whether an admin is running the session. When one appears and
@@ -363,7 +414,13 @@ angular.module('beamng.apps')
           $scope.visualize = data.visualize !== false;
           if (typeof data.width === 'number') { $scope.settingsUi.width = data.width; }
           if (typeof data.height === 'number') { $scope.settingsUi.height = data.height; }
-          if (typeof data.depth === 'number') { $scope.settingsUi.depth = data.depth; }
+          // Starting grid placed/loaded on this client.
+          $scope.startPositions = toArray(data.startPositions);
+          $scope.gridSlot = data.gridSlot || null;
+          $scope.gridFrozen = !!data.gridFrozen;
+          // Race entry state as this client knows it.
+          if (typeof data.entryMode === 'string') { $scope.entryMode = data.entryMode; }
+          if (typeof data.joined === 'boolean') { $scope.joined = data.joined; }
           // Joker route + reset allowance state pushed by the client Lua.
           $scope.jokerRoute = toArray(data.jokerRoute);
           $scope.jokerNext = data.jokerNext || 1;
@@ -380,11 +437,17 @@ angular.module('beamng.apps')
         });
       });
 
-      // The list the editor panel shows: main lap or joker route, whichever
-      // the editor is currently pointed at.
+      // The list the editor panel shows: main lap, joker route or starting
+      // grid, whichever the editor is currently pointed at.
       $scope.editorWaypoints = function () {
-        return $scope.editorTarget === 'joker' ? $scope.jokerRoute : $scope.routeWaypoints;
+        if ($scope.editorTarget === 'joker') { return $scope.jokerRoute; }
+        if ($scope.editorTarget === 'start') { return $scope.startPositions; }
+        return $scope.routeWaypoints;
       };
+
+      // Start positions are placements, not gates: the width/height override
+      // editor does not apply to them.
+      $scope.editingGrid = function () { return $scope.editorTarget === 'start'; };
 
       // ------------------------------------------------------------------
       // Regulation notices, forced spectating and vehicle rejections
@@ -573,6 +636,59 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.derbyEnd()');
       };
 
+      // --- Derby arena layouts (mirrors the track layout workflow) --------
+      $scope.$on('RaceManagerDerbyLayouts', function (event, data) {
+        if (!data) { return; }
+        $scope.$evalAsync(function () {
+          $scope.derbyLayouts = toArray(data.layouts);
+          $scope.derbyLayouts.forEach(function (l) { l.boundary = toArray(l.boundary); });
+          $scope.derbyLayoutMap = data.map || '';
+          var stillThere = $scope.derbyLayouts.some(function (l) {
+            return l.name === $scope.derbyUi.selected;
+          });
+          if (!stillThere) { $scope.derbyUi.selected = ''; }
+          if (!$scope.derbyLayouts.length) { $scope.derbyDropdownOpen = false; }
+        });
+      });
+
+      $scope.derbySaveLayout = function () {
+        var name = ($scope.derbyUi.name || '').trim();
+        if (!name) { return; }
+        // Send the timer fields first so the arena is saved with what the admin
+        // currently has on screen, not the last value the server saw.
+        $scope.derbyApplyConfig();
+        bngApi.engineLua('raceManager.derbySaveLayout(' + luaStr(name) + ')');
+      };
+      $scope.derbyLoadLayout = function () {
+        if (!$scope.derbyUi.selected) { return; }
+        bngApi.engineLua('raceManager.derbyLoadLayout(' + luaStr($scope.derbyUi.selected) + ')');
+      };
+      $scope.derbyDeleteLayout = function () {
+        if (!$scope.derbyUi.selected) { return; }
+        bngApi.engineLua('raceManager.derbyDeleteLayout(' + luaStr($scope.derbyUi.selected) + ')');
+      };
+      // Same custom-dropdown reasoning as the track layout picker: a native
+      // <select> popup does not render in BeamNG's embedded browser.
+      $scope.toggleDerbyDropdown = function () {
+        if (!$scope.derbyLayouts.length) { $scope.derbyDropdownOpen = false; return; }
+        $scope.derbyDropdownOpen = !$scope.derbyDropdownOpen;
+      };
+      $scope.selectDerbyLayout = function (l) {
+        $scope.derbyUi.selected = l.name;
+        $scope.derbyDropdownOpen = false;
+      };
+      $scope.selectedDerbyLabel = function () {
+        if (!$scope.derbyLayouts.length) { return 'No arenas saved for this map'; }
+        if (!$scope.derbyUi.selected) { return 'Select an arena…'; }
+        for (var i = 0; i < $scope.derbyLayouts.length; i++) {
+          if ($scope.derbyLayouts[i].name === $scope.derbyUi.selected) {
+            return $scope.derbyLayouts[i].name
+              + ' (' + $scope.derbyLayouts[i].boundary.length + ' markers)';
+          }
+        }
+        return $scope.derbyUi.selected;
+      };
+
       var editorMsgTimer = null;
       $scope.$on('RaceManagerEditorMsg', function (event, data) {
         $scope.$evalAsync(function () {
@@ -699,10 +815,82 @@ angular.module('beamng.apps')
         if (!h || h <= 0) { return; }
         bngApi.engineLua('raceManager.setCheckpointHeight(' + h + ')');
       };
-      $scope.applyDepth = function () {
-        var d = parseFloat($scope.settingsUi.depth);
-        if (!d || d <= 0) { return; }
-        bngApi.engineLua('raceManager.setCheckpointDepth(' + d + ')');
+
+      // ------------------------------------------------------------------
+      // UI -> LUA commands (race entry, grid and qualifying rules)
+      // ------------------------------------------------------------------
+      // Any player can enter or withdraw; this is not an admin control.
+      $scope.joinRace = function () {
+        bngApi.engineLua('extensions.load("raceManager"); raceManager.joinRace(true)');
+      };
+      $scope.leaveRace = function () {
+        bngApi.engineLua('raceManager.joinRace(false)');
+      };
+      $scope.canJoin = function () {
+        return $scope.phase !== 'countdown' && $scope.phase !== 'racing';
+      };
+      // Admin: opt-in entry vs "everyone on the server races".
+      $scope.toggleEntryMode = function () {
+        bngApi.engineLua('raceManager.setEntryMode("'
+          + ($scope.entryMode === 'all' ? 'join' : 'all') + '")');
+      };
+      $scope.setGridMode = function (mode) {
+        bngApi.engineLua('raceManager.setGridMode("' + mode + '")');
+      };
+      $scope.gridModeLabel = function () {
+        if ($scope.gridMode === 'random') { return 'Random draw'; }
+        if ($scope.gridMode === 'custom') { return 'Custom order'; }
+        return 'Qualifying order';
+      };
+      // Custom grid: pin one driver to one slot.
+      $scope.pinGridSlot = function (row) {
+        var n = parseInt($scope.gridUi.slot[row.id], 10);
+        if (!n || n < 1) { return; }
+        bngApi.engineLua('raceManager.setDriverGridSlot(' + row.id + ', ' + n + ')');
+      };
+      // The custom-order boxes only make sense before the lights go out.
+      $scope.canEditGrid = function () {
+        return $scope.isAdmin && $scope.gridMode === 'custom'
+          && $scope.phase !== 'countdown' && $scope.phase !== 'racing';
+      };
+      $scope.toggleGhostQuali = function () {
+        bngApi.engineLua('raceManager.setGhostQuali(' + (!$scope.ghostQuali) + ')');
+      };
+      // Qualifying session length. Laps are per driver; the time limit is
+      // entered in minutes and sent as seconds. 0 means unlimited for both.
+      $scope.applyQualiLimits = function () {
+        var laps = parseInt($scope.settingsUi.qualiLaps, 10);
+        var mins = parseFloat($scope.settingsUi.qualiMins);
+        if (isNaN(laps) || laps < 0) { laps = 0; }
+        if (isNaN(mins) || mins < 0) { mins = 0; }
+        bngApi.engineLua('raceManager.setQualiLimits('
+          + laps + ', ' + Math.round(mins * 60) + ')');
+      };
+      // Remaining qualifying time for the header readout.
+      $scope.qualiClock = function () {
+        if ($scope.qualiLeft === null || $scope.qualiLeft === undefined) { return ''; }
+        return $scope.formatRaceTime($scope.qualiLeft);
+      };
+      $scope.qualiLimitLabel = function () {
+        var bits = [];
+        if ($scope.qualiLapLimit > 0) { bits.push($scope.qualiLapLimit + ' laps'); }
+        if ($scope.qualiTimeLimit > 0) { bits.push(Math.round($scope.qualiTimeLimit / 60) + ' min'); }
+        return bits.length ? bits.join(' / ') : 'open';
+      };
+
+      // ------------------------------------------------------------------
+      // UI -> LUA commands (starting grid editor)
+      // ------------------------------------------------------------------
+      // "Place Start Position Here" is the same editorAdd the checkpoint tabs
+      // use — the editor target decides which list it lands in.
+      $scope.moveStartPosition = function (index) {
+        bngApi.engineLua('raceManager.moveStartPosition(' + index + ')');
+      };
+      $scope.removeStartPosition = function (index) {
+        bngApi.engineLua('raceManager.removeStartPosition(' + index + ')');
+      };
+      $scope.previewStartPosition = function (index) {
+        bngApi.engineLua('raceManager.previewStartPosition(' + index + ')');
       };
 
       // ------------------------------------------------------------------
@@ -750,8 +938,7 @@ angular.module('beamng.apps')
         var wp = $scope.editorWaypoints()[index - 1] || {};
         $scope.cpEdit = {
           width:  (typeof wp.width === 'number') ? wp.width : '',
-          height: (typeof wp.height === 'number') ? wp.height : '',
-          depth:  (typeof wp.depth === 'number') ? wp.depth : ''
+          height: (typeof wp.height === 'number') ? wp.height : ''
         };
       };
 
@@ -761,25 +948,23 @@ angular.module('beamng.apps')
         if (!$scope.selectedCp) { return; }
         var w = parseFloat($scope.cpEdit.width)  || 0;
         var h = parseFloat($scope.cpEdit.height) || 0;
-        var d = parseFloat($scope.cpEdit.depth)  || 0;
         bngApi.engineLua('raceManager.setCheckpointOverride('
-          + $scope.selectedCp + ', ' + w + ', ' + h + ', ' + d + ')');
+          + $scope.selectedCp + ', ' + w + ', ' + h + ')');
       };
 
       // Reset the selected gate back to the global defaults (clear all overrides).
       $scope.resetCheckpointOverride = function () {
         if (!$scope.selectedCp) { return; }
-        $scope.cpEdit = { width: '', height: '', depth: '' };
-        bngApi.engineLua('raceManager.setCheckpointOverride(' + $scope.selectedCp + ', 0, 0, 0)');
+        $scope.cpEdit = { width: '', height: '' };
+        bngApi.engineLua('raceManager.setCheckpointOverride(' + $scope.selectedCp + ', 0, 0)');
       };
 
       // Effective (displayed) dimension for a gate row: its override or the
-      // global default the box will actually use.
+      // global default the rectangle will actually use.
       $scope.cpDim = function (wp, field) {
         if (wp && typeof wp[field] === 'number') { return wp[field]; }
         if (field === 'width')  { return $scope.settingsUi.width; }
-        if (field === 'height') { return $scope.settingsUi.height; }
-        return $scope.settingsUi.depth;
+        return $scope.settingsUi.height;
       };
 
       // ------------------------------------------------------------------

@@ -67,6 +67,8 @@ local function push() RM_onRequestState(1) end
 onInit()
 RM_onLogin(1, '{"password":"phoenix"}')
 RM_onPlayerJoin(1); RM_onPlayerJoin(2); RM_onPlayerJoin(3); RM_onPlayerJoin(4)
+-- These suites predate the entry list; run them with entry open to everyone.
+RM_onSetEntryMode(1, '{"mode":"all"}')
 
 RM_onSetTotalLaps(1, '{"laps":5}')
 RM_onGenerateGrid(1)
