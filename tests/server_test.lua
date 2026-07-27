@@ -97,10 +97,30 @@ RM_onLogout(7)
 check(lastState.adminPresent == true, 'adminPresent stays true while pids 1 & 2 are admin')
 lastState = nil
 
--- Players join
+-- Players connect. Connecting is NOT entering: in the default opt-in mode the
+-- field is empty until drivers press Join Race.
 RM_onPlayerJoin(1); RM_onPlayerJoin(2); RM_onPlayerJoin(3)
 check(#lastState.drivers == 3, 'three drivers after join')
 check(lastState.phase == 'waiting', 'initial phase waiting')
+check(lastState.entryMode == 'join', 'race entry defaults to opt-in')
+check(lastState.entrants == 0, 'nobody is entered before anyone joins')
+
+-- Generate Grid with an empty entry list must not form a grid.
+RM_onGenerateGrid(1)
+check(lastState.phase == 'waiting', 'Generate Grid refused with no entrants')
+
+-- Everyone enters the race.
+RM_onJoinRace(1, '{"join":true}')
+RM_onJoinRace(2, '{"join":true}')
+RM_onJoinRace(3, '{"join":true}')
+check(lastState.entrants == 3, 'three entrants after joining')
+check(driver('Alice').joined == true, 'the entry flag is broadcast per driver')
+
+-- Leaving takes a driver back out of the field, then they rejoin for the race.
+RM_onJoinRace(3, '{"join":false}')
+check(lastState.entrants == 2, 'leaving removes a driver from the entry list')
+RM_onJoinRace(3, '{"join":true}')
+check(lastState.entrants == 3, 'and rejoining puts them back')
 
 -- Total laps setting (JSON path + clamping)
 RM_onSetTotalLaps(1, '{"laps":2}')
@@ -242,8 +262,8 @@ check(lastLayouts ~= nil and lastLayouts.map == 'gridmap_v2'
   and #lastLayouts.layouts == 1, 'save broadcasts refreshed layout list')
 check(lastLayouts.layouts[1].width == 24
   and #lastLayouts.layouts[1].checkpoints == 3, 'saved layout keeps width and gates')
-check(lastLayouts.layouts[1].height == 10 and lastLayouts.layouts[1].depth == 4,
-  'saved layout gets default height/depth when the client omits them')
+check(lastLayouts.layouts[1].height == 10,
+  'saved layout gets the default height when the client omits it')
 
 -- Same name on the same map overwrites instead of duplicating
 RM_onSaveLayout(1, '{"name":"gp circuit","width":30,"checkpoints":' .. cpJson .. '}')
@@ -311,26 +331,37 @@ check(lastLayouts ~= nil and #lastLayouts.layouts == 1
   and lastLayouts.layouts[1].checkpoints[1].y == 200.25,
   'layouts survive a server restart via layouts.json')
 
--- 3D dimensions + per-checkpoint overrides round-trip through save/persist.
+-- Gate dimensions + per-checkpoint overrides round-trip through save/persist.
+-- A checkpoint is a flat width x height rectangle: there is no depth field any
+-- more, and one arriving from an old client is dropped rather than stored.
 -- (Added after the count assertions above so this second layout doesn't skew
 -- them; the whole Resources tree is deleted at the end of the suite.)
 local cpOvr = '[{"x":1,"y":2,"z":3,"hx":0,"hy":1,"width":40,"height":25,"depth":6},'
   .. '{"x":4,"y":5,"z":6,"hx":1,"hy":0}]'
-RM_onSaveLayout(1, '{"name":"Banked Oval","width":30,"height":20,"depth":8,"checkpoints":' .. cpOvr .. '}')
+local startJson = '[{"x":10,"y":20,"z":30,"hx":0,"hy":1},{"x":10,"y":15,"z":30,"hx":0,"hy":1}]'
+RM_onSaveLayout(1, '{"name":"Banked Oval","width":30,"height":20,"checkpoints":' .. cpOvr
+  .. ',"startPositions":' .. startJson .. '}')
 local saved
 for _, l in ipairs(lastLayouts.layouts) do if l.name == 'Banked Oval' then saved = l end end
-check(saved ~= nil and saved.height == 20 and saved.depth == 8,
-  'saved layout keeps explicit layout-wide height/depth')
-check(saved and saved.checkpoints[1].width == 40 and saved.checkpoints[1].height == 25
-  and saved.checkpoints[1].depth == 6, 'per-checkpoint override round-trips through save')
+check(saved ~= nil and saved.height == 20, 'saved layout keeps the layout-wide height')
+check(saved and saved.checkpoints[1].width == 40 and saved.checkpoints[1].height == 25,
+  'per-checkpoint override round-trips through save')
+check(saved and saved.checkpoints[1].depth == nil,
+  'a depth sent by an old client is dropped, not persisted')
 check(saved and saved.checkpoints[2].width == nil and saved.checkpoints[2].height == nil,
   'a checkpoint without an override stays override-free')
--- Load broadcasts the override fields to clients too.
+-- The starting grid is saved with the track.
+check(saved and saved.startPositions and #saved.startPositions == 2
+  and saved.startPositions[1].x == 10, 'start positions are saved with the layout')
+check(lastState.startSlots == 2, 'the server tracks how many start positions exist')
+-- Load broadcasts the override fields and the grid to clients too.
 lastApplied = nil
 RM_onLoadLayout(1, '{"name":"Banked Oval"}')
-check(lastApplied ~= nil and lastApplied.height == 20 and lastApplied.depth == 8
+check(lastApplied ~= nil and lastApplied.height == 20
   and lastApplied.checkpoints[1].width == 40,
-  'ApplyLayout broadcast carries height/depth and gate overrides')
+  'ApplyLayout broadcast carries the height and gate overrides')
+check(lastApplied and lastApplied.startPositions
+  and #lastApplied.startPositions == 2, 'ApplyLayout broadcast carries the starting grid')
 
 -- ---------------------------------------------------------------------------
 -- Ghost drivers: a driver who disconnected mid-race is kept as DNF for the
@@ -339,6 +370,8 @@ check(lastApplied ~= nil and lastApplied.height == 20 and lastApplied.depth == 8
 -- (State is fresh here: the file was just re-dofile'd + onInit'd above.)
 -- ---------------------------------------------------------------------------
 RM_onPlayerJoin(1); RM_onPlayerJoin(2); RM_onPlayerJoin(3)
+-- This block predates the entry list, so it uses the "everyone races" mode.
+RM_onSetEntryMode(1, '{"mode":"all"}')
 RM_onSetTotalLaps(1, '{"laps":1}')
 RM_onGenerateGrid(1)
 RM_onStartCountdown(1)

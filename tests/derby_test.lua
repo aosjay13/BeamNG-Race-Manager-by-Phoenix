@@ -9,6 +9,7 @@
 local connected = { [1] = 'Alice', [2] = 'Bob', [3] = 'Cara' }
 local lastState = nil   -- last RM_Update payload (circuit racing)
 local lastDerby = nil   -- last RM_DerbyUpdate payload
+local lastArenas = nil  -- last RM_DerbyLayouts payload (saved arena list)
 local lastChat = nil
 local timers = {}
 local hostedMap = '/levels/gridmap_v2/info.json'
@@ -22,8 +23,9 @@ MP = {
     return t
   end,
   TriggerClientEvent = function (target, event, payload)
-    if event == 'RM_Update'      then lastState = payload end
-    if event == 'RM_DerbyUpdate' then lastDerby = payload end
+    if event == 'RM_Update'       then lastState  = payload end
+    if event == 'RM_DerbyUpdate'  then lastDerby  = payload end
+    if event == 'RM_DerbyLayouts' then lastArenas = payload end
   end,
   RegisterEvent = function () end,
   CreateEventTimer = function (name) timers[name] = true end,
@@ -230,6 +232,71 @@ check(lastDerby.derbyPhase == 'finished' and lastDerby.winner == 'Bob',
   'Bob wins the third derby')
 local p3 = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
 if p3 then os.remove(p3) end
+
+-- ---------------------------------------------------------------------------
+-- Saved arenas: an arena is its boundary polygon plus both timers, stored per
+-- map on the server exactly the way a track layout is.
+-- ---------------------------------------------------------------------------
+RM_onDerbyEnd(1)                     -- back to idle so the arena can be edited
+RM_onDerbyClearBoundary(1)
+RM_onDerbyAddMarker(1, '{"x":0,"y":0,"z":10}')
+RM_onDerbyAddMarker(1, '{"x":60,"y":0,"z":10}')
+RM_onDerbyAddMarker(1, '{"x":60,"y":60,"z":10}')
+RM_onDerbyAddMarker(1, '{"x":0,"y":60,"z":10}')
+RM_onDerbySetConfig(1, '{"oobLimit":7,"demoLimit":12}')
+
+-- Unauthenticated saves are dropped like every other admin command.
+lastArenas = nil
+RM_onDerbySaveLayout(9, '{"name":"Pit Arena","boundary":[{"x":0,"y":0,"z":0},{"x":1,"y":0,"z":0},{"x":1,"y":1,"z":0}]}')
+check(lastArenas == nil, 'arena save ignored before authentication')
+
+RM_onDerbySaveLayout(1, '{"name":"Pit Arena","boundary":[{"x":0,"y":0,"z":10},'
+  .. '{"x":60,"y":0,"z":10},{"x":60,"y":60,"z":10},{"x":0,"y":60,"z":10}],'
+  .. '"oobLimit":7,"demoLimit":12}')
+check(lastArenas ~= nil and #lastArenas.layouts == 1, 'the arena is saved and listed')
+check(lastArenas.map == 'gridmap_v2', 'arenas are listed for the hosted map')
+check(#lastArenas.layouts[1].boundary == 4, 'the boundary polygon is stored')
+check(lastArenas.layouts[1].oobLimit == 7 and lastArenas.layouts[1].demoLimit == 12,
+  'both timers are stored with the arena')
+
+-- Too few markers is not an arena.
+RM_onDerbySaveLayout(1, '{"name":"Sliver","boundary":[{"x":0,"y":0,"z":0},{"x":1,"y":0,"z":0}]}')
+check(#lastArenas.layouts == 1, 'an arena with fewer than 3 markers is rejected')
+
+-- Same name overwrites rather than duplicating (the edit workflow).
+RM_onDerbySaveLayout(1, '{"name":"pit arena","boundary":[{"x":0,"y":0,"z":10},'
+  .. '{"x":20,"y":0,"z":10},{"x":20,"y":20,"z":10}],"oobLimit":3,"demoLimit":4}')
+check(#lastArenas.layouts == 1 and #lastArenas.layouts[1].boundary == 3,
+  'saving the same name overwrites the arena')
+
+-- Loading adopts the boundary and the timers and pushes them to every client.
+RM_onDerbyClearBoundary(1)
+check(#lastDerby.boundary == 0, 'boundary cleared before the load')
+RM_onDerbyLoadLayout(1, '{"name":"Pit Arena"}')
+check(#lastDerby.boundary == 3, 'loading an arena restores its boundary')
+check(lastDerby.oobLimit == 3 and lastDerby.demoLimit == 4,
+  'loading an arena restores its timers')
+
+-- Strict map filter, same as track layouts.
+hostedMap = '/levels/east_coast_usa/info.json'
+RM_onDerbyRequestLayouts(1)
+check(#lastArenas.layouts == 0, 'arenas from another map are not listed')
+hostedMap = '/levels/gridmap_v2/info.json'
+RM_onDerbyRequestLayouts(1)
+check(#lastArenas.layouts == 1, 'and come back when that map is hosted again')
+
+-- An arena cannot be swapped under a running derby.
+RM_onDerbyStart(1)
+RM_onDerbyClearBoundary(1)              -- also refused while running
+RM_onDerbyLoadLayout(1, '{"name":"Pit Arena"}')
+check(#lastDerby.boundary == 3, 'the arena cannot change while a derby runs')
+RM_onDerbyEnd(1)
+RM_onDerbyEnd(1)                        -- finished -> idle
+local ap = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
+if ap then os.remove(ap) end
+
+RM_onDerbyDeleteLayout(1, '{"name":"Pit Arena"}')
+check(#lastArenas.layouts == 0, 'an arena can be deleted')
 
 -- ---------------------------------------------------------------------------
 -- Isolation: the whole derby session never touched circuit racing state

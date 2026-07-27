@@ -1,0 +1,219 @@
+-- Headless test for the race-entry list, the starting grid and the qualifying
+-- session rules in server/RaceManager/main.lua (Lua 5.3, same as BeamMP).
+-- Run from the repo root: lua5.3 tests/grid_test.lua
+--
+-- Covers, in one session-shaped pass:
+--   * opt-in entry: connecting is not entering, and only entrants are gridded
+--   * grid order: qualifying, random draw and a hand-picked custom order
+--   * grid assignment: every gridded driver is told which start position to
+--     stand on, and drivers who withdraw are told to stand down
+--   * qualifying limits: a per-driver lap allowance and a wall-clock limit
+--   * a finished driver is taken off the track and given their car back at
+--     the flag
+
+local connected = { [1] = 'Alice', [2] = 'Bob', [3] = 'Cara', [4] = 'Dan' }
+local lastState  = nil
+local lastChat   = nil
+local gridAssign = {}   -- [pid] = last slot the server assigned (false = cleared)
+local spectated  = {}   -- [pid] = last RM_ForceSpectate payload
+local released   = {}   -- ordered list of RM_ReleaseSpectate payloads
+local timers     = {}
+local hostedMap  = '/levels/gridmap_v2/info.json'
+
+MP = {
+  GetPlayerName = function (pid) return connected[pid] end,
+  SendChatMessage = function (target, msg) lastChat = msg end,
+  GetPlayers = function ()
+    local t = {}
+    for id, name in pairs(connected) do t[id] = name end
+    return t
+  end,
+  TriggerClientEvent = function (target, event, payload)
+    if event == 'RM_Update' then lastState = payload end
+    if event == 'RM_GridAssign' then
+      gridAssign[target] = payload.slot or false
+    end
+    if event == 'RM_ForceSpectate'   then spectated[target] = payload end
+    if event == 'RM_ReleaseSpectate' then released[#released + 1] = payload end
+  end,
+  RegisterEvent = function () end,
+  CreateEventTimer = function (name) timers[name] = true end,
+  CancelEventTimer = function (name) timers[name] = nil end,
+  Settings = { Map = 0 },
+  Get = function () return hostedMap end,
+}
+
+Util = {
+  JsonEncode = function (t) return t end,
+  JsonDecode = function (s)
+    local body = s:gsub('"([%w_]+)"%s*:', '%1='):gsub('%[', '{'):gsub('%]', '}')
+    return load('return ' .. body)()
+  end,
+}
+
+dofile('server/RaceManager/main.lua')
+
+local checks, fails = 0, 0
+local function check(cond, msg)
+  checks = checks + 1
+  if not cond then fails = fails + 1; print('FAIL: ' .. msg) end
+end
+local function driver(name)
+  for _, d in ipairs(lastState.drivers) do
+    if d.name == name then return d end
+  end
+end
+
+onInit()
+RM_onLogin(1, '{"password":"phoenix"}')
+for id in pairs(connected) do RM_onPlayerJoin(id) end
+
+-- ===========================================================================
+-- Race entry: connecting is not entering
+-- ===========================================================================
+check(lastState.entryMode == 'join', 'entry defaults to opt-in')
+check(lastState.entrants == 0, 'four connected players, nobody entered')
+
+RM_onJoinRace(2, '{"join":true}')
+RM_onJoinRace(3, '{"join":true}')
+RM_onJoinRace(1, '{"join":true}')
+check(lastState.entrants == 3, 'three of the four players entered')
+check(driver('Dan').joined ~= true, 'the player who never joined is not an entrant')
+
+-- ===========================================================================
+-- Qualifying with a lap allowance
+-- ===========================================================================
+RM_onSetQualiLimits(1, '{"laps":2,"seconds":0}')
+check(lastState.qualiLapLimit == 2, 'lap allowance set to 2')
+RM_onSetGhostQuali(1, '{"enabled":true}')
+check(lastState.ghostQuali == true, 'ghost qualifying armed')
+
+RM_onStartQualifying(1)
+check(lastState.phase == 'qualifying', 'qualifying started')
+check(driver('Alice').status == 'qualifying', 'entrants are put on track')
+check(driver('Dan').status == 'waiting', 'a non-entrant stays a spectator')
+check(driver('Alice').joined == true, 'entry survives the session wipe')
+
+-- A non-entrant's lap is not recorded at all.
+RM_onQualiLap(4, '{"lapTime":50.0}')
+check(driver('Dan').qualiBest == nil, 'a non-entrant cannot set a qualifying time')
+
+-- Alice: two laps, then her session is done and a third lap is ignored.
+RM_onQualiLap(1, '{"lapTime":95.0}')
+RM_onQualiLap(1, '{"lapTime":93.0}')
+check(driver('Alice').qualiLaps == 2, 'both of Alice\'s laps counted')
+check(driver('Alice').status == 'finished', 'Alice used her lap allowance')
+RM_onQualiLap(1, '{"lapTime":80.0}')
+check(driver('Alice').qualiBest == 93.0, 'a lap past the allowance is ignored')
+check(driver('Alice').qualiLaps == 2, 'and does not add to the lap count')
+
+RM_onQualiLap(2, '{"lapTime":91.0}')   -- Bob, one lap: fastest so far
+RM_onQualiLap(3, '{"lapTime":97.0}')   -- Cara, one lap
+
+-- The session closes itself once every entrant has used their allowance.
+check(lastState.phase == 'qualifying', 'the session runs while drivers have laps left')
+RM_onQualiLap(2, '{"lapTime":99.0}')
+RM_onQualiLap(3, '{"lapTime":99.0}')
+check(lastState.phase == 'waiting', 'qualifying closes when every allowance is spent')
+check(driver('Bob').qualiBest == 91.0, 'best laps survive the close')
+
+-- ===========================================================================
+-- Grid order: qualifying, random and custom
+-- ===========================================================================
+RM_onGenerateGrid(1)
+check(lastState.phase == 'grid', 'grid formed')
+check(driver('Bob').gridPos == 1 and driver('Alice').gridPos == 2
+  and driver('Cara').gridPos == 3, 'quali order puts the fastest on pole')
+check(driver('Dan').gridPos == nil, 'a non-entrant is left off the grid')
+check(gridAssign[2] == 1 and gridAssign[1] == 2 and gridAssign[3] == 3,
+  'every gridded driver is told which start position to take')
+check(gridAssign[4] == false, 'a non-entrant is told to stand down')
+
+-- Withdrawing from a formed grid clears that driver's placement.
+RM_onJoinRace(3, '{"join":false}')
+check(gridAssign[3] == false, 'withdrawing clears the start position')
+check(lastState.entrants == 2, 'the field shrinks to two')
+RM_onJoinRace(3, '{"join":true}')
+
+-- Random draw: still a complete 1..N permutation of the entry list.
+RM_onSetGridMode(1, '{"mode":"random"}')
+check(lastState.gridMode == 'random', 'grid mode switched to a random draw')
+RM_onGenerateGrid(1)
+local seen = {}
+for _, d in ipairs(lastState.drivers) do
+  if d.gridPos then seen[d.gridPos] = (seen[d.gridPos] or 0) + 1 end
+end
+check(seen[1] == 1 and seen[2] == 1 and seen[3] == 1,
+  'the random draw assigns each slot exactly once')
+
+-- Custom order: pinning a driver moves them, and pinning a slot someone else
+-- holds takes it off that driver rather than doubling up.
+RM_onSetDriverGrid(1, '{"pid":3,"slot":1}')
+check(lastState.gridMode == 'custom', 'pinning a slot switches to the custom order')
+RM_onSetDriverGrid(1, '{"pid":1,"slot":2}')
+RM_onSetDriverGrid(1, '{"pid":2,"slot":1}')  -- steals slot 1 from Cara
+RM_onGenerateGrid(1)
+check(driver('Bob').gridPos == 1, 'the last driver pinned to slot 1 starts from pole')
+check(driver('Alice').gridPos == 2, 'the driver pinned to slot 2 starts second')
+check(driver('Cara').gridPos == 3, 'the driver whose slot was taken falls in behind')
+check(gridAssign[2] == 1 and gridAssign[1] == 2 and gridAssign[3] == 3,
+  'the custom order is what gets sent to the clients')
+
+-- Grid order cannot be rewritten once the lights go out.
+RM_onSetTotalLaps(1, '{"laps":1}')
+RM_onGenerateGrid(1)
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+check(lastState.phase == 'racing', 'race running')
+RM_onSetGridMode(1, '{"mode":"quali"}')
+check(lastState.gridMode == 'custom', 'grid mode locked during the race')
+RM_onJoinRace(4, '{"join":true}')
+check(lastState.entrants == 3, 'nobody can enter a race already under way')
+
+-- ===========================================================================
+-- A finished driver is taken off the track, and gets their car back at the flag
+-- ===========================================================================
+spectated = {}
+released  = {}
+RM_onLap(2, '{"lapTime":90}')
+check(driver('Bob').status == 'finished', 'Bob took the flag')
+check(spectated[2] ~= nil and spectated[2].source == 'race',
+  'a finished car is removed from the track')
+check(lastState.phase == 'racing', 'the race continues for the others')
+
+RM_onLap(1, '{"lapTime":91}')
+RM_onLap(3, '{"lapTime":92}')
+check(lastState.phase == 'finished', 'race over once everyone has finished')
+check(#released > 0 and released[#released].source == 'race',
+  'the flag gives every removed car back')
+
+-- ===========================================================================
+-- Qualifying time limit: the clock closes the session on its own
+-- ===========================================================================
+RM_onResetLeaderboard(1)
+RM_onSetQualiLimits(1, '{"laps":0,"seconds":2}')
+check(lastState.qualiTimeLimit == 2, 'a 2 second qualifying limit is accepted')
+RM_onJoinRace(1, '{"join":true}')
+RM_onStartQualifying(1)
+check(lastState.phase == 'qualifying', 'timed qualifying started')
+for _ = 1, 10 do RM_Tick() end     -- +1.0s
+check(lastState.phase == 'qualifying', 'the session runs while time remains')
+check(lastState.qualiLeft ~= nil and lastState.qualiLeft < 2,
+  'the remaining time counts down in the broadcast')
+for _ = 1, 15 do RM_Tick() end     -- past the limit
+check(lastState.phase == 'waiting', 'the time limit closes qualifying')
+check(type(lastChat) == 'string' and lastChat:find('time limit', 1, true) ~= nil,
+  'chat announces why qualifying ended')
+
+-- Limits cannot be changed while qualifying is running.
+RM_onStartQualifying(1)
+RM_onSetQualiLimits(1, '{"laps":9,"seconds":900}')
+check(lastState.qualiLapLimit == 0 and lastState.qualiTimeLimit == 2,
+  'qualifying limits are locked while the session runs')
+
+if fails == 0 then
+  print('ALL PASS (' .. checks .. ' checks)')
+else
+  print(fails .. '/' .. checks .. ' FAILED')
+  os.exit(1)
+end

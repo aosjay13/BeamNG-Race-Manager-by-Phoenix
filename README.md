@@ -64,9 +64,9 @@ checkpoint configurations **on the BeamMP server** in
 and can be prepped days before an event:
 
 - **Save Current Layout** bundles the currently placed gates (positions,
-  headings, gate width) — including the **joker route**, if one is placed —
-  under a name, tagged with the level the server is hosting. Saving the same
-  name on the same map overwrites it.
+  headings, gate dimensions) — including the **joker route** and the
+  **starting grid**, if either is placed — under a name, tagged with the level
+  the server is hosting. Saving the same name on the same map overwrites it.
 - The dropdown is **strictly filtered by map** — the server only lists
   layouts saved for the level it is currently hosting.
 - Selecting a layout draws a top-down **2D track preview** (checkpoints,
@@ -118,24 +118,36 @@ Press **Editor** in the header to open the checkpoint editor, then drive the
 course you want to race:
 
 1. At each place you want a timing gate, drive through it **in the direction
-   of travel** and press **+ Checkpoint Here**. A gate is two vertical poles
-   spanning a line perpendicular to your heading — cars must pass between
-   them.
+   of travel** and press **+ Checkpoint Here**. A gate is a **flat rectangle**
+   standing perpendicular to your heading — cars must pass through it.
 2. **The last gate you place is the start/finish line** (drawn white in the
    world; earlier gates are orange, and your next target turns green during
    a session).
-3. Every gate is a **3D box**, not a flat line — it has a **width** (between
-   the poles), a **height** (how far it reaches up and down) and a **depth**
-   (how thick the timing line is). Set the live defaults with the **Gate
-   width** slider (2–120 m) and the **Def. height** / **Def. depth** fields.
-   Raise the height on **high-banked tracks** so the box covers the banking;
-   the in-world drawing shows a faint cage of the real hit-volume so you can
-   verify it. Click any placed checkpoint in the list to **override its own
-   Width / Height / Depth** (blank = inherit the default).
+3. Every gate has a **width** (how far it reaches across) and a **height**
+   (how far it reaches up and down). Set the live defaults with the **Gate
+   width** slider (2–120 m) and the **Gate height** field. Raise the height on
+   **high-banked tracks** so the rectangle covers the banking — what you see
+   drawn in the world *is* the trigger, so you can verify it at a glance.
+   Click any placed checkpoint in the list to **override its own
+   Width / Height** (blank = inherit the default).
 4. **Undo** removes the last gate, **Clear** wipes the route,
    **Hide/Show Gates** toggles the in-world drawing.
 5. **Save** / **Load** keep a personal scratch copy on your own machine
    (`settings/raceManager/route.json`) — handy while iterating on a design.
+
+#### Placing the starting grid
+
+Switch the editor to the **Start Grid** tab, then drive to each grid slot
+**facing down the track** and press **+ Place Start Position Here**. Slot 1 is
+pole. Every placed slot stays editable:
+
+- **Go** puts your car on that slot so you can check the spacing.
+- **Move Here** moves the slot to wherever your car is standing now.
+- **✕** deletes the slot; the rest of the grid closes up behind it.
+
+Slots are drawn as numbered outlines with a direction arrow, and your own slot
+turns green once the server assigns it. The grid is **saved and loaded with the
+track layout**, so a track is its gates *and* where the cars line up.
 
 ### Step 3 — Save it as a layout (so it survives the night)
 
@@ -153,33 +165,66 @@ panel) live on the server and persist across server restarts:
    nobody has to load anything manually. (Loading is locked while a
    countdown or race is running.)
 
-### Step 4 — Qualifying
+### Step 4 — Who is actually in the race
+
+Being connected is **not** the same as being entered. Every player gets a
+**Race Entry** bar with a **Join Race** button; only drivers who joined are
+put on the grid, and the bar shows how many have entered. Withdrawing
+(**Leave Race**) gives up your slot. Entry closes once the countdown starts.
+
+An admin can flip the mode to **Everyone races** if a session is simpler that
+way — then every connected player is in the field, which is how the plugin
+behaved before entry lists existed. Entry survives a **Start Quali**, so
+drivers only ever have to join once per event.
+
+### Step 5 — Qualifying
 
 Press **Start Quali**. Every driver's first crossing of the start/finish
 line starts their flying lap (the out-lap is free), and each full lap
 through all gates posts to the server — the table shows everyone's **Best
-Lap** and live provisional grid order, fastest on top. Run as many laps as
-you like; only your best counts. **End Session** closes qualifying but
-keeps the times.
+Lap**, laps run and live provisional grid order, fastest on top. Only your
+best counts. **End Session** closes qualifying but keeps the times.
 
-### Step 5 — Grid and race
+Three qualifying options sit in the admin settings:
+
+| Setting | What it does |
+|---------|--------------|
+| **Ghost quali** | Rival cars stop being obstacles for the session, so a flying lap can't be ruined by traffic. Ghosted cars are faded so you can see who they are. |
+| **Quali laps** | Timed laps each driver gets. Their session ends when they use them up; the whole session closes once nobody has laps left. `0` = unlimited. |
+| **Quali mins** | Wall-clock limit. The header shows the countdown, and the session closes itself when it expires. `0` = no limit. |
+
+Both limits are locked while qualifying is actually running, so nobody has
+the rug pulled mid-lap.
+
+### Step 6 — Grid and race
 
 1. Set the race distance with the **Laps** field + **Set** (visible to
    everyone as `race: N`).
-2. Press **Generate Grid** — starting positions lock in fastest-first from
-   quali bests; drivers without a time go to the back. (With no quali at
-   all, the grid falls back to join order.) Line the cars up on track.
-3. Press **Start Countdown**: everyone gets a synchronized 3‑2‑1‑**GO!**
-   overlay and the race clock starts.
-4. Race. The table now shows **Pos** (live position), the starting grid slot,
+2. Choose the **Grid order**:
+   - **Quali** — fastest-first from quali bests; drivers without a time go to
+     the back (the default, and with no qualifying at all it falls back to
+     join order).
+   - **Random** — a random draw, for a race with no qualifying behind it.
+   - **Custom** — type a slot number next to any driver in the **Start**
+     column and press Enter. Pinning a slot someone else holds takes it off
+     them rather than doubling up; unpinned drivers fall in behind by quali
+     time.
+3. Press **Generate Grid**. Every entered driver is **placed on their start
+   position and held there** — you cannot move until the countdown finishes,
+   so nobody jumps the start. The header shows your slot and a `HOLD` tag.
+   If there are more drivers than placed start positions, chat warns you.
+4. Press **Start Countdown**: everyone gets a synchronized 3‑2‑1‑**GO!**
+   overlay, every car is released by that same broadcast, and the race clock
+   starts.
+5. Race. The table now shows **Pos** (live position), the starting grid slot,
    current lap, best race lap and **Led** (laps led), and it re-sorts itself
    leader-first in real time as places change (see *Live position tracking*
    below). Finish order is decided by the server's single clock, so it's fair
    for every client.
-5. The race ends when everyone has finished (or you press **End Session**,
+6. The race ends when everyone has finished (or you press **End Session**,
    which DNFs anyone still out). Disconnecting mid-race is an automatic DNF.
 
-### Step 6 — Results
+### Step 7 — Results
 
 When the race closes, the server automatically writes a results file
 (qualifying classification + race classification, pole and winner tagged) to
@@ -223,10 +268,10 @@ shown in the app header while you race.
 
 ## League regulations
 
-Four rule systems layer on top of the session flow above. All of them are
+Several rule systems layer on top of the session flow above. All of them are
 off by default, so a plain race night behaves exactly as it always did.
 
-### Vehicle reset limits & forced spectating
+### Vehicle reset limits
 
 **Max resets** (Race settings, admin only) decides how many vehicle
 resets/repairs each driver gets per session:
@@ -234,20 +279,34 @@ resets/repairs each driver gets per session:
 | Value | Meaning |
 |-------|---------|
 | `-1` (or blank) | Unlimited — the default |
-| `0` | No resets at all: the first one ends your race |
-| `N` | `N` resets; the `N+1`st ends your race |
+| `0` | No resets at all: the reset button does nothing |
+| `N` | `N` resets; every press after that is blocked |
 
 The BeamMP server never sees a reset happen, so the **client** polices it.
 Every reset inside the allowance is counted and reported (the leaderboard
-gains an `Rst` column showing `used/allowed`). The reset that goes past the
-allowance is **invalidated on the spot**: the driver is DNF'd, their vehicle
-is removed, and their camera is pinned to **freecam** — they cannot spawn a
-replacement car until the session ends. The results file records
-`DNF - Reset limit exceeded`.
+gains an `Rst` column showing `used/allowed`). Once the allowance is gone the
+reset is **blocked rather than punished**: BeamNG has already teleported the
+car by the time the mod hears about it, so the car is put straight back on the
+position and orientation it held a moment earlier. The driver keeps racing —
+they simply cannot use the reset button any more.
 
-The same forced-spectator lock is applied to a driver **eliminated in a Demo
-Derby**, using the derby's own event scope so the two modes can never release
-each other's spectators. The limit is locked once a countdown or race starts.
+Blocked attempts are still counted, so the `Rst` column reads `3/3+2` for a
+driver who kept pressing R after running out, and the results file records the
+same. Nobody is disqualified for it. The limit is locked once a countdown or
+race starts.
+
+### Cars on and off the track
+
+Two things happen automatically so the track only ever holds cars that are
+still racing:
+
+- **A driver who takes the flag is removed from the track** and put into
+  freecam. A finished car has nothing left to gain and is an obstacle for
+  everyone still running.
+- **When the session ends, every removed car is put back.** The same applies
+  to a driver **eliminated in a Demo Derby** — their car returns when the derby
+  finishes. The spectator lock is scoped per mode, so a race and a derby can
+  never release each other's spectators.
 
 ### Rallycross joker laps
 
@@ -326,6 +385,14 @@ running a derby never touches qualifying/race state). Open it with the
    position, and the poles connect in order into a closed perimeter polygon
    (3+ markers required; **Clear Boundary** starts over). Any shape works,
    including non-convex ones.
+
+   Arenas are **saved and loaded** the same way track layouts are. Type a name
+   in the **Saved Arenas** panel and press **Save Current Arena**: the boundary
+   polygon *and* both timers are stored on the server in
+   `Resources/Server/RaceManager/derbyArenas.json`, tagged with the hosted map,
+   so a prepped arena survives a restart. **Load Arena** pushes it to every
+   connected client at once; **✕** deletes it. Loading is refused while a derby
+   is running — the arena cannot move under the drivers.
 3. **Start Derby**: every connected player becomes a participant. Each client
    checks its own vehicle against the arena polygon (ray-casting
    point-in-polygon) and its own speed:
@@ -335,6 +402,7 @@ running a derby never touches qualifying/race state). Open it with the
      moving or you're **Demolished**. Disconnecting counts as Disqualified.
    - An eliminated driver's vehicle is removed and their camera is forced into
      **freecam** until the derby ends; they cannot spawn a replacement car.
+     When the derby finishes, their car is **put back** automatically.
 4. The driver table shows who's still in, who's out (with reason and
    elimination time) and the winner. When exactly one driver remains the
    server ends the derby, announces the **winner** in chat, and writes

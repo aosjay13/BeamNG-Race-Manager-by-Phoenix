@@ -71,9 +71,17 @@ end
 expect(bound('settingsUi.laps'),   'Laps input binds settingsUi.laps')
 expect(bound('settingsUi.resets'), 'Max resets input binds settingsUi.resets')
 expect(bound('settingsUi.width'),  'Gate width inputs bind settingsUi.width')
-expect(bound('settingsUi.height'), 'Default height input binds settingsUi.height')
-expect(bound('settingsUi.depth'),  'Default depth input binds settingsUi.depth')
+expect(bound('settingsUi.height'), 'Gate height input binds settingsUi.height')
+expect(bound('settingsUi.qualiLaps'), 'Quali lap limit input binds settingsUi.qualiLaps')
+expect(bound('settingsUi.qualiMins'), 'Quali time limit input binds settingsUi.qualiMins')
+expect(bound('derbyUi.name'),      'Derby arena name input binds derbyUi.name')
 expect(bound('lbUi.opacity'),      'Leaderboard opacity slider binds lbUi.opacity')
+
+-- A checkpoint is a flat width x height rectangle: the depth control and every
+-- reference to it are gone from both ends.
+expect(not html:find('settingsUi.depth', 1, true), 'the gate depth input is gone from the template')
+expect(not js:find('setCheckpointDepth', 1, true), 'the depth command is gone from the controller')
+expect(not html:find('cpEdit.depth', 1, true), 'the per-gate depth override is gone')
 
 -- UI -> server: the Set handlers read the value the inputs actually write.
 expect(js:find('$scope.settingsUi.laps', 1, true) ~= nil,
@@ -95,6 +103,33 @@ expect(js:find('$scope.totalLaps = data.totalLaps', 1, true) ~= nil,
   'totalLaps is mirrored from the server broadcast')
 expect(js:find('$scope.maxResets = data.maxResets', 1, true) ~= nil,
   'maxResets is mirrored from the server broadcast')
+
+-- ---------------------------------------------------------------------------
+-- 4. Race entry, the starting grid and the qualifying rules are wired end to
+--    end: a control in the template, a handler that sends the command, and a
+--    server field the state handler mirrors back.
+-- ---------------------------------------------------------------------------
+local function wired(command, handler, msg)
+  expect(html:find(handler .. '(', 1, true) ~= nil, msg .. ': template calls ' .. handler)
+  expect(js:find('raceManager.' .. command, 1, true) ~= nil,
+    msg .. ': the handler sends raceManager.' .. command)
+end
+
+wired('joinRace',           'joinRace',           'Join Race')
+wired('setEntryMode',       'toggleEntryMode',    'Entry mode')
+wired('setGridMode',        'setGridMode',        'Grid order')
+wired('setDriverGridSlot',  'pinGridSlot',        'Custom grid slot')
+wired('setGhostQuali',      'toggleGhostQuali',   'Ghost qualifying')
+wired('setQualiLimits',     'applyQualiLimits',   'Qualifying limits')
+wired('moveStartPosition',  'moveStartPosition',  'Move start position')
+wired('removeStartPosition','removeStartPosition','Remove start position')
+wired('derbySaveLayout',    'derbySaveLayout',    'Derby arena save')
+wired('derbyLoadLayout',    'derbyLoadLayout',    'Derby arena load')
+
+for _, field in ipairs({ 'entryMode', 'gridMode', 'ghostQuali', 'startSlots' }) do
+  expect(js:find('data.' .. field, 1, true) ~= nil,
+    field .. ' is mirrored from the server broadcast')
+end
 
 if fails == 0 then
   print('ui_bindings_test: ' .. checks .. ' checks, 0 failures ('

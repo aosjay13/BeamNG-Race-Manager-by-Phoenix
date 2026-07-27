@@ -88,6 +88,11 @@ end
 
 onInit()
 RM_onPlayerJoin(1); RM_onPlayerJoin(2); RM_onPlayerJoin(3)
+-- This suite predates the entry list; run it with entry open to everyone.
+adminLogin(1)
+RM_onSetEntryMode(1, '{"mode":"all"}')
+RM_onLogout(1)
+lastState = nil
 
 -- ===========================================================================
 -- Module 1: vehicle reset ruleset
@@ -120,23 +125,22 @@ check(spectated[2] == nil, 'Bob is not spectating while inside the allowance')
 RM_onSetMaxResets(1, '{"maxResets":9}')
 check(lastState.maxResets == 2, 'reset limit locked once the race is under way')
 
--- The client blocked a third reset and reported it: instant DNF + spectator.
+-- The client BLOCKED a third reset (it put the car back where it was) and
+-- reported the attempt. That is not a penalty: Bob keeps racing, keeps his car
+-- and stays out of spectator mode — the attempt is only counted.
 lastChat = nil
 RM_onResetDenied(2)
-check(driver('Bob').status == 'dnf', 'reset overrun is a DNF')
-check(driver('Bob').outReason == 'DNF - Reset limit exceeded',
-  'DNF reason recorded for the results file')
-check(spectated[2] ~= nil and spectated[2].source == 'race',
-  'the offender is forced into spectator mode (race-scoped)')
-check(type(lastChat) == 'string' and lastChat:find('reset limit exceeded', 1, true),
-  'chat announces the reset-limit DNF')
-check(lastState.phase == 'racing', 'the race carries on for everyone else')
+check(driver('Bob').status == 'racing', 'a blocked reset does not end the race')
+check(driver('Bob').outReason == nil, 'no DNF reason is recorded for a blocked reset')
+check(driver('Bob').resetsBlocked == 1, 'the blocked attempt is counted')
+check(driver('Bob').resets == 2, 'a blocked reset does not spend allowance')
+check(spectated[2] == nil, 'a blocked reset never forces spectator mode')
+check(lastState.phase == 'racing', 'the race carries on')
 
--- A DNF'd driver cannot keep spending allowance or be punished twice.
-RM_onVehicleReset(2)
-check(driver('Bob').resets == 2, 'resets stop accruing once the driver is out')
+-- Repeated attempts keep counting; the driver is never punished for them.
 RM_onResetDenied(2)
-check(driver('Bob').status == 'dnf', 'duplicate reset-denied reports are no-ops')
+check(driver('Bob').resetsBlocked == 2, 'further blocked attempts keep counting')
+check(driver('Bob').status == 'racing', 'still racing after a second blocked reset')
 
 -- Reset reports outside a race are ignored entirely.
 RM_onEndRace(1)
