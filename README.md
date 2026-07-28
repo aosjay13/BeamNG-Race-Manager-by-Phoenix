@@ -295,6 +295,14 @@ driver who kept pressing R after running out, and the results file records the
 same. Nobody is disqualified for it. The limit is locked once a countdown or
 race starts.
 
+Two details keep a spent allowance from turning into a stuck car. BeamNG
+reports every teleport as a vehicle reset, including the ones the mod performs
+itself, so the car being put back — and being stood on its grid slot — is
+recognised as the mod's own doing and never counted, blocked or reported.
+And because the reset key repeats while it is held, the block is applied to
+every press but the notice, the console line and the server report are limited
+to one a second.
+
 ### Cars on and off the track
 
 Two things happen automatically so the track only ever holds cars that are

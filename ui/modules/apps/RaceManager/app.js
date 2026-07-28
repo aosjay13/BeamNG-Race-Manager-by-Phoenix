@@ -61,7 +61,15 @@ angular.module('beamng.apps')
       $scope.jokerNext = 1;
       $scope.jokerTaken = false;
       $scope.jokerLap = null;
-      $scope.editorTarget = 'main';   // which route the editor appends to
+      // Which list the checkpoint editor appends to and shows. Three targets:
+      // the main lap, the joker route and the starting grid. Anything else is
+      // not a target the client Lua knows about, so it falls back to the main
+      // lap — the same normalisation raceManager.setEditorTarget applies.
+      var EDITOR_TARGETS = { main: true, joker: true, start: true };
+      function editorTargetOf(value) {
+        return EDITOR_TARGETS[value] ? value : 'main';
+      }
+      $scope.editorTarget = 'main';
       // Garage list (approved vehicles/setups).
       $scope.garage = [];             // [{ model, label }]
       $scope.garageEnforce = false;
@@ -426,7 +434,7 @@ angular.module('beamng.apps')
           $scope.jokerNext = data.jokerNext || 1;
           $scope.jokerTaken = !!data.jokerTaken;
           $scope.jokerLap = data.jokerLap || null;
-          $scope.editorTarget = data.editorTarget === 'joker' ? 'joker' : 'main';
+          $scope.editorTarget = editorTargetOf(data.editorTarget);
           if (typeof data.resetsUsed === 'number') { $scope.resetsUsed = data.resetsUsed; }
           if (typeof data.spectating === 'boolean') { $scope.spectating = data.spectating; }
           // Keep the override editor in sync (a gate may have been removed, or
@@ -920,13 +928,15 @@ angular.module('beamng.apps')
         if ($scope.showEditor) { schedulePreview(); }  // canvas re-enters the DOM
       };
 
-      // Switch the editor between the main lap and the joker route. Everything
-      // in the editor panel (+ Checkpoint Here, Undo, Clear, the gate list)
-      // follows this selection.
+      // Switch the editor between the main lap, the joker route and the start
+      // grid. Everything in the editor panel (+ Checkpoint Here, Undo, Clear,
+      // the list below) follows this selection. The tab is applied locally as
+      // well as sent on: the client's route broadcast echoes it back, but the
+      // panel must not wait a frame (or a lost broadcast) to switch.
       $scope.setEditorTarget = function (target) {
         $scope.selectedCp = null;
-        bngApi.engineLua('raceManager.setEditorTarget("'
-          + (target === 'joker' ? 'joker' : 'main') + '")');
+        $scope.editorTarget = editorTargetOf(target);
+        bngApi.engineLua('raceManager.setEditorTarget("' + $scope.editorTarget + '")');
       };
 
       // Per-checkpoint override editing: pick a placed gate (1-based) and load

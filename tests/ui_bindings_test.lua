@@ -131,6 +131,49 @@ for _, field in ipairs({ 'entryMode', 'gridMode', 'ghostQuali', 'startSlots' }) 
     field .. ' is mirrored from the server broadcast')
 end
 
+-- ---------------------------------------------------------------------------
+-- 5. Editor tabs: Main Route / Joker Route / Start Grid
+--
+-- The editor panel shows whichever list editorTarget names, so a tab that is
+-- not carried through — to the client Lua on the way out, or back from its
+-- route broadcast — leaves the button looking pressed while the panel stays on
+-- the main route. That is exactly how the Start Grid tab broke: both ends
+-- collapsed anything that was not 'joker' back to 'main'.
+-- ---------------------------------------------------------------------------
+wired('setEditorTarget', 'setEditorTarget', 'Editor tabs')
+
+local tabs = {}
+for target in html:gmatch("setEditorTarget%('([%w_]+)'%)") do tabs[target] = true end
+expect(tabs.main and tabs.joker and tabs.start,
+  'the template offers a Main Route, a Joker Route and a Start Grid tab')
+
+local accepted = js:match('EDITOR_TARGETS%s*=%s*{(.-)}') or ''
+for target in pairs(tabs) do
+  expect(accepted:find(target .. ':', 1, true) ~= nil,
+    'the "' .. target .. '" tab is not in the controller\'s EDITOR_TARGETS, so '
+      .. 'pressing it falls back to the main route')
+end
+
+-- Every editorTarget assignment fed by a tab press or by the client's route
+-- broadcast has to normalise through editorTargetOf; a hand-written ternary is
+-- what dropped the third target on the floor.
+for assign in js:gmatch('%$scope%.editorTarget%s*=%s*([^\n]+)') do
+  if assign:find('data.editorTarget', 1, true) or assign:find('target', 1, true) then
+    expect(assign:find('editorTargetOf', 1, true) ~= nil,
+      'editorTarget is assigned from `' .. assign .. '` without editorTargetOf, '
+        .. 'so a target it does not name collapses back to the main route')
+  end
+end
+
+-- The command sent to the client Lua must carry the tab that was pressed.
+local setTarget = js:match('%$scope%.setEditorTarget%s*=%s*function%s*%(target%)%s*{(.-)};')
+expect(setTarget ~= nil, 'found the setEditorTarget handler in app.js')
+if setTarget then
+  expect(setTarget:find("'joker'", 1, true) == nil and setTarget:find("'main'", 1, true) == nil,
+    'setEditorTarget rewrites the pressed tab into a hard-coded target before '
+      .. 'sending it to raceManager.setEditorTarget')
+end
+
 if fails == 0 then
   print('ui_bindings_test: ' .. checks .. ' checks, 0 failures ('
     .. #models .. ' ng-model bindings)')

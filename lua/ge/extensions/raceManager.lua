@@ -105,6 +105,22 @@ local lastGoodRot    = nil       -- quaternion { x, y, z, w } for the same sampl
 local snapshotLeft   = 0         -- seconds until the next snapshot is taken
 local SNAPSHOT_EVERY = 0.25      -- seconds between "last good position" samples
 
+-- BeamNG reports a teleport as a vehicle reset, and this mod teleports the car
+-- itself (blocked-reset restore, grid placement, editor preview). Without a way
+-- to tell those apart from the driver pressing reset, a blocked reset restored
+-- the car, heard its own restore back as a fresh reset, restored again... an
+-- endless loop that pinned the car in place and flooded the UI until the game
+-- locked up. Every teleport we perform is recorded here (where and when), and a
+-- reset reported from that spot inside the window is our own echo.
+local selfTeleport   = { left = 0, x = 0, y = 0, z = 0 }
+local TELEPORT_WINDOW = 0.6      -- seconds an echo of our own teleport can arrive in
+local TELEPORT_RADIUS = 2.0      -- metres from where we put the car
+-- Reset fires repeatedly while the key is held, so the feedback for a blocked
+-- attempt (notice, log line, server report) is rate limited. The block itself
+-- is applied on every single attempt.
+local blockNoticeLeft = 0
+local BLOCK_NOTICE_EVERY = 1.0   -- seconds between blocked-reset reports
+
 -- Race entry (opt-in). Mirrored from the server so the UI can show a Join /
 -- Leave button and whether entry is open to everyone or by request.
 local entryMode = 'join'         -- 'join' (opt-in) | 'all' (everyone races)
@@ -269,6 +285,7 @@ local function resetLapTracking()
   jokerTaken   = false
   jokerLapUsed = nil
   resetsUsed   = 0
+  blockNoticeLeft = 0   -- a fresh session may report its first blocked attempt at once
   -- Telemetry restarts with the session; report immediately on the next frame
   -- so the leaderboard has a distance for this driver from the first moments.
   distToNext   = nil
@@ -774,6 +791,35 @@ local function snapshotUpdate(dt)
   if not ok then lastGoodPos, lastGoodRot = nil, nil end
 end
 
+-- Remember a teleport this mod just performed, so the vehicle-reset hook it
+-- provokes can be recognised as our own doing rather than a driver reset.
+local function noteSelfTeleport(x, y, z)
+  selfTeleport.left = TELEPORT_WINDOW
+  selfTeleport.x, selfTeleport.y, selfTeleport.z = x, y, z
+end
+
+-- True when the reset just reported is the echo of our own teleport: it arrived
+-- inside the window AND the car is sitting where we put it. Both halves matter —
+-- the window alone would swallow a driver reset pressed immediately after a
+-- block, and a driver reset always moves the car somewhere else.
+local function isSelfTeleportEcho()
+  if selfTeleport.left <= 0 then return false end
+  local veh = playerVehicle()
+  if not veh then return false end
+  local ok, near = pcall(function ()
+    local p = veh:getPosition()
+    local dx, dy, dz = p.x - selfTeleport.x, p.y - selfTeleport.y, p.z - selfTeleport.z
+    return (dx * dx + dy * dy + dz * dz) <= TELEPORT_RADIUS * TELEPORT_RADIUS
+  end)
+  return ok and near == true
+end
+
+-- Age out both reset-side timers.
+local function resetGuardUpdate(dt)
+  if selfTeleport.left  > 0 then selfTeleport.left  = selfTeleport.left  - dt end
+  if blockNoticeLeft    > 0 then blockNoticeLeft    = blockNoticeLeft    - dt end
+end
+
 -- Undo a reset the driver was not entitled to. BeamNG has already teleported
 -- the car by the time onVehicleResetted fires, so the block is applied after
 -- the fact: put the car back exactly where it was standing a moment ago.
@@ -781,10 +827,14 @@ local function restoreLastGoodPosition()
   local veh = playerVehicle()
   if not veh or not lastGoodPos then return false end
   local rot = lastGoodRot or quat(0, 0, 0, 1)
+  -- Armed BEFORE the teleport: the hook it triggers may arrive on this very
+  -- frame, and hearing it back as a driver reset is what caused the loop.
+  noteSelfTeleport(lastGoodPos.x, lastGoodPos.y, lastGoodPos.z)
   local ok = pcall(function ()
     veh:setPositionRotation(lastGoodPos.x, lastGoodPos.y, lastGoodPos.z,
       rot.x, rot.y, rot.z, rot.w)
   end)
+  if not ok then selfTeleport.left = 0 end
   return ok
 end
 
@@ -793,6 +843,9 @@ end
 function M.onVehicleResetted(vehId)
   local veh = playerVehicle()
   if not veh or veh:getID() ~= vehId then return end
+  -- Our own teleport coming back at us (a restore, a grid placement, a preview).
+  -- Never a driver reset, so it must not be counted, blocked or reported.
+  if isSelfTeleportEcho() then return end
   if spectatorLock then
     -- Out of the session: a reset must never put a spectator back on track.
     removeLocalVehicle()
@@ -806,13 +859,21 @@ function M.onVehicleResetted(vehId)
     -- straight back where it was, the driver stays in the race, and the server
     -- is told so the attempt shows up in the live table and the results.
     local restored = restoreLastGoodPosition()
-    if inMultiplayer() then TriggerServerEvent('RM_ResetDenied', '') end
-    pushNotice('reset', maxResets == 0
-      and 'RESET BLOCKED — no resets allowed in this session'
-      or  ('RESET BLOCKED — all ' .. maxResets .. ' resets used'))
-    log('W', 'raceManager', 'Reset blocked: allowance of ' .. maxResets
-      .. ' exhausted (position ' .. (restored and 'restored' or 'NOT restored') .. ')')
-    pushRouteState()
+    -- Holding the reset key fires this hook over and over. The block above runs
+    -- every time; the talking about it does not, or the notice channel, the
+    -- console and the server all get flooded by one held key.
+    if blockNoticeLeft <= 0 then
+      blockNoticeLeft = BLOCK_NOTICE_EVERY
+      if inMultiplayer() then TriggerServerEvent('RM_ResetDenied', '') end
+      pushNotice('reset', maxResets == 0
+        and 'RESET BLOCKED — no resets allowed in this session'
+        or  ('RESET BLOCKED — all ' .. maxResets .. ' resets used'))
+      log('W', 'raceManager', 'Reset blocked: allowance of ' .. maxResets
+        .. ' exhausted (position ' .. (restored and 'restored' or 'NOT restored') .. ')')
+    end
+    -- Nothing in the pushed state changed (a blocked reset spends no allowance),
+    -- so there is deliberately no pushRouteState here: it would be one more UI
+    -- message per attempt for no new information.
     return
   end
 
@@ -871,18 +932,26 @@ local function setLocalVehicleFrozen(frozen)
   return ok
 end
 
+-- Heading (hx, hy) -> yaw about Z, expressed as a quaternion. BeamNG's
+-- vehicles face +Y at identity, so the angle is measured from +Y.
+local function startPositionRot(sp)
+  local yaw  = math.atan2(sp.hx, sp.hy)
+  local half = yaw * 0.5
+  return quat(0, 0, math.sin(half), math.cos(half))
+end
+
 -- Put the local car on a placed start position, facing down the track.
 local function placeOnStartPosition(sp)
   local veh = playerVehicle()
   if not veh or not sp then return false end
-  -- Heading (hx, hy) -> yaw about Z, expressed as a quaternion. BeamNG's
-  -- vehicles face +Y at identity, so the angle is measured from +Y.
-  local yaw = math.atan2(sp.hx, sp.hy)
-  local half = yaw * 0.5
-  local qz, qw = math.sin(half), math.cos(half)
+  local rot = startPositionRot(sp)
+  -- Same story as the blocked-reset restore: this teleport comes back as a
+  -- vehicle reset, and being gridded must never cost a driver an allowance.
+  noteSelfTeleport(sp.x, sp.y, sp.z)
   local ok = pcall(function ()
-    veh:setPositionRotation(sp.x, sp.y, sp.z, 0, 0, qz, qw)
+    veh:setPositionRotation(sp.x, sp.y, sp.z, rot.x, rot.y, rot.z, rot.w)
   end)
+  if not ok then selfTeleport.left = 0 end
   return ok
 end
 
@@ -901,9 +970,10 @@ local function applyGridSlot(slot)
   if placeOnStartPosition(sp) then
     setLocalVehicleFrozen(true)
     -- The grid slot is where the car legitimately stands, so it is also the
-    -- position a blocked reset should restore to.
+    -- position a blocked reset should restore to — facing down the track, not
+    -- at whatever identity rotation happens to mean on this circuit.
     lastGoodPos = vec3(sp.x, sp.y, sp.z)
-    lastGoodRot = nil
+    lastGoodRot = startPositionRot(sp)
     pushNotice('grid', 'You start from P' .. slot .. ' — hold for the countdown')
     log('I', 'raceManager', 'Placed on grid slot ' .. slot)
   end
@@ -1436,6 +1506,7 @@ function M.onUpdate(dt)
   drawGates()
   drawStartPositions()      -- starting grid slots
   snapshotUpdate(dt)        -- Module 1: rolling "last good position"
+  resetGuardUpdate(dt)      -- Module 1: teleport-echo window + notice throttle
   spectatorUpdate(dt)       -- Module 1: keep a spectator in freecam
   ghostUpdate(dt)           -- ghost mode qualifying
   vehicleConfigUpdate(dt)   -- Module 4: declare setup changes to the server
@@ -2165,6 +2236,8 @@ function M.onExtensionUnloaded()
   applyGhostMode(false)
   maxResets       = -1
   resetsUsed      = 0
+  selfTeleport.left = 0
+  blockNoticeLeft = 0
   jokerEnabled    = false
   editorTarget    = 'main'
   lastReportedSig = nil
