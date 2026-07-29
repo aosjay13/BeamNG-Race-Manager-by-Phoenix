@@ -105,6 +105,23 @@ local lastGoodRot    = nil       -- quaternion { x, y, z, w } for the same sampl
 local snapshotLeft   = 0         -- seconds until the next snapshot is taken
 local SNAPSHOT_EVERY = 0.25      -- seconds between "last good position" samples
 
+-- What a LEGAL reset does while racing (mirrored from the server):
+--   'inplace'    -- BeamNG's normal repair-where-you-stand (the default)
+--   'checkpoint' -- the car is moved to the last checkpoint it crossed
+local resetMode      = 'inplace'
+local lastGate       = nil       -- last checkpoint the local car crossed (a wp table)
+
+-- Once the allowance is spent the reset INPUTS themselves are switched off via
+-- BeamNG's input action filter, so pressing R/Insert does nothing at all — the
+-- car never resets, not even in place. The onVehicleResetted restore below
+-- stays as a fallback for reset paths the filter cannot see.
+local RESET_ACTIONS = {
+  'reset_physics', 'reset_all_physics', 'recover_vehicle', 'recover_vehicle_alt',
+  'recover_to_last_road', 'reload_vehicle', 'reload_all_vehicles',
+  'loadHome', 'dropPlayerAtCamera',
+}
+local resetInputsBlocked = false
+
 -- BeamNG reports a teleport as a vehicle reset, and this mod teleports the car
 -- itself (blocked-reset restore, grid placement, editor preview). Without a way
 -- to tell those apart from the driver pressing reset, a blocked reset restored
@@ -156,6 +173,19 @@ local function localServerId()
     if ok then return tonumber(id) end
   end
   return nil
+end
+
+-- Position + normalized heading of the local car, the one measurement every
+-- editor placement (checkpoints, start positions, derby markers) is built from.
+local function vehiclePlacement()
+  local veh = playerVehicle()
+  if not veh then return nil end
+  local pos = veh:getPosition()
+  local dir = veh:getDirectionVector()
+  local len = math.sqrt(dir.x * dir.x + dir.y * dir.y)
+  local hx, hy = 0, 1
+  if len > 1e-4 then hx, hy = dir.x / len, dir.y / len end
+  return { x = pos.x, y = pos.y, z = pos.z, hx = hx, hy = hy }
 end
 
 local function clampWidth(w)
@@ -219,6 +249,7 @@ local function pushRouteState()
     -- Reset ruleset (Module 1)
     maxResets    = maxResets,
     resetsUsed   = resetsUsed,
+    resetMode    = resetMode,
     spectating   = spectatorLock ~= nil,
   })
 end
@@ -228,6 +259,25 @@ end
 -- editor's transient messages.
 local function pushNotice(kind, msg)
   guihooks.trigger('RaceManagerNotice', { kind = kind, msg = msg })
+end
+
+-- Every state broadcast from the current server plugin carries this stamp. A
+-- broadcast without it comes from an OUTDATED copy of the server plugin still
+-- installed alongside this one — two copies alternating broadcasts is exactly
+-- what made every UI element flicker between two states on each tick — so
+-- unstamped payloads are dropped (and the problem reported once).
+local RM_PROTOCOL = 2
+local staleServerWarned = false
+local function fromCurrentServer(data)
+  if type(data) == 'table' and data.rmProtocol == RM_PROTOCOL then return true end
+  if not staleServerWarned then
+    staleServerWarned = true
+    pushNotice('server', 'Ignoring broadcasts from an outdated Race Manager server plugin — '
+      .. 'remove old copies from the server\'s Resources/Server folder')
+    log('W', 'raceManager', 'Dropped a state broadcast without the current protocol stamp: '
+      .. 'an outdated copy of the server plugin appears to be installed alongside this one')
+  end
+  return false
 end
 
 -- ---------------------------------------------------------------------------
@@ -285,6 +335,7 @@ local function resetLapTracking()
   jokerTaken   = false
   jokerLapUsed = nil
   resetsUsed   = 0
+  lastGate     = nil
   blockNoticeLeft = 0   -- a fresh session may report its first blocked attempt at once
   -- Telemetry restarts with the session; report immediately on the next frame
   -- so the leaderboard has a distance for this driver from the first moments.
@@ -323,6 +374,7 @@ local function clearTrackState(reason)
   prevPos      = nil
   distToNext   = nil
   progressLeft = 0
+  lastGate     = nil
   pushRouteState()
   log('I', 'raceManager', 'Track state cleared (' .. tostring(reason or 'local') .. ')')
 end
@@ -418,6 +470,7 @@ local function checkGates()
   if prevPos then
     local wp = route[armedWp]
     if wp and segmentCrossesGate(wp, prevPos, pos) then
+      lastGate = wp   -- the "Last Checkpoint" reset mode respawns here
       if armedWp >= #route then
         onLapCompleted()
         armedWp = 1
@@ -772,11 +825,54 @@ local function resetsEnforced()
   return maxResets >= 0 and (phase == 'racing' or phase == 'countdown')
 end
 
+-- Derby reset allowance (mirrored from the derby broadcast). The derby module
+-- further down owns its phase; it fills in derbyResetsActive so this module
+-- can ask "is a derby policing resets right now?" without reaching into
+-- derby state directly.
+local derbyMaxResets    = -1
+local derbyResetsUsed   = 0
+local derbyResetsActive = function () return false end
+
+local function derbyResetsEnforced()
+  return derbyMaxResets >= 0 and derbyResetsActive()
+end
+
+-- Switch the reset/recover input actions off (or back on) via BeamNG's input
+-- action filter. With the filter armed the keys are dead at the source: the
+-- vehicle never resets at all. Older builds without the filter fall back to
+-- the restore in onVehicleResetted.
+local function setResetInputsBlocked(blocked)
+  blocked = blocked and true or false
+  if blocked == resetInputsBlocked then return end
+  if not (core_input_actionFilter and core_input_actionFilter.setGroup
+      and core_input_actionFilter.addAction) then
+    return
+  end
+  local ok = pcall(function ()
+    core_input_actionFilter.setGroup('raceManagerResets', RESET_ACTIONS)
+    core_input_actionFilter.addAction(0, 'raceManagerResets', blocked)
+  end)
+  if ok then
+    resetInputsBlocked = blocked
+    log('I', 'raceManager', 'Reset inputs ' .. (blocked and 'BLOCKED' or 'released'))
+  end
+end
+
+-- Recomputed every frame (cheap: only acts on a change): the reset keys go
+-- dead the moment the allowance is spent and come back the moment the session
+-- lets go of the rule.
+local function resetInputBlockUpdate()
+  local wantBlocked = not spectatorLock
+    and ((resetsEnforced() and resetsUsed >= maxResets)
+      or (derbyResetsEnforced() and derbyResetsUsed >= derbyMaxResets))
+  setResetInputsBlocked(wantBlocked)
+end
+
 -- Rolling "last good position" sample. Taken a few times a second while the
 -- driver is out on track and NOT frozen on the grid, so a blocked reset always
 -- has somewhere sane to put the car back.
 local function snapshotUpdate(dt)
-  if not resetsEnforced() or spectatorLock or gridFrozen then return end
+  if not (resetsEnforced() or derbyResetsEnforced()) or spectatorLock or gridFrozen then return end
   snapshotLeft = snapshotLeft - dt
   if snapshotLeft > 0 then return end
   snapshotLeft = SNAPSHOT_EVERY
@@ -820,6 +916,37 @@ local function resetGuardUpdate(dt)
   if blockNoticeLeft    > 0 then blockNoticeLeft    = blockNoticeLeft    - dt end
 end
 
+-- Heading (hx, hy) -> yaw about Z, expressed as a quaternion that stands a
+-- VEHICLE facing down that heading. BeamNG vehicle models point down -Y at
+-- identity, so a half-turn is baked in on top of the heading yaw — without it
+-- every placement came out exactly 180° backwards.
+local function headingRot(hx, hy)
+  local yaw  = math.atan2(hx, hy) + math.pi
+  local half = yaw * 0.5
+  return quat(0, 0, math.sin(half), math.cos(half))
+end
+
+-- "Last Checkpoint" reset mode: stand the car on a gate's centre, facing the
+-- gate's direction of travel. The teleport is flagged as our own so the
+-- vehicle-reset echo it provokes is never miscounted, and the gate becomes the
+-- new "last good position" so a blocked follow-up reset restores there.
+local function relocateToGate(wp)
+  local veh = playerVehicle()
+  if not veh or not wp then return false end
+  local rot = headingRot(wp.hx, wp.hy)
+  noteSelfTeleport(wp.x, wp.y, wp.z)
+  local ok = pcall(function ()
+    veh:setPositionRotation(wp.x, wp.y, wp.z, rot.x, rot.y, rot.z, rot.w)
+  end)
+  if ok then
+    lastGoodPos = vec3(wp.x, wp.y, wp.z)
+    lastGoodRot = rot
+  else
+    selfTeleport.left = 0
+  end
+  return ok
+end
+
 -- Undo a reset the driver was not entitled to. BeamNG has already teleported
 -- the car by the time onVehicleResetted fires, so the block is applied after
 -- the fact: put the car back exactly where it was standing a moment ago.
@@ -852,12 +979,12 @@ function M.onVehicleResetted(vehId)
     forceFreeCamera()
     return
   end
-  if not resetsEnforced() then return end
-
-  if resetsUsed >= maxResets then
-    -- Over the allowance: the reset is BLOCKED, not punished. The car goes
-    -- straight back where it was, the driver stays in the race, and the server
-    -- is told so the attempt shows up in the live table and the results.
+  if resetsEnforced() and resetsUsed >= maxResets then
+    -- Over the allowance. The reset INPUTS are already switched off at this
+    -- point (resetInputBlockUpdate), so this branch only fires for a reset
+    -- path the input filter cannot see; the car goes straight back where it
+    -- was, the driver stays in the race, and the server is told so the
+    -- attempt shows up in the live table and the results.
     local restored = restoreLastGoodPosition()
     -- Holding the reset key fires this hook over and over. The block above runs
     -- every time; the talking about it does not, or the notice channel, the
@@ -877,14 +1004,49 @@ function M.onVehicleResetted(vehId)
     return
   end
 
-  resetsUsed = resetsUsed + 1
-  -- A legal reset makes the new position the good one immediately, so a second
-  -- (blocked) press right after it doesn't drag the car back to before the first.
-  snapshotLeft = 0
-  if inMultiplayer() then TriggerServerEvent('RM_VehicleReset', '') end
-  local left = maxResets - resetsUsed
-  pushNotice('reset', string.format('Reset %d/%d used — %d left', resetsUsed, maxResets, left))
-  pushRouteState()
+  -- The reset is allowed to happen. "Last Checkpoint" mode: the repair itself
+  -- already happened where the car stands (BeamNG did it before this hook
+  -- fired), but the driver races on from the last checkpoint they crossed
+  -- rather than from the crash site. Applies whether or not resets are
+  -- limited; before the first gate of a session it falls back to in-place.
+  if resetMode == 'checkpoint' and phase == 'racing' and lastGate and not gridFrozen then
+    relocateToGate(lastGate)
+  end
+
+  if resetsEnforced() then
+    resetsUsed = resetsUsed + 1
+    -- A legal reset makes the new position the good one immediately, so a second
+    -- (blocked) press right after it doesn't drag the car back to before the first.
+    snapshotLeft = 0
+    if inMultiplayer() then TriggerServerEvent('RM_VehicleReset', '') end
+    local left = maxResets - resetsUsed
+    pushNotice('reset', string.format('Reset %d/%d used — %d left', resetsUsed, maxResets, left))
+    pushRouteState()
+    return
+  end
+
+  -- Demo derby (isolated ruleset): the same policing against the derby's own
+  -- allowance while a derby is running and this driver is still in it.
+  if derbyResetsEnforced() then
+    if derbyResetsUsed >= derbyMaxResets then
+      local restored = restoreLastGoodPosition()
+      if blockNoticeLeft <= 0 then
+        blockNoticeLeft = BLOCK_NOTICE_EVERY
+        if inMultiplayer() then TriggerServerEvent('RM_DerbyResetDenied', '') end
+        pushNotice('reset', derbyMaxResets == 0
+          and 'RESET BLOCKED — no resets allowed in this derby'
+          or  ('RESET BLOCKED — all ' .. derbyMaxResets .. ' derby resets used'))
+        log('W', 'raceManager', 'Derby reset blocked: allowance of ' .. derbyMaxResets
+          .. ' exhausted (position ' .. (restored and 'restored' or 'NOT restored') .. ')')
+      end
+      return
+    end
+    derbyResetsUsed = derbyResetsUsed + 1
+    snapshotLeft = 0
+    if inMultiplayer() then TriggerServerEvent('RM_DerbyVehicleReset', '') end
+    pushNotice('reset', string.format('Derby reset %d/%d used — %d left',
+      derbyResetsUsed, derbyMaxResets, derbyMaxResets - derbyResetsUsed))
+  end
 end
 
 -- BeamNG hook: a vehicle appeared. A driver serving a spectator penalty must
@@ -932,19 +1094,13 @@ local function setLocalVehicleFrozen(frozen)
   return ok
 end
 
--- Heading (hx, hy) -> yaw about Z, expressed as a quaternion. BeamNG's
--- vehicles face +Y at identity, so the angle is measured from +Y.
-local function startPositionRot(sp)
-  local yaw  = math.atan2(sp.hx, sp.hy)
-  local half = yaw * 0.5
-  return quat(0, 0, math.sin(half), math.cos(half))
-end
-
 -- Put the local car on a placed start position, facing down the track.
+-- Rotation comes from headingRot (Module 1), which bakes in the half-turn for
+-- BeamNG's -Y vehicle forward — placements used to come out 180° backwards.
 local function placeOnStartPosition(sp)
   local veh = playerVehicle()
   if not veh or not sp then return false end
-  local rot = startPositionRot(sp)
+  local rot = headingRot(sp.hx, sp.hy)
   -- Same story as the blocked-reset restore: this teleport comes back as a
   -- vehicle reset, and being gridded must never cost a driver an allowance.
   noteSelfTeleport(sp.x, sp.y, sp.z)
@@ -973,7 +1129,7 @@ local function applyGridSlot(slot)
     -- position a blocked reset should restore to — facing down the track, not
     -- at whatever identity rotation happens to mean on this circuit.
     lastGoodPos = vec3(sp.x, sp.y, sp.z)
-    lastGoodRot = startPositionRot(sp)
+    lastGoodRot = headingRot(sp.hx, sp.hy)
     pushNotice('grid', 'You start from P' .. slot .. ' — hold for the countdown')
     log('I', 'raceManager', 'Placed on grid slot ' .. slot)
   end
@@ -1203,12 +1359,21 @@ local derbyPhase     = 'idle'     -- idle | running | finished (mirrored from se
 local derbyBoundary  = {}         -- ordered polygon vertices { x, y, z }
 local derbyOobLimit  = 5          -- seconds (mirrored from server config)
 local derbyDemoLimit = 10
+local derbyStarts    = {}         -- derby starting grid { x, y, z, hx, hy } (mirrored)
+local derbySlot      = nil        -- start slot the server assigned us for this derby
+local derbyVisualize = true       -- Hide/Show toggle for the boundary + grid visuals
 local derbyOobLeft   = nil        -- active out-of-bounds countdown, nil = inside
 local derbyDemoLeft  = nil        -- active stopped countdown, nil = moving
 local derbyOut       = false      -- true once we reported our own elimination
                                   -- (or we're a spectator, not a participant)
 local derbyRunTime   = 0          -- local seconds since this derby went running
 local derbyWarnShown = false      -- whether the UI currently shows a warning
+
+-- Module 1 asks this before policing the derby reset allowance: only a live
+-- derby with this driver still in it spends (or blocks) derby resets.
+derbyResetsActive = function ()
+  return derbyPhase == 'running' and not derbyOut
+end
 
 local function derbyPushWarning()
   guihooks.trigger('RaceManagerDerbyWarning', {
@@ -1306,9 +1471,17 @@ local function derbyUpdate(dt)
 end
 
 -- Boundary visualization: red poles at each marker, a rope along the
--- perimeter (closed loop), and a label above marker 1.
+-- perimeter (closed loop), and a label above marker 1. Mirrors the race
+-- editor's Hide/Show Gates rule: unconditional while the derby runs (drivers
+-- must see the arena), the toggle only applies outside of one.
 local function derbyDrawBoundary()
-  if #derbyBoundary == 0 or not debugDrawer then return end
+  if not debugDrawer then return end
+  if derbyPhase ~= 'running' and not derbyVisualize then return end
+  -- Derby starting grid slots, numbered from slot 1.
+  for i, sp in ipairs(derbyStarts) do
+    drawStartPosition(sp, i, derbySlot == i)
+  end
+  if #derbyBoundary == 0 then return end
   local color = (derbyPhase == 'running')
     and ColorF(0.9, 0.15, 0.15, 0.9)   -- live arena: red
     or  ColorF(0.9, 0.6, 0.1, 0.8)     -- setup/finished: amber
@@ -1350,12 +1523,41 @@ function M.derbyClearBoundary()
   if inMultiplayer() then TriggerServerEvent('RM_DerbyClearBoundary', '') end
 end
 
-function M.derbySetConfig(oobLimit, demoLimit)
+function M.derbySetConfig(oobLimit, demoLimit, maxResets)
   if inMultiplayer() then
     TriggerServerEvent('RM_DerbySetConfig', jsonEncode({
       oobLimit = tonumber(oobLimit), demoLimit = tonumber(demoLimit),
+      maxResets = tonumber(maxResets),
     }))
   end
+end
+
+-- --- Derby starting grid (admin) -------------------------------------------
+-- Same workflow as the race grid: drive to each slot, press the button, slot 1
+-- first. The server owns the list and hands each participant a slot number at
+-- Start Derby; this client puts its own car there.
+function M.derbyAddStartPosition()
+  if not inMultiplayer() then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Demo Derby needs a BeamMP server' })
+    return
+  end
+  local place = vehiclePlacement()
+  if not place then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
+    return
+  end
+  TriggerServerEvent('RM_DerbyAddStart', jsonEncode(place))
+end
+
+function M.derbyClearStartPositions()
+  if inMultiplayer() then TriggerServerEvent('RM_DerbyClearStarts', '') end
+end
+
+-- Hide/Show the derby boundary + start grid visuals (client-local, like the
+-- race editor's gate toggle). Pushed to the UI so the button label follows.
+function M.derbyToggleVisualize()
+  derbyVisualize = not derbyVisualize
+  guihooks.trigger('RaceManagerDerbyVisual', { visualize = derbyVisualize })
 end
 
 function M.derbyStart()
@@ -1373,7 +1575,8 @@ function M.derbyRequestState()
   else
     guihooks.trigger('RaceManagerDerby', {
       derbyPhase = 'idle', oobLimit = derbyOobLimit, demoLimit = derbyDemoLimit,
-      derbyTime = 0, boundary = {}, players = {},
+      maxResets = derbyMaxResets, derbyTime = 0, boundary = {},
+      startPositions = {}, players = {},
     })
   end
 end
@@ -1407,9 +1610,19 @@ function M.derbySaveLayout(name)
     end
     markers[i] = { x = x, y = y, z = z }
   end
+  -- The derby starting grid travels with the arena, exactly the way the race
+  -- grid travels with a track layout.
+  local starts = nil
+  if #derbyStarts > 0 then
+    starts = {}
+    for i, sp in ipairs(derbyStarts) do
+      starts[i] = { x = sp.x, y = sp.y, z = sp.z, hx = sp.hx, hy = sp.hy }
+    end
+  end
   TriggerServerEvent('RM_DerbySaveLayout', jsonEncode({
     name = name, boundary = markers,
     oobLimit = derbyOobLimit, demoLimit = derbyDemoLimit,
+    maxResets = derbyMaxResets, startPositions = starts,
   }))
 end
 
@@ -1440,20 +1653,27 @@ end
 local function onDerbyUpdate(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
+  if not fromCurrentServer(data) then return end
 
   local newPhase = data.derbyPhase or 'idle'
   if newPhase == 'running' and derbyPhase ~= 'running' then
-    -- Fresh derby: re-arm local detection from a clean slate.
+    -- Fresh derby: re-arm local detection from a clean slate. The derby reset
+    -- allowance is per-derby, so it starts over too.
     derbyOut = false
     derbyRunTime = 0
+    derbyResetsUsed = 0
     derbyClearWarnings()
   elseif newPhase ~= 'running' then
+    if derbyPhase == 'running' then derbySlot = nil end
     derbyClearWarnings()
   end
   derbyPhase = newPhase
 
   derbyOobLimit  = tonumber(data.oobLimit)  or derbyOobLimit
   derbyDemoLimit = tonumber(data.demoLimit) or derbyDemoLimit
+  if type(data.maxResets) == 'number' then
+    derbyMaxResets = math.floor(data.maxResets)
+  end
 
   local boundary = {}
   if type(data.boundary) == 'table' then
@@ -1463,6 +1683,19 @@ local function onDerbyUpdate(rawData)
     end
   end
   derbyBoundary = boundary
+
+  -- Derby starting grid (a placement + a facing per slot, like the race grid).
+  local starts = {}
+  if type(data.startPositions) == 'table' then
+    for _, sp in ipairs(data.startPositions) do
+      local x, y, z = tonumber(sp.x), tonumber(sp.y), tonumber(sp.z)
+      if x and y and z then
+        starts[#starts + 1] = { x = x, y = y, z = z,
+          hx = tonumber(sp.hx) or 0, hy = tonumber(sp.hy) or 1 }
+      end
+    end
+  end
+  derbyStarts = starts
 
   -- If the server already knows we're out (e.g. reconnect race), stop
   -- policing. Same if we're not in the participant list at all: we joined
@@ -1482,6 +1715,28 @@ local function onDerbyUpdate(rawData)
   end
 
   guihooks.trigger('RaceManagerDerby', data)
+end
+
+-- Start Derby handed this client a start slot: stand the car on it, facing
+-- the placed heading. No freeze/hold — the derby's start grace period covers
+-- the line-up, and the teleport is flagged so it never counts as a reset.
+local function onDerbyGridAssign(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local slot = tonumber(data.slot)
+  derbySlot = slot and math.floor(slot) or nil
+  local sp = derbySlot and derbyStarts[derbySlot]
+  if not sp then
+    if derbySlot then
+      pushNotice('grid', 'Derby start position ' .. derbySlot .. ' is not placed in this arena')
+      log('W', 'raceManager', 'Derby start slot ' .. derbySlot .. ' has no placed position')
+    end
+    return
+  end
+  if placeOnStartPosition(sp) then
+    pushNotice('grid', 'Derby: you start from P' .. derbySlot)
+    log('I', 'raceManager', 'Placed on derby start slot ' .. derbySlot)
+  end
 end
 
 -- Map-filtered arena list from the server.
@@ -1507,6 +1762,7 @@ function M.onUpdate(dt)
   drawStartPositions()      -- starting grid slots
   snapshotUpdate(dt)        -- Module 1: rolling "last good position"
   resetGuardUpdate(dt)      -- Module 1: teleport-echo window + notice throttle
+  resetInputBlockUpdate()   -- Module 1: dead reset keys once the allowance is gone
   spectatorUpdate(dt)       -- Module 1: keep a spectator in freecam
   ghostUpdate(dt)           -- ghost mode qualifying
   vehicleConfigUpdate(dt)   -- Module 4: declare setup changes to the server
@@ -1532,19 +1788,6 @@ local function activeEditorRoute()
   if editorTarget == 'joker' then return jokerRoute end
   if editorTarget == 'start' then return startPositions end
   return route
-end
-
--- Position + normalized heading of the local car, the one measurement every
--- editor placement is built from.
-local function vehiclePlacement()
-  local veh = playerVehicle()
-  if not veh then return nil end
-  local pos = veh:getPosition()
-  local dir = veh:getDirectionVector()
-  local len = math.sqrt(dir.x * dir.x + dir.y * dir.y)
-  local hx, hy = 0, 1
-  if len > 1e-4 then hx, hy = dir.x / len, dir.y / len end
-  return { x = pos.x, y = pos.y, z = pos.z, hx = hx, hy = hy }
 end
 
 function M.editorAdd()
@@ -1838,9 +2081,13 @@ end
 local function onServerUpdate(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
+  if not fromCurrentServer(data) then return end
 
   -- League regulations arrive with every state broadcast (Modules 1 & 2).
   if type(data.maxResets) == 'number' then maxResets = math.floor(data.maxResets) end
+  if data.resetMode == 'checkpoint' or data.resetMode == 'inplace' then
+    resetMode = data.resetMode
+  end
   jokerEnabled = data.jokerEnabled == true
   -- Race entry + qualifying rules.
   if type(data.entryMode) == 'string' then entryMode = data.entryMode end
@@ -2091,6 +2338,18 @@ function M.setMaxResets(n)
   end
 end
 
+-- Module 1: what a legal reset does while racing — repair in place (default)
+-- or respawn at the last checkpoint the driver crossed.
+function M.setResetMode(mode)
+  mode = (tostring(mode or 'inplace') == 'checkpoint') and 'checkpoint' or 'inplace'
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetResetMode', jsonEncode({ mode = mode }))
+  else
+    resetMode = mode
+    pushRouteState()
+  end
+end
+
 -- Module 2: arm/disarm the joker lap requirement for the next race.
 function M.setJokerEnabled(enabled)
   enabled = enabled and true or false
@@ -2201,25 +2460,49 @@ function M.requestState()
   end
 end
 
+-- Server -> client event wiring. Handlers are reached through a GLOBAL
+-- dispatch table that every (re)load of this extension overwrites: BeamMP's
+-- AddEventHandler has no matching remove, so registering the local closures
+-- directly left every previous instance's handlers alive across a reload — a
+-- stale instance pushing its own (empty) state to the UI between the live
+-- instance's pushes is one way the UI ends up flickering between two states.
+-- With the indirection the bridge binds to BeamMP exactly once per game
+-- session and always dispatches into the newest instance's handlers.
+local DISPATCH = {
+  RM_Update          = onServerUpdate,
+  RM_Countdown       = onServerCountdown,
+  RM_Layouts         = onLayoutList,
+  RM_ApplyLayout     = onApplyLayout,
+  RM_ClearTrack      = onClearTrack,
+  RM_LoginResult     = onLoginResult,
+  RM_PasswordChanged = onPasswordChanged,
+  -- Module 1: forced spectator mode (used by racing and, separately, by derby)
+  RM_ForceSpectate   = onForceSpectate,
+  RM_ReleaseSpectate = onReleaseSpectate,
+  -- Module 4: garage list enforcement feedback
+  RM_VehicleRejected = onVehicleRejected,
+  RM_GarageResult    = onGarageResult,
+  -- Starting grid: the server hands out slots, this client places the car.
+  RM_GridAssign      = onGridAssign,
+  -- Demo Derby module
+  RM_DerbyUpdate     = onDerbyUpdate,
+  RM_DerbyLayouts    = onDerbyLayoutList,
+  RM_DerbyGridAssign = onDerbyGridAssign,
+}
+
 function M.onExtensionLoaded()
   if inMultiplayer() and AddEventHandler then
-    AddEventHandler('RM_Update', onServerUpdate)
-    AddEventHandler('RM_Countdown', onServerCountdown)
-    AddEventHandler('RM_Layouts', onLayoutList)
-    AddEventHandler('RM_ApplyLayout', onApplyLayout)
-    AddEventHandler('RM_ClearTrack', onClearTrack)
-    AddEventHandler('RM_LoginResult', onLoginResult)
-    AddEventHandler('RM_PasswordChanged', onPasswordChanged)
-    -- Module 1: forced spectator mode (used by racing and, separately, by derby)
-    AddEventHandler('RM_ForceSpectate', onForceSpectate)
-    AddEventHandler('RM_ReleaseSpectate', onReleaseSpectate)
-    -- Module 4: garage list enforcement feedback
-    AddEventHandler('RM_VehicleRejected', onVehicleRejected)
-    AddEventHandler('RM_GarageResult', onGarageResult)
-    -- Starting grid: the server hands out slots, this client places the car.
-    AddEventHandler('RM_GridAssign', onGridAssign)
-    AddEventHandler('RM_DerbyUpdate', onDerbyUpdate)  -- Demo Derby module
-    AddEventHandler('RM_DerbyLayouts', onDerbyLayoutList)
+    rawset(_G, 'raceManagerDispatch', DISPATCH)
+    if not rawget(_G, 'raceManagerHandlersBound') then
+      rawset(_G, 'raceManagerHandlersBound', true)
+      for name in pairs(DISPATCH) do
+        AddEventHandler(name, function (rawData)
+          local d = rawget(_G, 'raceManagerDispatch')
+          local fn = d and d[name]
+          if fn then fn(rawData) end
+        end)
+      end
+    end
   end
   log('I', 'raceManager', 'Race Manager client bridge loaded (multiplayer=' .. tostring(inMultiplayer()) .. ')')
 end
@@ -2234,8 +2517,11 @@ function M.onExtensionUnloaded()
   releaseSpectator(nil)
   releaseGridHold()
   applyGhostMode(false)
+  setResetInputsBlocked(false)   -- never leave the reset keys dead after unload
   maxResets       = -1
   resetsUsed      = 0
+  resetMode       = 'inplace'
+  lastGate        = nil
   selfTeleport.left = 0
   blockNoticeLeft = 0
   jokerEnabled    = false
@@ -2248,7 +2534,11 @@ function M.onExtensionUnloaded()
   -- survive into the next session.
   derbyPhase    = 'idle'
   derbyBoundary = {}
+  derbyStarts   = {}
+  derbySlot     = nil
   derbyOut      = false
+  derbyMaxResets  = -1
+  derbyResetsUsed = 0
   derbyClearWarnings()
 end
 

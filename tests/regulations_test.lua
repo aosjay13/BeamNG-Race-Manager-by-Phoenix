@@ -112,8 +112,21 @@ RM_onSetMaxResets(1, '{"maxResets":9999}')
 check(lastState.maxResets == 99, 'reset limit clamped to the maximum')
 RM_onSetMaxResets(1, '{"maxResets":2}')
 
+-- Reset mode: in place (default) or respawn at the last checkpoint crossed.
+check(lastState.resetMode == 'inplace', 'reset mode defaults to in place')
+RM_onSetResetMode(1, '{"mode":"checkpoint"}')
+check(lastState.resetMode == 'checkpoint', 'reset mode switches to last checkpoint')
+RM_onSetResetMode(1, '{"mode":"sideways"}')
+check(lastState.resetMode == 'checkpoint', 'an unknown reset mode is rejected')
+RM_onSetResetMode(1, '{"mode":"inplace"}')
+check(lastState.resetMode == 'inplace', 'and back to in place')
+
 startRace(3)
 check(lastState.phase == 'racing', 'race running with a 2-reset allowance')
+
+-- The mode is locked once the race is under way, like every regulation.
+RM_onSetResetMode(1, '{"mode":"checkpoint"}')
+check(lastState.resetMode == 'inplace', 'reset mode locked once the race is under way')
 
 -- Resets inside the allowance are just counted.
 RM_onVehicleReset(2)
@@ -141,6 +154,13 @@ check(lastState.phase == 'racing', 'the race carries on')
 RM_onResetDenied(2)
 check(driver('Bob').resetsBlocked == 2, 'further blocked attempts keep counting')
 check(driver('Bob').status == 'racing', 'still racing after a second blocked reset')
+
+-- A rogue over-allowance RM_VehicleReset report cannot push the tally past the
+-- limit: it is recorded as one more blocked attempt instead, so the counter
+-- can never render as "3/2".
+RM_onVehicleReset(2)
+check(driver('Bob').resets == 2, 'the used-reset tally can never pass the limit')
+check(driver('Bob').resetsBlocked == 3, 'the over-limit report counts as blocked instead')
 
 -- Reset reports outside a race are ignored entirely.
 RM_onEndRace(1)

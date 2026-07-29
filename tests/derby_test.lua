@@ -11,6 +11,7 @@ local lastState = nil   -- last RM_Update payload (circuit racing)
 local lastDerby = nil   -- last RM_DerbyUpdate payload
 local lastArenas = nil  -- last RM_DerbyLayouts payload (saved arena list)
 local lastChat = nil
+local derbyGrid = {}    -- [pid] = start slot handed out at Start Derby
 local timers = {}
 local hostedMap = '/levels/gridmap_v2/info.json'
 
@@ -26,6 +27,7 @@ MP = {
     if event == 'RM_Update'       then lastState  = payload end
     if event == 'RM_DerbyUpdate'  then lastDerby  = payload end
     if event == 'RM_DerbyLayouts' then lastArenas = payload end
+    if event == 'RM_DerbyGridAssign' then derbyGrid[target] = payload.slot end
   end,
   RegisterEvent = function () end,
   CreateEventTimer = function (name) timers[name] = true end,
@@ -297,6 +299,55 @@ if ap then os.remove(ap) end
 
 RM_onDerbyDeleteLayout(1, '{"name":"Pit Arena"}')
 check(#lastArenas.layouts == 0, 'an arena can be deleted')
+
+-- ---------------------------------------------------------------------------
+-- Derby editor additions: reset allowance, starting grid, arena round trip
+-- ---------------------------------------------------------------------------
+RM_onDerbySetConfig(1, '{"oobLimit":5,"demoLimit":10,"maxResets":2}')
+check(lastDerby.maxResets == 2, 'derby reset allowance is configurable')
+RM_onDerbySetConfig(1, '{"oobLimit":5,"demoLimit":10,"maxResets":-5}')
+check(lastDerby.maxResets == -1, 'any negative allowance normalises to unlimited')
+RM_onDerbySetConfig(1, '{"oobLimit":5,"demoLimit":10,"maxResets":2}')
+
+RM_onDerbyAddStart(9, '{"x":1,"y":1,"z":0,"hx":0,"hy":1}')  -- not authenticated
+check(#lastDerby.startPositions == 0, 'unauthenticated start placement is refused')
+RM_onDerbyAddStart(1, '{"x":10,"y":20,"z":0,"hx":0,"hy":1}')
+RM_onDerbyAddStart(1, '{"x":14,"y":20,"z":0,"hx":0,"hy":1}')
+check(#lastDerby.startPositions == 2, 'derby start positions accumulate in slot order')
+check(lastDerby.startPositions[1].x == 10 and lastDerby.startPositions[1].hy == 1,
+  'a start position keeps its placement and facing')
+
+-- The grid and the allowance travel with a saved arena.
+RM_onDerbySaveLayout(1, '{"name":"Grid Arena","boundary":[{"x":0,"y":0,"z":0},'
+  .. '{"x":60,"y":0,"z":0},{"x":60,"y":60,"z":0}],"oobLimit":5,"demoLimit":10,'
+  .. '"maxResets":2,"startPositions":[{"x":10,"y":20,"z":0,"hx":0,"hy":1},'
+  .. '{"x":14,"y":20,"z":0,"hx":0,"hy":1}]}')
+RM_onDerbyClearStarts(1)
+RM_onDerbySetConfig(1, '{"oobLimit":5,"demoLimit":10,"maxResets":-1}')
+check(#lastDerby.startPositions == 0 and lastDerby.maxResets == -1,
+  'start grid cleared and allowance back to unlimited before the reload')
+RM_onDerbyLoadLayout(1, '{"name":"Grid Arena"}')
+check(#lastDerby.startPositions == 2, 'loading an arena restores its starting grid')
+check(lastDerby.maxResets == 2, 'and its reset allowance')
+
+-- Start Derby hands each participant a slot (pid order; the field can be
+-- bigger than the placed grid).
+RM_onDerbyStart(1)
+check(derbyGrid[1] == 1 and derbyGrid[2] == 2, 'participants are stood on slots 1 and 2')
+check(derbyGrid[3] == nil, 'a driver beyond the placed grid gets no slot')
+
+-- Reset tally: counted per driver, capped at the allowance.
+RM_onDerbyVehicleReset(2)
+check(derbyPlayer('Bob').resets == 1, 'a derby reset is tallied for the standings')
+RM_onDerbyVehicleReset(2)
+RM_onDerbyVehicleReset(2)
+check(derbyPlayer('Bob').resets == 2, 'the tally can never pass the allowance')
+
+RM_onDerbyEnd(1)
+RM_onDerbyEnd(1)                        -- finished -> idle
+local gp = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
+if gp then os.remove(gp) end
+RM_onDerbyDeleteLayout(1, '{"name":"Grid Arena"}')
 
 -- ---------------------------------------------------------------------------
 -- Isolation: the whole derby session never touched circuit racing state

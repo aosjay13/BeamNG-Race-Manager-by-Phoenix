@@ -41,6 +41,7 @@ local race = {
   time         = 0.0,        -- seconds since GO (advanced by RM_Tick while racing)
   totalLaps    = DEFAULT_TOTAL_LAPS,
   maxResets    = UNLIMITED_RESETS,  -- vehicle resets allowed per driver per session
+  resetMode    = 'inplace',  -- what a legal reset does: 'inplace' | 'checkpoint'
   jokerEnabled = false,      -- rallycross joker lap required exactly once per race
   -- Race entry. 'join' (default): drivers opt in with the UI's Join Race button
   -- and only they are gridded. 'all': every connected session is a participant,
@@ -256,15 +257,23 @@ end
 -- module), but the state broadcast has to advertise the approved car list.
 local garageSnapshot
 
+-- Stamped into every state broadcast. The client bridge drops broadcasts
+-- without the current stamp: they come from an OUTDATED copy of this plugin
+-- still installed alongside (two copies alternating broadcasts made every UI
+-- element flicker between two states on each tick).
+local RM_PROTOCOL = 2
+
 local function broadcastState(targetPid)
   local garageView = garageSnapshot and garageSnapshot() or {}
   local payload = Util.JsonEncode({
+    rmProtocol   = RM_PROTOCOL,
     phase        = race.phase,
     raceTime     = race.time,
     totalLaps    = race.totalLaps,
     -- League regulations (Module 1 + 2): clients enforce these locally, the
     -- server re-checks and is authoritative for the final classification.
     maxResets    = race.maxResets,
+    resetMode    = race.resetMode,
     jokerEnabled = race.jokerEnabled,
     -- Race entry + starting grid.
     entryMode    = race.entryMode,
@@ -946,6 +955,20 @@ function RM_onSetMaxResets(pid, rawData)
     .. (n < 0 and 'unlimited' or tostring(n)) .. ' by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
+-- What a LEGAL reset does while racing: repair in place (the default), or
+-- respawn the driver at the last checkpoint they crossed. Enforced client-side
+-- (only the client can move a car); the server holds the switch. Locked once
+-- the countdown/race is under way, like every other regulation.
+function RM_onSetResetMode(pid, rawData)
+  if not requireAuth(pid) then return end
+  if race.phase == 'countdown' or race.phase == 'racing' then return end
+  local mode = decodeString(rawData, 'mode')
+  if mode ~= 'inplace' and mode ~= 'checkpoint' then return end
+  race.resetMode = mode
+  broadcastState()
+  print('[RaceManager] Reset mode set to "' .. mode .. '" by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
 -- Client consumed one of its allowed resets. The client counts locally (it is
 -- the only side that sees the reset happen); the server keeps the tally that
 -- the live table and the results file report.
@@ -956,6 +979,13 @@ function RM_onVehicleReset(pid)
   -- Only drivers still in the race spend allowance; a DNF'd/finished driver's
   -- resets are meaningless and must not keep growing in the results file.
   if rec.status ~= 'racing' and rec.status ~= 'gridded' then return end
+  -- The tally can never pass the limit, no matter what a client reports: an
+  -- over-allowance report is recorded as a blocked attempt instead, so the
+  -- counter never renders as "3/2".
+  if race.maxResets >= 0 and (rec.resets or 0) >= race.maxResets then
+    RM_onResetDenied(pid)
+    return
+  end
   rec.resets = (rec.resets or 0) + 1
   print(string.format('[RaceManager] %s used reset %d/%s',
     rec.name, rec.resets, race.maxResets < 0 and '∞' or tostring(race.maxResets)))
@@ -1884,15 +1914,21 @@ local DERBY_MAX_LIMIT          = 120
 local DERBY_TICK_MS            = 1000 -- derby clock resolution (1 s is plenty)
 local DERBY_MAX_MARKERS        = 64
 
+local DERBY_UNLIMITED_RESETS = -1
+local DERBY_MAX_RESET_LIMIT  = 99
+local DERBY_MAX_STARTS       = 64
+
 local derby = {
   phase     = 'idle',   -- idle | running | finished
   oobLimit  = DERBY_DEFAULT_OOB_LIMIT,
   demoLimit = DERBY_DEFAULT_DEMO_LIMIT,
+  maxResets = DERBY_UNLIMITED_RESETS,  -- vehicle resets per driver per derby
   time      = 0,        -- seconds since Start Derby (advanced by RM_DerbyTick)
   boundary  = {},       -- ordered polygon vertices { x, y, z }
+  startPositions = {},  -- derby starting grid { x, y, z, hx, hy }, slot 1 first
   winner    = nil,      -- winner's name once decided
 }
-local derbyPlayers = {} -- [pid] = { id, name, status, reason, elimTime }
+local derbyPlayers = {} -- [pid] = { id, name, status, reason, elimTime, resets }
                         -- status: alive | eliminated | winner
 
 local function derbyClampLimit(n, default)
@@ -1920,11 +1956,14 @@ end
 
 local function broadcastDerbyState(targetPid)
   MP.TriggerClientEvent(targetPid or -1, 'RM_DerbyUpdate', Util.JsonEncode({
+    rmProtocol = RM_PROTOCOL,
     derbyPhase = derby.phase,
     oobLimit   = derby.oobLimit,
     demoLimit  = derby.demoLimit,
+    maxResets  = derby.maxResets,
     derbyTime  = derby.time,
     boundary   = derby.boundary,
+    startPositions = derby.startPositions,
     winner     = derby.winner,
     players    = derbyClassification(),
   }))
@@ -1947,7 +1986,9 @@ local function buildDerbyResultsText()
     derbyFmtTime(derby.time), #list, derby.oobLimit, derby.demoLimit))
   add('==================================================')
   add('')
-  add(string.format('%-5s %-22s %-14s %s', 'Pos', 'Driver', 'Result', 'Eliminated At'))
+  -- The resets column only appears when the derby actually limited them.
+  local resetCol = derby.maxResets >= 0 and string.format(' %-6s', 'Resets') or ''
+  add(string.format('%-5s %-22s %-14s %-13s%s', 'Pos', 'Driver', 'Result', 'Eliminated At', resetCol))
   for i, rec in ipairs(list) do
     local result, elimAt
     if rec.status == 'winner' then
@@ -1957,8 +1998,10 @@ local function buildDerbyResultsText()
     else
       result, elimAt = rec.reason or 'Eliminated', derbyFmtTime(rec.elimTime)
     end
+    local resetVal = derby.maxResets >= 0
+      and string.format(' %-6s', (rec.resets or 0) .. '/' .. derby.maxResets) or ''
     local tag = rec.status == 'winner' and '  << LAST MAN STANDING' or ''
-    add(string.format('P%-4d %-22s %-14s %-13s%s', i, rec.name, result, elimAt, tag))
+    add(string.format('P%-4d %-22s %-14s %-13s%s%s', i, rec.name, result, elimAt, resetVal, tag))
   end
   if #list == 0 then add('(no drivers)') end
   add('')
@@ -2039,9 +2082,18 @@ function RM_onDerbySetConfig(pid, rawData)
   if not ok or type(data) ~= 'table' then return end
   derby.oobLimit  = derbyClampLimit(data.oobLimit,  derby.oobLimit)
   derby.demoLimit = derbyClampLimit(data.demoLimit, derby.demoLimit)
+  -- Reset allowance, mirroring the race rule: negative = unlimited, 0 = none.
+  local resets = tonumber(data.maxResets)
+  if resets then
+    resets = math.floor(resets)
+    if resets < 0 then resets = DERBY_UNLIMITED_RESETS
+    elseif resets > DERBY_MAX_RESET_LIMIT then resets = DERBY_MAX_RESET_LIMIT end
+    derby.maxResets = resets
+  end
   broadcastDerbyState()
-  print(string.format('[RaceManager] Derby config by %s: OOB %gs, stop %gs',
-    MP.GetPlayerName(pid) or pid, derby.oobLimit, derby.demoLimit))
+  print(string.format('[RaceManager] Derby config by %s: OOB %gs, stop %gs, resets %s',
+    MP.GetPlayerName(pid) or pid, derby.oobLimit, derby.demoLimit,
+    derby.maxResets < 0 and 'unlimited' or tostring(derby.maxResets)))
 end
 
 -- Admin dropped a boundary marker at their vehicle's position; the ordered
@@ -2067,6 +2119,57 @@ function RM_onDerbyClearBoundary(pid)
   derby.boundary = {}
   broadcastDerbyState()
   print('[RaceManager] Derby boundary cleared by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- Admin dropped a derby start position at their vehicle's placement (position
+-- + facing). Slot 1 is placed first; Start Derby hands one slot per driver.
+function RM_onDerbyAddStart(pid, rawData)
+  if not requireAuth(pid) then return end
+  if derby.phase == 'running' then return end
+  if #derby.startPositions >= DERBY_MAX_STARTS then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local x, y, z = tonumber(data.x), tonumber(data.y), tonumber(data.z)
+  if not (x and y and z) then return end
+  derby.startPositions[#derby.startPositions + 1] = {
+    x = x, y = y, z = z,
+    hx = tonumber(data.hx) or 0, hy = tonumber(data.hy) or 1,
+  }
+  broadcastDerbyState()
+  print(string.format('[RaceManager] Derby start position %d placed by %s at %.1f, %.1f',
+    #derby.startPositions, MP.GetPlayerName(pid) or pid, x, y))
+end
+
+function RM_onDerbyClearStarts(pid)
+  if not requireAuth(pid) then return end
+  if derby.phase == 'running' then return end
+  derby.startPositions = {}
+  broadcastDerbyState()
+  print('[RaceManager] Derby start grid cleared by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- Client spent one of its derby resets (the client polices the allowance, the
+-- server keeps the tally the standings show).
+function RM_onDerbyVehicleReset(pid)
+  if derby.phase ~= 'running' then return end
+  local rec = derbyPlayers[pid]
+  if not rec or rec.status ~= 'alive' then return end
+  if derby.maxResets >= 0 and (rec.resets or 0) >= derby.maxResets then return end
+  rec.resets = (rec.resets or 0) + 1
+  print(string.format('[RaceManager] Derby: %s used reset %d/%s',
+    rec.name, rec.resets, derby.maxResets < 0 and '∞' or tostring(derby.maxResets)))
+  broadcastDerbyState()
+end
+
+-- Client blocked a derby reset the driver was no longer entitled to. Logged
+-- only — the block itself already happened client-side and costs nothing.
+function RM_onDerbyResetDenied(pid)
+  if derby.phase ~= 'running' then return end
+  local rec = derbyPlayers[pid]
+  if not rec then return end
+  print(string.format('[RaceManager] Derby: %s reset BLOCKED (allowance %s spent)',
+    rec.name, derby.maxResets < 0 and 'unlimited' or tostring(derby.maxResets)))
 end
 
 -- ---------------------------------------------------------------------------
@@ -2177,6 +2280,12 @@ function RM_onDerbySaveLayout(pid, rawData)
     return
   end
 
+  local resets = tonumber(data.maxResets)
+  if resets then
+    resets = math.floor(resets)
+    if resets < 0 then resets = DERBY_UNLIMITED_RESETS
+    elseif resets > DERBY_MAX_RESET_LIMIT then resets = DERBY_MAX_RESET_LIMIT end
+  end
   local map = getCurrentMap()
   local entry = {
     name      = name,
@@ -2184,6 +2293,9 @@ function RM_onDerbySaveLayout(pid, rawData)
     boundary  = boundary,
     oobLimit  = derbyClampLimit(data.oobLimit,  derby.oobLimit),
     demoLimit = derbyClampLimit(data.demoLimit, derby.demoLimit),
+    maxResets = resets or derby.maxResets,
+    -- Optional starting grid (same placement shape the race grid uses).
+    startPositions = sanitizeCheckpoints(data.startPositions),
   }
   local all = getDerbyLayouts()
   local replaced = false
@@ -2224,6 +2336,8 @@ function RM_onDerbyLoadLayout(pid, rawData)
       derby.boundary  = l.boundary
       derby.oobLimit  = derbyClampLimit(l.oobLimit,  derby.oobLimit)
       derby.demoLimit = derbyClampLimit(l.demoLimit, derby.demoLimit)
+      if type(l.maxResets) == 'number' then derby.maxResets = math.floor(l.maxResets) end
+      derby.startPositions = sanitizeCheckpoints(l.startPositions) or {}
       broadcastDerbyState()
       local msg = string.format('[RaceManager] Derby arena "%s" loaded on %s by %s (%d markers)',
         l.name, map, MP.GetPlayerName(pid) or pid, #l.boundary)
@@ -2269,6 +2383,7 @@ function RM_onDerbyStart(pid)
       status   = 'alive',
       reason   = nil,
       elimTime = nil,
+      resets   = 0,
     }
   end
   local count = 0
@@ -2281,6 +2396,20 @@ function RM_onDerbyStart(pid)
   MP.CreateEventTimer('RM_DerbyTick', DERBY_TICK_MS)
   releaseSpectators('derby')  -- fresh derby: nobody carries a stale penalty
   broadcastDerbyState()
+  -- Starting grid: when start positions are placed, every participant gets a
+  -- slot (join order — pid ascending — is deterministic and fair enough for a
+  -- derby) and their client stands the car on it. Sent after the state
+  -- broadcast so every client already holds the slot list it is told to use;
+  -- drivers beyond the placed grid keep their current position.
+  if #derby.startPositions > 0 then
+    local ordered = {}
+    for id in pairs(derbyPlayers) do ordered[#ordered + 1] = id end
+    table.sort(ordered)
+    for slot, id in ipairs(ordered) do
+      if slot > #derby.startPositions then break end
+      MP.TriggerClientEvent(id, 'RM_DerbyGridAssign', Util.JsonEncode({ slot = slot }))
+    end
+  end
   MP.SendChatMessage(-1, string.format(
     '[RaceManager] DEMO DERBY STARTED! %d drivers. Stay inside the arena and keep moving!', count))
   print('[RaceManager] Derby started by ' .. (MP.GetPlayerName(pid) or pid)
@@ -2445,6 +2574,7 @@ function onInit()
   MP.RegisterEvent('RM_SetQualiLimits',   'RM_onSetQualiLimits')
   -- Module 1: vehicle reset ruleset + forced spectator reports
   MP.RegisterEvent('RM_SetMaxResets',     'RM_onSetMaxResets')
+  MP.RegisterEvent('RM_SetResetMode',     'RM_onSetResetMode')
   MP.RegisterEvent('RM_VehicleReset',     'RM_onVehicleReset')
   MP.RegisterEvent('RM_ResetDenied',      'RM_onResetDenied')
   -- Module 2: rallycross joker lap
@@ -2474,6 +2604,10 @@ function onInit()
   MP.RegisterEvent('RM_DerbySetConfig',     'RM_onDerbySetConfig')
   MP.RegisterEvent('RM_DerbyAddMarker',     'RM_onDerbyAddMarker')
   MP.RegisterEvent('RM_DerbyClearBoundary', 'RM_onDerbyClearBoundary')
+  MP.RegisterEvent('RM_DerbyAddStart',      'RM_onDerbyAddStart')
+  MP.RegisterEvent('RM_DerbyClearStarts',   'RM_onDerbyClearStarts')
+  MP.RegisterEvent('RM_DerbyVehicleReset',  'RM_onDerbyVehicleReset')
+  MP.RegisterEvent('RM_DerbyResetDenied',   'RM_onDerbyResetDenied')
   MP.RegisterEvent('RM_DerbyStart',         'RM_onDerbyStart')
   MP.RegisterEvent('RM_DerbyEnd',           'RM_onDerbyEnd')
   MP.RegisterEvent('RM_DerbyDisqualified',  'RM_onDerbyDisqualified')
