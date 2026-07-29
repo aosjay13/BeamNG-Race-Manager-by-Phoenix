@@ -108,6 +108,15 @@
               ng-disabled="phase === 'countdown' || phase === 'racing'">Set</button>
       <span class="rm-setting-val">{{ resetRuleLabel() }}</span>
     </span>
+    <span class="rm-setting" title="What a legal reset does while racing: repair the car where it stands, or respawn it at the last checkpoint it crossed (falls back to in-place before the first checkpoint).">
+      <label>Reset mode</label>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': resetMode === 'inplace'}"
+              ng-click="setResetMode('inplace')"
+              ng-disabled="phase === 'countdown' || phase === 'racing'">In place</button>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': resetMode === 'checkpoint'}"
+              ng-click="setResetMode('checkpoint')"
+              ng-disabled="phase === 'countdown' || phase === 'racing'">Last checkpoint</button>
+    </span>
     <!-- Module 2: rallycross joker lap -->
     <span class="rm-setting" title="Rallycross joker lap: every finisher must take the Joker Route exactly once (never on lap 1) or the server disqualifies them at the flag.">
       <label>Joker lap</label>
@@ -351,6 +360,7 @@
       Demo Derby
       <span class="rm-derby-phase rm-derby-phase-{{ derby.phase }}">{{ derby.phase === 'running' ? 'LIVE — ' + formatDerbyTime(derby.time) : (derby.phase === 'finished' ? 'Finished' : 'Setup') }}</span>
       <span class="rm-derby-markers">{{ derby.boundaryCount }} boundary marker{{ derby.boundaryCount === 1 ? '' : 's' }}</span>
+      <span class="rm-derby-markers">{{ derby.startCount }} start slot{{ derby.startCount === 1 ? '' : 's' }}</span>
     </div>
 
     <div class="rm-derby-settings">
@@ -366,8 +376,13 @@
                ng-disabled="derby.phase === 'running'">
         <span class="rm-setting-val">s</span>
       </span>
+      <span class="rm-setting" title="Vehicle resets each driver gets this derby. 0 = no resets at all; -1 (or blank) = unlimited. Once the allowance is gone the reset keys are blocked.">
+        <label>Max resets</label>
+        <input type="number" class="rm-width-num" min="-1" max="99" step="1" ng-model="derbyUi.resets"
+               ng-disabled="derby.phase === 'running'">
+      </span>
       <button class="rm-btn rm-btn-mini" ng-click="derbyApplyConfig()"
-              ng-disabled="derby.phase === 'running'">Set Timers</button>
+              ng-disabled="derby.phase === 'running'">Set Rules</button>
     </div>
 
     <div class="rm-derby-controls">
@@ -378,6 +393,17 @@
       </button>
       <button class="rm-btn rm-btn-end" ng-click="derbyClearBoundary()"
               ng-disabled="derby.phase === 'running' || !derby.boundaryCount">Clear Boundary</button>
+      <button class="rm-btn rm-btn-grid" ng-click="derbyAddStart()"
+              ng-disabled="derby.phase === 'running'"
+              title="Place a derby start position at your vehicle (position + facing). Slot 1 first; drivers are stood on their slot at Start Derby.">
+        + Start Position
+      </button>
+      <button class="rm-btn rm-btn-end" ng-click="derbyClearStarts()"
+              ng-disabled="derby.phase === 'running' || !derby.startCount">Clear Start Grid</button>
+      <button class="rm-btn" ng-click="derbyToggleVisualize()"
+              title="Hide or show the boundary poles and start slots (always shown while a derby is running)">
+        {{ derby.visualize ? 'Hide' : 'Show' }} Boundary
+      </button>
       <button class="rm-btn rm-btn-start" ng-click="derbyStart()"
               ng-disabled="derby.phase === 'running'">Start Derby</button>
       <button class="rm-btn rm-btn-end" ng-click="derbyEnd()"
@@ -429,8 +455,8 @@
                 title="Delete this saved arena from the server">✕</button>
       </div>
       <div class="rm-layouts-hint">
-        An arena is its boundary polygon plus both timers, stored per map — the
-        same way track layouts are.
+        An arena is its boundary polygon, both timers, the reset limit and the
+        starting grid, stored per map — the same way track layouts are.
       </div>
     </div>
 
@@ -438,6 +464,8 @@
       Drive around the arena edge and press <b>+ Boundary Marker</b> at each corner
       (3+ markers make a polygon). Leaving it during the derby starts the
       out-of-bounds countdown; stopping starts the demolished countdown.
+      Optionally place a starting grid with <b>+ Start Position</b> (slot 1 first,
+      facing the way the car should point) — Start Derby stands every driver on a slot.
     </div>
 
     <div class="rm-derby-winner" ng-if="derby.winner">🏆 WINNER: {{ derby.winner }}</div>
@@ -448,6 +476,7 @@
           <th class="rm-col-grid">Pos</th>
           <th class="rm-col-name">Driver</th>
           <th class="rm-col-status">Status</th>
+          <th class="rm-col-reset" ng-if="derbyResetsLimited()" title="Vehicle resets used / allowed this derby">Rst</th>
           <th class="rm-col-time">Out At</th>
         </tr>
       </thead>
@@ -460,6 +489,7 @@
             <span class="rm-light" ng-class="{'rm-light-racing': p.status === 'alive', 'rm-light-dnf': p.status === 'eliminated', 'rm-light-finished': p.status === 'winner'}"></span>
             <span class="rm-status-text">{{ derbyStatusLabel(p) }}</span>
           </td>
+          <td class="rm-col-reset" ng-if="derbyResetsLimited()">{{ derbyResetLabel(p) }}</td>
           <td class="rm-col-time">{{ p.status === 'eliminated' ? formatDerbyTime(p.elimTime) : '—' }}</td>
         </tr>
       </tbody>
@@ -526,6 +556,7 @@
           <th class="rm-col-grid">Pos</th>
           <th class="rm-col-name">Driver</th>
           <th class="rm-col-status">Status</th>
+          <th class="rm-col-reset" ng-if="derbyResetsLimited()" title="Vehicle resets used / allowed this derby">Rst</th>
           <th class="rm-col-time">Out At</th>
         </tr>
       </thead>
@@ -538,6 +569,7 @@
             <span class="rm-light" ng-class="{'rm-light-racing': p.status === 'alive', 'rm-light-dnf': p.status === 'eliminated', 'rm-light-finished': p.status === 'winner'}"></span>
             <span class="rm-status-text">{{ derbyStatusLabel(p) }}</span>
           </td>
+          <td class="rm-col-reset" ng-if="derbyResetsLimited()">{{ derbyResetLabel(p) }}</td>
           <td class="rm-col-time">{{ p.status === 'eliminated' ? formatDerbyTime(p.elimTime) : '—' }}</td>
         </tr>
       </tbody>

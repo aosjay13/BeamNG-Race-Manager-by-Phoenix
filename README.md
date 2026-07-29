@@ -56,6 +56,14 @@ Resources/Client/RaceManager_Client.zip
 For offline testing (waypoint editor only — racing needs BeamMP), drop the
 same zip into your BeamNG user folder's `mods/` directory instead.
 
+> **When updating: remove old copies first.** Two versions of the server
+> plugin installed side by side (e.g. an old `RaceManager` folder next to a
+> renamed new one) each run their own state machine and take turns
+> broadcasting, which makes every UI element flicker between two states on
+> each tick. State broadcasts now carry a protocol stamp and the client
+> ignores unstamped ones (a notice tells you when that happens), but the
+> outdated copy should still be deleted from `Resources/Server/`.
+
 ### Track layouts (persistent, per-map)
 
 The **Track Layouts** panel at the bottom of the editor stores named
@@ -285,15 +293,29 @@ resets/repairs each driver gets per session:
 The BeamMP server never sees a reset happen, so the **client** polices it.
 Every reset inside the allowance is counted and reported (the leaderboard
 gains an `Rst` column showing `used/allowed`). Once the allowance is gone the
-reset is **blocked rather than punished**: BeamNG has already teleported the
-car by the time the mod hears about it, so the car is put straight back on the
-position and orientation it held a moment earlier. The driver keeps racing —
-they simply cannot use the reset button any more.
+reset **inputs themselves are switched off** through BeamNG's input action
+filter — pressing reset/recover does nothing at all, the car never resets,
+and the driver simply keeps racing. As a fallback for reset paths the filter
+cannot see, any reset that still slips through is undone: the car is put
+straight back on the position and orientation it held a moment earlier.
 
-Blocked attempts are still counted, so the `Rst` column reads `3/3+2` for a
-driver who kept pressing R after running out, and the results file records the
-same. Nobody is disqualified for it. The limit is locked once a countdown or
-race starts.
+Blocked attempts are still reported to the server and recorded in the results
+file (`3/3+2` for a driver who kept pressing R after running out), but the
+live `Rst` counter is clamped — it only ever shows `used/allowed` and can
+never exceed the limit. Nobody is disqualified for a blocked attempt. The
+limit is locked once a countdown or race starts.
+
+**Reset mode** (Race settings, admin only) decides what a *legal* reset does
+while racing:
+
+| Mode | Behaviour |
+|------|-----------|
+| **In place** | BeamNG's normal repair-where-you-stand (the default) |
+| **Last checkpoint** | The car is respawned at the last checkpoint it crossed, facing the direction of travel |
+
+Last-checkpoint mode applies whether or not resets are limited; before the
+first checkpoint of a session it falls back to in-place. Like every
+regulation it is locked once the countdown starts.
 
 Two details keep a spent allowance from turning into a stuck car. BeamNG
 reports every teleport as a vehicle reset, including the ones the mod performs
@@ -385,23 +407,33 @@ racing systems above (own server events, own UI panel, own results files —
 running a derby never touches qualifying/race state). Open it with the
 **Derby** tab in the app header.
 
-1. **Set the timers**: *OOB timer* (seconds allowed outside the arena,
-   default 5) and *Demolished timer* (seconds a car may sit stopped before
-   elimination, default 10), then **Set Timers**.
+1. **Set the rules**: *OOB timer* (seconds allowed outside the arena,
+   default 5), *Demolished timer* (seconds a car may sit stopped before
+   elimination, default 10) and *Max resets* (per driver per derby: `-1`
+   unlimited, `0` none, `N` allowed — enforced exactly the way the race reset
+   limit is, dead reset keys included), then **Set Rules**. When resets are
+   limited the derby standings gain their own `Rst` column.
 2. **Build the arena**: drive to each corner of your intended arena and press
    **+ Boundary Marker** — each press drops a red pole at your vehicle's
    position, and the poles connect in order into a closed perimeter polygon
    (3+ markers required; **Clear Boundary** starts over). Any shape works,
-   including non-convex ones.
+   including non-convex ones. Optionally place a **starting grid**: drive to
+   each slot facing the way the car should point and press
+   **+ Start Position** (slot 1 first; **Clear Start Grid** starts over).
+   **Hide/Show Boundary** keeps the setup view clean — the poles and slots are
+   always drawn while a derby is running.
 
    Arenas are **saved and loaded** the same way track layouts are. Type a name
    in the **Saved Arenas** panel and press **Save Current Arena**: the boundary
-   polygon *and* both timers are stored on the server in
+   polygon, both timers, the reset limit *and* the starting grid are stored on
+   the server in
    `Resources/Server/RaceManager/derbyArenas.json`, tagged with the hosted map,
    so a prepped arena survives a restart. **Load Arena** pushes it to every
    connected client at once; **✕** deletes it. Loading is refused while a derby
    is running — the arena cannot move under the drivers.
-3. **Start Derby**: every connected player becomes a participant. Each client
+3. **Start Derby**: every connected player becomes a participant, and when a
+   starting grid is placed each participant's car is stood on a slot (join
+   order; drivers beyond the placed grid stay where they are). Each client
    checks its own vehicle against the arena polygon (ray-casting
    point-in-polygon) and its own speed:
    - Leaving the arena flashes **OUT OF BOUNDS! RETURN IN X.Xs** — return in

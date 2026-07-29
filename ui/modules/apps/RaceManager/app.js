@@ -55,6 +55,9 @@ angular.module('beamng.apps')
       // Vehicle resets: -1 unlimited, 0 none, N per driver per session.
       $scope.maxResets = -1;      // authoritative value mirrored from the server
       $scope.resetsUsed = 0;      // what THIS client has spent
+      // What a legal reset does: repair in place, or respawn at the last
+      // checkpoint the driver crossed. Mirrored from the server.
+      $scope.resetMode = 'inplace';
       // Rallycross joker lap.
       $scope.jokerEnabled = false;
       $scope.jokerRoute = [];     // joker gates placed/loaded on this client
@@ -152,19 +155,22 @@ angular.module('beamng.apps')
         phase: 'idle',        // idle | running | finished (server authoritative)
         time: 0,
         boundaryCount: 0,
+        startCount: 0,        // derby starting grid slots placed
+        maxResets: -1,        // resets per driver per derby (-1 = unlimited)
+        visualize: true,      // boundary/grid visuals shown (client-local)
         winner: null,
-        players: []           // { id, name, status, reason, elimTime }
+        players: []           // { id, name, status, reason, elimTime, resets }
       };
       // Dot rule again: these inputs live inside the ng-if derby panel.
-      $scope.derbyUi = { oob: 5, demo: 10, name: '', selected: '' };
+      $scope.derbyUi = { oob: 5, demo: 10, resets: -1, name: '', selected: '' };
       // Saved arenas for the hosted map (same workflow as track layouts).
       $scope.derbyLayouts = [];
       $scope.derbyLayoutMap = '';
       $scope.derbyDropdownOpen = false;
-      // Last timer values mirrored from the server. Broadcasts only overwrite
+      // Last config values mirrored from the server. Broadcasts only overwrite
       // an input while it still shows the previous server value; an edit in
       // progress (field differs) survives marker drops and other rebroadcasts.
-      var derbyCfgSeen = { oob: null, demo: null };
+      var derbyCfgSeen = { oob: null, demo: null, resets: null };
       $scope.derbyWarning = null;  // { type: 'oob'|'stopped', remaining } or null
 
       var PHASE_LABELS = {
@@ -258,14 +264,12 @@ angular.module('beamng.apps')
       // Reset cell: used/allowed, or a dash when resets are unlimited.
       // (These helpers also keep raw comparison operators out of the template.)
       $scope.resetsLimited = function () { return $scope.maxResets >= 0; };
-      // "2/3" while allowance is left; "3/3+2" once the driver has had two
-      // further resets BLOCKED, so a persistent offender is visible without
-      // them ever being penalised for it.
+      // "2/3" — clamped so the counter can never exceed the limit or grow a
+      // "+N" tail. Blocked attempts still reach the server and the exported
+      // results file; the live counter only ever shows used/allowed.
       $scope.resetLabel = function (row) {
         if (!$scope.resetsLimited()) { return '∞'; }
-        var label = (row.resets || 0) + '/' + $scope.maxResets;
-        if (row.resetsBlocked) { label += '+' + row.resetsBlocked; }
-        return label;
+        return Math.min(row.resets || 0, $scope.maxResets) + '/' + $scope.maxResets;
       };
       $scope.resetsLow = function (row) {
         return $scope.resetsLimited() && ($scope.maxResets - (row.resets || 0)) <= 0;
@@ -364,6 +368,9 @@ angular.module('beamng.apps')
             if ($scope.maxResets !== data.maxResets) { $scope.settingsUi.resets = data.maxResets; }
             $scope.maxResets = data.maxResets;
           }
+          if (data.resetMode === 'checkpoint' || data.resetMode === 'inplace') {
+            $scope.resetMode = data.resetMode;
+          }
           $scope.jokerEnabled = !!data.jokerEnabled;
           // Race entry + starting grid.
           $scope.entryMode = data.entryMode === 'all' ? 'all' : 'join';
@@ -436,6 +443,9 @@ angular.module('beamng.apps')
           $scope.jokerLap = data.jokerLap || null;
           $scope.editorTarget = editorTargetOf(data.editorTarget);
           if (typeof data.resetsUsed === 'number') { $scope.resetsUsed = data.resetsUsed; }
+          if (data.resetMode === 'checkpoint' || data.resetMode === 'inplace') {
+            $scope.resetMode = data.resetMode;
+          }
           if (typeof data.spectating === 'boolean') { $scope.spectating = data.spectating; }
           // Keep the override editor in sync (a gate may have been removed, or
           // its stored overrides changed by the last command).
@@ -571,7 +581,9 @@ angular.module('beamng.apps')
           $scope.derby.time = data.derbyTime || 0;
           $scope.derby.winner = data.winner || null;
           $scope.derby.boundaryCount = toArray(data.boundary).length;
+          $scope.derby.startCount = toArray(data.startPositions).length;
           $scope.derby.players = toArray(data.players);
+          if (typeof data.maxResets === 'number') { $scope.derby.maxResets = data.maxResets; }
           if (typeof data.oobLimit === 'number' && $scope.derby.phase !== 'running') {
             if (derbyCfgSeen.oob === null || Number($scope.derbyUi.oob) === derbyCfgSeen.oob) {
               $scope.derbyUi.oob = data.oobLimit;
@@ -584,7 +596,20 @@ angular.module('beamng.apps')
             }
             derbyCfgSeen.demo = data.demoLimit;
           }
+          if (typeof data.maxResets === 'number' && $scope.derby.phase !== 'running') {
+            if (derbyCfgSeen.resets === null || Number($scope.derbyUi.resets) === derbyCfgSeen.resets) {
+              $scope.derbyUi.resets = data.maxResets;
+            }
+            derbyCfgSeen.resets = data.maxResets;
+          }
           if ($scope.derby.phase !== 'running') { $scope.derbyWarning = null; }
+        });
+      });
+
+      // Client-local Hide/Show toggle for the boundary + derby grid visuals.
+      $scope.$on('RaceManagerDerbyVisual', function (event, data) {
+        $scope.$evalAsync(function () {
+          $scope.derby.visualize = !(data && data.visualize === false);
         });
       });
 
@@ -626,13 +651,33 @@ angular.module('beamng.apps')
         var oob = parseFloat($scope.derbyUi.oob);
         var demo = parseFloat($scope.derbyUi.demo);
         if (!isFinite(oob) || oob <= 0 || !isFinite(demo) || demo <= 0) { return; }
-        bngApi.engineLua('raceManager.derbySetConfig(' + oob + ', ' + demo + ')');
+        // Resets mirror the race rule: blank or negative = unlimited, 0 = none.
+        var resets = parseInt($scope.derbyUi.resets, 10);
+        if (isNaN(resets) || resets < 0) { resets = -1; }
+        bngApi.engineLua('raceManager.derbySetConfig(' + oob + ', ' + demo + ', ' + resets + ')');
       };
       $scope.derbyAddMarker = function () {
         bngApi.engineLua('raceManager.derbyAddMarker()');
       };
       $scope.derbyClearBoundary = function () {
         bngApi.engineLua('raceManager.derbyClearBoundary()');
+      };
+      // Derby starting grid: drive to each slot and place it; slot 1 first.
+      $scope.derbyAddStart = function () {
+        bngApi.engineLua('raceManager.derbyAddStartPosition()');
+      };
+      $scope.derbyClearStarts = function () {
+        bngApi.engineLua('raceManager.derbyClearStartPositions()');
+      };
+      $scope.derbyToggleVisualize = function () {
+        bngApi.engineLua('raceManager.derbyToggleVisualize()');
+      };
+      // Reset cell for the derby standings, clamped the same way the race
+      // table's is: never over the limit, never a "+N" tail.
+      $scope.derbyResetsLimited = function () { return $scope.derby.maxResets >= 0; };
+      $scope.derbyResetLabel = function (p) {
+        if (!$scope.derbyResetsLimited()) { return '∞'; }
+        return Math.min(p.resets || 0, $scope.derby.maxResets) + '/' + $scope.derby.maxResets;
       };
       $scope.derbyStart = function () {
         // Push the current timer inputs first so the derby always starts with
@@ -792,6 +837,13 @@ angular.module('beamng.apps')
         if (isNaN(n)) { n = -1; }
         if (n < 0) { n = -1; }
         bngApi.engineLua('raceManager.setMaxResets(' + n + ')');
+      };
+
+      // Module 1: what a legal reset does — repair in place or respawn at the
+      // last checkpoint crossed.
+      $scope.setResetMode = function (mode) {
+        bngApi.engineLua('raceManager.setResetMode("'
+          + (mode === 'checkpoint' ? 'checkpoint' : 'inplace') + '")');
       };
 
       // Module 2: arm/disarm the joker lap requirement.
