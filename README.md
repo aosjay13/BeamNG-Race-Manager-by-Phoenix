@@ -453,10 +453,36 @@ running a derby never touches qualifying/race state). Open it with the
 
 ## Game version compatibility
 
-Tracked against **BeamNG.drive v0.39**. The mod talks to a lot of game
-surfaces — vehicles, cameras, the input action filter, the debug drawer, the
-UI app host — so every release gets a pass over the patch notes. What v0.39
-changed, and what was done about it:
+Tracked against **BeamNG.drive v0.39.1** and **BeamMP v4.22.0**. The mod talks
+to a lot of game surfaces — vehicles, cameras, the input action filter, the
+debug drawer, the UI app host, BeamMP's event bridge — so every release gets a
+pass over the changelogs.
+
+### BeamMP v4.22.0
+
+| v4.22.0 change | Effect on the mod | Status |
+|---|---|---|
+| BeamMP renamed its extension hooks with an `onBeamMP*` prefix — `onServerLeave` → `onBeamMPServerLeave`, `runPostJoin` → `onBeamMPPostJoin`, `onLauncherConnected` → `onBeamMPLauncherConnected` | The mod referenced none of them, which was the bug: it never learned that a session had started or ended. Every regulation the server owns is *applied* on the client (reset keys switched off at the input filter, the car frozen on its grid slot, a finished or eliminated driver held in freecam) and lifted by a broadcast — so leaving a server mid-race dropped you into singleplayer with a dead reset key, a frozen car and a camera reasserting freecam every second | Fixed: the mod now handles the session-leave hook and purges everything it was enforcing. Both the new and the old hook name are registered, so it works on v4.22.0 and on v4.21.1 and earlier |
+| Same rename on the join side | The extension can be mounted and loaded before BeamMP's network extension is ready, in which case it bound no handlers and sat deaf for the whole session | Fixed: the join hook (both names) re-binds the handlers and asks the server for the live state a beat later, so joining mid-session works without opening the app |
+| Handlers are keyed by a *source* and a re-registration from the same source replaces rather than stacks | Only affects how the bridge binds | The source is now passed explicitly instead of being inferred from the call site, so re-binding is idempotent. Older builds ignore the extra argument |
+| TCP connection handling and retry logic; batch-based mod loading; UI refresh; avatar null-pointer fix; translation updates | Internal to BeamMP | No change needed |
+| `ADM` → `ADMIN` role rename; `ui.multiplayer.*` → `ui.beammp.*` translation keys | The mod uses neither BeamMP roles nor its translation keys | No change needed |
+
+**Ghost qualifying, one honest caveat:** BeamMP exposes no vehicle-collision
+toggle — not in v4.22.0 and not in v4.21.1 either, so this is not a regression.
+The mod probes for one and, finding none, fades rival cars so you can *see* who
+is ghosted, but they remain solid. The console says so when the rule arms.
+
+### BeamNG.drive v0.39.1 (hotfix)
+
+Reviewed, nothing to change. The hotfix covers jbeam parts with a missing
+`slotType`, D3D12 texture/VRAM/emissive fixes with a D3D11 fallback, a fix for
+large mod lists failing to load, restored vehicle spawning under memory
+pressure, and a PlayStation controller crash. None of it touches a surface this
+mod binds to — it draws only immediate-mode `debugDrawer` shapes and ships no
+jbeam.
+
+### BeamNG.drive v0.39
 
 | v0.39 change | Effect on the mod | Status |
 |---|---|---|

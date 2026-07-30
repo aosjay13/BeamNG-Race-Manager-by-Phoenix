@@ -93,6 +93,10 @@ local prevPos      = nil         -- vehicle position last frame (crossing segmen
 local distToNext   = nil
 local progressLeft = 0           -- seconds until the next report is due
 
+-- Countdown to the state request fired after joining a BeamMP server (see the
+-- session lifecycle hooks at the bottom of the file). nil = nothing pending.
+local joinRequestLeft = nil
+
 -- Vehicle reset ruleset (Module 1). maxResets mirrors the server: -1 unlimited,
 -- 0 none, N allowed per session. resetsUsed counts what this client has spent.
 -- Once the allowance is gone the reset is BLOCKED rather than punished: the car
@@ -1849,8 +1853,20 @@ end
 -- End of DEMO DERBY module
 -- ===========================================================================
 
+-- Post-join: ask the server for the current state once its socket has had a
+-- moment to come up, so a driver who joins a server mid-session sees the live
+-- race without having to open the app and press anything.
+local function joinRequestUpdate(dt)
+  if not joinRequestLeft then return end
+  joinRequestLeft = joinRequestLeft - dt
+  if joinRequestLeft > 0 then return end
+  joinRequestLeft = nil
+  M.requestState()
+end
+
 function M.onUpdate(dt)
   localTime = localTime + dt
+  joinRequestUpdate(dt)     -- deferred state request after joining a server
   checkGates()
   reportProgress(dt)        -- live position telemetry (distance to next gate)
   drawGates()
@@ -2556,13 +2572,22 @@ function M.requestState()
 end
 
 -- Server -> client event wiring. Handlers are reached through a GLOBAL
--- dispatch table that every (re)load of this extension overwrites: BeamMP's
--- AddEventHandler has no matching remove, so registering the local closures
--- directly left every previous instance's handlers alive across a reload — a
--- stale instance pushing its own (empty) state to the UI between the live
--- instance's pushes is one way the UI ends up flickering between two states.
--- With the indirection the bridge binds to BeamMP exactly once per game
--- session and always dispatches into the newest instance's handlers.
+-- dispatch table that every (re)load of this extension overwrites: older
+-- BeamMP builds have an AddEventHandler with no matching remove, so registering
+-- the local closures directly left every previous instance's handlers alive
+-- across a reload — a stale instance pushing its own (empty) state to the UI
+-- between the live instance's pushes is one way the UI ends up flickering
+-- between two states. With the indirection the bridge binds to BeamMP exactly
+-- once per game session and always dispatches into the newest instance's
+-- handlers.
+--
+-- Recent BeamMP builds also key handlers by a SOURCE and replace (rather than
+-- stack) a re-registration from the same source. That source defaults to
+-- whatever debug.getinfo() makes of the calling file, so it is passed
+-- explicitly below: with a fixed source the binding is idempotent on those
+-- builds even if the global guard is lost, and older builds simply ignore the
+-- extra argument.
+local HANDLER_SOURCE = 'raceManager'
 local DISPATCH = {
   RM_Update          = onServerUpdate,
   RM_Countdown       = onServerCountdown,
@@ -2585,30 +2610,33 @@ local DISPATCH = {
   RM_DerbyGridAssign = onDerbyGridAssign,
 }
 
-function M.onExtensionLoaded()
-  if inMultiplayer() and AddEventHandler then
-    rawset(_G, 'raceManagerDispatch', DISPATCH)
-    if not rawget(_G, 'raceManagerHandlersBound') then
-      rawset(_G, 'raceManagerHandlersBound', true)
-      for name in pairs(DISPATCH) do
-        AddEventHandler(name, function (rawData)
-          local d = rawget(_G, 'raceManagerDispatch')
-          local fn = d and d[name]
-          if fn then fn(rawData) end
-        end)
-      end
-    end
+local function bindServerHandlers()
+  if not (inMultiplayer() and AddEventHandler) then return false end
+  rawset(_G, 'raceManagerDispatch', DISPATCH)
+  if rawget(_G, 'raceManagerHandlersBound') then return true end
+  rawset(_G, 'raceManagerHandlersBound', true)
+  for name in pairs(DISPATCH) do
+    AddEventHandler(name, function (rawData)
+      local d = rawget(_G, 'raceManagerDispatch')
+      local fn = d and d[name]
+      if fn then fn(rawData) end
+    end, HANDLER_SOURCE)
   end
+  return true
+end
+
+function M.onExtensionLoaded()
+  bindServerHandlers()
   log('I', 'raceManager', 'Race Manager client bridge loaded (multiplayer=' .. tostring(inMultiplayer()) .. ')')
 end
 
-function M.onExtensionUnloaded()
+-- Everything this client enforces locally, switched off. Called both when the
+-- extension is unloaded and when the BeamMP session ends (see below), because
+-- every one of these is a rule the SERVER owns and only this client can apply —
+-- with no server left to lift them they would otherwise stay applied.
+local function resetToIdle(reason)
   phase = 'waiting'
-  -- The extension stays resident across sessions (manual unload mode), so an
-  -- explicit purge here is what stops checkpoints leaking into the next one.
-  clearTrackState('extension unloaded')
-  -- Regulation state must not survive either: a stale spectator lock would
-  -- leave the next session's driver stuck in freecam.
+  clearTrackState(reason)
   releaseSpectator(nil)
   releaseGridHold()
   applyGhostMode(false)
@@ -2635,6 +2663,59 @@ function M.onExtensionUnloaded()
   derbyMaxResets  = -1
   derbyResetsUsed = 0
   derbyClearWarnings()
+  -- clearTrackState pushed a state part-way through the purge, while the
+  -- regulation values below it were still the old ones. Push again now that
+  -- everything is actually idle, or the UI keeps showing the allowance and the
+  -- entry status of a session that has ended.
+  pushRouteState()
 end
+
+function M.onExtensionUnloaded()
+  -- The extension stays resident across sessions (manual unload mode), so an
+  -- explicit purge here is what stops checkpoints leaking into the next one.
+  resetToIdle('extension unloaded')
+end
+
+-- ---------------------------------------------------------------------------
+-- BeamMP session lifecycle
+-- ---------------------------------------------------------------------------
+-- Leaving a BeamMP server used to leave this client mid-race forever. Every
+-- regulation the server owns is APPLIED here — the reset keys are switched off
+-- at the input filter, the car is frozen on its grid slot, a finished or
+-- eliminated driver is held in freecam — and all of them are lifted by a
+-- server broadcast that is never coming once the session is gone. A driver who
+-- disconnected mid-race was dropped back into singleplayer with a dead reset
+-- key and, if they had finished or been knocked out, no car and a camera that
+-- reasserted freecam every second.
+--
+-- BeamMP hooks every extension when a session starts and ends, so that is the
+-- signal to purge. v4.22.0 renamed those hooks with an onBeamMP* prefix
+-- (onServerLeave -> onBeamMPServerLeave, runPostJoin -> onBeamMPPostJoin);
+-- both names are registered, so whichever BeamMP build is installed, the mod
+-- hears it. Only one of the pair fires on any given build, and a second purge
+-- would be harmless anyway.
+local function onSessionLeave()
+  log('I', 'raceManager', 'BeamMP session ended: clearing local race state')
+  resetToIdle('BeamMP session ended')
+end
+
+M.onBeamMPServerLeave = onSessionLeave   -- BeamMP v4.22.0+
+M.onServerLeave       = onSessionLeave   -- BeamMP v4.21.1 and earlier
+
+-- Joining is the other half: the extension can be mounted and loaded before
+-- BeamMP's own network extension is ready, in which case onExtensionLoaded
+-- bound nothing and the mod would sit deaf for the whole session. Binding again
+-- here closes that race (the bind is guarded, and on builds that key handlers
+-- by source it is idempotent regardless). The state request is deferred a beat
+-- rather than sent immediately, because the launcher socket is still being
+-- brought up as this hook runs.
+local function onSessionJoin()
+  bindServerHandlers()
+  joinRequestLeft = 1.0
+  log('I', 'raceManager', 'BeamMP session joined: handlers bound, requesting state')
+end
+
+M.onBeamMPPostJoin = onSessionJoin       -- BeamMP v4.22.0+
+M.runPostJoin      = onSessionJoin       -- BeamMP v4.21.1 and earlier
 
 return M
