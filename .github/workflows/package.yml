@@ -43,7 +43,8 @@ jobs:
             scripts/raceManager/modScript.lua \
             ui/modules/apps/RaceManager/app.html \
             ui/modules/apps/RaceManager/app.js \
-            ui/modules/apps/RaceManager/app.json
+            ui/modules/apps/RaceManager/app.json \
+            ui/modules/apps/RaceManager/app.png
 
       # --- Copy server file, renamed to main.lua ---
       - name: Copy server files

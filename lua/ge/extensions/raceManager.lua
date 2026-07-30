@@ -115,6 +115,12 @@ local lastGate       = nil       -- last checkpoint the local car crossed (a wp 
 -- BeamNG's input action filter, so pressing R/Insert does nothing at all — the
 -- car never resets, not even in place. The onVehicleResetted restore below
 -- stays as a fallback for reset paths the filter cannot see.
+--
+-- That fallback is not optional any more: BeamNG v0.39 added a Vehicle
+-- Management flow to the Pause menu with its own "repair and reset" buttons,
+-- which is a reset the driver can reach without ever triggering one of the
+-- input actions below. The filter still covers the keys and pads; the restore
+-- in onVehicleResetted is what covers the Pause menu.
 local RESET_ACTIONS = {
   'reset_physics', 'reset_all_physics', 'recover_vehicle', 'recover_vehicle_alt',
   'recover_to_last_road', 'reload_vehicle', 'reload_all_vehicles',
@@ -161,8 +167,27 @@ local function inMultiplayer()
   return MPGameNetwork ~= nil and TriggerServerEvent ~= nil
 end
 
+-- The local player's vehicle. This is called several times per frame (gate
+-- crossing, telemetry, the reset snapshot, the derby checks), so it goes
+-- through the GE-side accessor BeamNG recommends: getPlayerVehicle(0) hands
+-- back the object with no garbage collector churn, while be:getPlayerVehicle(0)
+-- crosses into C++ and back on every call. v0.39 added a startup warning for
+-- extensions that cost too much time, and BeamNG's own performance guide names
+-- be:* accessors as the thing to stop doing, so the fast path is preferred and
+-- the old call is kept only as the fallback for builds without it.
+-- Which accessor exists is decided once, not per call.
+local vehicleAccessor = nil    -- nil = undecided, 'ge' | 'engine'
 local function playerVehicle()
-  return be:getPlayerVehicle(0)
+  if vehicleAccessor == nil then
+    if type(getPlayerVehicle) == 'function' and pcall(getPlayerVehicle, 0) then
+      vehicleAccessor = 'ge'
+    else
+      vehicleAccessor = 'engine'
+    end
+  end
+  if vehicleAccessor == 'ge' then return getPlayerVehicle(0) end
+  if be then return be:getPlayerVehicle(0) end
+  return nil
 end
 
 -- This client's BeamMP session id, so a broadcast that carries every driver can
@@ -567,6 +592,42 @@ local function stableSerialize(tbl)
   return table.concat(entries, ';')
 end
 
+-- Human-readable name of a saved setup. Until BeamNG v0.39 the .pc filename WAS
+-- the name the player typed, so reading the filename stem was enough. v0.39
+-- changed that ("Changed naming of the custom config files": the name now lives
+-- in the vehicle's info.json and the .pc filename is only a sanitised
+-- derivative of it), which left the Garage List showing a mangled filename
+-- instead of the setup's actual name. The real name is looked for on the config
+-- table first — under whichever key the build carries it — and the filename stem
+-- is kept as the last resort so older builds behave exactly as before.
+local function configDisplayName(cfg)
+  if type(cfg) ~= 'table' then return nil end
+  for _, key in ipairs({ 'configName', 'name', 'title' }) do
+    local v = cfg[key]
+    if type(v) == 'string' and v ~= '' then return v end
+  end
+  if type(cfg.partConfigFilename) == 'string' then
+    return cfg.partConfigFilename:match('([^/\\]+)%.pc$')
+  end
+  return nil
+end
+
+-- The BeamNG build this client is running. A game update can rename vehicle
+-- parts (v0.39 did: "Renamed a bunch of parts on some vehicles to unify part
+-- names with other vehicles"), and a renamed part changes the configuration
+-- signature below without the car itself changing at all — so every Garage List
+-- entry captured on an older build silently stops matching. Reporting the
+-- version lets the server say THAT, instead of leaving drivers rejected with no
+-- explanation. nil when the build cannot be identified; the server treats that
+-- as "unknown", never as a mismatch.
+local function gameVersion()
+  for _, name in ipairs({ 'beamng_versionb', 'beamng_version', 'beamng_buildinfo' }) do
+    local ok, v = pcall(function () return _G[name] end)
+    if ok and type(v) == 'string' and v ~= '' then return v end
+  end
+  return nil
+end
+
 -- Snapshot of the vehicle the local player is currently driving.
 local function localVehicleConfig()
   local veh = playerVehicle()
@@ -580,9 +641,7 @@ local function localVehicleConfig()
     if ok and type(cfg) == 'table' then
       if type(cfg.parts) == 'table' then parts = cfg.parts end
       if type(cfg.vars)  == 'table' then vars  = cfg.vars  end
-      if type(cfg.partConfigFilename) == 'string' then
-        configName = cfg.partConfigFilename:match('([^/\\]+)%.pc$')
-      end
+      configName = configDisplayName(cfg)
     end
   end
 
@@ -612,6 +671,7 @@ local function reportVehicleConfig(force)
   lastReportedSig = cfg.sig
   TriggerServerEvent('RM_VehicleConfig', jsonEncode({
     vid = cfg.vid, model = cfg.model, label = cfg.label, sig = cfg.sig,
+    game = gameVersion(),
   }))
 end
 
@@ -640,7 +700,7 @@ function M.whitelistCurrentVehicle()
     return
   end
   TriggerServerEvent('RM_WhitelistVehicle', jsonEncode({
-    model = cfg.model, label = cfg.label, sig = cfg.sig,
+    model = cfg.model, label = cfg.label, sig = cfg.sig, game = gameVersion(),
   }))
   log('I', 'raceManager', 'Whitelisting current vehicle: ' .. cfg.label)
 end
@@ -898,14 +958,32 @@ end
 -- inside the window AND the car is sitting where we put it. Both halves matter —
 -- the window alone would swallow a driver reset pressed immediately after a
 -- block, and a driver reset always moves the car somewhere else.
+--
+-- "Where we put it" cannot be a fixed radius, though. BeamNG v0.39 reworked the
+-- teleport detector (objectTeleported(): "improved detection to reduce false
+-- positives/negatives in extreme cases (such as ... really fast vehicles)"), so
+-- an echo we used to hear on the same frame can now arrive a frame or two later
+-- — and a car doing 250 km/h covers 2 metres in a frame and a half. Judged
+-- against a fixed 2 m the car would already be "somewhere else", the echo would
+-- be read as a driver reset, and a legitimately gridded or restored driver would
+-- be charged an allowance (or dragged back again). So the tolerance grows with
+-- how far the car could actually have travelled since we moved it: its own
+-- speed times the time elapsed. At the instant of the teleport that is exactly
+-- the old 2 m test, which is why a reset pressed right after a block is still
+-- caught as a real attempt.
 local function isSelfTeleportEcho()
   if selfTeleport.left <= 0 then return false end
   local veh = playerVehicle()
   if not veh then return false end
+  local elapsed = TELEPORT_WINDOW - selfTeleport.left
+  if elapsed < 0 then elapsed = 0 end
   local ok, near = pcall(function ()
     local p = veh:getPosition()
     local dx, dy, dz = p.x - selfTeleport.x, p.y - selfTeleport.y, p.z - selfTeleport.z
-    return (dx * dx + dy * dy + dz * dz) <= TELEPORT_RADIUS * TELEPORT_RADIUS
+    local v = veh:getVelocity()
+    local speed = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+    local allowed = TELEPORT_RADIUS + speed * elapsed
+    return (dx * dx + dy * dy + dz * dz) <= allowed * allowed
   end)
   return ok and near == true
 end
@@ -1152,10 +1230,27 @@ end
 -- collision, and which entry point exists varies by BeamMP build, so every
 -- known one is tried in turn; the mesh fade is applied either way so a driver
 -- can always SEE who is ghosted.
+--
+-- Walking the cars follows the same reasoning as playerVehicle: getAllVehicles()
+-- is the GE-side, allocation-free way to do it, and it hands back vehicles only,
+-- where be:getObject(i) walks every scene object and has to be filtered. The old
+-- loop stays as the fallback.
 local function forEachRemoteVehicle(fn)
-  if not be then return end
   local mine = playerVehicle()
   local myId = mine and mine:getID() or nil
+  if type(getAllVehicles) == 'function' then
+    local ok, list = pcall(getAllVehicles)
+    if ok and type(list) == 'table' then
+      for _, veh in ipairs(list) do
+        if veh then
+          local gotId, id = pcall(function () return veh:getID() end)
+          if gotId and id ~= myId then fn(veh, id) end
+        end
+      end
+      return
+    end
+  end
+  if not be then return end
   local count = be:getObjectCount() or 0
   for i = 0, count - 1 do
     local veh = be:getObject(i)
