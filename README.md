@@ -451,8 +451,34 @@ running a derby never touches qualifying/race state). Open it with the
    in reverse elimination order). **End Derby** force-ends a running derby;
    pressing it again after the finish resets the mode for the next round.
 
+## Game version compatibility
+
+Tracked against **BeamNG.drive v0.39**. The mod talks to a lot of game
+surfaces — vehicles, cameras, the input action filter, the debug drawer, the
+UI app host — so every release gets a pass over the patch notes. What v0.39
+changed, and what was done about it:
+
+| v0.39 change | Effect on the mod | Status |
+|---|---|---|
+| *"Renamed UI Apps to HUD Apps"*, UI ported to Vue | The app is an AngularJS directive under `ui/modules/apps/`. Legacy Angular screens are still hosted, and the app uses plain HTML plus core `ng-*` directives only (no Angular Material, no `bng-*` components), so it keeps working — it is now listed under **HUD Apps**. Its `types` categories (`ui.apps.categories.racing`, `.info`) are both still live keys | No change needed |
+| *"Changed naming of the custom config files"* — a saved setup's name lives in the vehicle's `info.json` and no longer matches the `.pc` filename | The Garage List labelled cars by the `.pc` filename stem, which now shows a sanitised derivative instead of the setup's real name | Fixed: the name is read off the config itself, with the filename kept as the fallback |
+| *"Renamed a bunch of parts on some vehicles"* | The Garage List matches an exact configuration **signature** built from part names. Renamed parts change the signature without the car changing, so lists captured before v0.39 stop matching and drivers are rejected in a car that is plainly approved. Only a re-capture can fix it | Fixed as far as it can be: entries now record the game build they were captured on, and a rejection caused by that skew says so instead of reading as an ordinary "setup not allowed" |
+| New Pause-menu **Vehicle Management** flow with its own repair/reset buttons | A reset the input action filter cannot see, so the "reset keys go dead" layer no longer covers every path | Already covered — the `onVehicleResetted` restore catches it and was built for exactly this |
+| *"Improved vehicle teleporting detector `objectTeleported()`"* (fewer false negatives on fast vehicles) | The mod teleports the car itself (blocked-reset restore, grid placement, checkpoint respawn) and has to recognise the resulting reset hook as its own echo. A later-arriving echo from a fast car is no longer where it was put | Fixed: the "is this our own teleport" tolerance now scales with the distance the car could actually have covered, instead of a flat 2 m |
+| `be:*` accessors called out as a framerate/GC cost, plus a new startup warning for slow extensions | The player's vehicle is read several times per frame | Fixed: uses `getPlayerVehicle(0)` / `getAllVehicles()`, falling back to the old calls on builds without them |
+| *"`guihooks.trigger` … now communicates only with the main UI HTML"* | Every UI push goes to the main UI app | No change needed |
+| Folder-based translations (`locales/translations/<lang>/*.json`) | The mod ships no translation keys of its own; its app name and description are literal strings, which stay supported | No change needed |
+
+The one thing an admin has to do by hand after a BeamNG update: if the
+**Garage List** is in use, re-capture it. A game update that renames vehicle
+parts invalidates every stored signature, and the server will now tell
+rejected drivers that is what happened.
+
 ## Troubleshooting: the app doesn't show up
 
+- Since BeamNG **v0.39** the app list is called **HUD Apps**, not *UI Apps*,
+  and is reached from the Pause menu (*System → HUD Apps*). Race Manager is
+  under the **Racing** and **Info** categories.
 - The game only scans mods at startup — **restart BeamNG** after
   installing/updating, and if the app list is still stale, clear the cache
   (Launcher → *Manage User Folder* → *Clear Cache*).

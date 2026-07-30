@@ -300,6 +300,45 @@ check(RM_onVehicleSpawn(1, 20, '1-1{"jbm":"pigeon","vcf":{"parts":{}}}') == nil,
 RM_onVehicleConfig(1, '{"vid":20,"model":"pigeon","sig":"unknown"}')
 check(rejected[1] == nil, 'admin setups are never rejected')
 
+-- ---------------------------------------------------------------------------
+-- A Garage List captured before a BeamNG update that renamed vehicle parts
+-- ---------------------------------------------------------------------------
+-- BeamNG v0.39 renamed parts on several vehicles. The car has not changed, but
+-- its configuration signature has, so every entry captured on an older build
+-- stops matching and drivers get rejected in a car that is plainly on the list.
+-- Nothing on the server can repair that (only a re-capture can), so the
+-- rejection has to name the cause.
+rejected = {}; removedVehicles = {}
+RM_onWhitelistVehicle(1,
+  '{"model":"sunburst","label":"Sunburst - Cup","sig":"' .. SIG_A .. 'sun","game":"0.38"}')
+check(#lastState.garage == 2, 'a capture carrying a game version is stored')
+
+-- Same model, signature built from the renamed parts, driver on the new build.
+RM_onVehicleConfig(3, '{"vid":9,"model":"sunburst","sig":"renamed parts","game":"0.39"}')
+check(rejected[3] ~= nil, 'a signature built from renamed parts is still rejected')
+check(rejected[3].detail:find('0.38', 1, true)
+  and rejected[3].detail:find('0.39', 1, true)
+  and rejected[3].detail:find('re%-capture'),
+  'and the rejection names both builds and the fix (re-capture the list)')
+check(rejected[3].message == 'Vehicle/Setup not allowed in this session.',
+  'the driver-facing message is unchanged')
+
+-- Same build on both sides: an ordinary "that tune is not allowed" rejection.
+rejected = {}
+RM_onVehicleConfig(3, '{"vid":9,"model":"sunburst","sig":"some other tune","game":"0.38"}')
+check(rejected[3] ~= nil and rejected[3].detail == 'setup signature not on the Garage List',
+  'a mismatch on the same build keeps the plain wording')
+
+-- Entries captured before the version was recorded at all are never blamed on
+-- a version skew.
+rejected = {}
+RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"' .. SIG_B .. '","game":"0.39"}')
+check(rejected[3] ~= nil and rejected[3].detail == 'setup signature not on the Garage List',
+  'an entry with no recorded build is never reported as a version skew')
+
+RM_onRemoveGarageEntry(1, '{"index":2}')
+check(#lastState.garage == 1, 'the versioned entry removed again')
+
 -- Removing the only entry disables enforcement (an empty list must not lock
 -- every player out).
 rejected = {}

@@ -1670,7 +1670,16 @@ local MAX_SIG_LENGTH     = 4000
 
 local garage = {
   enforce = false,   -- master switch for the whole rule
-  list    = {},      -- { { model = 'etk800', label = 'ETK 800 - Race', sig = '...' } }
+  -- { { model = 'etk800', label = 'ETK 800 - Race', sig = '...', game = '0.39' } }
+  -- `game` is the BeamNG build the entry was captured on. A game update can
+  -- rename vehicle parts without the car changing (BeamNG v0.39 did exactly
+  -- that), and a renamed part changes the signature, so every entry captured on
+  -- an earlier build stops matching. Storing the build is what lets a rejection
+  -- say "this list was captured on an older game version, re-capture it"
+  -- instead of leaving a driver rejected with no explanation. Entries written
+  -- before this field existed simply have no `game`, and are never treated as a
+  -- mismatch on that basis.
+  list    = {},
 }
 local garageLoaded = false
 
@@ -1692,6 +1701,7 @@ local function loadGarageFromDisk()
         model = tostring(e.model or '?'),
         label = tostring(e.label or e.model or 'Vehicle'),
         sig   = e.sig,
+        game  = (type(e.game) == 'string' and e.game ~= '') and e.game or nil,
       }
     end
   end
@@ -1753,6 +1763,28 @@ local function garageHasModel(model)
   return false
 end
 
+-- A signature mismatch on a car whose MODEL is approved is the shape a stale
+-- Garage List takes after a BeamNG update that renamed vehicle parts: the
+-- driver is in an allowed car, but the stored signature was built from part
+-- names the game no longer uses. When the entry was captured on a different
+-- build than the driver is running, say so — the admin has to re-capture, and
+-- nothing on the server can work that out for them. Returns nil when the
+-- versions match, are unknown, or the model was never approved in the first
+-- place, so an ordinary "you tuned a car that isn't allowed" rejection keeps
+-- its plain wording.
+local function garageVersionSkew(model, clientGame)
+  if type(clientGame) ~= 'string' or clientGame == '' then return nil end
+  if not model or model == '' then return nil end
+  local wanted = model:lower()
+  for _, e in ipairs(getGarage().list) do
+    if tostring(e.model):lower() == wanted and type(e.game) == 'string'
+        and e.game ~= '' and e.game ~= clientGame then
+      return e
+    end
+  end
+  return nil
+end
+
 local function rejectVehicle(pid, vid, why)
   if MP.RemoveVehicle and vid then
     pcall(MP.RemoveVehicle, pid, vid)
@@ -1796,6 +1828,7 @@ function RM_onWhitelistVehicle(pid, rawData)
     model = tostring(data.model or '?'),
     label = tostring(data.label or data.model or 'Vehicle'),
     sig   = sig,
+    game  = (type(data.game) == 'string' and data.game ~= '') and data.game or nil,
   }
   g.list[#g.list + 1] = entry
   local wrote, werr = saveGarageToDisk()
@@ -1858,6 +1891,15 @@ function RM_onVehicleConfig(pid, rawData)
   if not ok or type(data) ~= 'table' then return end
   local sig = data.sig and tostring(data.sig) or ''
   if sig ~= '' and garageHasSig(sig) then return end
+  local model = data.model and tostring(data.model) or ''
+  local stale = garageVersionSkew(model, data.game and tostring(data.game) or nil)
+  if stale then
+    rejectVehicle(pid, tonumber(data.vid), 'the Garage List entry for "' .. stale.label
+      .. '" was captured on BeamNG ' .. stale.game .. ' and you are on '
+      .. tostring(data.game) .. ' — a game update can rename vehicle parts, so an '
+      .. 'admin needs to re-capture the Garage List')
+    return
+  end
   rejectVehicle(pid, tonumber(data.vid), 'setup signature not on the Garage List')
 end
 
