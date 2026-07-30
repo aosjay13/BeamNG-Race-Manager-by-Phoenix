@@ -423,6 +423,52 @@ serverState({ phase = 'waiting', maxResets = -1, ghostQuali = true,
 frames(0.2)
 check(remote.alpha == 1, 'and solid again once qualifying ends')
 
+-- ===========================================================================
+-- BeamMP session lifecycle
+-- ===========================================================================
+-- Every regulation the server owns is APPLIED on this client and lifted by a
+-- broadcast. Leaving the server means that broadcast is never coming, so the
+-- mod has to lift them itself — otherwise a driver who disconnects mid-race is
+-- dropped into singleplayer with a dead reset key, a frozen car and a camera
+-- that reasserts freecam every second.
+for _, hook in ipairs({ 'onBeamMPServerLeave', 'onServerLeave' }) do
+  -- v4.22.0 renamed BeamMP's hooks with an onBeamMP* prefix; both names must
+  -- work, because only one of them exists on any given BeamMP build.
+  check(type(RM[hook]) == 'function', hook .. ' is handled')
+
+  RM.setFinishLine(0, 50, 0, 0, 1)
+  serverState({ phase = 'waiting',  maxResets = 0, totalLaps = 3, drivers = {} })
+  serverState({ phase = 'countdown', maxResets = 0, totalLaps = 3, drivers = {} })
+  handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race' })
+  frames(0.2)
+  check(inputsBlocked == false, hook .. ': setup — a spectator does not need blocked inputs')
+  handlers['RM_ReleaseSpectate']({ source = 'race' })
+  frames(0.2)
+  check(inputsBlocked == true, hook .. ': setup — the reset keys are dead with no allowance')
+
+  clearLog()
+  RM[hook]()
+  local st = lastRouteState()
+  check(st ~= nil and #st.waypoints == 0, hook .. ' clears the placed track')
+  check(st ~= nil and st.spectating == false, hook .. ' lifts any spectator lock')
+  check(st ~= nil and st.maxResets == -1, hook .. ' drops the reset allowance')
+  frames(0.2)
+  check(inputsBlocked == false, hook .. ' gives the reset keys back')
+end
+
+-- Joining: the extension can load before BeamMP's network extension is ready,
+-- which left the mod deaf for the whole session. The join hook binds again and
+-- asks the server for the current state a beat later, once its socket is up.
+for _, hook in ipairs({ 'onBeamMPPostJoin', 'runPostJoin' }) do
+  check(type(RM[hook]) == 'function', hook .. ' is handled')
+  clearLog()
+  RM[hook]()
+  check(countSent('RM_RequestState') == 0, hook .. ' does not talk before the socket is up')
+  frames(1.2)
+  check(countSent('RM_RequestState') == 1, hook .. ' then asks the server for the live state')
+  check(countSent('RM_RequestLayouts') == 1, hook .. ' and for the track layouts')
+end
+
 if fails == 0 then
   print('reset_test: ' .. checks .. ' checks, 0 failures')
 else
