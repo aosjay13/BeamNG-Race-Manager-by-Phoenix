@@ -357,5 +357,104 @@ RM_onRequestState(1)
 check(lastState.phase == 'waiting', 'racing state machine still waiting')
 check(lastState.totalLaps == 5, 'race distance untouched by the derby')
 
+-- ---------------------------------------------------------------------------
+-- Display names carry over to the derby board and the derby results
+-- ---------------------------------------------------------------------------
+-- Deliberately the LAST section in this file. An alias is set on the racing
+-- record -- that is the only place an admin can reach one -- so setting it
+-- broadcasts RM_Update, which would trip the isolation assertion above. That
+-- assertion is about derby activity never touching racing state, and this is
+-- an explicit admin action, not derby activity.
+--
+-- The derby keeps its own player table with its own copy of the name, so the
+-- board and the results have to resolve through the racing record by id rather
+-- than carrying a second copy that can drift.
+local function derbyRec(id)
+  for _, p in ipairs(lastDerby.players) do
+    if p.id == id then return p end
+  end
+end
+
+for id in pairs(connected) do RM_onPlayerJoin(id) end
+RM_onSetAlias(1, '{"target":2,"alias":"Bob Smash"}')
+RM_onDerbyStart(1)
+check(derbyRec(2) ~= nil, 'the renamed driver is on the derby board')
+check(derbyRec(2).alias == 'Bob Smash', 'the display name reaches the derby board')
+check(derbyRec(2).name == 'Bob', 'the real name is still carried alongside')
+check(derbyRec(1).alias == nil, 'a driver with no display name is unaffected')
+
+-- Clearing has to propagate too: a stamped copy would go sticky and leave a
+-- name the admin removed sitting on the standings forever.
+RM_onSetAlias(1, '{"target":2,"alias":""}')
+RM_onDerbyRequestState(1)
+check(derbyRec(2).alias == nil, 'clearing a display name clears it on the derby board')
+
+-- ...and into the exported derby results.
+RM_onSetAlias(1, '{"target":2,"alias":"Bob Smash"}')
+RM_onDerbyRequestState(1)
+RM_onDerbyDisqualified(1)
+RM_onDerbyDisqualified(3)
+check(lastDerby.winner == 'Bob Smash', 'the winner is announced under the display name')
+local dpath = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
+check(dpath ~= nil, 'the derby results path was announced')
+if dpath then
+  local rf = io.open(dpath, 'r')
+  local dtext = rf and rf:read('*a')
+  if rf then rf:close() end
+  check(dtext and dtext:find('Bob Smash', 1, true) ~= nil,
+    'the derby results file records the display name')
+  check(dtext and dtext:find('[Bob]', 1, true) ~= nil,
+    'the derby results file also records the real name, so it stays traceable')
+  os.remove(dpath)
+end
+
+-- ---------------------------------------------------------------------------
+-- Derby entry: everyone, or only drivers who opted in
+-- ---------------------------------------------------------------------------
+-- Also after the isolation assertion: opting in is RM_onJoinRace, which writes
+-- to the racing record and broadcasts RM_Update. The derby only ever READS that
+-- list, which is why players do not have to join twice.
+RM_onDerbyEnd(1)   -- back to setup from the section above
+RM_onDerbyEnd(1)
+
+check(lastDerby.entryMode == 'all', 'derby entry defaults to everyone (unchanged behaviour)')
+
+-- Opt-in with nobody joined: no field, and the derby must not start.
+RM_onDerbySetEntryMode(1, '{"mode":"join"}')
+check(lastDerby.entryMode == 'join', 'derby entry mode switches to opt-in')
+check(lastDerby.entrants == 0, 'nobody counts as entered before anyone joins')
+RM_onDerbyStart(1)
+check(lastDerby.derbyPhase ~= 'running', 'a derby with no entrants does not start')
+
+-- One driver opts in: only they are in the field.
+RM_onJoinRace(2, '{"join":true}')
+check(lastDerby.entrants == 1, 'the entrant count follows the racing entry list')
+RM_onDerbyStart(1)
+check(lastDerby.derbyPhase == 'running', 'the derby starts once somebody has joined')
+local inField = 0
+for _, p in ipairs(lastDerby.players) do inField = inField + 1 end
+check(inField == 1, 'only the driver who joined is a participant')
+check(derbyRec(2) ~= nil, 'the driver who joined is in the field')
+check(derbyRec(1) == nil, 'a connected player who did not join is left out')
+
+-- The mode is locked while a derby runs -- the field cannot change underneath.
+RM_onDerbySetEntryMode(1, '{"mode":"all"}')
+check(lastDerby.entryMode == 'join', 'entry mode is locked while a derby is running')
+RM_onDerbyEnd(1)
+RM_onDerbyEnd(1)
+
+-- Back to everyone: every connected player is in the field again.
+RM_onDerbySetEntryMode(1, '{"mode":"all"}')
+RM_onDerbyStart(1)
+inField = 0
+for _, p in ipairs(lastDerby.players) do inField = inField + 1 end
+check(inField == 3, 'everyone mode puts every connected player in the field')
+RM_onDerbyEnd(1)
+RM_onDerbyEnd(1)
+
+-- Admin-only, like every other derby rule.
+RM_onDerbySetEntryMode(3, '{"mode":"join"}')
+check(lastDerby.entryMode == 'all', 'a non-admin cannot change the derby entry mode')
+
 print(string.format('derby_test: %d checks, %d failures', checks, fails))
 os.exit(fails == 0 and 0 or 1)

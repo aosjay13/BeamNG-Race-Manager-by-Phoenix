@@ -274,6 +274,43 @@ bottom. The leaderboard flashes a green ▲ or red ▼ next to a driver who has
 just gained or lost a place, and your own distance to the next checkpoint is
 shown in the app header while you race.
 
+## Display names
+
+BeamMP calls a guest something like `Guest_4471`, which makes for an
+unreadable leaderboard and a worse results file. An admin can give any driver a
+readable name from the **Admin** tab: the panel lists everyone connected with
+their real name, a box, **Set**, and **✕** to clear.
+
+The name is **display only**. Timing, checkpoints, scoring and the starting grid
+all key on the BeamMP player id exactly as before — an alias is never used as a
+lookup, so renaming somebody mid-session moves nothing but the text on screen.
+
+**Names last for the session only.** That is a consequence of the accounts
+restriction rather than a choice: every player is a guest, BeamMP recycles
+session ids between players, and a guest name is regenerated on every join, so
+there is nothing stable to attach a lasting name to. If a driver reconnects,
+set their name again. The account id BeamMP exposes for a *logged-in* player
+would be the right anchor, and is where this goes when the restriction lifts.
+
+- **Fallback** — a driver with no name set simply shows their guest name. It can
+  never render blank.
+- **Validation** — 3–20 characters, letters, digits, spaces and `- _ .` only.
+  ASCII only, because the results file lays out fixed-width columns and Lua pads
+  by bytes, so one accented character would shear every row below it.
+- **Collisions and impersonation** — a name already in use, as an alias *or* as
+  someone's real guest name, is refused; so are `admin`, `server`, `host`,
+  `console` and anything starting with `guest`.
+- **Every attempt gets an answer** — the name applies, or a notice says why not.
+- **A recycled session id never inherits a name.** BeamMP hands ids out again
+  after a disconnect; if a different player turns up on one, the display name is
+  dropped rather than passed on.
+- **Race and derby** — names show on the race leaderboard, the derby standings
+  and the derby winner announcement.
+- **Results files** — both the race and derby exports record the name the driver
+  raced under, with their real guest name in brackets beside it, so a file is
+  readable *and* still traceable back to the session that set the times. Results
+  are a snapshot: renaming somebody later never rewrites a file already written.
+
 ## League regulations
 
 Several rule systems layer on top of the session flow above. All of them are
@@ -420,8 +457,10 @@ running a derby never touches qualifying/race state). Open it with the
    including non-convex ones. Optionally place a **starting grid**: drive to
    each slot facing the way the car should point and press
    **+ Start Position** (slot 1 first; **Clear Start Grid** starts over).
-   **Hide/Show Boundary** keeps the setup view clean — the poles and slots are
-   always drawn while a derby is running.
+   **Hide/Show Boundary** keeps the setup view clean. Once the derby starts the
+   **boundary is always drawn** — leaving it is what eliminates you, so you have
+   to be able to see it — while the **start slots are hidden**, since every car
+   has left its slot by then and the outlines would just clutter the arena.
 
    Arenas are **saved and loaded** the same way track layouts are. Type a name
    in the **Saved Arenas** panel and press **Save Current Arena**: the boundary
@@ -431,7 +470,15 @@ running a derby never touches qualifying/race state). Open it with the
    so a prepped arena survives a restart. **Load Arena** pushes it to every
    connected client at once; **✕** deletes it. Loading is refused while a derby
    is running — the arena cannot move under the drivers.
-3. **Start Derby**: every connected player becomes a participant, and when a
+3. **Entry** decides who takes part. **Everyone** (the default) puts every
+   connected player in the field, which is how the derby has always behaved.
+   **Opt-in** honours the same **Join Race** button the circuit races use, so
+   somebody who only wants to watch is not dragged in — worth knowing that being
+   entered means losing your car to freecam the moment you are eliminated.
+   Drivers never have to join twice: it is one entry list, read by both modes.
+   The counter beside the toggle shows how many would be in a derby started
+   right now, and the mode is locked while one is running.
+4. **Start Derby**: every participant is entered, and when a
    starting grid is placed each participant's car is stood on a slot (join
    order; drivers beyond the placed grid stay where they are). Each client
    checks its own vehicle against the arena polygon (ray-casting
@@ -443,8 +490,10 @@ running a derby never touches qualifying/race state). Open it with the
    - An eliminated driver's vehicle is removed and their camera is forced into
      **freecam** until the derby ends; they cannot spawn a replacement car.
      When the derby finishes, their car is **put back** automatically.
-4. The driver table shows who's still in, who's out (with reason and
-   elimination time) and the winner. When exactly one driver remains the
+5. The driver table shows who's still in, who's out (with reason and
+   elimination time) and the winner — under their **display name** if an admin
+   set one (see *Display names* above), in both the standings and the exported
+   results. When exactly one driver remains the
    server ends the derby, announces the **winner** in chat, and writes
    `derby_results_YYYY-MM-DD_HH-MM-SS.txt` to
    `Resources/Server/RaceManager/results/` (winner first, then everyone else

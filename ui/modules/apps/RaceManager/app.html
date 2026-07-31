@@ -426,6 +426,20 @@
       </span>
       <button class="rm-btn rm-btn-mini" ng-click="derbyApplyConfig()"
               ng-disabled="derby.phase === 'running'">Set Rules</button>
+      <span class="rm-setting" title="Everyone: every connected player is a participant (the classic behaviour). Opt-in: only drivers who pressed Join Race take part, so a spectator is not dragged in and left without a car.">
+        <label>Entry</label>
+        <button class="rm-btn rm-btn-mini rm-btn-toggle"
+                ng-class="{'rm-btn-toggle-on': derby.entryMode === 'all'}"
+                ng-click="toggleDerbyEntryMode()"
+                ng-disabled="derby.phase === 'running'">
+          {{ derby.entryMode === 'all' ? 'Everyone' : 'Opt-in (Join Race)' }}
+        </button>
+        <span class="rm-setting-val">{{ derby.entrants }} in</span>
+      </span>
+    </div>
+    <div class="rm-derby-hint" ng-if="derby.entryMode === 'join' && !derby.entrants && derby.phase !== 'running'">
+      ⚠ Opt-in entry is on and nobody has pressed <b>Join Race</b> — Start Derby
+      will have no field.
     </div>
 
     <div class="rm-derby-controls">

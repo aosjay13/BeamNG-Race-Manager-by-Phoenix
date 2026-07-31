@@ -1657,9 +1657,17 @@ end
 local function derbyDrawBoundary()
   if not debugDrawer then return end
   if derbyPhase ~= 'running' and not derbyVisualize then return end
-  -- Derby starting grid slots, numbered from slot 1.
-  for i, sp in ipairs(derbyStarts) do
-    drawStartPosition(sp, i, derbySlot == i)
+  -- Derby starting grid slots, numbered from slot 1. Setup furniture, the same
+  -- as the race start grid: they exist to lay the slots out and check spacing,
+  -- so they stop being drawn once the derby is under way -- by then every car
+  -- has left its slot and the outlines are just clutter in a live arena.
+  -- (Reaching here while not running means derbyVisualize is on, per the guard
+  -- above.) The boundary below is NOT hidden: leaving it is what eliminates
+  -- you, so a driver has to be able to see it.
+  if derbyPhase ~= 'running' then
+    for i, sp in ipairs(derbyStarts) do
+      drawStartPosition(sp, i, derbySlot == i)
+    end
   end
   if #derbyBoundary == 0 then return end
   local color = (derbyPhase == 'running')
@@ -1738,6 +1746,15 @@ end
 function M.derbyToggleVisualize()
   derbyVisualize = not derbyVisualize
   guihooks.trigger('RaceManagerDerbyVisual', { visualize = derbyVisualize })
+end
+
+-- Who takes part in the next derby: everyone connected, or only drivers who
+-- pressed Join Race. Server-owned like every other derby rule.
+function M.derbySetEntryMode(mode)
+  if not inMultiplayer() then return end
+  TriggerServerEvent('RM_DerbySetEntryMode', jsonEncode({
+    mode = (mode == 'join') and 'join' or 'all',
+  }))
 end
 
 function M.derbyStart()

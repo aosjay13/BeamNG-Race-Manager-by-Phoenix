@@ -270,6 +270,10 @@ angular.module('beamng.apps')
         time: 0,
         boundaryCount: 0,
         startCount: 0,        // derby starting grid slots placed
+        // Who takes part: 'all' (every connected player, the historical
+        // behaviour) or 'join' (only drivers who pressed Join Race).
+        entryMode: 'all',
+        entrants: 0,          // how many would be in a derby started right now
         maxResets: -1,        // resets per driver per derby (-1 = unlimited)
         visualize: true,      // boundary/grid visuals shown (client-local)
         winner: null,
@@ -776,6 +780,8 @@ angular.module('beamng.apps')
         if (!data) { return; }
         $scope.$evalAsync(function () {
           $scope.derby.phase = data.derbyPhase || 'idle';
+          $scope.derby.entryMode = data.entryMode === 'join' ? 'join' : 'all';
+          $scope.derby.entrants = data.entrants || 0;
           $scope.derby.time = data.derbyTime || 0;
           $scope.derby.winner = data.winner || null;
           $scope.derby.boundaryCount = toArray(data.boundary).length;
@@ -870,6 +876,12 @@ angular.module('beamng.apps')
         if (!$scope.derbyResetsLimited()) { return '∞'; }
         return Math.min(p.resets || 0, $scope.derby.maxResets) + '/' + $scope.derby.maxResets;
       };
+      // Derby entry: everyone connected, or only drivers who pressed Join Race.
+      $scope.toggleDerbyEntryMode = function () {
+        bngApi.engineLua('raceManager.derbySetEntryMode("'
+          + ($scope.derby.entryMode === 'all' ? 'join' : 'all') + '")');
+      };
+
       $scope.derbyStart = function () {
         // Push the current timer inputs first so the derby always starts with
         // what the admin sees in the two fields.
