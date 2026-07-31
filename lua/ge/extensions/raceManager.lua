@@ -1305,6 +1305,34 @@ local function applyGridSlot(slot)
   pushRouteState()
 end
 
+-- Keeping a held car held.
+--
+-- Placing a car on its slot is a teleport, and BeamNG treats a teleport as a
+-- vehicle reset -- which reloads the vehicle's Lua VM. The freeze queued
+-- immediately after the teleport is therefore racing the reset it just caused,
+-- and loses: the car lands on its slot and then rolls away. That is why Form Up
+-- placed cars without holding them.
+--
+-- Re-asserting is the fix, and there is precedent right above: the forced
+-- spectator camera re-applies freecam on a timer for the same reason. Cheap --
+-- one queued command every half second, and only while a hold is meant to be on.
+local HOLD_RECHECK_EVERY = 0.5
+local holdRecheck = 0
+
+local function holdUpdate(dt)
+  if not gridFrozen then
+    holdRecheck = 0
+    return
+  end
+  holdRecheck = holdRecheck - dt
+  if holdRecheck > 0 then return end
+  holdRecheck = HOLD_RECHECK_EVERY
+  local veh = playerVehicle()
+  if veh then
+    pcall(function () veh:queueLuaCommand('controller.setFreeze(1)') end)
+  end
+end
+
 -- GO (or any exit from the start procedure): release the car.
 -- `source` names the mode letting go. A hold imposed by the other mode is left
 -- alone. Passing nil forces the release, which is what a session ending or the
@@ -1974,6 +2002,11 @@ local function onDerbyGridAssign(rawData)
     if setLocalVehicleFrozen(true, 'derby') then
       pushRouteState()
       log('I', 'raceManager', 'Derby form-up: held until GO')
+    else
+      -- Never fail quietly here: a car that should be held and is not looks
+      -- exactly like a countdown that has not started yet.
+      log('W', 'raceManager', 'Derby form-up: could not hold the vehicle')
+      pushNotice('grid', 'Could not hold your car for the derby start')
     end
   end
 end
@@ -2021,6 +2054,7 @@ function M.onUpdate(dt)
   joinRequestUpdate(dt)     -- deferred state request after joining a server
   checkGates()
   lapTimerUpdate(dt)        -- live lap clock for this driver's own HUD
+  holdUpdate(dt)            -- keep a gridded/formed-up car actually held
   reportProgress(dt)        -- live position telemetry (distance to next gate)
   drawGates()
   drawStartPositions()      -- starting grid slots

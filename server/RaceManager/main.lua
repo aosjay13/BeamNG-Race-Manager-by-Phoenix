@@ -3045,6 +3045,10 @@ function onInit()
   MP.RegisterEvent('RM_DerbyLoadLayout',    'RM_onDerbyLoadLayout')
   MP.RegisterEvent('RM_DerbyDeleteLayout',  'RM_onDerbyDeleteLayout')
   MP.RegisterEvent('RM_DerbyTick',          'RM_DerbyTick')
+  -- Timer events only fire if they are registered like any other event. Missing
+  -- this one left the derby countdown frozen on 3 forever: the timer was
+  -- created and ticked, and nothing was listening.
+  MP.RegisterEvent('RM_DerbyCountdownTick', 'RM_DerbyCountdownTick')
   MP.RegisterEvent('onPlayerJoin',          'RM_Derby_onPlayerJoin')
   MP.RegisterEvent('onPlayerDisconnect',    'RM_Derby_onPlayerDisconnect')
   MP.RegisterEvent('onPlayerJoin',        'RM_onPlayerJoin')
