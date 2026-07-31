@@ -19,7 +19,7 @@ angular.module('beamng.apps')
     replace: true,
     restrict: 'EA',
     scope: true,
-    controller: ['$scope', '$element', function ($scope, $element) {
+    controller: ['$scope', '$element', '$interval', function ($scope, $element, $interval) {
 
       // ------------------------------------------------------------------
       // State
@@ -106,6 +106,84 @@ angular.module('beamng.apps')
       // the same ~3 Hz it reports to the server): distance to the next gate.
       $scope.progress = null;         // { lap, cp, dist }
 
+      // ----------------------------------------------------------------
+      // Own lap clock: live readout + post-lap hold
+      // ----------------------------------------------------------------
+      // How long a completed lap time stays on screen after the lap ends. Long
+      // enough to read at racing speed without covering the new lap for long.
+      var LAP_HOLD_MS = 3000;
+      // Render cadence for the live readout. The bridge only pushes every
+      // 250 ms; this ticks between pushes so the clock looks like a clock. The
+      // displayed value is interpolated from the last push using the browser
+      // clock, never accumulated, so it cannot drift away from the bridge.
+      var LAP_TICK_MS = 100;
+      // Very short lap while a hold is still showing: the newest time REPLACES
+      // the held one immediately rather than queueing behind it. Queueing would
+      // show a time for a lap the driver finished two laps ago and fall further
+      // behind with every short lap -- on a short circuit the display would
+      // never catch up to reality.
+      $scope.lapLive = null;   // { elapsed, at, lap } — last push + when it landed
+      $scope.lapHold = null;   // { lapTime, lap, until } — completed time on hold
+      var lapTicker = null;
+
+      function startLapTicker() {
+        if (lapTicker) { return; }
+        lapTicker = $interval(function () {
+          // Expire the hold. Nothing else to do: the live readout is computed
+          // on demand from lapLive, and this tick is what re-renders it.
+          if ($scope.lapHold && Date.now() >= $scope.lapHold.until) {
+            $scope.lapHold = null;
+          }
+          if (!$scope.lapLive && !$scope.lapHold) { stopLapTicker(); }
+        }, LAP_TICK_MS);
+      }
+      function stopLapTicker() {
+        if (lapTicker) { $interval.cancel(lapTicker); lapTicker = null; }
+      }
+
+      // Seconds on this lap right now: the bridge's last reading plus however
+      // long ago it arrived.
+      $scope.lapElapsed = function () {
+        if (!$scope.lapLive) { return null; }
+        return $scope.lapLive.elapsed + (Date.now() - $scope.lapLive.at) / 1000;
+      };
+      $scope.lapHolding = function () { return !!$scope.lapHold; };
+      // Only worth showing when there is a clock running or a time being held.
+      $scope.showLapTime = function () {
+        return !!$scope.lapLive || !!$scope.lapHold;
+      };
+
+      // Live lap clock from the bridge (250 ms), interpolated between pushes.
+      $scope.$on('RaceManagerLapTime', function (event, data) {
+        $scope.$evalAsync(function () {
+          if (!data || !data.running) {
+            $scope.lapLive = null;
+            if (!$scope.lapHold) { stopLapTicker(); }
+            return;
+          }
+          $scope.lapLive = {
+            elapsed: data.elapsed || 0,
+            at: Date.now(),
+            lap: data.lap || null
+          };
+          startLapTicker();
+        });
+      });
+
+      // A lap just completed: hold its time on screen. The live clock above is
+      // already counting the new lap — this only parks a copy of the old one.
+      $scope.$on('RaceManagerLapDone', function (event, data) {
+        if (!data || typeof data.lapTime !== 'number') { return; }
+        $scope.$evalAsync(function () {
+          $scope.lapHold = {
+            lapTime: data.lapTime,
+            lap: data.lap || null,
+            until: Date.now() + LAP_HOLD_MS
+          };
+          startLapTicker();
+        });
+      });
+
       // Admin authentication. Every editor/admin control stays hidden until the
       // server confirms a login (RaceManagerAuth). authUi holds the two inputs.
       $scope.isAdmin = false;
@@ -122,8 +200,45 @@ angular.module('beamng.apps')
       $scope.loginPinned = false;    // user explicitly asked to see login
       $scope.pwMsg = null;           // transient confirmation after a password change
 
+      // ----------------------------------------------------------------
+      // Admin panel tabs
+      // ----------------------------------------------------------------
+      // Every admin panel used to render stacked, one under the other. That
+      // overflowed the app window — .rm-root is overflow:hidden and only the
+      // leaderboard scrolls, so anything past the bottom edge was unreachable,
+      // and with the editor and derby panels both open it was most of them.
+      // One panel shows at a time now; the tab body scrolls as a safety net so
+      // a long gate list or a full derby table can't clip at a small size.
+      var ADMIN_TABS = {
+        race: true, quali: true, garage: true, editor: true, derby: true, admin: true
+      };
+      function adminTabOf(value) { return ADMIN_TABS[value] ? value : 'race'; }
+      // Persisted so an admin returns to the panel they were working in.
+      // (loadPref/savePref are declared further down; both are hoisted function
+      // declarations, so calling them here is safe.)
+      $scope.adminTab = adminTabOf(loadPref('adminTab', 'race'));
+      $scope.isAdminTab = function (tab) { return $scope.adminTab === tab; };
+      // The start-slot markers are drawn from Lua, which has no idea whether the
+      // editor panel is on screen. Tell it, so that editor furniture stays in
+      // the editor instead of being drawn for every racer on the grid.
+      function pushEditorOpen() {
+        var open = $scope.isAdmin && $scope.adminTab === 'editor';
+        bngApi.engineLua('raceManager.setEditorOpen(' + (!!open) + ')');
+      }
+      $scope.selectAdminTab = function (tab) {
+        $scope.adminTab = adminTabOf(tab);
+        savePref('adminTab', $scope.adminTab);
+        pushEditorOpen();
+        // Two panels need a nudge as they re-enter the DOM: the track preview
+        // canvas has to be drawn once it exists, and the derby module pulls its
+        // state over its own channel.
+        if ($scope.adminTab === 'editor') { schedulePreview(); }
+        if ($scope.adminTab === 'derby') {
+          bngApi.engineLua('raceManager.derbyRequestState()');
+        }
+      };
+
       // Checkpoint editor state
-      $scope.showEditor = false;
       $scope.routeWaypoints = [];
       $scope.nextWp = 1;
       $scope.visualize = true;
@@ -150,7 +265,6 @@ angular.module('beamng.apps')
       // DEMO DERBY (isolated module) — separate state, events and commands;
       // nothing here touches the circuit racing scope above.
       // ----------------------------------------------------------------
-      $scope.showDerby = false;
       $scope.derby = {
         phase: 'idle',        // idle | running | finished (server authoritative)
         time: 0,
@@ -334,6 +448,16 @@ angular.module('beamng.apps')
         return m + ':' + (s < 10 ? '0' : '') + s.toFixed(3);
       };
 
+      // Running lap clock: tenths, not thousandths. At a 100 ms render tick the
+      // thousandths digit would be frozen noise, and the coarser precision also
+      // sets the live readout apart from a held (official) time at a glance.
+      $scope.formatLapLive = function (t) {
+        if (t === null || t === undefined) { return '—'; }
+        var m = Math.floor(t / 60);
+        var s = t - m * 60;
+        return m + ':' + (s < 10 ? '0' : '') + s.toFixed(1);
+      };
+
       $scope.formatFinish = function (row) {
         if (row.status === 'dnf') { return 'DNF'; }
         if (row.finishTime === null || row.finishTime === undefined) {
@@ -427,6 +551,20 @@ angular.module('beamng.apps')
           $scope.routeWaypoints = data.waypoints || [];
           $scope.nextWp = data.nextWp || 1;
           $scope.visualize = data.visualize !== false;
+          // Admin session restored from the client bridge. This directive is
+          // destroyed and rebuilt every time BeamNG tears down the HUD layer —
+          // opening the pause menu does exactly that — so isAdmin cannot live
+          // only in this scope, or every pause reads as a logout. The bridge
+          // outlives the app and hands it back on the first route push.
+          if (typeof data.isAdmin === 'boolean' && data.isAdmin !== $scope.isAdmin) {
+            $scope.isAdmin = data.isAdmin;
+            if (data.isAdmin) {
+              $scope.showLogin = false;
+              $scope.loginPinned = false;
+              $scope.authError = false;
+            }
+            pushEditorOpen();
+          }
           if (typeof data.width === 'number') { $scope.settingsUi.width = data.width; }
           if (typeof data.height === 'number') { $scope.settingsUi.height = data.height; }
           // Starting grid placed/loaded on this client.
@@ -525,13 +663,20 @@ angular.module('beamng.apps')
       $scope.$on('RaceManagerAuth', function (event, data) {
         $scope.$evalAsync(function () {
           var ok = !!(data && data.success);
+          // `restored` marks a session handed back by the client bridge or
+          // re-confirmed by the server, rather than the answer to a password
+          // somebody just typed. Only a real attempt can fail, so only a real
+          // attempt lights the "Incorrect password" warning.
+          var restored = !!(data && data.restored);
           $scope.isAdmin = ok;
-          $scope.authError = !ok;
+          $scope.authError = !ok && !restored;
           if (ok) {
             $scope.authUi.password = '';
             $scope.showLogin = false;
             $scope.loginPinned = false;
           }
+          // Admin status gates the editor, so the Lua-side flag moves with it.
+          pushEditorOpen();
         });
       });
 
@@ -627,13 +772,6 @@ angular.module('beamng.apps')
         });
       });
 
-      $scope.toggleDerby = function () {
-        $scope.showDerby = !$scope.showDerby;
-        if ($scope.showDerby) {
-          bngApi.engineLua('raceManager.derbyRequestState()');
-        }
-      };
-
       $scope.derbyStatusLabel = function (p) {
         if (p.status === 'winner') { return 'WINNER'; }
         if (p.status === 'alive') { return 'In Arena'; }
@@ -725,6 +863,8 @@ angular.module('beamng.apps')
       $scope.toggleDerbyDropdown = function () {
         if (!$scope.derbyLayouts.length) { $scope.derbyDropdownOpen = false; return; }
         $scope.derbyDropdownOpen = !$scope.derbyDropdownOpen;
+        // Same scroll-container clipping guard as the track layout picker.
+        if ($scope.derbyDropdownOpen) { revealDropdown('.rm-derby-layouts .rm-layout-menu'); }
       };
       $scope.selectDerbyLayout = function (l) {
         $scope.derbyUi.selected = l.name;
@@ -789,8 +929,9 @@ angular.module('beamng.apps')
         $scope.isAdmin = false;
         $scope.showLogin = true;
         $scope.loginPinned = true;
-        $scope.showEditor = false;
-        $scope.showDerby = false;
+        // The admin tab is left where it was: every panel is behind ng-if
+        // isAdmin anyway, and a logout shouldn't discard the remembered tab.
+        pushEditorOpen();   // no admin, no editor: drop the start-slot markers
         bngApi.engineLua('raceManager.logout()');
       };
 
@@ -975,11 +1116,6 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.editorToggleVisualize()');
       };
 
-      $scope.toggleEditor = function () {
-        $scope.showEditor = !$scope.showEditor;
-        if ($scope.showEditor) { schedulePreview(); }  // canvas re-enters the DOM
-      };
-
       // Switch the editor between the main lap, the joker route and the start
       // grid. Everything in the editor panel (+ Checkpoint Here, Undo, Clear,
       // the list below) follows this selection. The tab is applied locally as
@@ -1055,6 +1191,18 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.loadLayout(' + luaStr($scope.layoutUi.selected) + ')');
       };
 
+      // The layout and arena pickers are absolutely positioned menus, and the
+      // admin tab body is a scroll container — a menu opened near its bottom
+      // edge would hang below the visible area. Scroll it into the scroller
+      // once Angular has put it in the DOM (the same deferred pattern the
+      // preview canvas uses).
+      function revealDropdown(selector) {
+        setTimeout(function () {
+          var menu = $element[0].querySelector(selector);
+          if (menu && menu.scrollIntoView) { menu.scrollIntoView({ block: 'nearest' }); }
+        }, 0);
+      }
+
       // Custom dropdown behaviour (see $scope.layoutDropdownOpen above for why
       // this isn't a native <select>). Opening only makes sense when there are
       // layouts to choose from; selecting an option mirrors the old
@@ -1062,6 +1210,7 @@ angular.module('beamng.apps')
       $scope.toggleLayoutDropdown = function () {
         if (!$scope.layouts.length) { $scope.layoutDropdownOpen = false; return; }
         $scope.layoutDropdownOpen = !$scope.layoutDropdownOpen;
+        if ($scope.layoutDropdownOpen) { revealDropdown('.rm-layouts .rm-layout-menu'); }
       };
 
       $scope.selectLayoutOption = function (l) {
@@ -1287,6 +1436,11 @@ angular.module('beamng.apps')
         document.removeEventListener('mouseup', onResizeEnd);
         if (noticeTimer) { clearTimeout(noticeTimer); }
         if (vehErrTimer) { clearTimeout(vehErrTimer); }
+        stopLapTicker();
+        // The app is going away (HUD teardown, pause menu, app closed), so the
+        // editor is not open any more. Without this the start-slot markers
+        // would stay drawn in the world with no panel behind them.
+        bngApi.engineLua('raceManager.setEditorOpen(false)');
       });
 
       // ------------------------------------------------------------------
@@ -1297,6 +1451,10 @@ angular.module('beamng.apps')
       bngApi.engineLua('extensions.load("raceManager"); raceManager.requestState()');
       // Demo Derby module: pull its state separately (isolated channel).
       bngApi.engineLua('raceManager.derbyRequestState()');
+      // Re-assert the editor flag on mount. The admin tab is restored from
+      // localStorage, so a rebuilt app can come straight back up on the Editor
+      // tab -- and the Lua side was told "closed" when the old one was torn down.
+      pushEditorOpen();
     }]
   };
 }]);

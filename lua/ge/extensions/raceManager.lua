@@ -41,6 +41,12 @@ local LAP_DEBOUNCE   = 2.0      -- seconds; double-fire guard on the S/F gate.
                                 -- this only needs to swallow same-crossing
                                 -- re-fires, not bound real lap times.
 local PROGRESS_EVERY = 0.3      -- seconds between live-position reports
+-- Live lap clock for the driver's own HUD. The lap start is already known here
+-- (lapStart), it simply was never sent anywhere -- the leaderboard only ever
+-- showed a Best Lap, so a driver had no running lap time at all. Pushed on a
+-- slow cadence and INTERPOLATED in the UI between pushes, which keeps the
+-- readout smooth without a guihook every frame.
+local LAP_TIME_EVERY = 0.25     -- seconds between live lap-time pushes to the UI
                                 -- (~3.3 Hz: responsive enough to resolve a
                                 -- side-by-side fight, light enough that a full
                                 -- grid does not flood the server)
@@ -79,6 +85,11 @@ local jokerArmed   = 1           -- next joker gate the local car must cross
 local jokerTaken   = false       -- joker route already completed this race
 local jokerLapUsed = nil         -- lap the joker was taken on (for the UI)
 local editorTarget = 'main'      -- which route the editor appends to: main | joker
+-- Is the editor panel open in the UI app? Mirrored here because the start-slot
+-- markers are drawn from Lua (debugDrawer) and the panel's open/closed state
+-- only exists in the UI. Pushed by the app whenever its admin tab changes, on
+-- mount, and on teardown -- so a closed app means a closed editor.
+local editorOpen   = false
 
 -- Local lap tracking (reset on every session change)
 local armedWp      = 1           -- next gate the local car must cross
@@ -147,6 +158,17 @@ local TELEPORT_RADIUS = 2.0      -- metres from where we put the car
 -- is applied on every single attempt.
 local blockNoticeLeft = 0
 local BLOCK_NOTICE_EVERY = 1.0   -- seconds between blocked-reset reports
+
+-- Admin session. This lives HERE, not in the UI app, and that is the whole
+-- point: BeamNG tears the HUD layer down and rebuilds it whenever the pause
+-- menu opens, which destroys the app's Angular scope and everything in it. The
+-- server session survives that (it is keyed by BeamMP player id and only
+-- dropped on disconnect or an explicit logout), so the client's copy has to
+-- survive it too, or every pause reads as a logout. This extension is resident
+-- across the pause menu -- modScript sets it to manual unload -- so it is the
+-- durable place to keep it. Pushed to the UI with every route state, and
+-- re-confirmed by the server on RM_RequestState (which the app sends on mount).
+local isAdmin   = false
 
 -- Race entry (opt-in). Mirrored from the server so the UI can show a Join /
 -- Leave button and whether entry is open to everyone or by request.
@@ -265,6 +287,9 @@ local function pushRouteState()
     startPositions = startPositions,
     gridSlot       = gridSlot,
     gridFrozen     = gridFrozen,
+    -- Admin session, so a freshly mounted UI app knows straight away that this
+    -- client is still logged in (see the isAdmin declaration above).
+    isAdmin      = isAdmin,
     -- Race entry (opt-in)
     entryMode    = entryMode,
     joined       = joined,
@@ -419,11 +444,20 @@ local function onLapCompleted()
   local lapTime = localTime - lapStart
   if timingActive and lapTime < LAP_DEBOUNCE then return end  -- double-fire guard
 
+  -- Hand the finished time to this driver's own HUD so it can hold it on screen
+  -- long enough to read. Display only, and deliberately separate from the
+  -- reports above: the server is still told the same lapTime it always was, and
+  -- lapStart is reset either way, so the lap clock never pauses for the hold.
+  local function announceLap(n)
+    guihooks.trigger('RaceManagerLapDone', { lapTime = lapTime, lap = n })
+  end
+
   if phase == 'qualifying' then
     if timingActive then
       if inMultiplayer() then
         TriggerServerEvent('RM_QualiLap', jsonEncode({ lapTime = lapTime }))
       end
+      announceLap(nil)
       log('I', 'raceManager', string.format('Quali lap: %.3fs', lapTime))
     else
       timingActive = true  -- out-lap over, the clock starts now
@@ -434,6 +468,7 @@ local function onLapCompleted()
     if inMultiplayer() then
       TriggerServerEvent('RM_Lap', jsonEncode({ lapTime = lapTime }))
     end
+    announceLap(localLap)
     log('I', 'raceManager', string.format('Lap %d done: %.3fs', localLap, lapTime))
     localLap = localLap + 1
     lapStart = localTime
@@ -514,6 +549,42 @@ local function checkGates()
     checkJokerGates(prevPos, pos)
   end
   prevPos = vec3(pos.x, pos.y, pos.z)
+end
+
+-- ---------------------------------------------------------------------------
+-- Live lap clock (display only)
+-- ---------------------------------------------------------------------------
+-- Strictly a HUD feed. The lap time that counts is still the one measured at
+-- the crossing in onLapCompleted and scored by the server; nothing here is ever
+-- reported upstream or used for timing. The UI interpolates forward from the
+-- last push with its own clock, so this cadence sets the correction rate, not
+-- the visible frame rate of the readout.
+local lapTimeLeft    = 0
+local lapTimerArmed  = false     -- was the clock running on the previous tick?
+
+local function lapTimerUpdate(dt)
+  -- Running whenever this client's own lap clock is: the whole race, and a
+  -- qualifying flying lap once the out-lap is done.
+  local running = (phase == 'racing')
+    or (phase == 'qualifying' and timingActive)
+  if not running then
+    -- Tell the UI once on the way down so it can drop the readout instead of
+    -- leaving the last value frozen on screen looking like a stalled clock.
+    if lapTimerArmed then
+      lapTimerArmed = false
+      guihooks.trigger('RaceManagerLapTime', { running = false })
+    end
+    return
+  end
+  lapTimerArmed = true
+  lapTimeLeft = lapTimeLeft - dt
+  if lapTimeLeft > 0 then return end
+  lapTimeLeft = LAP_TIME_EVERY
+  guihooks.trigger('RaceManagerLapTime', {
+    running = true,
+    lap     = localLap,
+    elapsed = localTime - lapStart,
+  })
 end
 
 -- ---------------------------------------------------------------------------
@@ -1375,10 +1446,15 @@ end
 
 local function drawStartPositions()
   if #startPositions == 0 or not debugDrawer then return end
-  -- Always visible while the grid is being formed; otherwise follow the same
-  -- Hide/Show Gates toggle the checkpoints use.
-  local forming = (phase == 'grid' or phase == 'countdown')
-  if not forming and not visualize then return end
+  -- Editor-only furniture. These markers exist to lay out and check a grid, so
+  -- they are drawn only while the editor panel is open -- they used to render
+  -- for every racer, including drivers who can't edit anything. This is purely
+  -- a render gate: `startPositions` itself is untouched and still drives grid
+  -- placement (applyGridSlot), the slot count reported to the server, and the
+  -- saved layout, for every client whether the editor is open or not.
+  if not editorOpen then return end
+  -- Inside the editor, the same Hide/Show Gates toggle the checkpoints use.
+  if not visualize then return end
   for i, sp in ipairs(startPositions) do
     drawStartPosition(sp, i, gridSlot == i)
   end
@@ -1868,6 +1944,7 @@ function M.onUpdate(dt)
   localTime = localTime + dt
   joinRequestUpdate(dt)     -- deferred state request after joining a server
   checkGates()
+  lapTimerUpdate(dt)        -- live lap clock for this driver's own HUD
   reportProgress(dt)        -- live position telemetry (distance to next gate)
   drawGates()
   drawStartPositions()      -- starting grid slots
@@ -1887,6 +1964,14 @@ end
 -- Which route the editor is currently building: the main lap or the joker
 -- route. Everything below (+ Checkpoint Here, Undo, the list) follows it.
 -- Three targets now: the main lap, the joker route, and the starting grid.
+-- The UI app tells us whether its editor panel is on screen. Drives the
+-- start-slot markers, which are editor furniture rather than driver
+-- information. Sent when the admin tab changes, when the app mounts, and when
+-- it is torn down (a closed app cannot have an open editor).
+function M.setEditorOpen(open)
+  editorOpen = open == true
+end
+
 function M.setEditorTarget(target)
   target = tostring(target or 'main')
   if target ~= 'joker' and target ~= 'start' then target = 'main' end
@@ -2200,6 +2285,15 @@ local function onServerUpdate(rawData)
     resetMode = data.resetMode
   end
   jokerEnabled = data.jokerEnabled == true
+  -- Per-player admin status. Present only on a targeted reply (RM_RequestState),
+  -- so the global broadcast never disturbs it. The server is the authority here:
+  -- if it says this session is not authenticated, the local flag is wrong and
+  -- gets corrected (server restart, or an admin logged out from elsewhere).
+  if type(data.youAreAdmin) == 'boolean' and data.youAreAdmin ~= isAdmin then
+    isAdmin = data.youAreAdmin
+    guihooks.trigger('RaceManagerAuth', { success = isAdmin, restored = true })
+    pushRouteState()
+  end
   -- Race entry + qualifying rules.
   if type(data.entryMode) == 'string' then entryMode = data.entryMode end
   ghostQuali = data.ghostQuali == true
@@ -2369,8 +2463,11 @@ end
 local function onLoginResult(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
-  guihooks.trigger('RaceManagerAuth', { success = data.success == true })
-  log('I', 'raceManager', 'Login result: ' .. tostring(data.success == true))
+  -- Remember it here as well as telling the UI: the UI's copy dies with the
+  -- app, this one outlives the pause menu.
+  isAdmin = data.success == true
+  guihooks.trigger('RaceManagerAuth', { success = isAdmin })
+  log('I', 'raceManager', 'Login result: ' .. tostring(isAdmin))
 end
 
 -- Server broadcast that an admin rotated the master password (never the value).
@@ -2394,15 +2491,22 @@ function M.login(password)
     TriggerServerEvent('RM_Login', jsonEncode({ password = tostring(password or '') }))
   else
     -- Offline: no server to authenticate against, but the checkpoint editor is
-    -- meant to stay usable single-player, so grant local admin outright.
+    -- meant to stay usable single-player, so grant local admin outright. Recorded
+    -- here too, so the offline editor also survives the pause menu.
+    isAdmin = true
     guihooks.trigger('RaceManagerAuth', { success = true, offline = true })
+    pushRouteState()
   end
 end
 
 -- Drop admin rights (UI "Log out" / back-to-login). Offline there is no server
 -- session to clear, so this is purely a UI-side action there.
 function M.logout()
+  -- Clear the durable copy FIRST. If it stayed set, the next route push would
+  -- hand admin straight back to the UI that just logged out.
+  isAdmin = false
   if inMultiplayer() then TriggerServerEvent('RM_Logout', '') end
+  pushRouteState()
 end
 
 -- Authenticated admin rotates the master password on the server.
@@ -2565,6 +2669,10 @@ function M.requestState()
     -- Not on a BeamMP server: still push a state so the UI renders, and the
     -- editor remains fully usable for building circuits offline. Grant local
     -- admin so the (offline) editor controls are visible without a password.
+    -- The flag has to be set here too, not just announced to the UI: every
+    -- later route push carries it, and a push saying "not admin" would take the
+    -- offline editor's own controls away again on the next gate placed.
+    isAdmin = true
     guihooks.trigger('RaceManagerUpdate', { phase = 'waiting', raceTime = 0, totalLaps = totalLaps, drivers = {} })
     guihooks.trigger('RaceManagerAuth', { success = true, offline = true })
     log('W', 'raceManager', 'Racing is multiplayer-only; the checkpoint editor works offline')
@@ -2636,6 +2744,11 @@ end
 -- with no server left to lift them they would otherwise stay applied.
 local function resetToIdle(reason)
   phase = 'waiting'
+  -- The server drops authenticatedPlayers on disconnect, so a session that has
+  -- ended takes the admin rights with it. Forget them here or the next server
+  -- would inherit an admin flag it never granted.
+  isAdmin = false
+  editorOpen = false
   clearTrackState(reason)
   releaseSpectator(nil)
   releaseGridHold()
