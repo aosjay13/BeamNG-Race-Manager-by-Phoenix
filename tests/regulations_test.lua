@@ -364,7 +364,11 @@ check(#lastState.garage == 0, 'Clear Garage empties the list')
 -- source, and the derby never touches the racing state machine.
 -- ===========================================================================
 spectated = {}; released = {}
+-- A derby starts in two steps now: Form Up places and holds the field, then
+-- Start Derby releases it with a countdown. Nothing is eliminated before GO.
+RM_onDerbyFormUp(1)
 RM_onDerbyStart(1)
+for _ = 1, 3 do RM_DerbyCountdownTick() end
 RM_onDerbyDemolished(2)
 check(spectated[2] ~= nil and spectated[2].source == 'derby',
   'a derby elimination forces spectator mode scoped to the derby')

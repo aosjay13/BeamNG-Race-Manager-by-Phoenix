@@ -363,7 +363,7 @@ local RM_PROTOCOL = 2
 -- nothing at all, with no error in any console. Bump this in ALL THREE files
 -- (main.lua, raceManager.lua, app.js) whenever the client/server contract
 -- changes.
-local RM_BUILD = '3.3.0-aliases'
+local RM_BUILD = '3.4.0-derby-start'
 
 local function broadcastState(targetPid)
   local garageView = garageSnapshot and garageSnapshot() or {}
@@ -2181,6 +2181,27 @@ local derby = {
 }
 local derbyPlayers = {} -- [pid] = { id, name, status, reason, elimTime, resets }
                         -- status: alive | eliminated | winner
+-- Derby countdown. Its own value and its own client event, deliberately not
+-- shared with the racing countdown: the two start procedures are independent
+-- and neither may release the other's held cars.
+local DERBY_COUNTDOWN_FROM = 3
+local derbyCountdownValue  = nil
+
+local function broadcastDerbyCountdown(count)
+  MP.TriggerClientEvent(-1, 'RM_DerbyCountdown', Util.JsonEncode({ count = count }))
+end
+
+-- A derby is "active" from the moment the field is formed up, not just while it
+-- is running. Setup actions -- editing the arena, changing the rules, loading a
+-- saved arena -- are locked for all three phases: once cars are standing on
+-- their slots and held, the ground must not move under them. Gameplay checks
+-- (elimination, reset counting, the tick) stay strictly 'running', because none
+-- of that should happen before GO.
+local function derbyActive()
+  return derby.phase == 'forming'
+      or derby.phase == 'countdown'
+      or derby.phase == 'running'
+end
 
 local function derbyClampLimit(n, default)
   n = tonumber(n)
@@ -2196,7 +2217,7 @@ end
 -- that is simply the field it started with; otherwise it depends on the entry
 -- mode, so the admin can see an empty opt-in list before pressing Start.
 local function derbyEligibleCount()
-  if derby.phase == 'running' then
+  if derbyActive() then
     local n = 0
     for _ in pairs(derbyPlayers) do n = n + 1 end
     return n
@@ -2253,7 +2274,7 @@ end
 -- capture a nil. Only matters outside a running derby: once one is under way
 -- the field is fixed and the count is whatever it started with.
 derbyEntryListChanged = function ()
-  if derby.phase ~= 'running' then broadcastDerbyState() end
+  if not derbyActive() then broadcastDerbyState() end
 end
 
 local function derbyFmtTime(t)
@@ -2364,7 +2385,7 @@ end
 
 function RM_onDerbySetConfig(pid, rawData)
   if not requireAuth(pid) then return end
-  if derby.phase == 'running' then return end
+  if derbyActive() then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
@@ -2388,7 +2409,7 @@ end
 -- marker list is the arena polygon every client runs point-in-polygon against.
 function RM_onDerbyAddMarker(pid, rawData)
   if not requireAuth(pid) then return end
-  if derby.phase == 'running' then return end
+  if derbyActive() then return end
   if #derby.boundary >= DERBY_MAX_MARKERS then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
@@ -2403,7 +2424,7 @@ end
 
 function RM_onDerbyClearBoundary(pid)
   if not requireAuth(pid) then return end
-  if derby.phase == 'running' then return end
+  if derbyActive() then return end
   derby.boundary = {}
   broadcastDerbyState()
   print('[RaceManager] Derby boundary cleared by ' .. (MP.GetPlayerName(pid) or pid))
@@ -2413,7 +2434,7 @@ end
 -- + facing). Slot 1 is placed first; Start Derby hands one slot per driver.
 function RM_onDerbyAddStart(pid, rawData)
   if not requireAuth(pid) then return end
-  if derby.phase == 'running' then return end
+  if derbyActive() then return end
   if #derby.startPositions >= DERBY_MAX_STARTS then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
@@ -2431,7 +2452,7 @@ end
 
 function RM_onDerbyClearStarts(pid)
   if not requireAuth(pid) then return end
-  if derby.phase == 'running' then return end
+  if derbyActive() then return end
   derby.startPositions = {}
   broadcastDerbyState()
   print('[RaceManager] Derby start grid cleared by ' .. (MP.GetPlayerName(pid) or pid))
@@ -2613,7 +2634,7 @@ end
 -- Refused while a derby is running — the arena cannot move under the drivers.
 function RM_onDerbyLoadLayout(pid, rawData)
   if not requireAuth(pid) then return end
-  if derby.phase == 'running' then return end
+  if derbyActive() then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' or type(data.name) ~= 'string' then return end
@@ -2663,7 +2684,7 @@ end
 -- change under the drivers.
 function RM_onDerbySetEntryMode(pid, rawData)
   if not requireAuth(pid) then return end
-  if derby.phase == 'running' then return end
+  if derbyActive() then return end
   local mode = decodeString(rawData, 'mode')
   if mode ~= 'all' and mode ~= 'join' then return end
   derby.entryMode = mode
@@ -2672,9 +2693,12 @@ function RM_onDerbySetEntryMode(pid, rawData)
     .. (MP.GetPlayerName(pid) or pid))
 end
 
-function RM_onDerbyStart(pid)
+-- Form up: build the field, stand everyone on a slot and HOLD them there until
+-- the countdown lets go. The derby's Generate Grid, and the same two-step shape
+-- the circuit races use — form the grid, then start it.
+function RM_onDerbyFormUp(pid)
   if not requireAuth(pid) then return end
-  if derby.phase == 'running' then return end
+  if derby.phase == 'running' or derby.phase == 'countdown' then return end
   derbyPlayers = {}
   derby.winner = nil
   derby.time   = 0
@@ -2701,42 +2725,106 @@ function RM_onDerbyStart(pid)
     -- Two different reasons, and telling them apart matters: an empty server is
     -- obvious, an empty entry list looks like a broken button.
     if optIn then
-      print('[RaceManager] Derby start ignored: nobody has joined (opt-in entry is on)')
+      print('[RaceManager] Derby form-up ignored: nobody has joined (opt-in entry is on)')
       MP.SendChatMessage(pid, '[RaceManager] Nobody has joined — press Join Race, '
         .. 'or switch derby entry to Everyone.')
     else
-      print('[RaceManager] Derby start ignored: no players connected')
+      print('[RaceManager] Derby form-up ignored: no players connected')
     end
     return
   end
-  derby.phase = 'running'
-  MP.CreateEventTimer('RM_DerbyTick', DERBY_TICK_MS)
+  derby.phase = 'forming'
   releaseSpectators('derby')  -- fresh derby: nobody carries a stale penalty
   broadcastDerbyState()
-  -- Starting grid: when start positions are placed, every participant gets a
-  -- slot (join order — pid ascending — is deterministic and fair enough for a
-  -- derby) and their client stands the car on it. Sent after the state
-  -- broadcast so every client already holds the slot list it is told to use;
-  -- drivers beyond the placed grid keep their current position.
-  if #derby.startPositions > 0 then
-    local ordered = {}
-    for id in pairs(derbyPlayers) do ordered[#ordered + 1] = id end
-    table.sort(ordered)
-    for slot, id in ipairs(ordered) do
-      if slot > #derby.startPositions then break end
-      MP.TriggerClientEvent(id, 'RM_DerbyGridAssign', Util.JsonEncode({ slot = slot }))
-    end
+  -- Slots go out AFTER the state broadcast, so every client already holds the
+  -- slot list it is about to be told to use. Join order (pid ascending) is
+  -- deterministic and fair enough for a derby. Everyone is held whether or not
+  -- a slot was placed for them — a driver with nowhere to line up still waits
+  -- for GO rather than getting a free run at the rest of the field.
+  local ordered = {}
+  for id in pairs(derbyPlayers) do ordered[#ordered + 1] = id end
+  table.sort(ordered)
+  for slot, id in ipairs(ordered) do
+    local placed = (slot <= #derby.startPositions) and slot or nil
+    MP.TriggerClientEvent(id, 'RM_DerbyGridAssign', Util.JsonEncode({
+      slot = placed,
+      hold = true,
+    }))
   end
   MP.SendChatMessage(-1, string.format(
+    '[RaceManager] Demo derby forming up: %d driver%s held for the start.',
+    count, count == 1 and '' or 's'))
+  print('[RaceManager] Derby formed up by ' .. (MP.GetPlayerName(pid) or pid)
+    .. ' (' .. count .. ' drivers, ' .. #derby.startPositions .. ' slots placed)')
+end
+
+function RM_onDerbyStart(pid)
+  if not requireAuth(pid) then return end
+  -- Form up first, so the field is standing still and held when the lights go
+  -- out. Mirrors Start Countdown needing a generated grid.
+  if derby.phase ~= 'forming' then
+    if derby.phase ~= 'running' and derby.phase ~= 'countdown' then
+      MP.SendChatMessage(pid, '[RaceManager] Press Form Up first — it places the '
+        .. 'field and holds it for the countdown.')
+    end
+    return
+  end
+  derby.phase = 'countdown'
+  derbyCountdownValue = DERBY_COUNTDOWN_FROM
+  broadcastDerbyState()
+  broadcastDerbyCountdown(derbyCountdownValue)
+  MP.CreateEventTimer('RM_DerbyCountdownTick', 1000)
+  print('[RaceManager] Derby countdown started by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+function RM_DerbyCountdownTick()
+  if derby.phase ~= 'countdown' then
+    MP.CancelEventTimer('RM_DerbyCountdownTick')
+    -- Whatever ended the countdown (End Derby) must not leave the field held.
+    broadcastDerbyCountdown(-1)
+    return
+  end
+  derbyCountdownValue = derbyCountdownValue - 1
+  if derbyCountdownValue > 0 then
+    broadcastDerbyCountdown(derbyCountdownValue)
+    return
+  end
+  -- GO! The same broadcast that clears the overlay releases every held car, so
+  -- nobody can creep away early or be held a moment longer than their rivals.
+  MP.CancelEventTimer('RM_DerbyCountdownTick')
+  broadcastDerbyCountdown(0)
+  derby.phase = 'running'
+  derby.time  = 0
+  MP.CreateEventTimer('RM_DerbyTick', DERBY_TICK_MS)
+  broadcastDerbyState()
+  local count = 0
+  for _ in pairs(derbyPlayers) do count = count + 1 end
+  MP.SendChatMessage(-1, string.format(
     '[RaceManager] DEMO DERBY STARTED! %d drivers. Stay inside the arena and keep moving!', count))
-  print('[RaceManager] Derby started by ' .. (MP.GetPlayerName(pid) or pid)
-    .. ' (' .. count .. ' drivers, ' .. #derby.boundary .. ' boundary markers)')
+  print('[RaceManager] Derby GO (' .. count .. ' drivers, '
+    .. #derby.boundary .. ' boundary markers)')
 end
 
 -- End Derby (admin): if exactly one driver is still alive they take the win,
 -- otherwise the derby closes with no winner.
 function RM_onDerbyEnd(pid)
   if not requireAuth(pid) then return end
+  -- Aborting before GO: no result to record, just put the field back. The
+  -- countdown broadcast is what releases the held cars, so it has to go out
+  -- even though nobody is racing yet -- otherwise everyone stays frozen.
+  if derby.phase == 'forming' or derby.phase == 'countdown' then
+    MP.CancelEventTimer('RM_DerbyCountdownTick')
+    derbyCountdownValue = nil
+    derby.phase  = 'idle'
+    derby.winner = nil
+    derby.time   = 0
+    derbyPlayers = {}
+    broadcastDerbyCountdown(-1)
+    broadcastDerbyState()
+    MP.SendChatMessage(-1, '[RaceManager] Demo derby start aborted.')
+    print('[RaceManager] Derby start aborted by ' .. (MP.GetPlayerName(pid) or pid))
+    return
+  end
   if derby.phase ~= 'running' then
     -- Allow clearing a finished derby back to idle from the UI.
     if derby.phase == 'finished' then
@@ -2950,6 +3038,7 @@ function onInit()
   MP.RegisterEvent('RM_DerbyDemolished',    'RM_onDerbyDemolished')
   MP.RegisterEvent('RM_DerbyRequestState',  'RM_onDerbyRequestState')
   MP.RegisterEvent('RM_DerbySetEntryMode',  'RM_onDerbySetEntryMode')
+  MP.RegisterEvent('RM_DerbyFormUp',        'RM_onDerbyFormUp')
   -- Derby arena layouts (save/load, mirroring the track layout workflow)
   MP.RegisterEvent('RM_DerbyRequestLayouts','RM_onDerbyRequestLayouts')
   MP.RegisterEvent('RM_DerbySaveLayout',    'RM_onDerbySaveLayout')

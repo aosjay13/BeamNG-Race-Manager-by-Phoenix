@@ -42,7 +42,7 @@ local LAP_DEBOUNCE   = 2.0      -- seconds; double-fire guard on the S/F gate.
                                 -- re-fires, not bound real lap times.
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '3.3.0-aliases'
+local RM_BUILD = '3.4.0-derby-start'
 
 local PROGRESS_EVERY = 0.3      -- seconds between live-position reports
 -- Live lap clock for the driver's own HUD. The lap start is already known here
@@ -1242,13 +1242,24 @@ end
 -- Freeze/unfreeze the local car. BeamNG's vehicle-side controller exposes
 -- setFreeze; queueLuaCommand is the GE-side way in, and it is pcall'd because
 -- a vehicle without that controller must not break the start procedure.
-local function setLocalVehicleFrozen(frozen)
+-- Who imposed the current hold: 'race' (the grid, before the lights) or 'derby'
+-- (form-up, before the derby countdown). Scoped for exactly the reason the
+-- spectator lock is: the two modes run their start procedures independently, and
+-- a racing phase change must never let go of a car being held for a derby, or
+-- the other way round. Without this a race ending would turn every held derby
+-- car loose in the middle of its countdown.
+local freezeSource = nil
+
+local function setLocalVehicleFrozen(frozen, source)
   local veh = playerVehicle()
   if not veh then return false end
   local ok = pcall(function ()
     veh:queueLuaCommand('controller.setFreeze(' .. (frozen and '1' or '0') .. ')')
   end)
-  if ok then gridFrozen = frozen and true or false end
+  if ok then
+    gridFrozen = frozen and true or false
+    freezeSource = frozen and (source or 'race') or nil
+  end
   return ok
 end
 
@@ -1282,7 +1293,7 @@ local function applyGridSlot(slot)
     return
   end
   if placeOnStartPosition(sp) then
-    setLocalVehicleFrozen(true)
+    setLocalVehicleFrozen(true, 'race')
     -- The grid slot is where the car legitimately stands, so it is also the
     -- position a blocked reset should restore to — facing down the track, not
     -- at whatever identity rotation happens to mean on this circuit.
@@ -1295,10 +1306,16 @@ local function applyGridSlot(slot)
 end
 
 -- GO (or any exit from the start procedure): release the car.
-local function releaseGridHold()
+-- `source` names the mode letting go. A hold imposed by the other mode is left
+-- alone. Passing nil forces the release, which is what a session ending or the
+-- extension unloading wants: with no server left to lift it, a held car would
+-- stay held forever.
+local function releaseGridHold(source)
   if not gridFrozen then return end
+  if source and freezeSource and freezeSource ~= source then return end
   setLocalVehicleFrozen(false)
   gridFrozen = false
+  freezeSource = nil
   pushRouteState()
 end
 
@@ -1529,9 +1546,15 @@ end
 
 local DERBY_STOP_SPEED    = 0.7   -- m/s; below this the car counts as stopped
                                   -- (generous enough to swallow physics jiggle)
-local DERBY_START_GRACE   = 5     -- s after Start Derby before the stopped-vehicle
-                                  -- check arms, so drivers waiting for the GO
-                                  -- announcement aren't instantly on the clock
+-- Seconds after GO before the stopped-vehicle check arms. This used to exist
+-- because there was no start procedure at all: cars sat parked waiting for
+-- someone to say go, and would have been on the demolished clock immediately.
+-- Form-up and the countdown removed that reason, but the timer is kept for the
+-- one that is left -- a car released at GO takes a moment to actually move, and
+-- nobody should be eliminated for reaction time. Deliberately unchanged rather
+-- than retuned: it is a gameplay value, and shortening it is a balance call for
+-- an admin to ask for, not a side effect of adding a countdown.
+local DERBY_START_GRACE   = 5
 local DERBY_POLE_HEIGHT   = 6     -- boundary poles are taller than gate poles
 local DERBY_POLE_RADIUS   = 0.2
 
@@ -1757,6 +1780,12 @@ function M.derbySetEntryMode(mode)
   }))
 end
 
+-- Form up: stand every participant on their slot and hold them there, ready
+-- for the countdown. The derby equivalent of Generate Grid.
+function M.derbyFormUp()
+  if inMultiplayer() then TriggerServerEvent('RM_DerbyFormUp', '') end
+end
+
 function M.derbyStart()
   if inMultiplayer() then TriggerServerEvent('RM_DerbyStart', '') end
 end
@@ -1864,6 +1893,11 @@ local function onDerbyUpdate(rawData)
     if derbyPhase == 'running' then derbySlot = nil end
     derbyClearWarnings()
   end
+  -- A derby that ends or is reset while cars are still held on the form-up grid
+  -- has to let them go. Only ever releases a hold this module imposed.
+  if newPhase == 'idle' or newPhase == 'finished' then
+    releaseGridHold('derby')
+  end
   derbyPhase = newPhase
 
   derbyOobLimit  = tonumber(data.oobLimit)  or derbyOobLimit
@@ -1923,17 +1957,37 @@ local function onDerbyGridAssign(rawData)
   local slot = tonumber(data.slot)
   derbySlot = slot and math.floor(slot) or nil
   local sp = derbySlot and derbyStarts[derbySlot]
-  if not sp then
-    if derbySlot then
-      pushNotice('grid', 'Derby start position ' .. derbySlot .. ' is not placed in this arena')
-      log('W', 'raceManager', 'Derby start slot ' .. derbySlot .. ' has no placed position')
+  if sp then
+    if placeOnStartPosition(sp) then
+      pushNotice('grid', 'Derby: you start from P' .. derbySlot)
+      log('I', 'raceManager', 'Placed on derby start slot ' .. derbySlot)
     end
-    return
+  elseif derbySlot then
+    pushNotice('grid', 'Derby start position ' .. derbySlot .. ' is not placed in this arena')
+    log('W', 'raceManager', 'Derby start slot ' .. derbySlot .. ' has no placed position')
   end
-  if placeOnStartPosition(sp) then
-    pushNotice('grid', 'Derby: you start from P' .. derbySlot)
-    log('I', 'raceManager', 'Placed on derby start slot ' .. derbySlot)
+  -- Form-up holds every participant until the countdown lets them go, whether
+  -- or not a slot was placed for them: a car with nowhere to line up still has
+  -- to wait for GO rather than getting a free run at everyone else. Tagged
+  -- 'derby' so a racing phase change can never release it.
+  if data.hold == true then
+    if setLocalVehicleFrozen(true, 'derby') then
+      pushRouteState()
+      log('I', 'raceManager', 'Derby form-up: held until GO')
+    end
   end
+end
+
+-- Derby countdown, on its own channel so the racing countdown and this one can
+-- never release each other's cars. GO (0) or an abort (-1) ends the hold; the
+-- overlay itself is the shared UI one, since a countdown looks the same either
+-- way and there is nothing mode-specific about drawing 3, 2, 1.
+local function onDerbyCountdown(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local count = tonumber(data.count)
+  if count and count <= 0 then releaseGridHold('derby') end
+  guihooks.trigger('RaceManagerCountdown', data)
 end
 
 -- Map-filtered arena list from the server.
@@ -2338,7 +2392,7 @@ local function onServerUpdate(rawData)
     -- quali start begins a fresh out-lap, GO starts lap 1 at the line.
     resetLapTracking()
     -- Leaving the start procedure must never leave a car frozen.
-    if newPhase ~= 'grid' and newPhase ~= 'countdown' then releaseGridHold() end
+    if newPhase ~= 'grid' and newPhase ~= 'countdown' then releaseGridHold('race') end
     if newPhase ~= 'grid' and newPhase ~= 'countdown' and newPhase ~= 'racing' then
       gridSlot = nil
     end
@@ -2412,7 +2466,7 @@ local function onServerCountdown(rawData)
   -- authoritative release — everyone's car is let go by the same broadcast, so
   -- nobody can creep away early or be held a moment longer than their rivals.
   local count = tonumber(data.count)
-  if count and count <= 0 then releaseGridHold() end
+  if count and count <= 0 then releaseGridHold('race') end
   guihooks.trigger('RaceManagerCountdown', data)
 end
 
@@ -2797,6 +2851,7 @@ local DISPATCH = {
   RM_DerbyUpdate     = onDerbyUpdate,
   RM_DerbyLayouts    = onDerbyLayoutList,
   RM_DerbyGridAssign = onDerbyGridAssign,
+  RM_DerbyCountdown  = onDerbyCountdown,
 }
 
 local function bindServerHandlers()

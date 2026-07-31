@@ -477,12 +477,22 @@ running a derby never touches qualifying/race state). Open it with the
    entered means losing your car to freecam the moment you are eliminated.
    Drivers never have to join twice: it is one entry list, read by both modes.
    The counter beside the toggle shows how many would be in a derby started
-   right now, and the mode is locked while one is running.
-4. **Start Derby**: every participant is entered, and when a
-   starting grid is placed each participant's car is stood on a slot (join
-   order; drivers beyond the placed grid stay where they are). Each client
-   checks its own vehicle against the arena polygon (ray-casting
-   point-in-polygon) and its own speed:
+   right now, and the mode is locked from Form Up onward.
+4. **Form Up**, then **Start Derby** — the same two steps a circuit race uses.
+   **Form Up** stands every participant on a start slot and **holds them there**;
+   the header reads *Formed up — held*. **Start Derby** then runs a synchronised
+   3‑2‑1‑**GO!**, and that same broadcast releases every car at once, so nobody
+   can creep away early. A driver with no slot placed for them is held where
+   they are rather than getting a free run at the field. **Abort Start** puts
+   everyone back if you formed up by mistake — no result is recorded.
+
+   The arena, the timers and the entry mode are all **locked from Form Up
+   onward**, not just once the derby is running: cars are already standing on
+   their slots by then and the ground must not move under them. Set the rules
+   before you form up.
+5. Once the lights go out each client polices **itself**, checking its own
+   vehicle against the arena polygon (ray-casting point-in-polygon) and its own
+   speed:
    - Leaving the arena flashes **OUT OF BOUNDS! RETURN IN X.Xs** — return in
      time or you're **Disqualified**.
    - Sitting still flashes **VEHICLE STOPPED! DEMOLISHED IN X.Xs** — get

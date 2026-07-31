@@ -401,7 +401,7 @@
   <div class="rm-derby" ng-if="isAdminTab('derby')">
     <div class="rm-derby-title">
       Demo Derby
-      <span class="rm-derby-phase rm-derby-phase-{{ derby.phase }}">{{ derby.phase === 'running' ? 'LIVE — ' + formatDerbyTime(derby.time) : (derby.phase === 'finished' ? 'Finished' : 'Setup') }}</span>
+      <span class="rm-derby-phase rm-derby-phase-{{ derby.phase }}">{{ derbyPhaseLabel() }}</span>
       <span class="rm-derby-markers">{{ derby.boundaryCount }} boundary marker{{ derby.boundaryCount === 1 ? '' : 's' }}</span>
       <span class="rm-derby-markers">{{ derby.startCount }} start slot{{ derby.startCount === 1 ? '' : 's' }}</span>
     </div>
@@ -410,28 +410,28 @@
       <span class="rm-setting">
         <label>OOB timer</label>
         <input type="number" min="1" max="120" step="0.5" ng-model="derbyUi.oob"
-               ng-disabled="derby.phase === 'running'">
+               ng-disabled="derbyActive()">
         <span class="rm-setting-val">s</span>
       </span>
       <span class="rm-setting">
         <label>Demolished timer</label>
         <input type="number" min="1" max="120" step="0.5" ng-model="derbyUi.demo"
-               ng-disabled="derby.phase === 'running'">
+               ng-disabled="derbyActive()">
         <span class="rm-setting-val">s</span>
       </span>
       <span class="rm-setting" title="Vehicle resets each driver gets this derby. 0 = no resets at all; -1 (or blank) = unlimited. Once the allowance is gone the reset keys are blocked.">
         <label>Max resets</label>
         <input type="number" class="rm-width-num" min="-1" max="99" step="1" ng-model="derbyUi.resets"
-               ng-disabled="derby.phase === 'running'">
+               ng-disabled="derbyActive()">
       </span>
       <button class="rm-btn rm-btn-mini" ng-click="derbyApplyConfig()"
-              ng-disabled="derby.phase === 'running'">Set Rules</button>
+              ng-disabled="derbyActive()">Set Rules</button>
       <span class="rm-setting" title="Everyone: every connected player is a participant (the classic behaviour). Opt-in: only drivers who pressed Join Race take part, so a spectator is not dragged in and left without a car.">
         <label>Entry</label>
         <button class="rm-btn rm-btn-mini rm-btn-toggle"
                 ng-class="{'rm-btn-toggle-on': derby.entryMode === 'all'}"
                 ng-click="toggleDerbyEntryMode()"
-                ng-disabled="derby.phase === 'running'">
+                ng-disabled="derbyActive()">
           {{ derby.entryMode === 'all' ? 'Everyone' : 'Opt-in (Join Race)' }}
         </button>
         <span class="rm-setting-val">{{ derby.entrants }} in</span>
@@ -444,29 +444,35 @@
 
     <div class="rm-derby-controls">
       <button class="rm-btn rm-btn-grid" ng-click="derbyAddMarker()"
-              ng-disabled="derby.phase === 'running'"
+              ng-disabled="derbyActive()"
               title="Drop a boundary pole at your vehicle's position; markers connect in order into the arena perimeter">
         + Boundary Marker
       </button>
       <button class="rm-btn rm-btn-end" ng-click="derbyClearBoundary()"
-              ng-disabled="derby.phase === 'running' || !derby.boundaryCount">Clear Boundary</button>
+              ng-disabled="derbyActive() || !derby.boundaryCount">Clear Boundary</button>
       <button class="rm-btn rm-btn-grid" ng-click="derbyAddStart()"
-              ng-disabled="derby.phase === 'running'"
+              ng-disabled="derbyActive()"
               title="Place a derby start position at your vehicle (position + facing). Slot 1 first; drivers are stood on their slot at Start Derby.">
         + Start Position
       </button>
       <button class="rm-btn rm-btn-end" ng-click="derbyClearStarts()"
-              ng-disabled="derby.phase === 'running' || !derby.startCount">Clear Start Grid</button>
+              ng-disabled="derbyActive() || !derby.startCount">Clear Start Grid</button>
       <button class="rm-btn" ng-click="derbyToggleVisualize()"
               title="Hide or show the boundary poles and start slots (always shown while a derby is running)">
         {{ derby.visualize ? 'Hide' : 'Show' }} Boundary
       </button>
+      <button class="rm-btn rm-btn-grid" ng-click="derbyFormUp()"
+              ng-disabled="derbyActive()"
+              title="Stand every participant on a start slot and hold them there, ready for the countdown. The derby's Generate Grid.">
+        Form Up
+      </button>
       <button class="rm-btn rm-btn-start" ng-click="derbyStart()"
-              ng-disabled="derby.phase === 'running'">Start Derby</button>
+              ng-disabled="derby.phase !== 'forming'"
+              title="Release the field with a 3-2-1 countdown. Form Up first.">Start Derby</button>
       <button class="rm-btn rm-btn-end" ng-click="derbyEnd()"
               ng-disabled="derby.phase === 'idle'"
-              title="Running: end the derby now. Finished: reset back to setup.">
-        {{ derby.phase === 'finished' ? 'Reset Derby' : 'End Derby' }}
+              title="Formed up or counting down: abort and release the field. Running: end the derby now. Finished: reset back to setup.">
+        {{ derby.phase === 'finished' ? 'Reset Derby' : (derby.phase === 'forming' || derby.phase === 'countdown' ? 'Abort Start' : 'End Derby') }}
       </button>
     </div>
 
@@ -479,7 +485,7 @@
         <input type="text" class="rm-layout-name" placeholder="Arena name…" maxlength="40"
                ng-model="derbyUi.name">
         <button class="rm-btn rm-btn-start" ng-click="derbySaveLayout()"
-                ng-disabled="derby.boundaryCount < 3 || !derbyUi.name || derby.phase === 'running'"
+                ng-disabled="derby.boundaryCount < 3 || !derbyUi.name || derbyActive()"
                 title="Save the current boundary and both timers on the server under this name">
           Save Current Arena
         </button>
@@ -503,12 +509,12 @@
           </div>
         </div>
         <button class="rm-btn rm-btn-grid" ng-click="derbyLoadLayout()"
-                ng-disabled="!derbyUi.selected || derby.phase === 'running'"
+                ng-disabled="!derbyUi.selected || derbyActive()"
                 title="Broadcast this arena's boundary and timers to every connected player">
           Load Arena
         </button>
         <button class="rm-btn rm-btn-end rm-btn-mini" ng-click="derbyDeleteLayout()"
-                ng-disabled="!derbyUi.selected || derby.phase === 'running'"
+                ng-disabled="!derbyUi.selected || derbyActive()"
                 title="Delete this saved arena from the server">✕</button>
       </div>
       <div class="rm-layouts-hint">

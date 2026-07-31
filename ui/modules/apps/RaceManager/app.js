@@ -339,7 +339,7 @@ angular.module('beamng.apps')
       // stale app.js does not have, so a button does nothing and no console
       // anywhere says a word. Showing all three makes it a glance instead of a
       // hunt. Bump this with main.lua and raceManager.lua.
-      var APP_BUILD = '3.3.0-aliases';
+      var APP_BUILD = '3.4.0-derby-start';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -876,6 +876,32 @@ angular.module('beamng.apps')
         if (!$scope.derbyResetsLimited()) { return '∞'; }
         return Math.min(p.resets || 0, $scope.derby.maxResets) + '/' + $scope.derby.maxResets;
       };
+      // A derby is under way from form-up onward, not just while running: the
+      // field is standing on its slots and held, so the arena and the rules are
+      // locked exactly as they are mid-derby.
+      $scope.derbyActive = function () {
+        return $scope.derby.phase === 'forming'
+          || $scope.derby.phase === 'countdown'
+          || $scope.derby.phase === 'running';
+      };
+      $scope.derbyPhaseLabel = function () {
+        switch ($scope.derby.phase) {
+          case 'running':   return 'LIVE — ' + $scope.formatDerbyTime($scope.derby.time);
+          case 'forming':   return 'Formed up — held';
+          case 'countdown': return 'Countdown';
+          case 'finished':  return 'Finished';
+          default:          return 'Setup';
+        }
+      };
+      $scope.derbyFormUp = function () {
+        // Push the timer/reset inputs first, so the derby forms up with what the
+        // admin currently has on screen. This has to happen HERE rather than at
+        // Start: once the field is formed the rules are locked, so a config sent
+        // then would simply be refused.
+        $scope.derbyApplyConfig();
+        bngApi.engineLua('raceManager.derbyFormUp()');
+      };
+
       // Derby entry: everyone connected, or only drivers who pressed Join Race.
       $scope.toggleDerbyEntryMode = function () {
         bngApi.engineLua('raceManager.derbySetEntryMode("'
@@ -883,9 +909,8 @@ angular.module('beamng.apps')
       };
 
       $scope.derbyStart = function () {
-        // Push the current timer inputs first so the derby always starts with
-        // what the admin sees in the two fields.
-        $scope.derbyApplyConfig();
+        // No config push here — the rules were sent at Form Up and are locked
+        // from that point, so this is purely "release the field".
         bngApi.engineLua('raceManager.derbyStart()');
       };
       $scope.derbyEnd = function () {
