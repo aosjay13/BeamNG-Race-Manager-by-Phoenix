@@ -7,6 +7,18 @@
     <!-- Live distance to your own next checkpoint (the third position metric) -->
     <span class="rm-dist" ng-if="phase === 'racing' && progress && progress.dist != null">{{ formatDistance(progress.dist) }}</span>
     <span class="rm-clock" ng-if="phase === 'racing' || phase === 'finished'">{{ formatRaceTime(raceTime) }}</span>
+    <!-- Own lap clock (same feed the driver bar uses; the header is the
+         admin/spectator equivalent, since minimal mode removes it). -->
+    <span class="rm-laptime" ng-if="showLapTime()">
+      <span class="rm-laptime-hold" ng-if="lapHolding()"
+            title="Lap just completed — held briefly so it can be read">
+        LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}
+      </span>
+      <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive"
+            title="Time on the current lap">
+        LAP {{ formatLapLive(lapElapsed()) }}
+      </span>
+    </span>
     <!-- Qualifying countdown when the session has a time limit -->
     <span class="rm-clock rm-quali-clock" ng-if="phase === 'qualifying' && qualiLeft !== null"
           title="Qualifying time remaining">Q {{ qualiClock() }}</span>
@@ -595,6 +607,17 @@
   <!-- The only chrome a non-admin keeps during a live session: leaderboard
        opacity, a size reset, and a way back to the login prompt. -->
   <div class="rm-driverbar" ng-if="minimalMode()" ng-style="{'background-color': 'rgba(15, 17, 22, ' + (lbUi.opacity * 0.8) + ')'}">
+    <!-- Own lap clock. A held time (just-completed lap) takes the slot for a
+         few seconds and is styled differently so it never reads as a stalled
+         clock; the live clock underneath never stops. -->
+    <span class="rm-laptime" ng-if="showLapTime()">
+      <span class="rm-laptime-hold" ng-if="lapHolding()">
+        LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}
+      </span>
+      <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive">
+        LAP {{ formatLapLive(lapElapsed()) }}
+      </span>
+    </span>
     <span class="rm-driverbar-label" ng-if="jokerEnabled">
       JOKER <b ng-class="{'rm-joker-done': jokerTaken}">{{ jokerTaken ? 'DONE (lap ' + jokerLap + ')' : 'PENDING' }}</b>
     </span>
@@ -804,6 +827,32 @@
   .rm-btn-mini  { padding: 2px 7px; font-size: 10px; }
 
   .rm-wp-progress { font-size: 10px; color: #7ee2a8; font-variant-numeric: tabular-nums; }
+
+  /* ============ Own lap clock ============================================ */
+  /* Two visually distinct states in one slot. The live clock is quiet and
+     monospaced; a just-completed lap is boxed and amber so a held value can
+     never be mistaken for a clock that has stopped ticking. */
+  .rm-laptime { font-variant-numeric: tabular-nums; letter-spacing: 0.5px; }
+  .rm-laptime-live {
+    font-size: 11px;
+    color: #bdc1c6;
+  }
+  .rm-laptime-hold {
+    display: inline-block;
+    padding: 0 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #fdd663;
+    background: rgba(251, 188, 5, 0.16);
+    border: 1px solid rgba(251, 188, 5, 0.55);
+    animation: rm-lap-pop 0.25s ease-out;
+  }
+  .rm-laptime-hold b { font-weight: 700; }
+  @keyframes rm-lap-pop {
+    0%   { transform: scale(1.12); opacity: 0.6; }
+    100% { transform: scale(1);    opacity: 1; }
+  }
   .rm-btn-tab { margin-left: auto; }
   .rm-btn-tab-active { background: rgba(255, 102, 0, 0.3); border-color: #ff6600; color: #ffb380; }
   .rm-admin-tag {

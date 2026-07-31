@@ -265,6 +265,13 @@ local RM_PROTOCOL = 2
 
 local function broadcastState(targetPid)
   local garageView = garageSnapshot and garageSnapshot() or {}
+  -- Per-player admin status. Only meaningful on a TARGETED send -- the global
+  -- broadcast is one payload for everybody, so this key is left off there and
+  -- clients ignore it when absent. This is what makes RM_RequestState (which
+  -- the UI app sends every time it mounts) an authoritative answer to "am I
+  -- still logged in", instead of the client having to remember on its own.
+  local selfAdmin = nil
+  if targetPid then selfAdmin = isAuthenticated(targetPid) end
   local payload = Util.JsonEncode({
     rmProtocol   = RM_PROTOCOL,
     phase        = race.phase,
@@ -294,6 +301,8 @@ local function broadcastState(targetPid)
     -- non-admin clients auto-spectate (skip the login prompt) when someone is
     -- already running the session, while still exposing a way back to login.
     adminPresent = next(authenticatedPlayers) ~= nil,
+    -- "Are YOU an admin" (targeted sends only; nil drops out of the JSON).
+    youAreAdmin  = selfAdmin,
     drivers      = buildDrivers(),
   })
   MP.TriggerClientEvent(targetPid or -1, 'RM_Update', payload)
