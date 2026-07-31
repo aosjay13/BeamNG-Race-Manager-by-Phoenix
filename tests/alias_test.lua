@@ -17,8 +17,9 @@
 -- Run from the repo root: lua5.3 tests/alias_test.lua
 
 local connected = { [1] = 'Guest_1111', [2] = 'Guest_2222', [3] = 'Guest_3333' }
-local lastState = nil     -- last RM_Update payload
-local chatTo    = {}      -- [pid] = last direct chat message
+local lastState    = nil  -- last RM_Update payload
+local chatTo       = {}   -- [pid] = last direct chat message
+local aliasResults = {}   -- [pid] = last RM_AliasResult payload
 local timers    = {}
 local hostedMap = '/levels/gridmap_v2/info.json'
 
@@ -31,7 +32,8 @@ MP = {
     return t
   end,
   TriggerClientEvent = function (target, event, payload)
-    if event == 'RM_Update' then lastState = payload end
+    if event == 'RM_Update'      then lastState = payload end
+    if event == 'RM_AliasResult' then aliasResults[target] = payload end
   end,
   RemoveVehicle = function () end,
   RegisterEvent = function () end,
@@ -62,7 +64,17 @@ local function driver(id)
   end
 end
 local function setAlias(admin, target, alias)
+  aliasResults[admin] = nil
   RM_onSetAlias(admin, string.format('{"target":%d,"alias":"%s"}', target, alias))
+end
+-- Every exit path must answer the admin. A press of Set that reports nothing at
+-- all is indistinguishable from a plugin that never received the event, which
+-- is the dead end this contract exists to prevent.
+local function answered(admin, wantOk)
+  local r = aliasResults[admin]
+  if not r then return false end
+  if wantOk ~= nil and r.success ~= wantOk then return false end
+  return type(r.message) == 'string' and r.message ~= ''
 end
 
 onInit()
@@ -80,9 +92,20 @@ check(driver(2).name == 'Guest_2222', 'the real guest name is broadcast')
 -- ---------------------------------------------------------------------------
 setAlias(3, 2, 'Hijack')       -- player 3 never logged in
 check(driver(2).alias == nil, 'a non-admin cannot set an alias')
+check(answered(3, false), 'an unauthenticated attempt is answered, not ignored silently')
 
 setAlias(1, 2, 'Bob Racer')
 check(driver(2).alias == 'Bob Racer', 'an admin can set an alias')
+check(answered(1, true), 'a successful set is confirmed back to the admin')
+
+-- A malformed request must not vanish either.
+aliasResults[1] = nil
+RM_onSetAlias(1, '{"nonsense":true}')
+check(answered(1, false), 'a malformed request is answered')
+
+aliasResults[1] = nil
+RM_onSetAlias(1, '{"target":99,"alias":"Ghost"}')
+check(answered(1, false), 'targeting a driver who is not on the server is answered')
 
 -- ---------------------------------------------------------------------------
 -- 3. Race logic is untouched: the driver is still keyed by session id, and a
@@ -98,12 +121,32 @@ check(driver(2).name == 'Guest_2222', 'the real name is still carried alongside'
 RM_onEndRace(1)
 
 -- ---------------------------------------------------------------------------
+-- 3b. Player id ZERO is a real driver.
+--
+-- BeamMP hands out zero-based player ids, so the first player on the server is
+-- id 0. Any `id > 0` style guard silently throws that driver away -- which is
+-- precisely how the client bridge broke this feature for whoever joined first:
+-- the row rendered, the click fired, and the command was dropped before it was
+-- ever sent. Pin it on the server side too, so nothing here grows the same
+-- assumption.
+-- ---------------------------------------------------------------------------
+connected[0] = 'Guest_0000'
+RM_onPlayerJoin(0)
+check(driver(0) ~= nil, 'player id 0 is a real driver in the broadcast')
+setAlias(1, 0, 'Zero Hero')
+check(driver(0).alias == 'Zero Hero', 'player id 0 can be given a display name')
+check(answered(1, true), 'setting a name on player id 0 is confirmed')
+setAlias(1, 0, '')
+check(driver(0).alias == nil, 'player id 0 can have its display name cleared')
+
+-- ---------------------------------------------------------------------------
 -- 4. Collisions and impersonation
 -- ---------------------------------------------------------------------------
 setAlias(1, 2, 'Taken Name')
 setAlias(1, 3, 'Taken Name')
 check(driver(3).alias == nil, 'an alias already in use is refused')
-check(chatTo[1] and chatTo[1]:find('already in use'), 'the admin is told why it was refused')
+check(answered(1, false) and aliasResults[1].message:find('already in use'),
+  'the admin is told why it was refused')
 
 setAlias(1, 3, 'taken name')
 check(driver(3).alias == nil, 'the collision check is case-insensitive')

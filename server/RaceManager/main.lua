@@ -332,6 +332,17 @@ local garageSnapshot
 -- element flicker between two states on each tick).
 local RM_PROTOCOL = 2
 
+-- Build stamp, reported to the UI so the three halves of this mod can be
+-- compared at a glance. They are deployed separately -- the server plugin is
+-- copied to Resources/Server, the client zip is pushed by BeamMP, and BeamNG
+-- caches UI files -- so any one of them can be older than the others. That is
+-- invisible today and fails in the worst possible way: Angular silently ignores
+-- a call to a scope function a stale app.js does not have, so a button does
+-- nothing at all, with no error in any console. Bump this in ALL THREE files
+-- (main.lua, raceManager.lua, app.js) whenever the client/server contract
+-- changes.
+local RM_BUILD = '3.3.0-aliases'
+
 local function broadcastState(targetPid)
   local garageView = garageSnapshot and garageSnapshot() or {}
   -- Per-player admin status. Only meaningful on a TARGETED send -- the global
@@ -343,6 +354,7 @@ local function broadcastState(targetPid)
   if targetPid then selfAdmin = isAuthenticated(targetPid) end
   local payload = Util.JsonEncode({
     rmProtocol   = RM_PROTOCOL,
+    serverBuild  = RM_BUILD,
     phase        = race.phase,
     raceTime     = race.time,
     totalLaps    = race.totalLaps,
@@ -1008,7 +1020,6 @@ function RM_onStartPositionCount(pid, rawData)
   broadcastState()
 end
 
--- Host sets the race distance. Locked once the countdown/race is under way.
 -- Admin sets or clears a driver's display alias. Admin-only on purpose: with
 -- guest-only identities there is nothing to enforce a ban against, so a
 -- self-service name could be re-set the moment it was cleared.
@@ -1016,13 +1027,39 @@ end
 -- The target is addressed by BeamMP player id -- the same key race logic uses --
 -- and only rec.alias is written. No timing, checkpoint or scoring field is
 -- touched, and the alias is never read back as a key.
+--
+-- EVERY exit path reports back. An admin pressing Set and getting nothing at
+-- all -- no name, no reason -- cannot tell a rejected name from a plugin that
+-- never received the event, which is exactly the dead end this handler used to
+-- leave them in.
+local function aliasResult(pid, ok, msg)
+  MP.TriggerClientEvent(pid, 'RM_AliasResult', Util.JsonEncode({
+    success = ok and true or false,
+    message = msg,
+  }))
+  print('[RaceManager] Alias: ' .. msg)
+end
+
 function RM_onSetAlias(pid, rawData)
-  if not requireAuth(pid) then return end
+  -- Not "return quietly": a client can believe it is an admin while the server
+  -- disagrees (a restart empties authenticatedPlayers while the client bridge
+  -- still holds its own flag), and silence there looks exactly like a broken
+  -- button. Say so, and the client drops its stale admin state.
+  if not isAuthenticated(pid) then
+    print('[RaceManager] Ignored alias command from unauthenticated player ' .. tostring(pid))
+    MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({ success = false }))
+    aliasResult(pid, false, 'Not logged in as an admin on this server — log in again.')
+    return
+  end
+
   local target = decodeNumber(rawData, 'target')
-  if not target then return end
+  if not target then
+    aliasResult(pid, false, 'Malformed request (no target driver).')
+    return
+  end
   local rec = players[math.floor(target)]
   if not rec then
-    MP.SendChatMessage(pid, '[RaceManager] No such driver on this server.')
+    aliasResult(pid, false, 'That driver is no longer on the server.')
     return
   end
 
@@ -1030,31 +1067,32 @@ function RM_onSetAlias(pid, rawData)
   local raw = decodeString(rawData, 'alias') or ''
   if raw:gsub('%s', '') == '' then
     if rec.alias then
-      print(string.format('[RaceManager] Alias cleared for %s (was "%s") by %s',
-        rec.name, rec.alias, MP.GetPlayerName(pid) or pid))
+      local was = rec.alias
       rec.alias = nil
       broadcastState()
+      aliasResult(pid, true, 'Display name cleared for ' .. rec.name .. ' (was "' .. was .. '").')
+    else
+      aliasResult(pid, true, rec.name .. ' has no display name to clear.')
     end
     return
   end
 
   local clean, why = sanitizeAlias(raw)
   if not clean then
-    MP.SendChatMessage(pid, '[RaceManager] Name rejected: ' .. why .. '.')
+    aliasResult(pid, false, 'Name rejected: ' .. why .. '.')
     return
   end
-  local taken = aliasInUse(clean, rec.id)
-  if taken then
-    MP.SendChatMessage(pid, '[RaceManager] Name rejected: "' .. clean
-      .. '" is already in use by another driver.')
+  if aliasInUse(clean, rec.id) then
+    aliasResult(pid, false, 'Name rejected: "' .. clean .. '" is already in use.')
     return
   end
 
   rec.alias = clean
-  print(string.format('[RaceManager] Alias "%s" set for %s by %s',
-    clean, rec.name, MP.GetPlayerName(pid) or pid))
   broadcastState()
+  aliasResult(pid, true, 'Display name "' .. clean .. '" set for ' .. rec.name .. '.')
 end
+
+-- Host sets the race distance. Locked once the countdown/race is under way.
 
 function RM_onSetTotalLaps(pid, rawData)
   if not requireAuth(pid) then return end
@@ -2829,5 +2867,6 @@ function onInit()
   getLayouts()       -- warm the layout cache so saved tracks survive the restart visibly
   getGarage()        -- and the approved vehicle list (Module 4)
   getDerbyLayouts()  -- and the saved derby arenas
-  print('[RaceManager] Server plugin loaded (circuit edition, map: ' .. getCurrentMap() .. ')')
+  print('[RaceManager] Server plugin loaded (build ' .. RM_BUILD
+    .. ', circuit edition, map: ' .. getCurrentMap() .. ')')
 end

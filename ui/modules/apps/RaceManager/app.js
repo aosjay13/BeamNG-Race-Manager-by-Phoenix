@@ -325,6 +325,25 @@ angular.module('beamng.apps')
       // Admin-only alias editor inputs, keyed by driver id. Bound through an
       // object for the same ng-if child-scope reason every other input is.
       $scope.aliasUi = { input: {} };
+
+      // ------------------------------------------------------------------
+      // Build stamps
+      // ------------------------------------------------------------------
+      // This mod ships as three separately-deployed pieces and BeamNG caches UI
+      // files, so any one of them can be older than the others. That failure is
+      // silent in the worst way: Angular ignores a call to a scope function a
+      // stale app.js does not have, so a button does nothing and no console
+      // anywhere says a word. Showing all three makes it a glance instead of a
+      // hunt. Bump this with main.lua and raceManager.lua.
+      var APP_BUILD = '3.3.0-aliases';
+      $scope.appBuild    = APP_BUILD;
+      $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
+      $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
+      $scope.buildsMatch = function () {
+        if (!$scope.clientBuild || !$scope.serverBuild) { return true; }  // unknown yet
+        return $scope.appBuild === $scope.clientBuild
+          && $scope.appBuild === $scope.serverBuild;
+      };
       $scope.applyAlias = function (row) {
         if (!row) { return; }
         var v = $scope.aliasUi.input[row.id];
@@ -555,6 +574,7 @@ angular.module('beamng.apps')
           // Track whether an admin is running the session. When one appears and
           // we're just a spectator who hasn't pinned the login open, auto-hide
           // the prompt so the app is fully visible (a header Login button stays).
+          if (typeof data.serverBuild === 'string') { $scope.serverBuild = data.serverBuild; }
           $scope.adminPresent = !!data.adminPresent;
           if ($scope.adminPresent && !$scope.isAdmin && !$scope.loginPinned) {
             $scope.showLogin = false;
@@ -583,6 +603,7 @@ angular.module('beamng.apps')
           $scope.routeWaypoints = data.waypoints || [];
           $scope.nextWp = data.nextWp || 1;
           $scope.visualize = data.visualize !== false;
+          if (typeof data.clientBuild === 'string') { $scope.clientBuild = data.clientBuild; }
           // Admin session restored from the client bridge. This directive is
           // destroyed and rebuilt every time BeamNG tears down the HUD layer —
           // opening the pause menu does exactly that — so isAdmin cannot live

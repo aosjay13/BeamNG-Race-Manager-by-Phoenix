@@ -570,6 +570,23 @@
       </span>
     </div>
 
+    <!-- ===== Build stamps =====
+         The three pieces deploy separately and BeamNG caches UI files, so one
+         can be older than the others. A stale app.js makes buttons do nothing
+         at all, silently — this row is how you see that in one glance. -->
+    <div class="rm-adminbar">
+      <span class="rm-adminbar-label">Build</span>
+      <span class="rm-build" ng-class="{'rm-build-bad': !buildsMatch()}">
+        app {{ appBuild }}
+        · client {{ clientBuild || '—' }}
+        · server {{ serverBuild || '—' }}
+      </span>
+      <span class="rm-setting-warn" ng-if="!buildsMatch()">
+        ⚠ Mismatch — a stale piece will make controls do nothing. Update all
+        three and clear the BeamNG cache.
+      </span>
+    </div>
+
     <!-- ===== Display names ===== -->
     <!-- Readable names over the top of BeamMP's random guest numbers. Display
          only: every table still keys on the driver's session id, and the timing
@@ -982,6 +999,10 @@
   }
   /* Admin housekeeping tab: stacked bars rather than one wrapping row. */
   .rm-adminbar-panel { display: flex; flex-direction: column; }
+
+  /* Build stamps */
+  .rm-build { font-size: 10px; color: #9aa0a6; font-variant-numeric: tabular-nums; }
+  .rm-build-bad { color: #fdd663; font-weight: 700; }
 
   /* Display names (aliases) */
   .rm-alias { padding: 7px 10px; border-top: 1px dashed rgba(255, 255, 255, 0.12); }

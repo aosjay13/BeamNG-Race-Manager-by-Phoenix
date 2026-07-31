@@ -40,6 +40,10 @@ local LAP_DEBOUNCE   = 2.0      -- seconds; double-fire guard on the S/F gate.
                                 -- Kept low so even very short circuits report:
                                 -- this only needs to swallow same-crossing
                                 -- re-fires, not bound real lap times.
+-- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
+-- the note in main.lua for why a mismatch is otherwise invisible.
+local RM_BUILD = '3.3.0-aliases'
+
 local PROGRESS_EVERY = 0.3      -- seconds between live-position reports
 -- Live lap clock for the driver's own HUD. The lap start is already known here
 -- (lapStart), it simply was never sent anywhere -- the leaderboard only ever
@@ -278,6 +282,7 @@ end
 local function pushRouteState()
   reportStartCount()
   guihooks.trigger('RaceManagerRoute', {
+    clientBuild  = RM_BUILD,
     waypoints    = route,
     nextWp       = armedWp,
     width        = checkpointWidth,
@@ -2365,6 +2370,17 @@ local function onVehicleRejected(rawData)
 end
 
 -- Server confirmed (or refused) a Whitelist Current Vehicle capture.
+-- Server ruled on an alias change. Surfaced as a notice so the admin always
+-- gets an answer -- the name applied, or why it did not.
+local function onAliasResult(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local msg = tostring(data.message or '')
+  if msg == '' then return end
+  pushNotice(data.success == true and 'alias' or 'vehicle', msg)
+  log('I', 'raceManager', 'Alias result: ' .. msg)
+end
+
 local function onGarageResult(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
@@ -2536,14 +2552,34 @@ end
 -- straight through to the server, which validates it and owns the result; this
 -- client keeps no alias state of its own and never uses one as a key.
 function M.setAlias(targetId, alias)
-  targetId = math.floor(tonumber(targetId) or 0)
-  if targetId <= 0 then return end
-  if inMultiplayer() then
-    TriggerServerEvent('RM_SetAlias', jsonEncode({
-      target = targetId,
-      alias  = tostring(alias or ''),
-    }))
+  -- BeamMP player ids are ZERO-BASED: the first player on the server is id 0.
+  -- Rejecting `<= 0` therefore throws away a perfectly real driver, which is
+  -- exactly what made Set do nothing at all for the first player to join --
+  -- the row rendered, the click fired, and the command died here. Only a
+  -- missing/non-numeric id or a negative one is invalid.
+  targetId = tonumber(targetId)
+  if not targetId then
+    log('W', 'raceManager', 'setAlias: no target driver id')
+    return
   end
+  targetId = math.floor(targetId)
+  if targetId < 0 then
+    log('W', 'raceManager', 'setAlias: invalid target driver id ' .. tostring(targetId))
+    return
+  end
+  if not inMultiplayer() then
+    editorMsg('Display names need a BeamMP server')
+    return
+  end
+  -- Logged on the way out so the game console (~) shows the attempt. If this
+  -- line appears and no result notice follows, the request left this client and
+  -- the server plugin did not answer -- which points at the server side, not
+  -- the app.
+  log('I', 'raceManager', string.format('setAlias -> driver %d = "%s"', targetId, tostring(alias or '')))
+  TriggerServerEvent('RM_SetAlias', jsonEncode({
+    target = targetId,
+    alias  = tostring(alias or ''),
+  }))
 end
 
 function M.setTotalLaps(n)
@@ -2724,6 +2760,7 @@ local DISPATCH = {
   -- Module 4: garage list enforcement feedback
   RM_VehicleRejected = onVehicleRejected,
   RM_GarageResult    = onGarageResult,
+  RM_AliasResult     = onAliasResult,
   -- Starting grid: the server hands out slots, this client places the car.
   RM_GridAssign      = onGridAssign,
   -- Demo Derby module
@@ -2749,7 +2786,8 @@ end
 
 function M.onExtensionLoaded()
   bindServerHandlers()
-  log('I', 'raceManager', 'Race Manager client bridge loaded (multiplayer=' .. tostring(inMultiplayer()) .. ')')
+  log('I', 'raceManager', 'Race Manager client bridge loaded (build ' .. RM_BUILD
+    .. ', multiplayer=' .. tostring(inMultiplayer()) .. ')')
 end
 
 -- Everything this client enforces locally, switched off. Called both when the
