@@ -42,7 +42,7 @@ local LAP_DEBOUNCE   = 2.0      -- seconds; double-fire guard on the S/F gate.
                                 -- re-fires, not bound real lap times.
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '3.4.1-derby-hold'
+local RM_BUILD = '3.4.2-hold-inputs'
 
 local PROGRESS_EVERY = 0.3      -- seconds between live-position reports
 -- Live lap clock for the driver's own HUD. The lap start is already known here
@@ -998,6 +998,42 @@ local function setResetInputsBlocked(blocked)
   end
 end
 
+-- Driving inputs, switched off while a car is held on the grid.
+--
+-- This is a SECOND mechanism, not a replacement for controller.setFreeze. The
+-- freeze is the right primitive and is what actually pins the car, but placing
+-- a car on its slot is a teleport, and BeamNG treats a teleport as a vehicle
+-- reset which reloads the vehicle's Lua VM -- so a freeze can be wiped by the
+-- very teleport that preceded it. The freeze is re-asserted on a timer for that
+-- reason, and this closes the gap in between: even in the window where the
+-- freeze has been undone, throttle and gearshift do nothing, so a held driver
+-- cannot pull away from the line.
+--
+-- The action filter is already how this mod switches the reset keys off, so
+-- this is the same mechanism pointed at a different group.
+local HOLD_ACTIONS = {
+  'accelerate', 'brake', 'clutch', 'shiftUp', 'shiftDown',
+  'nitrousOxideActive', 'toggleRangeBox', 'parkingbrake',
+}
+local holdInputsBlocked = false
+
+local function setHoldInputsBlocked(blocked)
+  blocked = blocked and true or false
+  if blocked == holdInputsBlocked then return end
+  if not (core_input_actionFilter and core_input_actionFilter.setGroup
+      and core_input_actionFilter.addAction) then
+    return
+  end
+  local ok = pcall(function ()
+    core_input_actionFilter.setGroup('raceManagerHold', HOLD_ACTIONS)
+    core_input_actionFilter.addAction(0, 'raceManagerHold', blocked)
+  end)
+  if ok then
+    holdInputsBlocked = blocked
+    log('I', 'raceManager', 'Start-hold driving inputs ' .. (blocked and 'BLOCKED' or 'released'))
+  end
+end
+
 -- Recomputed every frame (cheap: only acts on a change): the reset keys go
 -- dead the moment the allowance is spent and come back the moment the session
 -- lets go of the rule.
@@ -1321,6 +1357,9 @@ local holdRecheck = 0
 local holdAsserts = 0     -- re-applications since this hold began (for the log)
 
 local function holdUpdate(dt)
+  -- Driving inputs follow the hold exactly, both ways. Cheap: setHoldInputsBlocked
+  -- returns immediately unless the state actually changed.
+  setHoldInputsBlocked(gridFrozen)
   if not gridFrozen then
     holdRecheck = 0
     holdAsserts = 0
@@ -2937,6 +2976,7 @@ local function resetToIdle(reason)
   releaseGridHold()
   applyGhostMode(false)
   setResetInputsBlocked(false)   -- never leave the reset keys dead after unload
+  setHoldInputsBlocked(false)    -- nor the throttle, if we unloaded mid-hold
   maxResets       = -1
   resetsUsed      = 0
   resetMode       = 'inplace'

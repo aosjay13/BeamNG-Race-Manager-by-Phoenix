@@ -367,7 +367,7 @@ local RM_PROTOCOL = 2
 -- contract. That narrower rule is what let two client-side fixes ship under one
 -- stamp: the build line read as matching while a client was a fix behind, which
 -- is precisely the situation this was added to make visible.
-local RM_BUILD = '3.4.1-derby-hold'
+local RM_BUILD = '3.4.2-hold-inputs'
 
 local function broadcastState(targetPid)
   local garageView = garageSnapshot and garageSnapshot() or {}
