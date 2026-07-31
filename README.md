@@ -453,7 +453,7 @@ running a derby never touches qualifying/race state). Open it with the
 
 ## Game version compatibility
 
-Tracked against **BeamNG.drive v0.39.1** and **BeamMP v4.22.0**. The mod talks
+Tracked against **BeamNG.drive v0.39.2** and **BeamMP v4.22.0**. The mod talks
 to a lot of game surfaces — vehicles, cameras, the input action filter, the
 debug drawer, the UI app host, BeamMP's event bridge — so every release gets a
 pass over the changelogs.
@@ -472,6 +472,23 @@ pass over the changelogs.
 toggle — not in v4.22.0 and not in v4.21.1 either, so this is not a regression.
 The mod probes for one and, finding none, fades rival cars so you can *see* who
 is ghosted, but they remain solid. The console says so when the rule arms.
+
+### BeamNG.drive v0.39.2 (hotfix)
+
+Reviewed, **nothing to change in the code**. The hotfix covers a Mod Manager
+update fix, an explicit D3D12 launcher option with better GPU detection, the
+VRAM detection threshold dropping 6 GB → 5.5 GB, a Wl40 front-axle fix, and
+premature Steam achievement unlocks. None of it touches a surface this mod
+binds to: no UI/HUD app hosting, no GE Lua or `guihooks` change, nothing on the
+input action filter, `onVehicleResetted`/`objectTeleported`, the debug drawer,
+or the cameras.
+
+Two things for admins rather than the code, though:
+
+| v0.39.2 change | Why it matters here | What to do |
+|---|---|---|
+| *"Fixed update process for users with mods installed"* — the automatic mod-disabling system on major updates **failed to trigger** for some users, and now does | Anyone in that group can come back from the update with the client mod switched off. It is the same end state as the "app doesn't show up" case below, reached by a different route | Check Race Manager is still listed under **HUD Apps** and enabled in the Mods menu. Whether BeamMP-pushed client mods are caught by this as well is not stated in the changelog — worth a look on the first session after updating |
+| Wl40 front-axle fix on the showloader configuration | A jbeam change to a shipped vehicle. The Garage List matches an exact configuration **signature** built from part names, so a part that moved or was renamed invalidates a stored entry and the driver is rejected in a car that is plainly approved | **Re-capture any whitelisted Wl40.** Entries record the game build they were captured on, so a rejection caused by this says so rather than reading as an ordinary "setup not allowed" |
 
 ### BeamNG.drive v0.39.1 (hotfix)
 
