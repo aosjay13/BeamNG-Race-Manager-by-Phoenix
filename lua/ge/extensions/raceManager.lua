@@ -2532,6 +2532,20 @@ function M.generateGrid()
   if inMultiplayer() then TriggerServerEvent('RM_GenerateGrid', '') end
 end
 
+-- Admin sets or clears a driver's display alias (presentation only). Passed
+-- straight through to the server, which validates it and owns the result; this
+-- client keeps no alias state of its own and never uses one as a key.
+function M.setAlias(targetId, alias)
+  targetId = math.floor(tonumber(targetId) or 0)
+  if targetId <= 0 then return end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetAlias', jsonEncode({
+      target = targetId,
+      alias  = tostring(alias or ''),
+    }))
+  end
+end
+
 function M.setTotalLaps(n)
   n = math.floor(tonumber(n) or 0)
   if n < 1 then return end

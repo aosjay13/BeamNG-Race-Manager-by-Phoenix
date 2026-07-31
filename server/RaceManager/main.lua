@@ -95,6 +95,9 @@ local function newRecord(pid)
   return {
     id         = pid,
     name       = MP.GetPlayerName(pid) or ('Player ' .. pid),
+    -- Admin-assigned readable name. Display only, cleared when the connection
+    -- is inherited by someone else. nil = show the real name.
+    alias      = nil,
     -- waiting | qualifying | gridded | racing | finished | dsq | dnf
     status     = 'waiting',
     joined     = false,      -- opted into the race (see race.entryMode)
@@ -124,6 +127,72 @@ end
 local function clearProgress(rec)
   rec.cpCleared = 0
   rec.distNext  = nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Display aliases (presentation only -- NEVER a key)
+-- ---------------------------------------------------------------------------
+-- Everyone on this server is a BeamMP guest, so there is no stable per-player
+-- identity to bind a readable name to: the session id is recycled between
+-- players (see RM_onPlayerDisconnect) and the guest name is regenerated on every
+-- join. An alias is therefore scoped to the connection and lives ON THE PLAYER
+-- RECORD, not in a side table keyed by session id -- a side table would hand a
+-- departed player's alias to whoever inherits that id next.
+--
+-- Nothing here is ever used as a lookup key. Race logic keys on the BeamMP
+-- player id throughout (players[pid], rec.id, the client's own-row match); the
+-- alias is read only by displayName below, which feeds the results file, the
+-- chat announcements and the leaderboard payload.
+local MIN_ALIAS_LEN = 3
+local MAX_ALIAS_LEN = 20    -- results file pads the Driver column to 22
+-- Names nobody may take, so a player cannot pose as staff or as an unnamed
+-- player. Compared case-insensitively.
+local RESERVED_ALIASES = {
+  ['admin'] = true, ['server'] = true, ['host'] = true, ['console'] = true,
+  ['system'] = true, ['racemanager'] = true, ['race manager'] = true,
+}
+
+-- The single resolution point on this side: alias if set, real name otherwise.
+-- rec.name always exists (newRecord falls back to 'Player <id>'), so this can
+-- never return nil or an empty string.
+local function displayName(rec)
+  if not rec then return '?' end
+  return rec.alias or rec.name
+end
+
+-- Cleaned alias, or nil plus a reason to show the admin.
+--
+-- ASCII only, and that is deliberate rather than lazy: the results file formats
+-- fixed-width columns with %-22s, and Lua pads by BYTES, not codepoints, so a
+-- single multi-byte character silently breaks the alignment of every row after
+-- it. The character class also excludes control characters and anything that
+-- could read as markup.
+local function sanitizeAlias(raw)
+  if type(raw) ~= 'string' then return nil, 'not a string' end
+  local s = raw:gsub('%s+', ' '):gsub('^%s', ''):gsub('%s$', '')
+  if s == '' then return nil, 'empty' end
+  if s:find('[^%w %-%_%.]') then
+    return nil, 'letters, digits, spaces and - _ . only'
+  end
+  if #s < MIN_ALIAS_LEN then return nil, 'at least ' .. MIN_ALIAS_LEN .. ' characters' end
+  if #s > MAX_ALIAS_LEN then return nil, 'at most ' .. MAX_ALIAS_LEN .. ' characters' end
+  local lower = s:lower()
+  if RESERVED_ALIASES[lower] then return nil, '"' .. s .. '" is reserved' end
+  if lower:find('^guest') then return nil, 'cannot start with "guest"' end
+  return s
+end
+
+-- Rejects a name already held by somebody else, as an alias OR as their real
+-- guest name, so an alias can never shadow another driver on the timing screen.
+local function aliasInUse(candidate, exceptPid)
+  local lower = candidate:lower()
+  for pid, rec in pairs(players) do
+    if pid ~= exceptPid then
+      if rec.alias and rec.alias:lower() == lower then return true, rec end
+      if rec.name  and rec.name:lower()  == lower then return true, rec end
+    end
+  end
+  return false
 end
 
 local function ensurePlayer(pid)
@@ -455,6 +524,16 @@ end
 -- Qualifying classification: the locked grid if one exists, otherwise best
 -- quali lap. This is deliberately independent of the race outcome so the
 -- pole sitter and the race winner stay distinct in the output.
+-- Results are a SNAPSHOT, not a live view: the file records the name the driver
+-- raced under. There is no player id in the exported format to resolve against
+-- later, so a rename can never rewrite history -- but it also means the real
+-- guest name has to be carried alongside an alias, or the file loses the only
+-- thread back to the session that set the lap times.
+local function aliasNote(rec)
+  if not rec.alias then return '' end
+  return '  [' .. rec.name .. ']'
+end
+
 local function qualiClassification()
   local list = {}
   for _, rec in pairs(players) do list[#list + 1] = rec end
@@ -506,8 +585,8 @@ local function buildResultsText()
   add(string.format('%-5s %-22s %-10s %s', 'Pos', 'Driver', 'Best Lap', 'Laps'))
   for i, rec in ipairs(quali) do
     local tag = (i == 1 and rec.qualiBest) and '  << POLE POSITION' or ''
-    add(string.format('P%-4d %-22s %-10s %-5d%s',
-      i, rec.name, fmtLap(rec.qualiBest), rec.qualiLaps or 0, tag))
+    add(string.format('P%-4d %-22s %-10s %-5d%s%s',
+      i, displayName(rec), fmtLap(rec.qualiBest), rec.qualiLaps or 0, aliasNote(rec), tag))
   end
   if #quali == 0 then add('(no drivers)') end
   add('')
@@ -539,9 +618,9 @@ local function buildResultsText()
     local resetVal = race.maxResets >= 0
       and string.format(' %-6s', string.format('%d/%d%s', rec.resets or 0, race.maxResets,
         (rec.resetsBlocked or 0) > 0 and ('+' .. rec.resetsBlocked) or '')) or ''
-    add(string.format('%-5s %-22s %-10s %-9d %-10s%s%s%s',
-      pos, rec.name, fmtLap(rec.raceBest), rec.lapsLed or 0, finish,
-      jokerVal, resetVal, tag))
+    add(string.format('%-5s %-22s %-10s %-9d %-10s%s%s%s%s',
+      pos, displayName(rec), fmtLap(rec.raceBest), rec.lapsLed or 0, finish,
+      jokerVal, resetVal, aliasNote(rec), tag))
   end
   if #final == 0 then add('(no drivers)') end
   add('')
@@ -677,7 +756,7 @@ function RM_onJoinRace(pid, rawData)
   end
   broadcastState()
   MP.SendChatMessage(-1, string.format('[RaceManager] %s %s the race (%d entrant%s).',
-    rec.name, join and 'JOINED' or 'left', entrantCount(),
+    displayName(rec), join and 'JOINED' or 'left', entrantCount(),
     entrantCount() == 1 and '' or 's'))
   print('[RaceManager] ' .. rec.name .. (join and ' joined' or ' left') .. ' the race')
 end
@@ -930,6 +1009,53 @@ function RM_onStartPositionCount(pid, rawData)
 end
 
 -- Host sets the race distance. Locked once the countdown/race is under way.
+-- Admin sets or clears a driver's display alias. Admin-only on purpose: with
+-- guest-only identities there is nothing to enforce a ban against, so a
+-- self-service name could be re-set the moment it was cleared.
+--
+-- The target is addressed by BeamMP player id -- the same key race logic uses --
+-- and only rec.alias is written. No timing, checkpoint or scoring field is
+-- touched, and the alias is never read back as a key.
+function RM_onSetAlias(pid, rawData)
+  if not requireAuth(pid) then return end
+  local target = decodeNumber(rawData, 'target')
+  if not target then return end
+  local rec = players[math.floor(target)]
+  if not rec then
+    MP.SendChatMessage(pid, '[RaceManager] No such driver on this server.')
+    return
+  end
+
+  -- A blank alias clears it and falls back to the real guest name.
+  local raw = decodeString(rawData, 'alias') or ''
+  if raw:gsub('%s', '') == '' then
+    if rec.alias then
+      print(string.format('[RaceManager] Alias cleared for %s (was "%s") by %s',
+        rec.name, rec.alias, MP.GetPlayerName(pid) or pid))
+      rec.alias = nil
+      broadcastState()
+    end
+    return
+  end
+
+  local clean, why = sanitizeAlias(raw)
+  if not clean then
+    MP.SendChatMessage(pid, '[RaceManager] Name rejected: ' .. why .. '.')
+    return
+  end
+  local taken = aliasInUse(clean, rec.id)
+  if taken then
+    MP.SendChatMessage(pid, '[RaceManager] Name rejected: "' .. clean
+      .. '" is already in use by another driver.')
+    return
+  end
+
+  rec.alias = clean
+  print(string.format('[RaceManager] Alias "%s" set for %s by %s',
+    clean, rec.name, MP.GetPlayerName(pid) or pid))
+  broadcastState()
+end
+
 function RM_onSetTotalLaps(pid, rawData)
   if not requireAuth(pid) then return end
   if race.phase == 'countdown' or race.phase == 'racing' then return end
@@ -1161,7 +1287,7 @@ function RM_onQualiLap(pid, rawData)
     rec.status = 'finished'
     MP.SendChatMessage(-1, string.format(
       '[RaceManager] %s has used all %d qualifying lap%s.',
-      rec.name, race.qualiLapLimit, race.qualiLapLimit == 1 and '' or 's'))
+      displayName(rec), race.qualiLapLimit, race.qualiLapLimit == 1 and '' or 's'))
     broadcastState()
     checkQualiLapLimit()
     return
@@ -2052,7 +2178,8 @@ local function buildDerbyResultsText()
     local resetVal = derby.maxResets >= 0
       and string.format(' %-6s', (rec.resets or 0) .. '/' .. derby.maxResets) or ''
     local tag = rec.status == 'winner' and '  << LAST MAN STANDING' or ''
-    add(string.format('P%-4d %-22s %-14s %-13s%s%s', i, rec.name, result, elimAt, resetVal, tag))
+    add(string.format('P%-4d %-22s %-14s %-13s%s%s%s',
+      i, displayName(rec), result, elimAt, resetVal, aliasNote(rec), tag))
   end
   if #list == 0 then add('(no drivers)') end
   add('')
@@ -2114,8 +2241,8 @@ local function derbyEliminate(pid, reason)
   end
   if alive == 1 then
     lastAlive.status = 'winner'
-    derby.winner = lastAlive.name
-    finishDerby('last man standing: ' .. lastAlive.name)
+    derby.winner = displayName(lastAlive)
+    finishDerby('last man standing: ' .. displayName(lastAlive))
   elseif alive == 0 then
     finishDerby('no survivors')
   else
@@ -2489,7 +2616,7 @@ function RM_onDerbyEnd(pid)
   end
   if alive == 1 then
     lastAlive.status = 'winner'
-    derby.winner = lastAlive.name
+    derby.winner = displayName(lastAlive)
   end
   finishDerby('ended by ' .. (MP.GetPlayerName(pid) or pid))
 end
@@ -2568,6 +2695,24 @@ function RM_Tick()
 end
 
 function RM_onPlayerJoin(pid)
+  -- Session ids are recycled. If a record already exists under this id but the
+  -- connected player's name has changed, a DIFFERENT person now holds it, so the
+  -- display identity must not carry over -- inheriting the previous player's
+  -- alias would be impersonation by accident. Only the display fields are
+  -- refreshed here; the record itself (and its lap data) is left alone, which is
+  -- the pre-existing behaviour Generate Grid purges.
+  local existing = players[pid]
+  if existing then
+    local current = MP.GetPlayerName(pid)
+    if current and current ~= existing.name then
+      if existing.alias then
+        print(string.format('[RaceManager] Session id %d reused (%s -> %s): alias "%s" dropped',
+          pid, existing.name, current, existing.alias))
+      end
+      existing.name  = current
+      existing.alias = nil
+    end
+  end
   local rec = ensurePlayer(pid)
   -- Connecting is not entering: in the default opt-in mode a new arrival is a
   -- spectator until they press Join Race. In 'all' mode they are in the field
@@ -2614,6 +2759,7 @@ function onInit()
   MP.RegisterEvent('RM_StartQualifying',  'RM_onStartQualifying')
   MP.RegisterEvent('RM_GenerateGrid',     'RM_onGenerateGrid')
   MP.RegisterEvent('RM_SetTotalLaps',     'RM_onSetTotalLaps')
+  MP.RegisterEvent('RM_SetAlias',         'RM_onSetAlias')
   -- Race entry (opt-in) + starting grid
   MP.RegisterEvent('RM_JoinRace',           'RM_onJoinRace')
   MP.RegisterEvent('RM_SetEntryMode',       'RM_onSetEntryMode')

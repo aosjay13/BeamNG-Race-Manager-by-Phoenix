@@ -305,6 +305,38 @@ angular.module('beamng.apps')
         dnf:        'DNF'
       };
 
+      // ------------------------------------------------------------------
+      // Display aliases (presentation only)
+      // ------------------------------------------------------------------
+      // The single resolution point on this side. Every table renders driver
+      // names through this and nothing else; `row.id` stays the key everywhere
+      // (ng-repeat track by, grid pinning, position tracking), so an alias can
+      // never become a lookup. The server sends both fields, so a driver with no
+      // alias falls back to their real guest name and can never render blank.
+      $scope.driverName = function (row) {
+        if (!row) { return ''; }
+        return row.alias || row.name || '';
+      };
+      // Real name, shown to admins beside the alias so a renamed driver can
+      // still be tied back to the guest session that set the lap times.
+      $scope.realName = function (row) {
+        return (row && row.alias) ? row.name : '';
+      };
+      // Admin-only alias editor inputs, keyed by driver id. Bound through an
+      // object for the same ng-if child-scope reason every other input is.
+      $scope.aliasUi = { input: {} };
+      $scope.applyAlias = function (row) {
+        if (!row) { return; }
+        var v = $scope.aliasUi.input[row.id];
+        bngApi.engineLua('raceManager.setAlias(' + row.id + ', '
+          + luaStr(v === undefined || v === null ? '' : String(v)) + ')');
+      };
+      $scope.clearAlias = function (row) {
+        if (!row) { return; }
+        $scope.aliasUi.input[row.id] = '';
+        bngApi.engineLua('raceManager.setAlias(' + row.id + ", '')");
+      };
+
       $scope.phaseLabel = function () { return PHASE_LABELS[$scope.phase] || $scope.phase; };
       $scope.statusLabel = function (s) { return STATUS_LABELS[s] || s; };
 
