@@ -42,7 +42,7 @@ local LAP_DEBOUNCE   = 2.0      -- seconds; double-fire guard on the S/F gate.
                                 -- re-fires, not bound real lap times.
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '3.4.0-derby-start'
+local RM_BUILD = '3.4.1-derby-hold'
 
 local PROGRESS_EVERY = 0.3      -- seconds between live-position reports
 -- Live lap clock for the driver's own HUD. The lap start is already known here
@@ -1316,20 +1316,32 @@ end
 -- Re-asserting is the fix, and there is precedent right above: the forced
 -- spectator camera re-applies freecam on a timer for the same reason. Cheap --
 -- one queued command every half second, and only while a hold is meant to be on.
-local HOLD_RECHECK_EVERY = 0.5
+local HOLD_RECHECK_EVERY = 0.25
 local holdRecheck = 0
+local holdAsserts = 0     -- re-applications since this hold began (for the log)
 
 local function holdUpdate(dt)
   if not gridFrozen then
     holdRecheck = 0
+    holdAsserts = 0
     return
   end
   holdRecheck = holdRecheck - dt
   if holdRecheck > 0 then return end
   holdRecheck = HOLD_RECHECK_EVERY
   local veh = playerVehicle()
-  if veh then
-    pcall(function () veh:queueLuaCommand('controller.setFreeze(1)') end)
+  if not veh then return end
+  pcall(function () veh:queueLuaCommand('controller.setFreeze(1)') end)
+  holdAsserts = holdAsserts + 1
+  -- Logged once per hold, not per re-application. If a car is loose while this
+  -- line is in the console, the freeze is being applied and something else is
+  -- undoing it; if the line is absent, this code is not running at all -- which
+  -- on a mod split across three separately-deployed pieces is the first thing
+  -- worth ruling out.
+  if holdAsserts == 1 then
+    log('I', 'raceManager', 'Hold active (' .. tostring(freezeSource)
+      .. '): re-asserting controller.setFreeze every '
+      .. HOLD_RECHECK_EVERY .. 's until released')
   end
 end
 

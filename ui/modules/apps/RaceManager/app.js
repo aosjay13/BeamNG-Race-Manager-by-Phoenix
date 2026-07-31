@@ -339,7 +339,7 @@ angular.module('beamng.apps')
       // stale app.js does not have, so a button does nothing and no console
       // anywhere says a word. Showing all three makes it a glance instead of a
       // hunt. Bump this with main.lua and raceManager.lua.
-      var APP_BUILD = '3.4.0-derby-start';
+      var APP_BUILD = '3.4.1-derby-hold';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -593,11 +593,29 @@ angular.module('beamng.apps')
         $scope.$evalAsync(function () { $scope.progress = data; });
       });
 
+      // How long GO! stays up after the lights go out.
+      //
+      // A race clears this overlay as a side effect: the next state broadcast
+      // arrives with a phase that is no longer 'countdown' and nulls it. A DERBY
+      // never sends that broadcast -- it is an isolated module with its own
+      // state channel -- so GO! sat on screen for the rest of the derby. Clearing
+      // it on a timer instead makes the overlay own its own lifetime, and gives
+      // GO! a readable beat in both modes rather than however long the next
+      // broadcast happens to take.
+      var GO_OVERLAY_MS = 1500;
+      var goTimer = null;
+
       $scope.$on('RaceManagerCountdown', function (event, data) {
         $scope.$evalAsync(function () {
           // data.count: 3, 2, 1, 0 (GO!), -1 (hide overlay)
           var c = (data && typeof data.count === 'number') ? data.count : -1;
           $scope.countdown = c >= 0 ? c : null;
+          if (goTimer) { clearTimeout(goTimer); goTimer = null; }
+          if (c === 0) {
+            goTimer = setTimeout(function () {
+              $scope.$evalAsync(function () { $scope.countdown = null; });
+            }, GO_OVERLAY_MS);
+          }
         });
       });
 
@@ -1526,6 +1544,7 @@ angular.module('beamng.apps')
         document.removeEventListener('mouseup', onResizeEnd);
         if (noticeTimer) { clearTimeout(noticeTimer); }
         if (vehErrTimer) { clearTimeout(vehErrTimer); }
+        if (goTimer) { clearTimeout(goTimer); }
         stopLapTicker();
         // The app is going away (HUD teardown, pause menu, app closed), so the
         // editor is not open any more. Without this the start-slot markers

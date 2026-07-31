@@ -360,10 +360,14 @@ local RM_PROTOCOL = 2
 -- caches UI files -- so any one of them can be older than the others. That is
 -- invisible today and fails in the worst possible way: Angular silently ignores
 -- a call to a scope function a stale app.js does not have, so a button does
--- nothing at all, with no error in any console. Bump this in ALL THREE files
--- (main.lua, raceManager.lua, app.js) whenever the client/server contract
--- changes.
-local RM_BUILD = '3.4.0-derby-start'
+-- nothing at all, with no error in any console.
+--
+-- Bump this in ALL THREE files (main.lua, raceManager.lua, app.js) on EVERY
+-- change that needs redeploying -- not just ones that change the client/server
+-- contract. That narrower rule is what let two client-side fixes ship under one
+-- stamp: the build line read as matching while a client was a fix behind, which
+-- is precisely the situation this was added to make visible.
+local RM_BUILD = '3.4.1-derby-hold'
 
 local function broadcastState(targetPid)
   local garageView = garageSnapshot and garageSnapshot() or {}
