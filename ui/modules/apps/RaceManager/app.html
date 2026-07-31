@@ -1,4 +1,4 @@
-<div class="rm-root" ng-class="{'rm-minimal': minimalMode()}">
+<div class="rm-root" ng-class="{'rm-minimal': minimalMode(), 'rm-admin': isAdmin}">
   <!-- ================= Header (hidden in minimal driver mode) ============= -->
   <div class="rm-header" ng-if="!minimalMode()">
     <span class="rm-title">RACE MANAGER</span>
@@ -17,8 +17,9 @@
     </span>
     <span class="rm-derby-badge" ng-if="derby.phase === 'running'">DERBY LIVE {{ formatDerbyTime(derby.time) }}</span>
     <span class="rm-admin-tag" ng-if="isAdmin" title="You are logged in as an admin">ADMIN</span>
-    <button class="rm-btn rm-btn-tab rm-btn-tab-derby" ng-if="isAdmin" ng-class="{'rm-btn-tab-derby-active': showDerby}" ng-click="toggleDerby()">Derby</button>
-    <button class="rm-btn rm-btn-tab" ng-if="isAdmin" ng-class="{'rm-btn-tab-active': showEditor}" ng-click="toggleEditor()">Editor</button>
+    <!-- Shortcuts to the two big panels; they select the matching admin tab. -->
+    <button class="rm-btn rm-btn-tab rm-btn-tab-derby" ng-if="isAdmin" ng-class="{'rm-btn-tab-derby-active': isAdminTab('derby')}" ng-click="selectAdminTab('derby')">Derby</button>
+    <button class="rm-btn rm-btn-tab" ng-if="isAdmin" ng-class="{'rm-btn-tab-active': isAdminTab('editor')}" ng-click="selectAdminTab('editor')">Editor</button>
     <button class="rm-btn rm-btn-tab" ng-if="isAdmin" ng-click="logout()" title="Log out and return to spectator view">Log out</button>
     <!-- Spectators: a way back to the login screen at any time -->
     <button class="rm-btn rm-btn-tab rm-btn-login-tab" ng-if="!isAdmin && !showLogin" ng-click="openLogin()" title="Log in as an admin">🔒 Login</button>
@@ -69,28 +70,49 @@
     </button>
   </div>
 
-  <!-- ================= Admin bar (change master password) ================= -->
-  <div class="rm-adminbar" ng-if="isAdmin">
-    <span class="rm-adminbar-label">Change password</span>
-    <input type="text" class="rm-login-input" ng-model="authUi.newPassword"
-           placeholder="New password (anything)…"
-           ng-keydown="$event.keyCode === 13 && changePassword()">
-    <button class="rm-btn rm-btn-mini" ng-click="changePassword()" ng-disabled="!authUi.newPassword">Set Password</button>
-    <span class="rm-pw-msg" ng-if="pwMsg">{{ pwMsg }}</span>
-  </div>
-
-  <!-- ================= Session controls (admin only) ================= -->
+  <!-- ================= Session controls (admin only) =====================
+       These stay outside the tab bar on purpose: they are the buttons an
+       admin reaches for under time pressure, so they must never be one click
+       away behind a tab. -->
   <div class="rm-controls" ng-if="isAdmin">
     <button class="rm-btn rm-btn-quali" ng-click="startQualifying()" ng-disabled="phase === 'countdown' || phase === 'racing'">Start Quali</button>
     <button class="rm-btn rm-btn-grid"  ng-click="generateGrid()"    ng-disabled="phase === 'countdown' || phase === 'racing'">Generate Grid</button>
     <button class="rm-btn rm-btn-start" ng-click="startCountdown()"  ng-disabled="phase !== 'grid'">Start Countdown</button>
     <button class="rm-btn rm-btn-end"   ng-click="endRace()"         ng-disabled="phase !== 'racing' && phase !== 'countdown' && phase !== 'qualifying'">End Session</button>
     <button class="rm-btn rm-btn-reset" ng-click="resetLeaderboard()">Reset</button>
-    <button class="rm-btn rm-btn-reset" ng-click="clearResults()" title="Delete all saved result .txt files on the server">Clear Results Cache</button>
   </div>
 
-  <!-- ================= Race settings (admin only) ================= -->
-  <div class="rm-settings" ng-if="isAdmin">
+  <!-- ================= Admin tab bar =====================================
+       Every admin panel used to stack vertically, which overflowed the app
+       window — .rm-root is overflow:hidden, so whatever ran past the bottom
+       edge was simply unreachable. One panel shows at a time now, and the
+       body below scrolls as a safety net for the tall ones. -->
+  <div class="rm-admin-tabs" ng-if="isAdmin">
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('race')}"
+            ng-click="selectAdminTab('race')"
+            title="Race distance, reset ruleset and the joker lap">Race</button>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('quali')}"
+            ng-click="selectAdminTab('quali')"
+            title="Qualifying rules and how the starting grid is filled">Quali &amp; Grid</button>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('garage')}"
+            ng-click="selectAdminTab('garage')"
+            title="Allowed vehicles and setups">Garage <span class="rm-tab-count" ng-if="garage.length">{{ garage.length }}</span></button>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('editor')}"
+            ng-click="selectAdminTab('editor')"
+            title="Checkpoint editor, starting grid and saved track layouts">Editor <span class="rm-tab-count" ng-if="routeWaypoints.length">{{ routeWaypoints.length }}</span></button>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('derby')}"
+            ng-click="selectAdminTab('derby')"
+            title="Demo Derby: arena, rules and standings">Derby</button>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('admin')}"
+            ng-click="selectAdminTab('admin')"
+            title="Master password and results housekeeping">Admin</button>
+  </div>
+
+  <!-- ================= Admin tab body (scrolls) ========================== -->
+  <div class="rm-admin-body" ng-if="isAdmin">
+
+  <!-- ================= Race settings ================= -->
+  <div class="rm-settings" ng-if="isAdminTab('race')">
     <span class="rm-setting">
       <label>Laps</label>
       <input type="number" min="1" max="500" ng-model="settingsUi.laps"
@@ -127,21 +149,10 @@
       </button>
       <span class="rm-setting-val" ng-if="jokerEnabled">{{ jokerRoute.length }} gates</span>
     </span>
-    <span class="rm-setting">
-      <label>Gate width</label>
-      <input type="range" min="2" max="120" step="1" ng-model="settingsUi.width" ng-change="applyWidth()">
-      <input type="number" class="rm-width-num" min="2" max="120" ng-model="settingsUi.width" ng-change="applyWidth()">
-      <span class="rm-setting-val">m</span>
-    </span>
-    <span class="rm-setting" title="How far the checkpoint rectangle extends up and down — raise it to cover high banking">
-      <label>Gate height</label>
-      <input type="number" class="rm-width-num" min="1" max="100" step="1" ng-model="settingsUi.height" ng-change="applyHeight()">
-      <span class="rm-setting-val">m</span>
-    </span>
   </div>
 
-  <!-- ================= Qualifying &amp; grid settings (admin only) ========= -->
-  <div class="rm-settings" ng-if="isAdmin">
+  <!-- ================= Qualifying &amp; grid settings ===================== -->
+  <div class="rm-settings" ng-if="isAdminTab('quali')">
     <span class="rm-setting" title="Ghost mode: rival cars stop being obstacles during qualifying, so a flying lap can't be ruined by traffic.">
       <label>Ghost quali</label>
       <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': ghostQuali}"
@@ -182,7 +193,7 @@
   </div>
 
   <!-- ================= Garage list (Module 4: vehicle & setup locking) ==== -->
-  <div class="rm-garage" ng-if="isAdmin">
+  <div class="rm-garage" ng-if="isAdminTab('garage')">
     <div class="rm-garage-head">
       <span class="rm-garage-title">Garage — allowed vehicles &amp; setups</span>
       <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': garageEnforce}"
@@ -215,7 +226,7 @@
   </div>
 
   <!-- ================= Checkpoint editor ================= -->
-  <div class="rm-editor" ng-if="showEditor && isAdmin">
+  <div class="rm-editor" ng-if="isAdminTab('editor')">
     <!-- Which route is being built: the main lap or the rallycross joker -->
     <div class="rm-route-tabs">
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-route-tab-active': editorTarget === 'main'}"
@@ -248,6 +259,26 @@
       <button class="rm-btn" ng-click="editorToggleVisualize()">{{ visualize ? 'Hide' : 'Show' }} Gates</button>
     </div>
     <div class="rm-editor-msg" ng-if="editorMsg">{{ editorMsg }}</div>
+
+    <!-- Default gate size for newly placed gates. These live in the editor and
+         nowhere else: they are not a race rule, they are the fallback every
+         checkpoint without its own Width/Height override uses (and the value
+         that travels with a saved layout). A start position is a placement,
+         not a gate, so the row is hidden on the Start Grid tab. -->
+    <div class="rm-settings rm-editor-defaults" ng-if="!editingGrid()">
+      <span class="rm-setting">
+        <label>Gate width</label>
+        <input type="range" min="2" max="120" step="1" ng-model="settingsUi.width" ng-change="applyWidth()">
+        <input type="number" class="rm-width-num" min="2" max="120" ng-model="settingsUi.width" ng-change="applyWidth()">
+        <span class="rm-setting-val">m</span>
+      </span>
+      <span class="rm-setting" title="How far the checkpoint rectangle extends up and down — raise it to cover high banking">
+        <label>Gate height</label>
+        <input type="number" class="rm-width-num" min="1" max="100" step="1" ng-model="settingsUi.height" ng-change="applyHeight()">
+        <span class="rm-setting-val">m</span>
+      </span>
+      <span class="rm-setting-val">default for new gates — click a placed gate to override it</span>
+    </div>
 
     <!-- Gate list (main lap / joker route) -->
     <div class="rm-editor-list" ng-if="editorWaypoints().length && !editingGrid()">
@@ -355,7 +386,7 @@
   </div>
 
   <!-- ================= DEMO DERBY (isolated module) ================= -->
-  <div class="rm-derby" ng-if="showDerby && isAdmin">
+  <div class="rm-derby" ng-if="isAdminTab('derby')">
     <div class="rm-derby-title">
       Demo Derby
       <span class="rm-derby-phase rm-derby-phase-{{ derby.phase }}">{{ derby.phase === 'running' ? 'LIVE — ' + formatDerbyTime(derby.time) : (derby.phase === 'finished' ? 'Finished' : 'Setup') }}</span>
@@ -498,6 +529,37 @@
       No participants recorded.
     </div>
   </div>
+
+  <!-- ================= Admin housekeeping ================================= -->
+  <div class="rm-adminbar-panel" ng-if="isAdminTab('admin')">
+    <div class="rm-adminbar">
+      <span class="rm-adminbar-label">Change password</span>
+      <input type="text" class="rm-login-input" ng-model="authUi.newPassword"
+             placeholder="New password (anything)…"
+             ng-keydown="$event.keyCode === 13 && changePassword()">
+      <button class="rm-btn rm-btn-mini" ng-click="changePassword()" ng-disabled="!authUi.newPassword">Set Password</button>
+      <span class="rm-pw-msg" ng-if="pwMsg">{{ pwMsg }}</span>
+    </div>
+    <div class="rm-adminbar">
+      <span class="rm-adminbar-label">Results</span>
+      <button class="rm-btn rm-btn-reset rm-btn-mini" ng-click="clearResults()"
+              title="Delete all saved result .txt files on the server">Clear Results Cache</button>
+      <span class="rm-layouts-hint">
+        Result files are written automatically when a session closes; this only
+        clears the ones already saved on the server.
+      </span>
+    </div>
+    <div class="rm-adminbar">
+      <span class="rm-adminbar-label">Session</span>
+      <button class="rm-btn rm-btn-mini" ng-click="logout()"
+              title="Log out and return to spectator view">Log out</button>
+      <span class="rm-layouts-hint">
+        Admin rights are dropped on disconnect as well.
+      </span>
+    </div>
+  </div>
+
+  </div><!-- /.rm-admin-body -->
 
   <!-- ================= Derby warning overlays (hidden by default) ========= -->
   <div class="rm-derby-warning rm-derby-warning-oob" ng-if="derbyWarning && derbyWarning.type === 'oob'">
@@ -795,6 +857,55 @@
   .rm-login-error { font-size: 11px; color: #f28b82; font-weight: 600; }
   .rm-login-hint { font-size: 10px; color: #9aa0a6; }
   .rm-pw-msg { font-size: 11px; color: #7ee2a8; font-weight: 600; }
+
+  /* ============ Admin tabs =============================================== */
+  /* One admin panel at a time. Before this, every panel stacked and the app
+     window (overflow:hidden) simply clipped whatever ran past the bottom edge,
+     with no scrollbar anywhere to reach it. */
+  .rm-admin-tabs {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 10px;
+    flex-wrap: wrap;
+    background: rgba(255, 255, 255, 0.03);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .rm-admin-tab-active {
+    background: rgba(255, 102, 0, 0.28);
+    border-color: #ff6600;
+    color: #ffb380;
+  }
+  .rm-tab-count {
+    margin-left: 4px;
+    padding: 0 4px;
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.14);
+    color: #bdc1c6;
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
+  }
+  /* The scroll safety net: the selected panel gets whatever room is going, but
+     it scrolls rather than pushing the leaderboard off the bottom. min-height:0
+     is what lets a flex item actually shrink below its content height; the
+     max-height keeps a share of a small window for the table below. */
+  .rm-admin-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: 58%;
+    overflow-y: auto;
+  }
+  /* Admin only — the driver (minimal) view is deliberately left alone. */
+  .rm-admin .rm-table-wrap { min-height: 84px; }
+  /* Gate sizing sits inside the editor panel, so it drops the settings row's
+     own divider and outer padding. */
+  .rm-editor-defaults {
+    border-bottom: none;
+    padding-left: 0;
+    padding-right: 0;
+  }
+  /* Admin housekeeping tab: stacked bars rather than one wrapping row. */
+  .rm-adminbar-panel { display: flex; flex-direction: column; }
 
   /* Race settings */
   .rm-settings {

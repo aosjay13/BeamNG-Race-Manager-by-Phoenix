@@ -9,7 +9,7 @@
     "top": "20px",
     "left": "20px",
     "width": "560px",
-    "height": "400px"
+    "height": "560px"
   },
   "types": ["ui.apps.categories.racing", "ui.apps.categories.info"]
 }

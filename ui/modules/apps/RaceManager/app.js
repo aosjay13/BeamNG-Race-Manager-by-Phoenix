@@ -122,8 +122,37 @@ angular.module('beamng.apps')
       $scope.loginPinned = false;    // user explicitly asked to see login
       $scope.pwMsg = null;           // transient confirmation after a password change
 
+      // ----------------------------------------------------------------
+      // Admin panel tabs
+      // ----------------------------------------------------------------
+      // Every admin panel used to render stacked, one under the other. That
+      // overflowed the app window — .rm-root is overflow:hidden and only the
+      // leaderboard scrolls, so anything past the bottom edge was unreachable,
+      // and with the editor and derby panels both open it was most of them.
+      // One panel shows at a time now; the tab body scrolls as a safety net so
+      // a long gate list or a full derby table can't clip at a small size.
+      var ADMIN_TABS = {
+        race: true, quali: true, garage: true, editor: true, derby: true, admin: true
+      };
+      function adminTabOf(value) { return ADMIN_TABS[value] ? value : 'race'; }
+      // Persisted so an admin returns to the panel they were working in.
+      // (loadPref/savePref are declared further down; both are hoisted function
+      // declarations, so calling them here is safe.)
+      $scope.adminTab = adminTabOf(loadPref('adminTab', 'race'));
+      $scope.isAdminTab = function (tab) { return $scope.adminTab === tab; };
+      $scope.selectAdminTab = function (tab) {
+        $scope.adminTab = adminTabOf(tab);
+        savePref('adminTab', $scope.adminTab);
+        // Two panels need a nudge as they re-enter the DOM: the track preview
+        // canvas has to be drawn once it exists, and the derby module pulls its
+        // state over its own channel.
+        if ($scope.adminTab === 'editor') { schedulePreview(); }
+        if ($scope.adminTab === 'derby') {
+          bngApi.engineLua('raceManager.derbyRequestState()');
+        }
+      };
+
       // Checkpoint editor state
-      $scope.showEditor = false;
       $scope.routeWaypoints = [];
       $scope.nextWp = 1;
       $scope.visualize = true;
@@ -150,7 +179,6 @@ angular.module('beamng.apps')
       // DEMO DERBY (isolated module) — separate state, events and commands;
       // nothing here touches the circuit racing scope above.
       // ----------------------------------------------------------------
-      $scope.showDerby = false;
       $scope.derby = {
         phase: 'idle',        // idle | running | finished (server authoritative)
         time: 0,
@@ -627,13 +655,6 @@ angular.module('beamng.apps')
         });
       });
 
-      $scope.toggleDerby = function () {
-        $scope.showDerby = !$scope.showDerby;
-        if ($scope.showDerby) {
-          bngApi.engineLua('raceManager.derbyRequestState()');
-        }
-      };
-
       $scope.derbyStatusLabel = function (p) {
         if (p.status === 'winner') { return 'WINNER'; }
         if (p.status === 'alive') { return 'In Arena'; }
@@ -725,6 +746,8 @@ angular.module('beamng.apps')
       $scope.toggleDerbyDropdown = function () {
         if (!$scope.derbyLayouts.length) { $scope.derbyDropdownOpen = false; return; }
         $scope.derbyDropdownOpen = !$scope.derbyDropdownOpen;
+        // Same scroll-container clipping guard as the track layout picker.
+        if ($scope.derbyDropdownOpen) { revealDropdown('.rm-derby-layouts .rm-layout-menu'); }
       };
       $scope.selectDerbyLayout = function (l) {
         $scope.derbyUi.selected = l.name;
@@ -789,8 +812,8 @@ angular.module('beamng.apps')
         $scope.isAdmin = false;
         $scope.showLogin = true;
         $scope.loginPinned = true;
-        $scope.showEditor = false;
-        $scope.showDerby = false;
+        // The admin tab is left where it was: every panel is behind ng-if
+        // isAdmin anyway, and a logout shouldn't discard the remembered tab.
         bngApi.engineLua('raceManager.logout()');
       };
 
@@ -975,11 +998,6 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.editorToggleVisualize()');
       };
 
-      $scope.toggleEditor = function () {
-        $scope.showEditor = !$scope.showEditor;
-        if ($scope.showEditor) { schedulePreview(); }  // canvas re-enters the DOM
-      };
-
       // Switch the editor between the main lap, the joker route and the start
       // grid. Everything in the editor panel (+ Checkpoint Here, Undo, Clear,
       // the list below) follows this selection. The tab is applied locally as
@@ -1055,6 +1073,18 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.loadLayout(' + luaStr($scope.layoutUi.selected) + ')');
       };
 
+      // The layout and arena pickers are absolutely positioned menus, and the
+      // admin tab body is a scroll container — a menu opened near its bottom
+      // edge would hang below the visible area. Scroll it into the scroller
+      // once Angular has put it in the DOM (the same deferred pattern the
+      // preview canvas uses).
+      function revealDropdown(selector) {
+        setTimeout(function () {
+          var menu = $element[0].querySelector(selector);
+          if (menu && menu.scrollIntoView) { menu.scrollIntoView({ block: 'nearest' }); }
+        }, 0);
+      }
+
       // Custom dropdown behaviour (see $scope.layoutDropdownOpen above for why
       // this isn't a native <select>). Opening only makes sense when there are
       // layouts to choose from; selecting an option mirrors the old
@@ -1062,6 +1092,7 @@ angular.module('beamng.apps')
       $scope.toggleLayoutDropdown = function () {
         if (!$scope.layouts.length) { $scope.layoutDropdownOpen = false; return; }
         $scope.layoutDropdownOpen = !$scope.layoutDropdownOpen;
+        if ($scope.layoutDropdownOpen) { revealDropdown('.rm-layouts .rm-layout-menu'); }
       };
 
       $scope.selectLayoutOption = function (l) {
