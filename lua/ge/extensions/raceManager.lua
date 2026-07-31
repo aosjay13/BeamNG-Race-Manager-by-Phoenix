@@ -2685,9 +2685,22 @@ end
 
 -- Custom grid: put one driver on one slot (the rest shuffle around them).
 function M.setDriverGridSlot(pid, slot)
-  pid  = math.floor(tonumber(pid) or 0)
-  slot = math.floor(tonumber(slot) or 0)
-  if pid <= 0 or slot < 1 then return end
+  -- BeamMP player ids are ZERO-BASED, so `pid <= 0` threw away whoever joined
+  -- the server first -- the box accepted a slot number and nothing was ever
+  -- sent. Slots themselves genuinely are 1-based (slot 1 is pole), so that
+  -- half of the guard stays. The server accepts target 0 either way.
+  pid  = tonumber(pid)
+  slot = tonumber(slot)
+  if not pid or not slot then
+    log('W', 'raceManager', 'setDriverGridSlot: missing driver id or slot')
+    return
+  end
+  pid, slot = math.floor(pid), math.floor(slot)
+  if pid < 0 or slot < 1 then
+    log('W', 'raceManager', string.format(
+      'setDriverGridSlot: invalid driver id %d or slot %d', pid, slot))
+    return
+  end
   if inMultiplayer() then
     TriggerServerEvent('RM_SetDriverGrid', jsonEncode({ pid = pid, slot = slot }))
   end
