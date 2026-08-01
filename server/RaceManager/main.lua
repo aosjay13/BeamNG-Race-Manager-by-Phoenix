@@ -65,6 +65,27 @@ local race = {
   qualiLapLimit  = 0,        -- timed laps allowed per driver (0 = unlimited)
   qualiTimeLimit = 0,        -- seconds the session runs for (0 = unlimited)
   qualiTime      = 0.0,      -- seconds elapsed in the current quali session
+  -- Post-expiry state for a TIMED session, and the one piece of the lifecycle a
+  -- lap-limited session has no equivalent of.
+  --
+  -- A lap-limited session has a per-driver terminal event built in: the
+  -- crossing that completes their allowance is the moment they are done, and the
+  -- session ends when the last of them is. A timed session has no such thing --
+  -- the clock expires for everybody at once, while they are spread around the
+  -- circuit -- so expiry cannot simply end it. Standing everyone down where they
+  -- are would throw away the lap they are on, which in qualifying is the one
+  -- that matters most.
+  --
+  -- So expiry does not end the session, it changes what a crossing MEANS: while
+  -- this is set, the next start/finish line a driver crosses is terminal for
+  -- them rather than the start of another lap. That reuses the removal and the
+  -- respawn-all the lap-limited path already goes through, and it is why this is
+  -- a sub-state of the running phase rather than a phase of its own -- drivers
+  -- must stay controllable and on track, which is exactly what the running phase
+  -- already gives them.
+  finalLap       = false,
+  finalLapLeft   = 0,        -- seconds of grace left before the stragglers are
+                             -- taken where they stand (see FINAL_LAP_GRACE)
 }
 local players = {}          -- [playerID] = per-player record
 local tickCounter = 0
@@ -72,6 +93,13 @@ local countdownValue = nil  -- current countdown number while phase == 'countdow
 local lapFirsts = {}        -- [lapNumber] = pid of the first driver to complete that lap
 local MAX_QUALI_LAPS   = 99
 local MAX_QUALI_TIME   = 7200   -- seconds (2 h)
+-- How long a timed session waits, after the clock expires, for drivers still out
+-- there to come round and take the flag. A driver sitting in the pits, parked,
+-- or who never left the grid has no crossing to give, and without a bound the
+-- session would wait for them forever. Sized to comfortably clear one lap of a
+-- long circuit; when it runs out the stragglers are taken where they stand and
+-- the session closes normally.
+local FINAL_LAP_GRACE  = 180    -- seconds
 
 -- ---------------------------------------------------------------------------
 -- Admin authentication
@@ -472,7 +500,7 @@ local RM_PROTOCOL = 2
 -- contract. That narrower rule is what let two client-side fixes ship under one
 -- stamp: the build line read as matching while a client was a fix behind, which
 -- is precisely the situation this was added to make visible.
-local RM_BUILD = '3.5.0-one-session-lifecycle'
+local RM_BUILD = '3.5.1-final-lap'
 
 local function broadcastState(targetPid)
   local garageView = garageSnapshot and garageSnapshot() or {}
@@ -511,6 +539,12 @@ local function broadcastState(targetPid)
     qualiTime      = race.qualiTime,
     qualiLeft      = race.qualiTimeLimit > 0
       and math.max(race.qualiTimeLimit - race.qualiTime, 0) or nil,
+    -- The clock has expired and everyone still out is on their last lap. Carried
+    -- on the state broadcast rather than a one-shot event so a client that joins
+    -- (or reconnects) mid-final-lap learns about it too, instead of driving a lap
+    -- it does not know is its last.
+    finalLap       = race.finalLap,
+    finalLapLeft   = race.finalLap and math.max(race.finalLapLeft, 0) or nil,
     -- Approved vehicle/setup list (Module 4).
     garage        = garageView.list,
     garageEnforce = garageView.enforce,
@@ -863,6 +897,28 @@ local function sessionUnderWay()
   return race.phase == 'countdown' or race.phase == 'racing' or race.phase == 'qualifying'
 end
 
+-- How many drivers are still circulating. Every "is this session over?" test in
+-- the file asks this, so there is one answer to it.
+local function driversOnTrack()
+  local n = 0
+  for _, rec in pairs(players) do
+    if onTrack(rec) then n = n + 1 end
+  end
+  return n
+end
+
+-- Take one driver off the track: they are done, their car is removed, and they
+-- watch until the session ends. THE single removal path -- the lap target, the
+-- expired-clock final lap and the grace timeout all come through here, so a
+-- driver's session ends the same way whichever of the three finished it.
+local function retireDriver(rec, reason)
+  if not onTrack(rec) then return false end
+  rec.status = 'finished'
+  rec.finishTime = race.time
+  forceSpectate(rec.id, reason, 'race')
+  return true
+end
+
 -- Forward declaration: the grid is formed by one function used by BOTH entry
 -- points (Generate Grid and Start Qualifying), and it needs the ordering rules
 -- that are defined further down the file.
@@ -919,6 +975,8 @@ end
 -- removed car back, then apply whichever rules belong to that session.
 local function finishSession(reason)
   MP.CancelEventTimer('RM_CountdownTick')
+  race.finalLap     = false
+  race.finalLapLeft = 0
   if isQualiSession() then
     -- Qualifying drops back to waiting rather than 'finished': the next thing
     -- an admin does is Generate Grid, and the times just set are what orders it.
@@ -1099,6 +1157,36 @@ local function endQualifying(reason)
   finishSession(reason)
 end
 
+-- The qualifying clock has run out.
+--
+-- This does NOT end the session, and that is the whole point. It arms the final
+-- lap: everybody stays controllable and out on track, and the next start/finish
+-- line each of them crosses ends their session instead of starting another lap.
+-- The session closes when the last of them has taken the flag -- through exactly
+-- the same removal and respawn-all a lap-limited session uses.
+--
+-- Ending it outright, which is what used to happen here, locked the leaderboard
+-- and left every car loose on an over circuit: nothing was removed, so the
+-- respawn had nothing to put back and no driver was ever told the session was
+-- done.
+local function beginFinalLap()
+  if race.finalLap then return end
+  -- Nobody left out there (everyone already used a lap allowance, or the field
+  -- emptied): there is no final lap to run, so close cleanly rather than arming
+  -- a state that nothing can ever leave.
+  if driversOnTrack() == 0 then
+    endQualifying('the time limit expired')
+    return
+  end
+  race.finalLap     = true
+  race.finalLapLeft = FINAL_LAP_GRACE
+  broadcastState()
+  MP.SendChatMessage(-1, '[RaceManager] TIME EXPIRED — the lap you are on is your '
+    .. 'FINAL LAP. Your session ends as you cross the line.')
+  print(string.format('[RaceManager] Qualifying time expired: final lap armed for %d driver(s)',
+    driversOnTrack()))
+end
+
 -- Deterministic shuffle for the random grid draw. os.time seeding is fine
 -- here: two grids drawn in the same second is not a fairness problem, and
 -- nothing else on the server depends on the RNG stream.
@@ -1164,6 +1252,8 @@ end
 formGrid = function (kind, byName)
   race.sessionKind = (kind == 'quali') and 'quali' or 'race'
   race.time = 0.0
+  race.finalLap     = false
+  race.finalLapLeft = 0
   lapFirsts = {}
 
   -- Purge ghost records first: drivers kept after disconnecting (DNF/finished,
@@ -1551,6 +1641,8 @@ function RM_CountdownTick()
   race.phase = runningStatus()   -- 'qualifying' or 'racing'
   race.time = 0.0
   race.qualiTime = 0.0
+  race.finalLap     = false
+  race.finalLapLeft = 0
   lapFirsts = {}
   for _, rec in pairs(players) do
     if rec.status == 'gridded' then
@@ -1622,6 +1714,8 @@ function RM_onResetLeaderboard(pid)
   race.sessionKind = 'race'
   race.time = 0.0
   race.qualiTime = 0.0
+  race.finalLap     = false
+  race.finalLapLeft = 0
   -- The records are gone and so is the entry list, but the display names are
   -- not: they live in the identity registry and ensurePlayer hands them straight
   -- back, which is what makes a name survive from one race into the next.
@@ -1710,35 +1804,60 @@ function RM_onLap(pid, rawData)
   -- completed must not linger and rank this driver against the next one.
   clearProgress(rec)
 
+  -- Two ways a crossing can be a driver's last, and they are checked together so
+  -- the removal below is reached by one route rather than two.
+  --
+  --   * the session's lap target, if it has one; or
+  --   * the expired clock. Once the final lap is armed, ANY crossing that
+  --     arrives is terminal.
+  --
+  -- That second rule is what settles the "crossed the line at almost exactly the
+  -- moment the clock expired" case, and it settles it the way this file settles
+  -- every other question of who was first: by arrival order at the server. A
+  -- crossing the server sees before expiry starts another lap; one it sees after
+  -- ends that driver's session. There is no clock skew to argue about, no
+  -- client-reported timestamp to trust, and the same input always produces the
+  -- same outcome.
+  --
+  -- Note this lap still COUNTS: the time set on it goes into Best Lap above, and
+  -- can improve a driver's position. That is deliberate and it is what makes a
+  -- final lap worth running -- the order is not frozen at expiry, it settles when
+  -- the last driver has taken the flag.
   local target = sessionLapTarget()
-  if target and completed >= target then
-    rec.status = 'finished'
-    rec.finishTime = race.time
+  local lastLap = (target and completed >= target) or race.finalLap
+  if lastLap then
+    local why
+    if quali and race.finalLap and not (target and completed >= target) then
+      why = 'Qualifying over — you took the flag on the final lap'
+    elseif quali then
+      why = 'Qualifying session complete — spectating until the flag'
+    else
+      why = 'You finished the race — spectating until the flag'
+    end
     -- A car that is done is taken off the track: it has nothing left to gain and
     -- a parked (or cruising) driver is an obstacle for everyone still running.
     -- Every one of them comes back at the flag (respawnAll in finishSession), so
     -- nobody is left stranded.
-    forceSpectate(pid, quali
-      and 'Qualifying session complete — spectating until the flag'
-      or  'You finished the race — spectating until the flag', 'race')
-    print(string.format('[RaceManager] %s completed %d lap(s) at %.3fs (led %d)',
-      rec.name, completed, race.time, rec.lapsLed))
-    if quali then
+    retireDriver(rec, why)
+    print(string.format('[RaceManager] %s completed %d lap(s) at %.3fs (led %d)%s',
+      rec.name, completed, race.time, rec.lapsLed, race.finalLap and ' [final lap]' or ''))
+    if quali and target and completed >= target then
       MP.SendChatMessage(-1, string.format('[RaceManager] %s has used all %d qualifying lap%s.',
         displayName(rec), target, target == 1 and '' or 's'))
+    elseif race.finalLap then
+      MP.SendChatMessage(-1, string.format('[RaceManager] %s has taken the flag (%d still out).',
+        displayName(rec), driversOnTrack()))
     end
     -- Everyone done (finished or dnf)? Close the session.
-    for _, r in pairs(players) do
-      if onTrack(r) then
-        broadcastState()
-        return
-      end
+    if driversOnTrack() > 0 then
+      broadcastState()
+      return
     end
-    finishSession(quali and 'every driver used their lap allowance' or 'all drivers finished')
+    finishSession(race.finalLap and 'every driver took the flag'
+      or (quali and 'every driver used their lap allowance' or 'all drivers finished'))
     return
-  else
-    rec.currentLap = completed + 1
   end
+  rec.currentLap = completed + 1
   broadcastState()
 end
 
@@ -3201,10 +3320,38 @@ function RM_Tick()
   -- which is what closes the session when the admin set a time limit.
   race.time = race.time + TICK_MS / 1000.0
   if race.phase == 'qualifying' then
-    race.qualiTime = race.qualiTime + TICK_MS / 1000.0
-    if race.qualiTimeLimit > 0 and race.qualiTime >= race.qualiTimeLimit then
-      endQualifying('the time limit expired')
-      return
+    if race.finalLap then
+      -- The clock has already expired and the field is on its last lap. What is
+      -- counting down now is the grace: a driver parked in the pits, or one who
+      -- never left the grid, has no crossing to give, and the session must not
+      -- wait on them forever.
+      race.finalLapLeft = race.finalLapLeft - TICK_MS / 1000.0
+      if race.finalLapLeft <= 0 then
+        local stranded = {}
+        for _, rec in pairs(players) do
+          if onTrack(rec) then stranded[#stranded + 1] = rec end
+        end
+        -- Snapshot first: retireDriver sends a client event per driver, and
+        -- building the list while that is going on is the shape of bug that
+        -- reached only the last name in it.
+        for _, rec in ipairs(stranded) do
+          retireDriver(rec, 'Qualifying over — the session closed before you reached the line')
+        end
+        if #stranded > 0 then
+          MP.SendChatMessage(-1, string.format(
+            '[RaceManager] Final-lap grace expired: %d driver%s taken where they stood.',
+            #stranded, #stranded == 1 and '' or 's'))
+        end
+        finishSession('the final-lap grace expired')
+        return
+      end
+    else
+      race.qualiTime = race.qualiTime + TICK_MS / 1000.0
+      if race.qualiTimeLimit > 0 and race.qualiTime >= race.qualiTimeLimit then
+        beginFinalLap()
+        -- Not a return: the session is still running, and the broadcast below
+        -- is what carries the final-lap flag to every client.
+      end
     end
   end
   tickCounter = tickCounter + 1

@@ -57,7 +57,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '3.5.0-one-session-lifecycle'
+local RM_BUILD = '3.5.1-final-lap'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -195,6 +195,9 @@ local entryMode = 'join'         -- 'join' (opt-in) | 'all' (everyone races)
 local joined    = false          -- this client is on the entry list
 
 -- Qualifying: ghost mode + session limits, all mirrored from the server.
+-- finalLap is the timed session's post-expiry state: the clock has run out and
+-- the lap this driver is on is their last.
+local finalLap       = false
 local ghostQuali     = false
 local ghostApplied   = false     -- ghosting currently applied to rival cars
 local qualiLapLimit  = 0         -- 0 = unlimited
@@ -2802,6 +2805,15 @@ local function onServerUpdate(rawData)
     guihooks.trigger('RaceManagerAuth', { success = isAdmin, restored = true })
     pushRouteState()
   end
+  -- The qualifying clock has expired and this driver is on their last lap. Read
+  -- off the state broadcast rather than a one-shot event, so a client that joins
+  -- or reconnects mid-final-lap is told too — but announced only on the EDGE, or
+  -- a 3 Hz broadcast would repeat the notice several times a second.
+  local wasFinalLap = finalLap
+  finalLap = data.finalLap == true
+  if finalLap and not wasFinalLap then
+    pushNotice('session', 'TIME EXPIRED — FINAL LAP. Your session ends as you cross the line.')
+  end
   -- Race entry + qualifying rules.
   if type(data.entryMode) == 'string' then entryMode = data.entryMode end
   ghostQuali = data.ghostQuali == true
@@ -3341,6 +3353,7 @@ local function resetToIdle(reason)
   lastReportedSig = nil
   gridSlot        = nil
   joined          = false
+  finalLap        = false
   ghostQuali      = false
   -- Same purge for the isolated derby module: markers and warnings must not
   -- survive into the next session.

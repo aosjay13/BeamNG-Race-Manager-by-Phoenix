@@ -20,8 +20,12 @@
       </span>
     </span>
     <!-- Qualifying countdown when the session has a time limit -->
-    <span class="rm-clock rm-quali-clock" ng-if="phase === 'qualifying' && qualiLeft !== null"
+    <span class="rm-clock rm-quali-clock" ng-if="phase === 'qualifying' && qualiLeft !== null && !finalLap"
           title="Qualifying time remaining">Q {{ qualiClock() }}</span>
+    <!-- Time is up, but the session is not: everyone still out finishes the lap
+         they are on, and their session ends as they cross the line. -->
+    <span class="rm-clock rm-final-lap" ng-if="phase === 'qualifying' && finalLap"
+          title="The qualifying clock has expired — the lap you are on is your last">FINAL LAP</span>
     <span class="rm-ghost-badge" ng-if="phase === 'qualifying' && ghostQuali" title="Rival cars are ghosted this session">GHOST</span>
     <!-- Your own grid slot, and the hold before the lights go out -->
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
@@ -1240,6 +1244,8 @@
 
   /* Header badges for the new session state */
   .rm-quali-clock { color: #ce93d8; }
+  /* Time is up but the session is still running — read as urgent, not as over. */
+  .rm-final-lap { color: #ffd54f; font-weight: 700; letter-spacing: 0.06em; }
   .rm-ghost-badge {
     font-size: 9px;
     font-weight: 700;

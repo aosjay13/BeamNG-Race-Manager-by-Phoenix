@@ -206,8 +206,11 @@ check(#released > 0 and released[#released].source == 'race',
   'the flag gives every removed car back')
 
 -- ===========================================================================
--- Qualifying time limit: the clock closes the session on its own
+-- Qualifying time limit: the clock arms the final lap
 -- ===========================================================================
+-- Expiry does NOT end a timed session — the drivers out there are mid-lap, and
+-- that lap is the one that matters. See tests/timed_quali_test.lua for the whole
+-- final-lap path and its edge cases; this only pins the transition.
 RM_onResetLeaderboard(1)
 RM_onSetQualiLimits(1, '{"laps":0,"seconds":2}')
 check(lastState.qualiTimeLimit == 2, 'a 2 second qualifying limit is accepted')
@@ -221,9 +224,14 @@ check(lastState.phase == 'qualifying', 'the session runs while time remains')
 check(lastState.qualiLeft ~= nil and lastState.qualiLeft < 2,
   'the remaining time counts down in the broadcast')
 for _ = 1, 15 do RM_Tick() end     -- past the limit
-check(lastState.phase == 'waiting', 'the time limit closes qualifying')
-check(type(lastChat) == 'string' and lastChat:find('time limit', 1, true) ~= nil,
-  'chat announces why qualifying ended')
+check(lastState.phase == 'qualifying',
+  'the time limit does not end the session out from under a driver mid-lap')
+check(lastState.finalLap == true, 'it arms the final lap instead')
+check(type(lastChat) == 'string' and lastChat:find('FINAL LAP', 1, true) ~= nil,
+  'chat tells every driver the lap they are on is their last')
+-- The crossing is what ends it, and it takes the car off the track.
+RM_onLap(1, '{"lapTime":88}')
+check(lastState.phase == 'waiting', 'the last driver home closes qualifying')
 
 -- Limits cannot be changed while qualifying is running.
 RM_onStartQualifying(1)

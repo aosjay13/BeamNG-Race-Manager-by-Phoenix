@@ -99,6 +99,7 @@ angular.module('beamng.apps')
       $scope.qualiLapLimit = 0;
       $scope.qualiTimeLimit = 0;
       $scope.qualiLeft = null;        // seconds remaining, null = no limit
+      $scope.finalLap  = false;       // quali clock expired: this lap is the last
       // Forced spectator mode.
       $scope.spectating = false;
       $scope.spectatorReason = null;
@@ -351,7 +352,7 @@ angular.module('beamng.apps')
       // stale app.js does not have, so a button does nothing and no console
       // anywhere says a word. Showing all three makes it a glance instead of a
       // hunt. Bump this with main.lua and raceManager.lua.
-      var APP_BUILD = '3.5.0-one-session-lifecycle';
+      var APP_BUILD = '3.5.1-final-lap';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -604,6 +605,11 @@ angular.module('beamng.apps')
             $scope.qualiTimeLimit = data.qualiTimeLimit;
           }
           $scope.qualiLeft = (typeof data.qualiLeft === 'number') ? data.qualiLeft : null;
+          // The qualifying clock has expired and everyone still out is on their
+          // last lap. The session has NOT ended: drivers keep driving until they
+          // cross the line, so the header says so rather than showing a clock
+          // frozen on zero and nothing else.
+          $scope.finalLap = data.finalLap === true;
           $scope.garage = toArray(data.garage);
           $scope.garageEnforce = !!data.garageEnforce;
           // Track whether an admin is running the session. When one appears and

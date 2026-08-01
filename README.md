@@ -221,7 +221,29 @@ Three qualifying options sit in the admin settings:
 |---------|--------------|
 | **Ghost quali** | Rival cars stop being obstacles for the session, so a flying lap can't be ruined by traffic. Ghosted cars are faded so you can see who they are. |
 | **Quali laps** | Timed laps each driver gets. Their session ends when they use them up; the whole session closes once nobody has laps left. `0` = unlimited. |
-| **Quali mins** | Wall-clock limit. The header shows the countdown, and the session closes itself when it expires. `0` = no limit. |
+| **Quali mins** | Wall-clock limit. The header shows the countdown; when it expires the session runs a **final lap** (below) rather than stopping dead. `0` = no limit. |
+
+**The final lap.** When a timed session's clock expires it does not end the
+session — everyone still out is mid-lap, and in qualifying that is the lap
+that matters. Instead:
+
+- chat and the header announce **FINAL LAP**; the clock is replaced by that
+  badge;
+- every driver stays controllable and on track;
+- each driver's session ends **as they cross the start/finish line** — their
+  car is taken off the track exactly as it is when a lap allowance runs out;
+- when the last one is home, everybody respawns together.
+
+That last lap still **counts**: a time set on it goes into your Best Lap and
+can move you up the order. The grid is not frozen at expiry, it settles when
+the last driver has taken the flag.
+
+Two rules keep it from hanging. A crossing the server sees *after* expiry is
+terminal — there is no extra lap for whoever was closest to the line, and
+arrival order at the server decides it, the same way it decides every other
+question of who was first. And a driver who never comes round (parked, in the
+pits, never left the grid) is bounded by a **3 minute grace**, after which
+the stragglers are taken where they stand and the session closes normally.
 
 Both limits are locked while qualifying is actually running, so nobody has
 the rug pulled mid-lap.
