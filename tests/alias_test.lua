@@ -112,7 +112,9 @@ check(answered(1, false), 'targeting a driver who is not on the server is answer
 --    rename moves no timing data.
 -- ---------------------------------------------------------------------------
 RM_onStartQualifying(1)
-RM_onQualiLap(2, '{"lapTime":61.5}')
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+RM_onLap(2, '{"lapTime":61.5}')
 local beforeRename = driver(2).qualiBest
 setAlias(1, 2, 'Renamed Mid Session')
 check(driver(2).id == 2, 'the driver is still keyed by its BeamMP session id')
@@ -213,7 +215,9 @@ check(driver(3).name == 'Guest_3333', 'the real name is still there to fall back
 setAlias(1, 2, 'Departing Driver')
 check(driver(2).alias == 'Departing Driver', 'alias set before the disconnect')
 RM_onStartQualifying(1)
-RM_onQualiLap(2, '{"lapTime":59.9}')   -- give the record a reason to survive
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+RM_onLap(2, '{"lapTime":59.9}')   -- give the record a reason to survive
 RM_onPlayerDisconnect(2)
 connected[2] = 'Guest_7777'             -- a DIFFERENT person inherits id 2
 RM_onPlayerJoin(2)

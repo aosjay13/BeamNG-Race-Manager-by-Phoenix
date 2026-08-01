@@ -13,6 +13,7 @@ local lastArenas = nil  -- last RM_DerbyLayouts payload (saved arena list)
 local lastChat = nil
 local derbyGrid = {}    -- [pid] = start slot handed out at form-up
 local derbyHeld = {}    -- [pid] = true when told to hold for the countdown
+local derbyReleased = {} -- [pid] = last RM_ReleaseSpectate payload
 local lastCountdown = nil  -- last RM_DerbyCountdown value (3..0, or -1 abort)
 local timers = {}
 local hostedMap = '/levels/gridmap_v2/info.json'
@@ -34,6 +35,7 @@ MP = {
       if payload.hold then derbyHeld[target] = true end
     end
     if event == 'RM_DerbyCountdown' then lastCountdown = payload.count end
+    if event == 'RM_ReleaseSpectate' then derbyReleased[target] = payload end
   end,
   RegisterEvent = function () end,
   CreateEventTimer = function (name) timers[name] = true end,
@@ -194,6 +196,30 @@ check(lastDerby.winner == 'Alice', 'winner broadcast')
 check(timers['RM_DerbyTick'] == nil, 'derby tick timer cancelled')
 check(type(lastChat) == 'string' and lastChat:find('WINNER: Alice', 1, true),
   'chat announces the winner')
+
+-- ---------------------------------------------------------------------------
+-- Every driver gets their car back, STAGGERED.
+--
+-- A derby ends with almost the whole field removed -- that is what a derby is --
+-- so it is the heaviest mass respawn in the mod. It was also the last one still
+-- firing a bare broadcast that put every car back on the same tick, which is
+-- precisely the refused-spawn / interpenetration case the ordering prevents.
+-- It goes through the same respawnField the racing side uses now.
+-- ---------------------------------------------------------------------------
+local derbyBack, derbyOrders = 0, {}
+for pid = 1, 3 do
+  local r = derbyReleased[pid]
+  if r then
+    derbyBack = derbyBack + 1
+    check(r.source == 'derby', 'driver ' .. pid .. ' is released by the DERBY, not the race')
+    check(type(r.order) == 'number' and r.count == 3,
+      'driver ' .. pid .. ' is told its place in the respawn order')
+    if r.order then derbyOrders[r.order] = (derbyOrders[r.order] or 0) + 1 end
+  end
+end
+check(derbyBack == 3, 'every derby participant gets their car back, not just the winner')
+check(derbyOrders[1] == 1 and derbyOrders[2] == 1 and derbyOrders[3] == 1,
+  'and the order is a clean 1..3 with no two cars spawning in the same slot')
 
 -- Display/results order: winner first, then latest-out first.
 check(lastDerby.players[1].name == 'Alice', 'P1 Alice (winner)')

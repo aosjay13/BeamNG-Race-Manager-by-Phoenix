@@ -117,6 +117,50 @@ for event, handler in server:gmatch("MP%.RegisterEvent%s*%(%s*'([%w_]+)'%s*,%s*'
       .. '", which is not defined in the server plugin')
 end
 
+-- ---------------------------------------------------------------------------
+-- 5. The four build stamps must agree.
+--
+-- This mod ships as three separately-deployed pieces -- the server plugin is
+-- copied to Resources/Server, the client zip is pushed by BeamMP, and BeamNG
+-- caches UI files -- so any one of them can be older than the others. That
+-- failure is silent in the worst way: Angular ignores a call to a scope function
+-- a stale app.js does not have, so a button does nothing and no console
+-- anywhere says a word. The stamp exists so the three can be compared at a
+-- glance, which only works if they are actually kept in step.
+--
+-- Remembering to bump all of them has already failed once (two client-side
+-- fixes shipped under one stamp, so the build line read as matching while a
+-- client was a fix behind). Checking it here is cheaper than remembering.
+-- ---------------------------------------------------------------------------
+local appJs   = readFile('ui/modules/apps/RaceManager/app.js')
+local appJson = readFile('ui/modules/apps/RaceManager/app.json')
+
+local stamps = {
+  ['server/RaceManager/main.lua']          = server:match("RM_BUILD%s*=%s*'([^']+)'"),
+  ['lua/ge/extensions/raceManager.lua']    = client:match("RM_BUILD%s*=%s*'([^']+)'"),
+  ['ui/modules/apps/RaceManager/app.js']   = appJs:match("APP_BUILD%s*=%s*'([^']+)'"),
+  ['ui/modules/apps/RaceManager/app.json'] = appJson:match('"version"%s*:%s*"([^"]+)"'),
+}
+
+local reference, referenceFrom = nil, nil
+for where, stamp in pairs(stamps) do
+  expect(stamp ~= nil, 'found a build stamp in ' .. where)
+  if stamp and not reference then reference, referenceFrom = stamp, where end
+end
+for where, stamp in pairs(stamps) do
+  expect(stamp == reference,
+    where .. ' is stamped "' .. tostring(stamp) .. '" but ' .. tostring(referenceFrom)
+      .. ' is "' .. tostring(reference) .. '" -- the pieces are deployed '
+      .. 'separately, and a stamp that disagrees is exactly the mismatch it '
+      .. 'exists to make visible')
+end
+
+-- The stamp is the released package version, so it has to look like one: the
+-- git tag the package is published under is this with a "v" in front.
+expect(reference ~= nil and reference:match('^%d+%.%d+%.%d+$') ~= nil,
+  'the build stamp is a plain semver ("' .. tostring(reference)
+    .. '"), matching the release tag it ships under')
+
 if fails == 0 then
   print('wiring_test: ' .. checks .. ' checks, 0 failures')
 else

@@ -88,34 +88,52 @@ check(lastState.qualiLapLimit == 2, 'lap allowance set to 2')
 RM_onSetGhostQuali(1, '{"enabled":true}')
 check(lastState.ghostQuali == true, 'ghost qualifying armed')
 
+-- Qualifying runs the SAME lifecycle a race does: form the grid, hold the
+-- field, count down, run the session, take finished cars off and give every car
+-- back. It used to skip straight to a running phase with no grid at all, which
+-- is why a driver's first crossing of the line was an out-lap and a "2 lap"
+-- session took three or four laps to get through.
 RM_onStartQualifying(1)
-check(lastState.phase == 'qualifying', 'qualifying started')
-check(driver('Alice').status == 'qualifying', 'entrants are put on track')
-check(driver('Dan').status == 'waiting', 'a non-entrant stays a spectator')
+check(lastState.phase == 'grid', 'Start Qualifying forms a grid, exactly like a race')
+check(driver('Alice').gridPos ~= nil, 'entrants are gridded for qualifying')
+check(driver('Alice').status == 'gridded', 'and are held on the grid, not loose on track')
+check(driver('Dan').gridPos == nil, 'a non-entrant is left off the qualifying grid')
 check(driver('Alice').joined == true, 'entry survives the session wipe')
+check(gridAssign[1] == driver('Alice').gridPos,
+  'every qualifying entrant is told which start position to take')
+
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+check(lastState.phase == 'qualifying', 'the qualifying session is running')
+check(driver('Alice').status == 'qualifying', 'entrants are out on track')
+check(driver('Alice').currentLap == 1, 'lap 1 starts at the line, with no out-lap')
+check(driver('Dan').status == 'waiting', 'a non-entrant stays a spectator')
 
 -- A non-entrant's lap is not recorded at all.
-RM_onQualiLap(4, '{"lapTime":50.0}')
+RM_onLap(4, '{"lapTime":50.0}')
 check(driver('Dan').qualiBest == nil, 'a non-entrant cannot set a qualifying time')
 
 -- Alice: two laps, then her session is done and a third lap is ignored.
-RM_onQualiLap(1, '{"lapTime":95.0}')
-RM_onQualiLap(1, '{"lapTime":93.0}')
+RM_onLap(1, '{"lapTime":95.0}')
+RM_onLap(1, '{"lapTime":93.0}')
 check(driver('Alice').qualiLaps == 2, 'both of Alice\'s laps counted')
 check(driver('Alice').status == 'finished', 'Alice used her lap allowance')
-RM_onQualiLap(1, '{"lapTime":80.0}')
+check(spectated[1] ~= nil, 'a driver who is done is taken off the track')
+RM_onLap(1, '{"lapTime":80.0}')
 check(driver('Alice').qualiBest == 93.0, 'a lap past the allowance is ignored')
 check(driver('Alice').qualiLaps == 2, 'and does not add to the lap count')
 
-RM_onQualiLap(2, '{"lapTime":91.0}')   -- Bob, one lap: fastest so far
-RM_onQualiLap(3, '{"lapTime":97.0}')   -- Cara, one lap
+RM_onLap(2, '{"lapTime":91.0}')   -- Bob, one lap: fastest so far
+RM_onLap(3, '{"lapTime":97.0}')   -- Cara, one lap
 
 -- The session closes itself once every entrant has used their allowance.
 check(lastState.phase == 'qualifying', 'the session runs while drivers have laps left')
-RM_onQualiLap(2, '{"lapTime":99.0}')
-RM_onQualiLap(3, '{"lapTime":99.0}')
+released = {}
+RM_onLap(2, '{"lapTime":99.0}')
+RM_onLap(3, '{"lapTime":99.0}')
 check(lastState.phase == 'waiting', 'qualifying closes when every allowance is spent')
 check(driver('Bob').qualiBest == 91.0, 'best laps survive the close')
+check(#released >= 3, 'every driver gets their car back when qualifying ends')
 
 -- ===========================================================================
 -- Grid order: qualifying, random and custom
@@ -188,25 +206,37 @@ check(#released > 0 and released[#released].source == 'race',
   'the flag gives every removed car back')
 
 -- ===========================================================================
--- Qualifying time limit: the clock closes the session on its own
+-- Qualifying time limit: the clock arms the final lap
 -- ===========================================================================
+-- Expiry does NOT end a timed session — the drivers out there are mid-lap, and
+-- that lap is the one that matters. See tests/timed_quali_test.lua for the whole
+-- final-lap path and its edge cases; this only pins the transition.
 RM_onResetLeaderboard(1)
 RM_onSetQualiLimits(1, '{"laps":0,"seconds":2}')
 check(lastState.qualiTimeLimit == 2, 'a 2 second qualifying limit is accepted')
 RM_onJoinRace(1, '{"join":true}')
 RM_onStartQualifying(1)
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
 check(lastState.phase == 'qualifying', 'timed qualifying started')
 for _ = 1, 10 do RM_Tick() end     -- +1.0s
 check(lastState.phase == 'qualifying', 'the session runs while time remains')
 check(lastState.qualiLeft ~= nil and lastState.qualiLeft < 2,
   'the remaining time counts down in the broadcast')
 for _ = 1, 15 do RM_Tick() end     -- past the limit
-check(lastState.phase == 'waiting', 'the time limit closes qualifying')
-check(type(lastChat) == 'string' and lastChat:find('time limit', 1, true) ~= nil,
-  'chat announces why qualifying ended')
+check(lastState.phase == 'qualifying',
+  'the time limit does not end the session out from under a driver mid-lap')
+check(lastState.finalLap == true, 'it arms the final lap instead')
+check(type(lastChat) == 'string' and lastChat:find('FINAL LAP', 1, true) ~= nil,
+  'chat tells every driver the lap they are on is their last')
+-- The crossing is what ends it, and it takes the car off the track.
+RM_onLap(1, '{"lapTime":88}')
+check(lastState.phase == 'waiting', 'the last driver home closes qualifying')
 
 -- Limits cannot be changed while qualifying is running.
 RM_onStartQualifying(1)
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
 RM_onSetQualiLimits(1, '{"laps":9,"seconds":900}')
 check(lastState.qualiLapLimit == 0 and lastState.qualiTimeLimit == 2,
   'qualifying limits are locked while the session runs')

@@ -64,6 +64,25 @@ same zip into your BeamNG user folder's `mods/` directory instead.
 > ignores unstamped ones (a notice tells you when that happens), but the
 > outdated copy should still be deleted from `Resources/Server/`.
 
+### Versions
+
+**Deploy all three pieces together.** The server plugin, the client zip and
+the UI files are installed separately and BeamNG caches UI files, so any one
+of them can end up older than the others — and that failure is silent: a
+button backed by a function a stale `app.js` does not have simply does
+nothing, with no error in any console.
+
+Every piece reports the same version, and the app header shows all of them,
+so a mismatch is a glance rather than a hunt. That version is also the
+release tag the package ships under, so `v0.4.0` on the releases page,
+`0.4.0` in the app header and `0.4.0` in the app list all mean the same
+build. If the header shows three numbers that are not identical, something
+did not get copied.
+
+> Releases before **v0.4.0** reported an unrelated internal number (`3.x.y`)
+> in the app header, and the app list showed a third number again. Those are
+> one number now.
+
 ### Track layouts (persistent, per-map)
 
 The **Track Layouts** panel at the bottom of the editor stores named
@@ -89,8 +108,14 @@ Everything below happens inside the **Race Manager** window in game. The
 session flow is always the same:
 
 ```
-Build/Load a track  →  Start Quali  →  Generate Grid  →  Start Countdown  →  Race  →  Results
+Build/Load a track  →  Start Quali  →  Start Countdown  →  Qualifying
+                    →  Generate Grid  →  Start Countdown  →  Race  →  Results
 ```
+
+Qualifying and the race run the **same** session lifecycle: form the grid,
+hold the field, count down, run, take finished cars off the track, give
+everybody their car back. The only things that differ are the lap target and
+how a lap is scored (best lap in qualifying, running order in the race).
 
 ### Step 1 — Open the app
 
@@ -183,15 +208,31 @@ put on the grid, and the bar shows how many have entered. Withdrawing
 An admin can flip the mode to **Everyone races** if a session is simpler that
 way — then every connected player is in the field, which is how the plugin
 behaved before entry lists existed. Entry survives a **Start Quali**, so
-drivers only ever have to join once per event.
+drivers only ever have to join once per event (**Reset** stands the whole
+field down and everyone joins again).
+
+The two modes are two answers to "who is in the field" and nothing more —
+from there they run identical code. A field of drivers who all pressed **Join
+Race** grids exactly the same way, slot for slot, as flipping to **Everyone
+races**.
 
 ### Step 5 — Qualifying
 
-Press **Start Quali**. Every driver's first crossing of the start/finish
-line starts their flying lap (the out-lap is free), and each full lap
-through all gates posts to the server — the table shows everyone's **Best
-Lap**, laps run and live provisional grid order, fastest on top. Only your
-best counts. **End Session** closes qualifying but keeps the times.
+Press **Start Quali**, then **Start Countdown**. Start Quali forms a
+qualifying grid exactly the way Generate Grid forms a race one — every
+entrant is stood on a start position and held — and the countdown releases
+the field.
+
+Lap 1 starts at the line, so **three qualifying laps means three laps**.
+There is no out-lap: qualifying used to begin wherever each driver happened
+to be parked, which cost everyone a lap before their first one counted and
+made a "3 lap" session take five or six.
+
+Each full lap through all gates posts to the server — the table shows
+everyone's **Best Lap**, laps run and live provisional grid order, fastest on
+top. Only your best counts. A driver who uses their lap allowance is taken
+off the track until the session ends, then gets their car back with everyone
+else. **End Session** closes qualifying early but keeps the times.
 
 Three qualifying options sit in the admin settings:
 
@@ -199,7 +240,29 @@ Three qualifying options sit in the admin settings:
 |---------|--------------|
 | **Ghost quali** | Rival cars stop being obstacles for the session, so a flying lap can't be ruined by traffic. Ghosted cars are faded so you can see who they are. |
 | **Quali laps** | Timed laps each driver gets. Their session ends when they use them up; the whole session closes once nobody has laps left. `0` = unlimited. |
-| **Quali mins** | Wall-clock limit. The header shows the countdown, and the session closes itself when it expires. `0` = no limit. |
+| **Quali mins** | Wall-clock limit. The header shows the countdown; when it expires the session runs a **final lap** (below) rather than stopping dead. `0` = no limit. |
+
+**The final lap.** When a timed session's clock expires it does not end the
+session — everyone still out is mid-lap, and in qualifying that is the lap
+that matters. Instead:
+
+- chat and the header announce **FINAL LAP**; the clock is replaced by that
+  badge;
+- every driver stays controllable and on track;
+- each driver's session ends **as they cross the start/finish line** — their
+  car is taken off the track exactly as it is when a lap allowance runs out;
+- when the last one is home, everybody respawns together.
+
+That last lap still **counts**: a time set on it goes into your Best Lap and
+can move you up the order. The grid is not frozen at expiry, it settles when
+the last driver has taken the flag.
+
+Two rules keep it from hanging. A crossing the server sees *after* expiry is
+terminal — there is no extra lap for whoever was closest to the line, and
+arrival order at the server decides it, the same way it decides every other
+question of who was first. And a driver who never comes round (parked, in the
+pits, never left the grid) is bounded by a **3 minute grace**, after which
+the stragglers are taken where they stand and the session closes normally.
 
 Both limits are locked while qualifying is actually running, so nobody has
 the rug pulled mid-lap.
@@ -221,6 +284,10 @@ the rug pulled mid-lap.
    position and held there** — you cannot move until the countdown finishes,
    so nobody jumps the start. The header shows your slot and a `HOLD` tag.
    If there are more drivers than placed start positions, chat warns you.
+   Cars are ghosted while the field forms up and land one after another
+   rather than all at once, so a full grid cannot refuse a placement for an
+   occupied slot or arrive interpenetrated and blow itself apart; collisions
+   come back once everyone is standing still on their slot.
 4. Press **Start Countdown**: everyone gets a synchronized 3‑2‑1‑**GO!**
    overlay, every car is released by that same broadcast, and the race clock
    starts.
@@ -231,6 +298,10 @@ the rug pulled mid-lap.
    for every client.
 6. The race ends when everyone has finished (or you press **End Session**,
    which DNFs anyone still out). Disconnecting mid-race is an automatic DNF.
+   At the flag **every** participant gets their car back — ghosted and
+   staggered, the same as a grid forming — and each driver's camera is put
+   explicitly back on their *own* car rather than on whichever vehicle the
+   game happens to pick.
 
 ### Step 7 — Results
 
@@ -285,7 +356,13 @@ The name is **display only**. Timing, checkpoints, scoring and the starting grid
 all key on the BeamMP player id exactly as before — an alias is never used as a
 lookup, so renaming somebody mid-session moves nothing but the text on screen.
 
-**Names last for the session only.** That is a consequence of the accounts
+**Names last as long as the connection does.** They survive Start Quali,
+Generate Grid, a whole race, **Reset**, and a second race after that — a name
+is bound to the BeamMP player id in a registry that outlives the per-session
+driver records, and never to a vehicle (a vehicle id changes on every
+respawn, so a name attached to one would not survive a single reset).
+
+They do **not** survive a reconnect, and that is a consequence of the accounts
 restriction rather than a choice: every player is a guest, BeamMP recycles
 session ids between players, and a guest name is regenerated on every join, so
 there is nothing stable to attach a lasting name to. If a driver reconnects,
@@ -499,7 +576,10 @@ running a derby never touches qualifying/race state). Open it with the
      moving or you're **Demolished**. Disconnecting counts as Disqualified.
    - An eliminated driver's vehicle is removed and their camera is forced into
      **freecam** until the derby ends; they cannot spawn a replacement car.
-     When the derby finishes, their car is **put back** automatically.
+     When the derby finishes, their car is **put back** automatically —
+     ghosted and staggered like every other mass respawn, and this is the
+     biggest one in the mod, since a derby ends with nearly the whole field
+     removed. Each driver's camera goes back on their own car.
 5. The driver table shows who's still in, who's out (with reason and
    elimination time) and the winner — under their **display name** if an admin
    set one (see *Display names* above), in both the standings and the exported
@@ -567,7 +647,7 @@ jbeam.
 | *"Renamed a bunch of parts on some vehicles"* | The Garage List matches an exact configuration **signature** built from part names. Renamed parts change the signature without the car changing, so lists captured before v0.39 stop matching and drivers are rejected in a car that is plainly approved. Only a re-capture can fix it | Fixed as far as it can be: entries now record the game build they were captured on, and a rejection caused by that skew says so instead of reading as an ordinary "setup not allowed" |
 | New Pause-menu **Vehicle Management** flow with its own repair/reset buttons | A reset the input action filter cannot see, so the "reset keys go dead" layer no longer covers every path | Already covered — the `onVehicleResetted` restore catches it and was built for exactly this |
 | *"Improved vehicle teleporting detector `objectTeleported()`"* (fewer false negatives on fast vehicles) | The mod teleports the car itself (blocked-reset restore, grid placement, checkpoint respawn) and has to recognise the resulting reset hook as its own echo. A later-arriving echo from a fast car is no longer where it was put | Fixed: the "is this our own teleport" tolerance now scales with the distance the car could actually have covered, instead of a flat 2 m |
-| `be:*` accessors called out as a framerate/GC cost, plus a new startup warning for slow extensions | The player's vehicle is read several times per frame | Fixed: uses `getPlayerVehicle(0)` / `getAllVehicles()`, falling back to the old calls on builds without them |
+| `be:*` accessors called out as a framerate/GC cost, plus a new startup warning for slow extensions | The player's vehicle is read several times per frame | Fixed: uses `getPlayerVehicle(0)` / `getAllVehicles()`, falling back to the old calls on builds without them. The position behind those reads is now sampled **once per frame** and shared, and the gate draw loop caches its geometry, labels and colours instead of rebuilding them every frame for every gate |
 | *"`guihooks.trigger` … now communicates only with the main UI HTML"* | Every UI push goes to the main UI app | No change needed |
 | Folder-based translations (`locales/translations/<lang>/*.json`) | The mod ships no translation keys of its own; its app name and description are literal strings, which stay supported | No change needed |
 

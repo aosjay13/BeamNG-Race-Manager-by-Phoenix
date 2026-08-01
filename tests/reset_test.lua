@@ -116,12 +116,22 @@ RM.onExtensionLoaded()
 -- Every broadcast from the current server plugin carries the protocol stamp;
 -- the client drops anything without it (see the stale-copy test below).
 local function serverState(t) t.rmProtocol = 2; handlers['RM_Update'](t) end
-local function gridAssign(slot) handlers['RM_GridAssign']({ slot = slot }) end
 local function derbyState(t) t.rmProtocol = 2; handlers['RM_DerbyUpdate'](t) end
 local function resetHook() RM.onVehicleResetted(veh.id) end
 local function frames(seconds, step)
   step = step or 0.1
   for _ = 1, math.floor(seconds / step + 0.5) do RM.onUpdate(step) end
+end
+
+-- A grid slot no longer teleports the car on the tick it arrives: the placement
+-- is QUEUED so a whole field can be ghosted and staggered rather than landing on
+-- one another. Pumping a few very short frames here runs this client's turn in
+-- that queue, and the steps are deliberately tiny -- the placement teleport is
+-- recognised as our own for TUNE-sized window afterwards, and burning that
+-- window in the harness would make the echo look like a driver reset.
+local function gridAssign(slot, order, count)
+  handlers['RM_GridAssign']({ slot = slot, order = order, count = count })
+  frames(0.05, 0.01)
 end
 local function countSent(event)
   local n = 0

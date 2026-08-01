@@ -24,7 +24,11 @@ angular.module('beamng.apps')
       // ------------------------------------------------------------------
       // State
       // ------------------------------------------------------------------
-      $scope.phase = 'waiting';   // waiting | qualifying | grid | countdown | racing | finished
+      $scope.phase = 'waiting';   // waiting | grid | countdown | qualifying | racing | finished
+      // 'race' | 'quali' — which session the phases above belong to. Qualifying
+      // runs the same lifecycle a race does, so this is what tells them apart.
+      $scope.sessionKind = 'race';
+      $scope.sessionLaps = 0;     // lap target of the current session (0 = none)
       $scope.raceTime = 0;
       $scope.totalLaps = 5;
       $scope.countdown = null;    // null = hidden, 3..1 = number, 0 = GO!
@@ -95,6 +99,7 @@ angular.module('beamng.apps')
       $scope.qualiLapLimit = 0;
       $scope.qualiTimeLimit = 0;
       $scope.qualiLeft = null;        // seconds remaining, null = no limit
+      $scope.finalLap  = false;       // quali clock expired: this lap is the last
       // Forced spectator mode.
       $scope.spectating = false;
       $scope.spectatorReason = null;
@@ -299,6 +304,14 @@ angular.module('beamng.apps')
         racing:     'Racing',
         finished:   'Race Over'
       };
+      // The grid and the countdown are shared by both sessions, so on their own
+      // they no longer say what is about to happen. An admin who has just
+      // pressed Start Quali needs to see that the grid they are looking at is a
+      // qualifying grid, not a race one.
+      var QUALI_PHASE_LABELS = {
+        grid:      'Quali Grid',
+        countdown: 'Quali Countdown'
+      };
       var STATUS_LABELS = {
         waiting:    'Waiting',
         qualifying: 'On Track',
@@ -338,8 +351,10 @@ angular.module('beamng.apps')
       // silent in the worst way: Angular ignores a call to a scope function a
       // stale app.js does not have, so a button does nothing and no console
       // anywhere says a word. Showing all three makes it a glance instead of a
-      // hunt. Bump this with main.lua and raceManager.lua.
-      var APP_BUILD = '3.4.6-one-hold-path';
+      // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
+      // -- they are the released package version and wiring_test fails if the
+      // four disagree.
+      var APP_BUILD = '0.4.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -360,7 +375,12 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.setAlias(' + row.id + ", '')");
       };
 
-      $scope.phaseLabel = function () { return PHASE_LABELS[$scope.phase] || $scope.phase; };
+      $scope.phaseLabel = function () {
+        if ($scope.sessionKind === 'quali' && QUALI_PHASE_LABELS[$scope.phase]) {
+          return QUALI_PHASE_LABELS[$scope.phase];
+        }
+        return PHASE_LABELS[$scope.phase] || $scope.phase;
+      };
       $scope.statusLabel = function (s) { return STATUS_LABELS[s] || s; };
 
       // Full text for a driver's status cell: the server's ruling reason wins
@@ -460,6 +480,13 @@ angular.module('beamng.apps')
         return $scope.phase === 'qualifying' || $scope.phase === 'countdown'
           || $scope.phase === 'racing' || $scope.derby.phase === 'running';
       };
+      // A session whose rules are locked: the field is standing on the grid or
+      // running. Start Quali and Generate Grid are refused by the server from
+      // here on, so the buttons say so rather than looking broken.
+      $scope.sessionUnderWay = function () {
+        return $scope.phase === 'countdown' || $scope.phase === 'racing'
+          || $scope.phase === 'qualifying';
+      };
       // Minimal mode: not logged in as an admin AND a session is live. The
       // whole chrome (header, session controls, editor, derby panel, login bar)
       // is removed from the DOM and only the leaderboard is left on screen.
@@ -473,15 +500,16 @@ angular.module('beamng.apps')
         return !$scope.isAdmin && $scope.derby.phase === 'running';
       };
 
-      // Qualifying view while the quali session runs (and in waiting, where a
-      // closed quali's provisional order is still the useful thing to show if
-      // any times exist); Race view from Grid Locked onward.
+      // Qualifying view for the whole of a qualifying session — including its
+      // grid and countdown, which a qualifying session now has just like a race
+      // does — and in waiting, where a closed quali's provisional order is still
+      // the useful thing to show if any times exist. Race view otherwise.
       $scope.isQualiView = function () {
-        if ($scope.phase === 'qualifying') { return true; }
-        if ($scope.phase === 'waiting') {
-          return $scope.drivers.some(function (d) { return d.qualiBest != null; });
+        if ($scope.phase === 'waiting' || $scope.phase === 'finished') {
+          return $scope.drivers.some(function (d) { return d.qualiBest != null; })
+            && $scope.phase === 'waiting';
         }
-        return false;
+        return $scope.sessionKind === 'quali';
       };
 
       // ------------------------------------------------------------------
@@ -528,6 +556,12 @@ angular.module('beamng.apps')
         if (!data) { return; }
         $scope.$evalAsync(function () {
           $scope.phase = data.phase || 'waiting';
+          // Which session the shared lifecycle is running. Qualifying and racing
+          // go through the same phases now (grid -> countdown -> running ->
+          // done), so the phase alone no longer says which one you are looking
+          // at — this does, and it is what the qualifying/race view switches on.
+          $scope.sessionKind = data.sessionKind === 'quali' ? 'quali' : 'race';
+          if (typeof data.sessionLaps === 'number') { $scope.sessionLaps = data.sessionLaps; }
           $scope.raceTime = data.raceTime || 0;
           $scope.drivers = data.drivers || [];
           // Note gains/losses before the table re-renders, so the arrows in the
@@ -573,6 +607,11 @@ angular.module('beamng.apps')
             $scope.qualiTimeLimit = data.qualiTimeLimit;
           }
           $scope.qualiLeft = (typeof data.qualiLeft === 'number') ? data.qualiLeft : null;
+          // The qualifying clock has expired and everyone still out is on their
+          // last lap. The session has NOT ended: drivers keep driving until they
+          // cross the line, so the header says so rather than showing a clock
+          // frozen on zero and nothing else.
+          $scope.finalLap = data.finalLap === true;
           $scope.garage = toArray(data.garage);
           $scope.garageEnforce = !!data.garageEnforce;
           // Track whether an admin is running the session. When one appears and
