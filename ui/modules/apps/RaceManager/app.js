@@ -352,7 +352,7 @@ angular.module('beamng.apps')
       // stale app.js does not have, so a button does nothing and no console
       // anywhere says a word. Showing all three makes it a glance instead of a
       // hunt. Bump this with main.lua and raceManager.lua.
-      var APP_BUILD = '3.5.4-derby-draw-cache';
+      var APP_BUILD = '3.5.5-garage-view-cache';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)

@@ -339,6 +339,50 @@ check(rejected[3] ~= nil and rejected[3].detail == 'setup signature not on the G
 RM_onRemoveGarageEntry(1, '{"index":2}')
 check(#lastState.garage == 1, 'the versioned entry removed again')
 
+-- ---------------------------------------------------------------------------
+-- The broadcast view of the Garage List is cached
+-- ---------------------------------------------------------------------------
+-- It is rebuilt into every state broadcast, which is a table per approved car
+-- three times a second for the life of the server -- describing a list an admin
+-- touches perhaps twice a session. So it is built once and held.
+--
+-- Caching it moves the risk from "wasteful" to "wrong": a view that does not
+-- notice a capture shows drivers a Garage List the server is no longer
+-- enforcing. Invalidation is one rule -- saveGarageToDisk, which every mutation
+-- already goes through -- and these checks are what say that rule is actually
+-- being applied on each of the four paths that can change it.
+local viewBefore = lastState.garage
+RM_onRequestState(1)
+check(lastState.garage == viewBefore,
+  'a broadcast that changes nothing reuses the same list, it does not rebuild it')
+RM_onPlayerJoin(2)
+check(lastState.garage == viewBefore, 'and it survives other traffic untouched')
+
+-- Capture: the view has to change, and say the right thing.
+RM_onWhitelistVehicle(1, '{"model":"covet","label":"Covet - Track","sig":"covetsig"}')
+check(lastState.garage ~= viewBefore, 'a capture rebuilds the view')
+check(#lastState.garage == 2 and lastState.garage[2].label == 'Covet - Track',
+  'and the captured car is in it')
+
+-- Enforcement flag: same list, but the flag beside it moved.
+viewBefore = lastState.garage
+RM_onSetGarageEnforce(1, '{"enabled":false}')
+check(lastState.garageEnforce == false, 'enforcement switched off')
+check(lastState.garage ~= viewBefore, 'flipping enforcement rebuilds the view too')
+RM_onSetGarageEnforce(1, '{"enabled":true}')
+
+-- Removal.
+viewBefore = lastState.garage
+RM_onRemoveGarageEntry(1, '{"index":2}')
+check(lastState.garage ~= viewBefore, 'removing an entry rebuilds the view')
+check(#lastState.garage == 1, 'and it is gone from the list clients see')
+
+-- Clearing.
+viewBefore = lastState.garage
+RM_onClearGarage(1)
+check(lastState.garage ~= viewBefore, 'clearing the garage rebuilds the view')
+check(#lastState.garage == 0, 'and leaves nothing in it')
+
 -- Removing the only entry disables enforcement (an empty list must not lock
 -- every player out).
 rejected = {}

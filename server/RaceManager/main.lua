@@ -500,10 +500,10 @@ local RM_PROTOCOL = 2
 -- contract. That narrower rule is what let two client-side fixes ship under one
 -- stamp: the build line read as matching while a client was a fix behind, which
 -- is precisely the situation this was added to make visible.
-local RM_BUILD = '3.5.4-derby-draw-cache'
+local RM_BUILD = '3.5.5-garage-view-cache'
 
 local function broadcastState(targetPid)
-  local garageView = garageSnapshot and garageSnapshot() or {}
+  local garageInfo = garageSnapshot and garageSnapshot() or {}
   -- Per-player admin status. Only meaningful on a TARGETED send -- the global
   -- broadcast is one payload for everybody, so this key is left off there and
   -- clients ignore it when absent. This is what makes RM_RequestState (which
@@ -546,8 +546,8 @@ local function broadcastState(targetPid)
     finalLap       = race.finalLap,
     finalLapLeft   = race.finalLap and math.max(race.finalLapLeft, 0) or nil,
     -- Approved vehicle/setup list (Module 4).
-    garage        = garageView.list,
-    garageEnforce = garageView.enforce,
+    garage        = garageInfo.list,
+    garageEnforce = garageInfo.enforce,
     -- True when at least one session is currently logged in as an admin. Lets
     -- non-admin clients auto-spectate (skip the login prompt) when someone is
     -- already running the session, while still exposing a way back to login.
@@ -2341,7 +2341,21 @@ local function getGarage()
   return garage
 end
 
+-- The compact view every state broadcast carries, held until the garage
+-- actually changes. nil means "rebuild on the next broadcast".
+--
+-- Rebuilding it per broadcast meant a table per approved car, three times a
+-- second, for the lifetime of the server -- describing a list an admin touches
+-- perhaps twice in a session.
+local garageView = nil
+
 local function saveGarageToDisk()
+  -- The one place the cached view is dropped, and deliberately the only one.
+  -- Persisting the garage and invalidating the view are the same event: every
+  -- path that alters the list or the enforcement flag has to come through here
+  -- or the change would not survive a restart either, so there is no second rule
+  -- to remember somewhere else.
+  garageView = nil
   ensureLayoutsDir()
   local f, ferr = io.open(GARAGE_FILE, 'w')
   if not f then return false, tostring(ferr) end
@@ -2353,7 +2367,15 @@ end
 -- Assigned to the forward-declared local near broadcastState so every state
 -- broadcast can carry the current Garage List without the racing code knowing
 -- how it is stored.
+--
+-- The table handed back is SHARED between broadcasts, which is the whole point
+-- of caching it. Nothing may write to it: broadcastState only reads two fields
+-- off it, and the encoder does not touch its argument.
 garageSnapshot = function ()
+  if garageView then return garageView end
+  -- getGarage() first: the lazy load from disk has to have happened before the
+  -- view is built off it, and that is what makes the initial load need no
+  -- invalidation of its own.
   local g = getGarage()
   -- Signatures can be long; the UI only ever displays model/label, so ship a
   -- compact view (the signature stays server-side).
@@ -2361,7 +2383,8 @@ garageSnapshot = function ()
   for i, e in ipairs(g.list) do
     list[i] = { model = e.model, label = e.label }
   end
-  return { list = list, enforce = g.enforce }
+  garageView = { list = list, enforce = g.enforce }
+  return garageView
 end
 
 -- Enforcement only bites when it is switched on AND at least one car has been
