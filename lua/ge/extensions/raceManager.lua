@@ -42,7 +42,7 @@ local LAP_DEBOUNCE   = 2.0      -- seconds; double-fire guard on the S/F gate.
                                 -- re-fires, not bound real lap times.
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '3.4.3-hold-restore'
+local RM_BUILD = '3.4.4-hold-on-reset'
 
 local PROGRESS_EVERY = 0.3      -- seconds between live-position reports
 -- Live lap clock for the driver's own HUD. The lap start is already known here
@@ -78,7 +78,14 @@ local visualize        = true
 -- slot number per driver and this client puts its own car on that slot.
 local startPositions = {}
 local gridSlot       = nil       -- slot the server assigned us for this race
-local gridFrozen     = false     -- true while the car is held for the start
+local gridFrozen     = false     -- true while the freeze command has been issued
+-- What the session WANTS held ('race' | 'derby' | nil), as opposed to whether
+-- the freeze is currently applied. Separating intent from state is what lets the
+-- freeze be put back at the one moment it is known to be lost: the vehicle reset
+-- that a placement teleport causes. Forward-declared with the setter because
+-- onVehicleResetted sits above the hold code and needs both.
+local holdWanted     = nil
+local setLocalVehicleFrozen      -- forward declaration, assigned further down
 
 -- Rallycross joker route (Module 2): a second, completely separate gate set
 -- describing the alternate route. Same checkpoint format as `route`; it travels
@@ -1137,7 +1144,19 @@ function M.onVehicleResetted(vehId)
   if not veh or veh:getID() ~= vehId then return end
   -- Our own teleport coming back at us (a restore, a grid placement, a preview).
   -- Never a driver reset, so it must not be counted, blocked or reported.
-  if isSelfTeleportEcho() then return end
+  if isSelfTeleportEcho() then
+    -- ...but this IS the moment a placement teleport wipes the freeze, because
+    -- the reset reloads the vehicle's Lua VM and controller state with it. If a
+    -- hold is wanted, put it straight back here rather than polling for it: this
+    -- fires exactly when it is needed and nowhere else, so the drivetrain is
+    -- left alone afterwards and a driver can still rev and pick a gear against
+    -- the hold.
+    if holdWanted then
+      setLocalVehicleFrozen(true, holdWanted)
+      log('I', 'raceManager', 'Hold re-applied after placement reset (' .. tostring(holdWanted) .. ')')
+    end
+    return
+  end
   if spectatorLock then
     -- Out of the session: a reset must never put a spectator back on track.
     removeLocalVehicle()
@@ -1257,7 +1276,7 @@ end
 -- car loose in the middle of its countdown.
 local freezeSource = nil
 
-local function setLocalVehicleFrozen(frozen, source)
+setLocalVehicleFrozen = function (frozen, source)
   local veh = playerVehicle()
   if not veh then return false end
   local ok = pcall(function ()
@@ -1287,6 +1306,51 @@ local function placeOnStartPosition(sp)
   return ok
 end
 
+-- Holding a car for a standing start.
+--
+-- Three things apply the freeze, and every one of them applies it EXACTLY ONCE:
+-- immediately when the hold is requested (all a race grid has ever needed), again
+-- from onVehicleResetted when the placement teleport's reset lands and wipes it
+-- (the case a long derby form-up hits), and a timed backstop for when that reset
+-- never arrives. Nothing re-freezes on a loop -- doing so re-pins the car at
+-- whatever state it is in and flattens the revs, which is what broke revving
+-- against the hold in 3.4.2.
+local pendingHold = nil   -- { left = seconds, source = 'race' | 'derby' }
+
+local function requestHold(source, delay)
+  holdWanted = source
+  local ok = setLocalVehicleFrozen(true, source)
+  if delay and delay > 0 then
+    pendingHold = { left = delay, source = source }
+  end
+  if ok then
+    pushRouteState()
+    log('I', 'raceManager', 'Hold requested (' .. tostring(source) .. ')')
+  else
+    -- Never fail quietly: a car that should be held and is not looks exactly
+    -- like a start procedure that has not begun.
+    log('W', 'raceManager', 'Hold (' .. tostring(source) .. ') could not be applied yet')
+  end
+  return ok
+end
+
+local function cancelPendingHold()
+  pendingHold = nil
+end
+
+-- Timed backstop only. The immediate apply and the reset hook do the real work.
+local function holdUpdate(dt)
+  if not pendingHold then return end
+  pendingHold.left = pendingHold.left - dt
+  if pendingHold.left > 0 then return end
+  local source = pendingHold.source
+  pendingHold = nil
+  if holdWanted ~= source then return end   -- released while we waited
+  if setLocalVehicleFrozen(true, source) then
+    log('I', 'raceManager', 'Hold confirmed by backstop (' .. tostring(source) .. ')')
+  end
+end
+
 -- Server assigned this client a grid slot: stand the car on it and hold it.
 local function applyGridSlot(slot)
   gridSlot = slot
@@ -1300,7 +1364,7 @@ local function applyGridSlot(slot)
     return
   end
   if placeOnStartPosition(sp) then
-    setLocalVehicleFrozen(true, 'race')
+    requestHold('race')
     -- The grid slot is where the car legitimately stands, so it is also the
     -- position a blocked reset should restore to — facing down the track, not
     -- at whatever identity rotation happens to mean on this circuit.
@@ -1312,57 +1376,18 @@ local function applyGridSlot(slot)
   pushRouteState()
 end
 
--- Deferred hold.
---
--- A freeze is applied ONCE and then left alone. Re-applying it on a timer looks
--- harmless and is not: every call re-pins the car at whatever state it is in
--- right now, which disturbs the position it is supposed to be holding and
--- resets the drivetrain, so revs bleed away and a pre-selected gear will not
--- stick. Both are things a standing start depends on.
---
--- Why deferred at all: placing a car is a teleport, and BeamNG treats a teleport
--- as a vehicle reset. A freeze queued in the same frame can land while the
--- vehicle is still resetting and be discarded with it. A race grid placement is
--- a short hop and has always been fine applying the freeze immediately -- that
--- is the behaviour this restores. A derby form-up can move a car clear across
--- the map to an arena, which is a much longer reset, so the derby schedules its
--- freeze for a moment later instead. One application either way.
-local pendingHold = nil   -- { left = seconds, source = 'race' | 'derby' }
-
-local function scheduleHold(source, delay)
-  pendingHold = { left = delay or 0, source = source }
-end
-
-local function cancelPendingHold()
-  pendingHold = nil
-end
-
-local function holdUpdate(dt)
-  if not pendingHold then return end
-  pendingHold.left = pendingHold.left - dt
-  if pendingHold.left > 0 then return end
-  local source = pendingHold.source
-  pendingHold = nil
-  if setLocalVehicleFrozen(true, source) then
-    pushRouteState()
-    log('I', 'raceManager', 'Hold applied (' .. tostring(source) .. ')')
-  else
-    -- Never fail quietly: a car that should be held and is not looks exactly
-    -- like a start procedure that has not begun.
-    log('W', 'raceManager', 'Hold (' .. tostring(source) .. ') could not be applied')
-    pushNotice('grid', 'Could not hold your car for the start')
-  end
-end
-
 -- GO (or any exit from the start procedure): release the car.
 -- `source` names the mode letting go. A hold imposed by the other mode is left
 -- alone. Passing nil forces the release, which is what a session ending or the
 -- extension unloading wants: with no server left to lift it, a held car would
 -- stay held forever.
 local function releaseGridHold(source)
-  -- A hold scheduled but not yet applied has to be called off too, or an abort
-  -- during the delay would freeze the car a moment after it was let go.
-  if pendingHold and (not source or pendingHold.source == source) then
+  -- Intent goes first. Anything still pending -- the timed backstop, or a reset
+  -- echo that has yet to arrive -- checks holdWanted before re-applying, so
+  -- clearing it here is what stops a car being frozen a moment after it was
+  -- deliberately let go.
+  if not source or not holdWanted or holdWanted == source then
+    holdWanted = nil
     cancelPendingHold()
   end
   if not gridFrozen then return end
@@ -2037,8 +2062,7 @@ local function onDerbyGridAssign(rawData)
     -- Waiting for the reset to settle and then freezing once keeps the car
     -- pinned without re-applying, so the driver can still rev and pick a gear
     -- against the hold exactly as they can on a race grid.
-    scheduleHold('derby', DERBY_HOLD_DELAY)
-    log('I', 'raceManager', 'Derby form-up: holding in ' .. DERBY_HOLD_DELAY .. 's')
+    requestHold('derby', DERBY_HOLD_DELAY)
   end
 end
 
