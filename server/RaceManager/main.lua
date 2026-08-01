@@ -95,6 +95,9 @@ local function newRecord(pid)
   return {
     id         = pid,
     name       = MP.GetPlayerName(pid) or ('Player ' .. pid),
+    -- Admin-assigned readable name. Display only, cleared when the connection
+    -- is inherited by someone else. nil = show the real name.
+    alias      = nil,
     -- waiting | qualifying | gridded | racing | finished | dsq | dnf
     status     = 'waiting',
     joined     = false,      -- opted into the race (see race.entryMode)
@@ -126,12 +129,100 @@ local function clearProgress(rec)
   rec.distNext  = nil
 end
 
+-- ---------------------------------------------------------------------------
+-- Display aliases (presentation only -- NEVER a key)
+-- ---------------------------------------------------------------------------
+-- Everyone on this server is a BeamMP guest, so there is no stable per-player
+-- identity to bind a readable name to: the session id is recycled between
+-- players (see RM_onPlayerDisconnect) and the guest name is regenerated on every
+-- join. An alias is therefore scoped to the connection and lives ON THE PLAYER
+-- RECORD, not in a side table keyed by session id -- a side table would hand a
+-- departed player's alias to whoever inherits that id next.
+--
+-- Nothing here is ever used as a lookup key. Race logic keys on the BeamMP
+-- player id throughout (players[pid], rec.id, the client's own-row match); the
+-- alias is read only by displayName below, which feeds the results file, the
+-- chat announcements and the leaderboard payload.
+local MIN_ALIAS_LEN = 3
+local MAX_ALIAS_LEN = 20    -- results file pads the Driver column to 22
+-- Names nobody may take, so a player cannot pose as staff or as an unnamed
+-- player. Compared case-insensitively.
+local RESERVED_ALIASES = {
+  ['admin'] = true, ['server'] = true, ['host'] = true, ['console'] = true,
+  ['system'] = true, ['racemanager'] = true, ['race manager'] = true,
+}
+
+-- Alias for any record that carries a player id, or nil.
+--
+-- The derby keeps its OWN player table with its own copy of the name, and an
+-- alias is only ever set on the racing record -- that is the one place an admin
+-- can reach. Rather than keeping a second copy that can drift, a record with no
+-- alias of its own resolves through the racing record by id. That also means
+-- setting or clearing a name mid-derby is picked up immediately.
+local function aliasOf(rec)
+  if not rec then return nil end
+  if rec.alias then return rec.alias end
+  local owner = rec.id and players[rec.id]
+  return owner and owner.alias or nil
+end
+
+-- The single resolution point on this side: alias if set, real name otherwise.
+-- rec.name always exists (newRecord falls back to 'Player <id>'), so this can
+-- never return nil or an empty string.
+local function displayName(rec)
+  if not rec then return '?' end
+  return aliasOf(rec) or rec.name
+end
+
+-- Cleaned alias, or nil plus a reason to show the admin.
+--
+-- ASCII only, and that is deliberate rather than lazy: the results file formats
+-- fixed-width columns with %-22s, and Lua pads by BYTES, not codepoints, so a
+-- single multi-byte character silently breaks the alignment of every row after
+-- it. The character class also excludes control characters and anything that
+-- could read as markup.
+local function sanitizeAlias(raw)
+  if type(raw) ~= 'string' then return nil, 'not a string' end
+  local s = raw:gsub('%s+', ' '):gsub('^%s', ''):gsub('%s$', '')
+  if s == '' then return nil, 'empty' end
+  if s:find('[^%w %-%_%.]') then
+    return nil, 'letters, digits, spaces and - _ . only'
+  end
+  if #s < MIN_ALIAS_LEN then return nil, 'at least ' .. MIN_ALIAS_LEN .. ' characters' end
+  if #s > MAX_ALIAS_LEN then return nil, 'at most ' .. MAX_ALIAS_LEN .. ' characters' end
+  local lower = s:lower()
+  if RESERVED_ALIASES[lower] then return nil, '"' .. s .. '" is reserved' end
+  if lower:find('^guest') then return nil, 'cannot start with "guest"' end
+  return s
+end
+
+-- Rejects a name already held by somebody else, as an alias OR as their real
+-- guest name, so an alias can never shadow another driver on the timing screen.
+local function aliasInUse(candidate, exceptPid)
+  local lower = candidate:lower()
+  for pid, rec in pairs(players) do
+    if pid ~= exceptPid then
+      if rec.alias and rec.alias:lower() == lower then return true, rec end
+      if rec.name  and rec.name:lower()  == lower then return true, rec end
+    end
+  end
+  return false
+end
+
 local function ensurePlayer(pid)
   if not players[pid] then
     players[pid] = newRecord(pid)
   end
   return players[pid]
 end
+
+-- Forward declaration: the derby module lives further down the file, but its
+-- entrant count is DERIVED from the racing entry list below (opt-in derbies
+-- honour the same Join Race). So anything that changes who is entered has to
+-- refresh the derby panel too, or an admin watching it reads a stale field size
+-- and presses Start Derby expecting a different set of drivers. Same pattern
+-- the garage store uses to be reachable from the state broadcast above it.
+local derbyEntryListChanged
 
 -- ---------------------------------------------------------------------------
 -- Race entry list
@@ -263,6 +354,21 @@ local garageSnapshot
 -- element flicker between two states on each tick).
 local RM_PROTOCOL = 2
 
+-- Build stamp, reported to the UI so the three halves of this mod can be
+-- compared at a glance. They are deployed separately -- the server plugin is
+-- copied to Resources/Server, the client zip is pushed by BeamMP, and BeamNG
+-- caches UI files -- so any one of them can be older than the others. That is
+-- invisible today and fails in the worst possible way: Angular silently ignores
+-- a call to a scope function a stale app.js does not have, so a button does
+-- nothing at all, with no error in any console.
+--
+-- Bump this in ALL THREE files (main.lua, raceManager.lua, app.js) on EVERY
+-- change that needs redeploying -- not just ones that change the client/server
+-- contract. That narrower rule is what let two client-side fixes ship under one
+-- stamp: the build line read as matching while a client was a fix behind, which
+-- is precisely the situation this was added to make visible.
+local RM_BUILD = '3.4.6-one-hold-path'
+
 local function broadcastState(targetPid)
   local garageView = garageSnapshot and garageSnapshot() or {}
   -- Per-player admin status. Only meaningful on a TARGETED send -- the global
@@ -274,6 +380,7 @@ local function broadcastState(targetPid)
   if targetPid then selfAdmin = isAuthenticated(targetPid) end
   local payload = Util.JsonEncode({
     rmProtocol   = RM_PROTOCOL,
+    serverBuild  = RM_BUILD,
     phase        = race.phase,
     raceTime     = race.time,
     totalLaps    = race.totalLaps,
@@ -455,6 +562,16 @@ end
 -- Qualifying classification: the locked grid if one exists, otherwise best
 -- quali lap. This is deliberately independent of the race outcome so the
 -- pole sitter and the race winner stay distinct in the output.
+-- Results are a SNAPSHOT, not a live view: the file records the name the driver
+-- raced under. There is no player id in the exported format to resolve against
+-- later, so a rename can never rewrite history -- but it also means the real
+-- guest name has to be carried alongside an alias, or the file loses the only
+-- thread back to the session that set the lap times.
+local function aliasNote(rec)
+  if not aliasOf(rec) then return '' end
+  return '  [' .. rec.name .. ']'
+end
+
 local function qualiClassification()
   local list = {}
   for _, rec in pairs(players) do list[#list + 1] = rec end
@@ -506,8 +623,8 @@ local function buildResultsText()
   add(string.format('%-5s %-22s %-10s %s', 'Pos', 'Driver', 'Best Lap', 'Laps'))
   for i, rec in ipairs(quali) do
     local tag = (i == 1 and rec.qualiBest) and '  << POLE POSITION' or ''
-    add(string.format('P%-4d %-22s %-10s %-5d%s',
-      i, rec.name, fmtLap(rec.qualiBest), rec.qualiLaps or 0, tag))
+    add(string.format('P%-4d %-22s %-10s %-5d%s%s',
+      i, displayName(rec), fmtLap(rec.qualiBest), rec.qualiLaps or 0, aliasNote(rec), tag))
   end
   if #quali == 0 then add('(no drivers)') end
   add('')
@@ -539,9 +656,9 @@ local function buildResultsText()
     local resetVal = race.maxResets >= 0
       and string.format(' %-6s', string.format('%d/%d%s', rec.resets or 0, race.maxResets,
         (rec.resetsBlocked or 0) > 0 and ('+' .. rec.resetsBlocked) or '')) or ''
-    add(string.format('%-5s %-22s %-10s %-9d %-10s%s%s%s',
-      pos, rec.name, fmtLap(rec.raceBest), rec.lapsLed or 0, finish,
-      jokerVal, resetVal, tag))
+    add(string.format('%-5s %-22s %-10s %-9d %-10s%s%s%s%s',
+      pos, displayName(rec), fmtLap(rec.raceBest), rec.lapsLed or 0, finish,
+      jokerVal, resetVal, aliasNote(rec), tag))
   end
   if #final == 0 then add('(no drivers)') end
   add('')
@@ -676,8 +793,11 @@ function RM_onJoinRace(pid, rawData)
     if race.phase == 'grid' then assignGridSlot(pid, nil) end
   end
   broadcastState()
+  -- An opt-in derby draws its field from this same list, so refresh that panel
+  -- too or its entrant count sits stale until something else moves.
+  if derbyEntryListChanged then derbyEntryListChanged() end
   MP.SendChatMessage(-1, string.format('[RaceManager] %s %s the race (%d entrant%s).',
-    rec.name, join and 'JOINED' or 'left', entrantCount(),
+    displayName(rec), join and 'JOINED' or 'left', entrantCount(),
     entrantCount() == 1 and '' or 's'))
   print('[RaceManager] ' .. rec.name .. (join and ' joined' or ' left') .. ' the race')
 end
@@ -690,6 +810,7 @@ function RM_onSetEntryMode(pid, rawData)
   if mode ~= 'all' and mode ~= 'join' then return end
   race.entryMode = mode
   broadcastState()
+  if derbyEntryListChanged then derbyEntryListChanged() end
   print('[RaceManager] Race entry mode set to "' .. mode .. '" by '
     .. (MP.GetPlayerName(pid) or pid))
 end
@@ -929,7 +1050,80 @@ function RM_onStartPositionCount(pid, rawData)
   broadcastState()
 end
 
+-- Admin sets or clears a driver's display alias. Admin-only on purpose: with
+-- guest-only identities there is nothing to enforce a ban against, so a
+-- self-service name could be re-set the moment it was cleared.
+--
+-- The target is addressed by BeamMP player id -- the same key race logic uses --
+-- and only rec.alias is written. No timing, checkpoint or scoring field is
+-- touched, and the alias is never read back as a key.
+--
+-- EVERY exit path reports back. An admin pressing Set and getting nothing at
+-- all -- no name, no reason -- cannot tell a rejected name from a plugin that
+-- never received the event, which is exactly the dead end this handler used to
+-- leave them in.
+local function aliasResult(pid, ok, msg)
+  MP.TriggerClientEvent(pid, 'RM_AliasResult', Util.JsonEncode({
+    success = ok and true or false,
+    message = msg,
+  }))
+  print('[RaceManager] Alias: ' .. msg)
+end
+
+function RM_onSetAlias(pid, rawData)
+  -- Not "return quietly": a client can believe it is an admin while the server
+  -- disagrees (a restart empties authenticatedPlayers while the client bridge
+  -- still holds its own flag), and silence there looks exactly like a broken
+  -- button. Say so, and the client drops its stale admin state.
+  if not isAuthenticated(pid) then
+    print('[RaceManager] Ignored alias command from unauthenticated player ' .. tostring(pid))
+    MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({ success = false }))
+    aliasResult(pid, false, 'Not logged in as an admin on this server — log in again.')
+    return
+  end
+
+  local target = decodeNumber(rawData, 'target')
+  if not target then
+    aliasResult(pid, false, 'Malformed request (no target driver).')
+    return
+  end
+  local rec = players[math.floor(target)]
+  if not rec then
+    aliasResult(pid, false, 'That driver is no longer on the server.')
+    return
+  end
+
+  -- A blank alias clears it and falls back to the real guest name.
+  local raw = decodeString(rawData, 'alias') or ''
+  if raw:gsub('%s', '') == '' then
+    if rec.alias then
+      local was = rec.alias
+      rec.alias = nil
+      broadcastState()
+      aliasResult(pid, true, 'Display name cleared for ' .. rec.name .. ' (was "' .. was .. '").')
+    else
+      aliasResult(pid, true, rec.name .. ' has no display name to clear.')
+    end
+    return
+  end
+
+  local clean, why = sanitizeAlias(raw)
+  if not clean then
+    aliasResult(pid, false, 'Name rejected: ' .. why .. '.')
+    return
+  end
+  if aliasInUse(clean, rec.id) then
+    aliasResult(pid, false, 'Name rejected: "' .. clean .. '" is already in use.')
+    return
+  end
+
+  rec.alias = clean
+  broadcastState()
+  aliasResult(pid, true, 'Display name "' .. clean .. '" set for ' .. rec.name .. '.')
+end
+
 -- Host sets the race distance. Locked once the countdown/race is under way.
+
 function RM_onSetTotalLaps(pid, rawData)
   if not requireAuth(pid) then return end
   if race.phase == 'countdown' or race.phase == 'racing' then return end
@@ -1161,7 +1355,7 @@ function RM_onQualiLap(pid, rawData)
     rec.status = 'finished'
     MP.SendChatMessage(-1, string.format(
       '[RaceManager] %s has used all %d qualifying lap%s.',
-      rec.name, race.qualiLapLimit, race.qualiLapLimit == 1 and '' or 's'))
+      displayName(rec), race.qualiLapLimit, race.qualiLapLimit == 1 and '' or 's'))
     broadcastState()
     checkQualiLapLimit()
     return
@@ -1971,6 +2165,16 @@ local DERBY_MAX_STARTS       = 64
 
 local derby = {
   phase     = 'idle',   -- idle | running | finished
+  -- Who is in a derby. 'all' (the default) is the historical behaviour: every
+  -- connected session becomes a participant. 'join' honours the same Join Race
+  -- opt-in the circuit races use, so somebody who only wants to watch is not
+  -- dragged in -- being entered means losing your car to freecam the moment you
+  -- are eliminated, which is a poor thing to do to a spectator.
+  --
+  -- This READS the racing entry list rather than keeping a second one: players
+  -- would otherwise have to opt in twice for no benefit. It is a read, so the
+  -- derby still never mutates racing state.
+  entryMode = 'all',    -- all | join
   oobLimit  = DERBY_DEFAULT_OOB_LIMIT,
   demoLimit = DERBY_DEFAULT_DEMO_LIMIT,
   maxResets = DERBY_UNLIMITED_RESETS,  -- vehicle resets per driver per derby
@@ -1981,6 +2185,27 @@ local derby = {
 }
 local derbyPlayers = {} -- [pid] = { id, name, status, reason, elimTime, resets }
                         -- status: alive | eliminated | winner
+-- Derby countdown. Its own value and its own client event, deliberately not
+-- shared with the racing countdown: the two start procedures are independent
+-- and neither may release the other's held cars.
+local DERBY_COUNTDOWN_FROM = 3
+local derbyCountdownValue  = nil
+
+local function broadcastDerbyCountdown(count)
+  MP.TriggerClientEvent(-1, 'RM_DerbyCountdown', Util.JsonEncode({ count = count }))
+end
+
+-- A derby is "active" from the moment the field is formed up, not just while it
+-- is running. Setup actions -- editing the arena, changing the rules, loading a
+-- saved arena -- are locked for all three phases: once cars are standing on
+-- their slots and held, the ground must not move under them. Gameplay checks
+-- (elimination, reset counting, the tick) stay strictly 'running', because none
+-- of that should happen before GO.
+local function derbyActive()
+  return derby.phase == 'forming'
+      or derby.phase == 'countdown'
+      or derby.phase == 'running'
+end
 
 local function derbyClampLimit(n, default)
   n = tonumber(n)
@@ -1992,9 +2217,33 @@ end
 
 -- Participants ordered for display/results: winner first, then survivors,
 -- then eliminated players latest-out first (2nd place = last one eliminated).
+-- How many players would be in a derby started right now. While one is running
+-- that is simply the field it started with; otherwise it depends on the entry
+-- mode, so the admin can see an empty opt-in list before pressing Start.
+local function derbyEligibleCount()
+  if derbyActive() then
+    local n = 0
+    for _ in pairs(derbyPlayers) do n = n + 1 end
+    return n
+  end
+  local n = 0
+  for id in pairs(MP.GetPlayers()) do
+    local rec = players[id]
+    if derby.entryMode ~= 'join' or (rec and rec.joined) then n = n + 1 end
+  end
+  return n
+end
+
 local function derbyClassification()
   local list = {}
-  for _, rec in pairs(derbyPlayers) do list[#list + 1] = rec end
+  for _, rec in pairs(derbyPlayers) do
+    -- Carry the display name onto the derby board. Re-read from the racing
+    -- record every time rather than merging: a stamped value would go sticky
+    -- and a name the admin CLEARED would never disappear from the standings.
+    local owner = players[rec.id]
+    rec.alias = owner and owner.alias or nil
+    list[#list + 1] = rec
+  end
   table.sort(list, function (a, b)
     local rank = { winner = 0, alive = 1, eliminated = 2 }
     local ra, rb = rank[a.status] or 3, rank[b.status] or 3
@@ -2009,6 +2258,10 @@ local function broadcastDerbyState(targetPid)
   MP.TriggerClientEvent(targetPid or -1, 'RM_DerbyUpdate', Util.JsonEncode({
     rmProtocol = RM_PROTOCOL,
     derbyPhase = derby.phase,
+    entryMode  = derby.entryMode,
+    -- How many would take part if the derby started right now, so the admin can
+    -- see an empty opt-in field before pressing Start rather than after.
+    entrants   = derbyEligibleCount(),
     oobLimit   = derby.oobLimit,
     demoLimit  = derby.demoLimit,
     maxResets  = derby.maxResets,
@@ -2018,6 +2271,14 @@ local function broadcastDerbyState(targetPid)
     winner     = derby.winner,
     players    = derbyClassification(),
   }))
+end
+
+-- Fills the forward declaration made up beside the racing entry list. Has to be
+-- assigned down HERE, after broadcastDerbyState exists, or the closure would
+-- capture a nil. Only matters outside a running derby: once one is under way
+-- the field is fixed and the count is whatever it started with.
+derbyEntryListChanged = function ()
+  if not derbyActive() then broadcastDerbyState() end
 end
 
 local function derbyFmtTime(t)
@@ -2052,7 +2313,8 @@ local function buildDerbyResultsText()
     local resetVal = derby.maxResets >= 0
       and string.format(' %-6s', (rec.resets or 0) .. '/' .. derby.maxResets) or ''
     local tag = rec.status == 'winner' and '  << LAST MAN STANDING' or ''
-    add(string.format('P%-4d %-22s %-14s %-13s%s%s', i, rec.name, result, elimAt, resetVal, tag))
+    add(string.format('P%-4d %-22s %-14s %-13s%s%s%s',
+      i, displayName(rec), result, elimAt, resetVal, aliasNote(rec), tag))
   end
   if #list == 0 then add('(no drivers)') end
   add('')
@@ -2114,8 +2376,8 @@ local function derbyEliminate(pid, reason)
   end
   if alive == 1 then
     lastAlive.status = 'winner'
-    derby.winner = lastAlive.name
-    finishDerby('last man standing: ' .. lastAlive.name)
+    derby.winner = displayName(lastAlive)
+    finishDerby('last man standing: ' .. displayName(lastAlive))
   elseif alive == 0 then
     finishDerby('no survivors')
   else
@@ -2127,7 +2389,7 @@ end
 
 function RM_onDerbySetConfig(pid, rawData)
   if not requireAuth(pid) then return end
-  if derby.phase == 'running' then return end
+  if derbyActive() then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
@@ -2151,7 +2413,7 @@ end
 -- marker list is the arena polygon every client runs point-in-polygon against.
 function RM_onDerbyAddMarker(pid, rawData)
   if not requireAuth(pid) then return end
-  if derby.phase == 'running' then return end
+  if derbyActive() then return end
   if #derby.boundary >= DERBY_MAX_MARKERS then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
@@ -2166,7 +2428,7 @@ end
 
 function RM_onDerbyClearBoundary(pid)
   if not requireAuth(pid) then return end
-  if derby.phase == 'running' then return end
+  if derbyActive() then return end
   derby.boundary = {}
   broadcastDerbyState()
   print('[RaceManager] Derby boundary cleared by ' .. (MP.GetPlayerName(pid) or pid))
@@ -2176,7 +2438,7 @@ end
 -- + facing). Slot 1 is placed first; Start Derby hands one slot per driver.
 function RM_onDerbyAddStart(pid, rawData)
   if not requireAuth(pid) then return end
-  if derby.phase == 'running' then return end
+  if derbyActive() then return end
   if #derby.startPositions >= DERBY_MAX_STARTS then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
@@ -2194,7 +2456,7 @@ end
 
 function RM_onDerbyClearStarts(pid)
   if not requireAuth(pid) then return end
-  if derby.phase == 'running' then return end
+  if derbyActive() then return end
   derby.startPositions = {}
   broadcastDerbyState()
   print('[RaceManager] Derby start grid cleared by ' .. (MP.GetPlayerName(pid) or pid))
@@ -2376,7 +2638,7 @@ end
 -- Refused while a derby is running — the arena cannot move under the drivers.
 function RM_onDerbyLoadLayout(pid, rawData)
   if not requireAuth(pid) then return end
-  if derby.phase == 'running' then return end
+  if derbyActive() then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' or type(data.name) ~= 'string' then return end
@@ -2421,56 +2683,152 @@ end
 
 -- Start Derby: snapshot every connected player as an active participant and
 -- start the derby clock. A fresh start from 'finished' wipes the last session.
-function RM_onDerbyStart(pid)
+-- Who takes part in the next derby: everyone connected, or only drivers who
+-- opted in with Join Race. Locked while a derby is running -- the field cannot
+-- change under the drivers.
+function RM_onDerbySetEntryMode(pid, rawData)
   if not requireAuth(pid) then return end
-  if derby.phase == 'running' then return end
+  if derbyActive() then return end
+  local mode = decodeString(rawData, 'mode')
+  if mode ~= 'all' and mode ~= 'join' then return end
+  derby.entryMode = mode
+  broadcastDerbyState()
+  print('[RaceManager] Derby entry mode set to "' .. mode .. '" by '
+    .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- Form up: build the field, stand everyone on a slot and HOLD them there until
+-- the countdown lets go. The derby's Generate Grid, and the same two-step shape
+-- the circuit races use — form the grid, then start it.
+function RM_onDerbyFormUp(pid)
+  if not requireAuth(pid) then return end
+  if derby.phase == 'running' or derby.phase == 'countdown' then return end
   derbyPlayers = {}
   derby.winner = nil
   derby.time   = 0
+  local optIn = derby.entryMode == 'join'
   for id in pairs(MP.GetPlayers()) do
-    derbyPlayers[id] = {
-      id       = id,
-      name     = MP.GetPlayerName(id) or ('Player ' .. id),
-      status   = 'alive',
-      reason   = nil,
-      elimTime = nil,
-      resets   = 0,
-    }
+    -- In opt-in mode only drivers who pressed Join Race take part. Read-only
+    -- against the racing entry list; a player with no racing record at all has
+    -- plainly not joined anything.
+    local rec = players[id]
+    if (not optIn) or (rec and rec.joined) then
+      derbyPlayers[id] = {
+        id       = id,
+        name     = MP.GetPlayerName(id) or ('Player ' .. id),
+        status   = 'alive',
+        reason   = nil,
+        elimTime = nil,
+        resets   = 0,
+      }
+    end
   end
   local count = 0
   for _ in pairs(derbyPlayers) do count = count + 1 end
   if count == 0 then
-    print('[RaceManager] Derby start ignored: no players connected')
+    -- Two different reasons, and telling them apart matters: an empty server is
+    -- obvious, an empty entry list looks like a broken button.
+    if optIn then
+      print('[RaceManager] Derby form-up ignored: nobody has joined (opt-in entry is on)')
+      MP.SendChatMessage(pid, '[RaceManager] Nobody has joined — press Join Race, '
+        .. 'or switch derby entry to Everyone.')
+    else
+      print('[RaceManager] Derby form-up ignored: no players connected')
+    end
     return
   end
-  derby.phase = 'running'
-  MP.CreateEventTimer('RM_DerbyTick', DERBY_TICK_MS)
+  derby.phase = 'forming'
   releaseSpectators('derby')  -- fresh derby: nobody carries a stale penalty
   broadcastDerbyState()
-  -- Starting grid: when start positions are placed, every participant gets a
-  -- slot (join order — pid ascending — is deterministic and fair enough for a
-  -- derby) and their client stands the car on it. Sent after the state
-  -- broadcast so every client already holds the slot list it is told to use;
-  -- drivers beyond the placed grid keep their current position.
-  if #derby.startPositions > 0 then
-    local ordered = {}
-    for id in pairs(derbyPlayers) do ordered[#ordered + 1] = id end
-    table.sort(ordered)
-    for slot, id in ipairs(ordered) do
-      if slot > #derby.startPositions then break end
-      MP.TriggerClientEvent(id, 'RM_DerbyGridAssign', Util.JsonEncode({ slot = slot }))
-    end
+  -- Slots go out AFTER the state broadcast, so every client already holds the
+  -- slot list it is about to be told to use. Join order (pid ascending) is
+  -- deterministic and fair enough for a derby. Everyone is held whether or not
+  -- a slot was placed for them — a driver with nowhere to line up still waits
+  -- for GO rather than getting a free run at the rest of the field.
+  local ordered = {}
+  for id in pairs(derbyPlayers) do ordered[#ordered + 1] = id end
+  table.sort(ordered)
+  for slot, id in ipairs(ordered) do
+    local placed = (slot <= #derby.startPositions) and slot or nil
+    MP.TriggerClientEvent(id, 'RM_DerbyGridAssign', Util.JsonEncode({
+      slot = placed,
+      hold = true,
+    }))
   end
   MP.SendChatMessage(-1, string.format(
+    '[RaceManager] Demo derby forming up: %d driver%s held for the start.',
+    count, count == 1 and '' or 's'))
+  print('[RaceManager] Derby formed up by ' .. (MP.GetPlayerName(pid) or pid)
+    .. ' (' .. count .. ' drivers, ' .. #derby.startPositions .. ' slots placed)')
+end
+
+function RM_onDerbyStart(pid)
+  if not requireAuth(pid) then return end
+  -- Form up first, so the field is standing still and held when the lights go
+  -- out. Mirrors Start Countdown needing a generated grid.
+  if derby.phase ~= 'forming' then
+    if derby.phase ~= 'running' and derby.phase ~= 'countdown' then
+      MP.SendChatMessage(pid, '[RaceManager] Press Form Up first — it places the '
+        .. 'field and holds it for the countdown.')
+    end
+    return
+  end
+  derby.phase = 'countdown'
+  derbyCountdownValue = DERBY_COUNTDOWN_FROM
+  broadcastDerbyState()
+  broadcastDerbyCountdown(derbyCountdownValue)
+  MP.CreateEventTimer('RM_DerbyCountdownTick', 1000)
+  print('[RaceManager] Derby countdown started by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+function RM_DerbyCountdownTick()
+  if derby.phase ~= 'countdown' then
+    MP.CancelEventTimer('RM_DerbyCountdownTick')
+    -- Whatever ended the countdown (End Derby) must not leave the field held.
+    broadcastDerbyCountdown(-1)
+    return
+  end
+  derbyCountdownValue = derbyCountdownValue - 1
+  if derbyCountdownValue > 0 then
+    broadcastDerbyCountdown(derbyCountdownValue)
+    return
+  end
+  -- GO! The same broadcast that clears the overlay releases every held car, so
+  -- nobody can creep away early or be held a moment longer than their rivals.
+  MP.CancelEventTimer('RM_DerbyCountdownTick')
+  broadcastDerbyCountdown(0)
+  derby.phase = 'running'
+  derby.time  = 0
+  MP.CreateEventTimer('RM_DerbyTick', DERBY_TICK_MS)
+  broadcastDerbyState()
+  local count = 0
+  for _ in pairs(derbyPlayers) do count = count + 1 end
+  MP.SendChatMessage(-1, string.format(
     '[RaceManager] DEMO DERBY STARTED! %d drivers. Stay inside the arena and keep moving!', count))
-  print('[RaceManager] Derby started by ' .. (MP.GetPlayerName(pid) or pid)
-    .. ' (' .. count .. ' drivers, ' .. #derby.boundary .. ' boundary markers)')
+  print('[RaceManager] Derby GO (' .. count .. ' drivers, '
+    .. #derby.boundary .. ' boundary markers)')
 end
 
 -- End Derby (admin): if exactly one driver is still alive they take the win,
 -- otherwise the derby closes with no winner.
 function RM_onDerbyEnd(pid)
   if not requireAuth(pid) then return end
+  -- Aborting before GO: no result to record, just put the field back. The
+  -- countdown broadcast is what releases the held cars, so it has to go out
+  -- even though nobody is racing yet -- otherwise everyone stays frozen.
+  if derby.phase == 'forming' or derby.phase == 'countdown' then
+    MP.CancelEventTimer('RM_DerbyCountdownTick')
+    derbyCountdownValue = nil
+    derby.phase  = 'idle'
+    derby.winner = nil
+    derby.time   = 0
+    derbyPlayers = {}
+    broadcastDerbyCountdown(-1)
+    broadcastDerbyState()
+    MP.SendChatMessage(-1, '[RaceManager] Demo derby start aborted.')
+    print('[RaceManager] Derby start aborted by ' .. (MP.GetPlayerName(pid) or pid))
+    return
+  end
   if derby.phase ~= 'running' then
     -- Allow clearing a finished derby back to idle from the UI.
     if derby.phase == 'finished' then
@@ -2489,7 +2847,7 @@ function RM_onDerbyEnd(pid)
   end
   if alive == 1 then
     lastAlive.status = 'winner'
-    derby.winner = lastAlive.name
+    derby.winner = displayName(lastAlive)
   end
   finishDerby('ended by ' .. (MP.GetPlayerName(pid) or pid))
 end
@@ -2568,6 +2926,24 @@ function RM_Tick()
 end
 
 function RM_onPlayerJoin(pid)
+  -- Session ids are recycled. If a record already exists under this id but the
+  -- connected player's name has changed, a DIFFERENT person now holds it, so the
+  -- display identity must not carry over -- inheriting the previous player's
+  -- alias would be impersonation by accident. Only the display fields are
+  -- refreshed here; the record itself (and its lap data) is left alone, which is
+  -- the pre-existing behaviour Generate Grid purges.
+  local existing = players[pid]
+  if existing then
+    local current = MP.GetPlayerName(pid)
+    if current and current ~= existing.name then
+      if existing.alias then
+        print(string.format('[RaceManager] Session id %d reused (%s -> %s): alias "%s" dropped',
+          pid, existing.name, current, existing.alias))
+      end
+      existing.name  = current
+      existing.alias = nil
+    end
+  end
   local rec = ensurePlayer(pid)
   -- Connecting is not entering: in the default opt-in mode a new arrival is a
   -- spectator until they press Join Race. In 'all' mode they are in the field
@@ -2614,6 +2990,7 @@ function onInit()
   MP.RegisterEvent('RM_StartQualifying',  'RM_onStartQualifying')
   MP.RegisterEvent('RM_GenerateGrid',     'RM_onGenerateGrid')
   MP.RegisterEvent('RM_SetTotalLaps',     'RM_onSetTotalLaps')
+  MP.RegisterEvent('RM_SetAlias',         'RM_onSetAlias')
   -- Race entry (opt-in) + starting grid
   MP.RegisterEvent('RM_JoinRace',           'RM_onJoinRace')
   MP.RegisterEvent('RM_SetEntryMode',       'RM_onSetEntryMode')
@@ -2664,12 +3041,18 @@ function onInit()
   MP.RegisterEvent('RM_DerbyDisqualified',  'RM_onDerbyDisqualified')
   MP.RegisterEvent('RM_DerbyDemolished',    'RM_onDerbyDemolished')
   MP.RegisterEvent('RM_DerbyRequestState',  'RM_onDerbyRequestState')
+  MP.RegisterEvent('RM_DerbySetEntryMode',  'RM_onDerbySetEntryMode')
+  MP.RegisterEvent('RM_DerbyFormUp',        'RM_onDerbyFormUp')
   -- Derby arena layouts (save/load, mirroring the track layout workflow)
   MP.RegisterEvent('RM_DerbyRequestLayouts','RM_onDerbyRequestLayouts')
   MP.RegisterEvent('RM_DerbySaveLayout',    'RM_onDerbySaveLayout')
   MP.RegisterEvent('RM_DerbyLoadLayout',    'RM_onDerbyLoadLayout')
   MP.RegisterEvent('RM_DerbyDeleteLayout',  'RM_onDerbyDeleteLayout')
   MP.RegisterEvent('RM_DerbyTick',          'RM_DerbyTick')
+  -- Timer events only fire if they are registered like any other event. Missing
+  -- this one left the derby countdown frozen on 3 forever: the timer was
+  -- created and ticked, and nothing was listening.
+  MP.RegisterEvent('RM_DerbyCountdownTick', 'RM_DerbyCountdownTick')
   MP.RegisterEvent('onPlayerJoin',          'RM_Derby_onPlayerJoin')
   MP.RegisterEvent('onPlayerDisconnect',    'RM_Derby_onPlayerDisconnect')
   MP.RegisterEvent('onPlayerJoin',        'RM_onPlayerJoin')
@@ -2683,5 +3066,6 @@ function onInit()
   getLayouts()       -- warm the layout cache so saved tracks survive the restart visibly
   getGarage()        -- and the approved vehicle list (Module 4)
   getDerbyLayouts()  -- and the saved derby arenas
-  print('[RaceManager] Server plugin loaded (circuit edition, map: ' .. getCurrentMap() .. ')')
+  print('[RaceManager] Server plugin loaded (build ' .. RM_BUILD
+    .. ', circuit edition, map: ' .. getCurrentMap() .. ')')
 end

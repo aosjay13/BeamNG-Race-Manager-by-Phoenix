@@ -401,7 +401,7 @@
   <div class="rm-derby" ng-if="isAdminTab('derby')">
     <div class="rm-derby-title">
       Demo Derby
-      <span class="rm-derby-phase rm-derby-phase-{{ derby.phase }}">{{ derby.phase === 'running' ? 'LIVE — ' + formatDerbyTime(derby.time) : (derby.phase === 'finished' ? 'Finished' : 'Setup') }}</span>
+      <span class="rm-derby-phase rm-derby-phase-{{ derby.phase }}">{{ derbyPhaseLabel() }}</span>
       <span class="rm-derby-markers">{{ derby.boundaryCount }} boundary marker{{ derby.boundaryCount === 1 ? '' : 's' }}</span>
       <span class="rm-derby-markers">{{ derby.startCount }} start slot{{ derby.startCount === 1 ? '' : 's' }}</span>
     </div>
@@ -410,49 +410,69 @@
       <span class="rm-setting">
         <label>OOB timer</label>
         <input type="number" min="1" max="120" step="0.5" ng-model="derbyUi.oob"
-               ng-disabled="derby.phase === 'running'">
+               ng-disabled="derbyActive()">
         <span class="rm-setting-val">s</span>
       </span>
       <span class="rm-setting">
         <label>Demolished timer</label>
         <input type="number" min="1" max="120" step="0.5" ng-model="derbyUi.demo"
-               ng-disabled="derby.phase === 'running'">
+               ng-disabled="derbyActive()">
         <span class="rm-setting-val">s</span>
       </span>
       <span class="rm-setting" title="Vehicle resets each driver gets this derby. 0 = no resets at all; -1 (or blank) = unlimited. Once the allowance is gone the reset keys are blocked.">
         <label>Max resets</label>
         <input type="number" class="rm-width-num" min="-1" max="99" step="1" ng-model="derbyUi.resets"
-               ng-disabled="derby.phase === 'running'">
+               ng-disabled="derbyActive()">
       </span>
       <button class="rm-btn rm-btn-mini" ng-click="derbyApplyConfig()"
-              ng-disabled="derby.phase === 'running'">Set Rules</button>
+              ng-disabled="derbyActive()">Set Rules</button>
+      <span class="rm-setting" title="Everyone: every connected player is a participant (the classic behaviour). Opt-in: only drivers who pressed Join Race take part, so a spectator is not dragged in and left without a car.">
+        <label>Entry</label>
+        <button class="rm-btn rm-btn-mini rm-btn-toggle"
+                ng-class="{'rm-btn-toggle-on': derby.entryMode === 'all'}"
+                ng-click="toggleDerbyEntryMode()"
+                ng-disabled="derbyActive()">
+          {{ derby.entryMode === 'all' ? 'Everyone' : 'Opt-in (Join Race)' }}
+        </button>
+        <span class="rm-setting-val">{{ derby.entrants }} in</span>
+      </span>
+    </div>
+    <div class="rm-derby-hint" ng-if="derby.entryMode === 'join' && !derby.entrants && derby.phase !== 'running'">
+      ⚠ Opt-in entry is on and nobody has pressed <b>Join Race</b> — Start Derby
+      will have no field.
     </div>
 
     <div class="rm-derby-controls">
       <button class="rm-btn rm-btn-grid" ng-click="derbyAddMarker()"
-              ng-disabled="derby.phase === 'running'"
+              ng-disabled="derbyActive()"
               title="Drop a boundary pole at your vehicle's position; markers connect in order into the arena perimeter">
         + Boundary Marker
       </button>
       <button class="rm-btn rm-btn-end" ng-click="derbyClearBoundary()"
-              ng-disabled="derby.phase === 'running' || !derby.boundaryCount">Clear Boundary</button>
+              ng-disabled="derbyActive() || !derby.boundaryCount">Clear Boundary</button>
       <button class="rm-btn rm-btn-grid" ng-click="derbyAddStart()"
-              ng-disabled="derby.phase === 'running'"
+              ng-disabled="derbyActive()"
               title="Place a derby start position at your vehicle (position + facing). Slot 1 first; drivers are stood on their slot at Start Derby.">
         + Start Position
       </button>
       <button class="rm-btn rm-btn-end" ng-click="derbyClearStarts()"
-              ng-disabled="derby.phase === 'running' || !derby.startCount">Clear Start Grid</button>
+              ng-disabled="derbyActive() || !derby.startCount">Clear Start Grid</button>
       <button class="rm-btn" ng-click="derbyToggleVisualize()"
               title="Hide or show the boundary poles and start slots (always shown while a derby is running)">
         {{ derby.visualize ? 'Hide' : 'Show' }} Boundary
       </button>
+      <button class="rm-btn rm-btn-grid" ng-click="derbyFormUp()"
+              ng-disabled="derbyActive()"
+              title="Stand every participant on a start slot and hold them there, ready for the countdown. The derby's Generate Grid.">
+        Form Up
+      </button>
       <button class="rm-btn rm-btn-start" ng-click="derbyStart()"
-              ng-disabled="derby.phase === 'running'">Start Derby</button>
+              ng-disabled="derby.phase !== 'forming'"
+              title="Release the field with a 3-2-1 countdown. Form Up first.">Start Derby</button>
       <button class="rm-btn rm-btn-end" ng-click="derbyEnd()"
               ng-disabled="derby.phase === 'idle'"
-              title="Running: end the derby now. Finished: reset back to setup.">
-        {{ derby.phase === 'finished' ? 'Reset Derby' : 'End Derby' }}
+              title="Formed up or counting down: abort and release the field. Running: end the derby now. Finished: reset back to setup.">
+        {{ derby.phase === 'finished' ? 'Reset Derby' : (derby.phase === 'forming' || derby.phase === 'countdown' ? 'Abort Start' : 'End Derby') }}
       </button>
     </div>
 
@@ -465,7 +485,7 @@
         <input type="text" class="rm-layout-name" placeholder="Arena name…" maxlength="40"
                ng-model="derbyUi.name">
         <button class="rm-btn rm-btn-start" ng-click="derbySaveLayout()"
-                ng-disabled="derby.boundaryCount < 3 || !derbyUi.name || derby.phase === 'running'"
+                ng-disabled="derby.boundaryCount < 3 || !derbyUi.name || derbyActive()"
                 title="Save the current boundary and both timers on the server under this name">
           Save Current Arena
         </button>
@@ -489,12 +509,12 @@
           </div>
         </div>
         <button class="rm-btn rm-btn-grid" ng-click="derbyLoadLayout()"
-                ng-disabled="!derbyUi.selected || derby.phase === 'running'"
+                ng-disabled="!derbyUi.selected || derbyActive()"
                 title="Broadcast this arena's boundary and timers to every connected player">
           Load Arena
         </button>
         <button class="rm-btn rm-btn-end rm-btn-mini" ng-click="derbyDeleteLayout()"
-                ng-disabled="!derbyUi.selected || derby.phase === 'running'"
+                ng-disabled="!derbyUi.selected || derbyActive()"
                 title="Delete this saved arena from the server">✕</button>
       </div>
       <div class="rm-layouts-hint">
@@ -527,7 +547,7 @@
         <tr ng-repeat="p in derby.players track by p.id"
             ng-class="{'rm-derby-row-out': p.status === 'eliminated', 'rm-derby-row-winner': p.status === 'winner'}">
           <td class="rm-col-grid">{{ $index + 1 }}</td>
-          <td class="rm-col-name" title="{{ p.name }}">{{ p.name }}</td>
+          <td class="rm-col-name" title="{{ driverName(p) }}{{ realName(p) ? ' (' + realName(p) + ')' : '' }}">{{ driverName(p) }}</td>
           <td class="rm-col-status">
             <span class="rm-light" ng-class="{'rm-light-racing': p.status === 'alive', 'rm-light-dnf': p.status === 'eliminated', 'rm-light-finished': p.status === 'winner'}"></span>
             <span class="rm-status-text">{{ derbyStatusLabel(p) }}</span>
@@ -568,6 +588,50 @@
       <span class="rm-layouts-hint">
         Admin rights are dropped on disconnect as well.
       </span>
+    </div>
+
+    <!-- ===== Build stamps =====
+         The three pieces deploy separately and BeamNG caches UI files, so one
+         can be older than the others. A stale app.js makes buttons do nothing
+         at all, silently — this row is how you see that in one glance. -->
+    <div class="rm-adminbar">
+      <span class="rm-adminbar-label">Build</span>
+      <span class="rm-build" ng-class="{'rm-build-bad': !buildsMatch()}">
+        app {{ appBuild }}
+        · client {{ clientBuild || '—' }}
+        · server {{ serverBuild || '—' }}
+      </span>
+      <span class="rm-setting-warn" ng-if="!buildsMatch()">
+        ⚠ Mismatch — a stale piece will make controls do nothing. Update all
+        three and clear the BeamNG cache.
+      </span>
+    </div>
+
+    <!-- ===== Display names ===== -->
+    <!-- Readable names over the top of BeamMP's random guest numbers. Display
+         only: every table still keys on the driver's session id, and the timing
+         and scoring systems never see these. -->
+    <div class="rm-alias">
+      <div class="rm-layouts-title">Display Names</div>
+      <div class="rm-alias-row" ng-repeat="row in drivers track by row.id">
+        <span class="rm-alias-real" title="Real BeamMP name for this session">{{ row.name }}</span>
+        <input type="text" class="rm-alias-input" maxlength="20"
+               placeholder="Display name…"
+               ng-model="aliasUi.input[row.id]"
+               ng-keydown="$event.keyCode === 13 && applyAlias(row)">
+        <button class="rm-btn rm-btn-mini rm-btn-start" ng-click="applyAlias(row)">Set</button>
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="clearAlias(row)"
+                ng-disabled="!row.alias" title="Clear this display name">✕</button>
+        <span class="rm-alias-current" ng-if="row.alias">→ {{ row.alias }}</span>
+      </div>
+      <div class="rm-layouts-hint" ng-if="!drivers.length">
+        No drivers connected yet.
+      </div>
+      <div class="rm-layouts-hint" ng-if="drivers.length">
+        3–20 characters, letters/digits/spaces and <b>- _ .</b> only. A name already
+        in use is refused. Names last for the session only — BeamMP guest identities
+        change on every reconnect, so they are not remembered across a rejoin.
+      </div>
     </div>
   </div>
 
@@ -649,7 +713,7 @@
         <tr ng-repeat="p in derby.players track by p.id"
             ng-class="{'rm-derby-row-out': p.status === 'eliminated', 'rm-derby-row-winner': p.status === 'winner'}">
           <td class="rm-col-grid">{{ $index + 1 }}</td>
-          <td class="rm-col-name" title="{{ p.name }}">{{ p.name }}</td>
+          <td class="rm-col-name" title="{{ driverName(p) }}{{ realName(p) ? ' (' + realName(p) + ')' : '' }}">{{ driverName(p) }}</td>
           <td class="rm-col-status">
             <span class="rm-light" ng-class="{'rm-light-racing': p.status === 'alive', 'rm-light-dnf': p.status === 'eliminated', 'rm-light-finished': p.status === 'winner'}"></span>
             <span class="rm-status-text">{{ derbyStatusLabel(p) }}</span>
@@ -678,7 +742,7 @@
       <tbody>
         <tr ng-repeat="row in drivers track by row.id" ng-class="{'rm-row-out': !row.joined && entryMode !== 'all'}">
           <td class="rm-col-grid">P{{ $index + 1 }}</td>
-          <td class="rm-col-name" title="{{ row.name }}">{{ row.name }}</td>
+          <td class="rm-col-name" title="{{ driverName(row) }}{{ realName(row) ? ' (' + realName(row) + ')' : '' }}">{{ driverName(row) }}</td>
           <td class="rm-col-time">{{ formatLap(row.qualiBest) }}</td>
           <td class="rm-col-led">{{ row.qualiLaps || 0 }}{{ qualiLapLimit > 0 ? '/' + qualiLapLimit : '' }}</td>
           <td class="rm-col-status">
@@ -732,7 +796,7 @@
                    ng-blur="pinGridSlot(row)"
                    title="Type a starting slot and press Enter to pin this driver to it">
           </td>
-          <td class="rm-col-name" title="{{ row.name }}">{{ row.name }}</td>
+          <td class="rm-col-name" title="{{ driverName(row) }}{{ realName(row) ? ' (' + realName(row) + ')' : '' }}">{{ driverName(row) }}</td>
           <td class="rm-col-lap" title="{{ row.cpCleared ? row.cpCleared + ' checkpoint(s) cleared this lap' : '' }}">{{ row.currentLap ? row.currentLap + '/' + totalLaps : '—' }}</td>
           <td class="rm-col-time">{{ formatLap(row.raceBest) }}</td>
           <td class="rm-col-led">{{ row.lapsLed || 0 }}</td>
@@ -955,6 +1019,39 @@
   }
   /* Admin housekeeping tab: stacked bars rather than one wrapping row. */
   .rm-adminbar-panel { display: flex; flex-direction: column; }
+
+  /* Build stamps */
+  .rm-build { font-size: 10px; color: #9aa0a6; font-variant-numeric: tabular-nums; }
+  .rm-build-bad { color: #fdd663; font-weight: 700; }
+
+  /* Display names (aliases) */
+  .rm-alias { padding: 7px 10px; border-top: 1px dashed rgba(255, 255, 255, 0.12); }
+  .rm-alias-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+    font-size: 11px;
+  }
+  .rm-alias-real {
+    width: 120px;
+    flex: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #9aa0a6;
+  }
+  .rm-alias-input {
+    flex: 1;
+    min-width: 0;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: #e8eaed;
+    border-radius: 3px;
+    padding: 2px 6px;
+    font-size: 11px;
+  }
+  .rm-alias-current { color: #7ee2a8; font-weight: 600; white-space: nowrap; }
 
   /* Race settings */
   .rm-settings {

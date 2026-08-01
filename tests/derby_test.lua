@@ -11,7 +11,9 @@ local lastState = nil   -- last RM_Update payload (circuit racing)
 local lastDerby = nil   -- last RM_DerbyUpdate payload
 local lastArenas = nil  -- last RM_DerbyLayouts payload (saved arena list)
 local lastChat = nil
-local derbyGrid = {}    -- [pid] = start slot handed out at Start Derby
+local derbyGrid = {}    -- [pid] = start slot handed out at form-up
+local derbyHeld = {}    -- [pid] = true when told to hold for the countdown
+local lastCountdown = nil  -- last RM_DerbyCountdown value (3..0, or -1 abort)
 local timers = {}
 local hostedMap = '/levels/gridmap_v2/info.json'
 
@@ -27,7 +29,11 @@ MP = {
     if event == 'RM_Update'       then lastState  = payload end
     if event == 'RM_DerbyUpdate'  then lastDerby  = payload end
     if event == 'RM_DerbyLayouts' then lastArenas = payload end
-    if event == 'RM_DerbyGridAssign' then derbyGrid[target] = payload.slot end
+    if event == 'RM_DerbyGridAssign' then
+      derbyGrid[target] = payload.slot
+      if payload.hold then derbyHeld[target] = true end
+    end
+    if event == 'RM_DerbyCountdown' then lastCountdown = payload.count end
   end,
   RegisterEvent = function () end,
   CreateEventTimer = function (name) timers[name] = true end,
@@ -51,6 +57,17 @@ local function check(cond, msg)
   checks = checks + 1
   if not cond then fails = fails + 1; print('FAIL: ' .. msg) end
 end
+-- A derby now starts in TWO steps, the same shape the circuit races use: Form
+-- Up places the field and holds it, then Start Derby releases it with a
+-- countdown. Everywhere this suite used to press one button it drives the whole
+-- procedure through here; the procedure ITSELF is asserted step by step in its
+-- own section at the end of the file.
+local DERBY_COUNTDOWN_STEPS = 3
+local function startDerby(admin)
+  RM_onDerbyFormUp(admin)
+  RM_onDerbyStart(admin)
+  for _ = 1, DERBY_COUNTDOWN_STEPS do RM_DerbyCountdownTick() end
+end
 local function derbyPlayer(name)
   for _, p in ipairs(lastDerby.players) do
     if p.name == name then return p end
@@ -61,8 +78,8 @@ onInit()
 
 -- Derby admin events now require authentication too. Confirm an unauthenticated
 -- session is rejected, then log in the admin sessions the suite drives with.
-RM_onDerbyStart(1)
-check(lastDerby == nil, 'derby start ignored before authentication')
+RM_onDerbyFormUp(1)
+check(lastDerby == nil, 'derby form-up ignored before authentication')
 RM_onLogin(1, '{"password":"phoenix"}')
 RM_onLogin(2, '{"password":"phoenix"}')
 -- Login broadcasts circuit state (adminPresent); clear it so the isolation
@@ -141,7 +158,7 @@ check(lastDerby.derbyPhase == 'idle', 'pre-start elimination ignored')
 -- ---------------------------------------------------------------------------
 -- Run the derby: eliminations -> last man standing -> results export
 -- ---------------------------------------------------------------------------
-RM_onDerbyStart(1)
+startDerby(1)
 check(lastDerby.derbyPhase == 'running', 'derby running after start')
 check(#lastDerby.players == 3, 'all three connected players participate')
 check(timers['RM_DerbyTick'] == true, 'derby tick timer created')
@@ -210,7 +227,7 @@ check(lastDerby.derbyPhase == 'idle' and #lastDerby.players == 0, 'End resets fi
 -- ---------------------------------------------------------------------------
 -- Second derby: admin force-end with several alive -> no winner
 -- ---------------------------------------------------------------------------
-RM_onDerbyStart(2)
+startDerby(2)
 for _ = 1, 5 do RM_DerbyTick() end
 RM_onDerbyEnd(1)
 check(lastDerby.derbyPhase == 'finished', 'admin ended the derby')
@@ -223,7 +240,7 @@ RM_onDerbyEnd(1)  -- back to idle
 -- ---------------------------------------------------------------------------
 -- Disconnect during a derby eliminates the player (as Disqualified)
 -- ---------------------------------------------------------------------------
-RM_onDerbyStart(1)
+startDerby(1)
 for _ = 1, 3 do RM_DerbyTick() end
 RM_Derby_onPlayerDisconnect(3)
 check(derbyPlayer('Cara').status == 'eliminated'
@@ -288,7 +305,7 @@ RM_onDerbyRequestLayouts(1)
 check(#lastArenas.layouts == 1, 'and come back when that map is hosted again')
 
 -- An arena cannot be swapped under a running derby.
-RM_onDerbyStart(1)
+startDerby(1)
 RM_onDerbyClearBoundary(1)              -- also refused while running
 RM_onDerbyLoadLayout(1, '{"name":"Pit Arena"}')
 check(#lastDerby.boundary == 3, 'the arena cannot change while a derby runs')
@@ -332,7 +349,7 @@ check(lastDerby.maxResets == 2, 'and its reset allowance')
 
 -- Start Derby hands each participant a slot (pid order; the field can be
 -- bigger than the placed grid).
-RM_onDerbyStart(1)
+startDerby(1)
 check(derbyGrid[1] == 1 and derbyGrid[2] == 2, 'participants are stood on slots 1 and 2')
 check(derbyGrid[3] == nil, 'a driver beyond the placed grid gets no slot')
 
@@ -356,6 +373,168 @@ check(lastState == nil, 'no RM_Update was ever broadcast by derby activity')
 RM_onRequestState(1)
 check(lastState.phase == 'waiting', 'racing state machine still waiting')
 check(lastState.totalLaps == 5, 'race distance untouched by the derby')
+
+-- ---------------------------------------------------------------------------
+-- Display names carry over to the derby board and the derby results
+-- ---------------------------------------------------------------------------
+-- Deliberately the LAST section in this file. An alias is set on the racing
+-- record -- that is the only place an admin can reach one -- so setting it
+-- broadcasts RM_Update, which would trip the isolation assertion above. That
+-- assertion is about derby activity never touching racing state, and this is
+-- an explicit admin action, not derby activity.
+--
+-- The derby keeps its own player table with its own copy of the name, so the
+-- board and the results have to resolve through the racing record by id rather
+-- than carrying a second copy that can drift.
+local function derbyRec(id)
+  for _, p in ipairs(lastDerby.players) do
+    if p.id == id then return p end
+  end
+end
+
+for id in pairs(connected) do RM_onPlayerJoin(id) end
+RM_onSetAlias(1, '{"target":2,"alias":"Bob Smash"}')
+startDerby(1)
+check(derbyRec(2) ~= nil, 'the renamed driver is on the derby board')
+check(derbyRec(2).alias == 'Bob Smash', 'the display name reaches the derby board')
+check(derbyRec(2).name == 'Bob', 'the real name is still carried alongside')
+check(derbyRec(1).alias == nil, 'a driver with no display name is unaffected')
+
+-- Clearing has to propagate too: a stamped copy would go sticky and leave a
+-- name the admin removed sitting on the standings forever.
+RM_onSetAlias(1, '{"target":2,"alias":""}')
+RM_onDerbyRequestState(1)
+check(derbyRec(2).alias == nil, 'clearing a display name clears it on the derby board')
+
+-- ...and into the exported derby results.
+RM_onSetAlias(1, '{"target":2,"alias":"Bob Smash"}')
+RM_onDerbyRequestState(1)
+RM_onDerbyDisqualified(1)
+RM_onDerbyDisqualified(3)
+check(lastDerby.winner == 'Bob Smash', 'the winner is announced under the display name')
+local dpath = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
+check(dpath ~= nil, 'the derby results path was announced')
+if dpath then
+  local rf = io.open(dpath, 'r')
+  local dtext = rf and rf:read('*a')
+  if rf then rf:close() end
+  check(dtext and dtext:find('Bob Smash', 1, true) ~= nil,
+    'the derby results file records the display name')
+  check(dtext and dtext:find('[Bob]', 1, true) ~= nil,
+    'the derby results file also records the real name, so it stays traceable')
+  os.remove(dpath)
+end
+
+-- ---------------------------------------------------------------------------
+-- Derby entry: everyone, or only drivers who opted in
+-- ---------------------------------------------------------------------------
+-- Also after the isolation assertion: opting in is RM_onJoinRace, which writes
+-- to the racing record and broadcasts RM_Update. The derby only ever READS that
+-- list, which is why players do not have to join twice.
+RM_onDerbyEnd(1)   -- back to setup from the section above
+RM_onDerbyEnd(1)
+
+check(lastDerby.entryMode == 'all', 'derby entry defaults to everyone (unchanged behaviour)')
+
+-- Opt-in with nobody joined: no field, and the derby must not start.
+RM_onDerbySetEntryMode(1, '{"mode":"join"}')
+check(lastDerby.entryMode == 'join', 'derby entry mode switches to opt-in')
+check(lastDerby.entrants == 0, 'nobody counts as entered before anyone joins')
+startDerby(1)
+check(lastDerby.derbyPhase ~= 'running', 'a derby with no entrants does not start')
+
+-- One driver opts in: only they are in the field.
+RM_onJoinRace(2, '{"join":true}')
+check(lastDerby.entrants == 1, 'the entrant count follows the racing entry list')
+startDerby(1)
+check(lastDerby.derbyPhase == 'running', 'the derby starts once somebody has joined')
+local inField = 0
+for _, p in ipairs(lastDerby.players) do inField = inField + 1 end
+check(inField == 1, 'only the driver who joined is a participant')
+check(derbyRec(2) ~= nil, 'the driver who joined is in the field')
+check(derbyRec(1) == nil, 'a connected player who did not join is left out')
+
+-- The mode is locked while a derby runs -- the field cannot change underneath.
+RM_onDerbySetEntryMode(1, '{"mode":"all"}')
+check(lastDerby.entryMode == 'join', 'entry mode is locked while a derby is running')
+RM_onDerbyEnd(1)
+RM_onDerbyEnd(1)
+
+-- Back to everyone: every connected player is in the field again.
+RM_onDerbySetEntryMode(1, '{"mode":"all"}')
+startDerby(1)
+inField = 0
+for _, p in ipairs(lastDerby.players) do inField = inField + 1 end
+check(inField == 3, 'everyone mode puts every connected player in the field')
+RM_onDerbyEnd(1)
+RM_onDerbyEnd(1)
+
+-- Admin-only, like every other derby rule.
+RM_onDerbySetEntryMode(3, '{"mode":"join"}')
+check(lastDerby.entryMode == 'all', 'a non-admin cannot change the derby entry mode')
+
+-- ---------------------------------------------------------------------------
+-- Form up and countdown: the derby's own start procedure
+-- ---------------------------------------------------------------------------
+-- The field is placed and HELD at Form Up, then released by a countdown, the
+-- same two-step shape the circuit races use. The hold is imposed and lifted by
+-- the client, so what is asserted here is the server contract that drives it:
+-- the phases, the hold flag on the grid assign, and the countdown broadcast.
+RM_onDerbyEnd(1)
+RM_onDerbyEnd(1)
+RM_onDerbySetEntryMode(1, '{"mode":"all"}')
+check(lastDerby.derbyPhase == 'idle', 'derby back to idle before the start-procedure checks')
+
+-- Start Derby without forming up first is refused.
+RM_onDerbyStart(1)
+check(lastDerby.derbyPhase == 'idle', 'Start Derby does nothing until the field is formed up')
+
+-- Form Up places and holds everyone.
+derbyGrid = {}
+derbyHeld = {}
+lastCountdown = nil    -- earlier sections ran countdowns of their own
+RM_onDerbyFormUp(1)
+check(lastDerby.derbyPhase == 'forming', 'Form Up puts the derby in the forming phase')
+local held = 0
+for _ in pairs(derbyHeld) do held = held + 1 end
+check(held == 3, 'every participant is told to hold, not just those with a slot')
+check(lastCountdown == nil, 'forming up does not start the countdown on its own')
+
+-- Rules and arena edits are locked from form-up onward, not just once running.
+local oobBefore = lastDerby.oobLimit
+RM_onDerbySetConfig(1, '{"oob":42,"demo":42,"maxResets":-1}')
+check(lastDerby.oobLimit == oobBefore, 'derby rules are locked once the field is formed')
+local markersBefore = #lastDerby.boundary
+RM_onDerbyAddMarker(1, '{"x":99,"y":99,"z":0}')
+check(#lastDerby.boundary == markersBefore, 'the arena cannot be edited once the field is formed')
+
+-- Start Derby runs a countdown, and only GO puts it into running.
+RM_onDerbyStart(1)
+check(lastDerby.derbyPhase == 'countdown', 'Start Derby begins the countdown')
+check(lastCountdown == 3, 'the countdown starts at 3')
+RM_DerbyCountdownTick()
+check(lastCountdown == 2, 'the countdown ticks down')
+check(lastDerby.derbyPhase == 'countdown', 'still counting down, not running')
+RM_DerbyCountdownTick()
+check(lastCountdown == 1, 'the countdown reaches 1')
+RM_DerbyCountdownTick()
+check(lastCountdown == 0, 'GO is broadcast, which is what releases the held cars')
+check(lastDerby.derbyPhase == 'running', 'the derby is running only after GO')
+
+-- Aborting before GO releases the field and records no result.
+RM_onDerbyEnd(1)          -- end the running derby from above
+RM_onDerbyEnd(1)          -- clear finished -> idle
+lastCountdown = nil
+RM_onDerbyFormUp(1)
+check(lastDerby.derbyPhase == 'forming', 'formed up again')
+RM_onDerbyEnd(1)
+check(lastDerby.derbyPhase == 'idle', 'aborting from form-up goes straight back to idle')
+check(lastCountdown == -1, 'the abort broadcasts a countdown cancel, which frees the held cars')
+check(lastDerby.winner == nil, 'an aborted start records no winner')
+
+-- Admin-only, like everything else in the derby.
+RM_onDerbyFormUp(3)
+check(lastDerby.derbyPhase == 'idle', 'a non-admin cannot form up the field')
 
 print(string.format('derby_test: %d checks, %d failures', checks, fails))
 os.exit(fails == 0 and 0 or 1)

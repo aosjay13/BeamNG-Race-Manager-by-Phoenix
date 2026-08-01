@@ -270,6 +270,10 @@ angular.module('beamng.apps')
         time: 0,
         boundaryCount: 0,
         startCount: 0,        // derby starting grid slots placed
+        // Who takes part: 'all' (every connected player, the historical
+        // behaviour) or 'join' (only drivers who pressed Join Race).
+        entryMode: 'all',
+        entrants: 0,          // how many would be in a derby started right now
         maxResets: -1,        // resets per driver per derby (-1 = unlimited)
         visualize: true,      // boundary/grid visuals shown (client-local)
         winner: null,
@@ -303,6 +307,57 @@ angular.module('beamng.apps')
         finished:   'Finished',
         dsq:        'Disqualified',
         dnf:        'DNF'
+      };
+
+      // ------------------------------------------------------------------
+      // Display aliases (presentation only)
+      // ------------------------------------------------------------------
+      // The single resolution point on this side. Every table renders driver
+      // names through this and nothing else; `row.id` stays the key everywhere
+      // (ng-repeat track by, grid pinning, position tracking), so an alias can
+      // never become a lookup. The server sends both fields, so a driver with no
+      // alias falls back to their real guest name and can never render blank.
+      $scope.driverName = function (row) {
+        if (!row) { return ''; }
+        return row.alias || row.name || '';
+      };
+      // Real name, shown to admins beside the alias so a renamed driver can
+      // still be tied back to the guest session that set the lap times.
+      $scope.realName = function (row) {
+        return (row && row.alias) ? row.name : '';
+      };
+      // Admin-only alias editor inputs, keyed by driver id. Bound through an
+      // object for the same ng-if child-scope reason every other input is.
+      $scope.aliasUi = { input: {} };
+
+      // ------------------------------------------------------------------
+      // Build stamps
+      // ------------------------------------------------------------------
+      // This mod ships as three separately-deployed pieces and BeamNG caches UI
+      // files, so any one of them can be older than the others. That failure is
+      // silent in the worst way: Angular ignores a call to a scope function a
+      // stale app.js does not have, so a button does nothing and no console
+      // anywhere says a word. Showing all three makes it a glance instead of a
+      // hunt. Bump this with main.lua and raceManager.lua.
+      var APP_BUILD = '3.4.6-one-hold-path';
+      $scope.appBuild    = APP_BUILD;
+      $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
+      $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
+      $scope.buildsMatch = function () {
+        if (!$scope.clientBuild || !$scope.serverBuild) { return true; }  // unknown yet
+        return $scope.appBuild === $scope.clientBuild
+          && $scope.appBuild === $scope.serverBuild;
+      };
+      $scope.applyAlias = function (row) {
+        if (!row) { return; }
+        var v = $scope.aliasUi.input[row.id];
+        bngApi.engineLua('raceManager.setAlias(' + row.id + ', '
+          + luaStr(v === undefined || v === null ? '' : String(v)) + ')');
+      };
+      $scope.clearAlias = function (row) {
+        if (!row) { return; }
+        $scope.aliasUi.input[row.id] = '';
+        bngApi.engineLua('raceManager.setAlias(' + row.id + ", '')");
       };
 
       $scope.phaseLabel = function () { return PHASE_LABELS[$scope.phase] || $scope.phase; };
@@ -523,6 +578,7 @@ angular.module('beamng.apps')
           // Track whether an admin is running the session. When one appears and
           // we're just a spectator who hasn't pinned the login open, auto-hide
           // the prompt so the app is fully visible (a header Login button stays).
+          if (typeof data.serverBuild === 'string') { $scope.serverBuild = data.serverBuild; }
           $scope.adminPresent = !!data.adminPresent;
           if ($scope.adminPresent && !$scope.isAdmin && !$scope.loginPinned) {
             $scope.showLogin = false;
@@ -537,11 +593,29 @@ angular.module('beamng.apps')
         $scope.$evalAsync(function () { $scope.progress = data; });
       });
 
+      // How long GO! stays up after the lights go out.
+      //
+      // A race clears this overlay as a side effect: the next state broadcast
+      // arrives with a phase that is no longer 'countdown' and nulls it. A DERBY
+      // never sends that broadcast -- it is an isolated module with its own
+      // state channel -- so GO! sat on screen for the rest of the derby. Clearing
+      // it on a timer instead makes the overlay own its own lifetime, and gives
+      // GO! a readable beat in both modes rather than however long the next
+      // broadcast happens to take.
+      var GO_OVERLAY_MS = 1500;
+      var goTimer = null;
+
       $scope.$on('RaceManagerCountdown', function (event, data) {
         $scope.$evalAsync(function () {
           // data.count: 3, 2, 1, 0 (GO!), -1 (hide overlay)
           var c = (data && typeof data.count === 'number') ? data.count : -1;
           $scope.countdown = c >= 0 ? c : null;
+          if (goTimer) { clearTimeout(goTimer); goTimer = null; }
+          if (c === 0) {
+            goTimer = setTimeout(function () {
+              $scope.$evalAsync(function () { $scope.countdown = null; });
+            }, GO_OVERLAY_MS);
+          }
         });
       });
 
@@ -551,6 +625,7 @@ angular.module('beamng.apps')
           $scope.routeWaypoints = data.waypoints || [];
           $scope.nextWp = data.nextWp || 1;
           $scope.visualize = data.visualize !== false;
+          if (typeof data.clientBuild === 'string') { $scope.clientBuild = data.clientBuild; }
           // Admin session restored from the client bridge. This directive is
           // destroyed and rebuilt every time BeamNG tears down the HUD layer —
           // opening the pause menu does exactly that — so isAdmin cannot live
@@ -723,6 +798,8 @@ angular.module('beamng.apps')
         if (!data) { return; }
         $scope.$evalAsync(function () {
           $scope.derby.phase = data.derbyPhase || 'idle';
+          $scope.derby.entryMode = data.entryMode === 'join' ? 'join' : 'all';
+          $scope.derby.entrants = data.entrants || 0;
           $scope.derby.time = data.derbyTime || 0;
           $scope.derby.winner = data.winner || null;
           $scope.derby.boundaryCount = toArray(data.boundary).length;
@@ -817,10 +894,41 @@ angular.module('beamng.apps')
         if (!$scope.derbyResetsLimited()) { return '∞'; }
         return Math.min(p.resets || 0, $scope.derby.maxResets) + '/' + $scope.derby.maxResets;
       };
-      $scope.derbyStart = function () {
-        // Push the current timer inputs first so the derby always starts with
-        // what the admin sees in the two fields.
+      // A derby is under way from form-up onward, not just while running: the
+      // field is standing on its slots and held, so the arena and the rules are
+      // locked exactly as they are mid-derby.
+      $scope.derbyActive = function () {
+        return $scope.derby.phase === 'forming'
+          || $scope.derby.phase === 'countdown'
+          || $scope.derby.phase === 'running';
+      };
+      $scope.derbyPhaseLabel = function () {
+        switch ($scope.derby.phase) {
+          case 'running':   return 'LIVE — ' + $scope.formatDerbyTime($scope.derby.time);
+          case 'forming':   return 'Formed up — held';
+          case 'countdown': return 'Countdown';
+          case 'finished':  return 'Finished';
+          default:          return 'Setup';
+        }
+      };
+      $scope.derbyFormUp = function () {
+        // Push the timer/reset inputs first, so the derby forms up with what the
+        // admin currently has on screen. This has to happen HERE rather than at
+        // Start: once the field is formed the rules are locked, so a config sent
+        // then would simply be refused.
         $scope.derbyApplyConfig();
+        bngApi.engineLua('raceManager.derbyFormUp()');
+      };
+
+      // Derby entry: everyone connected, or only drivers who pressed Join Race.
+      $scope.toggleDerbyEntryMode = function () {
+        bngApi.engineLua('raceManager.derbySetEntryMode("'
+          + ($scope.derby.entryMode === 'all' ? 'join' : 'all') + '")');
+      };
+
+      $scope.derbyStart = function () {
+        // No config push here — the rules were sent at Form Up and are locked
+        // from that point, so this is purely "release the field".
         bngApi.engineLua('raceManager.derbyStart()');
       };
       $scope.derbyEnd = function () {
@@ -1436,6 +1544,7 @@ angular.module('beamng.apps')
         document.removeEventListener('mouseup', onResizeEnd);
         if (noticeTimer) { clearTimeout(noticeTimer); }
         if (vehErrTimer) { clearTimeout(vehErrTimer); }
+        if (goTimer) { clearTimeout(goTimer); }
         stopLapTicker();
         // The app is going away (HUD teardown, pause menu, app closed), so the
         // editor is not open any more. Without this the start-slot markers

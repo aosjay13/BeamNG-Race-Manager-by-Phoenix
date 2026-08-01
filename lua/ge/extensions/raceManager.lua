@@ -40,6 +40,10 @@ local LAP_DEBOUNCE   = 2.0      -- seconds; double-fire guard on the S/F gate.
                                 -- Kept low so even very short circuits report:
                                 -- this only needs to swallow same-crossing
                                 -- re-fires, not bound real lap times.
+-- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
+-- the note in main.lua for why a mismatch is otherwise invisible.
+local RM_BUILD = '3.4.6-one-hold-path'
+
 local PROGRESS_EVERY = 0.3      -- seconds between live-position reports
 -- Live lap clock for the driver's own HUD. The lap start is already known here
 -- (lapStart), it simply was never sent anywhere -- the leaderboard only ever
@@ -74,7 +78,14 @@ local visualize        = true
 -- slot number per driver and this client puts its own car on that slot.
 local startPositions = {}
 local gridSlot       = nil       -- slot the server assigned us for this race
-local gridFrozen     = false     -- true while the car is held for the start
+local gridFrozen     = false     -- true while the freeze command has been issued
+-- What the session WANTS held ('race' | 'derby' | nil), as opposed to whether
+-- the freeze is currently applied. Separating intent from state is what lets the
+-- freeze be put back at the one moment it is known to be lost: the vehicle reset
+-- that a placement teleport causes. Forward-declared with the setter because
+-- onVehicleResetted sits above the hold code and needs both.
+local holdWanted     = nil
+local setLocalVehicleFrozen      -- forward declaration, assigned further down
 
 -- Rallycross joker route (Module 2): a second, completely separate gate set
 -- describing the alternate route. Same checkpoint format as `route`; it travels
@@ -278,6 +289,7 @@ end
 local function pushRouteState()
   reportStartCount()
   guihooks.trigger('RaceManagerRoute', {
+    clientBuild  = RM_BUILD,
     waypoints    = route,
     nextWp       = armedWp,
     width        = checkpointWidth,
@@ -993,6 +1005,13 @@ local function setResetInputsBlocked(blocked)
   end
 end
 
+-- NOTE: driving inputs are deliberately NOT filtered while a car is held.
+-- controller.setFreeze pins the car in place but leaves the drivetrain live, and
+-- that is the point: revving against the hold and pre-selecting a gear before
+-- the lights is how a standing start is supposed to work. A previous build
+-- blocked throttle/clutch/shift here as a "second mechanism" and took that away
+-- from every driver; the freeze alone is the correct primitive.
+
 -- Recomputed every frame (cheap: only acts on a change): the reset keys go
 -- dead the moment the allowance is spent and come back the moment the session
 -- lets go of the rule.
@@ -1125,7 +1144,19 @@ function M.onVehicleResetted(vehId)
   if not veh or veh:getID() ~= vehId then return end
   -- Our own teleport coming back at us (a restore, a grid placement, a preview).
   -- Never a driver reset, so it must not be counted, blocked or reported.
-  if isSelfTeleportEcho() then return end
+  if isSelfTeleportEcho() then
+    -- ...but this IS the moment a placement teleport wipes the freeze, because
+    -- the reset reloads the vehicle's Lua VM and controller state with it. If a
+    -- hold is wanted, put it straight back here rather than polling for it: this
+    -- fires exactly when it is needed and nowhere else, so the drivetrain is
+    -- left alone afterwards and a driver can still rev and pick a gear against
+    -- the hold.
+    if holdWanted then
+      setLocalVehicleFrozen(true, holdWanted)
+      log('I', 'raceManager', 'Hold re-applied after placement reset (' .. tostring(holdWanted) .. ')')
+    end
+    return
+  end
   if spectatorLock then
     -- Out of the session: a reset must never put a spectator back on track.
     removeLocalVehicle()
@@ -1237,13 +1268,44 @@ end
 -- Freeze/unfreeze the local car. BeamNG's vehicle-side controller exposes
 -- setFreeze; queueLuaCommand is the GE-side way in, and it is pcall'd because
 -- a vehicle without that controller must not break the start procedure.
-local function setLocalVehicleFrozen(frozen)
+-- Who imposed the current hold: 'race' (the grid, before the lights) or 'derby'
+-- (form-up, before the derby countdown). Scoped for exactly the reason the
+-- spectator lock is: the two modes run their start procedures independently, and
+-- a racing phase change must never let go of a car being held for a derby, or
+-- the other way round. Without this a race ending would turn every held derby
+-- car loose in the middle of its countdown.
+local freezeSource = nil
+
+-- Freezing a car in place.
+--
+-- Through core_vehicleBridge, which is how BeamNG's own career code does it
+-- (cargoScreen.lua, general.lua, progress.lua all call
+-- executeAction(veh, 'setFreeze', ...)). The bridge routes the call through
+-- gameplayInterface inside the vehicle VM instead of poking `controller`
+-- directly, and that difference matters: queueLuaCommand only QUEUES a string,
+-- so `controller.setFreeze(1)` was accepted, reported success, and then quietly
+-- did nothing -- which is exactly what the logs showed, a hold requested
+-- successfully and a car that drove away regardless.
+--
+-- The direct call is kept as a fallback for builds without the bridge; it is
+-- still what the game's older exploration.lua uses.
+setLocalVehicleFrozen = function (frozen, source)
   local veh = playerVehicle()
   if not veh then return false end
-  local ok = pcall(function ()
-    veh:queueLuaCommand('controller.setFreeze(' .. (frozen and '1' or '0') .. ')')
-  end)
-  if ok then gridFrozen = frozen and true or false end
+  local want = frozen and true or false
+  local ok = false
+  if core_vehicleBridge and core_vehicleBridge.executeAction then
+    ok = pcall(core_vehicleBridge.executeAction, veh, 'setFreeze', want)
+  end
+  if not ok then
+    ok = pcall(function ()
+      veh:queueLuaCommand('controller.setFreeze(' .. (want and '1' or '0') .. ')')
+    end)
+  end
+  if ok then
+    gridFrozen = want
+    freezeSource = want and (source or 'race') or nil
+  end
   return ok
 end
 
@@ -1264,6 +1326,33 @@ local function placeOnStartPosition(sp)
   return ok
 end
 
+-- Holding a car for a standing start.
+--
+-- ONE path, shared by both modes: place the car, freeze it once, leave it alone.
+-- The race hold has always behaved correctly doing exactly this, so the derby
+-- does the same rather than anything of its own -- every derby-specific variant
+-- tried here (re-asserting on a timer, deferring the first application, adding a
+-- second one as a backstop) made it worse, and all of them were really working
+-- around a freeze call that did nothing.
+--
+-- Applying it more than once is not harmless: each call re-pins the car at
+-- whatever state it is in and resets the drivetrain, so revs bleed away and a
+-- pre-selected gear will not stick. Revving and shifting against the hold is the
+-- point of a standing start, so the freeze is issued once and never repeated.
+local function requestHold(source)
+  holdWanted = source
+  local ok = setLocalVehicleFrozen(true, source)
+  if ok then
+    pushRouteState()
+    log('I', 'raceManager', 'Hold requested (' .. tostring(source) .. ')')
+  else
+    -- Never fail quietly: a car that should be held and is not looks exactly
+    -- like a start procedure that has not begun.
+    log('W', 'raceManager', 'Hold (' .. tostring(source) .. ') could not be applied')
+  end
+  return ok
+end
+
 -- Server assigned this client a grid slot: stand the car on it and hold it.
 local function applyGridSlot(slot)
   gridSlot = slot
@@ -1277,7 +1366,7 @@ local function applyGridSlot(slot)
     return
   end
   if placeOnStartPosition(sp) then
-    setLocalVehicleFrozen(true)
+    requestHold('race')
     -- The grid slot is where the car legitimately stands, so it is also the
     -- position a blocked reset should restore to — facing down the track, not
     -- at whatever identity rotation happens to mean on this circuit.
@@ -1290,10 +1379,22 @@ local function applyGridSlot(slot)
 end
 
 -- GO (or any exit from the start procedure): release the car.
-local function releaseGridHold()
+-- `source` names the mode letting go. A hold imposed by the other mode is left
+-- alone. Passing nil forces the release, which is what a session ending or the
+-- extension unloading wants: with no server left to lift it, a held car would
+-- stay held forever.
+local function releaseGridHold(source)
+  -- Intent goes first. A reset echo that has yet to arrive checks holdWanted
+  -- before re-applying, so clearing it here is what stops a car being frozen a
+  -- moment after it was deliberately let go.
+  if not source or not holdWanted or holdWanted == source then
+    holdWanted = nil
+  end
   if not gridFrozen then return end
+  if source and freezeSource and freezeSource ~= source then return end
   setLocalVehicleFrozen(false)
   gridFrozen = false
+  freezeSource = nil
   pushRouteState()
 end
 
@@ -1524,9 +1625,15 @@ end
 
 local DERBY_STOP_SPEED    = 0.7   -- m/s; below this the car counts as stopped
                                   -- (generous enough to swallow physics jiggle)
-local DERBY_START_GRACE   = 5     -- s after Start Derby before the stopped-vehicle
-                                  -- check arms, so drivers waiting for the GO
-                                  -- announcement aren't instantly on the clock
+-- Seconds after GO before the stopped-vehicle check arms. This used to exist
+-- because there was no start procedure at all: cars sat parked waiting for
+-- someone to say go, and would have been on the demolished clock immediately.
+-- Form-up and the countdown removed that reason, but the timer is kept for the
+-- one that is left -- a car released at GO takes a moment to actually move, and
+-- nobody should be eliminated for reaction time. Deliberately unchanged rather
+-- than retuned: it is a gameplay value, and shortening it is a balance call for
+-- an admin to ask for, not a side effect of adding a countdown.
+local DERBY_START_GRACE   = 5
 local DERBY_POLE_HEIGHT   = 6     -- boundary poles are taller than gate poles
 local DERBY_POLE_RADIUS   = 0.2
 
@@ -1652,9 +1759,17 @@ end
 local function derbyDrawBoundary()
   if not debugDrawer then return end
   if derbyPhase ~= 'running' and not derbyVisualize then return end
-  -- Derby starting grid slots, numbered from slot 1.
-  for i, sp in ipairs(derbyStarts) do
-    drawStartPosition(sp, i, derbySlot == i)
+  -- Derby starting grid slots, numbered from slot 1. Setup furniture, the same
+  -- as the race start grid: they exist to lay the slots out and check spacing,
+  -- so they stop being drawn once the derby is under way -- by then every car
+  -- has left its slot and the outlines are just clutter in a live arena.
+  -- (Reaching here while not running means derbyVisualize is on, per the guard
+  -- above.) The boundary below is NOT hidden: leaving it is what eliminates
+  -- you, so a driver has to be able to see it.
+  if derbyPhase ~= 'running' then
+    for i, sp in ipairs(derbyStarts) do
+      drawStartPosition(sp, i, derbySlot == i)
+    end
   end
   if #derbyBoundary == 0 then return end
   local color = (derbyPhase == 'running')
@@ -1733,6 +1848,21 @@ end
 function M.derbyToggleVisualize()
   derbyVisualize = not derbyVisualize
   guihooks.trigger('RaceManagerDerbyVisual', { visualize = derbyVisualize })
+end
+
+-- Who takes part in the next derby: everyone connected, or only drivers who
+-- pressed Join Race. Server-owned like every other derby rule.
+function M.derbySetEntryMode(mode)
+  if not inMultiplayer() then return end
+  TriggerServerEvent('RM_DerbySetEntryMode', jsonEncode({
+    mode = (mode == 'join') and 'join' or 'all',
+  }))
+end
+
+-- Form up: stand every participant on their slot and hold them there, ready
+-- for the countdown. The derby equivalent of Generate Grid.
+function M.derbyFormUp()
+  if inMultiplayer() then TriggerServerEvent('RM_DerbyFormUp', '') end
 end
 
 function M.derbyStart()
@@ -1842,6 +1972,11 @@ local function onDerbyUpdate(rawData)
     if derbyPhase == 'running' then derbySlot = nil end
     derbyClearWarnings()
   end
+  -- A derby that ends or is reset while cars are still held on the form-up grid
+  -- has to let them go. Only ever releases a hold this module imposed.
+  if newPhase == 'idle' or newPhase == 'finished' then
+    releaseGridHold('derby')
+  end
   derbyPhase = newPhase
 
   derbyOobLimit  = tonumber(data.oobLimit)  or derbyOobLimit
@@ -1901,17 +2036,40 @@ local function onDerbyGridAssign(rawData)
   local slot = tonumber(data.slot)
   derbySlot = slot and math.floor(slot) or nil
   local sp = derbySlot and derbyStarts[derbySlot]
-  if not sp then
-    if derbySlot then
-      pushNotice('grid', 'Derby start position ' .. derbySlot .. ' is not placed in this arena')
-      log('W', 'raceManager', 'Derby start slot ' .. derbySlot .. ' has no placed position')
+  if sp then
+    if placeOnStartPosition(sp) then
+      pushNotice('grid', 'Derby: you start from P' .. derbySlot)
+      log('I', 'raceManager', 'Placed on derby start slot ' .. derbySlot)
     end
-    return
+  elseif derbySlot then
+    pushNotice('grid', 'Derby start position ' .. derbySlot .. ' is not placed in this arena')
+    log('W', 'raceManager', 'Derby start slot ' .. derbySlot .. ' has no placed position')
   end
-  if placeOnStartPosition(sp) then
-    pushNotice('grid', 'Derby: you start from P' .. derbySlot)
-    log('I', 'raceManager', 'Placed on derby start slot ' .. derbySlot)
+  -- Form-up holds every participant until the countdown lets them go, whether
+  -- or not a slot was placed for them: a car with nowhere to line up still has
+  -- to wait for GO rather than getting a free run at everyone else. Tagged
+  -- 'derby' so a racing phase change can never release it.
+  if data.hold == true then
+    -- Identical to the race grid hold, deliberately: same call, same moment,
+    -- only the source tag differs. The derby used to schedule a second freeze a
+    -- moment later on the theory that its longer teleport needed one; that was
+    -- built on top of an API that never worked at all, and once the freeze went
+    -- through core_vehicleBridge the extra application was the only thing left
+    -- separating a working race hold from a broken derby one.
+    requestHold('derby')
   end
+end
+
+-- Derby countdown, on its own channel so the racing countdown and this one can
+-- never release each other's cars. GO (0) or an abort (-1) ends the hold; the
+-- overlay itself is the shared UI one, since a countdown looks the same either
+-- way and there is nothing mode-specific about drawing 3, 2, 1.
+local function onDerbyCountdown(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local count = tonumber(data.count)
+  if count and count <= 0 then releaseGridHold('derby') end
+  guihooks.trigger('RaceManagerCountdown', data)
 end
 
 -- Map-filtered arena list from the server.
@@ -2316,7 +2474,7 @@ local function onServerUpdate(rawData)
     -- quali start begins a fresh out-lap, GO starts lap 1 at the line.
     resetLapTracking()
     -- Leaving the start procedure must never leave a car frozen.
-    if newPhase ~= 'grid' and newPhase ~= 'countdown' then releaseGridHold() end
+    if newPhase ~= 'grid' and newPhase ~= 'countdown' then releaseGridHold('race') end
     if newPhase ~= 'grid' and newPhase ~= 'countdown' and newPhase ~= 'racing' then
       gridSlot = nil
     end
@@ -2365,6 +2523,17 @@ local function onVehicleRejected(rawData)
 end
 
 -- Server confirmed (or refused) a Whitelist Current Vehicle capture.
+-- Server ruled on an alias change. Surfaced as a notice so the admin always
+-- gets an answer -- the name applied, or why it did not.
+local function onAliasResult(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local msg = tostring(data.message or '')
+  if msg == '' then return end
+  pushNotice(data.success == true and 'alias' or 'vehicle', msg)
+  log('I', 'raceManager', 'Alias result: ' .. msg)
+end
+
 local function onGarageResult(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
@@ -2379,7 +2548,7 @@ local function onServerCountdown(rawData)
   -- authoritative release — everyone's car is let go by the same broadcast, so
   -- nobody can creep away early or be held a moment longer than their rivals.
   local count = tonumber(data.count)
-  if count and count <= 0 then releaseGridHold() end
+  if count and count <= 0 then releaseGridHold('race') end
   guihooks.trigger('RaceManagerCountdown', data)
 end
 
@@ -2532,6 +2701,40 @@ function M.generateGrid()
   if inMultiplayer() then TriggerServerEvent('RM_GenerateGrid', '') end
 end
 
+-- Admin sets or clears a driver's display alias (presentation only). Passed
+-- straight through to the server, which validates it and owns the result; this
+-- client keeps no alias state of its own and never uses one as a key.
+function M.setAlias(targetId, alias)
+  -- BeamMP player ids are ZERO-BASED: the first player on the server is id 0.
+  -- Rejecting `<= 0` therefore throws away a perfectly real driver, which is
+  -- exactly what made Set do nothing at all for the first player to join --
+  -- the row rendered, the click fired, and the command died here. Only a
+  -- missing/non-numeric id or a negative one is invalid.
+  targetId = tonumber(targetId)
+  if not targetId then
+    log('W', 'raceManager', 'setAlias: no target driver id')
+    return
+  end
+  targetId = math.floor(targetId)
+  if targetId < 0 then
+    log('W', 'raceManager', 'setAlias: invalid target driver id ' .. tostring(targetId))
+    return
+  end
+  if not inMultiplayer() then
+    editorMsg('Display names need a BeamMP server')
+    return
+  end
+  -- Logged on the way out so the game console (~) shows the attempt. If this
+  -- line appears and no result notice follows, the request left this client and
+  -- the server plugin did not answer -- which points at the server side, not
+  -- the app.
+  log('I', 'raceManager', string.format('setAlias -> driver %d = "%s"', targetId, tostring(alias or '')))
+  TriggerServerEvent('RM_SetAlias', jsonEncode({
+    target = targetId,
+    alias  = tostring(alias or ''),
+  }))
+end
+
 function M.setTotalLaps(n)
   n = math.floor(tonumber(n) or 0)
   if n < 1 then return end
@@ -2635,9 +2838,22 @@ end
 
 -- Custom grid: put one driver on one slot (the rest shuffle around them).
 function M.setDriverGridSlot(pid, slot)
-  pid  = math.floor(tonumber(pid) or 0)
-  slot = math.floor(tonumber(slot) or 0)
-  if pid <= 0 or slot < 1 then return end
+  -- BeamMP player ids are ZERO-BASED, so `pid <= 0` threw away whoever joined
+  -- the server first -- the box accepted a slot number and nothing was ever
+  -- sent. Slots themselves genuinely are 1-based (slot 1 is pole), so that
+  -- half of the guard stays. The server accepts target 0 either way.
+  pid  = tonumber(pid)
+  slot = tonumber(slot)
+  if not pid or not slot then
+    log('W', 'raceManager', 'setDriverGridSlot: missing driver id or slot')
+    return
+  end
+  pid, slot = math.floor(pid), math.floor(slot)
+  if pid < 0 or slot < 1 then
+    log('W', 'raceManager', string.format(
+      'setDriverGridSlot: invalid driver id %d or slot %d', pid, slot))
+    return
+  end
   if inMultiplayer() then
     TriggerServerEvent('RM_SetDriverGrid', jsonEncode({ pid = pid, slot = slot }))
   end
@@ -2710,12 +2926,14 @@ local DISPATCH = {
   -- Module 4: garage list enforcement feedback
   RM_VehicleRejected = onVehicleRejected,
   RM_GarageResult    = onGarageResult,
+  RM_AliasResult     = onAliasResult,
   -- Starting grid: the server hands out slots, this client places the car.
   RM_GridAssign      = onGridAssign,
   -- Demo Derby module
   RM_DerbyUpdate     = onDerbyUpdate,
   RM_DerbyLayouts    = onDerbyLayoutList,
   RM_DerbyGridAssign = onDerbyGridAssign,
+  RM_DerbyCountdown  = onDerbyCountdown,
 }
 
 local function bindServerHandlers()
@@ -2735,7 +2953,8 @@ end
 
 function M.onExtensionLoaded()
   bindServerHandlers()
-  log('I', 'raceManager', 'Race Manager client bridge loaded (multiplayer=' .. tostring(inMultiplayer()) .. ')')
+  log('I', 'raceManager', 'Race Manager client bridge loaded (build ' .. RM_BUILD
+    .. ', multiplayer=' .. tostring(inMultiplayer()) .. ')')
 end
 
 -- Everything this client enforces locally, switched off. Called both when the
@@ -2754,6 +2973,7 @@ local function resetToIdle(reason)
   releaseGridHold()
   applyGhostMode(false)
   setResetInputsBlocked(false)   -- never leave the reset keys dead after unload
+  holdWanted = nil               -- nothing is meant to be held any more
   maxResets       = -1
   resetsUsed      = 0
   resetMode       = 'inplace'

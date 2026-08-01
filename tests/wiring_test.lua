@@ -1,0 +1,125 @@
+-- Static audit of the event wiring between the three layers.
+--
+-- Why this exists: every other test in this suite mocks MP.RegisterEvent as a
+-- no-op and then calls the handlers DIRECTLY, so registration is the one link
+-- nothing exercises. That blind spot has now produced the same bug twice --
+-- RM_SetAlias, where an admin pressed Set and nothing reached the server, and
+-- RM_DerbyCountdownTick, where the derby countdown created a timer, ticked, and
+-- froze on 3 forever because nothing was listening. Both looked like dead
+-- buttons and neither left a trace in any console.
+--
+-- Nothing here runs the plugin. It reads the three sources as text and checks
+-- that every event one layer sends has somebody registered to receive it.
+-- Run from the repo root: lua5.3 tests/wiring_test.lua
+
+local fails, checks = 0, 0
+local function expect(cond, msg)
+  checks = checks + 1
+  if not cond then
+    fails = fails + 1
+    print('FAIL: ' .. msg)
+  end
+end
+
+local function readFile(path)
+  local f = assert(io.open(path, 'r'), 'cannot open ' .. path)
+  local s = f:read('*a')
+  f:close()
+  return s
+end
+
+local server = readFile('server/RaceManager/main.lua')
+local client = readFile('lua/ge/extensions/raceManager.lua')
+
+-- Everything the server plugin registers a handler for.
+local registered = {}
+for name in server:gmatch("MP%.RegisterEvent%s*%(%s*'([%w_]+)'") do
+  registered[name] = true
+end
+expect(next(registered) ~= nil, 'found MP.RegisterEvent calls in the server plugin')
+
+-- ---------------------------------------------------------------------------
+-- 1. Every timer the server creates must have a registered handler.
+--
+-- MP.CreateEventTimer fires an event on an interval; if nothing is registered
+-- under that name the timer runs forever and does nothing at all.
+-- ---------------------------------------------------------------------------
+local timers = {}
+for name in server:gmatch("MP%.CreateEventTimer%s*%(%s*'([%w_]+)'") do
+  timers[name] = true
+end
+expect(next(timers) ~= nil, 'found MP.CreateEventTimer calls in the server plugin')
+for name in pairs(timers) do
+  expect(registered[name],
+    'timer "' .. name .. '" is created but never registered, so it ticks into '
+      .. 'nothing (this is exactly how the derby countdown stuck on 3)')
+end
+
+-- ---------------------------------------------------------------------------
+-- 2. Every event the CLIENT sends upstream must be registered on the server.
+--
+-- An unregistered event is dropped silently by BeamMP: the control appears to
+-- do nothing and no console anywhere reports it.
+-- ---------------------------------------------------------------------------
+local sentUpstream = {}
+for name in client:gmatch("TriggerServerEvent%s*%(%s*'([%w_]+)'") do
+  sentUpstream[name] = true
+end
+expect(next(sentUpstream) ~= nil, 'found TriggerServerEvent calls in the client bridge')
+for name in pairs(sentUpstream) do
+  expect(registered[name],
+    'the client sends "' .. name .. '" but the server registers no handler for '
+      .. 'it, so pressing that control does nothing and says nothing')
+end
+
+-- ---------------------------------------------------------------------------
+-- 3. Every event the SERVER pushes downstream must be dispatched by the client.
+--
+-- The client routes incoming events through one DISPATCH table; a name missing
+-- from it is received and thrown away.
+-- ---------------------------------------------------------------------------
+local dispatchBlock = client:match('local DISPATCH = {(.-)\n}')
+expect(dispatchBlock ~= nil, 'found the client DISPATCH table')
+
+local dispatched = {}
+if dispatchBlock then
+  for name in dispatchBlock:gmatch('([%w_]+)%s*=') do
+    dispatched[name] = true
+  end
+end
+
+local sentDownstream = {}
+for name in server:gmatch("MP%.TriggerClientEvent%s*%([^,]+,%s*'([%w_]+)'") do
+  sentDownstream[name] = true
+end
+expect(next(sentDownstream) ~= nil, 'found MP.TriggerClientEvent calls in the server plugin')
+for name in pairs(sentDownstream) do
+  expect(dispatched[name],
+    'the server sends "' .. name .. '" to clients but it is not in the client '
+      .. 'DISPATCH table, so the client receives it and throws it away')
+end
+
+-- ---------------------------------------------------------------------------
+-- 4. Handlers named in a registration must actually exist.
+--
+-- MP.RegisterEvent takes the handler name as a STRING, so a typo cannot be
+-- caught by the compiler -- it resolves to nil at fire time.
+-- ---------------------------------------------------------------------------
+for event, handler in server:gmatch("MP%.RegisterEvent%s*%(%s*'[%w_]+'%s*,%s*'([%w_]+)'()") do
+  local _ = handler
+end
+for event, handler in server:gmatch("MP%.RegisterEvent%s*%(%s*'([%w_]+)'%s*,%s*'([%w_]+)'") do
+  -- Our own handlers are global functions defined in this file. BeamMP's base
+  -- hooks (onPlayerJoin and friends) are ours too -- every name we register
+  -- points at a function we define.
+  expect(server:find('function ' .. handler .. '%s*%(') ~= nil,
+    'event "' .. event .. '" is registered to handler "' .. handler
+      .. '", which is not defined in the server plugin')
+end
+
+if fails == 0 then
+  print('wiring_test: ' .. checks .. ' checks, 0 failures')
+else
+  print('wiring_test: ' .. fails .. ' FAILURES of ' .. checks .. ' checks')
+  os.exit(1)
+end

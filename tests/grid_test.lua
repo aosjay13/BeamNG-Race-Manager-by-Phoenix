@@ -211,6 +211,30 @@ RM_onSetQualiLimits(1, '{"laps":9,"seconds":900}')
 check(lastState.qualiLapLimit == 0 and lastState.qualiTimeLimit == 2,
   'qualifying limits are locked while the session runs')
 
+-- ---------------------------------------------------------------------------
+-- Player id ZERO is a real driver.
+--
+-- BeamMP hands out zero-based player ids, so the first player on the server is
+-- id 0. An `id > 0` guard silently throws that driver away -- which is exactly
+-- how the client bridge dropped both the grid-pin and the display-name command
+-- for whoever joined first: the control accepted input and nothing was ever
+-- sent. Pinned here so the server never grows the same assumption.
+--
+-- Deliberately last in the file: it adds a fourth driver, and every section
+-- above is written around the three that join at the top.
+-- ---------------------------------------------------------------------------
+RM_onEndRace(1)
+RM_onResetLeaderboard(1)
+connected[0] = 'Zed'
+RM_onPlayerJoin(0)
+RM_onSetEntryMode(1, '{"mode":"all"}')
+RM_onSetGridMode(1, '{"mode":"custom"}')
+RM_onSetDriverGrid(1, '{"pid":0,"slot":1}')
+RM_onGenerateGrid(1)
+check(driver('Zed') ~= nil, 'player id 0 is a real driver')
+check(driver('Zed').gridPos == 1, 'player id 0 can be pinned to a grid slot')
+check(gridAssign[0] == 1, 'player id 0 is sent its slot like every other driver')
+
 if fails == 0 then
   print('ALL PASS (' .. checks .. ' checks)')
 else
