@@ -42,7 +42,7 @@ local LAP_DEBOUNCE   = 2.0      -- seconds; double-fire guard on the S/F gate.
                                 -- re-fires, not bound real lap times.
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '3.4.4-hold-on-reset'
+local RM_BUILD = '3.4.5-vehiclebridge-freeze'
 
 local PROGRESS_EVERY = 0.3      -- seconds between live-position reports
 -- Live lap clock for the driver's own HUD. The lap start is already known here
@@ -1276,15 +1276,35 @@ end
 -- car loose in the middle of its countdown.
 local freezeSource = nil
 
+-- Freezing a car in place.
+--
+-- Through core_vehicleBridge, which is how BeamNG's own career code does it
+-- (cargoScreen.lua, general.lua, progress.lua all call
+-- executeAction(veh, 'setFreeze', ...)). The bridge routes the call through
+-- gameplayInterface inside the vehicle VM instead of poking `controller`
+-- directly, and that difference matters: queueLuaCommand only QUEUES a string,
+-- so `controller.setFreeze(1)` was accepted, reported success, and then quietly
+-- did nothing -- which is exactly what the logs showed, a hold requested
+-- successfully and a car that drove away regardless.
+--
+-- The direct call is kept as a fallback for builds without the bridge; it is
+-- still what the game's older exploration.lua uses.
 setLocalVehicleFrozen = function (frozen, source)
   local veh = playerVehicle()
   if not veh then return false end
-  local ok = pcall(function ()
-    veh:queueLuaCommand('controller.setFreeze(' .. (frozen and '1' or '0') .. ')')
-  end)
+  local want = frozen and true or false
+  local ok = false
+  if core_vehicleBridge and core_vehicleBridge.executeAction then
+    ok = pcall(core_vehicleBridge.executeAction, veh, 'setFreeze', want)
+  end
+  if not ok then
+    ok = pcall(function ()
+      veh:queueLuaCommand('controller.setFreeze(' .. (want and '1' or '0') .. ')')
+    end)
+  end
   if ok then
-    gridFrozen = frozen and true or false
-    freezeSource = frozen and (source or 'race') or nil
+    gridFrozen = want
+    freezeSource = want and (source or 'race') or nil
   end
   return ok
 end
@@ -1346,8 +1366,13 @@ local function holdUpdate(dt)
   local source = pendingHold.source
   pendingHold = nil
   if holdWanted ~= source then return end   -- released while we waited
+  -- Both outcomes are logged. A silent branch here is why the last round could
+  -- not tell "the backstop ran and failed" from "the backstop never ran".
   if setLocalVehicleFrozen(true, source) then
     log('I', 'raceManager', 'Hold confirmed by backstop (' .. tostring(source) .. ')')
+  else
+    log('W', 'raceManager', 'Hold backstop could not reach the vehicle ('
+      .. tostring(source) .. ')')
   end
 end
 
