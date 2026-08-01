@@ -130,21 +130,32 @@ check(lastState.totalLaps == 1, 'laps clamped to minimum 1')
 RM_onSetTotalLaps(1, '{"laps":2}')
 
 -- Qualifying: Cara fastest, Bob middle, Alice slowest; Bob improves.
+-- Qualifying runs the same lifecycle a race does — grid, hold, countdown, GO —
+-- and reports its laps on the same event, so there is one lap path rather than
+-- two that can drift apart.
 RM_onStartQualifying(1)
-check(lastState.phase == 'qualifying', 'phase qualifying')
-RM_onQualiLap(1, '{"lapTime":95.5}')
-RM_onQualiLap(2, '{"lapTime":99.0}')
-RM_onQualiLap(2, '{"lapTime":92.1}')   -- improvement
-RM_onQualiLap(2, '{"lapTime":97.0}')   -- slower, must not overwrite
-RM_onQualiLap(3, '{"lapTime":90.0}')
+check(lastState.phase == 'grid', 'Start Qualifying forms a grid')
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+check(lastState.phase == 'qualifying', 'phase qualifying after GO')
+RM_onLap(1, '{"lapTime":95.5}')
+RM_onLap(2, '{"lapTime":99.0}')
+RM_onLap(2, '{"lapTime":92.1}')   -- improvement
+RM_onLap(2, '{"lapTime":97.0}')   -- slower, must not overwrite
+RM_onLap(3, '{"lapTime":90.0}')
 check(driver('Bob').qualiBest == 92.1, 'best lap keeps the fastest (92.1)')
+check(driver('Bob').qualiLaps == 3, 'and every lap is counted')
+check(driver('Alice').currentLap == 2, 'a qualifying driver advances a lap like a racer')
+
+-- A lap reported outside a running session is ignored.
+RM_onEndRace(1)
+check(lastState.phase == 'waiting', 'ending qualifying drops back to waiting')
 check(lastState.drivers[1].name == 'Cara', 'provisional order: Cara P1')
 check(lastState.drivers[2].name == 'Bob',  'provisional order: Bob P2')
 check(lastState.drivers[3].name == 'Alice','provisional order: Alice P3')
-
--- Quali lap during wrong phase is ignored
+local aliceLap = driver('Alice').currentLap
 RM_onLap(1, '{"lapTime":80}')
-check(driver('Alice').currentLap == 0, 'race lap ignored during quali')
+check(driver('Alice').currentLap == aliceLap, 'a lap outside a session is ignored')
 
 -- Generate grid: fastest first
 RM_onGenerateGrid(1)

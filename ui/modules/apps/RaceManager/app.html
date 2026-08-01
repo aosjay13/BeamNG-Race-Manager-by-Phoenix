@@ -87,9 +87,12 @@
        admin reaches for under time pressure, so they must never be one click
        away behind a tab. -->
   <div class="rm-controls" ng-if="isAdmin">
-    <button class="rm-btn rm-btn-quali" ng-click="startQualifying()" ng-disabled="phase === 'countdown' || phase === 'racing'">Start Quali</button>
-    <button class="rm-btn rm-btn-grid"  ng-click="generateGrid()"    ng-disabled="phase === 'countdown' || phase === 'racing'">Generate Grid</button>
-    <button class="rm-btn rm-btn-start" ng-click="startCountdown()"  ng-disabled="phase !== 'grid'">Start Countdown</button>
+    <button class="rm-btn rm-btn-quali" ng-click="startQualifying()" ng-disabled="sessionUnderWay()"
+            title="Form the QUALIFYING grid: every entrant is stood on a start position and held. Press Start Countdown to run the session.">Start Quali</button>
+    <button class="rm-btn rm-btn-grid"  ng-click="generateGrid()"    ng-disabled="sessionUnderWay()"
+            title="Form the RACE grid from the qualifying times (or the grid order you chose). Press Start Countdown to start the race.">Generate Grid</button>
+    <button class="rm-btn rm-btn-start" ng-click="startCountdown()"  ng-disabled="phase !== 'grid'"
+            title="Count the field down and release the hold. Starts whichever session is on the grid.">Start Countdown</button>
     <button class="rm-btn rm-btn-end"   ng-click="endRace()"         ng-disabled="phase !== 'racing' && phase !== 'countdown' && phase !== 'qualifying'">End Session</button>
     <button class="rm-btn rm-btn-reset" ng-click="resetLeaderboard()">Reset</button>
   </div>
@@ -815,7 +818,8 @@
         <tr ng-if="!drivers.length">
           <td colspan="9" class="rm-empty">
             No drivers yet — join a BeamMP server running the RaceManager plugin, then press
-            <b>Start Quali</b> (or <b>Generate Grid</b> for a join-order grid).
+            <b>Start Quali</b> (or <b>Generate Grid</b> to go straight to a race),
+            followed by <b>Start Countdown</b>.
           </td>
         </tr>
       </tbody>

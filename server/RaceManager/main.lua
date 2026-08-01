@@ -37,8 +37,15 @@ local MAX_RESET_LIMIT    = 99
 -- State
 -- ---------------------------------------------------------------------------
 local race = {
-  phase        = 'waiting',  -- waiting | qualifying | grid | countdown | racing | finished
-  time         = 0.0,        -- seconds since GO (advanced by RM_Tick while racing)
+  phase        = 'waiting',  -- waiting | grid | countdown | qualifying | racing | finished
+  -- Which session the lifecycle is currently running. There is ONE lifecycle --
+  -- form the grid, hold, GO, remove finished cars, respawn everybody -- and this
+  -- is the only thing that differs between a race and a qualifying session:
+  -- which lap count they run to and how a completed lap is scored. Qualifying
+  -- used to sit outside the state machine with lap detection of its own, which
+  -- is why a 3-lap qualifying session took five or six laps to finish.
+  sessionKind  = 'race',     -- race | quali
+  time         = 0.0,        -- seconds since GO (advanced by RM_Tick while a session runs)
   totalLaps    = DEFAULT_TOTAL_LAPS,
   maxResets    = UNLIMITED_RESETS,  -- vehicle resets allowed per driver per session
   resetMode    = 'inplace',  -- what a legal reset does: 'inplace' | 'checkpoint'
@@ -209,9 +216,107 @@ local function aliasInUse(candidate, exceptPid)
   return false
 end
 
+-- ---------------------------------------------------------------------------
+-- Player identity registry
+-- ---------------------------------------------------------------------------
+-- `players` is a PER-SESSION table. Start Qualifying and Reset Session rebuild
+-- it from scratch on purpose -- lap times, grid slots and reset tallies are all
+-- meant to be thrown away with the session. Two things on that record are not:
+-- the admin-assigned display name, and the driver's decision to enter. Wiping
+-- the table took both with it every time, which is exactly why names vanished
+-- between qualifying and the race, and again between one race and the next.
+--
+-- They live here instead. Keyed by BeamMP player id, because that is the key
+-- everything else in this file already uses -- and NOT by anything derived from
+-- a vehicle: a vehicle id changes on every respawn, so a name bound to one
+-- survives nothing. The id on its own is not an identity either (BeamMP
+-- recycles session ids between players), so an entry is only handed back when
+-- the CONNECTION still matches: same id AND same guest name. A different player
+-- inheriting the id starts clean, which is what stops an accidental
+-- impersonation.
+local identities = {}   -- [pid] = { name = <guest name>, alias = ..., joined = bool }
+
+-- Every player id that reaches this file goes through here first.
+--
+-- Event handlers are called with a number, but MP.GetPlayers() keys its map on
+-- the server's own terms, and a key that does not compare equal to the one a
+-- record was stored under reads as "that player is not on this server". That is
+-- how a full grid of drivers who had every one of them opted in came out as an
+-- empty entry list: the online check purged every record, and with it every
+-- `joined` flag, a moment before the grid was built from them.
+local function pidKey(id)
+  local n = tonumber(id)
+  if not n then return nil end
+  return math.floor(n)
+end
+
+-- Connected players, keyed exactly the way every record in `players` is.
+local function onlinePlayers()
+  local out = {}
+  local raw = MP.GetPlayers()
+  if type(raw) ~= 'table' then return out end
+  for id, name in pairs(raw) do
+    local key = pidKey(id)
+    if key then
+      out[key] = name or MP.GetPlayerName(key) or ('Player ' .. key)
+    end
+  end
+  return out
+end
+
+-- The stored identity for this connection, or nil. Clears itself when the name
+-- no longer matches: that means somebody else now holds the session id.
+local function identityFor(pid, name)
+  local ident = identities[pid]
+  if not ident then return nil end
+  if name and ident.name and ident.name ~= name then
+    if ident.alias then
+      print(string.format('[RaceManager] Session id %d reused (%s -> %s): display name "%s" dropped',
+        pid, tostring(ident.name), tostring(name), ident.alias))
+    end
+    identities[pid] = nil
+    return nil
+  end
+  return ident
+end
+
+-- Write the durable half of a record back to the registry. Called from every
+-- place that can change a display name or an entry decision, so the registry is
+-- never behind the record it mirrors.
+local function rememberIdentity(rec)
+  if not rec or not rec.id then return end
+  identities[rec.id] = {
+    name   = rec.name,
+    alias  = rec.alias,
+    joined = rec.joined == true,
+  }
+end
+
+-- Stand the whole field down. Reset Session is the "start the evening again"
+-- button, so the entry list goes with it -- but the display names do NOT: an
+-- admin who spent five minutes naming a grid should not have to do it twice
+-- because they cleared a leaderboard.
+local function clearEntries()
+  for _, ident in pairs(identities) do
+    ident.joined = false
+  end
+end
+
 local function ensurePlayer(pid)
+  pid = pidKey(pid)
+  if not pid then return nil end
   if not players[pid] then
-    players[pid] = newRecord(pid)
+    local rec = newRecord(pid)
+    -- A fresh record for a connection we already know inherits its display name
+    -- and its entry decision. This is the whole point of the registry: the
+    -- record is disposable, the identity is not.
+    local ident = identityFor(pid, rec.name)
+    if ident then
+      rec.alias  = ident.alias
+      rec.joined = ident.joined == true
+    end
+    players[pid] = rec
+    rememberIdentity(rec)
   end
   return players[pid]
 end
@@ -367,7 +472,7 @@ local RM_PROTOCOL = 2
 -- contract. That narrower rule is what let two client-side fixes ship under one
 -- stamp: the build line read as matching while a client was a fix behind, which
 -- is precisely the situation this was added to make visible.
-local RM_BUILD = '3.4.6-one-hold-path'
+local RM_BUILD = '3.5.0-one-session-lifecycle'
 
 local function broadcastState(targetPid)
   local garageView = garageSnapshot and garageSnapshot() or {}
@@ -382,6 +487,11 @@ local function broadcastState(targetPid)
     rmProtocol   = RM_PROTOCOL,
     serverBuild  = RM_BUILD,
     phase        = race.phase,
+    -- Which session the shared lifecycle is running. The phase says where in
+    -- the lifecycle we are; this says what it is a lifecycle OF.
+    sessionKind  = race.sessionKind,
+    sessionLaps  = (race.sessionKind == 'quali')
+      and (race.qualiLapLimit > 0 and race.qualiLapLimit or 0) or race.totalLaps,
     raceTime     = race.time,
     totalLaps    = race.totalLaps,
     -- League regulations (Module 1 + 2): clients enforce these locally, the
@@ -435,8 +545,16 @@ end
 -- Starting grid. The server decides WHICH slot a driver gets; only the client
 -- can put the car there (no physics access here), so the slot number is all
 -- that goes over the wire. A nil slot clears any placement.
-local function assignGridSlot(pid, slot)
-  MP.TriggerClientEvent(pid, 'RM_GridAssign', Util.JsonEncode({ slot = slot }))
+--
+-- `order` and `count` describe this driver's place in the field. They exist for
+-- one reason: a whole grid teleporting into position on the same tick is how a
+-- placement gets refused for an occupied location, or lands two cars inside each
+-- other and throws them apart. The client uses them to stagger its own
+-- placement and to ghost itself while the field is landing.
+local function assignGridSlot(pid, slot, order, count)
+  MP.TriggerClientEvent(pid, 'RM_GridAssign', Util.JsonEncode({
+    slot = slot, order = order, count = count,
+  }))
 end
 
 local function broadcastCountdown(count)
@@ -701,15 +819,124 @@ local function applyJokerRuling()
   return excluded
 end
 
--- Single exit point for every way a race ends (all finished, admin ended,
--- last racer disconnected): apply the joker ruling, flip the phase, log the
--- results file, announce it in chat.
-local function finishRace(reason)
+-- ---------------------------------------------------------------------------
+-- Session lifecycle (shared by racing and qualifying)
+-- ---------------------------------------------------------------------------
+-- One lifecycle, two sets of rules. Everything below asks the session what it
+-- is running rather than branching on the phase name, so a fix to the grid, the
+-- hold, the finish or the respawn lands on both sessions at once.
+
+local function isQualiSession()
+  return race.sessionKind == 'quali'
+end
+
+-- The lap count the CURRENT session runs to, or nil when it has no lap target
+-- (an unlimited qualifying session, closed by its clock or by the admin).
+local function sessionLapTarget()
+  if isQualiSession() then
+    return race.qualiLapLimit > 0 and race.qualiLapLimit or nil
+  end
+  return race.totalLaps
+end
+
+-- The status a driver carries while they are circulating. Presentation only --
+-- every check in this file goes through onTrack() -- but it keeps the timing
+-- screen reading "Qualifying" during qualifying and "Racing" during a race.
+local function runningStatus()
+  return isQualiSession() and 'qualifying' or 'racing'
+end
+
+local function onTrack(rec)
+  return rec ~= nil and (rec.status == 'racing' or rec.status == 'qualifying')
+end
+
+-- The lights have gone out and cars are circulating: laps count, telemetry
+-- counts, the clock runs.
+local function sessionRunning()
+  return race.phase == 'racing' or race.phase == 'qualifying'
+end
+
+-- The session is under way: the lights have gone out (or are about to) and
+-- nothing about the rules may move under the drivers. Qualifying is included
+-- now that it is a real session rather than an open pit lane.
+local function sessionUnderWay()
+  return race.phase == 'countdown' or race.phase == 'racing' or race.phase == 'qualifying'
+end
+
+-- Forward declaration: the grid is formed by one function used by BOTH entry
+-- points (Generate Grid and Start Qualifying), and it needs the ordering rules
+-- that are defined further down the file.
+local formGrid
+
+-- Give every participant their car back at the end of a session.
+--
+-- The participant list is SNAPSHOTTED before a single release goes out. The
+-- release is what makes a client delete its freecam and spawn a vehicle, and
+-- building the list while that is under way is how a mass respawn ends up
+-- reaching only the last driver in it.
+--
+-- Each driver is also told its place in the order. Five cars materialising in
+-- the same instant is how a respawn gets refused for an occupied location, or
+-- lands two cars inside each other and blows them apart; the clients use this
+-- to stagger their spawns and to ghost themselves while it happens.
+local function respawnAll(source)
+  source = source or 'race'
+  local field = {}
+  for _, rec in pairs(players) do
+    field[#field + 1] = rec
+  end
+  table.sort(field, function (a, b)
+    return (a.gridPos or math.huge) < (b.gridPos or math.huge)
+      or ((a.gridPos or math.huge) == (b.gridPos or math.huge) and a.id < b.id)
+  end)
+
+  -- Participants first, in grid order, each carrying its slot in the spawn
+  -- sequence. Everyone else still gets the lock lifted, they just have no
+  -- place in the order because they have no car to put back.
+  local participants, bystanders = {}, {}
+  for _, rec in ipairs(field) do
+    if rec.gridPos or isEntrant(rec) then
+      participants[#participants + 1] = rec
+    else
+      bystanders[#bystanders + 1] = rec
+    end
+  end
+  for i, rec in ipairs(participants) do
+    MP.TriggerClientEvent(rec.id, 'RM_ReleaseSpectate', Util.JsonEncode({
+      source = source, order = i, count = #participants,
+    }))
+  end
+  for _, rec in ipairs(bystanders) do
+    MP.TriggerClientEvent(rec.id, 'RM_ReleaseSpectate', Util.JsonEncode({ source = source }))
+  end
+  print(string.format('[RaceManager] Respawning %d participant(s) (%d bystander(s)) after the session',
+    #participants, #bystanders))
+end
+
+-- Single exit point for every way a session ends (everyone finished, the clock
+-- ran out, the admin ended it, the last driver disconnected). Both kinds go
+-- through here, so both get the same close-down: stop the clock, put every
+-- removed car back, then apply whichever rules belong to that session.
+local function finishSession(reason)
+  MP.CancelEventTimer('RM_CountdownTick')
+  if isQualiSession() then
+    -- Qualifying drops back to waiting rather than 'finished': the next thing
+    -- an admin does is Generate Grid, and the times just set are what orders it.
+    race.phase = 'waiting'
+    for _, rec in pairs(players) do
+      if onTrack(rec) then rec.status = 'waiting' end
+    end
+    respawnAll('race')
+    broadcastState()
+    MP.SendChatMessage(-1, '[RaceManager] Qualifying is over — ' .. reason .. '.')
+    print('[RaceManager] Qualifying closed: ' .. reason)
+    return
+  end
+
   local excluded = applyJokerRuling()
   race.phase = 'finished'
-  -- The session is over: anyone forced into spectator mode by the reset rule
-  -- gets their camera and vehicle back.
-  releaseSpectators('race')
+  -- The session is over: every car taken off the track comes back.
+  respawnAll('race')
   broadcastState()
   if excluded > 0 then
     MP.SendChatMessage(-1, string.format(
@@ -730,35 +957,37 @@ end
 -- Session state machine (UI commands relayed by the client bridge)
 -- ---------------------------------------------------------------------------
 
--- Start Qualifying: snapshot the entry list and wipe all session data.
--- Allowed any time outside an active countdown/race. Drivers who have not
--- joined stay 'waiting' (spectators) — they can still press Join and start
--- setting times while the session runs.
+-- Start Qualifying: wipe the previous session's times and form the qualifying
+-- grid. Allowed any time a session is not already under way.
+--
+-- This is the SAME grid path Generate Grid takes -- form up, stand every
+-- entrant on a slot, hold them there for the countdown. Qualifying used to skip
+-- all of it and simply flip the phase, which left every driver starting from
+-- wherever they happened to be parked: the first crossing of the line was an
+-- out-lap nobody asked for, a driver sitting mid-route had to complete a lap
+-- before their first one even began to count, and a "3 lap" session took five
+-- or six laps to get through. Starting from the grid is what makes three laps
+-- mean three laps.
+--
+-- Display names and entry decisions are NOT wiped: they live in the identity
+-- registry and are restored by ensurePlayer inside formGrid.
 function RM_onStartQualifying(pid)
   if not requireAuth(pid) then return end
-  if race.phase == 'countdown' or race.phase == 'racing' then return end
+  if sessionUnderWay() then return end
   MP.CancelEventTimer('RM_CountdownTick')
-  -- Entry list survives the wipe: joining is a decision about the event, not
-  -- about one session, so it must not be silently thrown away here.
-  local wasJoined = {}
-  for id, rec in pairs(players) do wasJoined[id] = rec.joined end
   players = {}
   lapFirsts = {}
   race.time = 0.0
   race.qualiTime = 0.0
-  for id in pairs(MP.GetPlayers()) do
-    local rec = ensurePlayer(id)
-    rec.joined = wasJoined[id] == true
-    rec.status = isEntrant(rec) and 'qualifying' or 'waiting'
-  end
-  race.phase = 'qualifying'
-  -- Fresh session: nobody is serving a forced-spectator penalty any more.
-  releaseSpectators('race')
-  broadcastState()
-  print(string.format('[RaceManager] Qualifying started by %s (%d entrant(s), entry: %s%s%s)',
+  if not formGrid('quali', MP.GetPlayerName(pid) or pid) then return end
+  print(string.format('[RaceManager] Qualifying grid formed by %s (%d entrant(s), entry: %s%s%s)',
     MP.GetPlayerName(pid) or pid, entrantCount(), race.entryMode,
     race.qualiLapLimit > 0 and (', ' .. race.qualiLapLimit .. ' lap limit') or '',
     race.qualiTimeLimit > 0 and (', ' .. race.qualiTimeLimit .. 's limit') or ''))
+  MP.SendChatMessage(-1, string.format(
+    '[RaceManager] Qualifying grid formed (%s). Start Countdown to begin the session.',
+    race.qualiLapLimit > 0 and (race.qualiLapLimit .. ' lap' .. (race.qualiLapLimit == 1 and '' or 's'))
+      or 'unlimited laps'))
 end
 
 -- ---------------------------------------------------------------------------
@@ -777,12 +1006,15 @@ function RM_onJoinRace(pid, rawData)
       join = data.join == true or data.join == 1
     end
   end
-  if join and (race.phase == 'countdown' or race.phase == 'racing') then
-    print('[RaceManager] Join refused for ' .. rec.name .. ': the race is under way')
+  if join and sessionUnderWay() then
+    print('[RaceManager] Join refused for ' .. rec.name .. ': the session is under way')
     return
   end
   if rec.joined == join then return end
   rec.joined = join
+  -- Entering is a decision about the EVENT, not about one session, so it goes
+  -- in the registry and survives every session wipe below.
+  rememberIdentity(rec)
   if join then
     if race.phase == 'qualifying' then rec.status = 'qualifying' end
   else
@@ -805,7 +1037,7 @@ end
 -- Admin switches between opt-in entry and "everyone on the server races".
 function RM_onSetEntryMode(pid, rawData)
   if not requireAuth(pid) then return end
-  if race.phase == 'countdown' or race.phase == 'racing' then return end
+  if sessionUnderWay() then return end
   local mode = decodeString(rawData, 'mode')
   if mode ~= 'all' and mode ~= 'join' then return end
   race.entryMode = mode
@@ -836,7 +1068,7 @@ end
 -- driver can't have the rug pulled mid-lap.
 function RM_onSetQualiLimits(pid, rawData)
   if not requireAuth(pid) then return end
-  if race.phase == 'qualifying' then return end
+  if sessionUnderWay() then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
@@ -859,28 +1091,12 @@ function RM_onSetQualiLimits(pid, rawData)
     race.qualiTimeLimit == 0 and 'no time limit' or (race.qualiTimeLimit .. 's')))
 end
 
--- Close qualifying: everyone keeps their Best Lap, the phase drops back to
--- waiting so the admin can generate the grid.
+-- Close qualifying. Everyone keeps their Best Lap and every car comes back;
+-- both of those are finishSession's job now, shared with the race, so this is
+-- only the guard that says a qualifying session is what is running.
 local function endQualifying(reason)
-  if race.phase ~= 'qualifying' then return end
-  race.phase = 'waiting'
-  for _, rec in pairs(players) do
-    if rec.status == 'qualifying' then rec.status = 'waiting' end
-  end
-  broadcastState()
-  MP.SendChatMessage(-1, '[RaceManager] Qualifying is over — ' .. reason .. '.')
-  print('[RaceManager] Qualifying closed: ' .. reason)
-end
-
--- A driver used up their timed-lap allowance. Not a penalty: their session is
--- simply done, and the whole session closes once nobody is left running.
-local function checkQualiLapLimit()
-  if race.qualiLapLimit <= 0 then return end
-  local running = 0
-  for _, rec in pairs(players) do
-    if isEntrant(rec) and rec.status == 'qualifying' then running = running + 1 end
-  end
-  if running == 0 then endQualifying('every driver used their lap allowance') end
+  if race.phase ~= 'qualifying' or not isQualiSession() then return end
+  finishSession(reason)
 end
 
 -- Deterministic shuffle for the random grid draw. os.time seeding is fine
@@ -933,44 +1149,83 @@ local function orderForGrid(ordered)
   return ordered
 end
 
--- Generate Grid: order the entry list (see orderForGrid) and lock in starting
--- positions, then tell every driver which start position to stand on. Drivers
--- who join afterwards go to the back on the next Generate Grid. Also usable
--- from waiting/finished: with no quali times everyone ties and the grid falls
--- back to join order.
-function RM_onGenerateGrid(pid)
-  if not requireAuth(pid) then return end
-  if race.phase == 'countdown' or race.phase == 'racing' then return end
+-- Form the grid for a session. THE one implementation, filling the forward
+-- declaration made up beside finishSession.
+--
+-- Both entry points come through here -- Generate Grid for a race, Start
+-- Qualifying for a qualifying session -- because there used to be two routes to
+-- the grid and only one of them worked. With every driver opted in individually
+-- the field came out empty and no car was ever teleported, while "Everyone
+-- races" put the same five drivers on the grid without complaint; the
+-- difference was never in the placement code, it was in what survived the
+-- online purge below.
+--
+-- Returns true when a grid was actually formed.
+formGrid = function (kind, byName)
+  race.sessionKind = (kind == 'quali') and 'quali' or 'race'
   race.time = 0.0
   lapFirsts = {}
+
   -- Purge ghost records first: drivers kept after disconnecting (DNF/finished,
   -- so the previous results file could list them) must not be re-gridded — a
-  -- ghost would be flipped to 'racing' at GO, never report a lap, and block
-  -- the "all drivers finished" auto-finish forever.
-  local online = MP.GetPlayers()
+  -- ghost would be flipped to running at GO, never report a lap, and block the
+  -- "all drivers finished" auto-finish forever.
+  --
+  -- onlinePlayers() is what makes this safe. The purge compares the key a record
+  -- is stored under against the keys the server reports as connected, and if
+  -- those two do not compare equal EVERY record is purged -- taking every
+  -- `joined` flag with it, one line before the entry list is read. That reads
+  -- as "nobody has joined" no matter how many drivers pressed the button, and
+  -- it is invisible in "everyone races" mode because isEntrant never looks at
+  -- the flag there.
+  local online = onlinePlayers()
   for id in pairs(players) do
     if online[id] == nil then players[id] = nil end
   end
   -- Make sure every connected player has a record so the entry list is complete.
+  -- ensurePlayer restores the display name and the entry decision from the
+  -- identity registry, so a driver who opted in before the last session wipe is
+  -- still an entrant here.
   for id in pairs(online) do ensurePlayer(id) end
-  local ordered = {}
+
+  local ordered, skipped = {}, {}
   for _, rec in pairs(players) do
     if isEntrant(rec) then
       ordered[#ordered + 1] = rec
     else
       -- Not entered: explicitly off the grid, and holding no stale slot.
+      skipped[#skipped + 1] = rec.name
       rec.gridPos = nil
       rec.status  = 'waiting'
       assignGridSlot(rec.id, nil)
     end
   end
+
   if #ordered == 0 then
-    print('[RaceManager] Generate Grid ignored: nobody has joined the race')
-    MP.SendChatMessage(-1, '[RaceManager] Nobody has joined the race yet — '
-      .. 'press Join Race in the Race Manager app.')
-    return
+    -- Never a bare "nobody joined". An empty field with players connected is
+    -- the exact shape the opt-in bug took, and the one thing that would have
+    -- identified it is a line saying who was considered and why they were not
+    -- entered.
+    local connected = 0
+    for _ in pairs(online) do connected = connected + 1 end
+    print(string.format(
+      '[RaceManager] Grid not formed: no entrants (entry mode "%s", %d connected, %d record(s): %s)',
+      race.entryMode, connected, #skipped,
+      #skipped > 0 and table.concat(skipped, ', ') or 'none'))
+    MP.SendChatMessage(-1, string.format(
+      '[RaceManager] Nobody is entered for this session (%d connected, entry mode "%s") — '
+        .. 'press Join Race in the Race Manager app, or switch entry to Everyone.',
+      connected, race.entryMode))
+    return false
   end
+
   orderForGrid(ordered)
+  -- Locks come off BEFORE the slots go out. A driver still serving a spectator
+  -- penalty from the last session has no car at all, and a start position sent
+  -- to a client with nothing to place is a slot silently dropped on the floor.
+  -- The client coalesces the two: it puts its car back and stands it on the
+  -- slot as one ghosted, staggered operation.
+  releaseSpectators('race')
   for gridPos, rec in ipairs(ordered) do
     rec.gridPos    = gridPos
     rec.status     = 'gridded'
@@ -978,33 +1233,50 @@ function RM_onGenerateGrid(pid)
     rec.currentLap = 0
     rec.lapsLed    = 0
     rec.finishTime = nil
-    -- New race: reset allowance and joker credit start over for everyone.
+    -- New session: reset allowance and joker credit start over for everyone.
     rec.resets     = 0
     rec.resetsBlocked = 0
     rec.jokerTaken = 0
     rec.jokerLap   = nil
     rec.outReason  = nil
+    -- A qualifying grid also clears the times it is about to replace.
+    if isQualiSession() then
+      rec.qualiBest = nil
+      rec.qualiLaps = 0
+    end
     clearProgress(rec)
-    -- Put the car on its start position and hold it there until GO.
-    assignGridSlot(rec.id, gridPos)
+    -- Put the car on its start position and hold it there until GO. The order
+    -- and the field size travel with the slot so the client can stagger its
+    -- placement instead of every car being teleported in the same instant.
+    assignGridSlot(rec.id, gridPos, gridPos, #ordered)
   end
+
   race.phase = 'grid'
-  releaseSpectators('race')
   broadcastState()
   if race.startSlots > 0 and #ordered > race.startSlots then
     MP.SendChatMessage(-1, string.format(
       '[RaceManager] Warning: %d drivers but only %d start positions placed — '
         .. 'the back of the grid has nowhere to line up.', #ordered, race.startSlots))
   end
-  print('[RaceManager] Grid generated by ' .. (MP.GetPlayerName(pid) or pid)
-    .. ' (' .. #ordered .. ' drivers, ' .. race.gridMode .. ' order, pole: '
-    .. (ordered[1] and ordered[1].name or 'n/a') .. ')')
+  print(string.format('[RaceManager] %s grid formed by %s (%d drivers, %s order, pole: %s)',
+    isQualiSession() and 'Qualifying' or 'Race', tostring(byName), #ordered, race.gridMode,
+    ordered[1] and ordered[1].name or 'n/a'))
+  return true
+end
+
+-- Generate Grid: form the race grid. Drivers who join afterwards go to the back
+-- on the next Generate Grid. Also usable from waiting/finished: with no quali
+-- times everyone ties and the grid falls back to join order.
+function RM_onGenerateGrid(pid)
+  if not requireAuth(pid) then return end
+  if sessionUnderWay() then return end
+  formGrid('race', MP.GetPlayerName(pid) or pid)
 end
 
 -- How the grid gets filled. Locked once the countdown/race starts.
 function RM_onSetGridMode(pid, rawData)
   if not requireAuth(pid) then return end
-  if race.phase == 'countdown' or race.phase == 'racing' then return end
+  if sessionUnderWay() then return end
   local mode = decodeString(rawData, 'mode')
   if mode ~= 'quali' and mode ~= 'random' and mode ~= 'custom' then return end
   race.gridMode = mode
@@ -1018,7 +1290,7 @@ end
 -- order immediately so the admin sees the result.
 function RM_onSetDriverGrid(pid, rawData)
   if not requireAuth(pid) then return end
-  if race.phase == 'countdown' or race.phase == 'racing' then return end
+  if sessionUnderWay() then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
@@ -1099,6 +1371,7 @@ function RM_onSetAlias(pid, rawData)
     if rec.alias then
       local was = rec.alias
       rec.alias = nil
+      rememberIdentity(rec)
       broadcastState()
       aliasResult(pid, true, 'Display name cleared for ' .. rec.name .. ' (was "' .. was .. '").')
     else
@@ -1118,6 +1391,9 @@ function RM_onSetAlias(pid, rawData)
   end
 
   rec.alias = clean
+  -- Into the registry, not just onto the record: the record is rebuilt by the
+  -- next Start Qualifying and the name has to outlive that.
+  rememberIdentity(rec)
   broadcastState()
   aliasResult(pid, true, 'Display name "' .. clean .. '" set for ' .. rec.name .. '.')
 end
@@ -1126,7 +1402,7 @@ end
 
 function RM_onSetTotalLaps(pid, rawData)
   if not requireAuth(pid) then return end
-  if race.phase == 'countdown' or race.phase == 'racing' then return end
+  if sessionUnderWay() then return end
   local n = decodeNumber(rawData, 'laps')
   if not n then return end
   n = math.floor(n)
@@ -1147,7 +1423,7 @@ end
 -- driver who has already spent their allowance.
 function RM_onSetMaxResets(pid, rawData)
   if not requireAuth(pid) then return end
-  if race.phase == 'countdown' or race.phase == 'racing' then return end
+  if sessionUnderWay() then return end
   local n = decodeNumber(rawData, 'maxResets')
   if not n then return end
   n = math.floor(n)
@@ -1164,7 +1440,7 @@ end
 -- the countdown/race is under way, like every other regulation.
 function RM_onSetResetMode(pid, rawData)
   if not requireAuth(pid) then return end
-  if race.phase == 'countdown' or race.phase == 'racing' then return end
+  if sessionUnderWay() then return end
   local mode = decodeString(rawData, 'mode')
   if mode ~= 'inplace' and mode ~= 'checkpoint' then return end
   race.resetMode = mode
@@ -1178,10 +1454,10 @@ end
 function RM_onVehicleReset(pid)
   local rec = players[pid]
   if not rec then return end
-  if race.phase ~= 'racing' and race.phase ~= 'countdown' then return end
-  -- Only drivers still in the race spend allowance; a DNF'd/finished driver's
+  if not sessionUnderWay() then return end
+  -- Only drivers still in the session spend allowance; a DNF'd/finished driver's
   -- resets are meaningless and must not keep growing in the results file.
-  if rec.status ~= 'racing' and rec.status ~= 'gridded' then return end
+  if not onTrack(rec) and rec.status ~= 'gridded' then return end
   -- The tally can never pass the limit, no matter what a client reports: an
   -- over-allowance report is recorded as a blocked attempt instead, so the
   -- counter never renders as "3/2".
@@ -1202,8 +1478,8 @@ end
 function RM_onResetDenied(pid)
   local rec = players[pid]
   if not rec then return end
-  if race.phase ~= 'racing' and race.phase ~= 'countdown' then return end
-  if rec.status ~= 'racing' and rec.status ~= 'gridded' then return end
+  if not sessionUnderWay() then return end
+  if not onTrack(rec) and rec.status ~= 'gridded' then return end
   rec.resetsBlocked = (rec.resetsBlocked or 0) + 1
   print(string.format('[RaceManager] %s: reset BLOCKED (%d blocked, allowance %s spent)',
     rec.name, rec.resetsBlocked,
@@ -1221,7 +1497,7 @@ end
 -- mid-race.
 function RM_onSetJokerEnabled(pid, rawData)
   if not requireAuth(pid) then return end
-  if race.phase == 'countdown' or race.phase == 'racing' then return end
+  if sessionUnderWay() then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
@@ -1235,8 +1511,9 @@ end
 -- "only once" locally; the server records the count (and the lap it happened
 -- on) and rules on it when the race ends.
 function RM_onJokerLap(pid, rawData)
-  if race.phase ~= 'racing' then return end
-  local rec = players[pid]
+  -- Race regulation only: a joker route has no meaning in qualifying.
+  if race.phase ~= 'racing' or isQualiSession() then return end
+  local rec = players[pidKey(pid) or -1]
   if not rec or rec.status ~= 'racing' then return end
   rec.jokerTaken = (rec.jokerTaken or 0) + 1
   local lap = decodeNumber(rawData, 'lap')
@@ -1267,15 +1544,17 @@ function RM_CountdownTick()
     broadcastCountdown(countdownValue)
     return
   end
-  -- GO!
+  -- GO! One release for both kinds of session: every held car is let go by the
+  -- same broadcast, and lap 1 starts at the line for everybody.
   MP.CancelEventTimer('RM_CountdownTick')
   broadcastCountdown(0)
-  race.phase = 'racing'
+  race.phase = runningStatus()   -- 'qualifying' or 'racing'
   race.time = 0.0
+  race.qualiTime = 0.0
   lapFirsts = {}
   for _, rec in pairs(players) do
     if rec.status == 'gridded' then
-      rec.status     = 'racing'
+      rec.status     = runningStatus()
       rec.currentLap = 1
       rec.raceBest   = nil
       rec.lapsLed    = 0
@@ -1284,35 +1563,53 @@ function RM_CountdownTick()
       rec.jokerTaken = 0
       rec.jokerLap   = nil
       rec.outReason  = nil
+      if isQualiSession() then
+        rec.qualiBest = nil
+        rec.qualiLaps = 0
+      end
       clearProgress(rec)
     end
   end
   broadcastState()
-  print('[RaceManager] GO! (' .. race.totalLaps .. ' laps)'
-    .. (race.jokerEnabled and ' — JOKER LAP REQUIRED' or '')
+  local target = sessionLapTarget()
+  print('[RaceManager] GO! (' .. (isQualiSession() and 'qualifying' or 'race') .. ', '
+    .. (target and (target .. ' laps') or 'unlimited laps') .. ')'
+    .. (race.jokerEnabled and not isQualiSession() and ' — JOKER LAP REQUIRED' or '')
     .. (race.maxResets >= 0 and (' — resets limited to ' .. race.maxResets) or ''))
 end
 
 -- End Session: during a race anyone still on track becomes DNF; during
 -- qualifying the session closes but Best Laps are kept so the grid can
--- still be generated.
+-- still be generated. Either way every car comes back (finishSession).
 function RM_onEndRace(pid)
   if not requireAuth(pid) then return end
-  if race.phase == 'racing' or race.phase == 'countdown' then
-    MP.CancelEventTimer('RM_CountdownTick')
-    broadcastCountdown(-1)  -- hide any countdown overlay
-    for _, rec in pairs(players) do
-      if rec.status == 'racing' or rec.status == 'gridded' then
-        rec.status = 'dnf'
-        rec.outReason = rec.outReason or 'DNF - Session ended'
-      end
-    end
-    finishRace('ended by ' .. (MP.GetPlayerName(pid) or pid))
-  elseif race.phase == 'qualifying' then
+  if race.phase == 'grid' then
+    -- Aborting before the lights: no result to record, just stand the field
+    -- down and let the held cars go.
+    broadcastCountdown(-1)
     race.phase = 'waiting'
+    for _, rec in pairs(players) do
+      if rec.status == 'gridded' then rec.status = 'waiting' end
+    end
+    respawnAll('race')
     broadcastState()
-    print('[RaceManager] Qualifying closed by ' .. (MP.GetPlayerName(pid) or pid))
+    print('[RaceManager] Grid stood down by ' .. (MP.GetPlayerName(pid) or pid))
+    return
   end
+  if not sessionUnderWay() then return end
+  MP.CancelEventTimer('RM_CountdownTick')
+  broadcastCountdown(-1)  -- hide any countdown overlay
+  if isQualiSession() then
+    finishSession('ended by ' .. (MP.GetPlayerName(pid) or pid))
+    return
+  end
+  for _, rec in pairs(players) do
+    if onTrack(rec) or rec.status == 'gridded' then
+      rec.status = 'dnf'
+      rec.outReason = rec.outReason or 'DNF - Session ended'
+    end
+  end
+  finishSession('ended by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
 function RM_onResetLeaderboard(pid)
@@ -1322,45 +1619,19 @@ function RM_onResetLeaderboard(pid)
   players = {}
   lapFirsts = {}
   race.phase = 'waiting'
+  race.sessionKind = 'race'
   race.time = 0.0
-  for id in pairs(MP.GetPlayers()) do
+  race.qualiTime = 0.0
+  -- The records are gone and so is the entry list, but the display names are
+  -- not: they live in the identity registry and ensurePlayer hands them straight
+  -- back, which is what makes a name survive from one race into the next.
+  clearEntries()
+  for id in pairs(onlinePlayers()) do
     ensurePlayer(id)
   end
-  releaseSpectators('race')
+  respawnAll('race')
   broadcastState()
   print('[RaceManager] Session reset by ' .. (MP.GetPlayerName(pid) or pid))
-end
-
--- ---------------------------------------------------------------------------
--- Lap reports from clients
--- ---------------------------------------------------------------------------
-
--- Qualifying: client completed a timed lap; keep the best. A lap only counts
--- for a driver who is entered and still has allowance left — once the lap limit
--- is reached their session is done and further laps are ignored.
-function RM_onQualiLap(pid, rawData)
-  if race.phase ~= 'qualifying' then return end
-  local rec = ensurePlayer(pid)
-  if not isEntrant(rec) then return end
-  if rec.status ~= 'qualifying' then return end
-  local lapTime = decodeNumber(rawData, 'lapTime')
-  if not lapTime or lapTime <= 0 then return end
-  rec.qualiLaps = (rec.qualiLaps or 0) + 1
-  if not rec.qualiBest or lapTime < rec.qualiBest then
-    rec.qualiBest = lapTime
-    print(string.format('[RaceManager] %s quali best: %.3fs (lap %d)',
-      rec.name, lapTime, rec.qualiLaps))
-  end
-  if race.qualiLapLimit > 0 and rec.qualiLaps >= race.qualiLapLimit then
-    rec.status = 'finished'
-    MP.SendChatMessage(-1, string.format(
-      '[RaceManager] %s has used all %d qualifying lap%s.',
-      displayName(rec), race.qualiLapLimit, race.qualiLapLimit == 1 and '' or 's'))
-    broadcastState()
-    checkQualiLapLimit()
-    return
-  end
-  broadcastState()
 end
 
 -- ---------------------------------------------------------------------------
@@ -1379,9 +1650,9 @@ local MAX_CHECKPOINTS = 500      -- sanity clamp on a reported checkpoint count
 local MAX_REPORT_DIST = 1e6      -- metres; anything beyond this is nonsense
 
 function RM_onProgress(pid, rawData)
-  if race.phase ~= 'racing' then return end
-  local rec = players[pid]
-  if not rec or rec.status ~= 'racing' then return end
+  if not sessionRunning() then return end
+  local rec = players[pidKey(pid) or -1]
+  if not onTrack(rec) then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
@@ -1405,20 +1676,33 @@ function RM_onProgress(pid, rawData)
   end
 end
 
--- Race: client crossed the start/finish line after all checkpoints.
--- Server decides Laps Led (first report per lap number wins — one arrival
--- order for everyone) and the finish (lap count reached).
+-- A client crossed the start/finish line after clearing all checkpoints. ONE
+-- handler for both kinds of session, which is the point: qualifying used to
+-- report its laps on a channel of its own with its own counting rules, and that
+-- second implementation is what drifted. The server decides Laps Led (first
+-- report per lap number wins — one arrival order for everyone) and the finish
+-- (the session's lap target reached).
 function RM_onLap(pid, rawData)
-  if race.phase ~= 'racing' then return end
+  if not sessionRunning() then return end
   local rec = ensurePlayer(pid)
-  if rec.status ~= 'racing' then return end
+  if not rec or not onTrack(rec) then return end
+  local quali = isQualiSession()
   local lapTime = decodeNumber(rawData, 'lapTime')
-  if lapTime and lapTime > 0 and (not rec.raceBest or lapTime < rec.raceBest) then
-    rec.raceBest = lapTime
+  if lapTime and lapTime > 0 then
+    if not rec.raceBest or lapTime < rec.raceBest then rec.raceBest = lapTime end
+    -- Qualifying scores on the best lap; that is the whole difference between
+    -- the two sessions once the lifecycle is shared.
+    if quali and (not rec.qualiBest or lapTime < rec.qualiBest) then
+      rec.qualiBest = lapTime
+      print(string.format('[RaceManager] %s quali best: %.3fs (lap %d)',
+        rec.name, lapTime, (rec.qualiLaps or 0) + 1))
+    end
   end
 
   local completed = rec.currentLap
-  if not lapFirsts[completed] then
+  if quali then
+    rec.qualiLaps = (rec.qualiLaps or 0) + 1
+  elseif not lapFirsts[completed] then
     lapFirsts[completed] = pid
     rec.lapsLed = rec.lapsLed + 1
   end
@@ -1426,24 +1710,31 @@ function RM_onLap(pid, rawData)
   -- completed must not linger and rank this driver against the next one.
   clearProgress(rec)
 
-  if completed >= race.totalLaps then
+  local target = sessionLapTarget()
+  if target and completed >= target then
     rec.status = 'finished'
     rec.finishTime = race.time
-    -- A finished car is taken off the track: it has nothing left to gain and a
-    -- parked (or cruising) finisher is an obstacle for the drivers still
-    -- racing. The car comes back when the race ends (releaseSpectators('race')
-    -- in finishRace), so the driver is not stranded.
-    forceSpectate(pid, 'You finished the race — spectating until the flag', 'race')
-    print(string.format('[RaceManager] %s finished %d laps at %.3fs (led %d)',
+    -- A car that is done is taken off the track: it has nothing left to gain and
+    -- a parked (or cruising) driver is an obstacle for everyone still running.
+    -- Every one of them comes back at the flag (respawnAll in finishSession), so
+    -- nobody is left stranded.
+    forceSpectate(pid, quali
+      and 'Qualifying session complete — spectating until the flag'
+      or  'You finished the race — spectating until the flag', 'race')
+    print(string.format('[RaceManager] %s completed %d lap(s) at %.3fs (led %d)',
       rec.name, completed, race.time, rec.lapsLed))
-    -- Everyone done (finished or dnf)? Close the race.
+    if quali then
+      MP.SendChatMessage(-1, string.format('[RaceManager] %s has used all %d qualifying lap%s.',
+        displayName(rec), target, target == 1 and '' or 's'))
+    end
+    -- Everyone done (finished or dnf)? Close the session.
     for _, r in pairs(players) do
-      if r.status == 'racing' then
+      if onTrack(r) then
         broadcastState()
         return
       end
     end
-    finishRace('all drivers finished')
+    finishSession(quali and 'every driver used their lap allowance' or 'all drivers finished')
     return
   else
     rec.currentLap = completed + 1
@@ -1823,7 +2114,7 @@ end
 -- Locked once a countdown/race is under way — nobody swaps the track mid-race.
 function RM_onLoadLayout(pid, rawData)
   if not requireAuth(pid) then return end
-  if race.phase == 'countdown' or race.phase == 'racing' then return end
+  if sessionUnderWay() then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' or type(data.name) ~= 'string' then return end
@@ -2227,7 +2518,11 @@ local function derbyEligibleCount()
     return n
   end
   local n = 0
-  for id in pairs(MP.GetPlayers()) do
+  -- onlinePlayers() rather than MP.GetPlayers() directly: this reads the racing
+  -- entry list by id, and an id that does not compare equal to the key that
+  -- record is stored under reads as "has not joined" for every driver on the
+  -- server -- the same way it emptied the race grid.
+  for id in pairs(onlinePlayers()) do
     local rec = players[id]
     if derby.entryMode ~= 'join' or (rec and rec.joined) then n = n + 1 end
   end
@@ -2707,7 +3002,7 @@ function RM_onDerbyFormUp(pid)
   derby.winner = nil
   derby.time   = 0
   local optIn = derby.entryMode == 'join'
-  for id in pairs(MP.GetPlayers()) do
+  for id in pairs(onlinePlayers()) do
     -- In opt-in mode only drivers who pressed Join Race take part. Read-only
     -- against the racing entry list; a player with no racing record at all has
     -- plainly not joined anything.
@@ -2900,24 +3195,18 @@ end
 -- the single throttled place where the running order is re-sorted, re-numbered
 -- (buildDrivers -> assignPositions) and pushed to everyone.
 function RM_Tick()
-  -- Qualifying runs on the same clock: the session time is what the countdown
-  -- in every driver's UI reads, and it is what closes the session when the
-  -- admin set a time limit.
+  if not sessionRunning() then return end
+  -- One clock for both sessions. race.time is the session clock every finish
+  -- time is stamped from; qualifying additionally runs its own wall clock,
+  -- which is what closes the session when the admin set a time limit.
+  race.time = race.time + TICK_MS / 1000.0
   if race.phase == 'qualifying' then
     race.qualiTime = race.qualiTime + TICK_MS / 1000.0
     if race.qualiTimeLimit > 0 and race.qualiTime >= race.qualiTimeLimit then
       endQualifying('the time limit expired')
       return
     end
-    tickCounter = tickCounter + 1
-    if tickCounter >= PUSH_EVERY_TICKS then
-      tickCounter = 0
-      broadcastState()
-    end
-    return
   end
-  if race.phase ~= 'racing' then return end
-  race.time = race.time + TICK_MS / 1000.0
   tickCounter = tickCounter + 1
   if tickCounter >= PUSH_EVERY_TICKS then
     tickCounter = 0
@@ -2932,19 +3221,24 @@ function RM_onPlayerJoin(pid)
   -- alias would be impersonation by accident. Only the display fields are
   -- refreshed here; the record itself (and its lap data) is left alone, which is
   -- the pre-existing behaviour Generate Grid purges.
+  pid = pidKey(pid)
+  if not pid then return end
+  local current = MP.GetPlayerName(pid)
+  -- The registry is scoped to the connection, so a name that no longer matches
+  -- retires the stored identity (and its entry decision) in one place. Do this
+  -- BEFORE ensurePlayer, or the new record would inherit what is being dropped.
+  identityFor(pid, current)
   local existing = players[pid]
   if existing then
-    local current = MP.GetPlayerName(pid)
     if current and current ~= existing.name then
-      if existing.alias then
-        print(string.format('[RaceManager] Session id %d reused (%s -> %s): alias "%s" dropped',
-          pid, existing.name, current, existing.alias))
-      end
       existing.name  = current
       existing.alias = nil
+      existing.joined = false
+      rememberIdentity(existing)
     end
   end
   local rec = ensurePlayer(pid)
+  if not rec then return end
   -- Connecting is not entering: in the default opt-in mode a new arrival is a
   -- spectator until they press Join Race. In 'all' mode they are in the field
   -- straight away, which is what that mode means.
@@ -2953,6 +3247,8 @@ function RM_onPlayerJoin(pid)
 end
 
 function RM_onPlayerDisconnect(pid)
+  pid = pidKey(pid)
+  if not pid then return end
   -- Session IDs are reused, so a disconnecting admin must drop its auth flag;
   -- the next player to inherit this ID starts with no admin rights.
   local wasAdmin = authenticatedPlayers[pid] ~= nil
@@ -2963,21 +3259,21 @@ function RM_onPlayerDisconnect(pid)
     if wasAdmin then broadcastState() end
     return
   end
-  if rec.status == 'racing' or rec.status == 'gridded' then
+  if onTrack(rec) or rec.status == 'gridded' then
     rec.status = 'dnf'
     rec.outReason = rec.outReason or 'DNF - Disconnected'
-  elseif rec.status == 'waiting' or (rec.status == 'qualifying' and not rec.qualiBest) then
+  elseif rec.status == 'waiting' then
     players[pid] = nil
   end
-  -- If the last active racer just dropped, the race is over.
-  if race.phase == 'racing' then
+  -- If the last driver out on track just dropped, the session is over.
+  if sessionRunning() then
     for _, r in pairs(players) do
-      if r.status == 'racing' then
+      if onTrack(r) then
         broadcastState()
         return
       end
     end
-    finishRace('no racers left on track')
+    finishSession('no drivers left on track')
     return
   end
   broadcastState()
@@ -3019,7 +3315,6 @@ function onInit()
   MP.RegisterEvent('RM_StartCountdown',   'RM_onStartCountdown')
   MP.RegisterEvent('RM_EndRace',          'RM_onEndRace')
   MP.RegisterEvent('RM_ResetLeaderboard', 'RM_onResetLeaderboard')
-  MP.RegisterEvent('RM_QualiLap',         'RM_onQualiLap')
   MP.RegisterEvent('RM_ClearResults',     'RM_onClearResults')
   MP.RegisterEvent('RM_Lap',              'RM_onLap')
   MP.RegisterEvent('RM_Progress',         'RM_onProgress')  -- live position telemetry

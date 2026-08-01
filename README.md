@@ -89,8 +89,14 @@ Everything below happens inside the **Race Manager** window in game. The
 session flow is always the same:
 
 ```
-Build/Load a track  →  Start Quali  →  Generate Grid  →  Start Countdown  →  Race  →  Results
+Build/Load a track  →  Start Quali  →  Start Countdown  →  Qualifying
+                    →  Generate Grid  →  Start Countdown  →  Race  →  Results
 ```
+
+Qualifying and the race run the **same** session lifecycle: form the grid,
+hold the field, count down, run, take finished cars off the track, give
+everybody their car back. The only things that differ are the lap target and
+how a lap is scored (best lap in qualifying, running order in the race).
 
 ### Step 1 — Open the app
 
@@ -183,15 +189,31 @@ put on the grid, and the bar shows how many have entered. Withdrawing
 An admin can flip the mode to **Everyone races** if a session is simpler that
 way — then every connected player is in the field, which is how the plugin
 behaved before entry lists existed. Entry survives a **Start Quali**, so
-drivers only ever have to join once per event.
+drivers only ever have to join once per event (**Reset** stands the whole
+field down and everyone joins again).
+
+The two modes are two answers to "who is in the field" and nothing more —
+from there they run identical code. A field of drivers who all pressed **Join
+Race** grids exactly the same way, slot for slot, as flipping to **Everyone
+races**.
 
 ### Step 5 — Qualifying
 
-Press **Start Quali**. Every driver's first crossing of the start/finish
-line starts their flying lap (the out-lap is free), and each full lap
-through all gates posts to the server — the table shows everyone's **Best
-Lap**, laps run and live provisional grid order, fastest on top. Only your
-best counts. **End Session** closes qualifying but keeps the times.
+Press **Start Quali**, then **Start Countdown**. Start Quali forms a
+qualifying grid exactly the way Generate Grid forms a race one — every
+entrant is stood on a start position and held — and the countdown releases
+the field.
+
+Lap 1 starts at the line, so **three qualifying laps means three laps**.
+There is no out-lap: qualifying used to begin wherever each driver happened
+to be parked, which cost everyone a lap before their first one counted and
+made a "3 lap" session take five or six.
+
+Each full lap through all gates posts to the server — the table shows
+everyone's **Best Lap**, laps run and live provisional grid order, fastest on
+top. Only your best counts. A driver who uses their lap allowance is taken
+off the track until the session ends, then gets their car back with everyone
+else. **End Session** closes qualifying early but keeps the times.
 
 Three qualifying options sit in the admin settings:
 
@@ -221,6 +243,10 @@ the rug pulled mid-lap.
    position and held there** — you cannot move until the countdown finishes,
    so nobody jumps the start. The header shows your slot and a `HOLD` tag.
    If there are more drivers than placed start positions, chat warns you.
+   Cars are ghosted while the field forms up and land one after another
+   rather than all at once, so a full grid cannot refuse a placement for an
+   occupied slot or arrive interpenetrated and blow itself apart; collisions
+   come back once everyone is standing still on their slot.
 4. Press **Start Countdown**: everyone gets a synchronized 3‑2‑1‑**GO!**
    overlay, every car is released by that same broadcast, and the race clock
    starts.
@@ -231,6 +257,10 @@ the rug pulled mid-lap.
    for every client.
 6. The race ends when everyone has finished (or you press **End Session**,
    which DNFs anyone still out). Disconnecting mid-race is an automatic DNF.
+   At the flag **every** participant gets their car back — ghosted and
+   staggered, the same as a grid forming — and each driver's camera is put
+   explicitly back on their *own* car rather than on whichever vehicle the
+   game happens to pick.
 
 ### Step 7 — Results
 
@@ -285,7 +315,13 @@ The name is **display only**. Timing, checkpoints, scoring and the starting grid
 all key on the BeamMP player id exactly as before — an alias is never used as a
 lookup, so renaming somebody mid-session moves nothing but the text on screen.
 
-**Names last for the session only.** That is a consequence of the accounts
+**Names last as long as the connection does.** They survive Start Quali,
+Generate Grid, a whole race, **Reset**, and a second race after that — a name
+is bound to the BeamMP player id in a registry that outlives the per-session
+driver records, and never to a vehicle (a vehicle id changes on every
+respawn, so a name attached to one would not survive a single reset).
+
+They do **not** survive a reconnect, and that is a consequence of the accounts
 restriction rather than a choice: every player is a guest, BeamMP recycles
 session ids between players, and a guest name is regenerated on every join, so
 there is nothing stable to attach a lasting name to. If a driver reconnects,

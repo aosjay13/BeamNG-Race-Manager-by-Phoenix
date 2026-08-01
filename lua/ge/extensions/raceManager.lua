@@ -28,33 +28,36 @@ local M = {}
 -- ---------------------------------------------------------------------------
 -- Tunables
 -- ---------------------------------------------------------------------------
-local DEFAULT_WIDTH  = 20       -- meters across the gate (lateral span)
-local MIN_WIDTH      = 2
-local MAX_WIDTH      = 120
-local DEFAULT_HEIGHT = 10       -- meters the trigger extends up/down (vertical)
-local MIN_HEIGHT     = 1
-local MAX_HEIGHT     = 100
-local EDGE_RADIUS    = 0.15     -- meters; thickness of the drawn rectangle edge
-local GHOST_ALPHA    = 0.35     -- mesh alpha applied to ghosted rivals in quali
-local LAP_DEBOUNCE   = 2.0      -- seconds; double-fire guard on the S/F gate.
-                                -- Kept low so even very short circuits report:
-                                -- this only needs to swallow same-crossing
-                                -- re-fires, not bound real lap times.
+-- One table rather than a local apiece, and that is not a style preference:
+-- Lua allows at most 200 locals in a function, the top level of this file IS a
+-- function, and it was already within a handful of that ceiling. Going over is
+-- not a warning -- the file does not compile, and the whole mod is simply
+-- absent. Constants are the cheapest thing to group, so they are grouped.
+local TUNE = {
+  DEFAULT_WIDTH = 20,    -- meters across the gate (lateral span)
+  MIN_WIDTH = 2,
+  MAX_WIDTH = 120,
+  DEFAULT_HEIGHT = 10,    -- meters the trigger extends up/down (vertical)
+  MIN_HEIGHT = 1,
+  MAX_HEIGHT = 100,
+  EDGE_RADIUS = 0.15,  -- meters; thickness of the drawn rectangle edge
+  GHOST_ALPHA = 0.35,  -- mesh alpha applied to ghosted rival cars
+  -- Seconds; double-fire guard on the S/F gate. Kept low so even very short
+  -- circuits report: this only needs to swallow same-crossing re-fires, not
+  -- bound real lap times.
+  LAP_DEBOUNCE = 2.0,
+  PROGRESS_EVERY = 0.3,   -- seconds between live-position reports
+  -- Live lap clock for the driver's own HUD. Pushed on a slow cadence and
+  -- INTERPOLATED in the UI between pushes, which keeps the readout smooth
+  -- without a guihook every frame. ~3.3 Hz: responsive enough to resolve a
+  -- side-by-side fight, light enough that a full grid does not flood the server.
+  LAP_TIME_EVERY = 0.25,
+  ROUTE_FILE = 'settings/raceManager/route.json',
+}
+
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '3.4.6-one-hold-path'
-
-local PROGRESS_EVERY = 0.3      -- seconds between live-position reports
--- Live lap clock for the driver's own HUD. The lap start is already known here
--- (lapStart), it simply was never sent anywhere -- the leaderboard only ever
--- showed a Best Lap, so a driver had no running lap time at all. Pushed on a
--- slow cadence and INTERPOLATED in the UI between pushes, which keeps the
--- readout smooth without a guihook every frame.
-local LAP_TIME_EVERY = 0.25     -- seconds between live lap-time pushes to the UI
-                                -- (~3.3 Hz: responsive enough to resolve a
-                                -- side-by-side fight, light enough that a full
-                                -- grid does not flood the server)
-local ROUTE_FILE     = 'settings/raceManager/route.json'
+local RM_BUILD = '3.5.0-one-session-lifecycle'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -69,8 +72,8 @@ local totalLaps = 5          -- mirrored from server broadcasts
 -- global defaults below. Each checkpoint is a flat, upright rectangle:
 -- width = lateral span, height = vertical extent (covers banking).
 local route            = {}
-local checkpointWidth  = DEFAULT_WIDTH
-local checkpointHeight = DEFAULT_HEIGHT
+local checkpointWidth  = TUNE.DEFAULT_WIDTH
+local checkpointHeight = TUNE.DEFAULT_HEIGHT
 local visualize        = true
 
 -- Starting grid: ordered list of { x, y, z, hx, hy } placed by the race
@@ -86,6 +89,11 @@ local gridFrozen     = false     -- true while the freeze command has been issue
 -- onVehicleResetted sits above the hold code and needs both.
 local holdWanted     = nil
 local setLocalVehicleFrozen      -- forward declaration, assigned further down
+-- Ghosting is defined with the qualifying rules further down, but the placement
+-- scheduler above it needs to switch it on: a field of cars being teleported
+-- into position has to pass through each other on the way in. Forward-declared
+-- rather than moved so the ghost code stays beside the rule it was built for.
+local setGhostReason             -- forward declaration, assigned further down
 
 -- Rallycross joker route (Module 2): a second, completely separate gate set
 -- describing the alternate route. Same checkpoint format as `route`; it travels
@@ -227,6 +235,64 @@ local function playerVehicle()
   return nil
 end
 
+-- ---------------------------------------------------------------------------
+-- "Our" vehicle, in a world full of other people's
+-- ---------------------------------------------------------------------------
+-- playerVehicle() answers "which vehicle is this client currently attached to",
+-- and in multiplayer that is NOT the same question as "which vehicle is ours".
+-- The moment our own car is deleted -- which is exactly what happens to a driver
+-- who takes the flag -- BeamNG hands the camera (and getPlayerVehicle) to
+-- whatever vehicle is nearest to hand, which is another player's car.
+--
+-- Every consequence of that was in this session's bug report. The respawn is
+-- guarded by "do I already have a car?", so a finisher watching a rival's car
+-- was told yes and never got their own back. The camera was left wherever the
+-- game had put it, so the whole field ended up watching the one driver whose
+-- car still existed. And removeLocalVehicle would happily have deleted the
+-- rival's car instead of ours.
+--
+-- So ownership is asked about explicitly, and everything that removes, respawns
+-- or points a camera at "our" vehicle goes through ownVehicle() below.
+-- nil when this BeamMP build (or singleplayer) cannot tell us who owns what, in
+-- which case the attached vehicle is the best answer available and is used as-is.
+local function ownershipFn()
+  if MPVehicleGE and type(MPVehicleGE.isOwn) == 'function' then return MPVehicleGE.isOwn end
+  return nil
+end
+
+local function isOwnVehicle(vehId)
+  if vehId == nil then return false end
+  local isOwn = ownershipFn()
+  if not isOwn then return true end   -- singleplayer: it is all ours
+  local ok, own = pcall(isOwn, vehId)
+  return ok and own == true
+end
+
+local function vehicleId(veh)
+  if not veh then return nil end
+  local ok, id = pcall(function () return veh:getID() end)
+  if ok then return id end
+  return nil
+end
+
+-- The local player's OWN vehicle, or nil when they genuinely have none.
+-- Falls back to a scan when the attached vehicle turns out to belong to someone
+-- else: our car may still exist, we are simply not looking at it.
+local function ownVehicle()
+  local veh = playerVehicle()
+  if not ownershipFn() then return veh end
+  if veh and isOwnVehicle(vehicleId(veh)) then return veh end
+  if type(getAllVehicles) == 'function' then
+    local ok, list = pcall(getAllVehicles)
+    if ok and type(list) == 'table' then
+      for _, v in ipairs(list) do
+        if v and isOwnVehicle(vehicleId(v)) then return v end
+      end
+    end
+  end
+  return nil
+end
+
 -- This client's BeamMP session id, so a broadcast that carries every driver can
 -- be narrowed down to our own row. nil offline.
 local function localServerId()
@@ -251,14 +317,14 @@ local function vehiclePlacement()
 end
 
 local function clampWidth(w)
-  w = tonumber(w) or DEFAULT_WIDTH
-  if w < MIN_WIDTH then w = MIN_WIDTH elseif w > MAX_WIDTH then w = MAX_WIDTH end
+  w = tonumber(w) or TUNE.DEFAULT_WIDTH
+  if w < TUNE.MIN_WIDTH then w = TUNE.MIN_WIDTH elseif w > TUNE.MAX_WIDTH then w = TUNE.MAX_WIDTH end
   return w
 end
 
 local function clampHeight(h)
-  h = tonumber(h) or DEFAULT_HEIGHT
-  if h < MIN_HEIGHT then h = MIN_HEIGHT elseif h > MAX_HEIGHT then h = MAX_HEIGHT end
+  h = tonumber(h) or TUNE.DEFAULT_HEIGHT
+  if h < TUNE.MIN_HEIGHT then h = TUNE.MIN_HEIGHT elseif h > TUNE.MAX_HEIGHT then h = TUNE.MAX_HEIGHT end
   return h
 end
 
@@ -390,6 +456,16 @@ end
 -- ---------------------------------------------------------------------------
 -- Lap logic
 -- ---------------------------------------------------------------------------
+-- One session is running (the lights are out and laps count). Qualifying and
+-- racing are the same thing here on purpose: both start from the grid, both
+-- count a lap per completed circuit of the route, and both report it upstream on
+-- the same event. Qualifying used to have detection of its own -- an out-lap
+-- before the clock started, and no defined starting point because there was no
+-- grid -- which is why a three-lap session took five or six laps to get through.
+local function sessionRunning()
+  return phase == 'racing' or phase == 'qualifying'
+end
+
 local function resetLapTracking()
   timingActive = false
   lapStart     = localTime
@@ -407,9 +483,11 @@ local function resetLapTracking()
   -- so the leaderboard has a distance for this driver from the first moments.
   distToNext   = nil
   progressLeft = 0
-  -- Race: cars launch from the grid at the line, so the first target is
-  -- checkpoint 1. Quali: the out-lap ends at the S/F line, so arm the line.
-  if phase == 'racing' then
+  -- Cars launch from the grid at the line, so the first target is checkpoint 1
+  -- and the clock is already running — for a qualifying session exactly as much
+  -- as for a race. Outside a running session the start/finish line is armed, so
+  -- a driver pottering about before the lights still gets sensible gate colours.
+  if sessionRunning() then
     armedWp = 1
     timingActive = true
   else
@@ -454,7 +532,7 @@ end
 
 local function onLapCompleted()
   local lapTime = localTime - lapStart
-  if timingActive and lapTime < LAP_DEBOUNCE then return end  -- double-fire guard
+  if timingActive and lapTime < TUNE.LAP_DEBOUNCE then return end  -- double-fire guard
 
   -- Hand the finished time to this driver's own HUD so it can hold it on screen
   -- long enough to read. Display only, and deliberately separate from the
@@ -464,27 +542,20 @@ local function onLapCompleted()
     guihooks.trigger('RaceManagerLapDone', { lapTime = lapTime, lap = n })
   end
 
-  if phase == 'qualifying' then
-    if timingActive then
-      if inMultiplayer() then
-        TriggerServerEvent('RM_QualiLap', jsonEncode({ lapTime = lapTime }))
-      end
-      announceLap(nil)
-      log('I', 'raceManager', string.format('Quali lap: %.3fs', lapTime))
-    else
-      timingActive = true  -- out-lap over, the clock starts now
-      log('I', 'raceManager', 'Quali: flying lap started')
-    end
-    lapStart = localTime
-  elseif phase == 'racing' then
-    if inMultiplayer() then
-      TriggerServerEvent('RM_Lap', jsonEncode({ lapTime = lapTime }))
-    end
-    announceLap(localLap)
-    log('I', 'raceManager', string.format('Lap %d done: %.3fs', localLap, lapTime))
-    localLap = localLap + 1
-    lapStart = localTime
+  -- ONE report, for both kinds of session. The server knows which one is
+  -- running and scores the lap accordingly (best lap in qualifying, running
+  -- order and laps led in a race); the client's job is only to say "that was a
+  -- lap, and it took this long". The separate RM_QualiLap channel this replaced
+  -- is what let qualifying's lap counting drift away from the race's.
+  if not sessionRunning() then return end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_Lap', jsonEncode({ lapTime = lapTime }))
   end
+  announceLap(localLap)
+  log('I', 'raceManager', string.format('Lap %d done: %.3fs (%s)',
+    localLap, lapTime, phase))
+  localLap = localLap + 1
+  lapStart = localTime
 end
 
 -- ---------------------------------------------------------------------------
@@ -575,10 +646,9 @@ local lapTimeLeft    = 0
 local lapTimerArmed  = false     -- was the clock running on the previous tick?
 
 local function lapTimerUpdate(dt)
-  -- Running whenever this client's own lap clock is: the whole race, and a
-  -- qualifying flying lap once the out-lap is done.
-  local running = (phase == 'racing')
-    or (phase == 'qualifying' and timingActive)
+  -- Running whenever this client's own lap clock is, which is now any session
+  -- from GO onwards: both kinds start from the grid with the clock already on.
+  local running = sessionRunning()
   if not running then
     -- Tell the UI once on the way down so it can drop the readout instead of
     -- leaving the last value frozen on screen looking like a stalled clock.
@@ -591,7 +661,7 @@ local function lapTimerUpdate(dt)
   lapTimerArmed = true
   lapTimeLeft = lapTimeLeft - dt
   if lapTimeLeft > 0 then return end
-  lapTimeLeft = LAP_TIME_EVERY
+  lapTimeLeft = TUNE.LAP_TIME_EVERY
   guihooks.trigger('RaceManagerLapTime', {
     running = true,
     lap     = localLap,
@@ -607,10 +677,10 @@ end
 -- measured here. Every frame the straight-line distance from the vehicle to the
 -- next gate's centre is recomputed; a few times a second that distance goes up
 -- to the server together with the lap and the number of checkpoints already
--- cleared on it. The send is throttled (PROGRESS_EVERY) so a full grid costs the
+-- cleared on it. The send is throttled (TUNE.PROGRESS_EVERY) so a full grid costs the
 -- server a handful of small events per second, not one per frame per driver.
 local function reportProgress(dt)
-  if phase ~= 'racing' or spectatorLock then
+  if not sessionRunning() or spectatorLock then
     distToNext = nil
     return
   end
@@ -632,7 +702,7 @@ local function reportProgress(dt)
 
   progressLeft = progressLeft - dt
   if progressLeft > 0 then return end
-  progressLeft = PROGRESS_EVERY
+  progressLeft = TUNE.PROGRESS_EVERY
 
   -- armedWp is the gate we are driving TOWARDS, so the count already cleared on
   -- this lap is one less (and 0 right after crossing the start/finish line).
@@ -834,7 +904,7 @@ local removedVehicle = nil   -- { model, config, pos, rot }
 -- Everything BeamNG needs to put this exact car back: jbeam model, the part
 -- config, and where it was standing.
 local function captureVehicleSnapshot()
-  local veh = playerVehicle()
+  local veh = ownVehicle()
   if not veh then return nil end
   local snap = {}
   pcall(function () snap.model = tostring(veh:getJBeamFilename()) end)
@@ -854,16 +924,45 @@ local function captureVehicleSnapshot()
   return snap
 end
 
--- Delete the local player's vehicle. BeamNG exposes several ways to do this
+-- Delete the local player's OWN vehicle. BeamNG exposes several ways to do this
 -- depending on version, so try them in order and never let a failure escape.
+--
+-- core_vehicles.removeCurrent deletes whatever the client is attached to, which
+-- is only safe once we know that is ours -- otherwise a driver taking the flag
+-- deletes a rival's car out from under them.
 local function removeLocalVehicle()
-  local veh = playerVehicle()
+  local veh = ownVehicle()
   if not veh then return end
   removedVehicle = captureVehicleSnapshot() or removedVehicle
-  if core_vehicles and core_vehicles.removeCurrent then
+  local attached = playerVehicle()
+  if core_vehicles and core_vehicles.removeCurrent
+      and attached and vehicleId(attached) == vehicleId(veh) then
     if pcall(core_vehicles.removeCurrent) then return end
   end
   pcall(function () veh:delete() end)
+end
+
+-- Put the camera on our own car and give control back to it.
+--
+-- Doing this explicitly is the point: after a mass respawn the game picks a
+-- vehicle for the camera on its own, and with five cars appearing at once its
+-- pick is arbitrary -- which is how every client in the session ended up
+-- watching the same driver.
+local function bindCameraToOwnVehicle()
+  local veh = ownVehicle()
+  if not veh then return false end
+  local bound = false
+  if be and be.enterVehicle then
+    bound = pcall(function () be:enterVehicle(0, veh) end)
+  end
+  if commands and commands.setGameCamera then
+    pcall(commands.setGameCamera)
+  elseif core_camera and core_camera.setByName then
+    pcall(core_camera.setByName, 0, 'orbit')
+  end
+  log('I', 'raceManager', 'Camera bound to own vehicle ' .. tostring(vehicleId(veh))
+    .. (bound and '' or ' (enterVehicle unavailable)'))
+  return true
 end
 
 -- Put back the car removed when this client was pushed into spectator mode.
@@ -872,9 +971,15 @@ end
 -- one instead of stranded in freecam with nothing to drive.
 local function respawnRemovedVehicle()
   local snap = removedVehicle
-  removedVehicle = nil
   if not snap or not snap.model then return false end
-  if playerVehicle() then return false end   -- they already have a car again
+  -- OWN car, not "a car". Asking playerVehicle() here is what stopped a
+  -- finisher's respawn: the camera had already been handed to a rival's vehicle,
+  -- so the answer was "you have one" and the driver stayed on foot for good.
+  if ownVehicle() then
+    removedVehicle = nil
+    return false
+  end
+  removedVehicle = nil
   local opts = { config = snap.config }
   if snap.pos then opts.pos = snap.pos end
   if snap.rot then opts.rot = snap.rot end
@@ -888,6 +993,10 @@ local function respawnRemovedVehicle()
   if spawned then
     log('I', 'raceManager', 'Respawned ' .. tostring(snap.model) .. ' after the session ended')
   else
+    -- Keep the snapshot: a failed spawn is worth another attempt when the
+    -- placement scheduler comes back round, and losing it means losing the only
+    -- record of what this driver was in.
+    removedVehicle = snap
     log('W', 'raceManager', 'Could not respawn ' .. tostring(snap.model)
       .. ' automatically — spawn a vehicle manually')
   end
@@ -944,16 +1053,33 @@ end
 -- never hand a race DNF their car back (and vice versa). Releasing puts the
 -- removed vehicle back and hands the camera to it, so the driver is ready for
 -- the next session instead of stuck in freecam.
-local function releaseSpectator(source)
+--
+-- The respawn is QUEUED rather than done here. Every driver in the field is
+-- released by the same broadcast, so doing it on the spot means the whole grid
+-- spawning on one tick — refused spawns and interpenetrated cars. `order` and
+-- `count` come from the server's snapshot of the participant list and put this
+-- client in the queue; a release without them (a lone spectator, a derby
+-- elimination) is simply order 1 of 1.
+--
+-- Forward-declared: the placement scheduler lives further down, beside the grid
+-- placement it shares its ghosting and its stagger with.
+local queueFieldPlacement
+
+local function releaseSpectator(source, order, count)
   if not spectatorLock then return end
   if source and source ~= spectatorLock then return end
   spectatorLock   = nil
   spectatorReason = nil
-  respawnRemovedVehicle()
-  restoreGameCamera()
+  if queueFieldPlacement then
+    queueFieldPlacement({ respawn = true, order = order, count = count })
+  else
+    respawnRemovedVehicle()
+    restoreGameCamera()
+  end
   guihooks.trigger('RaceManagerSpectator', { spectating = false })
   pushRouteState()
-  log('I', 'raceManager', 'Spectator mode released (' .. tostring(source or 'any') .. ')')
+  log('I', 'raceManager', 'Spectator mode released (' .. tostring(source or 'any')
+    .. ', order ' .. tostring(order or 1) .. '/' .. tostring(count or 1) .. ')')
 end
 
 -- While the lock is held the camera is re-asserted periodically: leaving
@@ -966,10 +1092,11 @@ local function spectatorUpdate(dt)
   if not isFreeCamera() then forceFreeCamera() end
 end
 
--- The reset allowance only applies while a race session is live; qualifying
--- out-laps and the setup phases stay free.
+-- The reset allowance applies for the whole of a live session — qualifying as
+-- well as a race, now that qualifying is one — and the countdown that starts it.
+-- The setup phases stay free.
 local function resetsEnforced()
-  return maxResets >= 0 and (phase == 'racing' or phase == 'countdown')
+  return maxResets >= 0 and (sessionRunning() or phase == 'countdown')
 end
 
 -- Derby reset allowance (mirrored from the derby broadcast). The derby module
@@ -1140,8 +1267,13 @@ end
 -- BeamNG hook: the local player reset/recovered a vehicle. Registered as an
 -- extension hook, so it fires for every vehicle — filter to our own first.
 function M.onVehicleResetted(vehId)
-  local veh = playerVehicle()
-  if not veh or veh:getID() ~= vehId then return end
+  -- Ours, or there is nothing here to do. The attached vehicle can be another
+  -- player's car — that is precisely the situation a driver who has just been
+  -- taken off the track is in — and treating their reset as ours is how a rival
+  -- ends up having their vehicle removed.
+  if not isOwnVehicle(vehId) then return end
+  local veh = ownVehicle()
+  if not veh or vehicleId(veh) ~= vehId then return end
   -- Our own teleport coming back at us (a restore, a grid placement, a preview).
   -- Never a driver reset, so it must not be counted, blocked or reported.
   if isSelfTeleportEcho() then
@@ -1240,15 +1372,7 @@ function M.onVehicleSpawned(vehId)
   -- Module 4: a new car means a new configuration to declare to the server.
   reportVehicleConfig(true)
   if not spectatorLock then return end
-  local mine = true
-  if MPVehicleGE and MPVehicleGE.isOwn then
-    local ok, own = pcall(MPVehicleGE.isOwn, vehId)
-    if ok then mine = own == true end
-  else
-    local veh = playerVehicle()
-    mine = veh ~= nil and veh:getID() == vehId
-  end
-  if not mine then return end
+  if not isOwnVehicle(vehId) then return end
   removeLocalVehicle()
   forceFreeCamera()
   pushNotice('spectate', 'You are spectating until the session ends')
@@ -1353,31 +1477,6 @@ local function requestHold(source)
   return ok
 end
 
--- Server assigned this client a grid slot: stand the car on it and hold it.
-local function applyGridSlot(slot)
-  gridSlot = slot
-  local sp = slot and startPositions[slot]
-  if not sp then
-    if slot then
-      pushNotice('grid', 'Start position ' .. slot .. ' is not placed on this track')
-      log('W', 'raceManager', 'Grid slot ' .. tostring(slot) .. ' has no start position')
-    end
-    pushRouteState()
-    return
-  end
-  if placeOnStartPosition(sp) then
-    requestHold('race')
-    -- The grid slot is where the car legitimately stands, so it is also the
-    -- position a blocked reset should restore to — facing down the track, not
-    -- at whatever identity rotation happens to mean on this circuit.
-    lastGoodPos = vec3(sp.x, sp.y, sp.z)
-    lastGoodRot = headingRot(sp.hx, sp.hy)
-    pushNotice('grid', 'You start from P' .. slot .. ' — hold for the countdown')
-    log('I', 'raceManager', 'Placed on grid slot ' .. slot)
-  end
-  pushRouteState()
-end
-
 -- GO (or any exit from the start procedure): release the car.
 -- `source` names the mode letting go. A hold imposed by the other mode is left
 -- alone. Passing nil forces the release, which is what a session ending or the
@@ -1395,6 +1494,228 @@ local function releaseGridHold(source)
   setLocalVehicleFrozen(false)
   gridFrozen = false
   freezeSource = nil
+  pushRouteState()
+end
+
+-- ===========================================================================
+-- Field placement: one ghosted, staggered queue
+-- ===========================================================================
+-- Everything that moves this client's car as part of a FIELD goes through here:
+-- forming a grid, and putting every car back when a session ends. Both are the
+-- same physical problem -- several vehicles arriving at nearly the same place at
+-- nearly the same instant -- and both used to be done immediately, on the tick
+-- the server event arrived. That is how a spawn gets refused for an occupied
+-- location, and how two cars land inside each other and are thrown apart by the
+-- solver the moment they exist.
+--
+-- Three things fix it, and all three are needed:
+--   * Ghosting. Collisions with other players' cars are off for the whole
+--     operation, so a car landing on top of another is a non-event.
+--   * A stagger. Each client waits (its order in the field) x STAGGER before
+--     placing its own car, so the field lands as a sequence, not a pile. No
+--     coordination is needed: the server hands out the order with the slot.
+--   * A settle window before collisions come back, sized for the WHOLE field
+--     rather than our own car, plus a hard timeout so a client that somehow
+--     never finishes still gets its collisions back.
+--
+-- The settle is deliberately a TIMER and not a "wait until the cars stop
+-- moving" test. On a grid the cars are frozen for the standing start, so they
+-- are already still; a motion test would either fire instantly or never, and
+-- collisions have to come back on a held car exactly as reliably as on a rolling
+-- one.
+local FIELD = {
+  STAGGER     = 0.18,   -- seconds between one car landing and the next
+  SETTLE      = 1.2,    -- seconds after the last car lands
+  SPAWN_GRACE = 0.5,    -- seconds for a spawned vehicle to exist
+  TIMEOUT     = 15.0,   -- hard cap: collisions come back regardless
+}
+
+local field = {
+  active  = false,
+  step    = nil,     -- wait | spawn | grace | place | settle
+  delay   = 0,       -- until OUR car is placed
+  grace   = 0,       -- until a just-spawned vehicle is usable
+  settle  = 0,       -- until collisions come back
+  timeout = 0,
+  respawn = false,   -- put our removed car back as part of this operation
+  slot    = nil,     -- slot to stand on
+  slots   = nil,     -- which slot list that indexes (race grid or derby arena)
+  hold    = false,   -- freeze once placed
+  holdSource = nil,  -- 'race' | 'derby' -- who owns the hold, so the other mode
+                     -- can never release it
+}
+
+-- Stand the car on its assigned slot. Called from the scheduler, never directly:
+-- placing a car is the part that has to be staggered and ghosted.
+local function placeOnAssignedSlot()
+  local slot = field.slot
+  local sp = slot and (field.slots or startPositions)[slot]
+  if not sp then
+    pushNotice('grid', 'Start position ' .. tostring(slot) .. ' is not placed on this track')
+    log('W', 'raceManager', 'Grid slot ' .. tostring(slot) .. ' has no start position')
+    return
+  end
+  if not placeOnStartPosition(sp) then
+    log('W', 'raceManager', 'Could not place the car on grid slot ' .. tostring(slot))
+    return
+  end
+  if field.hold then requestHold(field.holdSource or 'race') end
+  -- The grid slot is where the car legitimately stands, so it is also the
+  -- position a blocked reset should restore to — facing down the track, not
+  -- at whatever identity rotation happens to mean on this circuit.
+  lastGoodPos = vec3(sp.x, sp.y, sp.z)
+  lastGoodRot = headingRot(sp.hx, sp.hy)
+  pushNotice('grid', 'You start from P' .. slot .. ' — hold for the countdown')
+  log('I', 'raceManager', 'Placed on start slot ' .. slot
+    .. ' (' .. tostring(field.holdSource or 'race') .. ')')
+end
+
+local function endFieldOperation()
+  field.active = false
+  field.step   = nil
+  field.slot   = nil
+  field.slots  = nil
+  field.respawn = false
+  field.holdSource = nil
+  if setGhostReason then setGhostReason('placement', false) end
+end
+
+-- Queue a placement. A release and a grid slot that arrive on the same tick --
+-- which is exactly what forming a grid sends to a driver who was spectating --
+-- are ONE operation: put the car back, then stand it on its slot, under a single
+-- ghost.
+queueFieldPlacement = function (opts)
+  local order = math.max(math.floor(tonumber(opts.order) or 1), 1)
+  local count = math.max(math.floor(tonumber(opts.count) or order), order)
+  local delay  = (order - 1) * FIELD.STAGGER
+  local settle = (count - 1) * FIELD.STAGGER + FIELD.SETTLE
+
+  -- Coalesce only while the operation has not placed the car yet. Once it has
+  -- (step 'settle', which is just the wait for collisions to come back), a new
+  -- request is a NEW placement and has to run from the start -- folding it into
+  -- a settling operation would set a slot that nothing ever stands the car on.
+  if field.active and field.step ~= 'settle' then
+    field.respawn = field.respawn or (opts.respawn == true)
+    if opts.slot then
+      field.slot  = opts.slot
+      field.slots = opts.slots
+      field.hold  = opts.hold == true
+      field.holdSource = opts.holdSource
+    end
+    if field.step == 'wait' then field.delay = math.max(field.delay, delay) end
+    field.settle  = math.max(field.settle, settle)
+    field.timeout = math.max(field.timeout, FIELD.TIMEOUT)
+    return
+  end
+
+  field.active  = true
+  field.step    = 'wait'
+  field.delay   = delay
+  field.grace   = 0
+  field.settle  = settle
+  field.timeout = FIELD.TIMEOUT
+  field.respawn = opts.respawn == true
+  field.slot    = opts.slot
+  field.slots   = opts.slots
+  field.hold    = opts.hold == true
+  field.holdSource = opts.holdSource
+  if setGhostReason then setGhostReason('placement', true) end
+  log('I', 'raceManager', string.format(
+    'Field placement queued (order %d/%d, +%.2fs, respawn=%s, slot=%s)',
+    order, count, delay, tostring(field.respawn), tostring(field.slot)))
+end
+
+local function fieldUpdate(dt)
+  if not field.active then return end
+  field.timeout = field.timeout - dt
+
+  -- Timeout: whatever is stuck, the driver gets their car and their collisions
+  -- back rather than being left ghosted for the rest of the session.
+  if field.timeout <= 0 then
+    if field.step ~= 'settle' then
+      if field.respawn then respawnRemovedVehicle() end
+      if field.slot then placeOnAssignedSlot() end
+      bindCameraToOwnVehicle()
+      log('W', 'raceManager', 'Field placement timed out — finishing it anyway')
+    end
+    endFieldOperation()
+    pushRouteState()
+    return
+  end
+
+  if field.step == 'wait' then
+    field.delay = field.delay - dt
+    if field.delay > 0 then return end
+    field.step = 'spawn'
+    return
+  end
+
+  if field.step == 'spawn' then
+    if field.respawn then
+      field.respawn = false
+      if respawnRemovedVehicle() then
+        -- BeamNG spawns asynchronously: the vehicle is not usable on this frame.
+        field.grace = FIELD.SPAWN_GRACE
+        field.step  = 'grace'
+        return
+      end
+    end
+    field.step = 'place'
+    return
+  end
+
+  if field.step == 'grace' then
+    field.grace = field.grace - dt
+    if field.grace > 0 and not ownVehicle() then return end
+    field.step = 'place'
+    return
+  end
+
+  if field.step == 'place' then
+    if field.slot then placeOnAssignedSlot() end
+    -- Explicitly, every time. After a mass respawn the game picks a camera
+    -- target on its own, and with a whole field appearing at once its pick is
+    -- arbitrary — which is how everyone ended up watching the same car.
+    bindCameraToOwnVehicle()
+    field.step = 'settle'
+    pushRouteState()
+    return
+  end
+
+  -- 'settle': collisions come back once the whole field has landed.
+  field.settle = field.settle - dt
+  if field.settle > 0 then return end
+  endFieldOperation()
+  pushRouteState()
+end
+
+-- Run a queued placement to completion right now. For the paths that have no
+-- more update ticks coming (the extension unloading, a BeamMP session ending):
+-- a car left un-ghosted and unspawned there would stay that way.
+local function flushFieldPlacement()
+  if not field.active then return end
+  if field.respawn then respawnRemovedVehicle() end
+  if field.slot then placeOnAssignedSlot() end
+  bindCameraToOwnVehicle()
+  endFieldOperation()
+end
+
+-- Server assigned this client a grid slot: stand the car on it and hold it.
+-- `order`/`count` place this driver in the field so the placement can be
+-- staggered; they default to the slot number, which is the same thing whenever
+-- the grid is complete.
+local function applyGridSlot(slot, order, count)
+  gridSlot = slot
+  if not slot then
+    -- Standing down (withdrawn, or not entered): nothing to place, and nothing
+    -- should still be holding this car.
+    releaseGridHold('race')
+    pushRouteState()
+    return
+  end
+  queueFieldPlacement({
+    slot = slot, hold = true, order = order or slot, count = count,
+  })
   pushRouteState()
 end
 
@@ -1458,12 +1779,31 @@ local function applyGhostMode(enabled)
   if enabled == ghostApplied then return end
   ghostApplied = enabled
   local collisionsHandled = setBeamMPGhosting(enabled)
-  fadeRemoteVehicles(enabled and GHOST_ALPHA or 1)
+  fadeRemoteVehicles(enabled and TUNE.GHOST_ALPHA or 1)
   if enabled and not collisionsHandled then
-    log('W', 'raceManager', 'Ghost qualifying: this BeamMP build exposes no '
+    log('W', 'raceManager', 'Ghosting: this BeamMP build exposes no '
       .. 'collision toggle — rivals are faded but still solid')
   end
-  log('I', 'raceManager', 'Ghost qualifying ' .. (enabled and 'ON' or 'off'))
+  log('I', 'raceManager', 'Ghosting ' .. (enabled and 'ON' or 'off'))
+end
+
+-- Two independent things want collisions off, and they overlap: the qualifying
+-- ghost rule, and any mass placement (a grid forming, a field respawning at the
+-- flag). A single boolean meant whichever one finished first turned collisions
+-- back on underneath the other -- so they are refcounted by reason instead, and
+-- cars stay ghosted until nothing wants them ghosted any more.
+--
+-- Fills the forward declaration made beside the grid hold at the top of the file.
+local ghostReasons = {}
+
+setGhostReason = function (reason, on)
+  if on then ghostReasons[reason] = true else ghostReasons[reason] = nil end
+  applyGhostMode(next(ghostReasons) ~= nil)
+end
+
+local function clearGhostReasons()
+  ghostReasons = {}
+  applyGhostMode(false)
 end
 
 -- Ghosting is a qualifying-only rule: it arms with the quali phase and is
@@ -1475,12 +1815,12 @@ local GHOST_REFRESH_EVERY = 2.0
 
 local function ghostUpdate(dt)
   local want = ghostQuali and phase == 'qualifying' and not spectatorLock
-  applyGhostMode(want)
+  setGhostReason('quali', want)
   if not want then return end
   ghostRefresh = ghostRefresh - dt
   if ghostRefresh > 0 then return end
   ghostRefresh = GHOST_REFRESH_EVERY
-  fadeRemoteVehicles(GHOST_ALPHA)
+  fadeRemoteVehicles(TUNE.GHOST_ALPHA)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1503,10 +1843,10 @@ local function drawGate(wp, color, label)
   local tl, tr = corner(-1,  1), corner(1,  1)
   -- Verticals a touch thicker than the horizontals so the gate still reads as
   -- a gate at distance.
-  debugDrawer:drawCylinder(bl, tl, EDGE_RADIUS, color)
-  debugDrawer:drawCylinder(br, tr, EDGE_RADIUS, color)
-  debugDrawer:drawCylinder(bl, br, EDGE_RADIUS * 0.6, color)
-  debugDrawer:drawCylinder(tl, tr, EDGE_RADIUS * 0.6, color)
+  debugDrawer:drawCylinder(bl, tl, TUNE.EDGE_RADIUS, color)
+  debugDrawer:drawCylinder(br, tr, TUNE.EDGE_RADIUS, color)
+  debugDrawer:drawCylinder(bl, br, TUNE.EDGE_RADIUS * 0.6, color)
+  debugDrawer:drawCylinder(tl, tr, TUNE.EDGE_RADIUS * 0.6, color)
 
   local mid = (tl + tr) * 0.5 + vec3(0, 0, 0.8)
   debugDrawer:drawTextAdvanced(mid, String(label),
@@ -1568,7 +1908,7 @@ end
 -- exists to keep the editor view clean.
 local function drawGates()
   if not debugDrawer then return end
-  local active = (phase == 'qualifying' or phase == 'racing' or phase == 'countdown')
+  local active = sessionRunning() or phase == 'countdown' or phase == 'grid'
   if not active and not visualize then return end
 
   for i, wp in ipairs(route) do
@@ -1637,37 +1977,45 @@ local DERBY_START_GRACE   = 5
 local DERBY_POLE_HEIGHT   = 6     -- boundary poles are taller than gate poles
 local DERBY_POLE_RADIUS   = 0.2
 
-local derbyPhase     = 'idle'     -- idle | running | finished (mirrored from server)
-local derbyBoundary  = {}         -- ordered polygon vertices { x, y, z }
-local derbyOobLimit  = 5          -- seconds (mirrored from server config)
-local derbyDemoLimit = 10
-local derbyStarts    = {}         -- derby starting grid { x, y, z, hx, hy } (mirrored)
-local derbySlot      = nil        -- start slot the server assigned us for this derby
-local derbyVisualize = true       -- Hide/Show toggle for the boundary + grid visuals
-local derbyOobLeft   = nil        -- active out-of-bounds countdown, nil = inside
-local derbyDemoLeft  = nil        -- active stopped countdown, nil = moving
-local derbyOut       = false      -- true once we reported our own elimination
-                                  -- (or we're a spectator, not a participant)
-local derbyRunTime   = 0          -- local seconds since this derby went running
-local derbyWarnShown = false      -- whether the UI currently shows a warning
+-- One table rather than a dozen file-scope locals, for the same reason the
+-- tunables at the top of the file are one table: Lua caps a function at 200
+-- locals, the top level of this file is a function, and going over does not warn
+-- -- the file fails to compile and the mod is simply not there. This block was
+-- the largest cohesive group left.
+local derbyState = {
+  phase     = 'idle',   -- idle | running | finished (mirrored from server)
+  boundary  = {},       -- ordered polygon vertices { x, y, z }
+  oobLimit  = 5,        -- seconds (mirrored from server config)
+  demoLimit = 10,
+  starts    = {},       -- derby starting grid { x, y, z, hx, hy } (mirrored)
+  slot      = nil,      -- start slot the server assigned us for this derby
+  visualize = true,     -- Hide/Show toggle for the boundary + grid visuals
+  oobLeft   = nil,      -- active out-of-bounds countdown, nil = inside
+  demoLeft  = nil,      -- active stopped countdown, nil = moving
+  -- true once we reported our own elimination (or we're a spectator, not a
+  -- participant)
+  out       = false,
+  runTime   = 0,        -- local seconds since this derby went running
+  warnShown = false,    -- whether the UI currently shows a warning
+}
 
 -- Module 1 asks this before policing the derby reset allowance: only a live
 -- derby with this driver still in it spends (or blocks) derby resets.
 derbyResetsActive = function ()
-  return derbyPhase == 'running' and not derbyOut
+  return derbyState.phase == 'running' and not derbyState.out
 end
 
 local function derbyPushWarning()
   guihooks.trigger('RaceManagerDerbyWarning', {
-    oob     = derbyOobLeft,
-    stopped = derbyDemoLeft,
+    oob     = derbyState.oobLeft,
+    stopped = derbyState.demoLeft,
   })
-  derbyWarnShown = (derbyOobLeft ~= nil) or (derbyDemoLeft ~= nil)
+  derbyState.warnShown = (derbyState.oobLeft ~= nil) or (derbyState.demoLeft ~= nil)
 end
 
 local function derbyClearWarnings()
-  derbyOobLeft, derbyDemoLeft = nil, nil
-  if derbyWarnShown then derbyPushWarning() end
+  derbyState.oobLeft, derbyState.demoLeft = nil, nil
+  if derbyState.warnShown then derbyPushWarning() end
 end
 
 -- Standard ray-casting point-in-polygon test on the XY plane (the arena is a
@@ -1692,11 +2040,11 @@ end
 local derbyLocalServerId = localServerId
 
 local function derbyUpdate(dt)
-  if derbyPhase ~= 'running' or derbyOut then
+  if derbyState.phase ~= 'running' or derbyState.out then
     derbyClearWarnings()
     return
   end
-  derbyRunTime = derbyRunTime + dt
+  derbyState.runTime = derbyState.runTime + dt
   local veh = playerVehicle()
   if not veh then
     derbyClearWarnings()
@@ -1705,19 +2053,19 @@ local function derbyUpdate(dt)
   local changed = false
 
   -- Out-of-bounds check (needs a real polygon: at least 3 markers).
-  if #derbyBoundary >= 3 then
+  if #derbyState.boundary >= 3 then
     local pos = veh:getPosition()
-    if derbyPointInPolygon(pos.x, pos.y, derbyBoundary) then
-      if derbyOobLeft then derbyOobLeft = nil; changed = true end
+    if derbyPointInPolygon(pos.x, pos.y, derbyState.boundary) then
+      if derbyState.oobLeft then derbyState.oobLeft = nil; changed = true end
     else
-      if not derbyOobLeft then
-        derbyOobLeft = derbyOobLimit
+      if not derbyState.oobLeft then
+        derbyState.oobLeft = derbyState.oobLimit
       else
-        derbyOobLeft = derbyOobLeft - dt
+        derbyState.oobLeft = derbyState.oobLeft - dt
       end
       changed = true
-      if derbyOobLeft <= 0 then
-        derbyOut = true
+      if derbyState.oobLeft <= 0 then
+        derbyState.out = true
         derbyClearWarnings()
         if inMultiplayer() then TriggerServerEvent('RM_DerbyDisqualified', '') end
         log('I', 'raceManager', 'Derby: out-of-bounds timer expired, reported disqualification')
@@ -1731,17 +2079,17 @@ local function derbyUpdate(dt)
   -- before anyone has had a chance to move.
   local vel = veh:getVelocity()
   local speed = math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z)
-  if speed > DERBY_STOP_SPEED or derbyRunTime < DERBY_START_GRACE then
-    if derbyDemoLeft then derbyDemoLeft = nil; changed = true end
+  if speed > DERBY_STOP_SPEED or derbyState.runTime < DERBY_START_GRACE then
+    if derbyState.demoLeft then derbyState.demoLeft = nil; changed = true end
   else
-    if not derbyDemoLeft then
-      derbyDemoLeft = derbyDemoLimit
+    if not derbyState.demoLeft then
+      derbyState.demoLeft = derbyState.demoLimit
     else
-      derbyDemoLeft = derbyDemoLeft - dt
+      derbyState.demoLeft = derbyState.demoLeft - dt
     end
     changed = true
-    if derbyDemoLeft <= 0 then
-      derbyOut = true
+    if derbyState.demoLeft <= 0 then
+      derbyState.out = true
       derbyClearWarnings()
       if inMultiplayer() then TriggerServerEvent('RM_DerbyDemolished', '') end
       log('I', 'raceManager', 'Derby: stopped timer expired, reported demolition')
@@ -1758,38 +2106,38 @@ end
 -- must see the arena), the toggle only applies outside of one.
 local function derbyDrawBoundary()
   if not debugDrawer then return end
-  if derbyPhase ~= 'running' and not derbyVisualize then return end
+  if derbyState.phase ~= 'running' and not derbyState.visualize then return end
   -- Derby starting grid slots, numbered from slot 1. Setup furniture, the same
   -- as the race start grid: they exist to lay the slots out and check spacing,
   -- so they stop being drawn once the derby is under way -- by then every car
   -- has left its slot and the outlines are just clutter in a live arena.
-  -- (Reaching here while not running means derbyVisualize is on, per the guard
+  -- (Reaching here while not running means derbyState.visualize is on, per the guard
   -- above.) The boundary below is NOT hidden: leaving it is what eliminates
   -- you, so a driver has to be able to see it.
-  if derbyPhase ~= 'running' then
-    for i, sp in ipairs(derbyStarts) do
-      drawStartPosition(sp, i, derbySlot == i)
+  if derbyState.phase ~= 'running' then
+    for i, sp in ipairs(derbyState.starts) do
+      drawStartPosition(sp, i, derbyState.slot == i)
     end
   end
-  if #derbyBoundary == 0 then return end
-  local color = (derbyPhase == 'running')
+  if #derbyState.boundary == 0 then return end
+  local color = (derbyState.phase == 'running')
     and ColorF(0.9, 0.15, 0.15, 0.9)   -- live arena: red
     or  ColorF(0.9, 0.6, 0.1, 0.8)     -- setup/finished: amber
   local up = vec3(0, 0, DERBY_POLE_HEIGHT)
-  for i, m in ipairs(derbyBoundary) do
+  for i, m in ipairs(derbyState.boundary) do
     local base = vec3(m.x, m.y, m.z)
     debugDrawer:drawCylinder(base, base + up, DERBY_POLE_RADIUS, color)
-    local nxt = derbyBoundary[i % #derbyBoundary + 1]
-    if nxt and #derbyBoundary > 1 then
+    local nxt = derbyState.boundary[i % #derbyState.boundary + 1]
+    if nxt and #derbyState.boundary > 1 then
       local a = base + vec3(0, 0, DERBY_POLE_HEIGHT * 0.5)
       local b = vec3(nxt.x, nxt.y, nxt.z) + vec3(0, 0, DERBY_POLE_HEIGHT * 0.5)
       debugDrawer:drawCylinder(a, b, DERBY_POLE_RADIUS * 0.35, color)
     end
   end
-  local first = derbyBoundary[1]
+  local first = derbyState.boundary[1]
   debugDrawer:drawTextAdvanced(
     vec3(first.x, first.y, first.z + DERBY_POLE_HEIGHT + 0.8),
-    String('DERBY BOUNDARY (' .. #derbyBoundary .. ')'),
+    String('DERBY BOUNDARY (' .. #derbyState.boundary .. ')'),
     ColorF(1, 1, 1, 1), true, false, ColorI(120, 0, 0, 180))
 end
 
@@ -1846,8 +2194,8 @@ end
 -- Hide/Show the derby boundary + start grid visuals (client-local, like the
 -- race editor's gate toggle). Pushed to the UI so the button label follows.
 function M.derbyToggleVisualize()
-  derbyVisualize = not derbyVisualize
-  guihooks.trigger('RaceManagerDerbyVisual', { visualize = derbyVisualize })
+  derbyState.visualize = not derbyState.visualize
+  guihooks.trigger('RaceManagerDerbyVisual', { visualize = derbyState.visualize })
 end
 
 -- Who takes part in the next derby: everyone connected, or only drivers who
@@ -1879,7 +2227,7 @@ function M.derbyRequestState()
     TriggerServerEvent('RM_DerbyRequestLayouts', '')
   else
     guihooks.trigger('RaceManagerDerby', {
-      derbyPhase = 'idle', oobLimit = derbyOobLimit, demoLimit = derbyDemoLimit,
+      derbyPhase = 'idle', oobLimit = derbyState.oobLimit, demoLimit = derbyState.demoLimit,
       maxResets = derbyMaxResets, derbyTime = 0, boundary = {},
       startPositions = {}, players = {},
     })
@@ -1896,7 +2244,7 @@ function M.derbySaveLayout(name)
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Enter an arena name first' })
     return
   end
-  if #derbyBoundary < 3 then
+  if #derbyState.boundary < 3 then
     guihooks.trigger('RaceManagerEditorMsg', {
       msg = 'Place at least 3 boundary markers before saving an arena' })
     return
@@ -1906,7 +2254,7 @@ function M.derbySaveLayout(name)
     return
   end
   local markers = {}
-  for i, m in ipairs(derbyBoundary) do
+  for i, m in ipairs(derbyState.boundary) do
     local x, y, z = tonumber(m.x), tonumber(m.y), tonumber(m.z)
     if not (x and y and z) then
       guihooks.trigger('RaceManagerEditorMsg', {
@@ -1918,15 +2266,15 @@ function M.derbySaveLayout(name)
   -- The derby starting grid travels with the arena, exactly the way the race
   -- grid travels with a track layout.
   local starts = nil
-  if #derbyStarts > 0 then
+  if #derbyState.starts > 0 then
     starts = {}
-    for i, sp in ipairs(derbyStarts) do
+    for i, sp in ipairs(derbyState.starts) do
       starts[i] = { x = sp.x, y = sp.y, z = sp.z, hx = sp.hx, hy = sp.hy }
     end
   end
   TriggerServerEvent('RM_DerbySaveLayout', jsonEncode({
     name = name, boundary = markers,
-    oobLimit = derbyOobLimit, demoLimit = derbyDemoLimit,
+    oobLimit = derbyState.oobLimit, demoLimit = derbyState.demoLimit,
     maxResets = derbyMaxResets, startPositions = starts,
   }))
 end
@@ -1961,15 +2309,15 @@ local function onDerbyUpdate(rawData)
   if not fromCurrentServer(data) then return end
 
   local newPhase = data.derbyPhase or 'idle'
-  if newPhase == 'running' and derbyPhase ~= 'running' then
+  if newPhase == 'running' and derbyState.phase ~= 'running' then
     -- Fresh derby: re-arm local detection from a clean slate. The derby reset
     -- allowance is per-derby, so it starts over too.
-    derbyOut = false
-    derbyRunTime = 0
+    derbyState.out = false
+    derbyState.runTime = 0
     derbyResetsUsed = 0
     derbyClearWarnings()
   elseif newPhase ~= 'running' then
-    if derbyPhase == 'running' then derbySlot = nil end
+    if derbyState.phase == 'running' then derbyState.slot = nil end
     derbyClearWarnings()
   end
   -- A derby that ends or is reset while cars are still held on the form-up grid
@@ -1977,10 +2325,10 @@ local function onDerbyUpdate(rawData)
   if newPhase == 'idle' or newPhase == 'finished' then
     releaseGridHold('derby')
   end
-  derbyPhase = newPhase
+  derbyState.phase = newPhase
 
-  derbyOobLimit  = tonumber(data.oobLimit)  or derbyOobLimit
-  derbyDemoLimit = tonumber(data.demoLimit) or derbyDemoLimit
+  derbyState.oobLimit  = tonumber(data.oobLimit)  or derbyState.oobLimit
+  derbyState.demoLimit = tonumber(data.demoLimit) or derbyState.demoLimit
   if type(data.maxResets) == 'number' then
     derbyMaxResets = math.floor(data.maxResets)
   end
@@ -1992,7 +2340,7 @@ local function onDerbyUpdate(rawData)
       if x and y and z then boundary[#boundary + 1] = { x = x, y = y, z = z } end
     end
   end
-  derbyBoundary = boundary
+  derbyState.boundary = boundary
 
   -- Derby starting grid (a placement + a facing per slot, like the race grid).
   local starts = {}
@@ -2005,7 +2353,7 @@ local function onDerbyUpdate(rawData)
       end
     end
   end
-  derbyStarts = starts
+  derbyState.starts = starts
 
   -- If the server already knows we're out (e.g. reconnect race), stop
   -- policing. Same if we're not in the participant list at all: we joined
@@ -2018,9 +2366,9 @@ local function onDerbyUpdate(rawData)
       if tonumber(p.id) == myId then mine = p; break end
     end
     if mine then
-      if mine.status ~= 'alive' then derbyOut = true end
-    elseif derbyPhase == 'running' then
-      derbyOut = true
+      if mine.status ~= 'alive' then derbyState.out = true end
+    elseif derbyState.phase == 'running' then
+      derbyState.out = true
     end
   end
 
@@ -2034,28 +2382,29 @@ local function onDerbyGridAssign(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
   local slot = tonumber(data.slot)
-  derbySlot = slot and math.floor(slot) or nil
-  local sp = derbySlot and derbyStarts[derbySlot]
-  if sp then
-    if placeOnStartPosition(sp) then
-      pushNotice('grid', 'Derby: you start from P' .. derbySlot)
-      log('I', 'raceManager', 'Placed on derby start slot ' .. derbySlot)
-    end
-  elseif derbySlot then
-    pushNotice('grid', 'Derby start position ' .. derbySlot .. ' is not placed in this arena')
-    log('W', 'raceManager', 'Derby start slot ' .. derbySlot .. ' has no placed position')
-  end
+  derbyState.slot = slot and math.floor(slot) or nil
+
+  -- Through the same placement queue the race grid uses. A derby form-up is a
+  -- whole field being teleported onto adjacent slots at once, which is the same
+  -- physical problem: ghosted, staggered by slot number, collisions back once
+  -- the field has settled. The derby assigns slots 1..N in order, so the slot
+  -- number IS this car's place in the sequence.
+  --
   -- Form-up holds every participant until the countdown lets them go, whether
   -- or not a slot was placed for them: a car with nowhere to line up still has
   -- to wait for GO rather than getting a free run at everyone else. Tagged
   -- 'derby' so a racing phase change can never release it.
-  if data.hold == true then
-    -- Identical to the race grid hold, deliberately: same call, same moment,
-    -- only the source tag differs. The derby used to schedule a second freeze a
-    -- moment later on the theory that its longer teleport needed one; that was
-    -- built on top of an API that never worked at all, and once the freeze went
-    -- through core_vehicleBridge the extra application was the only thing left
-    -- separating a working race hold from a broken derby one.
+  if derbyState.slot then
+    queueFieldPlacement({
+      slot  = derbyState.slot,
+      slots = derbyState.starts,
+      hold  = data.hold == true,
+      holdSource = 'derby',
+      order = derbyState.slot,
+      count = math.max(#derbyState.starts, derbyState.slot),
+    })
+  elseif data.hold == true then
+    -- No slot placed for this driver: hold them where they stand.
     requestHold('derby')
   end
 end
@@ -2106,6 +2455,7 @@ function M.onUpdate(dt)
   reportProgress(dt)        -- live position telemetry (distance to next gate)
   drawGates()
   drawStartPositions()      -- starting grid slots
+  fieldUpdate(dt)           -- ghosted, staggered grid placement / mass respawn
   snapshotUpdate(dt)        -- Module 1: rolling "last good position"
   resetGuardUpdate(dt)      -- Module 1: teleport-echo window + notice throttle
   resetInputBlockUpdate()   -- Module 1: dead reset keys once the allowance is gone
@@ -2262,7 +2612,7 @@ function M.editorSave()
     log('W', 'raceManager', 'Editor: nothing to save')
     return
   end
-  jsonWriteFile(ROUTE_FILE, {
+  jsonWriteFile(TUNE.ROUTE_FILE, {
     version = 5,
     width   = checkpointWidth,
     height  = checkpointHeight,
@@ -2271,7 +2621,7 @@ function M.editorSave()
     startPositions = startPositions,
   }, true)
   log('I', 'raceManager', 'Editor: saved ' .. #route .. ' checkpoints ('
-    .. #jokerRoute .. ' joker, ' .. #startPositions .. ' start positions) to ' .. ROUTE_FILE)
+    .. #jokerRoute .. ' joker, ' .. #startPositions .. ' start positions) to ' .. TUNE.ROUTE_FILE)
   guihooks.trigger('RaceManagerEditorMsg', {
     msg = 'Saved ' .. #route .. ' checkpoints'
       .. (#jokerRoute > 0 and (' + ' .. #jokerRoute .. ' joker gates') or '')
@@ -2296,16 +2646,16 @@ local function migrateV1(waypoints)
 end
 
 function M.editorLoad()
-  local data = jsonReadFile(ROUTE_FILE)
+  local data = jsonReadFile(TUNE.ROUTE_FILE)
   if type(data) ~= 'table' or type(data.waypoints) ~= 'table' or #data.waypoints == 0 then
-    log('W', 'raceManager', 'Editor: no saved route at ' .. ROUTE_FILE)
+    log('W', 'raceManager', 'Editor: no saved route at ' .. TUNE.ROUTE_FILE)
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'No saved route found' })
     return
   end
   if data.version and data.version >= 2 then
     route = data.waypoints
-    checkpointWidth  = clampWidth(data.width or DEFAULT_WIDTH)
-    checkpointHeight = clampHeight(data.height or DEFAULT_HEIGHT)
+    checkpointWidth  = clampWidth(data.width or TUNE.DEFAULT_WIDTH)
+    checkpointHeight = clampHeight(data.height or TUNE.DEFAULT_HEIGHT)
     jokerRoute = (type(data.joker) == 'table') and data.joker or {}
     startPositions = (type(data.startPositions) == 'table') and data.startPositions or {}
   else
@@ -2475,7 +2825,7 @@ local function onServerUpdate(rawData)
     resetLapTracking()
     -- Leaving the start procedure must never leave a car frozen.
     if newPhase ~= 'grid' and newPhase ~= 'countdown' then releaseGridHold('race') end
-    if newPhase ~= 'grid' and newPhase ~= 'countdown' and newPhase ~= 'racing' then
+    if newPhase ~= 'grid' and newPhase ~= 'countdown' and not sessionRunning() then
       gridSlot = nil
     end
   end
@@ -2494,7 +2844,7 @@ local function onGridAssign(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
   local slot = tonumber(data.slot)
-  applyGridSlot(slot and math.floor(slot) or nil)
+  applyGridSlot(slot and math.floor(slot) or nil, tonumber(data.order), tonumber(data.count))
 end
 
 -- --- Module 1: forced spectator mode (server -> client) --------------------
@@ -2507,8 +2857,11 @@ end
 
 local function onReleaseSpectate(rawData)
   local ok, data = pcall(jsonDecode, rawData)
-  local source = (ok and type(data) == 'table' and data.source) and tostring(data.source) or nil
-  releaseSpectator(source)
+  if not ok or type(data) ~= 'table' then data = {} end
+  local source = data.source and tostring(data.source) or nil
+  -- The server snapshots the participant list before releasing anyone and hands
+  -- each driver its place in it, so the field respawns as a sequence.
+  releaseSpectator(source, tonumber(data.order), tonumber(data.count))
 end
 
 -- --- Module 4: the server refused this client's vehicle/setup --------------
@@ -2970,8 +3323,11 @@ local function resetToIdle(reason)
   editorOpen = false
   clearTrackState(reason)
   releaseSpectator(nil)
+  -- No more update ticks are coming, so anything the placement queue still owes
+  -- this driver -- their car, their camera, their collisions -- is settled now.
+  flushFieldPlacement()
   releaseGridHold()
-  applyGhostMode(false)
+  clearGhostReasons()
   setResetInputsBlocked(false)   -- never leave the reset keys dead after unload
   holdWanted = nil               -- nothing is meant to be held any more
   maxResets       = -1
@@ -2988,11 +3344,11 @@ local function resetToIdle(reason)
   ghostQuali      = false
   -- Same purge for the isolated derby module: markers and warnings must not
   -- survive into the next session.
-  derbyPhase    = 'idle'
-  derbyBoundary = {}
-  derbyStarts   = {}
-  derbySlot     = nil
-  derbyOut      = false
+  derbyState.phase    = 'idle'
+  derbyState.boundary = {}
+  derbyState.starts   = {}
+  derbyState.slot     = nil
+  derbyState.out      = false
   derbyMaxResets  = -1
   derbyResetsUsed = 0
   derbyClearWarnings()
