@@ -495,12 +495,27 @@ local RM_PROTOCOL = 2
 -- a call to a scope function a stale app.js does not have, so a button does
 -- nothing at all, with no error in any console.
 --
--- Bump this in ALL THREE files (main.lua, raceManager.lua, app.js) on EVERY
--- change that needs redeploying -- not just ones that change the client/server
--- contract. That narrower rule is what let two client-side fixes ship under one
--- stamp: the build line read as matching while a client was a fix behind, which
--- is precisely the situation this was added to make visible.
-local RM_BUILD = '3.5.5-garage-view-cache'
+-- Bump this in ALL FOUR places on EVERY change that needs redeploying -- not
+-- just ones that change the client/server contract. That narrower rule is what
+-- let two client-side fixes ship under one stamp: the build line read as
+-- matching while a client was a fix behind, which is precisely the situation
+-- this was added to make visible. The four are:
+--
+--   server/RaceManager/main.lua          RM_BUILD   (here)
+--   lua/ge/extensions/raceManager.lua    RM_BUILD
+--   ui/modules/apps/RaceManager/app.js   APP_BUILD
+--   ui/modules/apps/RaceManager/app.json version
+--
+-- tests/wiring_test.lua fails if they disagree, so this is checked rather than
+-- remembered.
+--
+-- The stamp IS the released package version, and deliberately so: it used to run
+-- on a scheme of its own (3.x.y) while releases were tagged v0.x.y, and app.json
+-- carried a third number that tracked neither. A driver reporting "I'm on 3.5.5"
+-- meant nothing to anyone reading a release page. One number now, matching the
+-- git tag the package is published under, so any redeploy needs a version bump
+-- by definition.
+local RM_BUILD = '0.4.0'
 
 local function broadcastState(targetPid)
   local garageInfo = garageSnapshot and garageSnapshot() or {}

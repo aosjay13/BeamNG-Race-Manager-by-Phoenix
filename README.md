@@ -64,6 +64,25 @@ same zip into your BeamNG user folder's `mods/` directory instead.
 > ignores unstamped ones (a notice tells you when that happens), but the
 > outdated copy should still be deleted from `Resources/Server/`.
 
+### Versions
+
+**Deploy all three pieces together.** The server plugin, the client zip and
+the UI files are installed separately and BeamNG caches UI files, so any one
+of them can end up older than the others — and that failure is silent: a
+button backed by a function a stale `app.js` does not have simply does
+nothing, with no error in any console.
+
+Every piece reports the same version, and the app header shows all of them,
+so a mismatch is a glance rather than a hunt. That version is also the
+release tag the package ships under, so `v0.4.0` on the releases page,
+`0.4.0` in the app header and `0.4.0` in the app list all mean the same
+build. If the header shows three numbers that are not identical, something
+did not get copied.
+
+> Releases before **v0.4.0** reported an unrelated internal number (`3.x.y`)
+> in the app header, and the app list showed a third number again. Those are
+> one number now.
+
 ### Track layouts (persistent, per-map)
 
 The **Track Layouts** panel at the bottom of the editor stores named

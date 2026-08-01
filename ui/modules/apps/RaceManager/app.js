@@ -351,8 +351,10 @@ angular.module('beamng.apps')
       // silent in the worst way: Angular ignores a call to a scope function a
       // stale app.js does not have, so a button does nothing and no console
       // anywhere says a word. Showing all three makes it a glance instead of a
-      // hunt. Bump this with main.lua and raceManager.lua.
-      var APP_BUILD = '3.5.5-garage-view-cache';
+      // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
+      // -- they are the released package version and wiring_test fails if the
+      // four disagree.
+      var APP_BUILD = '0.4.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
