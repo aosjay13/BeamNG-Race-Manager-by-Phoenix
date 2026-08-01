@@ -500,7 +500,7 @@ local RM_PROTOCOL = 2
 -- contract. That narrower rule is what let two client-side fixes ship under one
 -- stamp: the build line read as matching while a client was a fix behind, which
 -- is precisely the situation this was added to make visible.
-local RM_BUILD = '3.5.1-final-lap'
+local RM_BUILD = '3.5.2-derby-respawn'
 
 local function broadcastState(targetPid)
   local garageView = garageSnapshot and garageSnapshot() or {}
@@ -924,19 +924,42 @@ end
 -- that are defined further down the file.
 local formGrid
 
--- Give every participant their car back at the end of a session.
+-- Give a field of drivers their cars back.
 --
--- The participant list is SNAPSHOTTED before a single release goes out. The
--- release is what makes a client delete its freecam and spawn a vehicle, and
--- building the list while that is under way is how a mass respawn ends up
--- reaching only the last driver in it.
+-- THE mass-respawn mechanism, and the only one. It takes the field as two
+-- ready-made arrays rather than going and finding it, for two reasons:
 --
--- Each driver is also told its place in the order. Five cars materialising in
--- the same instant is how a respawn gets refused for an occupied location, or
--- lands two cars inside each other and blows them apart; the clients use this
--- to stagger their spawns and to ghost themselves while it happens.
-local function respawnAll(source)
+--   * both lists must be SNAPSHOTS. The release is what makes a client delete
+--     its freecam and spawn a vehicle, and building a list while that is under
+--     way is how a mass respawn ends up reaching only the last name in it.
+--   * the demo derby keeps its own participant table and never reads racing
+--     state. Handing the field in is what lets it share this without either
+--     module learning about the other's players.
+--
+-- `participants` are the drivers whose cars were removed, in the order they
+-- should come back; each is told its place. Five cars materialising in the same
+-- instant is how a respawn gets refused for an occupied location, or lands two
+-- cars inside each other and blows them apart; the clients use the order to
+-- stagger their spawns and to ghost themselves while it happens.
+--
+-- `bystanders` (optional) still get the lock lifted -- they simply have no place
+-- in the order, because they have no car to put back.
+local function respawnField(source, participants, bystanders)
   source = source or 'race'
+  for i, rec in ipairs(participants) do
+    MP.TriggerClientEvent(rec.id, 'RM_ReleaseSpectate', Util.JsonEncode({
+      source = source, order = i, count = #participants,
+    }))
+  end
+  for _, rec in ipairs(bystanders or {}) do
+    MP.TriggerClientEvent(rec.id, 'RM_ReleaseSpectate', Util.JsonEncode({ source = source }))
+  end
+  print(string.format('[RaceManager] Respawning %d %s participant(s) (%d bystander(s))',
+    #participants, source, bystanders and #bystanders or 0))
+end
+
+-- The racing field, in grid order, handed to respawnField above.
+local function respawnAll(source)
   local field = {}
   for _, rec in pairs(players) do
     field[#field + 1] = rec
@@ -946,9 +969,6 @@ local function respawnAll(source)
       or ((a.gridPos or math.huge) == (b.gridPos or math.huge) and a.id < b.id)
   end)
 
-  -- Participants first, in grid order, each carrying its slot in the spawn
-  -- sequence. Everyone else still gets the lock lifted, they just have no
-  -- place in the order because they have no car to put back.
   local participants, bystanders = {}, {}
   for _, rec in ipairs(field) do
     if rec.gridPos or isEntrant(rec) then
@@ -957,16 +977,7 @@ local function respawnAll(source)
       bystanders[#bystanders + 1] = rec
     end
   end
-  for i, rec in ipairs(participants) do
-    MP.TriggerClientEvent(rec.id, 'RM_ReleaseSpectate', Util.JsonEncode({
-      source = source, order = i, count = #participants,
-    }))
-  end
-  for _, rec in ipairs(bystanders) do
-    MP.TriggerClientEvent(rec.id, 'RM_ReleaseSpectate', Util.JsonEncode({ source = source }))
-  end
-  print(string.format('[RaceManager] Respawning %d participant(s) (%d bystander(s)) after the session',
-    #participants, #bystanders))
+  respawnField(source or 'race', participants, bystanders)
 end
 
 -- Single exit point for every way a session ends (everyone finished, the clock
@@ -2745,6 +2756,30 @@ local function writeDerbyResults()
   return true, path
 end
 
+-- Every driver in the derby gets their car back, through the same staggered,
+-- ghosted respawn the racing side uses.
+--
+-- A derby ends with almost the WHOLE field removed -- that is what a derby is,
+-- everyone but the last man standing has been eliminated and is watching from
+-- freecam -- so it is the heaviest mass respawn in the mod, and it was the one
+-- still firing a bare broadcast that put every car back on the same tick. That
+-- is exactly the refused-spawn-and-interpenetration case the ordering exists to
+-- prevent.
+--
+-- The field is snapshotted here and handed to respawnField, so the mechanism is
+-- shared while the isolation is not broken: this reads derbyPlayers only, never
+-- the racing tables. Elimination order is deliberately NOT the spawn order --
+-- drivers return to slots handed out by ascending id at form-up, so coming back
+-- in that same order puts them back the way they lined up.
+local function respawnDerbyField()
+  local participants = {}
+  for _, rec in pairs(derbyPlayers) do
+    participants[#participants + 1] = rec
+  end
+  table.sort(participants, function (a, b) return a.id < b.id end)
+  respawnField('derby', participants)
+end
+
 -- Single exit point for every way a derby ends (last man standing, admin
 -- ended, everyone eliminated): stop the clock, export results, announce.
 local function finishDerby(reason)
@@ -2752,7 +2787,7 @@ local function finishDerby(reason)
   MP.CancelEventTimer('RM_DerbyTick')
   -- The derby is over: every eliminated driver gets their car and camera back.
   -- Scoped to the 'derby' source so a racing DNF's spectator lock is untouched.
-  releaseSpectators('derby')
+  respawnDerbyField()
   broadcastDerbyState()
   print('[RaceManager] Derby over: ' .. reason)
   local ok, wrote, pathOrErr = pcall(writeDerbyResults)

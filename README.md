@@ -557,7 +557,10 @@ running a derby never touches qualifying/race state). Open it with the
      moving or you're **Demolished**. Disconnecting counts as Disqualified.
    - An eliminated driver's vehicle is removed and their camera is forced into
      **freecam** until the derby ends; they cannot spawn a replacement car.
-     When the derby finishes, their car is **put back** automatically.
+     When the derby finishes, their car is **put back** automatically —
+     ghosted and staggered like every other mass respawn, and this is the
+     biggest one in the mod, since a derby ends with nearly the whole field
+     removed. Each driver's camera goes back on their own car.
 5. The driver table shows who's still in, who's out (with reason and
    elimination time) and the winner — under their **display name** if an admin
    set one (see *Display names* above), in both the standings and the exported
