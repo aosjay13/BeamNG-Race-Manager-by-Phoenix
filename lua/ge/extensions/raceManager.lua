@@ -57,7 +57,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '3.5.2-derby-respawn'
+local RM_BUILD = '3.5.3-draw-cache'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -118,10 +118,10 @@ local localLap     = 1
 local localTime    = 0
 local prevPos      = nil         -- vehicle position last frame (crossing segment)
 
--- Live position telemetry: metres from the car to the centre of the next
--- checkpoint, recomputed every frame and reported to the server on a throttle.
-local distToNext   = nil
-local progressLeft = 0           -- seconds until the next report is due
+-- Live position telemetry: seconds until the next report of this car's distance
+-- to the next checkpoint is due. The distance itself is computed inside that
+-- report and nowhere else, so it needs no state up here.
+local progressLeft = 0
 
 -- Countdown to the state request fired after joining a BeamMP server (see the
 -- session lifecycle hooks at the bottom of the file). nil = nothing pending.
@@ -294,6 +294,28 @@ local function ownVehicle()
     end
   end
   return nil
+end
+
+-- Per-frame vehicle sample.
+--
+-- Several update steps want the same two things in the same frame -- the local
+-- car and where it is -- and each used to go and fetch them itself. getPosition()
+-- crosses into C++ and back, so the gate-crossing test and the position
+-- telemetry were paying for that round trip twice a frame to read one value that
+-- cannot have changed between them.
+--
+-- Sampled LAZILY, not at the top of onUpdate: outside a session nothing asks,
+-- and querying a vehicle every frame while sitting in the menus would be a
+-- worse deal than the one this replaces. `localTime` advances exactly once per
+-- frame, which makes it the frame stamp.
+local sample = { at = -1, veh = nil, pos = nil }
+
+local function sampledVehicle()
+  if sample.at == localTime then return sample.veh, sample.pos end
+  sample.at  = localTime
+  sample.veh = playerVehicle()
+  sample.pos = sample.veh and sample.veh:getPosition() or nil
+  return sample.veh, sample.pos
 end
 
 -- This client's BeamMP session id, so a broadcast that carries every driver can
@@ -484,7 +506,6 @@ local function resetLapTracking()
   blockNoticeLeft = 0   -- a fresh session may report its first blocked attempt at once
   -- Telemetry restarts with the session; report immediately on the next frame
   -- so the leaderboard has a distance for this driver from the first moments.
-  distToNext   = nil
   progressLeft = 0
   -- Cars launch from the grid at the line, so the first target is checkpoint 1
   -- and the clock is already running — for a qualifying session exactly as much
@@ -519,7 +540,6 @@ local function clearTrackState(reason)
   localLap     = 1
   lapStart     = localTime
   prevPos      = nil
-  distToNext   = nil
   progressLeft = 0
   lastGate     = nil
   pushRouteState()
@@ -614,9 +634,8 @@ local function checkGates()
   if spectatorLock then return end     -- out of the session: no more timing
   if #route == 0 and #jokerRoute == 0 then return end
   if phase ~= 'qualifying' and phase ~= 'racing' then return end
-  local veh = playerVehicle()
-  if not veh then return end
-  local pos = veh:getPosition()
+  local veh, pos = sampledVehicle()
+  if not veh or not pos then return end
   if prevPos then
     local wp = route[armedWp]
     if wp and segmentCrossesGate(wp, prevPos, pos) then
@@ -677,42 +696,35 @@ end
 -- ---------------------------------------------------------------------------
 -- The server decides the running order but has no physics access, so the third
 -- tie-break metric — how far a car is from the next checkpoint — can only be
--- measured here. Every frame the straight-line distance from the vehicle to the
--- next gate's centre is recomputed; a few times a second that distance goes up
--- to the server together with the lap and the number of checkpoints already
--- cleared on it. The send is throttled (TUNE.PROGRESS_EVERY) so a full grid costs the
--- server a handful of small events per second, not one per frame per driver.
+-- measured here. A few times a second that distance goes up to the server
+-- together with the lap and the number of checkpoints already cleared on it. The
+-- send is throttled (TUNE.PROGRESS_EVERY) so a full grid costs the server a
+-- handful of small events per second, not one per frame per driver.
+--
+-- The DISTANCE is throttled with it. It used to be recomputed every frame -- a
+-- vehicle query and a square root -- for a value that is only ever read by the
+-- payload below, so ~55 out of every 60 were thrown away unused.
 local function reportProgress(dt)
-  if not sessionRunning() or spectatorLock then
-    distToNext = nil
-    return
-  end
+  if not sessionRunning() or spectatorLock then return end
   local wp = route[armedWp]
-  if not wp then
-    distToNext = nil
-    return
-  end
-  local veh = playerVehicle()
-  if not veh then
-    distToNext = nil
-    return
-  end
-
-  -- Distance from the car to the centre of the next checkpoint, in metres.
-  local pos = veh:getPosition()
-  local dx, dy, dz = pos.x - wp.x, pos.y - wp.y, pos.z - wp.z
-  distToNext = math.sqrt(dx * dx + dy * dy + dz * dz)
+  if not wp then return end
 
   progressLeft = progressLeft - dt
   if progressLeft > 0 then return end
+
+  local veh, pos = sampledVehicle()
+  if not veh or not pos then return end
   progressLeft = TUNE.PROGRESS_EVERY
+
+  -- Distance from the car to the centre of the next checkpoint, in metres.
+  local dx, dy, dz = pos.x - wp.x, pos.y - wp.y, pos.z - wp.z
 
   -- armedWp is the gate we are driving TOWARDS, so the count already cleared on
   -- this lap is one less (and 0 right after crossing the start/finish line).
   local payload = {
     lap  = localLap,
     cp   = armedWp - 1,
-    dist = distToNext,
+    dist = math.sqrt(dx * dx + dy * dy + dz * dz),
   }
   if inMultiplayer() then
     TriggerServerEvent('RM_Progress', jsonEncode(payload))
@@ -1834,26 +1846,83 @@ end
 -- and perpendicular to the direction of travel. Nothing else — no poles, no
 -- cage — so what an admin sees on track is the real trigger, and raising the
 -- height visibly grows the box up the banking.
-local function drawGate(wp, color, label)
+-- Colours, built once on the first draw rather than at file scope.
+--
+-- ColorF/ColorI are engine constructors and do not exist while this file is
+-- being loaded (nor in the headless tests), so they cannot be plain constants --
+-- but rebuilding six of them per gate per frame, which is what the draw loop
+-- used to do, is the same waste with extra steps.
+local PALETTE = nil
+
+local function palette()
+  if PALETTE then return PALETTE end
+  PALETTE = {
+    finish    = ColorF(1, 1, 1, 0.9),          -- start/finish: white
+    armed     = ColorF(0.2, 0.85, 0.35, 0.9),  -- next target: green
+    route     = ColorF(1, 0.4, 0, 0.7),        -- rest of route: orange
+    joker     = ColorF(0.65, 0.3, 0.95, 0.8),  -- joker route: violet
+    jokerUsed = ColorF(0.45, 0.45, 0.5, 0.45), -- joker already taken: dimmed
+    text      = ColorF(1, 1, 1, 1),
+    textBg    = ColorI(0, 0, 0, 160),
+  }
+  return PALETTE
+end
+
+-- Per-gate geometry cache.
+--
+-- A gate's four corners are fixed by its placement and its dimensions, and a
+-- placed gate never moves -- yet all four were recomputed, and four vec3
+-- allocated, for every gate on every frame. On a twenty-gate circuit that is
+-- ~100 tables a frame thrown straight at the collector, which was the single
+-- largest source of GC pressure in the mod.
+--
+-- Keyed on the waypoint table with WEAK keys, so a gate that is deleted or
+-- replaced takes its entry with it. Deliberately not stored on the waypoint
+-- itself: editorSave serialises those tables verbatim, and a cache of vec3s
+-- would end up in the saved route file.
+local gateCache = setmetatable({}, { __mode = 'k' })
+
+-- Rebuilt only when something the geometry depends on has actually moved. The
+-- dimensions are re-derived every frame because they are two clamps and a table
+-- read, and that is far cheaper than the allocation it guards against -- a
+-- global width change has to be picked up without anything telling us about it.
+local function gateGeometry(wp)
   local w, h = gateDims(wp)
+  local g = gateCache[wp]
+  if g and g.w == w and g.h == h
+      and g.x == wp.x and g.y == wp.y and g.z == wp.z
+      and g.hx == wp.hx and g.hy == wp.hy then
+    return g
+  end
+
   local hw, hh = w * 0.5, h * 0.5
   local rx, ry = wp.hy, -wp.hx          -- lateral (width) axis
   -- corner(sr, su): center + lateral*sr*hw + up*su*hh
   local function corner(sr, su)
     return vec3(wp.x + rx * sr * hw, wp.y + ry * sr * hw, wp.z + su * hh)
   end
-  local bl, br = corner(-1, -1), corner(1, -1)
-  local tl, tr = corner(-1,  1), corner(1,  1)
+  g = {
+    w = w, h = h,
+    x = wp.x, y = wp.y, z = wp.z, hx = wp.hx, hy = wp.hy,
+    bl = corner(-1, -1), br = corner(1, -1),
+    tl = corner(-1,  1), tr = corner(1,  1),
+  }
+  g.mid = (g.tl + g.tr) * 0.5 + vec3(0, 0, 0.8)
+  gateCache[wp] = g
+  return g
+end
+
+local function drawGate(wp, color, label)
+  local g = gateGeometry(wp)
   -- Verticals a touch thicker than the horizontals so the gate still reads as
   -- a gate at distance.
-  debugDrawer:drawCylinder(bl, tl, TUNE.EDGE_RADIUS, color)
-  debugDrawer:drawCylinder(br, tr, TUNE.EDGE_RADIUS, color)
-  debugDrawer:drawCylinder(bl, br, TUNE.EDGE_RADIUS * 0.6, color)
-  debugDrawer:drawCylinder(tl, tr, TUNE.EDGE_RADIUS * 0.6, color)
+  debugDrawer:drawCylinder(g.bl, g.tl, TUNE.EDGE_RADIUS, color)
+  debugDrawer:drawCylinder(g.br, g.tr, TUNE.EDGE_RADIUS, color)
+  debugDrawer:drawCylinder(g.bl, g.br, TUNE.EDGE_RADIUS * 0.6, color)
+  debugDrawer:drawCylinder(g.tl, g.tr, TUNE.EDGE_RADIUS * 0.6, color)
 
-  local mid = (tl + tr) * 0.5 + vec3(0, 0, 0.8)
-  debugDrawer:drawTextAdvanced(mid, String(label),
-    ColorF(1, 1, 1, 1), true, false, ColorI(0, 0, 0, 160))
+  local p = palette()
+  debugDrawer:drawTextAdvanced(g.mid, String(label), p.text, true, false, p.textBg)
 end
 
 -- Starting grid markers: a flat slot outline on the ground with a short arrow
@@ -1909,40 +1978,82 @@ end
 -- drawing is unconditional, because a driver who cannot see the gates cannot
 -- race. The Hide/Show Gates toggle only applies outside a session, where it
 -- exists to keep the editor view clean.
+-- Gate labels, built once per route rather than per gate per frame.
+--
+-- Every label was a fresh string every frame, and the joker ones were three
+-- concatenations each. The text does not depend on anything that changes between
+-- frames -- only on the gate's index and the length of its route -- except for
+-- the two joker suffixes, which have exactly three states, so all three are
+-- precomputed and selected by lookup.
+local labelCache = { routeLen = -1, jokerLen = -1, route = {}, joker = {} }
+
+local function routeLabel(i, n)
+  if labelCache.routeLen ~= n then
+    labelCache.routeLen = n
+    labelCache.route = {}
+  end
+  local l = labelCache.route[i]
+  if not l then
+    l = (i == n) and (i .. ' START/FINISH') or ('CP ' .. i)
+    labelCache.route[i] = l
+  end
+  return l
+end
+
+-- `state`: 'open' | 'used' | 'closed' (lap 1).
+local function jokerLabel(i, n, state)
+  if labelCache.jokerLen ~= n then
+    labelCache.jokerLen = n
+    labelCache.joker = {}
+  end
+  local set = labelCache.joker[i]
+  if not set then
+    local base = (i == n) and 'JOKER EXIT' or ('JOKER ' .. i .. '/' .. n)
+    set = {
+      open   = base,
+      used   = base .. ' (used)',
+      closed = base .. ' (lap 1: closed)',
+    }
+    labelCache.joker[i] = set
+  end
+  return set[state]
+end
+
 local function drawGates()
   if not debugDrawer then return end
   local active = sessionRunning() or phase == 'countdown' or phase == 'grid'
   if not active and not visualize then return end
+  local p = palette()
 
+  local n = #route
   for i, wp in ipairs(route) do
     local color
-    if i == #route then
-      color = ColorF(1, 1, 1, 0.9)               -- start/finish: white
+    if i == n then
+      color = p.finish
     elseif active and i == armedWp then
-      color = ColorF(0.2, 0.85, 0.35, 0.9)       -- next target: green
+      color = p.armed
     else
-      color = ColorF(1, 0.4, 0, 0.7)             -- rest of route: orange
+      color = p.route
     end
-    drawGate(wp, color, (i == #route) and (i .. ' START/FINISH') or ('CP ' .. i))
+    drawGate(wp, color, routeLabel(i, n))
   end
 
   -- Joker route: violet, so it never reads as part of the main lap. The next
   -- joker gate lights up green like the main route, and the whole set greys out
   -- once the joker has been used (or while it is still forbidden on lap 1).
+  local jn = #jokerRoute
+  local state = jokerTaken and 'used'
+    or ((active and localLap <= 1) and 'closed' or 'open')
   for i, wp in ipairs(jokerRoute) do
     local color
     if jokerTaken then
-      color = ColorF(0.45, 0.45, 0.5, 0.45)      -- already used: dimmed
+      color = p.jokerUsed
     elseif active and jokerEnabled and i == jokerArmed then
-      color = ColorF(0.2, 0.85, 0.35, 0.9)       -- next joker target: green
+      color = p.armed
     else
-      color = ColorF(0.65, 0.3, 0.95, 0.8)       -- joker route: violet
+      color = p.joker
     end
-    local label = 'JOKER ' .. i .. '/' .. #jokerRoute
-    if i == #jokerRoute then label = 'JOKER EXIT' end
-    if jokerTaken then label = label .. ' (used)'
-    elseif active and localLap <= 1 then label = label .. ' (lap 1: closed)' end
-    drawGate(wp, color, label)
+    drawGate(wp, color, jokerLabel(i, jn, state))
   end
 end
 
