@@ -203,6 +203,89 @@ vec3Allocs = 0
 frame()
 check(vec3Allocs <= 1, 'joker gates are cached too (got ' .. vec3Allocs .. ')')
 
+-- ===========================================================================
+-- The derby arena: same problem, same fix
+-- ===========================================================================
+-- A perimeter is a pole and a rope span per marker, redrawn every frame for the
+-- whole length of a derby. The cache is keyed on the boundary table's identity,
+-- which only works because a broadcast that changes nothing keeps the table it
+-- already had -- so both halves are checked here.
+local function derbyState(t) t.rmProtocol = 2; handlers['RM_DerbyUpdate'](t) end
+local square = {
+  { x = 0,   y = 0,   z = 0 },
+  { x = 100, y = 0,   z = 0 },
+  { x = 100, y = 100, z = 0 },
+  { x = 0,   y = 100, z = 0 },
+}
+local function markers()
+  local out = {}
+  for i, m in ipairs(square) do out[i] = { x = m.x, y = m.y, z = m.z } end
+  return out
+end
+
+derbyState({ derbyPhase = 'running', boundary = markers(), players = {},
+  oobLimit = 5, demoLimit = 10 })
+cylinders, texts = {}, {}
+RM.onUpdate(0.016)
+-- 4 poles + 4 rope spans, and the route above is still drawn as well.
+local poles, ropes = 0, 0
+for _, c in ipairs(cylinders) do
+  if c.radius == 0.2 then poles = poles + 1 end
+  if math.abs(c.radius - 0.07) < 1e-9 then ropes = ropes + 1 end
+end
+check(poles == 4, 'one pole per boundary marker')
+check(ropes == 4, 'and a closed loop of rope spans')
+local labelled = false
+for _, t in ipairs(texts) do
+  if t.text == 'DERBY BOUNDARY (4)' then labelled = true end
+end
+check(labelled, 'the arena is labelled with its marker count')
+
+vec3Allocs, colorAllocs = 0, 0
+frame()
+check(vec3Allocs <= 1, 'a steady derby frame allocates no arena geometry (got '
+  .. vec3Allocs .. ')')
+check(colorAllocs == 0, 'and no colours')
+
+-- A broadcast that changes nothing must not invalidate anything. This is the
+-- part that makes the cache worth having: the server pushes derby state once a
+-- second, and every push used to install a brand new boundary table.
+derbyState({ derbyPhase = 'running', boundary = markers(), players = {},
+  oobLimit = 5, demoLimit = 10 })
+vec3Allocs = 0
+frame()
+check(vec3Allocs <= 1,
+  'an unchanged arena survives a rebroadcast intact (got ' .. vec3Allocs .. ')')
+
+-- A marker that actually moves must be picked up.
+square[2].x = 250
+derbyState({ derbyPhase = 'running', boundary = markers(), players = {},
+  oobLimit = 5, demoLimit = 10 })
+cylinders = {}
+RM.onUpdate(0.016)
+local moved = false
+for _, c in ipairs(cylinders) do
+  if c.radius == 0.2 and math.abs(c.a.x - 250) < 1e-6 then moved = true end
+end
+check(moved, 'a marker that moves is redrawn where it moved to')
+
+-- ...and so is one that is added.
+square[#square + 1] = { x = 50, y = 150, z = 0 }
+derbyState({ derbyPhase = 'running', boundary = markers(), players = {},
+  oobLimit = 5, demoLimit = 10 })
+cylinders, texts = {}, {}
+RM.onUpdate(0.016)
+poles = 0
+for _, c in ipairs(cylinders) do
+  if c.radius == 0.2 then poles = poles + 1 end
+end
+check(poles == 5, 'a marker added to the arena is drawn')
+labelled = false
+for _, t in ipairs(texts) do
+  if t.text == 'DERBY BOUNDARY (5)' then labelled = true end
+end
+check(labelled, 'and the label follows the new count')
+
 if fails == 0 then
   print('draw_test: ' .. checks .. ' checks, 0 failures')
 else

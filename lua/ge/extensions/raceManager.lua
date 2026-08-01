@@ -57,7 +57,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '3.5.3-draw-cache'
+local RM_BUILD = '3.5.4-derby-draw-cache'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -1864,6 +1864,12 @@ local function palette()
     jokerUsed = ColorF(0.45, 0.45, 0.5, 0.45), -- joker already taken: dimmed
     text      = ColorF(1, 1, 1, 1),
     textBg    = ColorI(0, 0, 0, 160),
+    -- Demo derby arena. Its own entries rather than its own table: the derby
+    -- module keeps its state and its logic separate, but a colour is a colour,
+    -- and building these per frame is what this exists to stop.
+    derbyLive    = ColorF(0.9, 0.15, 0.15, 0.9),  -- live arena: red
+    derbySetup   = ColorF(0.9, 0.6, 0.1, 0.8),    -- setup/finished: amber
+    derbyLabelBg = ColorI(120, 0, 0, 180),
   }
   return PALETTE
 end
@@ -2233,26 +2239,53 @@ local function derbyDrawBoundary()
       drawStartPosition(sp, i, derbyState.slot == i)
     end
   end
-  if #derbyState.boundary == 0 then return end
-  local color = (derbyState.phase == 'running')
-    and ColorF(0.9, 0.15, 0.15, 0.9)   -- live arena: red
-    or  ColorF(0.9, 0.6, 0.1, 0.8)     -- setup/finished: amber
-  local up = vec3(0, 0, DERBY_POLE_HEIGHT)
-  for i, m in ipairs(derbyState.boundary) do
-    local base = vec3(m.x, m.y, m.z)
-    debugDrawer:drawCylinder(base, base + up, DERBY_POLE_RADIUS, color)
-    local nxt = derbyState.boundary[i % #derbyState.boundary + 1]
-    if nxt and #derbyState.boundary > 1 then
-      local a = base + vec3(0, 0, DERBY_POLE_HEIGHT * 0.5)
-      local b = vec3(nxt.x, nxt.y, nxt.z) + vec3(0, 0, DERBY_POLE_HEIGHT * 0.5)
-      debugDrawer:drawCylinder(a, b, DERBY_POLE_RADIUS * 0.35, color)
+  local boundary = derbyState.boundary
+  local n = #boundary
+  if n == 0 then return end
+
+  -- Same story as the race gates: an arena perimeter is fixed geometry redrawn
+  -- every frame, and it was rebuilding all of it each time -- a pole and a rope
+  -- span per marker, which is seven vectors a marker, plus the label and its
+  -- anchor. Over an eight-marker arena that is the best part of sixty tables a
+  -- frame, for the entire length of a derby.
+  --
+  -- The cache lives on derbyState rather than in a new file-scope local, because
+  -- this file is close enough to Lua's 200-local ceiling that a new one there is
+  -- a cost of its own. It is keyed on the boundary table itself: onDerbyUpdate
+  -- keeps the existing table when the markers have not moved, so identity is
+  -- enough to say "nothing about this arena has changed".
+  local cache = derbyState.draw
+  if not cache or cache.src ~= boundary then
+    local up   = vec3(0, 0, DERBY_POLE_HEIGHT)
+    local half = vec3(0, 0, DERBY_POLE_HEIGHT * 0.5)
+    cache = { src = boundary, poles = {}, ropes = {} }
+    for i, m in ipairs(boundary) do
+      local base = vec3(m.x, m.y, m.z)
+      cache.poles[i] = { a = base, b = base + up }
+      local nxt = boundary[i % n + 1]
+      if nxt and n > 1 then
+        cache.ropes[#cache.ropes + 1] = {
+          a = base + half,
+          b = vec3(nxt.x, nxt.y, nxt.z) + half,
+        }
+      end
     end
+    local first = boundary[1]
+    cache.labelAt = vec3(first.x, first.y, first.z + DERBY_POLE_HEIGHT + 0.8)
+    cache.label   = 'DERBY BOUNDARY (' .. n .. ')'
+    derbyState.draw = cache
   end
-  local first = derbyState.boundary[1]
-  debugDrawer:drawTextAdvanced(
-    vec3(first.x, first.y, first.z + DERBY_POLE_HEIGHT + 0.8),
-    String('DERBY BOUNDARY (' .. #derbyState.boundary .. ')'),
-    ColorF(1, 1, 1, 1), true, false, ColorI(120, 0, 0, 180))
+
+  local p = palette()
+  local color = (derbyState.phase == 'running') and p.derbyLive or p.derbySetup
+  for _, pole in ipairs(cache.poles) do
+    debugDrawer:drawCylinder(pole.a, pole.b, DERBY_POLE_RADIUS, color)
+  end
+  for _, rope in ipairs(cache.ropes) do
+    debugDrawer:drawCylinder(rope.a, rope.b, DERBY_POLE_RADIUS * 0.35, color)
+  end
+  debugDrawer:drawTextAdvanced(cache.labelAt, String(cache.label),
+    p.text, true, false, p.derbyLabelBg)
 end
 
 -- --- Derby UI commands (called by the UI app) ------------------------------
@@ -2454,7 +2487,24 @@ local function onDerbyUpdate(rawData)
       if x and y and z then boundary[#boundary + 1] = { x = x, y = y, z = z } end
     end
   end
-  derbyState.boundary = boundary
+  -- Keep the table we already have when the markers have not actually moved.
+  -- Every broadcast used to install a brand new one -- once a second while a
+  -- derby runs, and on every marker drop while an admin builds an arena -- which
+  -- is garbage on its own, and would also throw away the draw cache below on
+  -- every push for an arena that had not changed at all.
+  --
+  -- Swapping the table IS the invalidation, and deliberately the only one: the
+  -- cache is keyed on this table's identity, so a new arena can never be drawn
+  -- with an old one's geometry, and there is no second rule here to forget to
+  -- apply somewhere else.
+  local same = #boundary == #derbyState.boundary
+  if same then
+    for i, m in ipairs(boundary) do
+      local o = derbyState.boundary[i]
+      if o.x ~= m.x or o.y ~= m.y or o.z ~= m.z then same = false; break end
+    end
+  end
+  if not same then derbyState.boundary = boundary end
 
   -- Derby starting grid (a placement + a facing per slot, like the race grid).
   local starts = {}
@@ -3470,6 +3520,9 @@ local function resetToIdle(reason)
   -- survive into the next session.
   derbyState.phase    = 'idle'
   derbyState.boundary = {}
+  -- Not invalidation (the empty table above already is that) -- this drops the
+  -- cache's reference to the arena that has just gone, so it can be collected.
+  derbyState.draw     = nil
   derbyState.starts   = {}
   derbyState.slot     = nil
   derbyState.out      = false
