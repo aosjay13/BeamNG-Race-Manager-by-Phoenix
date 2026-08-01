@@ -42,7 +42,7 @@ local LAP_DEBOUNCE   = 2.0      -- seconds; double-fire guard on the S/F gate.
                                 -- re-fires, not bound real lap times.
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '3.4.2-hold-inputs'
+local RM_BUILD = '3.4.3-hold-restore'
 
 local PROGRESS_EVERY = 0.3      -- seconds between live-position reports
 -- Live lap clock for the driver's own HUD. The lap start is already known here
@@ -998,41 +998,12 @@ local function setResetInputsBlocked(blocked)
   end
 end
 
--- Driving inputs, switched off while a car is held on the grid.
---
--- This is a SECOND mechanism, not a replacement for controller.setFreeze. The
--- freeze is the right primitive and is what actually pins the car, but placing
--- a car on its slot is a teleport, and BeamNG treats a teleport as a vehicle
--- reset which reloads the vehicle's Lua VM -- so a freeze can be wiped by the
--- very teleport that preceded it. The freeze is re-asserted on a timer for that
--- reason, and this closes the gap in between: even in the window where the
--- freeze has been undone, throttle and gearshift do nothing, so a held driver
--- cannot pull away from the line.
---
--- The action filter is already how this mod switches the reset keys off, so
--- this is the same mechanism pointed at a different group.
-local HOLD_ACTIONS = {
-  'accelerate', 'brake', 'clutch', 'shiftUp', 'shiftDown',
-  'nitrousOxideActive', 'toggleRangeBox', 'parkingbrake',
-}
-local holdInputsBlocked = false
-
-local function setHoldInputsBlocked(blocked)
-  blocked = blocked and true or false
-  if blocked == holdInputsBlocked then return end
-  if not (core_input_actionFilter and core_input_actionFilter.setGroup
-      and core_input_actionFilter.addAction) then
-    return
-  end
-  local ok = pcall(function ()
-    core_input_actionFilter.setGroup('raceManagerHold', HOLD_ACTIONS)
-    core_input_actionFilter.addAction(0, 'raceManagerHold', blocked)
-  end)
-  if ok then
-    holdInputsBlocked = blocked
-    log('I', 'raceManager', 'Start-hold driving inputs ' .. (blocked and 'BLOCKED' or 'released'))
-  end
-end
+-- NOTE: driving inputs are deliberately NOT filtered while a car is held.
+-- controller.setFreeze pins the car in place but leaves the drivetrain live, and
+-- that is the point: revving against the hold and pre-selecting a gear before
+-- the lights is how a standing start is supposed to work. A previous build
+-- blocked throttle/clutch/shift here as a "second mechanism" and took that away
+-- from every driver; the freeze alone is the correct primitive.
 
 -- Recomputed every frame (cheap: only acts on a change): the reset keys go
 -- dead the moment the allowance is spent and come back the moment the session
@@ -1341,46 +1312,45 @@ local function applyGridSlot(slot)
   pushRouteState()
 end
 
--- Keeping a held car held.
+-- Deferred hold.
 --
--- Placing a car on its slot is a teleport, and BeamNG treats a teleport as a
--- vehicle reset -- which reloads the vehicle's Lua VM. The freeze queued
--- immediately after the teleport is therefore racing the reset it just caused,
--- and loses: the car lands on its slot and then rolls away. That is why Form Up
--- placed cars without holding them.
+-- A freeze is applied ONCE and then left alone. Re-applying it on a timer looks
+-- harmless and is not: every call re-pins the car at whatever state it is in
+-- right now, which disturbs the position it is supposed to be holding and
+-- resets the drivetrain, so revs bleed away and a pre-selected gear will not
+-- stick. Both are things a standing start depends on.
 --
--- Re-asserting is the fix, and there is precedent right above: the forced
--- spectator camera re-applies freecam on a timer for the same reason. Cheap --
--- one queued command every half second, and only while a hold is meant to be on.
-local HOLD_RECHECK_EVERY = 0.25
-local holdRecheck = 0
-local holdAsserts = 0     -- re-applications since this hold began (for the log)
+-- Why deferred at all: placing a car is a teleport, and BeamNG treats a teleport
+-- as a vehicle reset. A freeze queued in the same frame can land while the
+-- vehicle is still resetting and be discarded with it. A race grid placement is
+-- a short hop and has always been fine applying the freeze immediately -- that
+-- is the behaviour this restores. A derby form-up can move a car clear across
+-- the map to an arena, which is a much longer reset, so the derby schedules its
+-- freeze for a moment later instead. One application either way.
+local pendingHold = nil   -- { left = seconds, source = 'race' | 'derby' }
+
+local function scheduleHold(source, delay)
+  pendingHold = { left = delay or 0, source = source }
+end
+
+local function cancelPendingHold()
+  pendingHold = nil
+end
 
 local function holdUpdate(dt)
-  -- Driving inputs follow the hold exactly, both ways. Cheap: setHoldInputsBlocked
-  -- returns immediately unless the state actually changed.
-  setHoldInputsBlocked(gridFrozen)
-  if not gridFrozen then
-    holdRecheck = 0
-    holdAsserts = 0
-    return
-  end
-  holdRecheck = holdRecheck - dt
-  if holdRecheck > 0 then return end
-  holdRecheck = HOLD_RECHECK_EVERY
-  local veh = playerVehicle()
-  if not veh then return end
-  pcall(function () veh:queueLuaCommand('controller.setFreeze(1)') end)
-  holdAsserts = holdAsserts + 1
-  -- Logged once per hold, not per re-application. If a car is loose while this
-  -- line is in the console, the freeze is being applied and something else is
-  -- undoing it; if the line is absent, this code is not running at all -- which
-  -- on a mod split across three separately-deployed pieces is the first thing
-  -- worth ruling out.
-  if holdAsserts == 1 then
-    log('I', 'raceManager', 'Hold active (' .. tostring(freezeSource)
-      .. '): re-asserting controller.setFreeze every '
-      .. HOLD_RECHECK_EVERY .. 's until released')
+  if not pendingHold then return end
+  pendingHold.left = pendingHold.left - dt
+  if pendingHold.left > 0 then return end
+  local source = pendingHold.source
+  pendingHold = nil
+  if setLocalVehicleFrozen(true, source) then
+    pushRouteState()
+    log('I', 'raceManager', 'Hold applied (' .. tostring(source) .. ')')
+  else
+    -- Never fail quietly: a car that should be held and is not looks exactly
+    -- like a start procedure that has not begun.
+    log('W', 'raceManager', 'Hold (' .. tostring(source) .. ') could not be applied')
+    pushNotice('grid', 'Could not hold your car for the start')
   end
 end
 
@@ -1390,6 +1360,11 @@ end
 -- extension unloading wants: with no server left to lift it, a held car would
 -- stay held forever.
 local function releaseGridHold(source)
+  -- A hold scheduled but not yet applied has to be called off too, or an abort
+  -- during the delay would freeze the car a moment after it was let go.
+  if pendingHold and (not source or pendingHold.source == source) then
+    cancelPendingHold()
+  end
   if not gridFrozen then return end
   if source and freezeSource and freezeSource ~= source then return end
   setLocalVehicleFrozen(false)
@@ -1634,6 +1609,12 @@ local DERBY_STOP_SPEED    = 0.7   -- m/s; below this the car counts as stopped
 -- than retuned: it is a gameplay value, and shortening it is a balance call for
 -- an admin to ask for, not a side effect of adding a countdown.
 local DERBY_START_GRACE   = 5
+-- Seconds between a form-up teleport and the freeze that holds the car. Long
+-- enough for the vehicle reset the teleport causes to finish, since a freeze
+-- landing mid-reset is discarded with it. Derby-specific on purpose: a race grid
+-- placement is a short hop and freezes immediately, but an arena can be right
+-- across the map.
+local DERBY_HOLD_DELAY    = 0.5
 local DERBY_POLE_HEIGHT   = 6     -- boundary poles are taller than gate poles
 local DERBY_POLE_RADIUS   = 0.2
 
@@ -2050,15 +2031,14 @@ local function onDerbyGridAssign(rawData)
   -- to wait for GO rather than getting a free run at everyone else. Tagged
   -- 'derby' so a racing phase change can never release it.
   if data.hold == true then
-    if setLocalVehicleFrozen(true, 'derby') then
-      pushRouteState()
-      log('I', 'raceManager', 'Derby form-up: held until GO')
-    else
-      -- Never fail quietly here: a car that should be held and is not looks
-      -- exactly like a countdown that has not started yet.
-      log('W', 'raceManager', 'Derby form-up: could not hold the vehicle')
-      pushNotice('grid', 'Could not hold your car for the derby start')
-    end
+    -- Deferred, unlike the race grid. A form-up can teleport a car right across
+    -- the map into the arena, and BeamNG treats that teleport as a vehicle
+    -- reset -- a freeze queued in the same frame can be thrown away with it.
+    -- Waiting for the reset to settle and then freezing once keeps the car
+    -- pinned without re-applying, so the driver can still rev and pick a gear
+    -- against the hold exactly as they can on a race grid.
+    scheduleHold('derby', DERBY_HOLD_DELAY)
+    log('I', 'raceManager', 'Derby form-up: holding in ' .. DERBY_HOLD_DELAY .. 's')
   end
 end
 
@@ -2976,7 +2956,7 @@ local function resetToIdle(reason)
   releaseGridHold()
   applyGhostMode(false)
   setResetInputsBlocked(false)   -- never leave the reset keys dead after unload
-  setHoldInputsBlocked(false)    -- nor the throttle, if we unloaded mid-hold
+  cancelPendingHold()            -- nothing left waiting to freeze a car
   maxResets       = -1
   resetsUsed      = 0
   resetMode       = 'inplace'

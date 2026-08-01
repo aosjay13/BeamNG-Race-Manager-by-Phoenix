@@ -339,7 +339,7 @@ angular.module('beamng.apps')
       // stale app.js does not have, so a button does nothing and no console
       // anywhere says a word. Showing all three makes it a glance instead of a
       // hunt. Bump this with main.lua and raceManager.lua.
-      var APP_BUILD = '3.4.2-hold-inputs';
+      var APP_BUILD = '3.4.3-hold-restore';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
