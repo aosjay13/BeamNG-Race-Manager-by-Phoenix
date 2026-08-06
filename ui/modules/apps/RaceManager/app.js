@@ -273,6 +273,11 @@ angular.module('beamng.apps')
       $scope.derby = {
         phase: 'idle',        // idle | running | finished (server authoritative)
         time: 0,
+        // The arena itself, mirrored from the server so the setup panel can
+        // list and edit it entry by entry. The counts are kept alongside
+        // because the header and the disabled rules read them everywhere.
+        boundary: [],         // [{ x, y, z }] in perimeter order
+        startPositions: [],   // [{ x, y, z, hx, hy }], slot 1 first
         boundaryCount: 0,
         startCount: 0,        // derby starting grid slots placed
         // Who takes part: 'all' (every connected player, the historical
@@ -295,6 +300,14 @@ angular.module('beamng.apps')
       // progress (field differs) survives marker drops and other rebroadcasts.
       var derbyCfgSeen = { oob: null, demo: null, resets: null };
       $scope.derbyWarning = null;  // { type: 'oob'|'stopped', remaining } or null
+      // Which listed entry has its edit controls open, 1-based, or null. Two
+      // selections rather than one shared "selected entry": the marker list and
+      // the start grid are shown at the same time, so a single one would make
+      // picking a slot silently close the marker you were working on. Plain
+      // scope properties, like the checkpoint editor's selectedCp — only
+      // controller functions write them, so no ng-if child scope can shadow one.
+      $scope.derbySelMarker = null;
+      $scope.derbySelStart = null;
 
       var PHASE_LABELS = {
         waiting:    'Waiting',
@@ -841,9 +854,16 @@ angular.module('beamng.apps')
           $scope.derby.entrants = data.entrants || 0;
           $scope.derby.time = data.derbyTime || 0;
           $scope.derby.winner = data.winner || null;
-          $scope.derby.boundaryCount = toArray(data.boundary).length;
-          $scope.derby.startCount = toArray(data.startPositions).length;
+          $scope.derby.boundary = toArray(data.boundary);
+          $scope.derby.startPositions = toArray(data.startPositions);
+          $scope.derby.boundaryCount = $scope.derby.boundary.length;
+          $scope.derby.startCount = $scope.derby.startPositions.length;
           $scope.derby.players = toArray(data.players);
+          // Keep the open edit controls pointed at something that still exists.
+          // An entry deleted here (by this admin or another one) must not leave
+          // a panel of buttons hanging over the entry that took its number, and
+          // a derby going live closes them: the arena is locked from form-up on.
+          syncDerbySelection();
           if (typeof data.maxResets === 'number') { $scope.derby.maxResets = data.maxResets; }
           if (typeof data.oobLimit === 'number' && $scope.derby.phase !== 'running') {
             if (derbyCfgSeen.oob === null || Number($scope.derbyUi.oob) === derbyCfgSeen.oob) {
@@ -922,6 +942,55 @@ angular.module('beamng.apps')
       };
       $scope.derbyClearStarts = function () {
         bngApi.engineLua('raceManager.derbyClearStartPositions()');
+      };
+
+      // --- Editing one placed marker / start slot ----------------------------
+      // Same shape as the track editor's lists: click a row to open its
+      // controls, click it again to close them, then Go / Move Here / ✕. The
+      // arena belongs to the server, so every button here is a request — the
+      // list redraws when the broadcast comes back, not when the button is
+      // pressed. Selection is refused (and dropped) once a derby is under way,
+      // which is the same rule the server enforces on the commands themselves.
+      function syncDerbySelection() {
+        if ($scope.derbyActive()) {
+          $scope.derbySelMarker = null;
+          $scope.derbySelStart = null;
+          return;
+        }
+        if ($scope.derbySelMarker > $scope.derby.boundary.length) {
+          $scope.derbySelMarker = null;
+        }
+        if ($scope.derbySelStart > $scope.derby.startPositions.length) {
+          $scope.derbySelStart = null;
+        }
+      }
+
+      $scope.selectDerbyMarker = function (index) {
+        if ($scope.derbyActive()) { return; }
+        $scope.derbySelMarker = ($scope.derbySelMarker === index) ? null : index;
+      };
+      $scope.selectDerbyStart = function (index) {
+        if ($scope.derbyActive()) { return; }
+        $scope.derbySelStart = ($scope.derbySelStart === index) ? null : index;
+      };
+
+      $scope.derbyMoveMarker = function (index) {
+        bngApi.engineLua('raceManager.derbyMoveMarker(' + index + ')');
+      };
+      $scope.derbyRemoveMarker = function (index) {
+        bngApi.engineLua('raceManager.derbyRemoveMarker(' + index + ')');
+      };
+      $scope.derbyPreviewMarker = function (index) {
+        bngApi.engineLua('raceManager.derbyPreviewMarker(' + index + ')');
+      };
+      $scope.derbyMoveStart = function (index) {
+        bngApi.engineLua('raceManager.derbyMoveStartPosition(' + index + ')');
+      };
+      $scope.derbyRemoveStart = function (index) {
+        bngApi.engineLua('raceManager.derbyRemoveStartPosition(' + index + ')');
+      };
+      $scope.derbyPreviewStart = function (index) {
+        bngApi.engineLua('raceManager.derbyPreviewStartPosition(' + index + ')');
       };
       $scope.derbyToggleVisualize = function () {
         bngApi.engineLua('raceManager.derbyToggleVisualize()');

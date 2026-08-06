@@ -373,11 +373,93 @@ RM_onDerbyLoadLayout(1, '{"name":"Grid Arena"}')
 check(#lastDerby.startPositions == 2, 'loading an arena restores its starting grid')
 check(lastDerby.maxResets == 2, 'and its reset allowance')
 
+-- ---------------------------------------------------------------------------
+-- Editing one placed marker / one placed start slot
+--
+-- Placement used to be final: fixing marker 2 of twelve meant Clear Boundary
+-- and driving the whole perimeter again. Both lists are now editable entry by
+-- entry, and what every check below is really asserting is that exactly ONE
+-- entry changes -- the failure this replaces was a bulk operation.
+-- ---------------------------------------------------------------------------
+check(#lastDerby.boundary == 3 and #lastDerby.startPositions == 2,
+  'editing starts from the loaded arena: 3 markers, 2 slots')
+
+-- Admin commands like every other one.
+RM_onDerbyMoveMarker(9, '{"index":1,"x":5,"y":5,"z":0}')
+RM_onDerbyRemoveMarker(9, '{"index":1}')
+RM_onDerbyMoveStart(9, '{"index":1,"x":5,"y":5,"z":0,"hx":0,"hy":1}')
+RM_onDerbyRemoveStart(9, '{"index":1}')
+check(#lastDerby.boundary == 3 and #lastDerby.startPositions == 2,
+  'unauthenticated marker/slot edits are refused')
+
+local before1, before3 = lastDerby.boundary[1].x, lastDerby.boundary[3].x
+RM_onDerbyMoveMarker(1, '{"index":2,"x":77,"y":88,"z":9}')
+check(lastDerby.boundary[2].x == 77 and lastDerby.boundary[2].y == 88
+  and lastDerby.boundary[2].z == 9, 'a marker moves to the position sent')
+check(#lastDerby.boundary == 3 and lastDerby.boundary[1].x == before1
+  and lastDerby.boundary[3].x == before3, 'and nothing else in the perimeter moves')
+
+RM_onDerbyMoveMarker(1, '{"index":9,"x":1,"y":1,"z":1}')
+RM_onDerbyMoveMarker(1, '{"index":2,"x":"nan","y":1,"z":1}')
+RM_onDerbyMoveMarker(1, '{"x":1,"y":1,"z":1}')
+RM_onDerbyMoveMarker(1, 'not json at all')
+check(lastDerby.boundary[2].x == 77 and #lastDerby.boundary == 3,
+  'an index that does not exist, a missing index and a malformed payload are no-ops')
+
+RM_onDerbyRemoveMarker(1, '{"index":2}')
+check(#lastDerby.boundary == 2, 'deleting a marker shortens the perimeter')
+check(lastDerby.boundary[1].x == before1 and lastDerby.boundary[2].x == before3,
+  'and the survivors keep their order, closing up around the gap')
+RM_onDerbyRemoveMarker(1, '{"index":7}')
+check(#lastDerby.boundary == 2, 'deleting an index that does not exist is a no-op')
+-- Dropping under three markers is allowed. The arena is then not a polygon --
+-- exactly the state it is in before the third marker is ever placed, and after
+-- Clear Boundary -- and the minimum is enforced where it already was: an arena
+-- with fewer cannot be saved.
+RM_onDerbyRemoveMarker(1, '{"index":1}')
+RM_onDerbyRemoveMarker(1, '{"index":1}')
+check(#lastDerby.boundary == 0, 'the last markers can still be deleted one at a time')
+RM_onDerbySaveLayout(1, '{"name":"Too Small","boundary":[{"x":0,"y":0,"z":0}]}')
+RM_onDerbyRequestLayouts(1)
+check(#lastArenas.layouts == 1, 'and an under-three arena still cannot be saved')
+
+-- Start slots: the same two operations, plus a facing that travels with a move.
+RM_onDerbyMoveStart(1, '{"index":2,"x":30,"y":40,"z":1,"hx":1,"hy":0}')
+check(lastDerby.startPositions[2].x == 30 and lastDerby.startPositions[2].hx == 1,
+  'a start slot moves, taking the facing it was moved to')
+check(lastDerby.startPositions[1].x == 10, 'and slot 1 is untouched by slot 2 moving')
+RM_onDerbyRemoveStart(1, '{"index":1}')
+check(#lastDerby.startPositions == 1 and lastDerby.startPositions[1].x == 30,
+  'deleting slot 1 promotes the slot behind it to pole')
+
+-- Editing the live arena must not rewrite the SAVED one it was loaded from:
+-- the two used to share a table, so moving a marker edited the file's copy too.
+RM_onDerbyRequestLayouts(1)
+local saved = lastArenas.layouts[1]
+check(saved.name == 'Grid Arena' and #saved.boundary == 3 and saved.boundary[2].x == 60,
+  'the saved arena is untouched by every edit made to the loaded one')
+
+-- Rebuild the arena the rest of the suite runs on: 3 markers, 2 slots.
+RM_onDerbyLoadLayout(1, '{"name":"Grid Arena"}')
+check(#lastDerby.boundary == 3 and #lastDerby.startPositions == 2,
+  'arena reloaded intact for the rest of the suite')
+
 -- Start Derby hands each participant a slot (pid order; the field can be
 -- bigger than the placed grid).
 startDerby(1)
 check(derbyGrid[1] == 1 and derbyGrid[2] == 2, 'participants are stood on slots 1 and 2')
 check(derbyGrid[3] == nil, 'a driver beyond the placed grid gets no slot')
+
+-- Individual edits are locked from form-up onward, exactly like Clear Boundary
+-- and Load Arena: the ground cannot move under a field standing on it.
+RM_onDerbyMoveMarker(1, '{"index":1,"x":-99,"y":-99,"z":0}')
+RM_onDerbyRemoveMarker(1, '{"index":1}')
+RM_onDerbyMoveStart(1, '{"index":1,"x":-99,"y":-99,"z":0,"hx":0,"hy":1}')
+RM_onDerbyRemoveStart(1, '{"index":1}')
+check(#lastDerby.boundary == 3 and lastDerby.boundary[1].x == 0,
+  'markers cannot be moved or deleted while a derby is under way')
+check(#lastDerby.startPositions == 2 and lastDerby.startPositions[1].x == 10,
+  'and neither can start slots')
 
 -- Reset tally: counted per driver, capped at the allowance.
 RM_onDerbyVehicleReset(2)

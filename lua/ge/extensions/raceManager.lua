@@ -2338,6 +2338,90 @@ function M.derbyClearStartPositions()
   if inMultiplayer() then TriggerServerEvent('RM_DerbyClearStarts', '') end
 end
 
+-- --- Derby marker / start slot editing -------------------------------------
+-- The derby's answer to moveStartPosition / removeStartPosition / preview,
+-- with one difference that decides the whole shape of these: the race grid is
+-- this client's own list, while the SERVER owns the arena. So a move sends the
+-- index plus the placement the car is standing on and waits for the broadcast
+-- to come back; only the preview is answered locally, because standing your own
+-- car somewhere is nobody else's business.
+function M.derbyMoveMarker(index)
+  index = math.floor(tonumber(index) or 0)
+  if index < 1 then return end
+  if not inMultiplayer() then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Demo Derby needs a BeamMP server' })
+    return
+  end
+  local veh = playerVehicle()
+  if not veh then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
+    return
+  end
+  local pos = veh:getPosition()
+  TriggerServerEvent('RM_DerbyMoveMarker',
+    jsonEncode({ index = index, x = pos.x, y = pos.y, z = pos.z }))
+end
+
+function M.derbyRemoveMarker(index)
+  index = math.floor(tonumber(index) or 0)
+  if index < 1 then return end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_DerbyRemoveMarker', jsonEncode({ index = index }))
+  end
+end
+
+function M.derbyMoveStartPosition(index)
+  index = math.floor(tonumber(index) or 0)
+  if index < 1 then return end
+  if not inMultiplayer() then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Demo Derby needs a BeamMP server' })
+    return
+  end
+  local place = vehiclePlacement()
+  if not place then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
+    return
+  end
+  place.index = index
+  TriggerServerEvent('RM_DerbyMoveStart', jsonEncode(place))
+end
+
+function M.derbyRemoveStartPosition(index)
+  index = math.floor(tonumber(index) or 0)
+  if index < 1 then return end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_DerbyRemoveStart', jsonEncode({ index = index }))
+  end
+end
+
+-- Preview, the race editor's "Go": stand the car on a placed entry so the
+-- creator can see where it actually is. Purely local and never freezes -- this
+-- is editor convenience, exactly like previewStartPosition.
+function M.derbyPreviewStartPosition(index)
+  index = math.floor(tonumber(index) or 0)
+  local sp = derbyState.starts[index]
+  if not sp then return end
+  if not placeOnStartPosition(sp) then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Could not move the vehicle' })
+  end
+end
+
+-- A boundary marker is a position with no facing of its own, so the car keeps
+-- the heading it already has rather than being spun to an arbitrary one.
+function M.derbyPreviewMarker(index)
+  index = math.floor(tonumber(index) or 0)
+  local m = derbyState.boundary[index]
+  if not m then return end
+  local place = vehiclePlacement()
+  if not place then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
+    return
+  end
+  if not placeOnStartPosition({ x = m.x, y = m.y, z = m.z, hx = place.hx, hy = place.hy }) then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Could not move the vehicle' })
+  end
+end
+
 -- Hide/Show the derby boundary + start grid visuals (client-local, like the
 -- race editor's gate toggle). Pushed to the UI so the button label follows.
 function M.derbyToggleVisualize()

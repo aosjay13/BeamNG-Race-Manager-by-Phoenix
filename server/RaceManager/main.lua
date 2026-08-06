@@ -2978,6 +2978,81 @@ function RM_onDerbyClearStarts(pid)
   print('[RaceManager] Derby start grid cleared by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
+-- --- Editing a placed marker / start slot -----------------------------------
+-- Both lists stay editable after placement, the way the race grid's slots do:
+-- move one entry to where the admin's car is standing now, or drop it and let
+-- the rest of the list close up. Neither is a bulk operation -- every other
+-- entry keeps its position and its number.
+--
+-- One decoder for all four handlers, because all four ask the same question:
+-- is this a well-formed request naming an entry that actually exists? Returns
+-- the 1-based index and the decoded payload, or nil.
+local function derbyEditRequest(rawData, list)
+  if type(rawData) ~= 'string' or rawData == '' then return nil end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return nil end
+  local index = tonumber(data.index)
+  if not index then return nil end
+  index = math.floor(index)
+  if not list[index] then return nil end
+  return index, data
+end
+
+function RM_onDerbyMoveMarker(pid, rawData)
+  if not requireAuth(pid) then return end
+  if derbyActive() then return end
+  local index, data = derbyEditRequest(rawData, derby.boundary)
+  if not index then return end
+  local x, y, z = tonumber(data.x), tonumber(data.y), tonumber(data.z)
+  if not (x and y and z) then return end
+  derby.boundary[index] = { x = x, y = y, z = z }
+  broadcastDerbyState()
+  print(string.format('[RaceManager] Derby marker %d moved by %s to %.1f, %.1f',
+    index, MP.GetPlayerName(pid) or pid, x, y))
+end
+
+-- Deleting below three markers is allowed: the arena simply stops being a
+-- polygon until enough are back, exactly as it is before the third is placed
+-- and after Clear Boundary. The minimum is enforced where it matters -- an
+-- arena cannot be saved, and out-of-bounds is not policed, without one.
+function RM_onDerbyRemoveMarker(pid, rawData)
+  if not requireAuth(pid) then return end
+  if derbyActive() then return end
+  local index = derbyEditRequest(rawData, derby.boundary)
+  if not index then return end
+  table.remove(derby.boundary, index)
+  broadcastDerbyState()
+  print(string.format('[RaceManager] Derby marker %d deleted by %s (%d left)',
+    index, MP.GetPlayerName(pid) or pid, #derby.boundary))
+end
+
+function RM_onDerbyMoveStart(pid, rawData)
+  if not requireAuth(pid) then return end
+  if derbyActive() then return end
+  local index, data = derbyEditRequest(rawData, derby.startPositions)
+  if not index then return end
+  local x, y, z = tonumber(data.x), tonumber(data.y), tonumber(data.z)
+  if not (x and y and z) then return end
+  derby.startPositions[index] = {
+    x = x, y = y, z = z,
+    hx = tonumber(data.hx) or 0, hy = tonumber(data.hy) or 1,
+  }
+  broadcastDerbyState()
+  print(string.format('[RaceManager] Derby start position %d moved by %s to %.1f, %.1f',
+    index, MP.GetPlayerName(pid) or pid, x, y))
+end
+
+function RM_onDerbyRemoveStart(pid, rawData)
+  if not requireAuth(pid) then return end
+  if derbyActive() then return end
+  local index = derbyEditRequest(rawData, derby.startPositions)
+  if not index then return end
+  table.remove(derby.startPositions, index)
+  broadcastDerbyState()
+  print(string.format('[RaceManager] Derby start position %d deleted by %s (%d left)',
+    index, MP.GetPlayerName(pid) or pid, #derby.startPositions))
+end
+
 -- Client spent one of its derby resets (the client polices the allowance, the
 -- server keeps the tally the standings show).
 function RM_onDerbyVehicleReset(pid)
@@ -3162,7 +3237,14 @@ function RM_onDerbyLoadLayout(pid, rawData)
   local list, map = derbyLayoutsForCurrentMap()
   for _, l in ipairs(list) do
     if l.name:lower() == data.name:lower() then
-      derby.boundary  = l.boundary
+      -- A COPY of the stored polygon, not the stored table itself. The live
+      -- arena is edited in place now -- a marker moved or deleted, not just
+      -- appended -- and sharing one table with the saved arena would mean
+      -- editing the live one silently rewrote the saved one, which the next
+      -- write of derbyArenas.json would then make permanent. (startPositions
+      -- has always come back from sanitizeCheckpoints as a fresh table; this
+      -- is the same guarantee for the boundary.)
+      derby.boundary  = sanitizeBoundary(l.boundary) or {}
       derby.oobLimit  = derbyClampLimit(l.oobLimit,  derby.oobLimit)
       derby.demoLimit = derbyClampLimit(l.demoLimit, derby.demoLimit)
       if type(l.maxResets) == 'number' then derby.maxResets = math.floor(l.maxResets) end
@@ -3578,6 +3660,10 @@ function onInit()
   MP.RegisterEvent('RM_DerbyClearBoundary', 'RM_onDerbyClearBoundary')
   MP.RegisterEvent('RM_DerbyAddStart',      'RM_onDerbyAddStart')
   MP.RegisterEvent('RM_DerbyClearStarts',   'RM_onDerbyClearStarts')
+  MP.RegisterEvent('RM_DerbyMoveMarker',    'RM_onDerbyMoveMarker')
+  MP.RegisterEvent('RM_DerbyRemoveMarker',  'RM_onDerbyRemoveMarker')
+  MP.RegisterEvent('RM_DerbyMoveStart',     'RM_onDerbyMoveStart')
+  MP.RegisterEvent('RM_DerbyRemoveStart',   'RM_onDerbyRemoveStart')
   MP.RegisterEvent('RM_DerbyVehicleReset',  'RM_onDerbyVehicleReset')
   MP.RegisterEvent('RM_DerbyResetDenied',   'RM_onDerbyResetDenied')
   MP.RegisterEvent('RM_DerbyStart',         'RM_onDerbyStart')

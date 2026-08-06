@@ -125,6 +125,31 @@ wired('moveStartPosition',  'moveStartPosition',  'Move start position')
 wired('removeStartPosition','removeStartPosition','Remove start position')
 wired('derbySaveLayout',    'derbySaveLayout',    'Derby arena save')
 wired('derbyLoadLayout',    'derbyLoadLayout',    'Derby arena load')
+-- The derby arena is editable entry by entry, the same way the race grid is.
+wired('derbyMoveMarker',        'derbyMoveMarker',   'Move derby boundary marker')
+wired('derbyRemoveMarker',      'derbyRemoveMarker', 'Remove derby boundary marker')
+wired('derbyMoveStartPosition', 'derbyMoveStart',    'Move derby start position')
+wired('derbyRemoveStartPosition', 'derbyRemoveStart','Remove derby start position')
+
+-- The lists themselves render the arrays the derby broadcast carries, not just
+-- the counts the header shows: a panel bound to `boundaryCount` alone can say
+-- "7 markers" and still offer nothing to click.
+for _, field in ipairs({ 'boundary', 'startPositions' }) do
+  expect(html:find('derby.' .. field .. '.length', 1, true) ~= nil,
+    'the derby panel lists derby.' .. field)
+  expect(js:find('$scope.derby.' .. field .. ' = toArray(data.' .. field .. ')', 1, true) ~= nil,
+    'derby.' .. field .. ' is mirrored from the derby broadcast')
+end
+
+-- Every one of those edit controls is refused by the server from form-up
+-- onward, so the template must not offer them then either.
+for _, handler in ipairs({ 'derbyMoveMarker', 'derbyRemoveMarker', 'derbyPreviewMarker',
+                           'derbyMoveStart', 'derbyRemoveStart', 'derbyPreviewStart' }) do
+  local call = html:match('ng%-click="' .. handler .. '%([^"]*%)"[^>]-ng%-disabled="([^"]*)"')
+  expect(call ~= nil and call:find('derbyActive()', 1, true) ~= nil,
+    handler .. ' is not disabled by derbyActive(), so the panel offers an edit '
+      .. 'the server will refuse while a derby is under way')
+end
 
 for _, field in ipairs({ 'entryMode', 'gridMode', 'ghostQuali', 'startSlots' }) do
   expect(js:find('data.' .. field, 1, true) ~= nil,

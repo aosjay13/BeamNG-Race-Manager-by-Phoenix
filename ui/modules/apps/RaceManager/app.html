@@ -503,6 +503,64 @@
       </button>
     </div>
 
+    <!-- ===== Placed markers and start slots: each one stays editable =====
+         Same list/edit shape as the track editor's gate and start-grid lists,
+         down to the classes, because they are the same thing: a numbered
+         placement you click to open its controls. Everything here is refused
+         from form-up onward — the arena cannot move under a formed-up field —
+         so the rows go read-only rather than disappearing, and the admin can
+         still read off the arena during a live derby. -->
+    <div class="rm-derby-lists" ng-if="derby.boundary.length || derby.startPositions.length">
+      <div class="rm-derby-list" ng-if="derby.boundary.length">
+        <div class="rm-layouts-title">Boundary Markers</div>
+        <div class="rm-editor-list">
+          <div class="rm-editor-wp-wrap" ng-repeat="m in derby.boundary track by $index">
+            <div class="rm-editor-wp" ng-class="{'rm-editor-wp-sel': derbySelMarker === $index + 1}"
+                 ng-click="selectDerbyMarker($index + 1)"
+                 title="Click to move or delete this boundary marker">
+              <span class="rm-editor-idx rm-derby-marker-idx">M{{ $index + 1 }}</span>
+              <span class="rm-editor-coords">{{ m.x.toFixed(1) }}, {{ m.y.toFixed(1) }}, {{ m.z.toFixed(1) }}</span>
+            </div>
+            <div class="rm-cp-edit rm-derby-edit" ng-if="derbySelMarker === $index + 1">
+              <button class="rm-btn rm-btn-mini" ng-click="derbyPreviewMarker($index + 1)"
+                      ng-disabled="derbyActive()"
+                      title="Put your car on this marker (keeping your heading) to see where it sits">Go</button>
+              <button class="rm-btn rm-btn-mini rm-btn-grid" ng-click="derbyMoveMarker($index + 1)"
+                      ng-disabled="derbyActive()"
+                      title="Move this marker to where your car is standing now">Move Here</button>
+              <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="derbyRemoveMarker($index + 1)"
+                      ng-disabled="derbyActive()"
+                      title="Delete this marker; the perimeter closes up between its neighbours">✕</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="rm-derby-list" ng-if="derby.startPositions.length">
+        <div class="rm-layouts-title">Start Positions</div>
+        <div class="rm-editor-list">
+          <div class="rm-editor-wp-wrap" ng-repeat="sp in derby.startPositions track by $index">
+            <div class="rm-editor-wp" ng-class="{'rm-editor-wp-sel': derbySelStart === $index + 1}"
+                 ng-click="selectDerbyStart($index + 1)"
+                 title="Click to move or delete this start slot">
+              <span class="rm-editor-idx rm-start-idx">P{{ $index + 1 }}</span>
+              <span class="rm-editor-coords">{{ sp.x.toFixed(1) }}, {{ sp.y.toFixed(1) }}, {{ sp.z.toFixed(1) }}</span>
+            </div>
+            <div class="rm-cp-edit rm-derby-edit" ng-if="derbySelStart === $index + 1">
+              <button class="rm-btn rm-btn-mini" ng-click="derbyPreviewStart($index + 1)"
+                      ng-disabled="derbyActive()"
+                      title="Put your car on this slot to check the spacing">Go</button>
+              <button class="rm-btn rm-btn-mini rm-btn-grid" ng-click="derbyMoveStart($index + 1)"
+                      ng-disabled="derbyActive()"
+                      title="Move this slot to where your car is standing now, facing the way it faces">Move Here</button>
+              <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="derbyRemoveStart($index + 1)"
+                      ng-disabled="derbyActive()"
+                      title="Delete this slot; the rest of the grid closes up">✕</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ===== Derby arenas: persistent, per-map, server-side ===== -->
     <div class="rm-derby-layouts">
       <div class="rm-layouts-title">
@@ -1321,6 +1379,22 @@
     border-color: #4285f4;
     color: #c3d9ff;
   }
+
+  /* Derby arena editing: the two placed lists, side by side while the panel is
+     wide enough and stacked when it is not. The rows themselves reuse the track
+     editor's .rm-editor-* styles — same control, same look. */
+  .rm-derby-lists {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    margin-top: 7px;
+    padding-top: 7px;
+    border-top: 1px dashed rgba(234, 67, 53, 0.35);
+  }
+  .rm-derby-list { flex: 1 1 190px; min-width: 0; }
+  .rm-derby-marker-idx { color: #f28b82; }
+  .rm-derby-edit { border-left-color: rgba(234, 67, 53, 0.5); background: rgba(234, 67, 53, 0.06); }
 
   /* Derby arena layouts */
   .rm-derby-layouts {

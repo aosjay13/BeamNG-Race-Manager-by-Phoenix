@@ -558,6 +558,24 @@ running a derby never touches qualifying/race state). Open it with the
    to be able to see it — while the **start slots are hidden**, since every car
    has left its slot by then and the outlines would just clutter the arena.
 
+   Everything placed is **listed under the controls** — `M1…Mn` for the markers,
+   `P1…Pn` for the start slots — and every entry stays editable, exactly the way
+   the [starting grid](#placing-the-starting-grid) does. Click one to open its
+   controls:
+
+   - **Go** puts your car on that entry. A start slot uses its own facing; a
+     boundary marker has none, so you keep the heading you already had.
+   - **Move Here** moves that one entry to where your car is standing now.
+   - **✕** deletes it; the perimeter (or the grid) closes up around the gap and
+     everything else keeps its number.
+
+   Fixing marker 2 of twelve no longer means clearing the arena and driving the
+   whole perimeter again. Deleting can take the arena under three markers — it is
+   then simply not a polygon yet, the same state it is in before the third marker
+   is first placed. All of it is **refused from Form Up onward**, like every other
+   setup control: the arena cannot move under a field standing on it, so during a
+   derby the lists stay readable but nothing in them can be changed.
+
    Arenas are **saved and loaded** the same way track layouts are. Type a name
    in the **Saved Arenas** panel and press **Save Current Arena**: the boundary
    polygon, both timers, the reset limit *and* the starting grid are stored on
