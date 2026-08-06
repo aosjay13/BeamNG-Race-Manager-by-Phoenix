@@ -508,11 +508,30 @@ impossible to lock the whole server out by accident.
   leaderboard* while a session is live — header, session controls, editor,
   derby panel, login bar and all panel backgrounds are removed from the DOM.
   During a derby the leaderboard shows the derby standings instead.
-- **Resize & fade.** Drag the grip in the bottom-right corner of the
-  leaderboard to resize it, and use the slider in the thin driver bar to set
-  its background opacity so it does not obstruct the view. Both settings are
-  remembered in `localStorage`. The driver bar also shows live joker/reset
-  status and keeps a 🔒 button so the login prompt is always reachable.
+- **Resize & fade — everywhere the app renders.** Drag the grip in the
+  bottom-right corner to resize the panel, and use the ◑ slider to set its
+  background opacity so it does not obstruct the view. In minimal mode the
+  grip and slider sit on the leaderboard and the driver bar; everywhere else
+  (admins on any tab, and drivers between sessions) they sit on the whole app
+  panel and in the header, with ⤢ to undo a drag.
+
+  The opacity is one shared setting, so fading the HUD means the same thing in
+  every view. The two sizes are stored separately — the leaderboard alone and
+  the full panel with its chrome are different things to measure, so resizing
+  one never disturbs the other. Everything is remembered in `localStorage`.
+
+  **The grip sizes the panel inside the app window, it does not resize the
+  window.** BeamNG paints every HUD app into a fixed-size box
+  (`.ui-app-host`, `overflow: hidden`) whose size belongs to the HUD app
+  layout editor — *Pause → System → HUD Apps*, edit mode, drag the app's
+  corner — and an app has no supported way to grow its own box. So the grip
+  stops at that edge rather than dragging into clipped, unreachable space.
+  **To make Race Manager bigger, enlarge the window in the layout editor
+  first, then drag the grip out to fill it.** Shrinking the window in the
+  editor pulls an oversized stored panel back in automatically.
+
+  The driver bar also shows live joker/reset status and keeps a 🔒 button so
+  the login prompt is always reachable.
 
 ## Demo Derby (parallel game mode)
 
