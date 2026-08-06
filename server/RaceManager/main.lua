@@ -656,6 +656,62 @@ function RM_onChangePassword(pid, rawData)
 end
 
 -- ---------------------------------------------------------------------------
+-- Filesystem helpers
+-- ---------------------------------------------------------------------------
+-- BeamMP ships an FS API, but it is not present in every build (and not in the
+-- headless tests), so everything below falls back to a shell command. Those
+-- commands are NOT the same on both platforms and plenty of BeamMP servers are
+-- hosted on Windows: cmd has no "mkdir -p" (it takes "-p" as another directory
+-- to create) and no "ls", so the POSIX spelling silently did nothing there.
+local IS_WINDOWS = package.config:sub(1, 1) == '\\'
+
+local function nativePath(path)
+  if IS_WINDOWS then return (path:gsub('/', '\\')) end
+  return path
+end
+
+local function makeDirectory(dir)
+  if FS and FS.CreateDirectory then
+    FS.CreateDirectory(dir)
+  elseif IS_WINDOWS then
+    -- cmd's mkdir already creates intermediate directories; it complains when
+    -- the directory exists, which is the normal case here, so stderr is muted.
+    os.execute('mkdir "' .. nativePath(dir) .. '" 2>nul')
+  else
+    os.execute('mkdir -p "' .. dir .. '"')
+  end
+end
+
+-- File names (not paths) directly inside dir; empty when it does not exist.
+local function listDirectory(dir)
+  local names = {}
+  if FS and FS.ListFiles then
+    for _, entry in pairs(FS.ListFiles(dir) or {}) do
+      local name = tostring(entry):match('[^/\\]+$')
+      if name then names[#names + 1] = name end
+    end
+    return names
+  end
+  local cmd = IS_WINDOWS
+    and ('dir /b "' .. nativePath(dir) .. '" 2>nul')
+    or  ('ls -1 "' .. dir .. '" 2>/dev/null')
+  local p = io.popen(cmd)
+  if p then
+    for name in p:lines() do
+      name = name:gsub('%s+$', '')
+      if name ~= '' then names[#names + 1] = name end
+    end
+    p:close()
+  end
+  return names
+end
+
+local function removeFile(path)
+  if FS and FS.Remove then return FS.Remove(path) ~= false end
+  return os.remove(path) ~= nil
+end
+
+-- ---------------------------------------------------------------------------
 -- Results logging
 -- ---------------------------------------------------------------------------
 -- Written automatically when a race session ends; one .txt per session so
@@ -668,13 +724,8 @@ local function fmtLap(t)
   return string.format('%d:%06.3f', m, t - m * 60)
 end
 
--- BeamMP ships an FS API; the io/os fallback keeps headless tests runnable.
 local function ensureResultsDir()
-  if FS and FS.CreateDirectory then
-    FS.CreateDirectory(RESULTS_DIR)
-  else
-    os.execute('mkdir -p "' .. RESULTS_DIR .. '"')
-  end
+  makeDirectory(RESULTS_DIR)
 end
 
 -- Timestamped result path that never overwrites: sessions ending within the
@@ -694,19 +745,8 @@ end
 
 local function listResultFiles()
   local names = {}
-  if FS and FS.ListFiles then
-    for _, entry in pairs(FS.ListFiles(RESULTS_DIR) or {}) do
-      local name = tostring(entry):match('[^/\\]+$')
-      if name and name:match('%.txt$') then names[#names + 1] = name end
-    end
-  else
-    local p = io.popen('ls -1 "' .. RESULTS_DIR .. '" 2>/dev/null')
-    if p then
-      for name in p:lines() do
-        if name:match('%.txt$') then names[#names + 1] = name end
-      end
-      p:close()
-    end
+  for _, name in ipairs(listDirectory(RESULTS_DIR)) do
+    if name:match('%.txt$') then names[#names + 1] = name end
   end
   return names
 end
@@ -714,14 +754,7 @@ end
 local function clearResultsCache()
   local removed = 0
   for _, name in ipairs(listResultFiles()) do
-    local path = RESULTS_DIR .. '/' .. name
-    local ok
-    if FS and FS.Remove then
-      ok = FS.Remove(path) ~= false
-    else
-      ok = os.remove(path) ~= nil
-    end
-    if ok then removed = removed + 1 end
+    if removeFile(RESULTS_DIR .. '/' .. name) then removed = removed + 1 end
   end
   return removed
 end
@@ -2071,11 +2104,7 @@ local function getCurrentMap()
 end
 
 local function ensureLayoutsDir()
-  if FS and FS.CreateDirectory then
-    FS.CreateDirectory(LAYOUTS_DIR)
-  else
-    os.execute('mkdir -p "' .. LAYOUTS_DIR .. '"')
-  end
+  makeDirectory(LAYOUTS_DIR)
 end
 
 local function loadLayoutsFromDisk()

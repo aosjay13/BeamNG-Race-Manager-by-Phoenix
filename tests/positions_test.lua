@@ -204,7 +204,13 @@ check(driver('Dan').status == 'dnf', 'Dan is out')
 check(driver('Alice').position == 3 and driver('Dan').position == 4,
   'a DNF drops below everyone still classified')
 
-os.execute('rm -rf Resources')
+-- Clean up the directory tree this test created in the repo root. "rm -rf" is
+-- not a command on Windows, so the tree has to be removed the native way there.
+if package.config:sub(1, 1) == '\\' then
+  os.execute('rmdir /s /q "Resources" 2>nul')
+else
+  os.execute('rm -rf Resources')
+end
 
 if fails == 0 then
   io.stdout:write(('ALL PASS (%d checks)\n'):format(checks))
