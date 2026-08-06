@@ -36,16 +36,121 @@ MP = {
   Get = function (setting) return hostedMap end,
 }
 
+-- Strict recursive-descent JSON decoder. The plugin calls Util.JsonDecode under
+-- pcall and treats a raised error as "reject this payload", so a payload that
+-- is not valid JSON has to raise rather than silently produce a table -- which
+-- is what the tests for malformed saves are actually asserting.
+local function jsonDecode(text)
+  if type(text) ~= 'string' then error('json: not a string', 0) end
+  local pos = 1
+  local function err(msg) error(('json: %s at %d'):format(msg, pos), 0) end
+  local function ws() pos = text:match('^[ \t\r\n]*()', pos) end
+  local parseValue
+  local function parseString()
+    pos = pos + 1  -- opening quote
+    local out = {}
+    while true do
+      local c = text:sub(pos, pos)
+      if c == '' then err('unterminated string') end
+      if c == '"' then pos = pos + 1; break end
+      if c == '\\' then
+        local e = text:sub(pos + 1, pos + 1)
+        if e == 'u' then
+          local cp = tonumber(text:sub(pos + 2, pos + 5), 16) or err('bad \\u escape')
+          out[#out + 1] = cp < 128 and string.char(cp) or '?'
+          pos = pos + 6
+        else
+          out[#out + 1] = ({ n = '\n', r = '\r', t = '\t', b = '\b', f = '\f' })[e] or e
+          pos = pos + 2
+        end
+      else
+        out[#out + 1] = c
+        pos = pos + 1
+      end
+    end
+    return table.concat(out)
+  end
+  parseValue = function ()
+    ws()
+    local c = text:sub(pos, pos)
+    if c == '"' then return parseString() end
+    if c == '{' then
+      pos = pos + 1
+      local obj = {}
+      ws()
+      if text:sub(pos, pos) == '}' then pos = pos + 1; return obj end
+      while true do
+        ws()
+        if text:sub(pos, pos) ~= '"' then err('expected key') end
+        local k = parseString()
+        ws()
+        if text:sub(pos, pos) ~= ':' then err('expected :') end
+        pos = pos + 1
+        obj[k] = parseValue()
+        ws()
+        local sep = text:sub(pos, pos)
+        pos = pos + 1
+        if sep == '}' then return obj end
+        if sep ~= ',' then err('expected , or }') end
+      end
+    end
+    if c == '[' then
+      pos = pos + 1
+      local arr = {}
+      ws()
+      if text:sub(pos, pos) == ']' then pos = pos + 1; return arr end
+      while true do
+        arr[#arr + 1] = parseValue()
+        ws()
+        local sep = text:sub(pos, pos)
+        pos = pos + 1
+        if sep == ']' then return arr end
+        if sep ~= ',' then err('expected , or ]') end
+      end
+    end
+    local lit = text:match('^true', pos) or text:match('^false', pos) or text:match('^null', pos)
+    if lit then
+      pos = pos + #lit
+      if lit == 'true' then return true elseif lit == 'false' then return false end
+      return nil
+    end
+    local num, nextPos = text:match('^(%-?%d+%.?%d*[eE]?[%+%-]?%d*)()', pos)
+    if num then pos = nextPos; return tonumber(num) or err('bad number') end
+    err('unexpected character')
+  end
+  local v = parseValue()
+  ws()
+  if pos <= #text then err('trailing garbage') end
+  return v
+end
+
 Util = {
   -- Passthrough: the tests inspect the table directly.
   JsonEncode = function (t) return t end,
-  -- Naive decoder: JSON object/array syntax mapped onto Lua table literals,
-  -- enough for {"lapTime":93.2} and the nested layout save payloads.
-  JsonDecode = function (s)
-    local body = s:gsub('"([%w_]+)"%s*:', '%1='):gsub('%[', '{'):gsub('%]', '}')
-    return load('return ' .. body)()
-  end,
+  JsonDecode = jsonDecode,
 }
+
+-- The suite writes into ./Resources and asserts on file counts, so a tree left
+-- behind by an aborted run has to go before anything is loaded -- otherwise
+-- stale layouts.json entries fail the layout-count checks. "rm -rf" is not a
+-- command on Windows, where a good few BeamMP servers are hosted.
+local function removeTree(path)
+  if package.config:sub(1, 1) == '\\' then
+    os.execute('rmdir /s /q "' .. path:gsub('/', '\\') .. '" 2>nul')
+  else
+    os.execute('rm -rf "' .. path .. '"')
+  end
+end
+
+-- Existence check that always closes the handle: an open handle keeps the file
+-- locked on Windows, which would then defeat removeTree at the end of the run.
+local function fileExists(path)
+  local f = path and io.open(path, 'r')
+  if f then f:close(); return true end
+  return false
+end
+
+removeTree('Resources')
 
 dofile('server/RaceManager/main.lua')
 
@@ -242,7 +347,7 @@ check(qualiSec:find('1:30.000', 1, true), "Cara's quali best formatted in quali 
 -- Clear Results Cache: all .txt files removed, chat confirms
 lastChat = nil
 RM_onClearResults(2)
-check(io.open(resultsPath, 'r') == nil, 'results file deleted by cache clear')
+check(not fileExists(resultsPath), 'results file deleted by cache clear')
 check(type(lastChat) == 'string' and lastChat:find('cache cleared', 1, true),
   'chat broadcast confirms cache clear')
 
@@ -267,7 +372,7 @@ lastChat = nil
 RM_onSaveLayout(1, '{"name":"GP Circuit","width":24,"checkpoints":' .. cpJson .. '}')
 check(type(lastChat) == 'string' and lastChat:find('GP Circuit', 1, true)
   and lastChat:find('gridmap_v2', 1, true), 'chat announces layout save with map name')
-check(io.open('Resources/Server/RaceManager/layouts.json', 'r') ~= nil,
+check(fileExists('Resources/Server/RaceManager/layouts.json'),
   'layouts.json written to disk')
 check(lastLayouts ~= nil and lastLayouts.map == 'gridmap_v2'
   and #lastLayouts.layouts == 1, 'save broadcasts refreshed layout list')
@@ -413,8 +518,7 @@ connected[3] = 'Cara'
 local ghostPath2 = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
 check(ghostPath1 and ghostPath2 and ghostPath1 ~= ghostPath2,
   'same-second sessions write distinct results files')
-check(ghostPath1 and io.open(ghostPath1, 'r') ~= nil
-  and ghostPath2 and io.open(ghostPath2, 'r') ~= nil,
+check(fileExists(ghostPath1) and fileExists(ghostPath2),
   'both results files exist on disk')
 
 -- adminPresent flips false only once every admin has logged out (so non-admin
@@ -425,7 +529,7 @@ RM_onRequestState(1)
 check(lastState.adminPresent == false, 'adminPresent is false after all admins log out')
 
 -- Clean up the directory tree the test created in the repo root
-os.execute('rm -rf Resources')
+removeTree('Resources')
 
 if fails == 0 then
   io.stdout:write(('ALL PASS (%d checks)\n'):format(checks))
