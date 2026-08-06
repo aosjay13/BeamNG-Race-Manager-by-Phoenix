@@ -1498,13 +1498,12 @@ angular.module('beamng.apps')
       }
 
       // ------------------------------------------------------------------
-      // Module 3: driver (non-admin) leaderboard ergonomics
+      // Module 3: HUD ergonomics (size + background fade)
       // ------------------------------------------------------------------
-      // A driver who is not logged in sees the leaderboard and nothing else.
-      // Because that panel now sits over the windscreen, they get two controls
-      // the admin UI never needed: drag the bottom-right corner to resize it,
-      // and a slider to fade its background out of the way. Both persist in
-      // localStorage so the choice survives a session.
+      // The app is painted over the windscreen, so wherever it renders it gets
+      // two controls: drag the bottom-right corner to resize it, and a slider
+      // to fade its background out of the way. Both persist in localStorage so
+      // the choice survives a session.
       function loadPref(key, def) {
         try {
           var raw = window.localStorage.getItem('raceManager.lb.' + key);
@@ -1517,66 +1516,163 @@ angular.module('beamng.apps')
         } catch (e) { /* private mode / storage disabled: preferences are optional */ }
       }
 
-      // Opacity is bound with ng-model from inside an ng-if (the driver bar), so
-      // it has to hang off an object for the same reason the settings inputs do:
-      // a bare primitive would be shadowed on the ng-if child scope, leaving the
-      // slider moving a copy nothing else reads.
+      // One opacity for the app as a whole: fading "the HUD" means the same
+      // thing to an admin reading the panels and to a driver reading the
+      // leaderboard, so both sliders read and write this one preference.
+      //
+      // Opacity is bound with ng-model from inside an ng-if (the driver bar and
+      // the header are both one), so it has to hang off an object for the same
+      // reason the settings inputs do: a bare primitive would be shadowed on
+      // the ng-if child scope, leaving the slider moving a copy nothing reads.
       $scope.lbUi = { opacity: loadPref('opacity', 0.85) };   // 0 (invisible) .. 1 (solid)
-      $scope.lbWidth   = loadPref('width', null);     // px, null = follow the app window
-      $scope.lbHeight  = loadPref('height', null);
 
-      // Applied to the leaderboard container in minimal (driver) mode.
-      $scope.lbStyle = function () {
-        var style = { 'background-color': 'rgba(15, 17, 22, ' + Number($scope.lbUi.opacity) + ')' };
-        if ($scope.lbWidth)  { style.width = $scope.lbWidth + 'px'; }
-        if ($scope.lbHeight) {
-          style.height = $scope.lbHeight + 'px';
-          style['max-height'] = $scope.lbHeight + 'px';
+      // Two panels can be resized, but never both at once: in minimal mode the
+      // leaderboard IS the HUD, and everywhere else the HUD is the whole app
+      // root with its chrome. Same drag, same storage, separate keys — the
+      // same number of pixels means a different size on each, so one shared
+      // pair would yank whichever panel was not dragged to a nonsense size the
+      // moment the mode flipped.
+      //
+      // `replace: true` on the directive means $element[0] IS .rm-root, so the
+      // root resolves to the element itself rather than a descendant.
+      var PANELS = {
+        leaderboard: {
+          el: function () { return $element[0].querySelector('.rm-table-wrap'); },
+          wKey: 'width',    hKey: 'height',    minW: 200, minH: 80
+        },
+        hud: {
+          el: function () { return $element[0]; },
+          wKey: 'hudWidth', hKey: 'hudHeight', minW: 240, minH: 100
         }
-        return style;
+      };
+      // px, null = follow the app window.
+      var panelSize = {
+        leaderboard: { w: loadPref('width', null),    h: loadPref('height', null) },
+        hud:         { w: loadPref('hudWidth', null), h: loadPref('hudHeight', null) }
       };
 
+      function panelStyle(name) {
+        var size = panelSize[name];
+        var style = { 'background-color': 'rgba(15, 17, 22, ' + Number($scope.lbUi.opacity) + ')' };
+        if (size.w) { style.width = size.w + 'px'; }
+        if (size.h) {
+          style.height = size.h + 'px';
+          style['max-height'] = size.h + 'px';
+        }
+        return style;
+      }
+      // Applied to the leaderboard container in minimal (driver) mode.
+      $scope.lbStyle = function () { return panelStyle('leaderboard'); };
+      // Applied to the app root everywhere else — admins on any tab, and
+      // drivers outside a live session.
+      $scope.hudStyle = function () { return panelStyle('hud'); };
+
       $scope.applyOpacity = function () { savePref('opacity', Number($scope.lbUi.opacity)); };
+
+      // The sticky table header paints its own near-opaque background, so
+      // without this it would survive the fade as a solid strip across an
+      // otherwise see-through HUD. It follows the slider through a custom
+      // property, which has to be written straight onto the element: jqLite's
+      // .css() camel-cases the name it is given, so a `--custom-prop` set
+      // through ng-style is silently dropped. (`replace: true` makes
+      // $element[0] the .rm-root div itself.)
+      $scope.$watch('lbUi.opacity', function (op) {
+        $element[0].style.setProperty('--rm-panel-bg', 'rgba(15, 17, 22, ' + Number(op) + ')');
+      });
+
+      // BeamNG paints this app inside its HUD app host: an absolutely
+      // positioned box, sized in px from the layout and clipped with
+      // overflow:hidden. Nothing we do to our own elements can make that box
+      // bigger — the window belongs to the HUD app layout editor (Pause >
+      // System > HUD Apps), and the only Lua hook for it writes the layout
+      // file without re-rendering. So anything dragged past that edge is
+      // simply clipped and unreachable, which reads as "the drag does
+      // nothing". The grip stops at the edge instead.
+      function hostBox() {
+        var host = $element[0].parentElement;
+        if (host && host.getBoundingClientRect) {
+          var r = host.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0) { return r; }
+        }
+        // Standalone (no HUD host): the viewport is the only limit.
+        return { right: window.innerWidth, bottom: window.innerHeight };
+      }
 
       var resizeFrom = null;
       function onResizeMove(ev) {
         if (!resizeFrom) { return; }
-        var w = Math.max(200, resizeFrom.w + (ev.clientX - resizeFrom.x));
-        var h = Math.max(80,  resizeFrom.h + (ev.clientY - resizeFrom.y));
+        var panel = resizeFrom.panel;
+        var w = Math.max(panel.minW, resizeFrom.w + (ev.clientX - resizeFrom.x));
+        var h = Math.max(panel.minH, resizeFrom.h + (ev.clientY - resizeFrom.y));
+        w = Math.min(w, resizeFrom.maxW);
+        h = Math.min(h, resizeFrom.maxH);
         $scope.$evalAsync(function () {
-          $scope.lbWidth = Math.round(w);
-          $scope.lbHeight = Math.round(h);
+          panelSize[resizeFrom.name].w = Math.round(w);
+          panelSize[resizeFrom.name].h = Math.round(h);
         });
       }
       function onResizeEnd() {
         document.removeEventListener('mousemove', onResizeMove);
         document.removeEventListener('mouseup', onResizeEnd);
         if (resizeFrom) {
-          savePref('width', $scope.lbWidth);
-          savePref('height', $scope.lbHeight);
+          var size = panelSize[resizeFrom.name];
+          savePref(resizeFrom.panel.wKey, size.w);
+          savePref(resizeFrom.panel.hKey, size.h);
         }
         resizeFrom = null;
       }
-      // Grip in the bottom-right corner of the leaderboard. Listeners go on the
+      // Grip in the bottom-right corner of the panel. Listeners go on the
       // document so the drag keeps tracking even when the pointer leaves the
       // (small) grip element.
-      $scope.startLeaderboardResize = function (ev) {
-        var wrap = $element[0].querySelector('.rm-table-wrap');
-        if (!wrap) { return; }
+      function startResize(name, ev) {
+        var panel = PANELS[name];
+        var el = panel.el();
+        if (!el) { return; }
         ev.preventDefault();
         ev.stopPropagation();
-        var rect = wrap.getBoundingClientRect();
-        resizeFrom = { x: ev.clientX, y: ev.clientY, w: rect.width, h: rect.height };
+        var rect = el.getBoundingClientRect();
+        var host = hostBox();
+        resizeFrom = {
+          name: name, panel: panel,
+          x: ev.clientX, y: ev.clientY, w: rect.width, h: rect.height,
+          // Room left between the panel's own top-left and the host's edges.
+          maxW: Math.max(panel.minW, host.right - rect.left),
+          maxH: Math.max(panel.minH, host.bottom - rect.top)
+        };
         document.addEventListener('mousemove', onResizeMove);
         document.addEventListener('mouseup', onResizeEnd);
-      };
+      }
+      $scope.startLeaderboardResize = function (ev) { startResize('leaderboard', ev); };
+      $scope.startHudResize         = function (ev) { startResize('hud', ev); };
 
-      $scope.resetLeaderboardSize = function () {
-        $scope.lbWidth = null;
-        $scope.lbHeight = null;
-        savePref('width', null);
-        savePref('height', null);
-      };
+      function resetSize(name) {
+        panelSize[name].w = null;
+        panelSize[name].h = null;
+        savePref(PANELS[name].wKey, null);
+        savePref(PANELS[name].hKey, null);
+      }
+      $scope.resetLeaderboardSize = function () { resetSize('leaderboard'); };
+      $scope.resetHudSize         = function () { resetSize('hud'); };
+
+      // The HUD app slot broadcasts this whenever the layout editor resizes
+      // our window. A size stored from a bigger window would now hang past the
+      // clip edge, leaving the grip stranded out of reach, so pull it back in.
+      function clampStored(name, maxW, maxH) {
+        var size = panelSize[name], panel = PANELS[name];
+        if (size.w && maxW > 0 && size.w > maxW) {
+          size.w = Math.max(panel.minW, Math.round(maxW));
+          savePref(panel.wKey, size.w);
+        }
+        if (size.h && maxH > 0 && size.h > maxH) {
+          size.h = Math.max(panel.minH, Math.round(maxH));
+          savePref(panel.hKey, size.h);
+        }
+      }
+      $scope.$on('app:resized', function (ev, size) {
+        if (!size) { return; }
+        clampStored('hud', size.width, size.height);
+        clampStored('leaderboard', size.width, size.height);
+      });
 
       $scope.$on('$destroy', function () {
         document.removeEventListener('mousemove', onResizeMove);

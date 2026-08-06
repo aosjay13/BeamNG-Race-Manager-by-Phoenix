@@ -1,4 +1,15 @@
-<div class="rm-root" ng-class="{'rm-minimal': minimalMode(), 'rm-admin': isAdmin}">
+<div class="rm-root" ng-class="{'rm-minimal': minimalMode(), 'rm-admin': isAdmin}"
+     ng-style="!minimalMode() && hudStyle()">
+  <!-- NOTHING may sit outside this root div — not even a comment. The directive
+       is `replace: true`, and the Angular 1.5.8 the game ships counts a sibling
+       comment node as a second root, so the whole template dies with
+       $compile:tplrt ("must have exactly one root element") and the app never
+       renders. Angular 1.6+ strips comments there first, so a newer Angular
+       will NOT reproduce it — keep every note inside the div, like this one.
+
+       Outside minimal mode this root is the panel that gets sized and faded; in
+       minimal mode the leaderboard is the HUD and carries those styles itself
+       (see .rm-table-wrap below), so the root stays out of the way. -->
   <!-- ================= Header (hidden in minimal driver mode) ============= -->
   <div class="rm-header" ng-if="!minimalMode()">
     <span class="rm-title">RACE MANAGER</span>
@@ -39,6 +50,15 @@
     <button class="rm-btn rm-btn-tab" ng-if="isAdmin" ng-click="logout()" title="Log out and return to spectator view">Log out</button>
     <!-- Spectators: a way back to the login screen at any time -->
     <button class="rm-btn rm-btn-tab rm-btn-login-tab" ng-if="!isAdmin && !showLogin" ng-click="openLogin()" title="Log in as an admin">🔒 Login</button>
+    <!-- Panel ergonomics, same pair the driver bar carries in minimal mode:
+         fade the HUD out of the way and undo a corner drag. The header renders
+         in every non-minimal view, so these are reachable from any tab, for
+         admins and for drivers between sessions alike. -->
+    <label class="rm-driverbar-op rm-hud-op" title="HUD background opacity">
+      <span>◑</span>
+      <input type="range" min="0" max="1" step="0.05" ng-model="lbUi.opacity" ng-change="applyOpacity()">
+    </label>
+    <button class="rm-btn rm-btn-mini" ng-click="resetHudSize()" title="Reset the HUD size">⤢</button>
   </div>
 
   <!-- ================= Admin login (dismissable — spectators bypass it) ==== -->
@@ -832,9 +852,22 @@
          title="Drag to resize the leaderboard"></div>
   </div>
 
+  <!-- ================= HUD resize grip =================================== -->
+  <!-- The whole-panel counterpart of the leaderboard grip: last child of the
+       root so it paints over whichever table is showing. In minimal mode the
+       leaderboard carries its own grip instead, so this one steps aside. -->
+  <div class="rm-lb-grip rm-hud-grip" ng-if="!minimalMode()"
+       ng-mousedown="startHudResize($event)"
+       title="Drag to resize the Race Manager panel"></div>
+
 <style>
   .rm-root {
     height: 100%;
+    /* The resize grip measures the border box (getBoundingClientRect) and
+       writes the result back as width/height, so those two have to mean the
+       same thing — otherwise every drag adds the border width and the panel
+       creeps past the edge of the HUD app window that clips it. */
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     position: relative;
@@ -854,6 +887,11 @@
     padding: 6px 10px;
     background: rgba(255, 102, 0, 0.15);
     border-bottom: 1px solid rgba(255, 102, 0, 0.5);
+    /* The row carries badges, tab shortcuts and the HUD size/fade controls;
+       once the panel is dragged narrow they wrap instead of pushing the last
+       ones out of reach past the edge. */
+    flex-wrap: wrap;
+    row-gap: 4px;
   }
   .rm-title { font-weight: 700; letter-spacing: 1px; color: #ff6600; }
   .rm-clock { font-variant-numeric: tabular-nums; color: #e8eaed; }
@@ -1326,7 +1364,10 @@
     border-bottom: 1px solid rgba(255, 255, 255, 0.15);
     position: sticky;
     top: 0;
-    background: rgba(15, 17, 22, 0.95);
+    /* Follows the HUD opacity slider (the controller writes --rm-panel-bg onto
+       the root). A fixed near-opaque fill here would stay as a solid strip
+       across an otherwise faded-out panel. */
+    background: var(--rm-panel-bg, rgba(15, 17, 22, 0.95));
   }
   .rm-table td {
     padding: 4px 8px;
@@ -1530,6 +1571,9 @@
     position: relative;
     max-width: 100%;
     overflow: auto;
+    /* Same reason as .rm-root: the 1px border below must be inside the width
+       the grip stores, not added on top of it. */
+    box-sizing: border-box;
     border: 1px solid rgba(255, 255, 255, 0.18);
     border-radius: 4px;
     /* Native corner grip as well as the JS one, for mouse-driven resizing in
@@ -1553,7 +1597,13 @@
         rgba(255, 255, 255, 0.5) 80%, transparent 80%);
     z-index: 3;
   }
-  /* The one strip of chrome a driver keeps: opacity, size reset, login. */
+  /* Same grip on the app root, for every view that is not minimal mode. The
+     root is position:relative already, so it anchors to the panel's own
+     bottom-right corner; it sits above the tab panels rather than a table, so
+     it needs to outrank the dropdown menus that open near it. */
+  .rm-hud-grip { z-index: 60; }
+  /* The one strip of chrome a driver keeps: opacity, size reset, login.
+     .rm-driverbar-op is shared with the header copy of the same control. */
   .rm-driverbar {
     display: flex;
     align-items: center;
@@ -1570,6 +1620,9 @@
   .rm-driverbar-spacer { flex: 1; min-width: 10px; }
   .rm-driverbar-op { display: flex; align-items: center; gap: 4px; }
   .rm-driverbar-op input[type="range"] { width: 70px; accent-color: #ff6600; }
+  /* Header copy: same control, sized to sit among the header badges. */
+  .rm-hud-op { font-size: 10px; color: #bdc1c6; cursor: pointer; }
+  .rm-hud-op input[type="range"] { width: 56px; }
   .rm-driverbar-btn {
     background: transparent;
     border: 1px solid rgba(255, 255, 255, 0.25);
