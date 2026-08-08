@@ -43,6 +43,16 @@ local OWN_PID, RIVAL_PID, THIRD_PID = 1, 2, 3
 local Vec = {}
 Vec.__index = Vec
 Vec.__mul = function (v, s) return setmetatable({ x = v.x * s, y = v.y * s, z = v.z * s }, Vec) end
+Vec.__add = function (a, b) return setmetatable({ x = a.x + b.x, y = a.y + b.y, z = a.z + b.z }, Vec) end
+-- The dimension-based bounds build their axes with a cross product, the way the
+-- engine's vec3 does.
+function Vec:cross(o)
+  return setmetatable({
+    x = self.y * o.z - self.z * o.y,
+    y = self.z * o.x - self.x * o.z,
+    z = self.x * o.y - self.y * o.x,
+  }, Vec)
+end
 local function v3(x, y, z) return setmetatable({ x = x, y = y, z = z }, Vec) end
 
 -- The engine's oriented-bounding-box overlap test. The real one is a full
@@ -77,7 +87,7 @@ local function makeVehicle(id, x, y)
   function v:getID() return self.id end
   function v:getPosition() return { x = self.x, y = self.y, z = self.z } end
   function v:getRotation() return { x = 0, y = 0, z = 0, w = 1 } end
-  function v:getDirectionVector() return { x = 0, y = 1, z = 0 } end
+  function v:getDirectionVector() return v3(0, 1, 0) end
   function v:getVelocity() return { x = 0, y = 0, z = 0 } end
   function v:getJBeamFilename() return 'etk800' end
   function v:setPositionRotation(nx, ny, nz) self.x, self.y, self.z = nx, ny, nz end
@@ -96,6 +106,13 @@ local function makeVehicle(id, x, y)
   -- The axis-aligned world box, which is what BeamNG's own spawn-occupancy test
   -- uses for vehicles that already exist. getExtents returns the FULL size, so
   -- these are the same 2.0 x 4.4 x 1.4 m dimensions as the oriented box above.
+  -- The third measurement source: the car's own dimensions. A vehicle knows how
+  -- big it is even when neither bounding box will say where it is.
+  v.hasDims = true
+  function v:getDirectionVectorUp() return v3(0, 0, 1) end
+  function v:getInitialLength() if not self.hasDims then return nil end return 4.4 end
+  function v:getInitialWidth()  if not self.hasDims then return nil end return 2.0 end
+  function v:getInitialHeight() if not self.hasDims then return nil end return 1.4 end
   function v:getWorldBox()
     if not self.hasWorldBox then return nil end
     return {
@@ -342,7 +359,7 @@ check(own.ghosted == false, 'baseline: clear space, ghost released')
 -- inside us, whatever shape we are.
 clearLog()
 driverReset(0, 0)
-own.hasBounds, own.hasWorldBox = false, false
+own.hasBounds, own.hasWorldBox, own.hasDims = false, false, false
 -- A little longer than the others: a car that reports no box waits out the
 -- settle cap before its timer even starts.
 frames(8.0)
@@ -360,7 +377,7 @@ check(own.ghosted == true,
 rival.x, rival.y = 500, 0
 frames(0.3)
 check(own.ghosted == false, 'and is released once that car is clear of it')
-own.hasBounds, own.hasWorldBox = true, true
+own.hasBounds, own.hasWorldBox, own.hasDims = true, true, true
 
 -- A rival that cannot be measured is judged on DISTANCE instead. Treating every
 -- measurement failure as an overlap is what left drivers ghosted for a whole
@@ -370,7 +387,8 @@ own.hasBounds, own.hasWorldBox = true, true
 clearLog()
 driverReset(0, 0)
 rival.x, rival.y = 500, 0
-rival.hasBounds, rival.hasWorldBox = false, false   -- a RIVAL cannot be measured
+-- A rival that no source can size up at all.
+rival.hasBounds, rival.hasWorldBox, rival.hasDims = false, false, false
 frames(6.0)
 check(own.ghosted == false,
   'an unmeasurable car far away does not block the ghost')
@@ -385,7 +403,7 @@ check(own.ghosted == true,
 rival.x = 500
 frames(0.3)
 check(own.ghosted == false, 'and once it moves away, the space is clear')
-rival.hasBounds, rival.hasWorldBox = true, true
+rival.hasBounds, rival.hasWorldBox, rival.hasDims = true, true, true
 own.y = 0
 
 -- ===========================================================================
@@ -414,6 +432,35 @@ rival.x, rival.y = 500, 0
 frames(0.3)
 check(own.ghosted == false, 'and released when that car leaves')
 own.hasBounds = true
+
+-- ===========================================================================
+-- When neither bounding box answers, the car is still measured properly
+-- ===========================================================================
+-- This is the difference between a ghost that ends and one that lasts a race.
+-- Below the bounding boxes there is only a flat radius wide enough to contain
+-- the largest vehicle pair -- and in a full field somebody is nearly always
+-- inside that, so a ghost that fell through to it would hold for most of the
+-- race. The car's own dimensions keep the answer the size of a car.
+clearLog()
+own.hasBounds, own.hasWorldBox = false, false      -- no boxes, dimensions only
+rival.hasBounds, rival.hasWorldBox = false, false
+rival.x, rival.y = 4.0, 0                          -- clear of us, but well inside
+driverReset(0, 0)                                  -- any blunt radius
+frames(8.0)
+check(own.ghosted == false,
+  'a car four metres away does not block a ghost when dimensions can be read')
+
+-- ...and a car genuinely overlapping still does.
+clearLog()
+rival.x, rival.y = 0, 2.0
+driverReset(0, 0)
+frames(8.0)
+check(own.ghosted == true, 'a car actually overlapping still blocks it')
+rival.x, rival.y = 500, 0
+frames(0.3)
+check(own.ghosted == false, 'and releases when it moves off')
+own.hasBounds, own.hasWorldBox = true, true
+rival.hasBounds, rival.hasWorldBox = true, true
 
 -- ===========================================================================
 -- A repeat reset restarts the timer, and does not stack

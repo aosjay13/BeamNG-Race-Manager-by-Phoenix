@@ -513,7 +513,9 @@ crossways through another is caught — and collisions come back only on a frame
 that is provably clear.
 
 Uncertainty counts as occupied, but it is always a question that can be asked
-again rather than a permanent verdict: a car that cannot be measured precisely is
+again rather than a permanent verdict. The space around a car is measured three
+ways in order — its oriented bounding box, its axis-aligned world box, then its
+own dimensions — so a car is nearly always measured at its true size: a car that cannot be measured precisely is
 judged on distance, and one that is far away is not treated as being inside you.
 The end of a session clears every ghost regardless — nothing stays intangible
 past the flag.
