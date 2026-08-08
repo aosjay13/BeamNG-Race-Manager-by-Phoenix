@@ -14,9 +14,9 @@ it build the starting grid, and the server writes a results file at the flag.
 
 > **This page is the short version.** Every feature in full detail is in
 > **[docs/REFERENCE.md](docs/REFERENCE.md)**. See also
-> [Architecture](docs/ARCHITECTURE.md) (how it's built) and
+> [Architecture](docs/ARCHITECTURE.md) (how it's built),
 > [Game version compatibility](docs/COMPATIBILITY.md) (what each BeamNG and
-> BeamMP release changed).
+> BeamMP release changed) and the [Changelog](CHANGELOG.md).
 
 ## Install
 
@@ -123,6 +123,7 @@ would expect without touching any of it.
 | Feature | What it gives you |
 |---|---|
 | **[Vehicle reset limits](docs/REFERENCE.md#vehicle-reset-limits)** | Cap resets per driver per session. Once the allowance is gone the reset key genuinely stops working. Optionally respawn at the last checkpoint instead of in place. |
+| **[Reset ghosting](docs/REFERENCE.md#reset-ghosting)** | A driver who resets is intangible for a few seconds instead of reappearing solid in the racing line. Collisions come back only once the space around them is provably clear — never while another car is inside them. |
 | **[Rallycross joker laps](docs/REFERENCE.md#rallycross-joker-laps)** | A second gate route that must be taken exactly once per race. Lap 1 is closed, and the server disqualifies anyone who missed it or took it twice. |
 | **[Garage List](docs/REFERENCE.md#vehicle--setup-locking-the-garage-list)** | Lock the session to exact cars *and* exact tunes. Anything not on the list gets deleted and the driver is told why. |
 | **[Display names](docs/REFERENCE.md#display-names)** | Give `Guest_4471` a readable name for the leaderboard and the results file. |

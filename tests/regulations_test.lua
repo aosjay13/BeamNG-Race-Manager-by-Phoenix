@@ -214,11 +214,11 @@ local text, path = readResults()
 check(text ~= nil, 'joker race wrote a results file')
 if text then
   local raceSec = text:sub(text:find('--- RACE RESULTS ---', 1, true) or 1)
-  check(raceSec:match('P1%s+Alice') and raceSec:find('RACE WINNER', 1, true),
+  check(raceSec:match('P1%s+%S+%s+Alice') and raceSec:find('RACE WINNER', 1, true),
     'Alice is the race winner in the results file')
-  check(raceSec:match('DSQ%s+Cara%s[^\n]*Disqualified %- Missed Joker'),
+  check(raceSec:match('DSQ%s+%S+%s+Cara%s[^\n]*Disqualified %- Missed Joker'),
     'results .txt records "Disqualified - Missed Joker" for Cara')
-  check(raceSec:match('DSQ%s+Bob%s[^\n]*Disqualified %- Extra Joker'),
+  check(raceSec:match('DSQ%s+%S+%s+Bob%s[^\n]*Disqualified %- Extra Joker'),
     'results .txt records the double-joker disqualification for Bob')
   check(text:find('joker lap required exactly once', 1, true),
     'results header states the joker regulation')

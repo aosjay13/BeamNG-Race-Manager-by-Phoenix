@@ -337,10 +337,12 @@ local qualiSec = content:sub(qPos or 1, rPos or -1)
 local raceSec  = content:sub(rPos or 1)
 check(qualiSec:match('P1%s+Cara') and qualiSec:find('POLE POSITION', 1, true),
   'Cara on pole in qualifying section')
-check(raceSec:match('P1%s+Bob') and raceSec:find('RACE WINNER', 1, true),
+-- Pos, then Start, then Driver: the race table carries the grid slot each
+-- driver started from, which is what makes a finishing position mean anything.
+check(raceSec:match('P1%s+%S+%s+Bob') and raceSec:find('RACE WINNER', 1, true),
   'Bob is the race winner in race section')
 check(not raceSec:match('P%d+%s+Cara%s[^\n]*WINNER'), 'pole sitter is not tagged winner')
-check(raceSec:match('DNF%s+Alice'), 'Alice listed as DNF')
+check(raceSec:match('DNF%s+%S+%s+Alice'), 'Alice listed as DNF')
 check(raceSec:find('1:31.500', 1, true), "Bob's best race lap formatted in race section")
 check(qualiSec:find('1:30.000', 1, true), "Cara's quali best formatted in quali section")
 
@@ -520,6 +522,201 @@ check(ghostPath1 and ghostPath2 and ghostPath1 ~= ghostPath2,
   'same-second sessions write distinct results files')
 check(fileExists(ghostPath1) and fileExists(ghostPath2),
   'both results files exist on disk')
+
+-- ===========================================================================
+-- Fastest lap of the session
+-- ===========================================================================
+-- One driver's time is painted gold on every leaderboard, so the server has to
+-- own "who is fastest" rather than each client deciding for itself. It is kept
+-- incrementally as laps are scored -- a lap arrives a few times a minute, a
+-- broadcast goes out three times a second, so scanning the field per broadcast
+-- would be the wrong way round.
+RM_onLogin(1, '{"password":"phoenix"}')
+RM_onResetLeaderboard(1)
+for id in pairs(connected) do RM_onPlayerJoin(id) end
+RM_onJoinRace(1, '{"join":true}')
+RM_onJoinRace(2, '{"join":true}')
+-- A long race, so nobody takes the flag part-way through this and stops being
+-- eligible to score laps.
+RM_onSetTotalLaps(1, '{"laps":10}')
+RM_onGenerateGrid(1)
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+
+RM_onRequestState(1)
+check(lastState.bestLapPid == nil, 'no fastest lap before anyone has set one')
+
+RM_onLap(1, '{"lapTime":95.5}')
+check(lastState.bestLapPid == 1, 'the first lap set is the fastest lap')
+check(math.abs(lastState.bestLapTime - 95.5) < 1e-6, 'and its time is broadcast')
+
+RM_onLap(2, '{"lapTime":97.0}')
+check(lastState.bestLapPid == 1, 'a slower lap does not take the fastest lap')
+
+RM_onLap(2, '{"lapTime":94.25}')
+check(lastState.bestLapPid == 2, 'a quicker lap takes it')
+check(math.abs(lastState.bestLapTime - 94.25) < 1e-6, 'and the time follows')
+
+-- It belongs to the SESSION: a new one starts with nobody holding it, or the
+-- gold would be sitting on a time set in a race that is over.
+RM_onEndRace(1)
+RM_onResetLeaderboard(1)
+RM_onRequestState(1)
+check(lastState.bestLapPid == nil, 'a new session starts with no fastest lap')
+connected[3] = 'Cara'
+
+-- ===========================================================================
+-- Results file: the Start column and the Hard Charger
+-- ===========================================================================
+-- Where a driver STARTED is half of what makes a result readable -- "P2" means
+-- nothing without knowing they qualified eighth -- and the Hard Charger is the
+-- driver who gained the most places between the two.
+RM_onLogin(1, '{"password":"phoenix"}')
+RM_onResetLeaderboard(1)
+connected[3] = 'Cara'
+for id in pairs(connected) do RM_onPlayerJoin(id) end
+for id in pairs(connected) do RM_onJoinRace(id, '{"join":true}') end
+RM_onSetTotalLaps(1, '{"laps":1}')
+-- A known grid: Alice pole, Bob second, Cara third.
+RM_onSetGridMode(1, '{"mode":"custom"}')
+RM_onSetDriverGrid(1, '{"pid":1,"slot":1}')
+RM_onSetDriverGrid(1, '{"pid":2,"slot":2}')
+RM_onSetDriverGrid(1, '{"pid":3,"slot":3}')
+RM_onGenerateGrid(1)
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+
+-- Cara wins from P3, Alice second from pole, Bob third from P2.
+lastChat = nil
+RM_onLap(3, '{"lapTime":90.0}')
+RM_onLap(1, '{"lapTime":91.0}')
+RM_onLap(2, '{"lapTime":92.0}')
+
+local hcPath = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
+local hcFile = hcPath and io.open(hcPath, 'r')
+local hcText = hcFile and hcFile:read('*a') or ''
+if hcFile then hcFile:close() end
+
+check(hcText:find('Start', 1, true) ~= nil, 'the results table has a Start column')
+-- Cara started P3 and won, so her row carries both.
+local caraRow = nil
+for line in hcText:gmatch('[^\n]+') do
+  if line:find('Cara', 1, true) and line:find('^P1%s') then caraRow = line end
+end
+check(caraRow ~= nil, 'the winning row is present')
+check(caraRow and caraRow:find('P3', 1, true) ~= nil,
+  'and records the grid slot she started from')
+
+check(hcText:find('HARD CHARGER', 1, true) ~= nil, 'the results name a Hard Charger')
+local hcLine = nil
+for line in hcText:gmatch('[^\n]+') do
+  if line:find('HARD CHARGER', 1, true) then hcLine = line end
+end
+check(hcLine and hcLine:find('Cara', 1, true) ~= nil,
+  'the Hard Charger is the driver who gained the most places')
+check(hcLine and hcLine:find('+2', 1, true) ~= nil, 'and the gain is stated')
+
+-- A tie on places gained goes to the driver who finished higher. Bob and Dan
+-- both gain two places; Bob finishes first and Dan second, so it is Bob's.
+RM_onResetLeaderboard(1)
+connected[4] = 'Dan'
+for id in pairs(connected) do RM_onPlayerJoin(id) end
+for id in pairs(connected) do RM_onJoinRace(id, '{"join":true}') end
+RM_onSetTotalLaps(1, '{"laps":1}')
+RM_onSetGridMode(1, '{"mode":"custom"}')
+-- Custom slots are renumbered to 1..N in the order given, so these ARE the
+-- grid positions the race starts from.
+RM_onSetDriverGrid(1, '{"pid":3,"slot":1}')   -- Cara  P1
+RM_onSetDriverGrid(1, '{"pid":1,"slot":2}')   -- Alice P2
+RM_onSetDriverGrid(1, '{"pid":2,"slot":3}')   -- Bob   P3
+RM_onSetDriverGrid(1, '{"pid":4,"slot":4}')   -- Dan   P4
+RM_onGenerateGrid(1)
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+lastChat = nil
+-- Finishing order, spaced on the server clock so it is unambiguous.
+RM_onLap(2, '{"lapTime":90.0}'); RM_Tick()    -- Bob   P3 -> P1  (+2)
+RM_onLap(4, '{"lapTime":91.0}'); RM_Tick()    -- Dan   P4 -> P2  (+2)
+RM_onLap(3, '{"lapTime":92.0}'); RM_Tick()    -- Cara  P1 -> P3
+RM_onLap(1, '{"lapTime":93.0}')               -- Alice P2 -> P4
+
+local tiePath = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
+local tieFile = tiePath and io.open(tiePath, 'r')
+local tieText = tieFile and tieFile:read('*a') or ''
+if tieFile then tieFile:close() end
+local tieLine = nil
+for line in tieText:gmatch('[^\n]+') do
+  if line:find('HARD CHARGER', 1, true) then tieLine = line end
+end
+check(tieLine and tieLine:find('Bob', 1, true) ~= nil,
+  'a tie on places gained goes to the higher finisher')
+check(tieLine and tieLine:find('Dan', 1, true) == nil,
+  'and not to the driver who gained the same but finished lower')
+
+-- ===========================================================================
+-- Half-way leader
+-- ===========================================================================
+-- Who led at half distance, rounded UP on an odd number of laps: a 5-lap race
+-- is decided at lap 3, the same as a 6-lap one.
+RM_onResetLeaderboard(1)
+for id in pairs(connected) do RM_onPlayerJoin(id) end
+for id in pairs(connected) do RM_onJoinRace(id, '{"join":true}') end
+RM_onSetTotalLaps(1, '{"laps":5}')
+RM_onGenerateGrid(1)
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+lastChat = nil
+-- Alice leads laps 1 and 2, Cara takes the lead on lap 3 (half way) and keeps
+-- it. The half-way leader must be Cara, not the eventual winner by default and
+-- not whoever led the first lap.
+-- Every entrant has to complete every lap or the race never ends: Dan is still
+-- on the entry list from the tie case above.
+for _ = 1, 2 do
+  RM_onLap(1, '{"lapTime":90.0}'); RM_Tick()
+  RM_onLap(3, '{"lapTime":91.0}'); RM_Tick()
+  RM_onLap(2, '{"lapTime":92.0}'); RM_Tick()
+  RM_onLap(4, '{"lapTime":93.0}'); RM_Tick()
+end
+for _ = 3, 5 do
+  RM_onLap(3, '{"lapTime":89.0}'); RM_Tick()
+  RM_onLap(1, '{"lapTime":90.0}'); RM_Tick()
+  RM_onLap(2, '{"lapTime":92.0}'); RM_Tick()
+  RM_onLap(4, '{"lapTime":93.0}'); RM_Tick()
+end
+
+local hwPath = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
+local hwFile = hwPath and io.open(hwPath, 'r')
+local hwText = hwFile and hwFile:read('*a') or ''
+if hwFile then hwFile:close() end
+local hwLine = nil
+for line in hwText:gmatch('[^\n]+') do
+  if line:find('HALF-WAY LEADER', 1, true) then hwLine = line end
+end
+check(hwLine ~= nil, 'the results name a half-way leader')
+check(hwLine and hwLine:find('Cara', 1, true) ~= nil,
+  'the half-way leader is whoever led the half-way lap')
+check(hwLine and hwLine:find('lap 3 of 5', 1, true) ~= nil,
+  'a 5-lap race rounds half distance up to lap 3')
+
+-- A one-lap race has no half way -- lap 1 is the flag.
+RM_onResetLeaderboard(1)
+for id in pairs(connected) do RM_onPlayerJoin(id) end
+for id in pairs(connected) do RM_onJoinRace(id, '{"join":true}') end
+RM_onSetTotalLaps(1, '{"laps":1}')
+RM_onGenerateGrid(1)
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+lastChat = nil
+RM_onLap(1, '{"lapTime":90.0}'); RM_Tick()
+RM_onLap(2, '{"lapTime":91.0}'); RM_Tick()
+RM_onLap(3, '{"lapTime":92.0}'); RM_Tick()
+RM_onLap(4, '{"lapTime":93.0}')
+local shortPath = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
+local shortFile = shortPath and io.open(shortPath, 'r')
+local shortText = shortFile and shortFile:read('*a') or ''
+if shortFile then shortFile:close() end
+check(shortText ~= '' and shortText:find('HALF-WAY LEADER', 1, true) == nil,
+  'a one-lap race reports no half-way leader')
 
 -- adminPresent flips false only once every admin has logged out (so non-admin
 -- clients know they can bypass the login and just spectate).

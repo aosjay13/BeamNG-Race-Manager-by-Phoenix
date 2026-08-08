@@ -32,6 +32,35 @@ local MAX_TOTAL_LAPS     = 500
 -- the default), 0 forbids resets outright, N allows N per session.
 local UNLIMITED_RESETS   = -1
 local MAX_RESET_LIMIT    = 99
+-- Reset ghosting. A driver who resets mid-session is intangible to other cars
+-- for a moment, so the car they materialise on top of is not hit by them and
+-- they are not hit by anyone.
+--
+-- These live here rather than on the client because they are a LEAGUE rule: a
+-- client running a five-second ghost against a field running eight is a field
+-- where two cars disagree about whether they can touch. They are broadcast with
+-- the rest of the regulations and mirrored by every client.
+--
+-- The maximum caps the BASE TIMER only. It is not a cap on the ghost: a car that
+-- is still sitting inside another when the timer runs out stays ghosted for as
+-- long as that remains true, with no limit and no override. See the occupancy
+-- check on the client, which is the only place that can see where cars are.
+-- Grid hold. The server cannot freeze a car -- it has no physics -- but it owns
+-- the hold, so it judges whether each held car is where it was put and pulls
+-- back the ones that are not. The tolerance is generous enough to absorb the
+-- settling of a car dropped onto a slot and tight enough that creeping forward
+-- to steal a start is caught immediately.
+-- Forward declaration. The checkpoint/start-position validator lives with the
+-- layout store far below, but the grid-hold code above it needs the same
+-- validation applied to the coordinates a client reports -- and a second,
+-- nearly-identical sanitizer sitting up here would be one more thing to keep in
+-- step with the first.
+local sanitizeCheckpoints
+local HOLD_TOLERANCE     = 0.5   -- metres a held car may be off its slot
+local HOLD_CORRECT_EVERY = 0.5   -- seconds between corrections for one driver
+local GHOST_ON_RESET     = true
+local GHOST_MIN_SECONDS  = 5.0
+local GHOST_MAX_SECONDS  = 15.0
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -60,6 +89,11 @@ local race = {
   --   custom -- the order the admin set by hand (RM_SetDriverGrid)
   gridMode     = 'quali',
   startSlots   = 0,          -- start positions the loaded track layout has
+  -- WHERE those start positions are: { x, y, z, hx, hy } per slot, slot 1 first.
+  -- Reported by a client when a track is loaded or edited, and set directly when
+  -- a saved layout is loaded. The count above is enough to warn that a field is
+  -- bigger than its grid; policing the hold needs the coordinates.
+  startPositions = {},
   -- Qualifying session rules.
   ghostQuali     = false,    -- rivals are ghosts during qualifying
   qualiLapLimit  = 0,        -- timed laps allowed per driver (0 = unlimited)
@@ -83,11 +117,26 @@ local race = {
   -- a sub-state of the running phase rather than a phase of its own -- drivers
   -- must stay controllable and on track, which is exactly what the running phase
   -- already gives them.
+  -- Fastest lap of the session so far, and who set it. Kept incrementally as
+  -- laps are scored rather than derived by scanning the field on every
+  -- broadcast: a lap arrives a handful of times a minute, a broadcast goes out
+  -- three times a second.
+  bestLapTime    = nil,
+  bestLapPid     = nil,
   finalLap       = false,
   finalLapLeft   = 0,        -- seconds of grace left before the stragglers are
                              -- taken where they stand (see FINAL_LAP_GRACE)
 }
 local players = {}          -- [playerID] = per-player record
+-- Authoritative reset-ghost state: [playerID] = { startedAt, duration }, both on
+-- race.time. Held here and not only on the clients that happened to be listening
+-- so that a driver joining or reconnecting DURING a ghost is told about it --
+-- otherwise their client shows a solid car that everyone else is passing
+-- through, and they are the one person who can drive into it.
+--
+-- A table keyed by player and not a flag: simultaneous ghosts are independent,
+-- and one ending must never end another.
+local ghosts = {}
 local tickCounter = 0
 local countdownValue = nil  -- current countdown number while phase == 'countdown'
 local lapFirsts = {}        -- [lapNumber] = pid of the first driver to complete that lap
@@ -146,6 +195,9 @@ local function newRecord(pid)
     finishTime = nil,        -- server race clock at final-lap completion
     resets     = 0,          -- vehicle resets consumed this session
     resetsBlocked = 0,       -- resets refused after the allowance ran out
+    ghosts     = 0,          -- reset ghosts armed this session (audit trail)
+    holdCorrections = 0,     -- times this car was pulled back onto its grid slot
+    holdCorrectedAt = nil,   -- race.time of the last correction (rate limiting)
     jokerTaken = 0,          -- completed runs of the joker route this race
     jokerLap   = nil,        -- lap the joker route was taken on
     outReason  = nil,        -- why this driver is dnf/dsq (results + UI text)
@@ -515,7 +567,66 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.4.0'
+local RM_BUILD = '0.5.0'
+
+-- The live ghost roster as the wire carries it. Absolute END times on race.time
+-- rather than "seconds left", so a client that receives this late works out a
+-- SHORTER remainder instead of a longer one, and two clients on different pings
+-- still agree on the instant the fade completes.
+local function ghostRoster()
+  local list = {}
+  for pid, g in pairs(ghosts) do
+    list[#list + 1] = { pid = pid, endsAt = g.startedAt + g.duration }
+  end
+  return list
+end
+
+-- The client applies its own ghost the instant the reset fires and tells the
+-- server afterwards. That order is deliberate and is not negotiable: the frame
+-- the car lands on somebody is the frame it must already be intangible, and a
+-- round trip here takes longer than that. So none of this is permission -- it is
+-- the record, and the relay that gets every OTHER client ghosting the same car.
+--
+-- What the server adds is the part no client can do: one clock, one copy of the
+-- truth for late joiners, and a log of every ghost.
+local function broadcastGhost(pid, g)
+  MP.TriggerClientEvent(-1, 'RM_Ghost', Util.JsonEncode({
+    pid       = pid,
+    active    = g ~= nil,
+    startedAt = g and g.startedAt or nil,
+    duration  = g and g.duration or nil,
+  }))
+end
+
+-- Drop one player's ghost and tell everyone. Safe to call for a player who has
+-- none, which is what makes it usable from every teardown path without each of
+-- them having to check first.
+local function clearGhost(pid, reason)
+  if not ghosts[pid] then return false end
+  local held = race.time - ghosts[pid].startedAt
+  ghosts[pid] = nil
+  broadcastGhost(pid, nil)
+  local rec = players[pid]
+  print(string.format('[RaceManager] %s: ghost ended after %.1fs (%s)',
+    rec and rec.name or ('pid ' .. tostring(pid)), held, reason or 'clear'))
+  return true
+end
+
+-- Every ghost dropped at once: a session ending, a grid forming, a leaderboard
+-- reset. Nothing stays ghosted across a session boundary -- the next session
+-- starts with everybody solid.
+local function clearAllGhosts(reason)
+  local any = false
+  for pid in pairs(ghosts) do
+    ghosts[pid] = nil
+    broadcastGhost(pid, nil)
+    any = true
+  end
+  if any then
+    print('[RaceManager] All reset ghosts cleared (' .. tostring(reason or 'session change') .. ')')
+  end
+  return any
+end
 
 local function broadcastState(targetPid)
   local garageInfo = garageSnapshot and garageSnapshot() or {}
@@ -547,6 +658,18 @@ local function broadcastState(targetPid)
     entrants     = entrantCount(),
     gridMode     = race.gridMode,
     startSlots   = race.startSlots,
+    -- Fastest lap of the session: whose row the leaderboard paints gold, and
+    -- how quick it was. One driver id on a payload that already goes out.
+    bestLapPid   = race.bestLapPid,
+    bestLapTime  = race.bestLapTime,
+    -- Reset ghosting: the rules every client must run, and who is a ghost right
+    -- now. The roster rides on the state broadcast for the same reason finalLap
+    -- does -- it is what a client that joined mid-ghost needs, and a one-shot
+    -- event it was not connected for can never give it.
+    ghostOnReset = GHOST_ON_RESET,
+    ghostMinSec  = GHOST_MIN_SECONDS,
+    ghostMaxSec  = GHOST_MAX_SECONDS,
+    ghosts       = ghostRoster(),
     -- Qualifying rules and clock.
     ghostQuali     = race.ghostQuali,
     qualiLapLimit  = race.qualiLapLimit,
@@ -833,8 +956,11 @@ local function buildResultsText()
   -- so a plain race exports exactly the same table it always did.
   local jokerCol  = race.jokerEnabled and string.format(' %-7s', 'Joker') or ''
   local resetCol  = race.maxResets >= 0 and string.format(' %-6s', 'Resets') or ''
-  add(string.format('%-5s %-22s %-10s %-9s %s%s%s',
-    'Pos', 'Driver', 'Best Lap', 'Laps Led', 'Finish', jokerCol, resetCol))
+  add(string.format('%-5s %-6s %-22s %-10s %-9s %s%s%s',
+    'Pos', 'Start', 'Driver', 'Best Lap', 'Laps Led', 'Finish', jokerCol, resetCol))
+  -- Hard Charger: most places gained from the grid slot to the finish. Worked
+  -- out in the same pass that writes the rows, so the table is walked once.
+  local hcRec, hcGain, hcPos = nil, nil, nil
   for i, rec in ipairs(final) do
     local excluded   = rec.status == 'dsq'
     local classified = rec.finishTime ~= nil and not excluded
@@ -847,6 +973,19 @@ local function buildResultsText()
       pos, finish = 'DNF', rec.outReason or 'DNF'
     end
     local tag = (i == 1 and classified) and '  << RACE WINNER' or ''
+    -- Only a classified finisher can have gained places: a driver who did not
+    -- finish has no finishing position to have gained them to. A gain of zero or
+    -- less is not a charge, so the line is omitted entirely rather than awarded
+    -- to whoever went backwards least.
+    local start = rec.gridPos
+    if classified and start then
+      local gain = start - i
+      -- Ties go to the higher finisher, which is `i` ascending -- so a later
+      -- driver has to beat the gain outright to take it.
+      if gain > 0 and (hcGain == nil or gain > hcGain) then
+        hcRec, hcGain, hcPos = rec, gain, i
+      end
+    end
     local jokerVal = race.jokerEnabled
       and string.format(' %-7s', (rec.jokerTaken or 0) == 0 and 'missed'
         or ('lap ' .. tostring(rec.jokerLap or '?'))) or ''
@@ -856,11 +995,39 @@ local function buildResultsText()
     local resetVal = race.maxResets >= 0
       and string.format(' %-6s', string.format('%d/%d%s', rec.resets or 0, race.maxResets,
         (rec.resetsBlocked or 0) > 0 and ('+' .. rec.resetsBlocked) or '')) or ''
-    add(string.format('%-5s %-22s %-10s %-9d %-10s%s%s%s%s',
-      pos, displayName(rec), fmtLap(rec.raceBest), rec.lapsLed or 0, finish,
+    add(string.format('%-5s %-6s %-22s %-10s %-9d %-10s%s%s%s%s',
+      pos, rec.gridPos and ('P' .. rec.gridPos) or '-',
+      displayName(rec), fmtLap(rec.raceBest), rec.lapsLed or 0, finish,
       jokerVal, resetVal, aliasNote(rec), tag))
   end
   if #final == 0 then add('(no drivers)') end
+  -- Half-distance leader: whoever completed the half-way lap first.
+  --
+  -- Half of an odd distance is not a lap, so it rounds UP -- a 5-lap race is
+  -- decided at lap 3, the same as a 6-lap one. That is the lap on which a driver
+  -- has more of the race behind them than in front, which is what "half way"
+  -- means when laps are the only unit available.
+  --
+  -- lapFirsts already records the first driver to complete each lap (it is what
+  -- Laps Led is counted from), so this is a lookup rather than a second pass:
+  -- the leader at half distance is by definition the first to get there.
+  -- A one-lap race has no half way: lap 1 is the flag, and reporting the winner
+  -- a second time under another heading says nothing.
+  local halfLap = math.ceil(race.totalLaps / 2)
+  local halfPid = (race.totalLaps >= 2) and lapFirsts[halfLap] or nil
+  local halfRec = halfPid and players[halfPid] or nil
+  if halfRec or hcRec then add('') end
+  -- Omitted rather than guessed at when nobody reached half distance -- a race
+  -- stopped early has no half-way leader, and the shortest race that can have
+  -- one is two laps (a one-lap race is decided at the flag).
+  if halfRec then
+    add(string.format(' HALF-WAY LEADER: %s  (led at lap %d of %d)',
+      displayName(halfRec), halfLap, race.totalLaps))
+  end
+  if hcRec then
+    add(string.format(' HARD CHARGER: %s  (P%d -> P%d, %+d place%s)',
+      displayName(hcRec), hcRec.gridPos, hcPos, hcGain, hcGain == 1 and '' or 's'))
+  end
   add('')
   return table.concat(lines, '\n') .. '\n'
 end
@@ -963,6 +1130,11 @@ local function retireDriver(rec, reason)
   if not onTrack(rec) then return false end
   rec.status = 'finished'
   rec.finishTime = race.time
+  -- Taking the flag ends the ghost with it. The car is about to be removed and
+  -- the driver put in freecam, so there is nothing left to be intangible -- and
+  -- a ghost left standing against a deleted car would be broadcast to everyone
+  -- for the rest of the session.
+  clearGhost(rec.id, 'driver finished')
   forceSpectate(rec.id, reason, 'race')
   return true
 end
@@ -1036,6 +1208,12 @@ local function finishSession(reason)
   MP.CancelEventTimer('RM_CountdownTick')
   race.finalLap     = false
   race.finalLapLeft = 0
+  -- Before either branch below, and before the respawn either of them runs: the
+  -- session is over, so no reset ghost outlives it. The mass respawn that
+  -- follows has a ghost of its own (the clients' 'placement' reason), which is
+  -- what keeps a field landing through each other safe -- this one has no more
+  -- work to do.
+  clearAllGhosts('session ended: ' .. tostring(reason))
   if isQualiSession() then
     -- Qualifying drops back to waiting rather than 'finished': the next thing
     -- an admin does is Generate Grid, and the times just set are what orders it.
@@ -1094,6 +1272,7 @@ function RM_onStartQualifying(pid)
   MP.CancelEventTimer('RM_CountdownTick')
   players = {}
   lapFirsts = {}
+  race.bestLapTime, race.bestLapPid = nil, nil
   race.time = 0.0
   race.qualiTime = 0.0
   if not formGrid('quali', MP.GetPlayerName(pid) or pid) then return end
@@ -1314,6 +1493,7 @@ formGrid = function (kind, byName)
   race.finalLap     = false
   race.finalLapLeft = 0
   lapFirsts = {}
+  race.bestLapTime, race.bestLapPid = nil, nil
 
   -- Purge ghost records first: drivers kept after disconnecting (DNF/finished,
   -- so the previous results file could list them) must not be re-gridded — a
@@ -1401,6 +1581,10 @@ formGrid = function (kind, byName)
   end
 
   race.phase = 'grid'
+  -- A new grid is a new session. Any ghost still standing from the last one is
+  -- cleared here rather than carried onto the grid, where the cars are about to
+  -- be teleported into position under the placement ghost anyway.
+  clearAllGhosts('grid formed')
   broadcastState()
   if race.startSlots > 0 and #ordered > race.startSlots then
     MP.SendChatMessage(-1, string.format(
@@ -1459,16 +1643,126 @@ function RM_onSetDriverGrid(pid, rawData)
     rec.name, slot, MP.GetPlayerName(pid) or pid))
 end
 
--- A client reported how many start positions the loaded track layout has, so
--- the server can warn when the field is bigger than the grid.
+-- A client reported the start positions of the loaded track layout: how many
+-- there are (so the server can warn when the field is bigger than the grid) and
+-- where they are (so it can police the hold).
+--
+-- The coordinates are only accepted while nothing is under way. A grid the
+-- server is actively judging cars against must not be redefinable by a client
+-- mid-countdown -- that would be a way to move everybody else's idea of where
+-- the slots are, which is precisely the check being defeated.
 function RM_onStartPositionCount(pid, rawData)
   local n = decodeNumber(rawData, 'count')
   if not n then return end
   n = math.floor(n)
   if n < 0 then n = 0 end
+
+  if not sessionUnderWay() and race.phase ~= 'grid'
+     and type(rawData) == 'string' and rawData ~= '' then
+    local ok, data = pcall(Util.JsonDecode, rawData)
+    if ok and type(data) == 'table' then
+      if type(data.positions) == 'table' then
+        race.startPositions = sanitizeCheckpoints(data.positions) or {}
+      elseif n ~= #race.startPositions then
+        -- A count that no longer matches the coordinates we hold, from a report
+        -- that carried none -- an older client, or a build predating the
+        -- coordinate report. The grid has changed and what we have is stale, so
+        -- it is dropped. Policing the hold against a grid whose slots have moved
+        -- would drag cars to the wrong places, which is worse than not policing
+        -- at all; the client-side guard still holds them.
+        race.startPositions = {}
+      end
+    end
+  end
+
   if n == race.startSlots then return end
   race.startSlots = n
   broadcastState()
+end
+
+-- ---------------------------------------------------------------------------
+-- Grid hold enforcement
+-- ---------------------------------------------------------------------------
+-- The server owns the hold. It cannot APPLY one -- it has no physics -- so the
+-- clients freeze their own cars, and this is the half that makes that
+-- trustworthy: every held car reports where it is, and a car that is not where
+-- it was put gets pulled back and the correction gets logged.
+--
+-- This exists because the client-side freeze turned out to have four ways of
+-- being silently lost (a late teleport echo, a driver reset on the grid, a
+-- vehicle reloaded on the grid, and no re-assert of any kind afterwards), and
+-- nothing anywhere noticed. A local guard fixes each of those; this makes the
+-- guarantee hold even when the local guard does not run at all.
+--
+-- Where a slot IS, for a driver who has been assigned one. nil when the track's
+-- grid was never reported -- an admin who built start positions live and never
+-- saved a layout, on a build predating the coordinate report -- in which case
+-- the server keeps out of it and the client-side guard is what enforces the
+-- hold. Better to police nothing than to police against a grid we do not have.
+local function slotPosition(rec)
+  if not rec or not rec.gridPos then return nil end
+  local list = race.startPositions
+  if type(list) ~= 'table' then return nil end
+  -- Only judge against a grid that matches the one the field was gridded on. If
+  -- the slot count and the coordinate count disagree, what we hold describes a
+  -- different track and slot N is not where we think it is.
+  if #list ~= race.startSlots then return nil end
+  return list[rec.gridPos]
+end
+
+-- Is this a moment when cars are meant to be standing still on the grid?
+local function holdInForce()
+  return race.phase == 'grid' or race.phase == 'countdown'
+end
+
+-- A held client reported where its car is. If it is off its slot by more than
+-- the tolerance, pull it back.
+function RM_onHoldPos(pid, rawData)
+  pid = pidKey(pid)
+  if not pid then return end
+  if not holdInForce() then return end
+  local rec = players[pid]
+  if not rec or rec.status ~= 'gridded' then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local x, y, z = tonumber(data.x), tonumber(data.y), tonumber(data.z)
+  if not (x and y and z) then return end
+
+  local slot = slotPosition(rec)
+  if not slot then return end
+
+  -- HORIZONTAL distance. The slot's stored height is where a car is DROPPED,
+  -- and it then falls onto its suspension -- often most of the tolerance on its
+  -- own. Judged in three dimensions, a car standing perfectly still on its slot
+  -- reads as having moved, and the correction that follows drops it again, and
+  -- it settles again: a loop that pins the car in the air being reset. Creeping
+  -- off the line is a move across the ground, so that is what is measured.
+  local dx, dy = x - slot.x, y - slot.y
+  local drift = math.sqrt(dx * dx + dy * dy)
+  if drift <= HOLD_TOLERANCE then
+    rec.holdWarned = nil
+    return
+  end
+
+  -- Corrections are rate-limited per driver on the server clock as well as on
+  -- the client: a car being physically pushed by someone else could otherwise
+  -- generate a correction on every report for as long as the shoving lasts.
+  local now = race.time
+  if rec.holdCorrectedAt and (now - rec.holdCorrectedAt) < HOLD_CORRECT_EVERY then
+    return
+  end
+  rec.holdCorrectedAt = now
+  rec.holdCorrections = (rec.holdCorrections or 0) + 1
+
+  MP.TriggerClientEvent(pid, 'RM_HoldCorrect', Util.JsonEncode({
+    x = slot.x, y = slot.y, z = slot.z, hx = slot.hx, hy = slot.hy,
+    reason = string.format('%.2fm off slot %d', drift, rec.gridPos),
+  }))
+  print(string.format(
+    '[RaceManager] HOLD violation: %s was %.2fm off grid slot %d during %s '
+    .. '(tolerance %.2fm) — pulled back, correction #%d',
+    rec.name, drift, rec.gridPos, race.phase, HOLD_TOLERANCE, rec.holdCorrections))
 end
 
 -- Admin sets or clears a driver's display alias. Admin-only on purpose: with
@@ -1637,6 +1931,81 @@ function RM_onResetDenied(pid)
 end
 
 -- ---------------------------------------------------------------------------
+-- Reset ghosting
+-- ---------------------------------------------------------------------------
+-- A client reset and ghosted itself. The duration it asks for is CLAMPED here,
+-- not trusted: the client computes the same number from the same broadcast
+-- rules, but it is the client, and a modified one asking for a five-minute ghost
+-- would otherwise get one.
+function RM_onGhostStart(pid, rawData)
+  pid = pidKey(pid)
+  if not pid then return end
+  if not GHOST_ON_RESET then return end
+  local rec = players[pid]
+  if not rec then return end
+  if not sessionUnderWay() then return end
+  if not onTrack(rec) and rec.status ~= 'gridded' then return end
+
+  local requested = GHOST_MIN_SECONDS
+  if type(rawData) == 'string' and rawData ~= '' then
+    local ok, data = pcall(Util.JsonDecode, rawData)
+    if ok and type(data) == 'table' and tonumber(data.duration) then
+      requested = tonumber(data.duration)
+    end
+  end
+  if requested < GHOST_MIN_SECONDS then requested = GHOST_MIN_SECONDS end
+  if requested > GHOST_MAX_SECONDS then requested = GHOST_MAX_SECONDS end
+
+  -- A repeat reset restarts the timer rather than stacking a second ghost.
+  local repeated = ghosts[pid] ~= nil
+  ghosts[pid] = { startedAt = race.time, duration = requested }
+  broadcastGhost(pid, ghosts[pid])
+  rec.ghosts = (rec.ghosts or 0) + 1
+  -- The audit line, and the reason "reset to phase through the pack" is
+  -- answerable from a log rather than from an argument in the chat. Where the
+  -- car was comes from the live telemetry the client already reports, so this
+  -- costs no extra traffic: running order, lap, and how far it was from its next
+  -- checkpoint at the moment it went intangible.
+  print(string.format(
+    '[RaceManager] %s GHOSTED %.1fs at race time %.1fs — P%s, lap %s, %s to next gate%s (ghost #%d this session)',
+    rec.name, requested, race.time,
+    tostring(rec.position or '?'), tostring(rec.currentLap or '?'),
+    rec.distNext and string.format('%.0fm', rec.distNext) or 'distance unknown',
+    repeated and ', TIMER RESTARTED' or '', rec.ghosts))
+  broadcastState()
+end
+
+-- The owning client reports the space around its car clear and its collision
+-- restored. Only that client can know this -- it is the one running the
+-- occupancy check -- so the server takes it at its word and relays it.
+function RM_onGhostEnd(pid)
+  pid = pidKey(pid)
+  if not pid then return end
+  if clearGhost(pid, 'client reported clear') then broadcastState() end
+end
+
+-- The client has been waiting on an occupied space for longer than it thinks is
+-- reasonable. A WARNING ONLY: nothing here shortens the ghost or forces it off,
+-- because forcing it off is the one thing that welds two cars together. It is
+-- logged so an admin watching a driver sit inside another car has something to
+-- point at.
+function RM_onGhostBlocked(pid, rawData)
+  pid = pidKey(pid)
+  if not pid then return end
+  local rec = players[pid]
+  if not rec or not ghosts[pid] then return end
+  local seconds = 0
+  if type(rawData) == 'string' and rawData ~= '' then
+    local ok, data = pcall(Util.JsonDecode, rawData)
+    if ok and type(data) == 'table' then seconds = tonumber(data.seconds) or 0 end
+  end
+  print(string.format(
+    '[RaceManager] %s is still ghosted: another car has been occupying its space '
+    .. 'for %.1fs (race time %.1fs). Not forced — restoring collision on '
+    .. 'overlapping cars would weld them together.', rec.name, seconds, race.time))
+end
+
+-- ---------------------------------------------------------------------------
 -- Module 2: rallycross joker lap
 -- ---------------------------------------------------------------------------
 -- Host arms/disarms the joker requirement. The joker route itself is a second
@@ -1703,6 +2072,7 @@ function RM_CountdownTick()
   race.finalLap     = false
   race.finalLapLeft = 0
   lapFirsts = {}
+  race.bestLapTime, race.bestLapPid = nil, nil
   for _, rec in pairs(players) do
     if rec.status == 'gridded' then
       rec.status     = runningStatus()
@@ -1769,6 +2139,7 @@ function RM_onResetLeaderboard(pid)
   broadcastCountdown(-1)
   players = {}
   lapFirsts = {}
+  race.bestLapTime, race.bestLapPid = nil, nil
   race.phase = 'waiting'
   race.sessionKind = 'race'
   race.time = 0.0
@@ -1843,6 +2214,13 @@ function RM_onLap(pid, rawData)
   local lapTime = decodeNumber(rawData, 'lapTime')
   if lapTime and lapTime > 0 then
     if not rec.raceBest or lapTime < rec.raceBest then rec.raceBest = lapTime end
+    -- Fastest lap of the SESSION, across everyone. One comparison per scored
+    -- lap; nothing walks the field for this.
+    if not race.bestLapTime or lapTime < race.bestLapTime then
+      race.bestLapTime = lapTime
+      race.bestLapPid  = rec.id
+      print(string.format('[RaceManager] FASTEST LAP: %s %.3fs', rec.name, lapTime))
+    end
     -- Qualifying scores on the best lap; that is the whole difference between
     -- the two sessions once the lifecycle is shared.
     if quali and (not rec.qualiBest or lapTime < rec.qualiBest) then
@@ -2150,7 +2528,7 @@ end
 -- present, so a gate with no override inherits the layout-wide defaults.
 -- The same shape describes a start position (a placement + a facing), so the
 -- starting grid goes through this too.
-local function sanitizeCheckpoints(raw)
+sanitizeCheckpoints = function (raw)
   if type(raw) ~= 'table' then return nil end
   local out = {}
   for i, cp in ipairs(raw) do
@@ -2301,6 +2679,9 @@ function RM_onLoadLayout(pid, rawData)
       clearTrackState('loading layout "' .. l.name .. '"')
       -- The grid this track was saved with is now the grid the session uses.
       race.startSlots = (type(l.startPositions) == 'table') and #l.startPositions or 0
+      -- The grid the hold is judged against comes from the layout being loaded,
+      -- not from whichever client happens to report next.
+      race.startPositions = (type(l.startPositions) == 'table') and l.startPositions or {}
       print(string.format('[RaceManager] Broadcasting RM_ApplyLayout: "%s", %d checkpoint(s), %d start position(s), width %s',
         l.name, #l.checkpoints, race.startSlots, tostring(l.width)))
       MP.TriggerClientEvent(-1, 'RM_ApplyLayout', Util.JsonEncode(l))
@@ -3584,6 +3965,12 @@ function RM_onPlayerDisconnect(pid)
   -- the next player to inherit this ID starts with no admin rights.
   local wasAdmin = authenticatedPlayers[pid] ~= nil
   authenticatedPlayers[pid] = nil
+  -- Their car is going with them, so the ghost on it has to go too. Unclearing
+  -- this matters more than it looks: session ids are REUSED, so a ghost left
+  -- against a departed player is inherited by the next person to be handed that
+  -- id, who would arrive already intangible and with no way to end it -- the
+  -- client that could run the occupancy check for it has gone.
+  clearGhost(pid, 'player disconnected')
   local rec = players[pid]
   if not rec then
     -- Non-racer admin (e.g. a spectating host) left: still refresh adminPresent.
@@ -3624,6 +4011,7 @@ function onInit()
   MP.RegisterEvent('RM_SetGridMode',        'RM_onSetGridMode')
   MP.RegisterEvent('RM_SetDriverGrid',      'RM_onSetDriverGrid')
   MP.RegisterEvent('RM_StartPositionCount', 'RM_onStartPositionCount')
+  MP.RegisterEvent('RM_HoldPos',            'RM_onHoldPos')
   -- Qualifying session rules
   MP.RegisterEvent('RM_SetGhostQuali',    'RM_onSetGhostQuali')
   MP.RegisterEvent('RM_SetQualiLimits',   'RM_onSetQualiLimits')
@@ -3632,6 +4020,10 @@ function onInit()
   MP.RegisterEvent('RM_SetResetMode',     'RM_onSetResetMode')
   MP.RegisterEvent('RM_VehicleReset',     'RM_onVehicleReset')
   MP.RegisterEvent('RM_ResetDenied',      'RM_onResetDenied')
+  -- Reset ghosting
+  MP.RegisterEvent('RM_GhostStart',       'RM_onGhostStart')
+  MP.RegisterEvent('RM_GhostEnd',         'RM_onGhostEnd')
+  MP.RegisterEvent('RM_GhostBlocked',     'RM_onGhostBlocked')
   -- Module 2: rallycross joker lap
   MP.RegisterEvent('RM_SetJokerEnabled',  'RM_onSetJokerEnabled')
   MP.RegisterEvent('RM_JokerLap',         'RM_onJokerLap')
