@@ -92,7 +92,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.5.0'
+local RM_BUILD = '0.5.1'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -2361,6 +2361,34 @@ function ghost.bounds(veh, margin)
       vec3(0, 0, he.z * 0.5 + margin)
   end)
   if ok and c then return c, x, y, z end
+  -- Last measurement: the car's own dimensions, oriented by where it is facing.
+  -- Every vehicle knows how big it is even when neither bounding box will say
+  -- where it is, and these are physics-side calls that answer for another
+  -- player's car as readily as for ours.
+  --
+  -- This tier matters more than a third fallback usually would. Below it there
+  -- is only a flat radius, and a radius wide enough to contain the largest
+  -- vehicle pair is several times wider than a car -- in a full field somebody
+  -- is nearly always inside it, so a ghost that reached that fallback would stay
+  -- up for most of the race. Measuring the actual car keeps the answer the size
+  -- of a car.
+  ok, c, x, y, z = pcall(function ()
+    local p = veh:getPosition()
+    local dir = veh:getDirectionVector()
+    local up = veh:getDirectionVectorUp()
+    local len = veh:getInitialLength() * 0.5
+    local wid = veh:getInitialWidth() * 0.5
+    local hgt = veh:getInitialHeight() * 0.5
+    if not (p and dir and up and len and wid and hgt) then return nil end
+    local fwd   = vec3(dir.x, dir.y, dir.z)
+    local upv   = vec3(up.x, up.y, up.z)
+    local right = fwd:cross(upv)
+    return vec3(p.x, p.y, p.z) + upv * hgt,
+      right * (wid + margin),
+      fwd * (len + margin),
+      upv * (hgt + margin)
+  end)
+  if ok and c then return c, x, y, z end
   return nil
 end
 
@@ -3639,6 +3667,45 @@ end
 -- start-slot markers, which are editor furniture rather than driver
 -- information. Sent when the admin tab changes, when the app mounts, and when
 -- it is torn down (a closed app cannot have an open editor).
+-- Diagnostic for the in-game Lua console:
+--   dump(raceManager.ghostStatus())
+-- Answers "why is this car still a ghost" without needing the log: whether it
+-- is ghosted, WHICH source is measuring the space around it, and what is
+-- currently blocking the restore. `boundsFrom` is the one that matters -- a
+-- field where no bounding box ever resolves behaves very differently from one
+-- where they do, and until now there was no way to tell which you had.
+function M.ghostStatus()
+  local veh = ownVehicle()
+  local measured, how = false, 'no vehicle'
+  if veh then
+    if ghost.bounds(veh, 0) then measured = true end
+    local okA, bbA = pcall(function () return veh:getSpawnWorldOOBB() end)
+    local okB, bbB = pcall(function () return veh:getWorldBox() end)
+    local okC = pcall(function () return veh:getInitialLength() end)
+    how = (okA and bbA and 'spawnWorldOOBB')
+      or (okB and bbB and 'worldBox')
+      or (okC and 'vehicle dimensions')
+      or 'nothing - falling back to a plain radius'
+  end
+  local ghosted = 0
+  for _ in pairs(ghost.veh) do ghosted = ghosted + 1 end
+  local reasons = {}
+  for r in pairs(ghost.field) do reasons[#reasons + 1] = r end
+  return {
+    ownGhosted     = ghost.own.vehId ~= nil,
+    settling       = ghost.own.settling,
+    secondsLeft    = ghost.own.left,
+    blockedFor     = ghost.own.blocked,
+    blockReason    = ghost.blockReason,
+    boundsMeasured = measured,
+    boundsFrom     = how,
+    carsGhosted    = ghosted,
+    fieldReasons   = table.concat(reasons, ','),
+    phase          = phase,
+    ghostQuali     = ghostQuali,
+  }
+end
+
 function M.setEditorOpen(open)
   editorOpen = open == true
 end

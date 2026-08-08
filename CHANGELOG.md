@@ -6,6 +6,27 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 [← Back to the README](README.md)
 
+## 0.5.1 — Ghost release fix
+
+### Fixed
+
+- **A reset ghost could still last most of a race.** The occupancy check that
+  decides when collisions come back has three ways to measure a car, and 0.5.0
+  had only two of them plus a blunt fallback: if neither bounding box answered,
+  the check fell through to a flat radius wide enough to contain the largest
+  pair of vehicles. In a full field somebody is nearly always inside a radius
+  that size, so the ghost stayed up. Between the boxes and that radius there is
+  now a real measurement — the car's own dimensions, oriented by where it is
+  facing — which every vehicle can answer for even when neither bounding box
+  will say where it is. The radius is a genuine last resort again rather than
+  the common path.
+
+- **`raceManager.ghostStatus()`**, for the in-game Lua console. Reports whether
+  a car is ghosted, WHICH of the three sources is measuring the space around it,
+  and what is blocking the restore. There was previously no way to tell a field
+  where the bounding boxes resolve from one where they never do, which is
+  exactly the difference that produced this bug.
+
 ## 0.5.0 — Reset ghosting
 
 ### Added

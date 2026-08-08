@@ -1,7 +1,7 @@
 {
   "name": "Race Manager",
   "author": "Phoenix",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Multiplayer race control with league regulations: qualifying, grid generation, 3D checkpoint gates, rallycross joker laps, vehicle reset limits with forced spectating, a locked vehicle/setup garage list, and a minimalist resizable driver leaderboard.",
   "directive": "raceManager",
   "domElement": "<race-manager></race-manager>",
