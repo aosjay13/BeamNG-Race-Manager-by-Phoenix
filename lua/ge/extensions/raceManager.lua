@@ -41,7 +41,22 @@ local TUNE = {
   MIN_HEIGHT = 1,
   MAX_HEIGHT = 100,
   EDGE_RADIUS = 0.15,  -- meters; thickness of the drawn rectangle edge
-  GHOST_ALPHA = 0.35,  -- mesh alpha applied to ghosted rival cars
+  GHOST_ALPHA = 0.35,  -- mesh alpha applied to a ghosted car
+  -- Reset ghosting. The DURATIONS are not here: they are a league rule, so the
+  -- server owns them and broadcasts them (see ghost.rules). What is left is
+  -- local presentation and local geometry, which no other client has an opinion
+  -- about and which must never differ between two clients in a way that matters.
+  GHOST_FADE_OUT_SEC     = 1.0,   -- fade back to solid over the last second
+  GHOST_OVERLAP_MARGIN   = 0.25,  -- metres added to every bound before testing
+  GHOST_OVERLAP_WARN_SEC = 10.0,  -- blocked this long: warn the driver, tell the server
+  -- Last-resort separation when a car cannot be measured at all. Comfortably
+  -- larger than the longest vehicle pair, so it is conservative -- but finite,
+  -- which is the point: an unmeasurable car far away must not block a ghost
+  -- forever.
+  GHOST_FALLBACK_RADIUS = 9.0,
+  -- Longest a ghost will wait for its car to report a bounding box before
+  -- starting the timer anyway.
+  GHOST_SETTLE_MAX = 1.0,
   -- Seconds; double-fire guard on the S/F gate. Kept low so even very short
   -- circuits report: this only needs to swallow same-crossing re-fires, not
   -- bound real lap times.
@@ -52,12 +67,32 @@ local TUNE = {
   -- without a guihook every frame. ~3.3 Hz: responsive enough to resolve a
   -- side-by-side fight, light enough that a full grid does not flood the server.
   LAP_TIME_EVERY = 0.25,
+  -- Grid hold enforcement. The client tolerance is deliberately TIGHTER than the
+  -- server's 0.5 m: the client checks every frame and the server four times a
+  -- second, so the client should normally have pulled the car back before the
+  -- server ever sees it move. A correction that reaches the server means the
+  -- local guard did not fire, which is worth knowing about.
+  HOLD_DRIFT       = 0.75,  -- metres off the settled slot before putting it back
+  HOLD_CREEP_SPEED = 0.60,  -- m/s on the slot: a lost freeze, re-pin where it is
+  -- A car dropped onto a start position falls onto its suspension. None of the
+  -- enforcement above runs until that has finished, or it fights the settling
+  -- and the car never comes to rest.
+  HOLD_SETTLE_GRACE = 3.0,  -- seconds allowed for a placed car to come to rest
+  HOLD_SETTLED_SPEED = 0.20, -- m/s under which a car counts as settled
+  -- ...but not before this much of the grace has passed. A car reports no
+  -- velocity on the frame it is placed, because it has not started falling yet,
+  -- so "it is not moving" means nothing that early and would anchor the car at
+  -- the height it was dropped from -- the very thing the settle window exists
+  -- to avoid.
+  HOLD_SETTLE_MIN  = 1.0,   -- seconds before stillness counts as settled
+  HOLD_REPORT_EVERY = 0.25, -- seconds between position reports while held
+  HOLD_CORRECT_COOLDOWN = 0.5, -- seconds after a correction before another
   ROUTE_FILE = 'settings/raceManager/route.json',
 }
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.4.0'
+local RM_BUILD = '0.5.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -89,11 +124,120 @@ local gridFrozen     = false     -- true while the freeze command has been issue
 -- onVehicleResetted sits above the hold code and needs both.
 local holdWanted     = nil
 local setLocalVehicleFrozen      -- forward declaration, assigned further down
+
+-- Grid hold enforcement.
+--
+-- The freeze used to be issued ONCE, at placement, and never checked again. That
+-- is fine while it sticks and silently wrong when it does not, and there were
+-- four ways for it not to stick: the placement teleport reports back as a
+-- vehicle reset which reloads the vehicle's Lua VM and takes the freeze with it,
+-- and the re-apply only happened when that report was recognised as our own echo
+-- -- so a report arriving later than the 0.6 s echo window, a driver pressing
+-- reset on the grid, and a vehicle reloaded or respawned on the grid all left
+-- the car free. Nothing re-asserted it and nothing noticed, so any one of those
+-- was permanent, and the driver simply drove away during the countdown.
+--
+-- So intent is now separated from effect and the effect is VERIFIED: while a
+-- hold is wanted the car's distance from the slot it was put on is watched, and
+-- drift is corrected. Correction is driven by observed movement and never by a
+-- timer, which matters -- re-applying the freeze re-pins the car and resets the
+-- drivetrain, so a car that is behaving has to be left completely alone or
+-- revving against the hold and pre-selecting a gear (the point of a standing
+-- start) would stop working.
+--
+-- Declared up here because onVehicleResetted, several hundred lines above the
+-- hold code, is one of the places that has to put the hold back.
+local hold = {
+  -- Where the car came to REST after being placed. Captured once it has stopped
+  -- moving, and it is what drift is measured against -- the slot coordinates are
+  -- where the car was dropped, which is above the ground by however far it then
+  -- falls onto its suspension.
+  anchor      = nil,
+  -- The slot itself, as a fallback for putting a car back before it has ever
+  -- settled (a reset on the grid during the settle window).
+  slot        = nil,
+  rot         = nil,   -- the rotation it was placed with
+  settleLeft  = 0,     -- seconds of grace left for a just-placed car to rest
+  reportLeft  = 0,     -- seconds until the next position report to the server
+  correctLeft = 0,     -- cooldown after a correction, so one slip is not a storm
+  corrections = 0,     -- how many times this car has been pulled back
+}
 -- Ghosting is defined with the qualifying rules further down, but the placement
 -- scheduler above it needs to switch it on: a field of cars being teleported
 -- into position has to pass through each other on the way in. Forward-declared
 -- rather than moved so the ghost code stays beside the rule it was built for.
 local setGhostReason             -- forward declaration, assigned further down
+
+-- Everything ghosting knows, in ONE table: its state, its mirrored rules and
+-- its functions. Two reasons, and neither is a style preference.
+--
+-- The first is the local ceiling this file's TUNE table already exists for --
+-- 194 of the 200 a function may hold are spoken for, and a module that needed a
+-- local apiece for its state and another for each of its eight functions simply
+-- would not compile. Hanging them off one table costs one.
+--
+-- The second is that it has to be declared HERE, above onVehicleResetted, which
+-- is what arms a reset ghost -- while the ghost code itself belongs beside the
+-- qualifying rule it grew out of, several hundred lines below. A table can be
+-- declared early and filled in late; a local function cannot.
+local ghost = {
+  -- Per-VEHICLE ghost reasons: veh[gameVehId] = { reason = true, ... }, and a
+  -- vehicle is ghosted while that set is non-empty. Per vehicle and not one
+  -- global flag, because two drivers resetting a second apart are two
+  -- independent ghosts and neither may end the other's.
+  veh     = {},
+  applied = {},   -- [gameVehId] = true while the ghost is actually applied
+  -- Seconds of ghost left per vehicle, which is what the fade reads. Only reset
+  -- ghosts have a remaining time; a quali or placement ghost has no clock and
+  -- sits at a flat alpha until the reason is dropped.
+  left    = {},
+  -- Last mesh alpha actually pushed to each car, so the per-frame fade can skip
+  -- the engine call when nothing moved.
+  alpha   = {},
+  -- The field-wide reasons currently in force ('quali', 'placement'), kept so
+  -- the sweep can re-assert them onto cars that appeared since.
+  field   = {},
+  -- This client's own reset ghost. Only ever one: a repeat reset restarts this
+  -- timer rather than stacking a second ghost beside it.
+  own = {
+    pid      = nil,    -- our BeamMP id, as the server knows us
+    vehId    = nil,    -- the car the ghost is on
+    settling = false,  -- placed, but not yet reporting a usable bounding box
+    settleLeft = 0,    -- ...and a cap on how long that wait may last
+    left     = 0,      -- seconds of base timer remaining
+    total    = 0,      -- base duration this ghost was granted (for the fade)
+    blocked  = 0,      -- seconds spent waiting for an occupied space to clear
+    warned   = false,  -- the "move clear" warning has been sent once
+  },
+  -- Ghosts other clients told us about, so their cars are ghosts on OUR screen
+  -- too: remote[pid] = the SERVER-CLOCK time the ghost ends.
+  --
+  -- An absolute end time and not a countdown, because a countdown starts the
+  -- moment the message is opened -- so 200 ms of latency would buy the sender
+  -- 200 ms of extra ghost on every other screen, and every receiver would
+  -- disagree slightly about when the car goes solid. An end time on a clock both
+  -- ends share means a late message produces a SHORTER remainder, never a longer
+  -- one, and every receiver lands on the same instant.
+  remote = {},
+  -- Our best estimate of the server clock (race.time). Set from every state
+  -- broadcast and advanced locally in between, so the remainder above is still
+  -- meaningful on the frames between pushes.
+  serverTime = 0,
+  -- League rules, mirrored from the server broadcast. Defaults match the
+  -- documented ones so a client that has not heard from the server yet still
+  -- behaves sanely rather than ghosting forever.
+  rules = { onReset = true, minSec = 5.0, maxSec = 15.0 },
+  -- Why the local ghost is currently held past its timer, for the log. nil when
+  -- it is not blocked.
+  blockReason = nil,
+  refresh  = 0,       -- seconds until the next re-assert sweep
+  -- [pid] = the local vehicle id that player owns, resolved when a ghost is
+  -- applied and re-checked on the sweep. Cached because the lookup builds a
+  -- table and the fade below runs every frame.
+  remoteVeh = {},
+  hudLeft  = 0,       -- seconds until the next HUD push is due
+  hudShown = false,   -- a HUD push has been sent that the UI is still showing
+}
 
 -- Rallycross joker route (Module 2): a second, completely separate gate set
 -- describing the alternate route. Same checkpoint format as `route`; it travels
@@ -198,8 +342,13 @@ local joined    = false          -- this client is on the entry list
 -- finalLap is the timed session's post-expiry state: the clock has run out and
 -- the lap this driver is on is their last.
 local finalLap       = false
+-- Who holds the session's fastest lap, as of the last broadcast. Remembered so
+-- the driver who sets it is congratulated once rather than on every broadcast
+-- that carries the same pid afterwards.
+local lastBestLapPid  = nil
+-- ...and the time they set, so beating your OWN fastest lap is announced too.
+local lastBestLapTime = nil
 local ghostQuali     = false
-local ghostApplied   = false     -- ghosting currently applied to rival cars
 local qualiLapLimit  = 0         -- 0 = unlimited
 local qualiTimeLimit = 0         -- seconds, 0 = unlimited
 
@@ -369,12 +518,29 @@ end
 -- placements. Report the count whenever it actually changes — placing a slot,
 -- deleting one, loading a layout — and never more often than that.
 local lastReportedStarts = nil
+-- Tell the server how many start positions this track has -- and, now, WHERE
+-- they are.
+--
+-- The count alone was enough while the grid was purely a client-side affair: the
+-- server handed out slot numbers and only needed to know how many existed. It
+-- cannot police the hold with that, though, because "is this car on its slot" is
+-- a question about coordinates. So the positions travel too, and the server
+-- judges distance itself rather than trusting a client's arithmetic about its
+-- own compliance.
+--
+-- Only sent on a change, which in practice means once when a track is loaded or
+-- edited: the payload is a few dozen numbers, not something to repeat.
 local function reportStartCount()
   if not inMultiplayer() then return end
   local n = #startPositions
   if n == lastReportedStarts then return end
   lastReportedStarts = n
-  TriggerServerEvent('RM_StartPositionCount', jsonEncode({ count = n }))
+  local positions = {}
+  for i, sp in ipairs(startPositions) do
+    positions[i] = { x = sp.x, y = sp.y, z = sp.z, hx = sp.hx, hy = sp.hy }
+  end
+  TriggerServerEvent('RM_StartPositionCount',
+    jsonEncode({ count = n, positions = positions }))
 end
 
 local function pushRouteState()
@@ -1310,6 +1476,36 @@ function M.onVehicleResetted(vehId)
     forceFreeCamera()
     return
   end
+
+  -- A DRIVER reset while held on the grid. This is not the echo above -- the car
+  -- really has been reset -- and the reset has just reloaded the vehicle's Lua
+  -- VM, taking the freeze with it. Nothing used to put it back, so pressing
+  -- reset on the grid was a way to be the only unfrozen car on it.
+  --
+  -- Handled here and not left to the drift watch because the driver should not
+  -- get even the fraction of a second of movement that noticing drift costs:
+  -- the car goes back on its slot and is pinned again on this frame.
+  if holdWanted then
+    hold.restore('driver reset while held on the grid')
+    pushNotice('grid', 'Reset on the grid — you are back on your slot and held')
+    return
+  end
+
+  -- The car has already been moved by the time this hook runs, so ghosting is
+  -- armed HERE -- above the allowance rules and before anything decides what the
+  -- reset was worth. Every branch below leaves the car somewhere it was not a
+  -- moment ago: an allowed reset in place, a checkpoint-mode relocation, and a
+  -- BLOCKED reset too, which teleports the car back to its last good position
+  -- and can just as easily put it inside somebody. Ghosting is not a reward for
+  -- a legal reset, it is a guard against a car appearing inside another one, so
+  -- it does not care which of those happened.
+  --
+  -- Deliberately armed during qualifying as well as racing: the welding hazard
+  -- is physics, not regulations, and cars are on track in both.
+  if ghost.rules.onReset and (phase == 'racing' or phase == 'qualifying') then
+    ghost.arm()
+  end
+
   if resetsEnforced() and resetsUsed >= maxResets then
     -- Over the allowance. The reset INPUTS are already switched off at this
     -- point (resetInputBlockUpdate), so this branch only fires for a reset
@@ -1386,12 +1582,61 @@ end
 function M.onVehicleSpawned(vehId)
   -- Module 4: a new car means a new configuration to declare to the server.
   reportVehicleConfig(true)
+  -- A car that appears while a field-wide ghost is in force is ghosted NOW, not
+  -- whenever the two-second sweep next comes round. A mass respawn is precisely
+  -- the moment cars appear, and a car that spawns solid in the middle of one --
+  -- for up to two seconds, or for good if the operation finishes first -- is the
+  -- thing the ghost exists to prevent.
+  if next(ghost.field) ~= nil and not isOwnVehicle(vehId) then
+    local got, veh = pcall(getObjectByID, vehId)
+    for reason in pairs(ghost.field) do
+      ghost.reason(vehId, reason, true, got and veh or nil)
+    end
+  end
+  -- A car reloaded or respawned while the grid is held arrives with no freeze on
+  -- it — it is a new vehicle, and the old one's freeze died with it. Put the
+  -- driver back on their slot, held, rather than leaving them the only car on
+  -- the grid that can move.
+  if holdWanted and isOwnVehicle(vehId) then
+    hold.restore('vehicle respawned while held on the grid')
+    pushNotice('grid', 'Back on your grid slot — held for the countdown')
+  end
   if not spectatorLock then return end
   if not isOwnVehicle(vehId) then return end
   removeLocalVehicle()
   forceFreeCamera()
   pushNotice('spectate', 'You are spectating until the session ends')
   log('W', 'raceManager', 'Blocked vehicle spawn while in forced spectator mode')
+end
+
+-- BeamNG hook: a vehicle is being removed. Ghost bookkeeping is keyed by vehicle
+-- id and vehicle ids are REUSED, so an entry left behind for a deleted car is not
+-- merely stale -- the next car to be handed that id inherits a ghost nobody
+-- armed, and (worse) inherits the belief that it is already ghosted, so the next
+-- real ghost on it does nothing at all. Dropped here rather than aged out.
+function M.onVehicleDestroyed(vehId)
+  if vehId == nil then return end
+  ghost.veh[vehId]     = nil
+  ghost.applied[vehId] = nil
+  ghost.left[vehId]    = nil
+  ghost.alpha[vehId]   = nil
+  -- The pid -> vehicle cache points at this id too. Left behind, the next car to
+  -- be handed the id would be treated as belonging to whoever owned the old one.
+  for pid, id in pairs(ghost.remoteVeh) do
+    if id == vehId then ghost.remoteVeh[pid] = nil end
+  end
+  -- Our own car going away ends our ghost outright: there is nothing left to
+  -- restore collision to, and holding the timer open would leave the next car
+  -- this driver spawns waiting on a countdown that belonged to a deleted one.
+  if ghost.own.vehId == vehId then
+    ghost.own.vehId    = nil
+    ghost.own.settling = false
+    ghost.own.left     = 0
+    ghost.own.total    = 0
+    ghost.own.blocked  = 0
+    ghost.own.warned   = false
+    if inMultiplayer() then TriggerServerEvent('RM_GhostEnd', '') end
+  end
 end
 
 -- ===========================================================================
@@ -1492,6 +1737,183 @@ local function requestHold(source)
   return ok
 end
 
+-- Put a held car back exactly where it was placed and pin it again.
+--
+-- Used by every path that can lose the hold: the local drift watch, a driver
+-- reset on the grid, a vehicle reloaded on the grid, and the server's
+-- correction. All four want the same thing -- the car back on its slot, facing
+-- down the track, frozen -- so they share one implementation and one log line.
+--
+-- The teleport is flagged as our own so the vehicle-reset report it provokes is
+-- not read as a driver reset and does not cost anyone a reset allowance.
+--
+-- A field of the hold table rather than a local function, for the same two
+-- reasons the ghost module is: this file is close to Lua's 200-local ceiling,
+-- and onVehicleResetted -- several hundred lines above here -- has to be able to
+-- call it. A table field is resolved when it is called, not when it is compiled.
+function hold.restore(reason)
+  if not holdWanted then return false end
+  local veh = ownVehicle()
+  if not veh then return false end
+  -- Back to where it settled if it ever did, and to the slot itself if it has
+  -- not (a reset during the settle window).
+  local to = hold.anchor or hold.slot
+  if to then
+    local rot = hold.rot or quat(0, 0, 0, 1)
+    noteSelfTeleport(to.x, to.y, to.z)
+    local ok = pcall(function ()
+      veh:setPositionRotation(to.x, to.y, to.z, rot.x, rot.y, rot.z, rot.w)
+    end)
+    if not ok then selfTeleport.left = 0 end
+    -- The car has just been dropped again, so it has to settle again -- and
+    -- until it has, nothing may measure it. Without this a restore is followed
+    -- immediately by the drift it caused, which is the loop this guard is for.
+    hold.anchor = nil
+    hold.settleLeft = TUNE.HOLD_SETTLE_GRACE
+  end
+  -- After the teleport, never before: the reset that a teleport reports back
+  -- would otherwise reload the vehicle VM and take this freeze with it.
+  setLocalVehicleFrozen(true, holdWanted)
+  hold.corrections = hold.corrections + 1
+  -- One line per correction would be one line per frame for a car whose freeze
+  -- cannot be applied at all, which is exactly the case worth being able to read
+  -- the log for. The count keeps the total honest.
+  if hold.correctLeft <= 0 then
+    log('W', 'raceManager', string.format(
+      'Grid hold restored (%s) — correction #%d', tostring(reason), hold.corrections))
+  end
+  hold.correctLeft = TUNE.HOLD_CORRECT_COOLDOWN
+  return true
+end
+
+-- Watch a held car and report where it is.
+--
+-- Two jobs, both only while a hold is wanted. Locally: if the car has moved off
+-- its slot the freeze is not doing its job, so put it back. This is what makes
+-- the hold survive a lost freeze whatever caused it -- it corrects the SYMPTOM
+-- (a car that moved) rather than needing to enumerate every cause.
+--
+-- And upward: the server owns the hold, so it is told where this car is on a
+-- steady cadence and can correct and log independently. A client that has been
+-- modified to skip the local guard still has the server behind it.
+--
+-- A car that is behaving is touched by NONE of this, and "behaving" includes
+-- the second or two after it is put down: a car dropped onto a start position
+-- falls onto its suspension, which is both movement and displacement. Enforcing
+-- against that is how the guard turned into a loop -- it teleported the car back
+-- up to the height it was placed at, the teleport was reported as a vehicle
+-- reset, and the car hovered there being reset every frame instead of settling.
+--
+-- So: nothing happens until the car has SETTLED, and the resting position it
+-- settles into becomes the anchor. Putting a car back then means putting it back
+-- on the ground where it was standing, not into the air where it was spawned.
+--
+-- The response is also graded, because the two failures are different sizes. A
+-- car that is merely MOVING has lost its freeze but is still on its slot: it is
+-- re-frozen where it stands, which costs nothing and provokes no reset. Only a
+-- car that has actually LEFT its slot is teleported back, and that is the rare
+-- case -- a real creep, or a freeze that cannot be applied at all.
+local function holdUpdate(dt)
+  if hold.correctLeft > 0 then hold.correctLeft = hold.correctLeft - dt end
+  if not holdWanted then
+    hold.reportLeft = 0
+    return
+  end
+  local veh = ownVehicle()
+  if not veh then return end
+  local ok, pos, vel = pcall(function ()
+    return veh:getPosition(), veh:getVelocity()
+  end)
+  if not ok or not pos then return end
+
+  local speed = 0
+  if vel then speed = math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z) end
+
+  -- Position reporting, and it happens whatever the enforcement below decides.
+  -- Telemetry is not enforcement: a car that is still settling is exactly the
+  -- car the server most wants to be able to see, and going quiet during the
+  -- grace would be a window in which it was flying blind. A quarter-second
+  -- cadence, because a full grid reporting every frame would be eleven messages
+  -- a frame about cars that are meant not to be moving.
+  if inMultiplayer() then
+    hold.reportLeft = hold.reportLeft - dt
+    if hold.reportLeft <= 0 then
+      hold.reportLeft = TUNE.HOLD_REPORT_EVERY
+      TriggerServerEvent('RM_HoldPos', jsonEncode({
+        x = pos.x, y = pos.y, z = pos.z, slot = gridSlot,
+      }))
+    end
+  end
+
+  -- Settling. The car is left completely alone until it stops moving, or until
+  -- the grace runs out for a car that never quite stops (resting on a kerb, an
+  -- idle shake). Whatever it is doing then is the baseline.
+  if hold.settleLeft > 0 then
+    hold.settleLeft = hold.settleLeft - dt
+    -- Settling is a car dropping onto its suspension: vertical, and going
+    -- nowhere. A car that has moved ACROSS the ground is not settling, it is
+    -- leaving -- so the grace is not a window in which the hold is off. It is
+    -- measured from the slot here because there is no resting position yet.
+    local away = 0
+    if hold.slot then
+      local ax, ay = pos.x - hold.slot.x, pos.y - hold.slot.y
+      away = math.sqrt(ax * ax + ay * ay)
+    end
+    if away > TUNE.HOLD_DRIFT then
+      hold.restore(string.format('left the slot (%.2fm) before settling', away))
+      pushNotice('grid', 'Hold the car — the countdown has not finished')
+      return
+    end
+    local waited = TUNE.HOLD_SETTLE_GRACE - hold.settleLeft
+    if hold.settleLeft > 0
+       and (waited < TUNE.HOLD_SETTLE_MIN or speed > TUNE.HOLD_SETTLED_SPEED) then
+      return
+    end
+    hold.settleLeft = 0
+    hold.anchor = vec3(pos.x, pos.y, pos.z)
+    log('I', 'raceManager', string.format(
+      'Grid hold settled at (%.2f, %.2f, %.2f)', pos.x, pos.y, pos.z))
+    return
+  end
+
+  if hold.anchor then
+    -- HORIZONTAL distance only. Creeping off the line is a move across the
+    -- ground; a car dropping onto its suspension, sagging as it cools, or
+    -- resting on a kerb moves vertically and is not creeping. Measuring in
+    -- three dimensions makes ordinary settling indistinguishable from jumping
+    -- the start, and the car gets dragged back for standing still.
+    local dx = pos.x - hold.anchor.x
+    local dy = pos.y - hold.anchor.y
+    local drift = math.sqrt(dx * dx + dy * dy)
+    if drift > TUNE.HOLD_DRIFT then
+      -- Off the slot: put it back. Not rate-limited, because landing on the same
+      -- anchor every time is idempotent and a car whose freeze cannot be applied
+      -- at all must not be allowed to ratchet forward between corrections. Only
+      -- the talking about it is throttled.
+      local announce = hold.correctLeft <= 0
+      hold.restore(string.format('%.2fm off the slot at %.1f m/s', drift, speed))
+      if announce then
+        pushNotice('grid', 'Hold the car — the countdown has not finished')
+      end
+      return
+    end
+    if speed > TUNE.HOLD_CREEP_SPEED then
+      -- Moving but still on its slot: the freeze has been lost and the car is
+      -- about to leave. Re-pin it where it stands. No teleport, so no vehicle
+      -- reset and none of the loop that came with one.
+      setLocalVehicleFrozen(true, holdWanted)
+      if hold.correctLeft <= 0 then
+        hold.correctLeft = TUNE.HOLD_CORRECT_COOLDOWN
+        hold.corrections = hold.corrections + 1
+        log('W', 'raceManager', string.format(
+          'Grid hold re-pinned a car moving at %.2f m/s on its slot', speed))
+      end
+      return
+    end
+  end
+
+end
+
 -- GO (or any exit from the start procedure): release the car.
 -- `source` names the mode letting go. A hold imposed by the other mode is left
 -- alone. Passing nil forces the release, which is what a session ending or the
@@ -1503,6 +1925,15 @@ local function releaseGridHold(source)
   -- moment after it was deliberately let go.
   if not source or not holdWanted or holdWanted == source then
     holdWanted = nil
+  end
+  -- The anchor goes with the intent. A stale one would have the drift watch
+  -- pulling a racing car back onto a grid slot it left at the lights.
+  if not holdWanted then
+    hold.anchor = nil
+    hold.slot = nil
+    hold.rot = nil
+    hold.settleLeft = 0
+    hold.reportLeft = 0
   end
   if not gridFrozen then return end
   if source and freezeSource and freezeSource ~= source then return end
@@ -1573,6 +2004,22 @@ local function placeOnAssignedSlot()
   if not placeOnStartPosition(sp) then
     log('W', 'raceManager', 'Could not place the car on grid slot ' .. tostring(slot))
     return
+  end
+  -- Where this car is meant to be standing, remembered before the hold is asked
+  -- for. Everything that verifies or restores the hold measures against this:
+  -- the local drift watch, the reset/respawn restores, and the server's
+  -- correction. Kept separately from lastGoodPos below because that one belongs
+  -- to the reset ruleset and moves as the driver laps.
+  if field.hold then
+    -- The slot's coordinates are where the car is DROPPED, not where it will
+    -- come to rest -- it still has to fall onto its suspension. Anchoring here
+    -- would mean every correction teleported the car back up to the drop height,
+    -- so the anchor is left unset and captured once the car has settled.
+    hold.anchor = nil
+    hold.slot   = vec3(sp.x, sp.y, sp.z)
+    hold.rot    = headingRot(sp.hx, sp.hy)
+    hold.settleLeft  = TUNE.HOLD_SETTLE_GRACE
+    hold.corrections = 0
   end
   if field.hold then requestHold(field.holdSource or 'race') end
   -- The grid slot is where the car legitimately stands, so it is also the
@@ -1735,28 +2182,49 @@ local function applyGridSlot(slot, order, count)
 end
 
 -- ===========================================================================
--- Ghost mode qualifying
+-- Ghosting: qualifying, field placement, and reset
 -- ===========================================================================
--- With ghosting armed, rival cars stop being obstacles during qualifying so a
--- flying lap can't be ruined by traffic. BeamMP owns vehicle-to-vehicle
--- collision, and which entry point exists varies by BeamMP build, so every
--- known one is tried in turn; the mesh fade is applied either way so a driver
--- can always SEE who is ghosted.
+-- A ghosted car has no vehicle-to-vehicle collision. Three things want that,
+-- and they overlap in time, so they are refcounted BY REASON and PER VEHICLE:
 --
--- Walking the cars follows the same reasoning as playerVehicle: getAllVehicles()
--- is the GE-side, allocation-free way to do it, and it hands back vehicles only,
--- where be:getObject(i) walks every scene object and has to be filtered. The old
--- loop stays as the fallback.
-local function forEachRemoteVehicle(fn)
-  local mine = playerVehicle()
-  local myId = mine and mine:getID() or nil
+--   'quali'      -- rivals stop being obstacles during a flying lap
+--   'placement'  -- a field being teleported onto a grid has to land through
+--                   itself rather than pile up
+--   'reset'      -- a driver who reset mid-race is intangible until the space
+--                   around them is provably clear (the rest of this section)
+--
+-- Per vehicle, not one global flag: two drivers resetting a second apart are
+-- two independent ghosts, and neither may end the other's.
+--
+-- HOW COLLISION IS ACTUALLY DROPPED. This used to probe MPVehicleGE for
+-- setGhostMode/setGhosts/enableGhostMode, find none of them on any build, and
+-- fall back to fading rival cars while leaving them solid -- so ghost
+-- qualifying looked like it worked and never did. The toggle is not BeamMP's
+-- at all: it is BeamNG's own `obj:setGhostEnabled(bool)`, a VEHICLE-side call
+-- reached from here through queueLuaCommand, the same bridge the grid freeze
+-- uses. It is per vehicle, it leaves world and terrain collision alone, and the
+-- engine drives it itself for instability recovery (lua/ge/main.lua) -- BeamNG's
+-- own multiplayer has `ghostOnReset`/`ghostOnTp` vehicle globals that do
+-- precisely this feature.
+--
+-- Because it is per vehicle, every client must ghost the SAME car, which is
+-- what the RM_Ghost broadcast is for. A vehicle id is meaningless across
+-- clients (it is a local scene-object id), so the wire carries the BeamMP
+-- player id -- which MPVehicleGE reports as `ownerID`, and which is the same
+-- key the server files everyone under.
+
+-- Walk vehicles. getAllVehicles() is the GE-side, allocation-free way to do it
+-- and hands back vehicles only, where be:getObject(i) walks every scene object
+-- and has to be filtered; the old loop stays as the fallback. `skipId` drops one
+-- car from the walk -- usually ours, sometimes the one being tested.
+local function forEachVehicle(skipId, fn)
   if type(getAllVehicles) == 'function' then
     local ok, list = pcall(getAllVehicles)
     if ok and type(list) == 'table' then
       for _, veh in ipairs(list) do
         if veh then
           local gotId, id = pcall(function () return veh:getID() end)
-          if gotId and id ~= myId then fn(veh, id) end
+          if gotId and id ~= skipId then fn(veh, id) end
         end
       end
       return
@@ -1768,74 +2236,520 @@ local function forEachRemoteVehicle(fn)
     local veh = be:getObject(i)
     if veh then
       local ok, id = pcall(function () return veh:getID() end)
-      if ok and id ~= myId then fn(veh, id) end
+      if ok and id ~= skipId then fn(veh, id) end
     end
   end
 end
 
--- Ask BeamMP to drop collisions with other players' cars. Returns true when a
--- supported entry point was found.
-local function setBeamMPGhosting(enabled)
-  if not MPVehicleGE then return false end
-  for _, name in ipairs({ 'setGhostMode', 'setGhosts', 'enableGhostMode' }) do
-    local fn = MPVehicleGE[name]
-    if type(fn) == 'function' and pcall(fn, enabled) then return true end
+-- Which local vehicle belongs to a given player id. This is the whole reason the
+-- broadcast carries a pid: the answer is different on every client.
+function ghost.vehicleForPid(pid)
+  if pid == nil or not (MPVehicleGE and type(MPVehicleGE.getVehicles) == 'function') then
+    return nil, nil
   end
-  return false
-end
-
-local function fadeRemoteVehicles(alpha)
-  forEachRemoteVehicle(function (veh)
-    pcall(function () veh:setMeshAlpha(alpha, '', false) end)
-  end)
-end
-
-local function applyGhostMode(enabled)
-  if enabled == ghostApplied then return end
-  ghostApplied = enabled
-  local collisionsHandled = setBeamMPGhosting(enabled)
-  fadeRemoteVehicles(enabled and TUNE.GHOST_ALPHA or 1)
-  if enabled and not collisionsHandled then
-    log('W', 'raceManager', 'Ghosting: this BeamMP build exposes no '
-      .. 'collision toggle — rivals are faded but still solid')
+  local ok, list = pcall(MPVehicleGE.getVehicles)
+  if not ok or type(list) ~= 'table' then return nil, nil end
+  for _, v in pairs(list) do
+    if type(v) == 'table' and tostring(v.ownerID) == tostring(pid) and v.gameVehicleID then
+      local got, obj = pcall(getObjectByID, v.gameVehicleID)
+      if got and obj then return obj, v.gameVehicleID end
+    end
   end
-  log('I', 'raceManager', 'Ghosting ' .. (enabled and 'ON' or 'off'))
+  return nil, nil
 end
 
--- Two independent things want collisions off, and they overlap: the qualifying
--- ghost rule, and any mass placement (a grid forming, a field respawning at the
--- flag). A single boolean meant whichever one finished first turned collisions
--- back on underneath the other -- so they are refcounted by reason instead, and
--- cars stay ghosted until nothing wants them ghosted any more.
+-- Set one car's mesh alpha, and only when it has actually moved. The fade runs
+-- every frame for a second, and setMeshAlpha is a call across into the engine
+-- per car -- with eleven cars on track, re-sending a value that has not changed
+-- is the difference between a fade that is free and one that is measurable.
+function ghost.fade(vehId, veh, alpha)
+  if not veh then return end
+  local was = ghost.alpha[vehId]
+  if was and math.abs(was - alpha) < 0.01 then return end
+  ghost.alpha[vehId] = alpha
+  pcall(function () veh:setMeshAlpha(alpha, '', false) end)
+end
+
+-- Apply (or lift) the ghost on one car: the collision toggle, then the fade that
+-- makes it visible. Both are pcall'd -- a vehicle that has just been deleted
+-- must not take the update loop down with it.
 --
--- Fills the forward declaration made beside the grid hold at the top of the file.
-local ghostReasons = {}
+-- Called on TRANSITIONS only. queueLuaCommand marshals a string into the
+-- vehicle's own Lua VM, which is not something to do sixty times a second per
+-- car for a value that changes twice per ghost; the per-frame fade goes through
+-- ghost.fade above and never touches collision.
+function ghost.apply(vehId, veh, on, alpha)
+  if not veh then return end
+  pcall(function ()
+    veh:queueLuaCommand('obj:setGhostEnabled(' .. (on and 'true' or 'false') .. ')')
+  end)
+  ghost.fade(vehId, veh, on and (alpha or TUNE.GHOST_ALPHA) or 1)
+  ghost.applied[vehId] = on or nil
+end
 
+-- Add or drop one reason on one vehicle, and make the car match.
+--
+-- `veh` is the vehicle object when the caller already has it -- which the field
+-- sweep does, holding it from the walk it is in the middle of. Looking it up
+-- again by id would be a scene lookup per car per sweep for a value already in
+-- hand, and with eleven cars on a two-second sweep that adds up for nothing.
+function ghost.reason(vehId, reason, on, veh)
+  if vehId == nil then return end
+  local set = ghost.veh[vehId]
+  if on then
+    set = set or {}
+    set[reason] = true
+    ghost.veh[vehId] = set
+  elseif set then
+    set[reason] = nil
+    if next(set) == nil then ghost.veh[vehId] = nil end
+  end
+  local want = ghost.veh[vehId] ~= nil
+  if want == (ghost.applied[vehId] == true) then return end
+  if not veh then
+    local got, found = pcall(getObjectByID, vehId)
+    veh = got and found or nil
+  end
+  ghost.apply(vehId, veh, want, ghost.alphaFor(vehId))
+end
+
+-- Alpha for a car mid-ghost. Translucent for most of the ghost, then fading
+-- back to solid over the last second -- the warning that contact is about to
+-- resume. The occupancy block deliberately does NOT fade: a car that is stuck
+-- inside another stays visibly a ghost for as long as that lasts.
+function ghost.alphaFor(vehId)
+  local left = ghost.left[vehId]
+  local fade = TUNE.GHOST_FADE_OUT_SEC
+  if not left or fade <= 0 or left >= fade then return TUNE.GHOST_ALPHA end
+  if left <= 0 then return TUNE.GHOST_ALPHA end
+  local t = 1 - (left / fade)          -- 0 at fade start, 1 at contact
+  return TUNE.GHOST_ALPHA + (1 - TUNE.GHOST_ALPHA) * t
+end
+
+-- The oriented bounding box of a car, as the four vectors overlapsOBB_OBB wants,
+-- with `margin` metres added to every half-extent.
+--
+-- getSpawnWorldOOBB is the box BeamNG's own spawn-occupancy test uses
+-- (lua/ge/spawn.lua). It is an ORIENTED box: a car lying crossways through
+-- another is caught, where a distance between origins reports it as clear.
+function ghost.bounds(veh, margin)
+  if not veh then return nil end
+  -- Preferred: the ORIENTED box. A car lying crossways through another is
+  -- caught by it, where an axis-aligned box or a radius would report clear.
+  local ok, c, x, y, z = pcall(function ()
+    local bb = veh:getSpawnWorldOOBB()
+    if not bb then return nil end
+    local he = bb:getHalfExtents()
+    return bb:getCenter(),
+      bb:getAxis(0) * (he.x + margin),
+      bb:getAxis(1) * (he.y + margin),
+      bb:getAxis(2) * (he.z + margin)
+  end)
+  if ok and c then return c, x, y, z end
+  -- Fallback: the axis-aligned world box, which is what BeamNG's own spawn
+  -- occupancy test uses for vehicles that already exist (lua/ge/spawn.lua).
+  -- getSpawnWorldOOBB can return nil -- shipping code nil-guards it -- and a
+  -- single nil used to mean "assume occupied", which is how one unmeasurable
+  -- car anywhere on the map left a driver ghosted for the rest of the race.
+  ok, c, x, y, z = pcall(function ()
+    local bb = veh:getWorldBox()
+    if not bb then return nil end
+    local he = bb:getExtents()
+    return bb:getCenter(),
+      vec3(he.x * 0.5 + margin, 0, 0),
+      vec3(0, he.y * 0.5 + margin, 0),
+      vec3(0, 0, he.z * 0.5 + margin)
+  end)
+  if ok and c then return c, x, y, z end
+  return nil
+end
+
+-- Where a car is, when nothing will say how big it is. Used only by the
+-- last-resort distance test below.
+function ghost.centre(veh)
+  if not veh then return nil end
+  local ok, p = pcall(function () return veh:getPosition() end)
+  if not ok or not p then return nil end
+  return p
+end
+
+-- Is anything solid sharing this car's space?
+--
+-- THE HARD INVARIANT LIVES HERE. Restoring collision on two overlapping cars
+-- welds their node structures together, which ends both races and cannot be
+-- undone -- so this answers "am I certain it is clear", not "do I think it is".
+-- Every way of failing to know (no bounding box, no vehicle list, an engine call
+-- that threw) returns BLOCKED. A ghost that lasts too long is a nuisance; a
+-- ghost lifted one frame too early is two ruined races.
+--
+-- Cars that are THEMSELVES ghosts are skipped, and that is load-bearing rather
+-- than an optimisation: a ghost cannot weld to anything, so it is not a hazard,
+-- and counting it as one would deadlock two overlapping ghosts against each
+-- other forever -- which is exactly the three-cars-stacked case.
+function ghost.occupied(vehId, veh)
+  local c1, x1, y1, z1 = ghost.bounds(veh, TUNE.GHOST_OVERLAP_MARGIN)
+  local mine = ghost.centre(veh)
+  -- Nothing to measure ourselves against and nowhere to stand: we genuinely
+  -- know nothing, so we stay ghosted. This is the only remaining way to be
+  -- blocked without another car being involved, and a car with no position at
+  -- all is a car that is being deleted -- which the teardown paths handle.
+  if not c1 and not mine then
+    ghost.blockReason = 'this car cannot be located'
+    return true
+  end
+
+  local blocked, sawAny, reason = false, false, nil
+  forEachVehicle(vehId, function (other, otherId)
+    if blocked then return end
+    if ghost.veh[otherId] then return end          -- a ghost cannot weld
+    sawAny = true
+    local c2, x2, y2, z2 = ghost.bounds(other, 0)
+    -- The precise test, when both cars can be measured. The margin is on OUR
+    -- box only; inflating both would demand double the configured clearance.
+    if c1 and c2 and type(overlapsOBB_OBB) == 'function' then
+      local okHit, hit = pcall(overlapsOBB_OBB, c1, x1, y1, z1, c2, x2, y2, z2)
+      if not okHit then
+        reason = 'overlap test failed'
+        blocked = true
+      elseif hit then
+        reason = 'another car is in this space'
+        blocked = true
+      end
+      return
+    end
+    -- One of the two cannot be measured. That is NOT the same as being inside
+    -- it: a car we cannot size up but which is fifty metres away is plainly not
+    -- overlapping anything. Treating every measurement failure as an overlap is
+    -- what left drivers ghosted for a whole race, because it could never
+    -- resolve -- so the fallback is a real (if blunt) test rather than a
+    -- verdict. The radius comfortably contains the largest vehicle pair.
+    local theirs = ghost.centre(other)
+    if not (mine and theirs) then
+      reason = 'a nearby car cannot be located'
+      blocked = true
+      return
+    end
+    local dx, dy, dz = mine.x - theirs.x, mine.y - theirs.y, mine.z - theirs.z
+    if (dx * dx + dy * dy + dz * dz)
+        <= (TUNE.GHOST_FALLBACK_RADIUS * TUNE.GHOST_FALLBACK_RADIUS) then
+      reason = 'a car that cannot be measured is close by'
+      blocked = true
+    end
+  end)
+  -- Nothing else on track at all is a clear frame, not an unknown one.
+  if not sawAny then
+    ghost.blockReason = nil
+    return false
+  end
+  ghost.blockReason = blocked and reason or nil
+  return blocked
+end
+
+-- Fills the forward declaration made beside the grid hold at the top of the
+-- file. These two reasons are field-wide: they ghost every car this client can
+-- see other than its own, which is what "rivals are ghosts" means locally.
 setGhostReason = function (reason, on)
-  if on then ghostReasons[reason] = true else ghostReasons[reason] = nil end
-  applyGhostMode(next(ghostReasons) ~= nil)
+  -- ownVehicle() and not playerVehicle(), for the reason set out at the top of
+  -- the file: the moment our car is deleted the game attaches this client to
+  -- somebody else's, and "the car I am attached to" would then exclude a RIVAL
+  -- from the ghost -- leaving the one car we are about to be respawned next to
+  -- as the only solid thing on track. With no car of our own the answer is nil,
+  -- and everything gets ghosted, which is exactly right for a mass respawn.
+  local mine = ownVehicle()
+  local myId = mine and vehicleId(mine) or nil
+  forEachVehicle(myId, function (veh, id) ghost.reason(id, reason, on, veh) end)
+  if on then ghost.field[reason] = true else ghost.field[reason] = nil end
 end
 
 local function clearGhostReasons()
-  ghostReasons = {}
-  applyGhostMode(false)
+  ghost.field = {}
+  ghost.remote = {}
+  ghost.left = {}
+  ghost.blockReason = nil
+  ghost.own = { settling = false, left = 0, total = 0, blocked = 0, warned = false }
+  ghost.veh = {}
+  -- Swept over EVERY car in the world, not just the ones this client believes
+  -- it ghosted. A session ending has to leave nothing ghosted whatever the
+  -- bookkeeping thinks -- an entry lost to a vehicle id being reused, or a ghost
+  -- applied by an instance of this extension that has since been reloaded, would
+  -- otherwise leave a car intangible with nothing left that could ever undo it.
+  -- This runs once per session end, so walking the field costs nothing.
+  ghost.applied = {}
+  ghost.alpha = {}
+  ghost.remoteVeh = {}
+  forEachVehicle(nil, function (veh, id) ghost.apply(id, veh, false) end)
+  ghost.applied = {}
+  ghost.alpha = {}
 end
 
--- Ghosting is a qualifying-only rule: it arms with the quali phase and is
--- dropped the moment the session changes, so nobody races ghosts. While it is
--- on, the fade is re-applied on a slow timer so a rival who joins (or respawns)
--- mid-session is ghosted too rather than showing up solid.
-local ghostRefresh = 0
-local GHOST_REFRESH_EVERY = 2.0
+-- Arm this client's own reset ghost. Called straight from the reset hook and
+-- applied LOCALLY on the spot -- no round trip -- because the dangerous frame is
+-- this one, not the one the server's acknowledgement arrives on. The broadcast
+-- follows so everyone else ghosts the same car.
+--
+-- A repeat reset while already ghosted RESTARTS the timer rather than stacking a
+-- second ghost, and the restart is capped: a driver holding the reset key can
+-- reach ghostMaxDurationSec of base timer and no further. The cap applies to the
+-- base timer ONLY -- it has no bearing on the occupancy check, which has no time
+-- limit in either direction.
+function ghost.arm()
+  local veh = ownVehicle()
+  local vehId = veh and vehicleId(veh) or nil
+  if not vehId then return end
+  local rules = ghost.rules
+  local base = rules.minSec
+  if ghost.own.vehId == vehId and ghost.own.total > 0 then
+    base = math.min(ghost.own.total + rules.minSec, rules.maxSec)
+  end
+  ghost.own.pid      = localServerId()
+  ghost.own.vehId    = vehId
+  ghost.own.total    = base
+  ghost.own.left     = base
+  ghost.own.blocked  = 0
+  ghost.own.warned   = false
+  -- The timer must not start on a car that is still being put down. It starts
+  -- once the vehicle reports a usable bounding box, which is also the first
+  -- moment the occupancy check could mean anything.
+  ghost.own.settling   = true
+  ghost.own.settleLeft = TUNE.GHOST_SETTLE_MAX
+  ghost.left[vehId]  = base
+  ghost.reason(vehId, 'reset', true)
+  -- Holding the reset key fires the vehicle-reset hook over and over -- the same
+  -- reason the blocked-reset notice further up is throttled. The ghost itself is
+  -- re-armed every time (it is local, and free), but the SERVER is not told
+  -- every time: only when the duration actually changes, which it stops doing
+  -- once the repeat extension hits its cap, plus a floor of half a second so a
+  -- held key cannot turn into a message per frame either way.
+  local changed = base ~= ghost.own.sentBase
+  local stale   = (localTime - (ghost.own.sentAt or -math.huge)) >= 0.5
+  if inMultiplayer() and (changed or stale) then
+    ghost.own.sentBase = base
+    ghost.own.sentAt   = localTime
+    TriggerServerEvent('RM_GhostStart', jsonEncode({ duration = base }))
+  end
+  log('I', 'raceManager', string.format(
+    'Reset ghost armed on vehicle %s for %.1fs', tostring(vehId), base))
+end
 
+-- Lift our own ghost and tell the server, so every other client drops it too.
+--
+-- `why` is 'clear' when the occupancy check passed -- the only route that
+-- restores collision to a car still on track, and the only one the driver is
+-- told about. Every other caller is a teardown (the session ended, the driver
+-- was stood down, the car was deleted) where there is no longer a race to be
+-- careful about, and announcing "contact restored" would be noise.
+function ghost.release(why)
+  local vehId = ghost.own.vehId
+  if vehId then
+    ghost.left[vehId] = nil
+    ghost.reason(vehId, 'reset', false)
+  end
+  ghost.own.vehId    = nil
+  ghost.own.settling = false
+  ghost.own.left     = 0
+  ghost.own.total    = 0
+  ghost.own.blocked  = 0
+  ghost.own.warned   = false
+  -- Forget what was last reported, so the NEXT ghost reports its duration even
+  -- though it opens with the same number this one did.
+  ghost.own.sentBase = nil
+  ghost.own.sentAt   = nil
+  if inMultiplayer() then TriggerServerEvent('RM_GhostEnd', '') end
+  if why == 'clear' then pushNotice('ghost', 'Contact restored') end
+  log('I', 'raceManager', 'Reset ghost released on vehicle ' .. tostring(vehId)
+    .. ' (' .. tostring(why or 'clear') .. ')')
+end
+
+-- Someone else's ghost. `endsAt` is on the SERVER clock, so what gets applied
+-- here is whatever is left of it by our reckoning of that clock -- a client
+-- 250 ms behind ghosts the car for 250 ms less, never 250 ms more.
+--
+-- Only an `endsAt` of nil clears the ghost, and an elapsed one does NOT. The
+-- server sends nil when the owning client has reported the space around its car
+-- clear; until then the ghost stands however long ago its timer nominally ran
+-- out, because the owner may be sitting inside somebody and still intangible.
+-- Un-ghosting a car here on our own clock would make it solid in OUR physics
+-- world while it was still a ghost in its owner's -- and a solid car overlapping
+-- another solid car on this client welds the pair on this client. The elapsed
+-- time is allowed to drive the fade and nothing else.
+function ghost.applyRemote(pid, endsAt)
+  if pid == nil then return end
+  ghost.remote[pid] = endsAt
+  local veh, vehId = ghost.vehicleForPid(pid)
+  -- Cache which local car this player owns. Resolving it means asking BeamMP for
+  -- its whole vehicle map, which builds a table -- fine here (an event, or the
+  -- two-second sweep), not fine on the per-frame fade below, which is why that
+  -- reads the cache instead.
+  ghost.remoteVeh[pid] = vehId
+  -- The car is not in this client's world yet (a join mid-ghost, or a vehicle
+  -- still spawning). The intent is remembered above and the refresh sweep
+  -- applies it as soon as the car appears.
+  if not vehId then return end
+  if endsAt ~= nil then
+    local left = endsAt - ghost.serverTime
+    ghost.left[vehId] = left > 0 and left or nil
+    ghost.reason(vehId, 'reset', true)
+    ghost.apply(vehId, veh, true, ghost.alphaFor(vehId))
+  else
+    ghost.left[vehId] = nil
+    ghost.reason(vehId, 'reset', false)
+  end
+end
+
+-- The server's whole ghost roster, off the state broadcast:
+-- { { pid = ..., endsAt = ... }, ... }, end times on the server clock.
+-- Authoritative, so a pid that is NOT in it has no ghost -- which is how a
+-- client that missed an RM_Ghost clear (or was not connected for it) stops
+-- showing a car as a ghost forever.
+--
+-- Our own row is skipped. Only this client can know whether the space around our
+-- car is clear, so our own ghost is ours to end; the server's copy of it is for
+-- everyone else's benefit.
+function ghost.applyRoster(list)
+  local mine = localServerId()
+  local seen = {}
+  for _, row in ipairs(list) do
+    local pid = row and row.pid
+    if pid ~= nil and tostring(pid) ~= tostring(mine) then
+      seen[pid] = true
+      ghost.applyRemote(pid, tonumber(row.endsAt))
+    end
+  end
+  for pid in pairs(ghost.remote) do
+    if not seen[pid] then ghost.applyRemote(pid, nil) end
+  end
+end
+
+-- The driver's own countdown, and the "you are stuck" warning. Its own guihook
+-- channel rather than the notice channel: a countdown moves continuously and the
+-- notice channel is for things that are said once.
+--
+-- Throttled to ~10 Hz, and silent entirely when there is no ghost. A guihook per
+-- frame is a message per frame to the UI for a readout a driver cannot read that
+-- fast, and this feature is meant to cost nothing with a full grid on track. The
+-- UI interpolates between pushes, exactly as it does for the lap clock.
+function ghost.pushHud(dt)
+  local active = ghost.own.vehId ~= nil
+  if not active and not ghost.hudShown then return end
+  ghost.hudLeft = ghost.hudLeft - dt
+  if active and ghost.hudShown and ghost.hudLeft > 0 then return end
+  ghost.hudLeft  = 0.1
+  ghost.hudShown = active
+  guihooks.trigger('RaceManagerGhost', {
+    active  = active,
+    left    = ghost.own.left,
+    total   = ghost.own.total,
+    blocked = ghost.own.blocked > 0,
+    warn    = ghost.own.blocked >= TUNE.GHOST_OVERLAP_WARN_SEC,
+  })
+end
+
+-- One update for all three ghost reasons, in the order they can affect each
+-- other: the qualifying rule (armed by the phase, dropped the moment the session
+-- changes, so nobody races ghosts), then this client's own reset ghost and the
+-- occupancy check that ends it, then everyone else's ghosts and the fade. The
+-- sweep at the end re-asserts whatever is wanted onto cars that have appeared
+-- since -- a rival who joined or respawned mid-session is ghosted too, rather
+-- than showing up solid.
 local function ghostUpdate(dt)
-  local want = ghostQuali and phase == 'qualifying' and not spectatorLock
-  setGhostReason('quali', want)
-  if not want then return end
-  ghostRefresh = ghostRefresh - dt
-  if ghostRefresh > 0 then return end
-  ghostRefresh = GHOST_REFRESH_EVERY
-  fadeRemoteVehicles(TUNE.GHOST_ALPHA)
+  -- Only on a CHANGE. setGhostReason walks every vehicle on track, and calling
+  -- it unconditionally would rebuild the vehicle list once a frame to tell it
+  -- the same thing it was told last frame. The sweep at the bottom of this
+  -- function is what catches cars that appeared since.
+  local wantQuali = ghostQuali and phase == 'qualifying' and not spectatorLock
+  if wantQuali ~= (ghost.field.quali == true) then
+    setGhostReason('quali', wantQuali)
+  end
+
+  -- --- this client's own reset ghost -------------------------------------
+  local own = ghost.own
+  -- Ends the moment the race does. Taking the flag, being stood down, the
+  -- session finishing and a return to the lobby all land here, and none of them
+  -- leaves a car to be careful around: the field is about to be respawned or
+  -- removed wholesale, and the placement ghost covers that.
+  if own.vehId and not ((phase == 'racing' or phase == 'qualifying') and not spectatorLock) then
+    ghost.release('session ended')
+  end
+  if own.vehId then
+    local got, veh = pcall(getObjectByID, own.vehId)
+    veh = got and veh or nil
+    if not veh then
+      -- The car is gone (deleted, or the driver was stood down). Nothing to
+      -- un-ghost, and nothing to keep counting.
+      ghost.release('vehicle gone')
+    else
+      if own.settling then
+        -- "Placed and settled": the first frame the car reports a usable box --
+        -- or, failing that, a short fixed wait. Waiting on the box ALONE is
+        -- another way to be ghosted forever: a car that never reports one would
+        -- never start its timer, so the ghost would have nothing to count down
+        -- and no way to end. The occupancy check is what actually guards the
+        -- restore, and it copes with an unmeasurable car on its own.
+        own.settleLeft = own.settleLeft - dt
+        if ghost.bounds(veh, 0) or own.settleLeft <= 0 then own.settling = false end
+      else
+        if own.left > 0 then
+          own.left = math.max(own.left - dt, 0)
+          ghost.left[own.vehId] = own.left
+          -- Drive the fade while it is running. Alpha only: the car is already
+          -- ghosted and re-sending that every frame would be a vehicle-VM
+          -- command per frame for no change.
+          ghost.fade(own.vehId, veh, ghost.alphaFor(own.vehId))
+        else
+          -- Base timer done: collision comes back on the first CLEAR frame and
+          -- not one before it. There is no time limit on this and no force.
+          if ghost.occupied(own.vehId, veh) then
+            own.blocked = own.blocked + dt
+            ghost.left[own.vehId] = nil     -- blocked cars stay visibly ghosts
+            ghost.fade(own.vehId, veh, TUNE.GHOST_ALPHA)
+            if not own.warned and own.blocked >= TUNE.GHOST_OVERLAP_WARN_SEC then
+              own.warned = true
+              pushNotice('ghost', 'Still ghosted — MOVE CLEAR of the other car')
+              if inMultiplayer() then
+                TriggerServerEvent('RM_GhostBlocked',
+                  jsonEncode({ seconds = own.blocked }))
+              end
+              log('W', 'raceManager', string.format(
+                'Reset ghost blocked for %.1fs: %s', own.blocked,
+                tostring(ghost.blockReason or 'another car is in this space')))
+            end
+          else
+            ghost.release('clear')
+          end
+        end
+      end
+    end
+  end
+  ghost.pushHud(dt)
+
+  -- --- other people's ghosts ---------------------------------------------
+  -- The shared clock runs on between server pushes so the last-second fade is
+  -- smooth at 60 fps instead of stepping three times a second. Every state
+  -- broadcast re-anchors it, so drift cannot accumulate -- the same
+  -- interpolate-and-correct arrangement the live lap clock uses.
+  ghost.serverTime = ghost.serverTime + dt
+  for pid, endsAt in pairs(ghost.remote) do
+    local vehId = ghost.remoteVeh[pid]
+    if vehId then
+      -- A lapsed ghost drops back to a flat translucent rather than staying
+      -- opaque: the fade said "contact is coming", and if the ghost is still
+      -- standing after it, contact did not come. Showing the car as solid while
+      -- it is still intangible would be the more confusing of the two lies.
+      local left = endsAt - ghost.serverTime
+      ghost.left[vehId] = left > 0 and left or nil
+      local got, veh = pcall(getObjectByID, vehId)
+      if got and veh then ghost.fade(vehId, veh, ghost.alphaFor(vehId)) end
+    end
+  end
+
+  -- --- re-assert sweep ----------------------------------------------------
+  -- Cars appear (a join, a respawn) after the event that ghosted them, so what
+  -- is wanted is re-applied on a slow timer rather than assumed to have stuck.
+  ghost.refresh = ghost.refresh - dt
+  if ghost.refresh > 0 then return end
+  ghost.refresh = 2.0
+  for reason in pairs(ghost.field) do setGhostReason(reason, true) end
+  for pid, endsAt in pairs(ghost.remote) do ghost.applyRemote(pid, endsAt) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -2704,6 +3618,7 @@ function M.onUpdate(dt)
   drawGates()
   drawStartPositions()      -- starting grid slots
   fieldUpdate(dt)           -- ghosted, staggered grid placement / mass respawn
+  holdUpdate(dt)            -- grid hold: verify it is holding, report position
   snapshotUpdate(dt)        -- Module 1: rolling "last good position"
   resetGuardUpdate(dt)      -- Module 1: teleport-echo window + notice throttle
   resetInputBlockUpdate()   -- Module 1: dead reset keys once the allowance is gone
@@ -3064,6 +3979,18 @@ local function onServerUpdate(rawData)
   ghostQuali = data.ghostQuali == true
   if type(data.qualiLapLimit)  == 'number' then qualiLapLimit  = data.qualiLapLimit  end
   if type(data.qualiTimeLimit) == 'number' then qualiTimeLimit = data.qualiTimeLimit end
+  -- Reset-ghosting rules are the server's, so every client in a league runs the
+  -- same numbers rather than whatever its own copy of the mod was shipped with.
+  -- Re-anchor the shared clock every push. Ghost end times are expressed on it.
+  if type(data.raceTime) == 'number' then ghost.serverTime = data.raceTime end
+  if type(data.ghostOnReset) == 'boolean' then ghost.rules.onReset = data.ghostOnReset end
+  if type(data.ghostMinSec)  == 'number'  then ghost.rules.minSec  = data.ghostMinSec  end
+  if type(data.ghostMaxSec)  == 'number'  then ghost.rules.maxSec  = data.ghostMaxSec  end
+  -- Authoritative per-vehicle ghost state, carried on the state broadcast for
+  -- the same reason finalLap is: it is what makes a client that joined (or
+  -- reconnected) DURING a ghost see it, instead of only clients that happened to
+  -- be listening when the one-shot event went out.
+  if type(data.ghosts) == 'table' then ghost.applyRoster(data.ghosts) end
   -- Whether THIS client is on the entry list, read off its own driver row.
   local wasJoined = joined
   local myId = localServerId()
@@ -3071,6 +3998,28 @@ local function onServerUpdate(rawData)
     for _, d in ipairs(data.drivers) do
       if tonumber(d.id) == myId then joined = d.joined == true; break end
     end
+  end
+
+  -- Fastest lap of the session. The leaderboard paints that driver's time gold
+  -- for everyone; the driver who set it is told, once, on the notice channel the
+  -- reset and joker rulings already use.
+  --
+  -- Keyed on the TIME as well as the holder. Keying on the holder alone meant a
+  -- driver who beat their own fastest lap was told nothing -- the pid had not
+  -- changed -- which is the one case where the driver is most likely to want to
+  -- know they did it. Every state broadcast carries the standing best, so what
+  -- distinguishes "they set a new one" from "this is the same one again" is the
+  -- time moving, and that is what is compared.
+  local bestPid  = tonumber(data.bestLapPid)
+  local bestTime = tonumber(data.bestLapTime)
+  if bestPid ~= lastBestLapPid or bestTime ~= lastBestLapTime then
+    if bestPid and myId and bestPid == myId and bestTime then
+      local mins = math.floor(bestTime / 60)
+      pushNotice('fastest',
+        string.format('FASTEST LAP — %d:%06.3f', mins, bestTime - mins * 60))
+    end
+    lastBestLapPid  = bestPid
+    lastBestLapTime = bestTime
   end
 
   local newPhase = data.phase or 'waiting'
@@ -3104,6 +4053,54 @@ local function onGridAssign(rawData)
   applyGridSlot(slot and math.floor(slot) or nil, tonumber(data.order), tonumber(data.count))
 end
 
+-- A ghost started or ended on some client. This is the one-shot companion to the
+-- roster carried on the state broadcast, and it exists for latency alone: the
+-- state push runs three times a second, and a third of a second is long enough
+-- for a car to teleport into a pack and be hit before anyone's client had been
+-- told it was a ghost. The roster is what makes the state RIGHT; this is what
+-- makes it right IN TIME.
+--
+-- Our own ghost is ignored here. We applied it locally the instant the reset
+-- fired, without waiting for this round trip, and only we can decide when it
+-- ends.
+local function onGhost(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local pid = data.pid
+  if pid == nil then return end
+  if tostring(pid) == tostring(localServerId()) then return end
+  local startedAt = tonumber(data.startedAt)
+  local duration  = tonumber(data.duration)
+  local endsAt    = nil
+  if data.active ~= false and startedAt and duration then
+    endsAt = startedAt + duration
+  end
+  ghost.applyRemote(pid, endsAt)
+end
+
+-- The server has seen this car off its grid slot and is pulling it back. The
+-- server owns the hold; this is it exercising that, and it arrives whether or
+-- not the local guard did its job — which is the point of having it.
+local function onHoldCorrect(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then data = {} end
+  if not holdWanted then return end
+  -- The server may know the slot coordinates when this client's view of them is
+  -- stale (a layout loaded after this client joined). Prefer what it sends.
+  if tonumber(data.x) and tonumber(data.y) and tonumber(data.z) then
+    -- The SLOT, not the anchor: this is a drop position, and the car has to be
+    -- allowed to settle onto it exactly as it did when it was first placed.
+    hold.slot   = vec3(tonumber(data.x), tonumber(data.y), tonumber(data.z))
+    hold.anchor = nil
+    if tonumber(data.hx) and tonumber(data.hy) then
+      hold.rot = headingRot(tonumber(data.hx), tonumber(data.hy))
+    end
+  end
+  hold.correctLeft = 0        -- a server correction is never rate-limited away
+  hold.restore('server correction: ' .. tostring(data.reason or 'moved off the grid'))
+  pushNotice('grid', 'Held on the grid — wait for the lights')
+end
+
 -- --- Module 1: forced spectator mode (server -> client) --------------------
 local function onForceSpectate(rawData)
   local ok, data = pcall(jsonDecode, rawData)
@@ -3116,9 +4113,24 @@ local function onReleaseSpectate(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then data = {} end
   local source = data.source and tostring(data.source) or nil
+  local order, count = tonumber(data.order), tonumber(data.count)
   -- The server snapshots the participant list before releasing anyone and hands
   -- each driver its place in it, so the field respawns as a sequence.
-  releaseSpectator(source, tonumber(data.order), tonumber(data.count))
+  if spectatorLock then
+    releaseSpectator(source, order, count)
+    return
+  end
+  -- Nothing of OURS to put back -- this driver never lost their car, because
+  -- they were still running when the session ended. They are released all the
+  -- same, and the rest of the field is about to materialise around them, so
+  -- they get the placement ghost for the same window everyone else does.
+  --
+  -- Without this the only cars ghosted through an end-of-session respawn were
+  -- the ones being respawned. A driver sitting on track was the one solid
+  -- object in the middle of a field landing on top of them.
+  if queueFieldPlacement then
+    queueFieldPlacement({ order = order, count = count })
+  end
 end
 
 -- --- Module 4: the server refused this client's vehicle/setup --------------
@@ -3539,6 +4551,10 @@ local DISPATCH = {
   RM_AliasResult     = onAliasResult,
   -- Starting grid: the server hands out slots, this client places the car.
   RM_GridAssign      = onGridAssign,
+  -- Reset ghosting: someone's car went intangible (or came back).
+  RM_Ghost           = onGhost,
+  -- Grid hold: the server pulling a car back onto its slot.
+  RM_HoldCorrect     = onHoldCorrect,
   -- Demo Derby module
   RM_DerbyUpdate     = onDerbyUpdate,
   RM_DerbyLayouts    = onDerbyLayoutList,

@@ -32,7 +32,15 @@ local sent     = {}
 local handlers = {}
 local world    = {}     -- [id] = vehicle, the vehicles that currently exist
 local attached = nil    -- what getPlayerVehicle(0) hands back
-local ghosted  = false
+-- [id] = true while that car's vehicle-to-vehicle collisions are switched off.
+--
+-- Collisions are dropped through BeamNG's own vehicle-side obj:setGhostEnabled,
+-- queued across from GE like any other vehicle command -- so watching the
+-- command string is how this test observes the real mechanism rather than a
+-- stand-in for it. (It used to stub MPVehicleGE.setGhostMode, which no BeamMP
+-- build has ever had: the test passed against an API that did not exist while
+-- ghosting did nothing on track.)
+local ghosts   = {}
 local deleted  = {}     -- [id] = true for every vehicle the mod deleted
 local spawns   = 0
 
@@ -45,7 +53,10 @@ local function makeVehicle(id)
   function v:getVelocity() return { x = 0, y = 0, z = 0 } end
   function v:getJBeamFilename() return 'etk800' end
   function v:setPositionRotation() end
-  function v:queueLuaCommand() end
+  function v:queueLuaCommand(cmd)
+    if cmd == 'obj:setGhostEnabled(true)'  then ghosts[self.id] = true end
+    if cmd == 'obj:setGhostEnabled(false)' then ghosts[self.id] = nil  end
+  end
   function v:setMeshAlpha() end
   function v:delete()
     deleted[self.id] = true
@@ -73,8 +84,11 @@ end
 -- anyone else's, which is the whole root of this bug.
 MPVehicleGE = {
   isOwn = function (id) return id == OWN_ID or id == RESPAWNED_ID end,
-  setGhostMode = function (on) ghosted = on and true or false end,
 }
+
+-- BeamNG's scene lookup. The ghost bookkeeping is keyed by vehicle id, so it
+-- needs a way back to the object for cars it is not holding a reference to.
+getObjectByID = function (id) return world[id] end
 
 core_vehicles = {
   -- Deletes whatever the client is ATTACHED to. That is only safe once the mod
@@ -158,7 +172,7 @@ handlers['RM_ReleaseSpectate']({ source = 'race', order = 1, count = 5 })
 
 -- Collisions are off for the whole operation: a field respawning together is
 -- how cars land inside each other and are thrown apart.
-check(ghosted == true, 'cars are ghosted while the field respawns')
+check(ghosts[RIVAL_ID] == true, 'cars are ghosted while the field respawns')
 check(spawns == 0, 'and nothing has spawned yet — the placement is queued')
 
 frames(0.3)
@@ -167,12 +181,12 @@ check(spawns == 1,
 check(attached ~= nil and attached:getID() == RESPAWNED_ID,
   'and the camera is bound to OUR car, not left on whatever the game picked')
 check(freeCam == false, 'the driving camera is restored')
-check(ghosted == true, 'collisions stay off until the whole field has settled')
+check(ghosts[RIVAL_ID] == true, 'collisions stay off until the whole field has settled')
 
 -- ...and come back once it has. Deliberately a timer, not a "have the cars
 -- stopped moving" test: on a grid they are frozen for the standing start.
 frames(3.0)
-check(ghosted == false, 'collisions come back once the field is placed and settled')
+check(ghosts[RIVAL_ID] == nil, 'collisions come back once the field is placed and settled')
 
 -- ===========================================================================
 -- The stagger: a driver further down the field waits its turn

@@ -214,6 +214,10 @@ the rug pulled mid-lap.
 4. Press **Start Countdown**: everyone gets a synchronized 3‑2‑1‑**GO!**
    overlay, every car is released by that same broadcast, and the race clock
    starts.
+
+   The hold is **enforced, not just requested** — see
+   [Holding the grid](#holding-the-grid) for what that means and what gets
+   logged.
 5. Race. The table now shows **Pos** (live position), the starting grid slot,
    current lap, best race lap and **Led** (laps led), and it re-sorts itself
    leader-first in real time as places change (see *Live position tracking*
@@ -231,7 +235,39 @@ the rug pulled mid-lap.
 When the race closes, the server automatically writes a results file
 (qualifying classification + race classification, pole and winner tagged) to
 `Resources/Server/RaceManager/results/` and announces the path in chat —
-ready for league standings or a broadcast overlay. Housekeeping:
+ready for league standings or a broadcast overlay.
+
+The race table records **Pos, Start, Driver, Best Lap, Laps Led, Finish** (plus
+Joker and Resets columns when those regulations are armed). `Start` is the grid
+slot the driver lined up on, which is what makes a finishing position readable —
+P2 means something very different from eighth on the grid than it does from pole.
+
+Underneath it, two awards:
+
+- **Half-way leader** — whoever completed the half-distance lap first.
+- **Hard Charger** — the classified finisher who gained the most places between
+  their grid slot and the flag.
+
+```
+Pos   Start  Driver                 Best Lap   Laps Led  Finish
+P1    P3     Cara                   1:30.000   1         0:00.000    << RACE WINNER
+P2    P1     Alice                  1:32.000   0         0:00.100
+P3    P2     Dan                    1:33.000   0         0:00.200
+
+ HALF-WAY LEADER: Alice  (led at lap 3 of 5)
+ HARD CHARGER: Cara  (P3 -> P1, +2 places)
+```
+
+Half distance **rounds up** on an odd number of laps: a 5-lap race is decided at
+lap 3, the same as a 6-lap one — that is the lap on which a driver has more of
+the race behind them than ahead. A one-lap race has no half way and reports none.
+
+A tie on places gained goes to the **higher finisher**. Drivers who did not
+finish are not eligible — there is no finishing position to have gained to — and
+if nobody gained a place the line is left out rather than given to whoever lost
+the fewest.
+
+Housekeeping:
 
 - **Reset** wipes the session back to Waiting with fresh driver records.
 - **Clear Results Cache** deletes all saved result `.txt` files on the
@@ -361,6 +397,148 @@ recognised as the mod's own doing and never counted, blocked or reported.
 And because the reset key repeats while it is held, the block is applied to
 every press but the notice, the console line and the server report are limited
 to one a second.
+
+### Fastest lap
+
+The quickest lap set by anyone in the session is shown **in gold** in the Best
+Lap column, so the whole field can see who holds it and when it changes hands.
+The driver who sets it gets a short `FASTEST LAP — 1:31.240` notice, on the same
+channel as the reset and joker messages.
+
+The notice fires again whenever the time changes hands **or improves** — beating
+your own fastest lap is announced too.
+
+It is per session — a new race starts with nobody holding it — and it is decided
+by the server, so every leaderboard agrees. Qualifying highlights the **quali
+best** (the time that session is scored on); the race highlights the **race
+best**.
+
+### Holding the grid
+
+Between **Generate Grid** and **GO!** every gridded car is frozen on its start
+position. The freeze itself is applied by each client — the server has no
+physics — but the server owns the rule and checks that it is actually working.
+
+A car dropped onto a start position first has to fall onto its suspension, and
+nothing polices it until it has come to rest — enforcing against settling makes
+a car hover at the height it was dropped from, being reset every frame. Where it
+settles is then what "on its slot" means.
+
+Distances are measured **across the ground**. Stealing a start is a move
+forwards; a car sagging on its suspension has not moved anywhere, and counting
+that as movement is what caused the hover.
+
+The two failures get different answers. A car that is merely *moving* on its slot
+has lost its freeze and is re-pinned where it stands — no teleport, so nothing is
+disturbed. A car that has actually **left** its slot is put back on it.
+
+Each held car reports its position four times a second. A car more than
+**0.5 m** from its assigned slot is put back on it, re-frozen, and the
+correction is logged with the driver, the distance, the slot and the race
+state:
+
+```
+[RaceManager] HOLD violation: Ryder was 2.50m off grid slot 4 during countdown
+              (tolerance 0.50m) — pulled back, correction #1
+```
+
+Each client also watches its own car and pulls it back before the server has to,
+so in practice a correction that reaches the server means the local guard did not
+run. Both are driven by the car *moving*: a car standing still on its slot is
+never touched, which is what lets you rev against the hold and pre-select a gear.
+Corrections are rate-limited per driver so one shove does not become a storm.
+
+The hold survives things that used to break it: a driver pressing reset on the
+grid, a vehicle reloaded or respawned on the grid, and a placement that settles
+too slowly all put the car back on its slot, held. A driver who resets on the
+grid gets a notice saying so.
+
+**Release is one broadcast to everybody.** No car is released ahead of another by
+its position in a loop; the only spread is each client's own network latency.
+
+**On launching:** a driver holding throttle with revs up will out-launch a driver
+sitting idle, and that is intended — it is a standing start, and preparing the
+launch is part of it. What the hold guarantees is that nobody is *ahead* of their
+slot when the lights go out, not that everyone launches identically. One
+consequence worth knowing: a car that has to be corrected is re-frozen, and
+re-freezing resets the drivetrain, so that driver loses their revs and any
+pre-selected gear. Only drivers whose hold actually failed pay that, and the
+alternative is letting them creep.
+
+If the server was never told where the grid slots are — an admin who built start
+positions live on an older client build, so only a count was reported — it stays
+out of it and the client-side guard alone enforces the hold. Loading a saved
+layout always gives the server the coordinates.
+
+### Reset ghosting
+
+A driver who resets mid-session used to reappear **solid and stationary**,
+often in the middle of the racing line, and whoever arrived next drove into
+them. Reset ghosting removes that: for a few seconds after a reset the car has
+no vehicle-to-vehicle collisions, in **both** directions — it cannot be hit and
+it cannot hit anyone. Collisions with the **world and the terrain are
+untouched**, so the car still sits on the road and still hits the scenery.
+
+Everyone else sees the ghosted car go **translucent**, then fade back to solid
+over the last second as a warning that contact is about to resume. The ghosted
+driver gets a countdown of their own in the app.
+
+It is on by default and applies during a race **and** during qualifying —
+resetting into somebody is the same physical problem in both.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `ghostOnReset` | `true` | Master switch. `false` disables reset ghosting entirely |
+| `ghostMinDurationSec` | `5.0` | How long a ghost lasts, from the moment the car is placed and settled |
+| `ghostMaxDurationSec` | `15.0` | Ceiling on the timer when a driver resets repeatedly |
+| `ghostAlpha` | `0.35` | How translucent a ghosted car looks to everyone else |
+| `ghostFadeOutSec` | `1.0` | Seconds spent fading back to solid before contact resumes |
+| `ghostOverlapMargin` | `0.25` | Metres of clearance required around a car before it goes solid |
+| `ghostOverlapWarnSec` | `10.0` | How long a driver may sit blocked before being told to move clear |
+
+The first three are **server** settings (near the top of
+`server/RaceManager/main.lua`) because they are a league rule — a client running
+a five-second ghost in a field running eight is a field where two cars disagree
+about whether they can touch, so the server broadcasts them and every client
+obeys. The last four are **client** settings (the `TUNE` table in
+`lua/ge/extensions/raceManager.lua`): local presentation and local geometry that
+no other client has an opinion about.
+
+**Why the timer is not the whole story.** Restoring collisions on two cars that
+are *inside each other* welds their node structures together. It ends both
+drivers' races instantly and there is no recovery from it. So when the timer
+expires the space around the car is measured against every other car on track —
+a real bounding-box test, not a distance between origins, so a car lying
+crossways through another is caught — and collisions come back only on a frame
+that is provably clear.
+
+Uncertainty counts as occupied, but it is always a question that can be asked
+again rather than a permanent verdict: a car that cannot be measured precisely is
+judged on distance, and one that is far away is not treated as being inside you.
+The end of a session clears every ghost regardless — nothing stays intangible
+past the flag.
+
+That check has **no time limit and no override** while the session is running. A car parked inside another
+stays a ghost indefinitely, is never forced solid, and goes solid the moment the
+space clears. If it is blocked for longer than `ghostOverlapWarnSec` the driver
+is told to **move clear** and the server logs it — a warning only, never a
+penalty. Cars that are themselves ghosts are ignored by the check, because a
+ghost cannot weld to anything and counting it would deadlock two overlapping
+ghosts against each other forever.
+
+Resetting again while already ghosted **restarts** the timer rather than adding
+a second ghost, up to `ghostMaxDurationSec`. That cap is on the timer only and
+never shortens the occupancy check.
+
+Every ghost is logged server-side with the driver, the race time, their running
+order, their lap and how far they were from their next checkpoint, so "reset to
+phase through the pack" is answerable from the log. **It is worth knowing that
+this is possible:** a ghosted car can drive through traffic for the length of
+its ghost, and parking inside another car is a way to stay ghosted. Neither is
+penalised — the log is there so an admin can see it and rule on it themselves.
+
+Ghosting is collision and rendering only. Checkpoint, lap and split validation
+are completely unaffected.
 
 ### Cars on and off the track
 

@@ -367,7 +367,7 @@ angular.module('beamng.apps')
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.4.0';
+      var APP_BUILD = '0.5.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -576,6 +576,9 @@ angular.module('beamng.apps')
           $scope.sessionKind = data.sessionKind === 'quali' ? 'quali' : 'race';
           if (typeof data.sessionLaps === 'number') { $scope.sessionLaps = data.sessionLaps; }
           $scope.raceTime = data.raceTime || 0;
+          // Who holds the session's fastest lap. One id, compared per row when
+          // the table renders — no scan, and no second sorted copy of the field.
+          $scope.bestLapPid = (data.bestLapPid === undefined) ? null : data.bestLapPid;
           $scope.drivers = data.drivers || [];
           // Note gains/losses before the table re-renders, so the arrows in the
           // position column reflect this very update.
@@ -746,6 +749,48 @@ angular.module('beamng.apps')
           }, 6000);
         });
       });
+
+      // Reset ghosting: this driver's own countdown to contact resuming.
+      //
+      // The bridge pushes at ~10 Hz and the readout is interpolated between
+      // pushes, the same arrangement the lap clock uses — a guihook per frame
+      // would be a message per frame for a number nobody can read that fast.
+      //
+      // `blocked` means the timer has run out but another car is still in the
+      // way, so the countdown is replaced by "MOVE CLEAR" rather than sitting at
+      // zero: the driver is waiting on the OTHER car now, not on a clock, and
+      // there is no time at which it gives up and lets them go solid.
+      var ghostTicker = null;
+      function stopGhostTicker() {
+        if (ghostTicker) { clearInterval(ghostTicker); ghostTicker = null; }
+      }
+      $scope.$on('RaceManagerGhost', function (event, data) {
+        $scope.$evalAsync(function () {
+          if (!data || !data.active) {
+            $scope.ghost = null;
+            stopGhostTicker();
+            return;
+          }
+          $scope.ghost = {
+            left: data.left || 0,
+            at: Date.now(),
+            blocked: !!data.blocked,
+            warn: !!data.warn
+          };
+          if (!ghostTicker) {
+            ghostTicker = setInterval(function () {
+              $scope.$evalAsync(function () {
+                if (!$scope.ghost) { stopGhostTicker(); return; }
+                if ($scope.ghost.blocked) { $scope.ghostLeft = 0; return; }
+                var elapsed = (Date.now() - $scope.ghost.at) / 1000;
+                $scope.ghostLeft = Math.max($scope.ghost.left - elapsed, 0);
+              });
+            }, 100);
+          }
+          $scope.ghostLeft = $scope.ghost.blocked ? 0 : $scope.ghost.left;
+        });
+      });
+      $scope.$on('$destroy', stopGhostTicker);
 
       $scope.$on('RaceManagerSpectator', function (event, data) {
         $scope.$evalAsync(function () {

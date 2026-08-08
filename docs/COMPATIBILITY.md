@@ -20,10 +20,31 @@ pass over the changelogs.
 | TCP connection handling and retry logic; batch-based mod loading; UI refresh; avatar null-pointer fix; translation updates | Internal to BeamMP | No change needed |
 | `ADM` → `ADMIN` role rename; `ui.multiplayer.*` → `ui.beammp.*` translation keys | The mod uses neither BeamMP roles nor its translation keys | No change needed |
 
-**Ghost qualifying, one honest caveat:** BeamMP exposes no vehicle-collision
-toggle — not in v4.22.0 and not in v4.21.1 either, so this is not a regression.
-The mod probes for one and, finding none, fades rival cars so you can *see* who
-is ghosted, but they remain solid. The console says so when the rule arms.
+**Ghost qualifying — this entry was wrong, and is now fixed.** It used to read
+that BeamMP exposes no vehicle-collision toggle, so ghosted rivals were faded but
+stayed solid. The first half was true and the conclusion was not: the mod was
+looking in the wrong place. It probed `MPVehicleGE` for `setGhostMode`,
+`setGhosts` and `enableGhostMode`, none of which any BeamMP build has ever had,
+and took the failure as proof that no toggle existed anywhere.
+
+The toggle is **BeamNG's**, not BeamMP's: `obj:setGhostEnabled(bool)`, a
+vehicle-side call reached from GE through `queueLuaCommand` — the same bridge the
+grid freeze already used. It is per vehicle, it leaves world and terrain
+collision alone, and it is present in `libbeamng.x64.dll` with a matching
+`getGhostEnabled`. The engine drives it itself for instability recovery
+(`lua/ge/main.lua`), and BeamNG's own multiplayer has `ghostOnReset` /
+`ghostOnTp` vehicle globals that are this exact feature.
+
+So ghost qualifying now actually removes collisions rather than only looking as
+though it does, and the same mechanism carries [reset
+ghosting](REFERENCE.md#reset-ghosting). Because it is per vehicle, every client
+must ghost the *same* car, which is why ghost state is broadcast keyed by
+**player id** — a vehicle id is a local scene-object id and means something
+different on every client.
+
+The lesson worth keeping: a capability probe that finds nothing has only proved
+that *those names* are absent. It never established that the capability was
+missing, and for two releases the docs recorded the stronger claim.
 
 ### BeamNG.drive v0.39.3 (hotfix)
 
