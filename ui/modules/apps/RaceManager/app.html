@@ -121,6 +121,38 @@
     <button class="rm-btn rm-btn-reset" ng-click="resetLeaderboard()">Reset</button>
   </div>
 
+  <!-- ================= Track layout (admin only) =========================
+       Deliberately HERE and not in the editor. Running a saved race is not an
+       authoring job: an admin should pick a layout and start the race without
+       ever opening the editor, which used to be the only place this lived —
+       and opening the editor is what replaces the race checkpoint visuals with
+       the authoring ones. Building layouts stays in the editor; choosing one
+       to race belongs next to Generate Grid and Start Countdown. -->
+  <div class="rm-controls rm-controls-layout" ng-if="isAdmin">
+    <span class="rm-controls-label">Track<span ng-if="layoutMap"> — {{ layoutMap }}</span></span>
+    <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': layoutDropdownOpen}">
+      <button type="button" class="rm-layout-trigger"
+              ng-class="{'rm-layout-trigger-empty': !layoutUi.selected}"
+              ng-click="toggleLayoutDropdown()">
+        <span class="rm-layout-trigger-label">{{ selectedLayoutLabel() }}</span>
+        <span class="rm-layout-caret">▾</span>
+      </button>
+      <div class="rm-layout-menu" ng-if="layoutDropdownOpen">
+        <div class="rm-layout-option"
+             ng-repeat="l in layouts track by l.name"
+             ng-class="{'rm-layout-option-active': l.name === layoutUi.selected}"
+             ng-click="selectLayoutOption(l)">
+          {{ l.name }} ({{ l.checkpoints.length }} gates)
+        </div>
+      </div>
+    </div>
+    <button class="rm-btn rm-btn-grid" ng-click="loadLayout()"
+            ng-disabled="!layoutUi.selected || phase === 'countdown' || phase === 'racing'"
+            title="Broadcast this layout's checkpoints to every connected player. No need to open the editor.">
+      Load Layout
+    </button>
+  </div>
+
   <!-- ================= Admin tab bar =====================================
        Every admin panel used to stack vertically, which overflowed the app
        window — .rm-root is overflow:hidden, so whatever ran past the bottom
@@ -389,35 +421,11 @@
             Save Current Layout
           </button>
         </div>
-        <div class="rm-layouts-row">
-          <!-- Custom dropdown (not a native <select> — its popup does not render
-               in BeamNG's CEF UI). The menu is DOM we position and z-index
-               ourselves so it sits above the preview canvas and is clickable. -->
-          <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': layoutDropdownOpen}">
-            <button type="button" class="rm-layout-trigger"
-                    ng-class="{'rm-layout-trigger-empty': !layoutUi.selected}"
-                    ng-click="toggleLayoutDropdown()">
-              <span class="rm-layout-trigger-label">{{ selectedLayoutLabel() }}</span>
-              <span class="rm-layout-caret">▾</span>
-            </button>
-            <div class="rm-layout-menu" ng-if="layoutDropdownOpen">
-              <div class="rm-layout-option"
-                   ng-repeat="l in layouts track by l.name"
-                   ng-class="{'rm-layout-option-active': l.name === layoutUi.selected}"
-                   ng-click="selectLayoutOption(l)">
-                {{ l.name }} ({{ l.checkpoints.length }} gates)
-              </div>
-            </div>
-          </div>
-          <button class="rm-btn rm-btn-grid" ng-click="loadLayout()"
-                  ng-disabled="!layoutUi.selected || phase === 'countdown' || phase === 'racing'"
-                  title="Broadcast this layout's checkpoints to every connected player">
-            Load Layout
-          </button>
-        </div>
         <div class="rm-layouts-hint">
           Layouts are stored on the server and only listed for the map currently hosted.
           A layout carries its checkpoints, the joker route and the starting grid.
+          <strong>Loading</strong> one to race is up in the session controls, so
+          running a saved race never means opening this editor.
         </div>
       </div>
       <canvas class="rm-preview-canvas" width="200" height="130"></canvas>
@@ -1275,6 +1283,15 @@
      like the old select, and the menu is absolutely positioned with a high
      z-index so it stacks above the 2D preview canvas and stays clickable
      (pointer-events explicitly enabled — nothing here is a click-through). */
+  /* The layout picker sits in the session controls, so it shares their look. */
+  .rm-controls-layout { align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); }
+  .rm-controls-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #9aa0a6;
+    white-space: nowrap;
+    align-self: center;
+  }
   .rm-layout-dropdown { position: relative; flex: 1; min-width: 0; }
   .rm-layout-trigger {
     display: flex;

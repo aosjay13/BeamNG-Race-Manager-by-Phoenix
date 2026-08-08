@@ -2967,6 +2967,175 @@ local function jokerLabel(i, n, state)
   return set[state]
 end
 
+-- ===========================================================================
+-- Race-mode checkpoint markers: BeamNG's own gate poles
+-- ===========================================================================
+-- During an actual race a checkpoint should look like a checkpoint, not like an
+-- editor overlay -- two vertical poles standing either side of the racing line,
+-- which is what BeamNG uses for its own races and what a driver already reads
+-- without being taught. That is `scenario/race_marker`, and this is the wrapper
+-- around it.
+--
+-- IT IS USED IN ITS DETACHED FORM, AND THAT IS THE WHOLE DESIGN. race_marker is
+-- a SINGLETON shared by everything in the game that races -- BeamNG's own
+-- hotlapping and flowgraph races, drag, drift, and BeamJoy if it is installed.
+-- Its setupMarkers() call rebuilds one global marker list, so calling it would
+-- silently delete every marker any of them had placed, and theirs would delete
+-- ours. createRaceMarker(true, ...) instead returns a marker that is never put
+-- in that shared list: we own it, nobody else can see it, and nothing we do can
+-- disturb another mod's race. The cost is that we drive it ourselves -- position
+-- it, colour it, tick it and destroy it -- which is what the rest of this
+-- section does.
+--
+-- Only the gates a driver needs are ever built: the one they are heading for
+-- and the one after it. A twenty-gate circuit still costs two markers.
+local poles = {
+  live = {},        -- [slot] = { marker = <engine marker>, key = <identity> }
+  enabled = false,  -- markers are currently wanted
+  -- The resolved engine module: nil = not looked yet, false = looked and this
+  -- build has none, table = the module.
+  mod = nil,
+  -- Why the poles are (or are not) up, and the last engine error if one was
+  -- thrown. Every call into the marker is pcall'd -- a checkpoint visual must
+  -- never take the race loop down -- but swallowing the reason as well is how a
+  -- visual that never appears becomes undiagnosable.
+  why = nil,
+  lastError = nil,
+}
+
+-- Ask the engine for a marker, or nil on a build (or a headless test) that has
+-- no race_marker. Every call into engine code here is pcall'd: a checkpoint
+-- visual must never be able to take the race loop down with it.
+--
+-- The module lookup is resolved ONCE and its failure is remembered. require()
+-- on a name that does not resolve walks the whole package path, and this is
+-- reached from the frame loop -- left uncached, a build without race_marker
+-- paid that search twice a frame forever, which measured seventy times the cost
+-- of everything else the mod does per frame put together.
+function poles.module()
+  if poles.mod ~= nil then return poles.mod or nil end
+  local ok, mod = pcall(require, 'scenario/race_marker')
+  if not ok or type(mod) ~= 'table' or type(mod.createRaceMarker) ~= 'function' then
+    poles.mod = false            -- looked, found nothing; do not look again
+    log('W', 'raceManager', 'No scenario/race_marker on this build — '
+      .. 'race checkpoints will keep the editor gate visual')
+    return nil
+  end
+  poles.mod = mod
+  return mod
+end
+
+function poles.create()
+  local mod = poles.module()
+  if not mod then return nil end
+  local made, marker = pcall(mod.createRaceMarker, true, 'sideColumnMarker')
+  if not made or type(marker) ~= 'table' then return nil end
+  return marker
+end
+
+-- Call into the engine, remembering the first thing that goes wrong. Silence is
+-- what made "I started a race and saw no poles" impossible to answer.
+function poles.call(what, fn, ...)
+  local ok, err = pcall(fn, ...)
+  if not ok and not poles.lastError then
+    poles.lastError = tostring(what) .. ': ' .. tostring(err)
+    log('E', 'raceManager', 'Race marker ' .. poles.lastError)
+  end
+  return ok
+end
+
+-- Point one marker slot at a gate. `key` identifies what the slot is currently
+-- showing, so a marker is only re-pointed when the gate under it actually
+-- changes rather than every frame.
+function poles.set(slot, wp, mode, key)
+  local entry = poles.live[slot]
+  if not entry then
+    local marker = poles.create()
+    if not marker then return false end
+    entry = { marker = marker }
+    poles.live[slot] = entry
+  end
+  if entry.key ~= key then
+    entry.key = key
+    local w = gateDims(wp)
+    -- The marker plants its poles at pos +/- side * radius, so radius is the
+    -- HALF width -- the same number the editor rectangle is built from.
+    poles.call('setToCheckpoint', entry.marker.setToCheckpoint, entry.marker, {
+      pos    = vec3(wp.x, wp.y, wp.z),
+      normal = vec3(wp.hx, wp.hy, 0),
+      radius = w * 0.5,
+    })
+    poles.call('setMode', entry.marker.setMode, entry.marker, mode)
+  end
+  return true
+end
+
+-- Destroy every marker we hold. Called on every teardown path there is: the
+-- race ending, the editor opening, the session closing, the extension
+-- unloading. These are real scene objects, so one left behind is a pair of
+-- poles standing on an empty map with nothing able to remove them.
+function poles.clear()
+  for slot, entry in pairs(poles.live) do
+    pcall(entry.marker.clearMarkers, entry.marker)
+    poles.live[slot] = nil
+  end
+  poles.enabled = false
+end
+
+-- Markers animate (they pulse and fade with distance), so they need a tick.
+-- Detached markers are not in race_marker's own render list, which is exactly
+-- why they are safe -- so we drive them.
+function poles.update(dt)
+  for _, entry in pairs(poles.live) do
+    poles.call('update', entry.marker.update, entry.marker, dt, dt)
+  end
+end
+
+-- Which gates should be wearing poles right now.
+--
+-- Race markers are for DRIVING, so they exist only while a session is running
+-- and only for this driver's own next two gates: the one they are aiming at and
+-- the one after it, so the line through the corner reads before they arrive.
+-- The editor's own view of the track is a separate thing entirely and turns
+-- these off -- an admin laying out a circuit wants to see all of it at once,
+-- labelled, which poles cannot do.
+function poles.sync(editorView)
+  local want = sessionRunning() and not editorView and not spectatorLock
+  -- One line whenever the answer changes, so "no poles" always has a reason
+  -- attached to it in the console rather than being a silent nothing.
+  local why = want and 'on'
+    or (not sessionRunning() and ('no session running (phase=' .. tostring(phase) .. ')'))
+    or (editorView and 'the editor is open and you are an admin')
+    or (spectatorLock and 'spectating')
+    or 'off'
+  if why ~= poles.why then
+    poles.why = why
+    log('I', 'raceManager', 'Race checkpoint poles: ' .. why)
+  end
+  if not want then
+    if next(poles.live) ~= nil then poles.clear() end
+    return
+  end
+  -- Nothing to do on a build with no marker module, and asking again every
+  -- frame is exactly the cost this short-circuit exists to avoid.
+  if poles.mod == false then return end
+  poles.enabled = true
+  local n = #route
+  if n == 0 then return end
+  -- 'lap' colours the start/finish line, 'default' the ordinary next gate --
+  -- the same meanings BeamNG gives them in its own races.
+  local a = armedWp
+  if a < 1 or a > n then a = 1 end
+  poles.set(1, route[a], a == n and 'lap' or 'default', 'main:' .. a)
+  local b = a % n + 1
+  if n > 1 then
+    poles.set(2, route[b], b == n and 'lap' or 'next', 'main:' .. b)
+  elseif poles.live[2] then
+    pcall(poles.live[2].marker.clearMarkers, poles.live[2].marker)
+    poles.live[2] = nil
+  end
+end
+
 local function drawGates()
   if not debugDrawer then return end
   local active = sessionRunning() or phase == 'countdown' or phase == 'grid'
@@ -3644,6 +3813,10 @@ function M.onUpdate(dt)
   lapTimerUpdate(dt)        -- live lap clock for this driver's own HUD
   reportProgress(dt)        -- live position telemetry (distance to next gate)
   drawGates()
+  -- Race-mode checkpoint poles. Editor visuals belong to admins with the editor
+  -- open; everyone else, including an admin who has closed it, gets the poles.
+  poles.sync(editorOpen and isAdmin)
+  poles.update(dt)
   drawStartPositions()      -- starting grid slots
   fieldUpdate(dt)           -- ghosted, staggered grid placement / mass respawn
   holdUpdate(dt)            -- grid hold: verify it is holding, report position
@@ -3703,6 +3876,29 @@ function M.ghostStatus()
     fieldReasons   = table.concat(reasons, ','),
     phase          = phase,
     ghostQuali     = ghostQuali,
+  }
+end
+
+-- Diagnostic for the in-game Lua console:
+--   dump(raceManager.polesStatus())
+-- Answers "why can I not see the checkpoint poles" in one line, without needing
+-- the log: whether the engine module resolved, whether they are wanted right
+-- now and why, how many are standing, and the first engine error if any.
+function M.polesStatus()
+  local live = 0
+  for _ in pairs(poles.live) do live = live + 1 end
+  return {
+    moduleFound    = poles.mod ~= nil and poles.mod ~= false,
+    moduleLookedUp = poles.mod ~= nil,
+    reason         = poles.why,
+    markersUp      = live,
+    lastError      = poles.lastError,
+    phase          = phase,
+    editorOpen     = editorOpen,
+    isAdmin        = isAdmin,
+    spectating     = spectatorLock ~= nil,
+    gates          = #route,
+    armed          = armedWp,
   }
 end
 
@@ -4667,6 +4863,7 @@ local function resetToIdle(reason)
   -- this driver -- their car, their camera, their collisions -- is settled now.
   flushFieldPlacement()
   releaseGridHold()
+  poles.clear()                  -- scene objects: never leave them standing
   clearGhostReasons()
   setResetInputsBlocked(false)   -- never leave the reset keys dead after unload
   holdWanted = nil               -- nothing is meant to be held any more

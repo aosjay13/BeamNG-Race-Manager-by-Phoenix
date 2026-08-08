@@ -199,6 +199,35 @@ if setTarget then
       .. 'sending it to raceManager.setEditorTarget')
 end
 
+-- ===========================================================================
+-- Running a saved race must not require the editor
+-- ===========================================================================
+-- The layout picker used to live inside the editor panel, which meant loading a
+-- track was only reachable by opening the editor -- and opening the editor is
+-- what swaps the race checkpoint visuals for the authoring ones. An admin
+-- looked for their gate poles during a race and found none, because choosing
+-- the track had left them in the editor.
+--
+-- So: the Load control lives in the session controls, next to Generate Grid and
+-- Start Countdown, and the editor keeps only the authoring half.
+local editorStart = html:find('================= Checkpoint editor', 1, true)
+local loadAt = html:find('ng%-click="loadLayout%(%)"')
+expect(loadAt ~= nil, 'the template has a Load Layout control')
+expect(editorStart ~= nil, 'the template has a checkpoint editor section')
+expect(loadAt and editorStart and loadAt < editorStart,
+  'Load Layout sits ABOVE the editor section, so running a saved race never ' ..
+  'requires opening the editor')
+
+-- Saving stays in the editor: that IS authoring.
+local saveAt = html:find('ng%-click="saveLayout%(%)"')
+expect(saveAt and editorStart and saveAt > editorStart,
+  'Save Current Layout stays inside the editor, where authoring belongs')
+
+-- Exactly one layout picker, or two dropdowns would share one open-state flag
+-- and both spring open together.
+local _, pickers = html:gsub('ng%-click="toggleLayoutDropdown%(%)"', '')
+expect(pickers == 1, 'exactly one layout dropdown in the template (found ' .. pickers .. ')')
+
 if fails == 0 then
   print('ui_bindings_test: ' .. checks .. ' checks, 0 failures ('
     .. #models .. ' ng-model bindings)')
