@@ -718,6 +718,58 @@ if shortFile then shortFile:close() end
 check(shortText ~= '' and shortText:find('HALF-WAY LEADER', 1, true) == nil,
   'a one-lap race reports no half-way leader')
 
+-- ===========================================================================
+-- Point to point: a sprint stage is one traversal
+-- ===========================================================================
+-- Setting a circuit to one lap times the same thing, which is why that was the
+-- workaround. The difference is that it reads as a one-lap circuit everywhere,
+-- and the lap count stops being a setting the admin has to remember.
+RM_onLogin(1, '{"password":"phoenix"}')
+RM_onResetLeaderboard(1)
+for id in pairs(connected) do RM_onPlayerJoin(id) end
+RM_onJoinRace(1, '{"join":true}')
+RM_onSetTotalLaps(1, '{"laps":7}')
+RM_onSetPointToPoint(1, '{"enabled":true}')
+check(lastState.pointToPoint == true, 'the track can be set to point to point')
+
+RM_onGenerateGrid(1)
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+lastChat = nil
+-- One traversal finishes the stage, even though Laps still says seven.
+RM_onLap(1, '{"lapTime":95.0}')
+check(driver('Alice') and driver('Alice').status ~= 'racing',
+  'crossing the last gate once finishes a point-to-point stage')
+check(lastState.totalLaps == 7,
+  'and the lap setting is kept, not clamped, so a circuit layout restores it')
+
+-- Switched back to a circuit, the lap count means what it says again.
+RM_onResetLeaderboard(1)
+RM_onSetPointToPoint(1, '{"enabled":false}')
+check(lastState.pointToPoint == false, 'and it can be switched back to a circuit')
+for id in pairs(connected) do RM_onPlayerJoin(id) end
+RM_onJoinRace(1, '{"join":true}')
+RM_onSetTotalLaps(1, '{"laps":2}')
+RM_onGenerateGrid(1)
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+RM_onLap(1, '{"lapTime":95.0}')
+check(driver('Alice') and driver('Alice').status == 'racing',
+  'a two-lap circuit is not finished by one lap')
+RM_onLap(1, '{"lapTime":94.0}')
+check(driver('Alice') and driver('Alice').status ~= 'racing', 'the second lap finishes it')
+
+-- The mode is locked once a session is under way: the shape of a race must not
+-- change under the drivers running it.
+RM_onResetLeaderboard(1)
+for id in pairs(connected) do RM_onPlayerJoin(id) end
+RM_onJoinRace(1, '{"join":true}')
+RM_onGenerateGrid(1)
+RM_onStartCountdown(1)
+RM_onSetPointToPoint(1, '{"enabled":true}')
+check(lastState.pointToPoint == false, 'the mode cannot be changed mid-session')
+RM_onEndRace(1)
+
 -- adminPresent flips false only once every admin has logged out (so non-admin
 -- clients know they can bypass the login and just spectate).
 RM_onLogout(1); RM_onLogout(2)

@@ -367,7 +367,7 @@ angular.module('beamng.apps')
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.5.3';
+      var APP_BUILD = '0.5.4';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -579,6 +579,7 @@ angular.module('beamng.apps')
           // Who holds the session's fastest lap. One id, compared per row when
           // the table renders — no scan, and no second sorted copy of the field.
           $scope.bestLapPid = (data.bestLapPid === undefined) ? null : data.bestLapPid;
+          if (typeof data.pointToPoint === 'boolean') { $scope.pointToPoint = data.pointToPoint; }
           $scope.drivers = data.drivers || [];
           // Note gains/losses before the table re-renders, so the arrows in the
           // position column reflect this very update.
@@ -674,12 +675,21 @@ angular.module('beamng.apps')
         });
       });
 
+      // Circuit or sprint stage. Owned by the loaded track, toggled in the
+      // editor, and mirrored from both the route push and the state broadcast.
+      $scope.pointToPoint = false;
+      $scope.togglePointToPoint = function () {
+        $scope.pointToPoint = !$scope.pointToPoint;
+        bngApi.engineLua('raceManager.setPointToPoint(' + (!!$scope.pointToPoint) + ')');
+      };
+
       $scope.$on('RaceManagerRoute', function (event, data) {
         if (!data) { return; }
         $scope.$evalAsync(function () {
           $scope.routeWaypoints = data.waypoints || [];
           $scope.nextWp = data.nextWp || 1;
           $scope.visualize = data.visualize !== false;
+          if (typeof data.pointToPoint === 'boolean') { $scope.pointToPoint = data.pointToPoint; }
           if (typeof data.clientBuild === 'string') { $scope.clientBuild = data.clientBuild; }
           // Admin session restored from the client bridge. This directive is
           // destroyed and rebuilt every time BeamNG tears down the HUD layer —

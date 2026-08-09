@@ -91,6 +91,25 @@ course you want to race:
 5. **Save** / **Load** keep a personal scratch copy on your own machine
    (`settings/raceManager/route.json`) — handy while iterating on a design.
 
+#### Circuit or point to point
+
+The **Main Route** row carries a toggle: **⟳ Circuit** or **⇥ Point to Point**.
+
+- **Circuit** — the last gate is a start/finish line, and the race runs for the
+  lap count.
+- **Point to Point** — the stage is driven once, first gate to last, and the
+  last gate is the finish. The gates relabel themselves (`1 START` … `N FINISH`),
+  the header shows a **POINT TO POINT** badge, and the Laps field is disabled
+  because laps do not apply.
+
+Setting a circuit to one lap times the same thing, which is why that worked as a
+workaround — but it reads as a one-lap circuit everywhere it is shown, and the
+lap count becomes a setting an admin has to remember. The toggle is **saved with
+the layout**, so a sprint stage stays a sprint stage.
+
+Your lap setting is kept rather than overwritten, so switching a circuit layout
+back in restores it. The mode is locked once a countdown or race starts.
+
 #### Placing the starting grid
 
 Switch the editor to the **Start Grid** tab, then drive to each grid slot

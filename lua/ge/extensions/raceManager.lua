@@ -92,7 +92,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.5.3'
+local RM_BUILD = '0.5.4'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -107,6 +107,15 @@ local totalLaps = 5          -- mirrored from server broadcasts
 -- global defaults below. Each checkpoint is a flat, upright rectangle:
 -- width = lateral span, height = vertical extent (covers banking).
 local route            = {}
+-- Is this track a circuit or a sprint?
+--
+-- A point-to-point stage is driven once, from the first gate to the last, and
+-- the last gate is a FINISH rather than a line you come back round to. Setting
+-- a circuit to one lap gets the same timing, which is why it worked as a
+-- workaround -- but it reads as a one-lap circuit everywhere it is shown, and a
+-- driver on a sprint stage wants to be told they are on a sprint stage. It
+-- belongs to the TRACK, so it travels with the layout.
+local pointToPoint     = false
 local checkpointWidth  = TUNE.DEFAULT_WIDTH
 local checkpointHeight = TUNE.DEFAULT_HEIGHT
 local visualize        = true
@@ -554,6 +563,7 @@ local function pushRouteState()
     visualize    = visualize,
     -- Starting grid
     startPositions = startPositions,
+    pointToPoint   = pointToPoint,
     gridSlot       = gridSlot,
     gridFrozen     = gridFrozen,
     -- Admin session, so a freshly mounted UI app knows straight away that this
@@ -2978,13 +2988,19 @@ end
 local labelCache = { routeLen = -1, jokerLen = -1, route = {}, joker = {} }
 
 local function routeLabel(i, n)
-  if labelCache.routeLen ~= n then
+  if labelCache.routeLen ~= n or labelCache.p2p ~= pointToPoint then
     labelCache.routeLen = n
+    labelCache.p2p = pointToPoint
     labelCache.route = {}
   end
   local l = labelCache.route[i]
   if not l then
-    l = (i == n) and (i .. ' START/FINISH') or ('CP ' .. i)
+    if pointToPoint then
+      -- A sprint stage has a start and a finish, not a line crossed twice.
+      l = (i == n) and (i .. ' FINISH') or (i == 1 and '1 START' or ('CP ' .. i))
+    else
+      l = (i == n) and (i .. ' START/FINISH') or ('CP ' .. i)
+    end
     labelCache.route[i] = l
   end
   return l
@@ -3985,6 +4001,21 @@ function M.setEditorOpen(open)
   editorOpen = open == true
 end
 
+-- Editor toggle: is this track a sprint or a circuit?
+--
+-- Told to the server as well as kept locally, because the lap count is the
+-- server's and a sprint stage is one traversal by definition -- leaving an
+-- admin to also remember "and set laps to 1" is the workaround this replaces.
+function M.setPointToPoint(on)
+  pointToPoint = on == true
+  labelCache.route = {}          -- the gate labels say which mode this is
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetPointToPoint', jsonEncode({ enabled = pointToPoint }))
+  end
+  pushRouteState()
+  log('I', 'raceManager', 'Track mode: ' .. (pointToPoint and 'POINT TO POINT' or 'circuit'))
+end
+
 function M.setEditorTarget(target)
   target = tostring(target or 'main')
   if target ~= 'joker' and target ~= 'start' then target = 'main' end
@@ -4255,6 +4286,10 @@ function M.saveLayout(name)
     checkpoints = cps,
     joker       = jokerCps,
     startPositions = starts,
+    -- Whether this track is a sprint stage or a circuit is a property of the
+    -- TRACK, so it is stored with it. An admin who built a point-to-point stage
+    -- should not have to remember to set it again every race night.
+    pointToPoint   = pointToPoint,
   })
   print('[raceManager] saveLayout: sending RM_SaveLayout (' .. #payload .. ' bytes) to server')
   TriggerServerEvent('RM_SaveLayout', payload)
@@ -4318,6 +4353,7 @@ local function onServerUpdate(rawData)
   end
   -- Race entry + qualifying rules.
   if type(data.entryMode) == 'string' then entryMode = data.entryMode end
+  if type(data.pointToPoint) == 'boolean' then pointToPoint = data.pointToPoint end
   ghostQuali = data.ghostQuali == true
   if type(data.qualiLapLimit)  == 'number' then qualiLapLimit  = data.qualiLapLimit  end
   if type(data.qualiTimeLimit) == 'number' then qualiTimeLimit = data.qualiTimeLimit end
@@ -4573,8 +4609,10 @@ local function onApplyLayout(rawData)
   startPositions = starts
   checkpointWidth  = clampWidth(data.width or checkpointWidth)
   checkpointHeight = clampHeight(data.height or checkpointHeight)
+  pointToPoint     = data.pointToPoint == true
   resetLapTracking()
-  editorMsg('Loaded layout "' .. tostring(data.name) .. '" (' .. #route .. ' gates'
+  editorMsg('Loaded layout "' .. tostring(data.name) .. '" ('
+    .. (pointToPoint and 'point to point, ' or '') .. #route .. ' gates'
     .. (#jokerRoute > 0 and (' + ' .. #jokerRoute .. ' joker') or '')
     .. (#startPositions > 0 and (', ' .. #startPositions .. ' grid slots') or '') .. ')')
   log('I', 'raceManager', 'Applied server layout "' .. tostring(data.name)

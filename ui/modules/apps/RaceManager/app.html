@@ -42,11 +42,14 @@
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
       START P{{ gridSlot }}<b ng-if="gridFrozen"> — HOLD</b>
     </span>
+    <span class="rm-p2p-badge" ng-if="pointToPoint"
+          title="This track is a point-to-point stage: driven once, first gate to last. Laps do not apply.">POINT TO POINT</span>
     <span class="rm-derby-badge" ng-if="derby.phase === 'running'">DERBY LIVE {{ formatDerbyTime(derby.time) }}</span>
     <span class="rm-admin-tag" ng-if="isAdmin" title="You are logged in as an admin">ADMIN</span>
-    <!-- Shortcuts to the two big panels; they select the matching admin tab. -->
-    <button class="rm-btn rm-btn-tab rm-btn-tab-derby" ng-if="isAdmin" ng-class="{'rm-btn-tab-derby-active': isAdminTab('derby')}" ng-click="selectAdminTab('derby')">Derby</button>
-    <button class="rm-btn rm-btn-tab" ng-if="isAdmin" ng-class="{'rm-btn-tab-active': isAdminTab('editor')}" ng-click="selectAdminTab('editor')">Editor</button>
+    <!-- The Editor and Derby shortcuts that used to sit here are gone: the admin
+         tab bar is directly below, shows which panel is active and carries the
+         checkpoint count, so a second control for the same action only cost
+         width in a header that is short of it. -->
     <button class="rm-btn rm-btn-tab" ng-if="isAdmin" ng-click="logout()" title="Log out and return to spectator view">Log out</button>
     <!-- Spectators: a way back to the login screen at any time -->
     <button class="rm-btn rm-btn-tab rm-btn-login-tab" ng-if="!isAdmin && !showLogin" ng-click="openLogin()" title="Log in as an admin">🔒 Login</button>
@@ -184,13 +187,17 @@
 
   <!-- ================= Race settings ================= -->
   <div class="rm-settings" ng-if="isAdminTab('race')">
+    <!-- Laps mean nothing on a sprint stage, so the field says so rather than
+         sitting there accepting a number that will be ignored. The setting is
+         kept, not clamped, so switching a circuit layout back in restores it. -->
     <span class="rm-setting">
       <label>Laps</label>
       <input type="number" min="1" max="500" ng-model="settingsUi.laps"
-             ng-disabled="phase === 'countdown' || phase === 'racing'">
+             ng-disabled="pointToPoint || phase === 'countdown' || phase === 'racing'">
       <button class="rm-btn rm-btn-mini" ng-click="applyTotalLaps()"
-              ng-disabled="phase === 'countdown' || phase === 'racing'">Set</button>
-      <span class="rm-setting-val">race: {{ totalLaps }}</span>
+              ng-disabled="pointToPoint || phase === 'countdown' || phase === 'racing'">Set</button>
+      <span class="rm-setting-val" ng-if="!pointToPoint">race: {{ totalLaps }}</span>
+      <span class="rm-setting-val rm-p2p-note" ng-if="pointToPoint">point to point — driven once</span>
     </span>
     <!-- Module 1: vehicle reset ruleset -->
     <span class="rm-setting" title="How many vehicle resets/repairs each driver gets this session. 0 = no resets at all; -1 (or blank) = unlimited. Once the allowance is gone the reset button is blocked — the car is put straight back where it was. Nobody is disqualified for it.">
@@ -314,6 +321,17 @@
               title="Place the starting grid: drive to each slot and press Place Start Position Here. Slot 1 is pole.">
         Start Grid ({{ startPositions.length }})
       </button>
+      <!-- Circuit or sprint. Setting a circuit to one lap times the same thing,
+           which is why that was the workaround — but it reads as a one-lap
+           circuit everywhere it is shown, and a driver on a sprint stage should
+           be told they are on one. Saved with the layout. -->
+      <button class="rm-btn rm-btn-mini rm-p2p-toggle" ng-if="editorTarget === 'main'"
+              ng-class="{'rm-p2p-on': pointToPoint}"
+              ng-click="togglePointToPoint()"
+              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              title="Circuit: the last gate is a start/finish line and the race runs for the lap count. Point to point: the stage is driven once, first gate to last, and the last gate is the finish.">
+        {{ pointToPoint ? '⇥ Point to Point' : '⟳ Circuit' }}
+      </button>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'joker'">
         Joker gates are drawn violet. Enable the joker lap in Race settings to enforce it.
       </span>
@@ -345,6 +363,7 @@
       </span>
       <span class="rm-setting" title="How far the checkpoint rectangle extends up and down — raise it to cover high banking">
         <label>Gate height</label>
+        <input type="range" min="1" max="100" step="1" ng-model="settingsUi.height" ng-change="applyHeight()">
         <input type="number" class="rm-width-num" min="1" max="100" step="1" ng-model="settingsUi.height" ng-change="applyHeight()">
         <span class="rm-setting-val">m</span>
       </span>
@@ -366,10 +385,19 @@
         </div>
         <!-- Per-checkpoint override editor (expands under the selected gate) -->
         <div class="rm-cp-edit" ng-if="selectedCp === $index + 1">
-          <span class="rm-setting"><label>W</label>
-            <input type="number" min="2" max="120" ng-model="cpEdit.width" placeholder="{{ settingsUi.width }}"></span>
-          <span class="rm-setting"><label>H</label>
-            <input type="number" min="1" max="100" ng-model="cpEdit.height" placeholder="{{ settingsUi.height }}"></span>
+          <!-- Same ranges and the same slider-plus-number pairing as the
+               defaults above, so a gate dimension is adjusted the same way
+               wherever it is being edited. Blank still means "inherit". -->
+          <span class="rm-setting rm-cp-dim"><label>W</label>
+            <input type="range" min="2" max="120" step="1" ng-model="cpEdit.width"
+                   ng-change="applyCheckpointOverride()">
+            <input type="number" min="2" max="120" ng-model="cpEdit.width"
+                   placeholder="{{ settingsUi.width }}"></span>
+          <span class="rm-setting rm-cp-dim"><label>H</label>
+            <input type="range" min="1" max="100" step="1" ng-model="cpEdit.height"
+                   ng-change="applyCheckpointOverride()">
+            <input type="number" min="1" max="100" ng-model="cpEdit.height"
+                   placeholder="{{ settingsUi.height }}"></span>
           <button class="rm-btn rm-btn-mini rm-btn-start" ng-click="applyCheckpointOverride()">Apply</button>
           <button class="rm-btn rm-btn-mini" ng-click="resetCheckpointOverride()">Reset</button>
         </div>
@@ -1292,6 +1320,23 @@
     white-space: nowrap;
     align-self: center;
   }
+  /* A per-gate override row: slider and number side by side, like the
+     defaults. The slider takes the slack so the number box stays readable. */
+  /* Sprint stage, called out wherever the lap count would otherwise be read. */
+  .rm-p2p-badge {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    background: rgba(126, 226, 168, 0.18);
+    color: #7ee2a8;
+  }
+  .rm-p2p-note { color: #7ee2a8; }
+  .rm-p2p-toggle.rm-p2p-on { background: rgba(126, 226, 168, 0.22); color: #7ee2a8; }
+  .rm-cp-dim { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; }
+  .rm-cp-dim input[type=range] { flex: 1; min-width: 40px; }
+  .rm-cp-dim input[type=number] { width: 48px; }
   .rm-layout-dropdown { position: relative; flex: 1; min-width: 0; }
   .rm-layout-trigger {
     display: flex;
