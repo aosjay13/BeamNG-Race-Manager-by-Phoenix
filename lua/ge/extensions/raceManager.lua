@@ -92,7 +92,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.5.1'
+local RM_BUILD = '0.5.2'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -2805,6 +2805,9 @@ local function palette()
     joker     = ColorF(0.65, 0.3, 0.95, 0.8),  -- joker route: violet
     jokerUsed = ColorF(0.45, 0.45, 0.5, 0.45), -- joker already taken: dimmed
     text      = ColorF(1, 1, 1, 1),
+    -- The editor gate's filled surface. Deliberately faint: it has to show the
+    -- gate's extent without hiding the road it is judged against.
+    fill      = ColorF(0.35, 0.65, 1, 0.16),
     textBg    = ColorI(0, 0, 0, 160),
     -- Demo derby arena. Its own entries rather than its own table: the derby
     -- module keeps its state and its logic separate, but a colour is a colour,
@@ -2856,12 +2859,41 @@ local function gateGeometry(wp)
     tl = corner(-1,  1), tr = corner(1,  1),
   }
   g.mid = (g.tl + g.tr) * 0.5 + vec3(0, 0, 0.8)
+  -- The authoring direction arrow, cached with the corners for the same reason
+  -- they are: it is fixed by the gate's placement, and rebuilding four vec3 per
+  -- gate per frame is precisely the garbage this cache exists to stop.
+  local ax, ay = wp.hx or 0, wp.hy or 1
+  g.arrowBase = vec3(wp.x, wp.y, wp.z + 0.35)
+  g.arrowTip  = vec3(wp.x + ax * 3.5, wp.y + ay * 3.5, wp.z + 0.35)
+  local hx, hy = ay * 0.9, -ax * 0.9
+  g.arrowL = vec3(g.arrowTip.x - ax * 1.1 + hx, g.arrowTip.y - ay * 1.1 + hy, g.arrowTip.z)
+  g.arrowR = vec3(g.arrowTip.x - ax * 1.1 - hx, g.arrowTip.y - ay * 1.1 - hy, g.arrowTip.z)
   gateCache[wp] = g
   return g
 end
 
-local function drawGate(wp, color, label)
+-- A gate, drawn for whoever is looking at it.
+--
+-- `authoring` is the editor's view of a checkpoint and a driver's view of one
+-- are different jobs, not different systems. An admin laying out a circuit needs
+-- to see the trigger itself -- how wide it is, how high it reaches, which number
+-- it is, which way through it counts -- across the whole track at once. A driver
+-- needs to know where the next gate is and nothing else; labels and a filled box
+-- across the racing line are clutter at speed, which is what the gate poles
+-- replace during a session.
+--
+-- Both read the same checkpoint. Only the drawing differs.
+local function drawGate(wp, color, label, authoring)
   local g = gateGeometry(wp)
+
+  if authoring then
+    -- The surface the crossing test actually uses, filled so its extent is
+    -- unmistakable, and translucent so the road underneath stays visible --
+    -- an admin is judging the gate against the track, not instead of it.
+    local p = palette()
+    debugDrawer:drawQuadSolid(g.bl, g.br, g.tr, g.tl, p.fill)
+  end
+
   -- Verticals a touch thicker than the horizontals so the gate still reads as
   -- a gate at distance.
   debugDrawer:drawCylinder(g.bl, g.tl, TUNE.EDGE_RADIUS, color)
@@ -2871,6 +2903,16 @@ local function drawGate(wp, color, label)
 
   local p = palette()
   debugDrawer:drawTextAdvanced(g.mid, String(label), p.text, true, false, p.textBg)
+
+  if authoring then
+    -- Which way through the gate counts. A rectangle alone is symmetrical and
+    -- says nothing about direction, and a gate placed facing backwards is the
+    -- classic way to build a circuit that cannot be completed. All four points
+    -- come out of the cache above.
+    debugDrawer:drawCylinder(g.arrowBase, g.arrowTip, 0.10, color)
+    debugDrawer:drawCylinder(g.arrowL, g.arrowTip, 0.10, color)
+    debugDrawer:drawCylinder(g.arrowR, g.arrowTip, 0.10, color)
+  end
 end
 
 -- Starting grid markers: a flat slot outline on the ground with a short arrow
@@ -3140,6 +3182,18 @@ local function drawGates()
   if not debugDrawer then return end
   local active = sessionRunning() or phase == 'countdown' or phase == 'grid'
   if not active and not visualize then return end
+
+  -- Who is looking, and therefore what they get.
+  --
+  --   authoring : an admin with the editor open -- the whole track at once,
+  --               filled, numbered, with the direction through each gate shown.
+  --   racing    : the gate POLES are doing this job, so the rectangles stay out
+  --               of the way. Drawing both was how the prototype shipped and it
+  --               is visual noise across the racing line.
+  --   otherwise : the plain outline, so the track is visible on the grid and
+  --               between sessions when no poles are up.
+  local authoring = editorOpen and isAdmin
+  if sessionRunning() and not authoring then return end
   local p = palette()
 
   local n = #route
@@ -3152,7 +3206,7 @@ local function drawGates()
     else
       color = p.route
     end
-    drawGate(wp, color, routeLabel(i, n))
+    drawGate(wp, color, routeLabel(i, n), authoring)
   end
 
   -- Joker route: violet, so it never reads as part of the main lap. The next
@@ -3170,7 +3224,7 @@ local function drawGates()
     else
       color = p.joker
     end
-    drawGate(wp, color, jokerLabel(i, jn, state))
+    drawGate(wp, color, jokerLabel(i, jn, state), authoring)
   end
 end
 

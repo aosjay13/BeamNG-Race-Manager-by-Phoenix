@@ -43,6 +43,7 @@ ColorF = function (r, g, b, a) colorAllocs = colorAllocs + 1; return { r, g, b, 
 ColorI = function (r, g, b, a) colorAllocs = colorAllocs + 1; return { r, g, b, a } end
 String = function (s) return s end
 
+local quads = {}
 local cylinders, texts = {}, {}
 debugDrawer = {
   drawCylinder = function (_, a, b, radius, color)
@@ -50,6 +51,10 @@ debugDrawer = {
   end,
   drawTextAdvanced = function (_, at, text)
     texts[#texts + 1] = { at = at, text = text }
+  end,
+  -- The filled surface of an editor gate. Only the authoring view draws it.
+  drawQuadSolid = function (_, a, b, c, d, color)
+    quads[#quads + 1] = { a = a, b = b, c = c, d = d, color = color }
   end,
 }
 
@@ -84,7 +89,7 @@ local RM = dofile('lua/ge/extensions/raceManager.lua')
 RM.onExtensionLoaded()
 
 local function frame()
-  cylinders, texts = {}, {}
+  cylinders, texts, quads = {}, {}, {}
   RM.onUpdate(0.016)
 end
 local function serverState(t) t.rmProtocol = 2; handlers['RM_Update'](t) end
@@ -98,13 +103,30 @@ handlers['RM_ApplyLayout']({
     { x = 0,   y = 300, z = 5, hx = 0, hy = 1 },
   },
 })
+-- ===========================================================================
+-- Editor and race are two views of the same checkpoint
+-- ===========================================================================
+-- A driver in a race gets the gate POLES (see tests/poles_test.lua); drawing
+-- the rectangles as well is clutter straight across the racing line. An admin
+-- with the editor open gets the authoring view instead: the filled surface, the
+-- number, and which way through the gate counts.
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
+frame()
+check(#cylinders == 0 and #texts == 0 and #quads == 0,
+  'a driver racing sees no gate rectangles -- the poles do that job')
+
+serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {},
+  youAreAdmin = true })
+RM.setEditorOpen(true)
+frame()
+check(#quads == 3, 'an admin authoring sees a filled surface per gate')
 
 -- ===========================================================================
 -- The geometry is right
 -- ===========================================================================
 frame()
-check(#cylinders == 12, 'three gates draw four edges each')
+-- Four edges and a three-part direction arrow per gate.
+check(#cylinders == 21, 'three gates draw four edges and an arrow each')
 check(#texts == 3, 'and one label each')
 
 -- Gate 1 faces +Y, so its lateral axis is +X and it spans ±10 m across,
@@ -155,7 +177,9 @@ RM.setCheckpointOverride(1, 60, 20)
 frame()
 check(near(cylinders[1].a.x, -30) and near(cylinders[1].a.z, -5),
   'a per-gate override is picked up on that gate')
-check(near(cylinders[5].a.x, -20) and near(cylinders[5].a.z, 0),
+-- Each gate emits four edges then a three-part arrow, so gate 2's first edge
+-- is index 8.
+check(near(cylinders[8].a.x, -20) and near(cylinders[8].a.z, 0),
   'and leaves the gates that did not change alone')
 
 -- Clearing the override falls back to the global default again.

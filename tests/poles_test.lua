@@ -127,6 +127,7 @@ debugDrawer = {
   drawTextAdvanced = function () end,
   drawSphere = function () end,
   drawLine = function () end,
+  drawQuadSolid = function () end,   -- the editor gate's filled surface
 }
 MPGameNetwork = {}
 MPConfig = { getPlayerServerID = function () return 1 end }
