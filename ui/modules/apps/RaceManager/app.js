@@ -72,7 +72,7 @@ angular.module('beamng.apps')
       // the main lap, the joker route and the starting grid. Anything else is
       // not a target the client Lua knows about, so it falls back to the main
       // lap — the same normalisation raceManager.setEditorTarget applies.
-      var EDITOR_TARGETS = { main: true, joker: true, start: true };
+      var EDITOR_TARGETS = { main: true, joker: true, pit: true, start: true };
       function editorTargetOf(value) {
         return EDITOR_TARGETS[value] ? value : 'main';
       }
@@ -367,7 +367,7 @@ angular.module('beamng.apps')
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.5.1';
+      var APP_BUILD = '0.6.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -579,6 +579,7 @@ angular.module('beamng.apps')
           // Who holds the session's fastest lap. One id, compared per row when
           // the table renders — no scan, and no second sorted copy of the field.
           $scope.bestLapPid = (data.bestLapPid === undefined) ? null : data.bestLapPid;
+          if (typeof data.pointToPoint === 'boolean') { $scope.pointToPoint = data.pointToPoint; }
           $scope.drivers = data.drivers || [];
           // Note gains/losses before the table re-renders, so the arrows in the
           // position column reflect this very update.
@@ -674,12 +675,24 @@ angular.module('beamng.apps')
         });
       });
 
+      // Circuit or sprint stage. Owned by the loaded track, toggled in the
+      // editor, and mirrored from both the route push and the state broadcast.
+      $scope.pointToPoint = false;
+      $scope.togglePointToPoint = function () {
+        $scope.pointToPoint = !$scope.pointToPoint;
+        bngApi.engineLua('raceManager.setPointToPoint(' + (!!$scope.pointToPoint) + ')');
+      };
+
       $scope.$on('RaceManagerRoute', function (event, data) {
         if (!data) { return; }
         $scope.$evalAsync(function () {
           $scope.routeWaypoints = data.waypoints || [];
+          $scope.pitRoute = data.pitRoute || [];
+          $scope.pitActive = !!data.pitActive;
+          $scope.pitLeft = data.pitLeft || 0;
           $scope.nextWp = data.nextWp || 1;
           $scope.visualize = data.visualize !== false;
+          if (typeof data.pointToPoint === 'boolean') { $scope.pointToPoint = data.pointToPoint; }
           if (typeof data.clientBuild === 'string') { $scope.clientBuild = data.clientBuild; }
           // Admin session restored from the client bridge. This directive is
           // destroyed and rebuilt every time BeamNG tears down the HUD layer —
@@ -723,12 +736,27 @@ angular.module('beamng.apps')
         });
       });
 
-      // The list the editor panel shows: main lap, joker route or starting
-      // grid, whichever the editor is currently pointed at.
+      // The list the editor panel shows: main lap, joker route, pit stalls or
+      // starting grid, whichever the editor is currently pointed at.
+      //
+      // Every target needs a case here. A missing one does not fail loudly --
+      // it falls through to the main route, so the tab's own count reads
+      // correctly off its real list while the list underneath shows the
+      // checkpoints instead. That is exactly how the pit tab came to show four
+      // stalls when one had been placed.
       $scope.editorWaypoints = function () {
         if ($scope.editorTarget === 'joker') { return $scope.jokerRoute; }
+        if ($scope.editorTarget === 'pit')   { return $scope.pitRoute; }
         if ($scope.editorTarget === 'start') { return $scope.startPositions; }
         return $scope.routeWaypoints;
+      };
+
+      // Adjust a placed gate: stand the car on it, or move it to the car.
+      $scope.previewCheckpoint = function (i) {
+        bngApi.engineLua('raceManager.previewCheckpoint(' + i + ')');
+      };
+      $scope.moveCheckpoint = function (i) {
+        bngApi.engineLua('raceManager.moveCheckpoint(' + i + ')');
       };
 
       // Start positions are placements, not gates: the width/height override
@@ -1267,16 +1295,9 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.setGarageEnforce(' + (!$scope.garageEnforce) + ')');
       };
 
-      $scope.applyWidth = function () {
-        var w = parseFloat($scope.settingsUi.width);
-        if (!w || w <= 0) { return; }
-        bngApi.engineLua('raceManager.setCheckpointWidth(' + w + ')');
-      };
-      $scope.applyHeight = function () {
-        var h = parseFloat($scope.settingsUi.height);
-        if (!h || h <= 0) { return; }
-        bngApi.engineLua('raceManager.setCheckpointHeight(' + h + ')');
-      };
+      // No applyWidth / applyHeight: the global gate size is gone. A gate takes
+      // its size when it is placed, inherits it from the gate before, and is
+      // edited on its own row -- so resizing one gate can never move another.
 
       // ------------------------------------------------------------------
       // UI -> LUA commands (race entry, grid and qualifying rules)
@@ -1418,12 +1439,12 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.setCheckpointOverride(' + $scope.selectedCp + ', 0, 0)');
       };
 
-      // Effective (displayed) dimension for a gate row: its override or the
-      // global default the rectangle will actually use.
+      // A gate's size, as shown on its row. Every gate placed or loaded carries
+      // its own now; the fallback is only reached by one from a layout saved
+      // before that was true, and the client fills those in as it loads.
       $scope.cpDim = function (wp, field) {
         if (wp && typeof wp[field] === 'number') { return wp[field]; }
-        if (field === 'width')  { return $scope.settingsUi.width; }
-        return $scope.settingsUi.height;
+        return field === 'width' ? $scope.settingsUi.width : $scope.settingsUi.height;
       };
 
       // ------------------------------------------------------------------

@@ -80,16 +80,67 @@ course you want to race:
    world; earlier gates are orange, and your next target turns green during
    a session).
 3. Every gate has a **width** (how far it reaches across) and a **height**
-   (how far it reaches up and down). Set the live defaults with the **Gate
-   width** slider (2–120 m) and the **Gate height** field. Raise the height on
-   **high-banked tracks** so the rectangle covers the banking — what you see
-   drawn in the world *is* the trigger, so you can verify it at a glance.
-   Click any placed checkpoint in the list to **override its own
-   Width / Height** (blank = inherit the default).
-4. **Undo** removes the last gate, **Clear** wipes the route,
+   (how far it reaches up and down), and **each gate owns its own**. The first
+   gate of a new route gets the standard size; every gate after it inherits the
+   size of the one placed before, so you set it once and drive the rest of the
+   route. Click any placed gate to change it — **nothing else moves**. Raise the
+   height on **high-banked tracks** so the rectangle covers the banking; what
+   you see drawn in the world *is* the trigger, so you can verify it at a glance.
+
+   > There used to be a global width/height that every gate without an override
+   > read live. Nudging that slider resized the entire circuit at once,
+   > retroactively, with no way back — so it is gone. Layouts saved under it are
+   > unaffected: each gate is given the size it was drawn with as the layout
+   > loads.
+4. Every placed gate has **Go** (stand your car on it, facing the way through)
+   and **Move Here** (move the gate to where your car is standing) — the same
+   pair the starting grid has. A gate keeps its Width/Height override when it
+   moves. Both work on the joker route and pit stalls too.
+5. **Undo** removes the last gate, **Clear** wipes the route,
    **Hide/Show Gates** toggles the in-world drawing.
-5. **Save** / **Load** keep a personal scratch copy on your own machine
+6. **Save** / **Load** keep a personal scratch copy on your own machine
    (`settings/raceManager/route.json`) — handy while iterating on a design.
+
+#### Circuit or point to point
+
+The **Main Route** row carries a toggle: **⟳ Circuit** or **⇥ Point to Point**.
+
+- **Circuit** — the last gate is a start/finish line, and the race runs for the
+  lap count.
+- **Point to Point** — the stage is driven once, first gate to last, and the
+  last gate is the finish. The gates relabel themselves (`1 START` … `N FINISH`),
+  the header shows a **POINT TO POINT** badge, and the Laps field is disabled
+  because laps do not apply.
+
+Setting a circuit to one lap times the same thing, which is why that worked as a
+workaround — but it reads as a one-lap circuit everywhere it is shown, and the
+lap count becomes a setting an admin has to remember. The toggle is **saved with
+the layout**, so a sprint stage stays a sprint stage.
+
+Your lap setting is kept rather than overwritten, so switching a circuit layout
+back in restores it. The mode is locked once a countdown or race starts.
+
+#### Pit stalls
+
+Switch the editor to the **Pit Stalls** tab, drive into each stall and press
+**+ Place Pit Stall Here**. Stalls are drawn amber and labelled `PIT 1`, `PIT 2`.
+
+Driving into a stall during a race **holds the car for 5 seconds, repairs it in
+place, and releases it**. The repair lands part-way through, so the car is whole
+before the driver gets it back, and the same stall will not trigger again for 8
+seconds.
+
+**A stall is an area, not a checkpoint.** They are kept out of the checkpoint
+list entirely, so they can never affect laps, splits or the running order — you
+can place them wherever a pit lane belongs without touching the race. A pit stop
+is not a driver reset either: it spends no reset allowance and is never reported
+as one. Every stop is logged server-side with the driver, the stall and the lap.
+
+They are **not** respawn points. A stall repairs a car where it stands and does
+nothing else — a later reset still goes wherever the reset ruleset says.
+
+Drivers get a pole on the **nearest** stall so the lane can be found; a whole
+lane wearing poles would read as a wall of gates across the track.
 
 #### Placing the starting grid
 

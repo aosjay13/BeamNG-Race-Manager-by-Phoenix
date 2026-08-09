@@ -70,8 +70,15 @@ end
 
 expect(bound('settingsUi.laps'),   'Laps input binds settingsUi.laps')
 expect(bound('settingsUi.resets'), 'Max resets input binds settingsUi.resets')
-expect(bound('settingsUi.width'),  'Gate width inputs bind settingsUi.width')
-expect(bound('settingsUi.height'), 'Gate height input binds settingsUi.height')
+-- No global gate width/height any more. They bound a single setting that every
+-- gate without an override read LIVE, so nudging a slider resized the whole
+-- circuit retroactively with nothing to undo it. A gate takes its size when it
+-- is placed, inherits it from the gate before, and is edited on its own row.
+expect(not bound('settingsUi.width'),
+  'there is no global Gate width control: resizing one gate must not move others')
+expect(not bound('settingsUi.height'), 'and no global Gate height control')
+expect(bound('cpEdit.width') and bound('cpEdit.height'),
+  'gate size is edited on the gate itself')
 expect(bound('settingsUi.qualiLaps'), 'Quali lap limit input binds settingsUi.qualiLaps')
 expect(bound('settingsUi.qualiMins'), 'Quali time limit input binds settingsUi.qualiMins')
 expect(bound('derbyUi.name'),      'Derby arena name input binds derbyUi.name')
@@ -198,6 +205,58 @@ if setTarget then
     'setEditorTarget rewrites the pressed tab into a hard-coded target before '
       .. 'sending it to raceManager.setEditorTarget')
 end
+
+-- ===========================================================================
+-- Every editor target must have a case in editorWaypoints()
+-- ===========================================================================
+-- A missing case does not fail loudly. editorWaypoints() falls through to the
+-- main route, so the tab's own count still reads correctly off its real list
+-- while the list underneath shows the CHECKPOINTS -- which is how the pit tab
+-- came to show four stalls when one had been placed.
+local wpFn = js:match('editorWaypoints%s*=%s*function%s*%(%)(.-)end') or ''
+for target in accepted:gmatch('([%w_]+)%s*:%s*true') do
+  if target ~= 'main' then
+    expect(wpFn:find("'" .. target .. "'", 1, true) ~= nil,
+      'editorWaypoints() has no case for the "' .. target .. '" target, so that ' ..
+      'tab silently lists the main route instead of its own markers')
+  end
+end
+
+-- The adjust controls the starting grid has, on placed gates too.
+for _, fn in ipairs({ 'previewCheckpoint', 'moveCheckpoint' }) do
+  expect(html:find(fn .. '%(') ~= nil, 'the gate list offers ' .. fn)
+  expect(js:find('%$scope%.' .. fn .. '%s*=') ~= nil,
+    fn .. ' is bound on the controller scope')
+end
+
+-- ===========================================================================
+-- Running a saved race must not require the editor
+-- ===========================================================================
+-- The layout picker used to live inside the editor panel, which meant loading a
+-- track was only reachable by opening the editor -- and opening the editor is
+-- what swaps the race checkpoint visuals for the authoring ones. An admin
+-- looked for their gate poles during a race and found none, because choosing
+-- the track had left them in the editor.
+--
+-- So: the Load control lives in the session controls, next to Generate Grid and
+-- Start Countdown, and the editor keeps only the authoring half.
+local editorStart = html:find('================= Checkpoint editor', 1, true)
+local loadAt = html:find('ng%-click="loadLayout%(%)"')
+expect(loadAt ~= nil, 'the template has a Load Layout control')
+expect(editorStart ~= nil, 'the template has a checkpoint editor section')
+expect(loadAt and editorStart and loadAt < editorStart,
+  'Load Layout sits ABOVE the editor section, so running a saved race never ' ..
+  'requires opening the editor')
+
+-- Saving stays in the editor: that IS authoring.
+local saveAt = html:find('ng%-click="saveLayout%(%)"')
+expect(saveAt and editorStart and saveAt > editorStart,
+  'Save Current Layout stays inside the editor, where authoring belongs')
+
+-- Exactly one layout picker, or two dropdowns would share one open-state flag
+-- and both spring open together.
+local _, pickers = html:gsub('ng%-click="toggleLayoutDropdown%(%)"', '')
+expect(pickers == 1, 'exactly one layout dropdown in the template (found ' .. pickers .. ')')
 
 if fails == 0 then
   print('ui_bindings_test: ' .. checks .. ' checks, 0 failures ('

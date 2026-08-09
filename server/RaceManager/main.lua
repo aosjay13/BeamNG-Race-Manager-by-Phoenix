@@ -89,6 +89,13 @@ local race = {
   --   custom -- the order the admin set by hand (RM_SetDriverGrid)
   gridMode     = 'quali',
   startSlots   = 0,          -- start positions the loaded track layout has
+  -- Is the loaded track a sprint stage rather than a circuit? A point-to-point
+  -- run is driven ONCE, first gate to last, and the last gate is a finish
+  -- rather than a line crossed again. Setting a circuit to one lap times the
+  -- same thing, which is why that was the workaround -- but it reads as a
+  -- one-lap circuit everywhere, and this is the difference being made explicit.
+  -- It belongs to the track, so it arrives with the layout.
+  pointToPoint = false,
   -- WHERE those start positions are: { x, y, z, hx, hy } per slot, slot 1 first.
   -- Reported by a client when a track is loaded or edited, and set directly when
   -- a saved layout is loaded. The count above is enough to warn that a field is
@@ -196,6 +203,7 @@ local function newRecord(pid)
     resets     = 0,          -- vehicle resets consumed this session
     resetsBlocked = 0,       -- resets refused after the allowance ran out
     ghosts     = 0,          -- reset ghosts armed this session (audit trail)
+    pitStops   = 0,          -- pit stalls used this session
     holdCorrections = 0,     -- times this car was pulled back onto its grid slot
     holdCorrectedAt = nil,   -- race.time of the last correction (rate limiting)
     jokerTaken = 0,          -- completed runs of the joker route this race
@@ -567,7 +575,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.5.1'
+local RM_BUILD = '0.6.0'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -658,6 +666,7 @@ local function broadcastState(targetPid)
     entrants     = entrantCount(),
     gridMode     = race.gridMode,
     startSlots   = race.startSlots,
+    pointToPoint = race.pointToPoint,
     -- Fastest lap of the session: whose row the leaderboard paints gold, and
     -- how quick it was. One driver id on a payload that already goes out.
     bestLapPid   = race.bestLapPid,
@@ -1082,6 +1091,10 @@ end
 -- The lap count the CURRENT session runs to, or nil when it has no lap target
 -- (an unlimited qualifying session, closed by its clock or by the admin).
 local function sessionLapTarget()
+  -- A sprint stage is one traversal, whatever the lap field says. Enforced here
+  -- rather than by clamping race.totalLaps, so an admin's lap setting survives
+  -- switching a circuit layout back in.
+  if race.pointToPoint then return 1 end
   if isQualiSession() then
     return race.qualiLapLimit > 0 and race.qualiLapLimit or nil
   end
@@ -1678,6 +1691,46 @@ function RM_onStartPositionCount(pid, rawData)
   if n == race.startSlots then return end
   race.startSlots = n
   broadcastState()
+end
+
+-- A driver pitted. The stop itself is entirely the client's -- only it can
+-- freeze and repair a car -- so this is the record, for the same reason ghosts
+-- and resets are recorded: an admin reading the results should be able to see
+-- who stopped, when, and how often, without having been watching.
+--
+-- Nothing here penalises or rewards a stop. A pit stall is a repair, not a
+-- regulation.
+function RM_onPitStop(pid, rawData)
+  pid = pidKey(pid)
+  if not pid then return end
+  local rec = players[pid]
+  if not rec then return end
+  if not sessionRunning() then return end
+  if not onTrack(rec) then return end
+  local stall = 0
+  if type(rawData) == 'string' and rawData ~= '' then
+    local ok, data = pcall(Util.JsonDecode, rawData)
+    if ok and type(data) == 'table' then stall = tonumber(data.stall) or 0 end
+  end
+  rec.pitStops = (rec.pitStops or 0) + 1
+  print(string.format('[RaceManager] %s pitted (stall %s) on lap %s at race time %.1fs — stop #%d',
+    rec.name, tostring(stall), tostring(rec.currentLap or '?'), race.time, rec.pitStops))
+  broadcastState()
+end
+
+-- Admin toggled the loaded track between a circuit and a point-to-point sprint.
+-- Locked once a session is under way, like every other regulation: the shape of
+-- the race must not change under the drivers running it.
+function RM_onSetPointToPoint(pid, rawData)
+  if not requireAuth(pid) then return end
+  if sessionUnderWay() then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  race.pointToPoint = data.enabled == true or data.enabled == 1
+  broadcastState()
+  print('[RaceManager] Track mode: ' .. (race.pointToPoint and 'POINT TO POINT' or 'circuit')
+    .. ' (by ' .. (MP.GetPlayerName(pid) or pid) .. ')')
 end
 
 -- ---------------------------------------------------------------------------
@@ -2630,6 +2683,12 @@ function RM_onSaveLayout(pid, rawData)
     joker       = sanitizeCheckpoints(data.joker),
     -- Optional starting grid: where the cars line up for this track.
     startPositions = starts,
+    -- Optional pit lane: stalls a driver may pull into for a repair. Kept out
+    -- of the checkpoint list on purpose -- they are an area, not a gate to be
+    -- passed in order, and lap validation must never see them.
+    pits         = sanitizeCheckpoints(data.pits),
+    -- Sprint stage or circuit. A property of the track, not of the session.
+    pointToPoint = data.pointToPoint == true,
   }
   -- Saving is also the moment the server learns this track's grid size, so the
   -- "more drivers than start positions" warning is accurate straight away.
@@ -2682,6 +2741,7 @@ function RM_onLoadLayout(pid, rawData)
       -- The grid the hold is judged against comes from the layout being loaded,
       -- not from whichever client happens to report next.
       race.startPositions = (type(l.startPositions) == 'table') and l.startPositions or {}
+      race.pointToPoint = l.pointToPoint == true
       print(string.format('[RaceManager] Broadcasting RM_ApplyLayout: "%s", %d checkpoint(s), %d start position(s), width %s',
         l.name, #l.checkpoints, race.startSlots, tostring(l.width)))
       MP.TriggerClientEvent(-1, 'RM_ApplyLayout', Util.JsonEncode(l))
@@ -4011,6 +4071,8 @@ function onInit()
   MP.RegisterEvent('RM_SetGridMode',        'RM_onSetGridMode')
   MP.RegisterEvent('RM_SetDriverGrid',      'RM_onSetDriverGrid')
   MP.RegisterEvent('RM_StartPositionCount', 'RM_onStartPositionCount')
+  MP.RegisterEvent('RM_SetPointToPoint',    'RM_onSetPointToPoint')
+  MP.RegisterEvent('RM_PitStop',            'RM_onPitStop')
   MP.RegisterEvent('RM_HoldPos',            'RM_onHoldPos')
   -- Qualifying session rules
   MP.RegisterEvent('RM_SetGhostQuali',    'RM_onSetGhostQuali')

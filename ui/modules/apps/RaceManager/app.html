@@ -42,11 +42,14 @@
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
       START P{{ gridSlot }}<b ng-if="gridFrozen"> — HOLD</b>
     </span>
+    <span class="rm-p2p-badge" ng-if="pointToPoint"
+          title="This track is a point-to-point stage: driven once, first gate to last. Laps do not apply.">POINT TO POINT</span>
     <span class="rm-derby-badge" ng-if="derby.phase === 'running'">DERBY LIVE {{ formatDerbyTime(derby.time) }}</span>
     <span class="rm-admin-tag" ng-if="isAdmin" title="You are logged in as an admin">ADMIN</span>
-    <!-- Shortcuts to the two big panels; they select the matching admin tab. -->
-    <button class="rm-btn rm-btn-tab rm-btn-tab-derby" ng-if="isAdmin" ng-class="{'rm-btn-tab-derby-active': isAdminTab('derby')}" ng-click="selectAdminTab('derby')">Derby</button>
-    <button class="rm-btn rm-btn-tab" ng-if="isAdmin" ng-class="{'rm-btn-tab-active': isAdminTab('editor')}" ng-click="selectAdminTab('editor')">Editor</button>
+    <!-- The Editor and Derby shortcuts that used to sit here are gone: the admin
+         tab bar is directly below, shows which panel is active and carries the
+         checkpoint count, so a second control for the same action only cost
+         width in a header that is short of it. -->
     <button class="rm-btn rm-btn-tab" ng-if="isAdmin" ng-click="logout()" title="Log out and return to spectator view">Log out</button>
     <!-- Spectators: a way back to the login screen at any time -->
     <button class="rm-btn rm-btn-tab rm-btn-login-tab" ng-if="!isAdmin && !showLogin" ng-click="openLogin()" title="Log in as an admin">🔒 Login</button>
@@ -121,6 +124,38 @@
     <button class="rm-btn rm-btn-reset" ng-click="resetLeaderboard()">Reset</button>
   </div>
 
+  <!-- ================= Track layout (admin only) =========================
+       Deliberately HERE and not in the editor. Running a saved race is not an
+       authoring job: an admin should pick a layout and start the race without
+       ever opening the editor, which used to be the only place this lived —
+       and opening the editor is what replaces the race checkpoint visuals with
+       the authoring ones. Building layouts stays in the editor; choosing one
+       to race belongs next to Generate Grid and Start Countdown. -->
+  <div class="rm-controls rm-controls-layout" ng-if="isAdmin">
+    <span class="rm-controls-label">Track<span ng-if="layoutMap"> — {{ layoutMap }}</span></span>
+    <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': layoutDropdownOpen}">
+      <button type="button" class="rm-layout-trigger"
+              ng-class="{'rm-layout-trigger-empty': !layoutUi.selected}"
+              ng-click="toggleLayoutDropdown()">
+        <span class="rm-layout-trigger-label">{{ selectedLayoutLabel() }}</span>
+        <span class="rm-layout-caret">▾</span>
+      </button>
+      <div class="rm-layout-menu" ng-if="layoutDropdownOpen">
+        <div class="rm-layout-option"
+             ng-repeat="l in layouts track by l.name"
+             ng-class="{'rm-layout-option-active': l.name === layoutUi.selected}"
+             ng-click="selectLayoutOption(l)">
+          {{ l.name }} ({{ l.checkpoints.length }} gates)
+        </div>
+      </div>
+    </div>
+    <button class="rm-btn rm-btn-grid" ng-click="loadLayout()"
+            ng-disabled="!layoutUi.selected || phase === 'countdown' || phase === 'racing'"
+            title="Broadcast this layout's checkpoints to every connected player. No need to open the editor.">
+      Load Layout
+    </button>
+  </div>
+
   <!-- ================= Admin tab bar =====================================
        Every admin panel used to stack vertically, which overflowed the app
        window — .rm-root is overflow:hidden, so whatever ran past the bottom
@@ -152,13 +187,17 @@
 
   <!-- ================= Race settings ================= -->
   <div class="rm-settings" ng-if="isAdminTab('race')">
+    <!-- Laps mean nothing on a sprint stage, so the field says so rather than
+         sitting there accepting a number that will be ignored. The setting is
+         kept, not clamped, so switching a circuit layout back in restores it. -->
     <span class="rm-setting">
       <label>Laps</label>
       <input type="number" min="1" max="500" ng-model="settingsUi.laps"
-             ng-disabled="phase === 'countdown' || phase === 'racing'">
+             ng-disabled="pointToPoint || phase === 'countdown' || phase === 'racing'">
       <button class="rm-btn rm-btn-mini" ng-click="applyTotalLaps()"
-              ng-disabled="phase === 'countdown' || phase === 'racing'">Set</button>
-      <span class="rm-setting-val">race: {{ totalLaps }}</span>
+              ng-disabled="pointToPoint || phase === 'countdown' || phase === 'racing'">Set</button>
+      <span class="rm-setting-val" ng-if="!pointToPoint">race: {{ totalLaps }}</span>
+      <span class="rm-setting-val rm-p2p-note" ng-if="pointToPoint">point to point — driven once</span>
     </span>
     <!-- Module 1: vehicle reset ruleset -->
     <span class="rm-setting" title="How many vehicle resets/repairs each driver gets this session. 0 = no resets at all; -1 (or blank) = unlimited. Once the allowance is gone the reset button is blocked — the car is put straight back where it was. Nobody is disqualified for it.">
@@ -276,21 +315,41 @@
               title="Place the alternate rallycross route here. It is saved with the layout and must be driven exactly once per race (never on lap 1).">
         Joker Route ({{ jokerRoute.length }})
       </button>
+      <button class="rm-btn rm-btn-mini rm-route-tab-pit"
+              ng-class="{'rm-route-tab-pit-active': editorTarget === 'pit'}"
+              ng-click="setEditorTarget('pit')"
+              title="Place pit stalls: drive into each stall and press Place Pit Stall Here. Driving into one during a race stops the car, repairs it and releases it. Stalls are NOT checkpoints — they never affect laps or splits.">
+        Pit Stalls ({{ pitRoute.length }})
+      </button>
       <button class="rm-btn rm-btn-mini rm-route-tab-start"
               ng-class="{'rm-route-tab-start-active': editorTarget === 'start'}"
               ng-click="setEditorTarget('start')"
               title="Place the starting grid: drive to each slot and press Place Start Position Here. Slot 1 is pole.">
         Start Grid ({{ startPositions.length }})
       </button>
+      <!-- Circuit or sprint. Setting a circuit to one lap times the same thing,
+           which is why that was the workaround — but it reads as a one-lap
+           circuit everywhere it is shown, and a driver on a sprint stage should
+           be told they are on one. Saved with the layout. -->
+      <button class="rm-btn rm-btn-mini rm-p2p-toggle" ng-if="editorTarget === 'main'"
+              ng-class="{'rm-p2p-on': pointToPoint}"
+              ng-click="togglePointToPoint()"
+              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              title="Circuit: the last gate is a start/finish line and the race runs for the lap count. Point to point: the stage is driven once, first gate to last, and the last gate is the finish.">
+        {{ pointToPoint ? '⇥ Point to Point' : '⟳ Circuit' }}
+      </button>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'joker'">
         Joker gates are drawn violet. Enable the joker lap in Race settings to enforce it.
+      </span>
+      <span class="rm-route-tab-note" ng-if="editorTarget === 'pit'">
+        Stalls are drawn amber. Driving into one repairs the car in place; they are not checkpoints.
       </span>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'start'">
         Slot 1 is pole. Drivers are placed here and held until the countdown ends.
       </span>
     </div>
     <div class="rm-editor-controls">
-      <button class="rm-btn rm-btn-grid"  ng-click="editorAdd()">+ {{ editorTarget === 'joker' ? 'Joker Gate' : (editorTarget === 'start' ? 'Place Start Position' : 'Checkpoint') }} Here</button>
+      <button class="rm-btn rm-btn-grid"  ng-click="editorAdd()">+ {{ editorTarget === 'joker' ? 'Joker Gate' : (editorTarget === 'start' ? 'Place Start Position' : (editorTarget === 'pit' ? 'Place Pit Stall' : 'Checkpoint')) }} Here</button>
       <button class="rm-btn"              ng-click="editorUndo()"  ng-disabled="!editorWaypoints().length">Undo</button>
       <button class="rm-btn rm-btn-end"   ng-click="editorClear()" ng-disabled="!editorWaypoints().length">Clear</button>
       <button class="rm-btn rm-btn-start" ng-click="editorSave()"  ng-disabled="!routeWaypoints.length">Save</button>
@@ -299,24 +358,14 @@
     </div>
     <div class="rm-editor-msg" ng-if="editorMsg">{{ editorMsg }}</div>
 
-    <!-- Default gate size for newly placed gates. These live in the editor and
-         nowhere else: they are not a race rule, they are the fallback every
-         checkpoint without its own Width/Height override uses (and the value
-         that travels with a saved layout). A start position is a placement,
-         not a gate, so the row is hidden on the Start Grid tab. -->
-    <div class="rm-settings rm-editor-defaults" ng-if="!editingGrid()">
-      <span class="rm-setting">
-        <label>Gate width</label>
-        <input type="range" min="2" max="120" step="1" ng-model="settingsUi.width" ng-change="applyWidth()">
-        <input type="number" class="rm-width-num" min="2" max="120" ng-model="settingsUi.width" ng-change="applyWidth()">
-        <span class="rm-setting-val">m</span>
-      </span>
-      <span class="rm-setting" title="How far the checkpoint rectangle extends up and down — raise it to cover high banking">
-        <label>Gate height</label>
-        <input type="number" class="rm-width-num" min="1" max="100" step="1" ng-model="settingsUi.height" ng-change="applyHeight()">
-        <span class="rm-setting-val">m</span>
-      </span>
-      <span class="rm-setting-val">default for new gates — click a placed gate to override it</span>
+    <!-- No global gate size. There used to be one, and every gate without its
+         own override read it live -- so nudging a slider resized the whole
+         circuit at once, retroactively, with nothing to undo it. A gate now
+         takes its size when it is placed, inheriting from the gate before it,
+         and keeps it. Size is edited on the gate itself, below. -->
+    <div class="rm-editor-hint" ng-if="!editingGrid() && editorWaypoints().length">
+      Each gate keeps its own size and passes it on to the next one you place.
+      Click a gate to change it — nothing else moves.
     </div>
 
     <!-- Gate list (main lap / joker route) -->
@@ -324,22 +373,41 @@
       <div class="rm-editor-wp-wrap" ng-repeat="wp in editorWaypoints() track by $index">
         <div class="rm-editor-wp" ng-class="{'rm-editor-wp-sel': selectedCp === $index + 1}"
              ng-click="selectCheckpoint($index + 1)"
-             title="Click to override this checkpoint's Width / Height">
+             title="Click to change this gate's Width / Height">
           <span class="rm-editor-idx" ng-class="{'rm-editor-finish': $last && editorTarget === 'main', 'rm-editor-joker': editorTarget === 'joker'}">{{ ($last && editorTarget === 'main') ? '🏁' : ($index + 1) }}</span>
           <span class="rm-editor-coords">{{ wp.x.toFixed(1) }}, {{ wp.y.toFixed(1) }}, {{ wp.z.toFixed(1) }}</span>
           <span class="rm-editor-dims">
             <span ng-class="{'rm-dim-set': wp.width != null}">W{{ cpDim(wp, 'width') }}</span>
             <span ng-class="{'rm-dim-set': wp.height != null}">H{{ cpDim(wp, 'height') }}</span>
           </span>
+          <!-- The same pair the starting grid has: stand the car on a placed
+               gate, or move the gate to where the car is. Without them a gate
+               that landed a metre wide meant deleting and re-driving the route.
+               ng-click stopPropagation so they do not also toggle the row's
+               width/height editor open and shut. -->
+          <button class="rm-btn rm-btn-mini" title="Put your car on this gate, facing the way through it"
+                  ng-click="$event.stopPropagation(); previewCheckpoint($index + 1)">Go</button>
+          <button class="rm-btn rm-btn-mini rm-btn-grid" title="Move this gate to where your car is standing now"
+                  ng-click="$event.stopPropagation(); moveCheckpoint($index + 1)">Move Here</button>
         </div>
         <!-- Per-checkpoint override editor (expands under the selected gate) -->
         <div class="rm-cp-edit" ng-if="selectedCp === $index + 1">
-          <span class="rm-setting"><label>W</label>
-            <input type="number" min="2" max="120" ng-model="cpEdit.width" placeholder="{{ settingsUi.width }}"></span>
-          <span class="rm-setting"><label>H</label>
-            <input type="number" min="1" max="100" ng-model="cpEdit.height" placeholder="{{ settingsUi.height }}"></span>
+          <!-- Same ranges and the same slider-plus-number pairing as the
+               defaults above, so a gate dimension is adjusted the same way
+               wherever it is being edited. Blank still means "inherit". -->
+          <span class="rm-setting rm-cp-dim"><label>W</label>
+            <input type="range" min="2" max="120" step="1" ng-model="cpEdit.width"
+                   ng-change="applyCheckpointOverride()">
+            <input type="number" min="2" max="120" ng-model="cpEdit.width"
+                   placeholder="width"></span>
+          <span class="rm-setting rm-cp-dim"><label>H</label>
+            <input type="range" min="1" max="100" step="1" ng-model="cpEdit.height"
+                   ng-change="applyCheckpointOverride()">
+            <input type="number" min="1" max="100" ng-model="cpEdit.height"
+                   placeholder="height"></span>
           <button class="rm-btn rm-btn-mini rm-btn-start" ng-click="applyCheckpointOverride()">Apply</button>
-          <button class="rm-btn rm-btn-mini" ng-click="resetCheckpointOverride()">Reset</button>
+          <button class="rm-btn rm-btn-mini" ng-click="resetCheckpointOverride()"
+                  title="Back to the standard size. Only this gate changes.">Default</button>
         </div>
       </div>
     </div>
@@ -389,35 +457,11 @@
             Save Current Layout
           </button>
         </div>
-        <div class="rm-layouts-row">
-          <!-- Custom dropdown (not a native <select> — its popup does not render
-               in BeamNG's CEF UI). The menu is DOM we position and z-index
-               ourselves so it sits above the preview canvas and is clickable. -->
-          <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': layoutDropdownOpen}">
-            <button type="button" class="rm-layout-trigger"
-                    ng-class="{'rm-layout-trigger-empty': !layoutUi.selected}"
-                    ng-click="toggleLayoutDropdown()">
-              <span class="rm-layout-trigger-label">{{ selectedLayoutLabel() }}</span>
-              <span class="rm-layout-caret">▾</span>
-            </button>
-            <div class="rm-layout-menu" ng-if="layoutDropdownOpen">
-              <div class="rm-layout-option"
-                   ng-repeat="l in layouts track by l.name"
-                   ng-class="{'rm-layout-option-active': l.name === layoutUi.selected}"
-                   ng-click="selectLayoutOption(l)">
-                {{ l.name }} ({{ l.checkpoints.length }} gates)
-              </div>
-            </div>
-          </div>
-          <button class="rm-btn rm-btn-grid" ng-click="loadLayout()"
-                  ng-disabled="!layoutUi.selected || phase === 'countdown' || phase === 'racing'"
-                  title="Broadcast this layout's checkpoints to every connected player">
-            Load Layout
-          </button>
-        </div>
         <div class="rm-layouts-hint">
           Layouts are stored on the server and only listed for the map currently hosted.
           A layout carries its checkpoints, the joker route and the starting grid.
+          <strong>Loading</strong> one to race is up in the session controls, so
+          running a saved race never means opening this editor.
         </div>
       </div>
       <canvas class="rm-preview-canvas" width="200" height="130"></canvas>
@@ -751,6 +795,12 @@
   </div>
   <!-- Transient regulation notices (reset used/denied, joker rulings). -->
   <div class="rm-notice" ng-class="'rm-notice-' + notice.kind" ng-if="notice">{{ notice.msg }}</div>
+
+  <!-- Pit stop: this driver is held in a stall while the car is repaired. -->
+  <div class="rm-pit" ng-if="pitActive">
+    <span class="rm-pit-title">IN THE PITS</span>
+    <span class="rm-pit-clock">{{ pitLeft | number:1 }}s</span>
+  </div>
 
   <!-- Reset ghost: this driver's own countdown to contact resuming. Shown only
        to the ghosted driver — everyone else sees the car itself go translucent.
@@ -1275,6 +1325,46 @@
      like the old select, and the menu is absolutely positioned with a high
      z-index so it stacks above the 2D preview canvas and stays clickable
      (pointer-events explicitly enabled — nothing here is a click-through). */
+  /* The layout picker sits in the session controls, so it shares their look. */
+  .rm-controls-layout { align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); }
+  .rm-controls-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #9aa0a6;
+    white-space: nowrap;
+    align-self: center;
+  }
+  /* A per-gate override row: slider and number side by side, like the
+     defaults. The slider takes the slack so the number box stays readable. */
+  /* Sprint stage, called out wherever the lap count would otherwise be read. */
+  .rm-p2p-badge {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    background: rgba(126, 226, 168, 0.18);
+    color: #7ee2a8;
+  }
+  .rm-route-tab-pit-active { background: rgba(255, 184, 26, 0.22); color: #ffb81a; }
+  .rm-pit {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 5px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 184, 26, 0.16);
+    color: #ffb81a;
+  }
+  .rm-pit-clock { font-variant-numeric: tabular-nums; }
+  .rm-notice-pit { background: rgba(255, 184, 26, 0.16); color: #ffb81a; }
+  .rm-p2p-note { color: #7ee2a8; }
+  .rm-p2p-toggle.rm-p2p-on { background: rgba(126, 226, 168, 0.22); color: #7ee2a8; }
+  .rm-cp-dim { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; }
+  .rm-cp-dim input[type=range] { flex: 1; min-width: 40px; }
+  .rm-cp-dim input[type=number] { width: 48px; }
   .rm-layout-dropdown { position: relative; flex: 1; min-width: 0; }
   .rm-layout-trigger {
     display: flex;
