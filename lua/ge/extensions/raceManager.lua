@@ -92,7 +92,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.5.2'
+local RM_BUILD = '0.5.3'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -3142,13 +3142,18 @@ end
 -- these off -- an admin laying out a circuit wants to see all of it at once,
 -- labelled, which poles cannot do.
 function poles.sync(editorView)
-  local want = sessionRunning() and not editorView and not spectatorLock
+  -- Poles are the DRIVER's view of a checkpoint, in every phase -- not only
+  -- during a running session. A driver learning a circuit before the lights
+  -- wants to see where the gates are just as much as one racing through them,
+  -- and the alternative was drawing the whole checkpoint set as rectangles,
+  -- which is the editor's job and clutter for everyone else.
+  local want = not editorView and not spectatorLock and #route > 0
   -- One line whenever the answer changes, so "no poles" always has a reason
   -- attached to it in the console rather than being a silent nothing.
   local why = want and 'on'
-    or (not sessionRunning() and ('no session running (phase=' .. tostring(phase) .. ')'))
     or (editorView and 'the editor is open and you are an admin')
     or (spectatorLock and 'spectating')
+    or (#route == 0 and 'no track loaded')
     or 'off'
   if why ~= poles.why then
     poles.why = why
@@ -3162,10 +3167,12 @@ function poles.sync(editorView)
   -- frame is exactly the cost this short-circuit exists to avoid.
   if poles.mod == false then return end
   poles.enabled = true
+
+  -- The gate being aimed at, and the one after it, so the line through the
+  -- corner reads before the driver arrives. 'lap' colours the start/finish
+  -- line, 'default' the ordinary next gate -- the same meanings BeamNG gives
+  -- them in its own races.
   local n = #route
-  if n == 0 then return end
-  -- 'lap' colours the start/finish line, 'default' the ordinary next gate --
-  -- the same meanings BeamNG gives them in its own races.
   local a = armedWp
   if a < 1 or a > n then a = 1 end
   poles.set(1, route[a], a == n and 'lap' or 'default', 'main:' .. a)
@@ -3176,24 +3183,42 @@ function poles.sync(editorView)
     pcall(poles.live[2].marker.clearMarkers, poles.live[2].marker)
     poles.live[2] = nil
   end
+
+  -- The joker route, when one is armed and still owed.
+  --
+  -- This is not decoration. The server DISQUALIFIES a driver who does not take
+  -- the joker exactly once, so a required route that nobody can see is a
+  -- penalty waiting to happen -- and the joker gates are not part of `route`,
+  -- so the two markers above never reach them. 'branch' is BeamNG's own colour
+  -- for an alternate line.
+  local jn = #jokerRoute
+  local showJoker = jokerEnabled and not jokerTaken and jn > 0
+  if showJoker then
+    local j = jokerArmed
+    if j < 1 or j > jn then j = 1 end
+    poles.set(3, jokerRoute[j], 'branch', 'joker:' .. j)
+  elseif poles.live[3] then
+    pcall(poles.live[3].marker.clearMarkers, poles.live[3].marker)
+    poles.live[3] = nil
+  end
 end
 
 local function drawGates()
   if not debugDrawer then return end
-  local active = sessionRunning() or phase == 'countdown' or phase == 'grid'
-  if not active and not visualize then return end
-
-  -- Who is looking, and therefore what they get.
+  -- The checkpoint rectangles are the EDITOR's view and only the editor's.
   --
-  --   authoring : an admin with the editor open -- the whole track at once,
-  --               filled, numbered, with the direction through each gate shown.
-  --   racing    : the gate POLES are doing this job, so the rectangles stay out
-  --               of the way. Drawing both was how the prototype shipped and it
-  --               is visual noise across the racing line.
-  --   otherwise : the plain outline, so the track is visible on the grid and
-  --               between sessions when no poles are up.
-  local authoring = editorOpen and isAdmin
-  if sessionRunning() and not authoring then return end
+  -- Everyone else -- every driver, and an admin who has closed the editor --
+  -- gets the gate poles instead, in every phase. Drawing a whole circuit's
+  -- worth of numbered rectangles at somebody who is trying to drive through it
+  -- is clutter; the poles say where the next gate is, which is the only part a
+  -- driver needs. `visualize` still hides them for an admin who wants the
+  -- unobstructed view while placing gates.
+  if not (editorOpen and isAdmin) then return end
+  if not visualize then return end
+  local authoring = true
+  -- Still needed below: which gate is armed, and whether the joker is open,
+  -- only mean anything while a session is under way.
+  local active = sessionRunning() or phase == 'countdown' or phase == 'grid'
   local p = palette()
 
   local n = #route

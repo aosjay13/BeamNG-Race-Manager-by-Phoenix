@@ -157,11 +157,15 @@ for i = 1, 4 do
 end
 
 -- ===========================================================================
--- Nothing before the lights
+-- Poles are the driver's view of a checkpoint, in every phase
 -- ===========================================================================
+-- Not only during a running session: a driver learning a circuit before the
+-- lights wants to see where the gates are just as much as one racing through
+-- them. The alternative was drawing the whole checkpoint set as numbered
+-- rectangles, which is the editor's job and clutter for everyone else.
 serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
 frames(3)
-check(aliveMarkers() == 0, 'no poles outside a running session')
+check(aliveMarkers() == 2, 'poles are up before a session, for learning the track')
 
 -- ===========================================================================
 -- Racing: poles on the next two gates, and only those
@@ -189,6 +193,44 @@ local pointedAt = madeMarkers[1].checkpoint
 frames(10)
 check(madeMarkers[1].checkpoint == pointedAt,
   'a marker sitting on the same gate is not re-pointed every frame')
+
+-- ===========================================================================
+-- The joker route gets a marker too
+-- ===========================================================================
+-- This is not decoration. The server DISQUALIFIES a driver who does not take
+-- the joker exactly once, and the joker gates are NOT part of the main route --
+-- so the two markers above never reach them. Before this, removing the
+-- checkpoint rectangles would have left a required route invisible.
+racing()
+frames(3)
+local plain = aliveMarkers()
+serverState({ phase = 'racing', maxResets = -1, totalLaps = 3, drivers = {},
+  jokerEnabled = true })
+handlers['RM_ApplyLayout']({ name = 'j', width = 20, height = 10,
+  checkpoints = {
+    { x = 100, y = 0, z = 0, hx = 1, hy = 0 },
+    { x = 200, y = 0, z = 0, hx = 1, hy = 0 },
+  },
+  joker = { { x = 150, y = 50, z = 0, hx = 1, hy = 0 } },
+})
+serverState({ phase = 'racing', maxResets = -1, totalLaps = 3, drivers = {},
+  jokerEnabled = true })
+frames(3)
+check(aliveMarkers() == plain + 1,
+  'an armed joker route gets a marker of its own, beyond the two main ones')
+
+-- Once taken, it stops being signposted.
+handlers['RM_ApplyLayout']({ name = 'j2', width = 20, height = 10,
+  checkpoints = {
+    { x = 100, y = 0, z = 0, hx = 1, hy = 0 },
+    { x = 200, y = 0, z = 0, hx = 1, hy = 0 },
+  },
+  joker = { { x = 150, y = 50, z = 0, hx = 1, hy = 0 } },
+})
+serverState({ phase = 'racing', maxResets = -1, totalLaps = 3, drivers = {},
+  jokerEnabled = false })
+frames(3)
+check(aliveMarkers() == plain, 'a disarmed joker route is not signposted')
 
 -- ===========================================================================
 -- The shared singleton is never touched
@@ -227,12 +269,21 @@ RM.setEditorOpen(false)
 -- ===========================================================================
 -- Teardown: these are scene objects, so nothing may be left standing
 -- ===========================================================================
+-- A track being cleared takes them down: there are no gates left to point at.
 racing()
 frames(3)
 check(aliveMarkers() == 2, 'poles up')
-serverState({ phase = 'finished', maxResets = -1, totalLaps = 3, drivers = {} })
+handlers['RM_ClearTrack']({ reason = 'test' })
 frames(3)
-check(aliveMarkers() == 0, 'the race ending takes the poles down')
+check(aliveMarkers() == 0, 'clearing the track takes the poles down')
+handlers['RM_ApplyLayout']({ name = 'x', width = 20, height = 10, checkpoints = {
+  { x = 100, y = 0, z = 0, hx = 1, hy = 0 },
+  { x = 200, y = 0, z = 0, hx = 1, hy = 0 },
+  { x = 300, y = 0, z = 0, hx = 1, hy = 0 },
+  { x = 400, y = 0, z = 0, hx = 1, hy = 0 },
+} })
+frames(3)
+check(aliveMarkers() == 2, 'and loading one puts them back')
 
 racing()
 frames(3)
