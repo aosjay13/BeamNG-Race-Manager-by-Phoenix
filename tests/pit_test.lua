@@ -26,17 +26,26 @@ local frozen = nil          -- last setFreeze value that reached the vehicle
 local repairs = 0           -- recovery.recoverInPlace() calls
 local VEH_ID = 7
 
-local veh = { id = VEH_ID, x = 0, y = 0, z = 0 }
+local ghosted = nil         -- last obj:setGhostEnabled value reaching the vehicle
+
+-- `speed` is the car's speed in m/s. A pit stop is only offered to a car that
+-- has come to a STOP in the stall, so most of this file drives a stationary car
+-- (the historical behaviour, where the box alone was the trigger) and the
+-- section on the stop rule moves it.
+local veh = { id = VEH_ID, x = 0, y = 0, z = 0, speed = 0 }
 function veh:getID() return self.id end
 function veh:getPosition() return { x = self.x, y = self.y, z = self.z } end
 function veh:getRotation() return { x = 0, y = 0, z = 0, w = 1 } end
 function veh:getDirectionVector() return { x = 0, y = 1, z = 0 } end
-function veh:getVelocity() return { x = 0, y = 0, z = 0 } end
+function veh:getVelocity() return { x = 0, y = self.speed, z = 0 } end
 function veh:getJBeamFilename() return 'etk800' end
 function veh:setPositionRotation(x, y, z) self.x, self.y, self.z = x, y, z end
 function veh:queueLuaCommand(cmd)
   -- The repair: BeamNG's own in-place recovery, queued into the vehicle VM.
   if cmd == 'recovery.recoverInPlace()' then repairs = repairs + 1 end
+  -- Ghosting is a vehicle-side call reached the same way.
+  local g = cmd:match('^obj:setGhostEnabled%((%a+)%)$')
+  if g then ghosted = (g == 'true') end
 end
 function veh:setMeshAlpha() end
 function veh:getSpawnWorldOOBB() return nil end
@@ -214,6 +223,67 @@ local firstStops = countSent('RM_PitStop')
 frames(3.0)                          -- still parked in the stall
 check(countSent('RM_PitStop') == firstStops,
   'sitting in the stall afterwards does not start another stop')
+
+-- ===========================================================================
+-- You have to stop in the box yourself
+-- ===========================================================================
+-- The stall used to trigger on the BOX ALONE, so a car that clipped a corner of
+-- one at racing speed was seized and frozen where it stood -- mid-lane, at
+-- whatever angle it happened to be travelling, with the stop happening TO the
+-- driver rather than being something they performed. The trigger is now the box
+-- AND a stopped car.
+clearLog()
+racing()
+veh.x, veh.y = 0, 0
+veh.speed = 0
+frames(9.0)                          -- clear the cooldown from the case above
+
+-- Straight through at racing speed: nothing happens.
+veh.speed = 30
+veh.x, veh.y = 50, 0
+frames(0.5)
+check(frozen ~= true, 'driving through a stall at speed does not seize the car')
+check(countSent('RM_PitStop') == 0, 'and starts no stop')
+
+-- ...and out the other side. Missing it must cost NOTHING but the lap: no stop
+-- was started, so no cooldown was spent and the stall is live on the next visit.
+veh.x, veh.y = 0, 0
+frames(0.5)
+check(countSent('RM_PitStop') == 0, 'still no stop after driving out again')
+
+-- Back in, and this time actually stop.
+veh.x, veh.y = 50, 0
+frames(0.3)
+check(frozen ~= true, 'still rolling in the box, still not held')
+veh.speed = 0
+frames(0.3)
+check(frozen == true, 'coming to a stop in the box starts the stop')
+check(countSent('RM_PitStop') == 1, 'and it is reported once')
+check(lastRoute().pitActive == true, 'and the driver is told they are in the pits')
+
+-- The stall was NOT on cooldown from the drive-through, which is the whole
+-- point of missing it being free.
+check(repairs >= 0, 'the stop runs normally after a missed attempt')
+
+-- ===========================================================================
+-- A car frozen in a stall is a ghost
+-- ===========================================================================
+-- It cannot move out of the way -- the stop is holding it -- and it is parked in
+-- the one part of the track everyone else arrives at slowly and off-line.
+check(ghosted == true, 'a car serving a pit stop is ghosted')
+
+-- The repair reloads the vehicle VM, which drops BOTH the freeze and the ghost.
+-- The freeze has always been re-asserted; the ghost has to be too, or collision
+-- comes back silently with seconds of the stop still to run.
+local repairsBefore = repairs
+ghosted = nil                        -- forget it, so only a re-assert can set it
+frames(3.5)
+check(repairs == repairsBefore + 1, 'the repair is issued during the stop')
+check(ghosted == true, 'and the ghost survives the repair reloading the vehicle')
+
+frames(2.5)
+check(frozen == false, 'the car is released when the stop is over')
+check(ghosted == false, 'and collision comes back with it')
 
 print(string.format('pit_test: %d checks, %d failures', checks, fails))
 if fails > 0 then os.exit(1) end

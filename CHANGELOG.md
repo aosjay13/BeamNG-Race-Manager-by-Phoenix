@@ -6,7 +6,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 [← Back to the README](README.md)
 
-## Unreleased — Derby arenas and mode separation
+## Unreleased — Derby arenas, mode separation, joker and pit fixes
 
 ### Added
 
@@ -56,6 +56,26 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   which predates the two-step start — so a driver held on the derby grid through
   the countdown kept the full spectator chrome and the previous race's
   leaderboard until the field was released.
+- **The joker route is violet again on track, and keeps its wording.** The
+  checkpoint refactor moved drivers onto BeamNG's gate poles, whose stock
+  alternate-route mode is *orange* — close enough to the main route's red-orange
+  that the joker stopped reading as a separate route, on the one route where
+  that mistake is a disqualification. The pole is now painted the same violet the
+  editor uses, and the editor's own label sits above it: `JOKER 2/3`,
+  `(lap 1: closed)`, `(used)`. The label is drawn separately because the engine's
+  gate markers render no text whatsoever. A joker already taken now stays
+  signposted, dimmed, instead of vanishing.
+- **A pit stop is something you perform again, not something that happens to
+  you.** The stall triggered on its box alone, so clipping a corner of one at
+  racing speed seized the car and froze it mid-lane. You now have to bring the
+  car to a stop inside the box; run through without stopping and you simply miss
+  it, with no cooldown spent, so the stall is live on the next lap.
+- **A car serving a pit stop is ghosted for the stop.** It is frozen, so it
+  cannot move out of the way, and it is parked where everyone else arrives slowly
+  and off-line. The ghost is re-asserted after the repair — that reloads the
+  vehicle VM, which silently dropped it, the same way it drops the freeze — and
+  it rides the server's reset-ghosting switch so every client agrees about which
+  cars are ghosts.
 
 ### Compatibility
 

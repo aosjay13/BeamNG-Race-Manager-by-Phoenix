@@ -95,6 +95,21 @@ local TUNE = {
   PIT_REPAIR_AT  = 2.0,   -- seconds remaining when the repair is issued
   PIT_COOLDOWN   = 8.0,   -- before the same stall can trigger again
   PIT_DEPTH      = 3.0,   -- metres along the stall a car counts as being in it
+  -- m/s below which the car counts as stopped IN the stall. A pit stop is
+  -- something a driver performs, not something that happens to them: the stall
+  -- used to trigger on the box alone, so clipping a corner of it at racing
+  -- speed froze the car mid-lane. Now you have to bring it to a stop in the box
+  -- yourself, and driving through without stopping simply misses the stop.
+  -- Same threshold the derby uses for a stationary car, and generous enough to
+  -- swallow physics jiggle.
+  PIT_STOP_SPEED = 0.7,
+  PIT_PROMPT_EVERY = 1.5, -- seconds between "stop in the box" reminders
+  -- The joker gate's pole colour, and its colour once the joker has been taken.
+  -- Plain {r, g, b} arrays rather than ColorF: these are written into the engine
+  -- marker's own colour table, which is three numbers. They match palette()'s
+  -- `joker` and `jokerUsed` so the editor and the track agree.
+  JOKER_POLE_RGB      = { 0.65, 0.3, 0.95 },
+  JOKER_POLE_USED_RGB = { 0.45, 0.45, 0.5 },
   ROUTE_FILE = 'settings/raceManager/route.json',
 }
 
@@ -275,6 +290,16 @@ local pit = {
   repaired = false,  -- the repair has been issued for this stop
   cooldown = 0,      -- stops the box you are standing in re-triggering
   stops    = 0,      -- how many this session, for the log
+  -- Standing in a stall but still rolling. Held so the "stop in the box"
+  -- reminder can be throttled: without it the prompt is a push per frame for
+  -- as long as a car creeps through the box.
+  promptLeft = 0,
+  -- The vehicle this stop ghosted, so it can be un-ghosted again even if the
+  -- car has since been replaced under us (a repair reloads the vehicle VM).
+  ghostVeh = nil,
+  -- Whether THIS stop is the thing that announced the ghost to the server. False
+  -- when a reset ghost was already running and owns that broadcast.
+  ghostSent = false,
 }
 local jokerRoute   = {}
 local jokerEnabled = false       -- mirrored from the server broadcast
@@ -1450,6 +1475,55 @@ function pit.inside(wp, pos)
      and math.abs(dz)  <= h * 0.5
 end
 
+-- Ghosting for the duration of a stop.
+--
+-- A stopped car in a stall is a hazard placed in the one part of the track
+-- everybody else arrives at slowly and off-line, and it cannot move out of the
+-- way -- it is frozen by the stop. So it stops being something to hit.
+--
+-- Rides the SERVER's reset-ghost switch rather than a rule of its own. Ghosting
+-- is per vehicle and applied by each client separately (see COMPATIBILITY.md),
+-- so every client has to agree about the same car: ghosting locally while the
+-- server refuses to relay it produces a car that is a ghost to its driver and
+-- solid to everyone else, which is worse than not ghosting at all. Gating both
+-- halves on the same switch keeps them in step, and the broadcast duration is
+-- the stop's own length so the ghost ends everywhere at the same moment.
+function pit.setGhost(on)
+  if on then
+    if pit.ghostVeh then return end
+    if not ghost.rules.onReset then return end   -- server has ghosting off
+    local veh = ownVehicle()
+    local vehId = veh and vehicleId(veh) or nil
+    if not vehId then return end
+    pit.ghostVeh = vehId
+    ghost.reason(vehId, 'pit', true, veh)
+    -- Only tell the server if a RESET ghost is not already running on this car.
+    -- The two share one per-player ghost on the server, so announcing a 5 s pit
+    -- ghost over a 15 s reset ghost would cut the longer one short for everyone
+    -- else -- and the car is already ghosted on every client anyway, which is
+    -- the only thing the broadcast is for. Locally the two are separate reasons,
+    -- so whichever ends last is what actually restores collision.
+    pit.ghostSent = inMultiplayer() and ghost.own.vehId == nil
+    if pit.ghostSent then
+      TriggerServerEvent('RM_GhostStart', jsonEncode({ duration = TUNE.PIT_HOLD_SEC }))
+    end
+    log('I', 'raceManager', string.format('Pit ghost on for vehicle %s (%.1fs)%s',
+      tostring(vehId), TUNE.PIT_HOLD_SEC,
+      pit.ghostSent and '' or ' (local only — a reset ghost already owns the broadcast)'))
+  else
+    local vehId = pit.ghostVeh
+    if not vehId then return end
+    pit.ghostVeh = nil
+    ghost.reason(vehId, 'pit', false)
+    -- Symmetrically: only end what we started. Ending a broadcast we did not
+    -- send would drop a reset ghost that is still running.
+    if pit.ghostSent and inMultiplayer() and ghost.own.vehId == nil then
+      TriggerServerEvent('RM_GhostEnd', '')
+    end
+    pit.ghostSent = false
+  end
+end
+
 -- Let a car go again, and forget the stop.
 function pit.release(reason)
   if not pit.active then return end
@@ -1457,6 +1531,7 @@ function pit.release(reason)
   pit.left     = 0
   pit.repaired = false
   pit.cooldown = TUNE.PIT_COOLDOWN
+  pit.setGhost(false)
   setLocalVehicleFrozen(false)
   pushRouteState()
   log('I', 'raceManager', 'Pit stop ended (' .. tostring(reason or 'complete') .. ')')
@@ -1492,6 +1567,14 @@ function pit.update(dt)
         -- The reset reloads the vehicle VM and takes the freeze with it, so it
         -- goes straight back on -- the car must not be free to leave early.
         setLocalVehicleFrozen(true, 'pit')
+        -- The VM reload takes the GHOST with it too, for the same reason and
+        -- just as silently: setGhostEnabled is a vehicle-side call, so the
+        -- repair would quietly hand collision back with seconds of the stop
+        -- still to run. Re-assert it against the id we ghosted, not a fresh
+        -- lookup, so this is the same car either way.
+        if pit.ghostVeh then
+          ghost.apply(pit.ghostVeh, veh, true, TUNE.GHOST_ALPHA)
+        end
       end
       pushNotice('pit', 'Repaired — hold for the release')
     end
@@ -1502,17 +1585,50 @@ function pit.update(dt)
     return
   end
 
+  if pit.promptLeft > 0 then pit.promptLeft = pit.promptLeft - dt end
+
   if #pitRoute == 0 or pit.cooldown > 0 then return end
   if not sessionRunning() or spectatorLock or gridFrozen then return end
   local veh, pos = sampledVehicle()
   if not veh or not pos then return end
+
+  -- Being in the box is no longer enough to be serving a stop.
+  --
+  -- A pit stop is something a driver PERFORMS. The trigger used to be the box
+  -- alone, so a car that clipped a corner of a stall at racing speed was seized
+  -- and frozen where it stood -- the stop happened TO them, in the middle of the
+  -- lane, at whatever angle they were travelling. Now the car has to actually be
+  -- stopped in the stall, which is the thing a pit stop is, and which puts the
+  -- decision back with the driver: come in slowly enough to stop in the box, or
+  -- run through it and go round again. Missing it costs nothing but the lap --
+  -- no stop is started, so no cooldown is spent and the stall is live on the
+  -- next visit.
+  local ok, speed = pcall(function ()
+    local v = veh:getVelocity()
+    return math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+  end)
+  if not ok or not speed then return end
+
   for i, wp in ipairs(pitRoute) do
     if pit.inside(wp, pos) then
+      if speed > TUNE.PIT_STOP_SPEED then
+        -- In the box and still rolling. Say so, throttled -- unthrottled this is
+        -- a UI push every frame for as long as a car creeps across the stall.
+        if pit.promptLeft <= 0 then
+          pit.promptLeft = TUNE.PIT_PROMPT_EVERY
+          pushNotice('pit', 'PIT STALL — come to a stop inside the box')
+        end
+        return
+      end
       pit.active   = true
       pit.left     = TUNE.PIT_HOLD_SEC
       pit.repaired = false
       pit.stops    = pit.stops + 1
+      pit.promptLeft = 0
       setLocalVehicleFrozen(true, 'pit')
+      -- Ghost before the notice, so a car that is about to sit frozen in the
+      -- lane stops being solid on the same frame it stops being able to move.
+      pit.setGhost(true)
       pushNotice('pit', string.format('PIT STOP — %.0fs', TUNE.PIT_HOLD_SEC))
       pushRouteState()
       log('I', 'raceManager', string.format(
@@ -2945,6 +3061,11 @@ local function palette()
     -- gate's extent without hiding the road it is judged against.
     fill      = ColorF(0.35, 0.65, 1, 0.16),
     textBg    = ColorI(0, 0, 0, 160),
+    -- The joker label's own backing, violet rather than the neutral black every
+    -- other label uses. A driver reads this one at speed to decide whether the
+    -- route beside them is one they still owe, and it has to be tellable from a
+    -- checkpoint label at a glance.
+    jokerLabelBg = ColorI(70, 20, 110, 190),
     -- Demo derby arena. Its own entries rather than its own table: the derby
     -- module keeps its state and its logic separate, but a colour is a colour,
     -- and building these per frame is what this exists to stop.
@@ -3239,10 +3360,48 @@ function poles.call(what, fn, ...)
   return ok
 end
 
+-- Repaint ONE marker's mode colour, in place.
+--
+-- The marker's eight stock modes carry eight fixed colours and violet is not
+-- among them: `branch`, the alternate-route mode the joker uses, is orange
+-- (1, 0.6, 0) and sits right beside the main route's red-orange `default`
+-- (1, 0.07, 0). On track that made the joker read as more of the same lap,
+-- which is the one thing it must never read as -- the server disqualifies a
+-- driver who does not take it exactly once.
+--
+-- This is safe to do because sideColumnMarker keeps its colours PER INSTANCE:
+-- its init does `self.modeInfos = deepcopy(modeInfos)`, so what is written here
+-- reaches our own detached marker and nothing else -- not the shared table the
+-- engine copies from, and not another mod's markers.
+--
+-- It is still reaching into an engine object's internals, so it fails soft in
+-- both directions: a build that renames, restructures or shares that table
+-- leaves the pole on its stock mode colour, which is exactly where it was
+-- before any of this existed.
+function poles.tint(marker, mode, rgb)
+  local ok, done = pcall(function ()
+    local infos = marker.modeInfos
+    if type(infos) ~= 'table' then return false end
+    local info = infos[mode]
+    if type(info) ~= 'table' or type(info.color) ~= 'table' then return false end
+    info.color[1], info.color[2], info.color[3] = rgb[1], rgb[2], rgb[3]
+    return true
+  end)
+  if (not ok or not done) and not poles.tintFailed then
+    poles.tintFailed = true
+    log('W', 'raceManager', 'Race marker colours are not per-instance on this '
+      .. 'build — the joker gate keeps the stock branch colour')
+  end
+  return ok and done
+end
+
 -- Point one marker slot at a gate. `key` identifies what the slot is currently
 -- showing, so a marker is only re-pointed when the gate under it actually
--- changes rather than every frame.
-function poles.set(slot, wp, mode, key)
+-- changes rather than every frame. `tint` is an optional {r, g, b} override for
+-- this slot's mode colour; because the repaint rides the same key check, a
+-- caller that wants the colour to follow a state has to put that state in the
+-- key (the joker does).
+function poles.set(slot, wp, mode, key, tint)
   local entry = poles.live[slot]
   if not entry then
     local marker = poles.create()
@@ -3260,6 +3419,10 @@ function poles.set(slot, wp, mode, key)
       normal = vec3(wp.hx, wp.hy, 0),
       radius = w * 0.5,
     })
+    -- Before setMode, not after: setMode starts a colour lerp that reads this
+    -- table on the spot, so a repaint applied afterwards would not be picked up
+    -- until something else changed the mode.
+    if tint then poles.tint(entry.marker, mode, tint) end
     poles.call('setMode', entry.marker.setMode, entry.marker, mode)
   end
   return true
@@ -3357,23 +3520,73 @@ function poles.sync(editorView)
     poles.live[4] = nil
   end
 
-  -- The joker route, when one is armed and still owed.
+  -- The joker route.
   --
   -- This is not decoration. The server DISQUALIFIES a driver who does not take
   -- the joker exactly once, so a required route that nobody can see is a
   -- penalty waiting to happen -- and the joker gates are not part of `route`,
-  -- so the two markers above never reach them. 'branch' is BeamNG's own colour
-  -- for an alternate line.
+  -- so the two markers above never reach them.
+  --
+  -- Painted VIOLET rather than left on the stock branch orange, matching the
+  -- editor's own colour for it, and dimmed once the joker has been taken.
+  -- Shown in every state, including used: "you have taken it" is exactly as
+  -- much a thing a driver needs to know as "you still owe it", and the pole
+  -- used to simply vanish at that point. The label beside it (drawJokerLabel)
+  -- carries the words, because the marker cannot draw text at all.
+  --
+  -- The state is part of the key, not just the gate index: the colour changes
+  -- when the joker is taken without the gate moving, and the repaint rides the
+  -- key check inside poles.set.
   local jn = #jokerRoute
-  local showJoker = jokerEnabled and not jokerTaken and jn > 0
-  if showJoker then
+  if jokerEnabled and jn > 0 then
     local j = jokerArmed
     if j < 1 or j > jn then j = 1 end
-    poles.set(3, jokerRoute[j], 'branch', 'joker:' .. j)
+    local rgb = jokerTaken and TUNE.JOKER_POLE_USED_RGB or TUNE.JOKER_POLE_RGB
+    poles.set(3, jokerRoute[j], 'branch',
+      'joker:' .. j .. ':' .. (jokerTaken and 'used' or 'owed'), rgb)
   elseif poles.live[3] then
     pcall(poles.live[3].marker.clearMarkers, poles.live[3].marker)
     poles.live[3] = nil
   end
+end
+
+-- The joker route's LABEL, for a driver.
+--
+-- Split from the pole above because the two cannot come from the same place:
+-- sideColumnMarker renders no text whatsoever (every drawTextAdvanced in it is
+-- commented out), so a pole can say where the joker is and never what state it
+-- is in. For the joker that is the half that matters -- "used" and
+-- "lap 1: closed" are the difference between a route you must take and one you
+-- must not, and taking it wrong is a disqualification either way.
+--
+-- Deliberately the same text the editor shows, from the same jokerLabel cache,
+-- so an admin and a driver are reading the identical words about the identical
+-- gate. Only the label is drawn here: the pole is the shape, and repeating the
+-- editor's filled rectangle over it would be the clutter the poles replaced.
+-- `derbyLive` is passed in rather than read, because the derby module is scoped
+-- further down this file and its state does not exist yet up here. A running
+-- derby is a different game mode on the same map: whatever race track happens to
+-- be loaded is not what anyone in the arena is driving, and a JOKER ROUTE label
+-- hanging over a demolition derby is exactly the authoring-debris problem the
+-- arena visuals were just cleaned up for.
+local function drawJokerLabel(derbyLive)
+  if not debugDrawer then return end
+  -- The editor draws its own, for every joker gate at once and with the
+  -- rectangle attached. This is the other view of the same thing.
+  if editorOpen and isAdmin then return end
+  if spectatorLock or derbyLive then return end
+  local jn = #jokerRoute
+  if not jokerEnabled or jn == 0 then return end
+  local j = jokerArmed
+  if j < 1 or j > jn then j = 1 end
+  local wp = jokerRoute[j]
+  if not wp then return end
+  local active = sessionRunning() or phase == 'countdown' or phase == 'grid'
+  local state = jokerTaken and 'used'
+    or ((active and localLap <= 1) and 'closed' or 'open')
+  local p = palette()
+  debugDrawer:drawTextAdvanced(gateGeometry(wp).mid,
+    String(jokerLabel(j, jn, state)), p.text, true, false, p.jokerLabelBg)
 end
 
 local function drawGates()
@@ -4333,6 +4546,8 @@ function M.onUpdate(dt)
   lapTimerUpdate(dt)        -- live lap clock for this driver's own HUD
   reportProgress(dt)        -- live position telemetry (distance to next gate)
   drawGates()
+  -- The one label a driver gets: the gate poles carry no text at all.
+  drawJokerLabel(derbyState.phase == 'running')
   -- Race-mode checkpoint poles. Editor visuals belong to admins with the editor
   -- open; everyone else, including an admin who has closed it, gets the poles.
   poles.sync(editorOpen and isAdmin)
@@ -5510,6 +5725,12 @@ local function resetToIdle(reason)
   pit.left        = 0
   pit.repaired    = false
   pit.cooldown    = 0
+  pit.promptLeft  = 0
+  -- clearGhostReasons above has already swept every car in the world clean, so
+  -- this is only dropping our record of what we ghosted -- left set, the next
+  -- stop would think it was already ghosted and never ghost at all.
+  pit.ghostVeh    = nil
+  pit.ghostSent   = false
   editorTarget    = 'main'
   lastReportedSig = nil
   gridSlot        = nil
