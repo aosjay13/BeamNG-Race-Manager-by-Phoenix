@@ -22,8 +22,12 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 - **Pit stalls.** An optional pit lane: drive into a stall and the car is held,
   repaired in place and released. Stalls live outside the checkpoint list, so
   they can never affect laps or splits, and a pit stop is not a driver reset.
-- Gate **height** gets the slider width already had, and per-checkpoint
-  overrides get sliders on the same ranges.
+- **Every gate owns its size.** The first gate of a route takes the standard
+  default and each one after inherits from the gate placed before it, so a
+  creator sets it once and drives the route. The global width/height that every
+  gate without an override read *live* is gone: nudging it resized the whole
+  circuit retroactively with no way back. Existing layouts are unaffected —
+  each gate is given the size it was drawn with as the layout loads.
 - Layout selection moved out of the editor into the session controls, so running
   a saved race never means opening the editor.
 

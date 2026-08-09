@@ -367,7 +367,7 @@ angular.module('beamng.apps')
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.5.6';
+      var APP_BUILD = '0.5.7';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -1295,16 +1295,9 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.setGarageEnforce(' + (!$scope.garageEnforce) + ')');
       };
 
-      $scope.applyWidth = function () {
-        var w = parseFloat($scope.settingsUi.width);
-        if (!w || w <= 0) { return; }
-        bngApi.engineLua('raceManager.setCheckpointWidth(' + w + ')');
-      };
-      $scope.applyHeight = function () {
-        var h = parseFloat($scope.settingsUi.height);
-        if (!h || h <= 0) { return; }
-        bngApi.engineLua('raceManager.setCheckpointHeight(' + h + ')');
-      };
+      // No applyWidth / applyHeight: the global gate size is gone. A gate takes
+      // its size when it is placed, inherits it from the gate before, and is
+      // edited on its own row -- so resizing one gate can never move another.
 
       // ------------------------------------------------------------------
       // UI -> LUA commands (race entry, grid and qualifying rules)
@@ -1446,12 +1439,12 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.setCheckpointOverride(' + $scope.selectedCp + ', 0, 0)');
       };
 
-      // Effective (displayed) dimension for a gate row: its override or the
-      // global default the rectangle will actually use.
+      // A gate's size, as shown on its row. Every gate placed or loaded carries
+      // its own now; the fallback is only reached by one from a layout saved
+      // before that was true, and the client fills those in as it loads.
       $scope.cpDim = function (wp, field) {
         if (wp && typeof wp[field] === 'number') { return wp[field]; }
-        if (field === 'width')  { return $scope.settingsUi.width; }
-        return $scope.settingsUi.height;
+        return field === 'width' ? $scope.settingsUi.width : $scope.settingsUi.height;
       };
 
       // ------------------------------------------------------------------

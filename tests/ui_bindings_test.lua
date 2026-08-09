@@ -70,8 +70,15 @@ end
 
 expect(bound('settingsUi.laps'),   'Laps input binds settingsUi.laps')
 expect(bound('settingsUi.resets'), 'Max resets input binds settingsUi.resets')
-expect(bound('settingsUi.width'),  'Gate width inputs bind settingsUi.width')
-expect(bound('settingsUi.height'), 'Gate height input binds settingsUi.height')
+-- No global gate width/height any more. They bound a single setting that every
+-- gate without an override read LIVE, so nudging a slider resized the whole
+-- circuit retroactively with nothing to undo it. A gate takes its size when it
+-- is placed, inherits it from the gate before, and is edited on its own row.
+expect(not bound('settingsUi.width'),
+  'there is no global Gate width control: resizing one gate must not move others')
+expect(not bound('settingsUi.height'), 'and no global Gate height control')
+expect(bound('cpEdit.width') and bound('cpEdit.height'),
+  'gate size is edited on the gate itself')
 expect(bound('settingsUi.qualiLaps'), 'Quali lap limit input binds settingsUi.qualiLaps')
 expect(bound('settingsUi.qualiMins'), 'Quali time limit input binds settingsUi.qualiMins')
 expect(bound('derbyUi.name'),      'Derby arena name input binds derbyUi.name')

@@ -165,12 +165,14 @@ check(near(cylinders[1].a.x, -10) and near(cylinders[1].a.z, 0),
 -- ===========================================================================
 -- A cache that misses a change is worse than no cache
 -- ===========================================================================
--- Global width: nothing tells the draw loop this happened, so it has to notice.
+-- The global default no longer reaches a gate that has already been placed.
+-- It used to, and nudging that slider resized a whole circuit retroactively
+-- with nothing to undo it; a placed gate now owns its size.
+local wasX = cylinders[1].a.x
 RM.setCheckpointWidth(40)
 frame()
-check(near(cylinders[1].a.x, -20),
-  'widening every gate is picked up (the corner moves out to 20 m)')
-check(near(cylinders[1].a.z, 0), 'and the height is unchanged')
+check(near(cylinders[1].a.x, wasX),
+  'changing the default does NOT resize gates that are already placed')
 
 -- Per-gate override: only that gate moves.
 RM.setCheckpointOverride(1, 60, 20)
@@ -179,8 +181,8 @@ check(near(cylinders[1].a.x, -30) and near(cylinders[1].a.z, -5),
   'a per-gate override is picked up on that gate')
 -- Each gate emits four edges then a three-part arrow, so gate 2's first edge
 -- is index 8.
-check(near(cylinders[8].a.x, -20) and near(cylinders[8].a.z, 0),
-  'and leaves the gates that did not change alone')
+check(near(cylinders[8].a.x, -10) and near(cylinders[8].a.z, 0),
+  'and leaves the gates that did not change alone, at the size they were loaded with')
 
 -- Clearing the override falls back to the global default again.
 RM.setCheckpointOverride(1, nil, nil)
@@ -309,6 +311,42 @@ for _, t in ipairs(texts) do
   if t.text == 'DERBY BOUNDARY (5)' then labelled = true end
 end
 check(labelled, 'and the label follows the new count')
+
+-- ===========================================================================
+-- A gate keeps its own size, and passes it to the next one placed
+-- ===========================================================================
+-- There used to be one global width/height that every gate without an override
+-- read live, so nudging a slider resized the whole circuit at once,
+-- retroactively, with nothing to undo it. A gate now takes its size when it is
+-- placed and keeps it.
+RM.setEditorOpen(false)
+-- Own the world: anything still placed by an earlier case draws too -- the
+-- other routes, the starting grid, and the derby arena above.
+derbyState({ derbyPhase = 'idle', boundary = {}, players = {}, starts = {} })
+for _, t in ipairs({ 'joker', 'pit', 'start', 'main' }) do
+  RM.setEditorTarget(t); RM.editorClear()
+end
+veh.x, veh.y, veh.z = 0, 10, 0; RM.editorAdd()
+RM.setCheckpointOverride(1, 44, 12)
+veh.x, veh.y, veh.z = 0, 20, 0; RM.editorAdd()
+veh.x, veh.y, veh.z = 0, 30, 0; RM.editorAdd()
+serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {},
+  youAreAdmin = true })
+RM.setEditorOpen(true)
+frame()
+check(#cylinders == 21, 'three gates are drawn')
+check(near(cylinders[1].a.x, -22), 'a resized gate is 22 m either side of centre')
+check(near(cylinders[8].a.x, -22), 'the gate placed after it inherited that size')
+check(near(cylinders[15].a.x, -22), 'and so did the one after that')
+
+-- Changing one gate now moves ONLY that gate.
+RM.setCheckpointOverride(2, 10, 4)
+frame()
+check(near(cylinders[8].a.x, -5), 'resizing a gate changes that gate')
+check(near(cylinders[1].a.x, -22), 'and leaves the one before it alone')
+check(near(cylinders[15].a.x, -22), 'and the one after it alone')
+RM.setEditorOpen(false)
+
 
 if fails == 0 then
   print('draw_test: ' .. checks .. ' checks, 0 failures')

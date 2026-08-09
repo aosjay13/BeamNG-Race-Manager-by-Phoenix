@@ -100,7 +100,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.5.6'
+local RM_BUILD = '0.5.7'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -539,6 +539,10 @@ end
 -- Effective rectangle dimensions for a checkpoint: a per-gate override wins,
 -- otherwise the global default. Always returned clamped so bad stored data
 -- can't produce a degenerate (zero/negative) trigger surface.
+-- A gate's size. Every gate placed or loaded now carries its own, so the
+-- fallback is only reached by a gate from a layout saved before sizes were
+-- per-gate -- and onApplyLayout fills those in from the layout's own stored
+-- width/height as it loads, so even they only pass through here once.
 local function gateDims(wp)
   return clampWidth(wp.width   or checkpointWidth),
          clampHeight(wp.height or checkpointHeight)
@@ -4189,6 +4193,19 @@ local function activeEditorRoute()
   return route
 end
 
+-- Place a marker where the car is standing.
+--
+-- A gate is given its size HERE, once, and keeps it. It inherits from the gate
+-- placed before it, so a creator sets the size once and drives the rest of the
+-- route; the first gate of a fresh route takes the standard default.
+--
+-- This replaced a global width/height that every gate without an override read
+-- live. That setting was a footgun: nudging a slider resized the entire circuit
+-- at once, retroactively, with nothing to undo it -- and the gates it hit were
+-- exactly the ones the creator had never thought about. A size that is decided
+-- when a gate is placed can only ever be wrong for that gate.
+--
+-- Start positions are placements, not gates, so they get no dimensions.
 function M.editorAdd()
   local place = vehiclePlacement()
   if not place then
@@ -4196,6 +4213,11 @@ function M.editorAdd()
     return
   end
   local target = activeEditorRoute()
+  if editorTarget ~= 'start' then
+    local prev = target[#target]
+    place.width  = clampWidth(prev and prev.width  or checkpointWidth)
+    place.height = clampHeight(prev and prev.height or checkpointHeight)
+  end
   target[#target + 1] = place
   pushRouteState()
 end
@@ -4803,8 +4825,13 @@ local function onApplyLayout(rawData)
         return nil
       end
       out[i] = { x = x, y = y, z = z, hx = tonumber(cp.hx) or 0, hy = tonumber(cp.hy) or 1 }
-      if tonumber(cp.width)  then out[i].width  = clampWidth(cp.width)   end
-      if tonumber(cp.height) then out[i].height = clampHeight(cp.height) end
+      -- A gate saved before sizes were per-gate has none of its own; it is
+      -- given the layout's stored default here, so it keeps exactly the size it
+      -- was drawn with and never depends on a live setting again.
+      if what ~= 'start position' then
+        out[i].width  = clampWidth(tonumber(cp.width)  or data.width  or checkpointWidth)
+        out[i].height = clampHeight(tonumber(cp.height) or data.height or checkpointHeight)
+      end
     end
     return out
   end

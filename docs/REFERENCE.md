@@ -80,12 +80,18 @@ course you want to race:
    world; earlier gates are orange, and your next target turns green during
    a session).
 3. Every gate has a **width** (how far it reaches across) and a **height**
-   (how far it reaches up and down). Set the live defaults with the **Gate
-   width** slider (2–120 m) and the **Gate height** field. Raise the height on
-   **high-banked tracks** so the rectangle covers the banking — what you see
-   drawn in the world *is* the trigger, so you can verify it at a glance.
-   Click any placed checkpoint in the list to **override its own
-   Width / Height** (blank = inherit the default).
+   (how far it reaches up and down), and **each gate owns its own**. The first
+   gate of a new route gets the standard size; every gate after it inherits the
+   size of the one placed before, so you set it once and drive the rest of the
+   route. Click any placed gate to change it — **nothing else moves**. Raise the
+   height on **high-banked tracks** so the rectangle covers the banking; what
+   you see drawn in the world *is* the trigger, so you can verify it at a glance.
+
+   > There used to be a global width/height that every gate without an override
+   > read live. Nudging that slider resized the entire circuit at once,
+   > retroactively, with no way back — so it is gone. Layouts saved under it are
+   > unaffected: each gate is given the size it was drawn with as the layout
+   > loads.
 4. Every placed gate has **Go** (stand your car on it, facing the way through)
    and **Move Here** (move the gate to where your car is standing) — the same
    pair the starting grid has. A gate keeps its Width/Height override when it

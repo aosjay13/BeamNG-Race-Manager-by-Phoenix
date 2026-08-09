@@ -358,25 +358,14 @@
     </div>
     <div class="rm-editor-msg" ng-if="editorMsg">{{ editorMsg }}</div>
 
-    <!-- Default gate size for newly placed gates. These live in the editor and
-         nowhere else: they are not a race rule, they are the fallback every
-         checkpoint without its own Width/Height override uses (and the value
-         that travels with a saved layout). A start position is a placement,
-         not a gate, so the row is hidden on the Start Grid tab. -->
-    <div class="rm-settings rm-editor-defaults" ng-if="!editingGrid()">
-      <span class="rm-setting">
-        <label>Gate width</label>
-        <input type="range" min="2" max="120" step="1" ng-model="settingsUi.width" ng-change="applyWidth()">
-        <input type="number" class="rm-width-num" min="2" max="120" ng-model="settingsUi.width" ng-change="applyWidth()">
-        <span class="rm-setting-val">m</span>
-      </span>
-      <span class="rm-setting" title="How far the checkpoint rectangle extends up and down — raise it to cover high banking">
-        <label>Gate height</label>
-        <input type="range" min="1" max="100" step="1" ng-model="settingsUi.height" ng-change="applyHeight()">
-        <input type="number" class="rm-width-num" min="1" max="100" step="1" ng-model="settingsUi.height" ng-change="applyHeight()">
-        <span class="rm-setting-val">m</span>
-      </span>
-      <span class="rm-setting-val">default for new gates — click a placed gate to override it</span>
+    <!-- No global gate size. There used to be one, and every gate without its
+         own override read it live -- so nudging a slider resized the whole
+         circuit at once, retroactively, with nothing to undo it. A gate now
+         takes its size when it is placed, inheriting from the gate before it,
+         and keeps it. Size is edited on the gate itself, below. -->
+    <div class="rm-editor-hint" ng-if="!editingGrid() && editorWaypoints().length">
+      Each gate keeps its own size and passes it on to the next one you place.
+      Click a gate to change it — nothing else moves.
     </div>
 
     <!-- Gate list (main lap / joker route) -->
@@ -384,7 +373,7 @@
       <div class="rm-editor-wp-wrap" ng-repeat="wp in editorWaypoints() track by $index">
         <div class="rm-editor-wp" ng-class="{'rm-editor-wp-sel': selectedCp === $index + 1}"
              ng-click="selectCheckpoint($index + 1)"
-             title="Click to override this checkpoint's Width / Height">
+             title="Click to change this gate's Width / Height">
           <span class="rm-editor-idx" ng-class="{'rm-editor-finish': $last && editorTarget === 'main', 'rm-editor-joker': editorTarget === 'joker'}">{{ ($last && editorTarget === 'main') ? '🏁' : ($index + 1) }}</span>
           <span class="rm-editor-coords">{{ wp.x.toFixed(1) }}, {{ wp.y.toFixed(1) }}, {{ wp.z.toFixed(1) }}</span>
           <span class="rm-editor-dims">
@@ -410,14 +399,15 @@
             <input type="range" min="2" max="120" step="1" ng-model="cpEdit.width"
                    ng-change="applyCheckpointOverride()">
             <input type="number" min="2" max="120" ng-model="cpEdit.width"
-                   placeholder="{{ settingsUi.width }}"></span>
+                   placeholder="width"></span>
           <span class="rm-setting rm-cp-dim"><label>H</label>
             <input type="range" min="1" max="100" step="1" ng-model="cpEdit.height"
                    ng-change="applyCheckpointOverride()">
             <input type="number" min="1" max="100" ng-model="cpEdit.height"
-                   placeholder="{{ settingsUi.height }}"></span>
+                   placeholder="height"></span>
           <button class="rm-btn rm-btn-mini rm-btn-start" ng-click="applyCheckpointOverride()">Apply</button>
-          <button class="rm-btn rm-btn-mini" ng-click="resetCheckpointOverride()">Reset</button>
+          <button class="rm-btn rm-btn-mini" ng-click="resetCheckpointOverride()"
+                  title="Back to the standard size. Only this gate changes.">Default</button>
         </div>
       </div>
     </div>
