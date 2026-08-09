@@ -3418,6 +3418,13 @@ local function drawGates()
   end
 end
 
+-- Forward declarations for the eight names the scoped derby block below has
+-- to expose: the dispatch table routes to its four handlers, onUpdate drives
+-- its two per-frame functions, and the idle purge clears its state. Everything
+-- else it owns stays inside the block and hands its register back at `end`.
+local derbyState, derbyClearWarnings, derbyUpdate, derbyDrawBoundary
+local onDerbyUpdate, onDerbyGridAssign, onDerbyCountdown, onDerbyLayoutList
+do
 -- ===========================================================================
 -- DEMO DERBY (isolated module)
 -- ===========================================================================
@@ -3457,7 +3464,7 @@ local DERBY_POLE_RADIUS   = 0.2
 -- locals, the top level of this file is a function, and going over does not warn
 -- -- the file fails to compile and the mod is simply not there. This block was
 -- the largest cohesive group left.
-local derbyState = {
+derbyState = {
   phase     = 'idle',   -- idle | running | finished (mirrored from server)
   boundary  = {},       -- ordered polygon vertices { x, y, z }
   oobLimit  = 5,        -- seconds (mirrored from server config)
@@ -3488,7 +3495,7 @@ local function derbyPushWarning()
   derbyState.warnShown = (derbyState.oobLeft ~= nil) or (derbyState.demoLeft ~= nil)
 end
 
-local function derbyClearWarnings()
+derbyClearWarnings = function ()
   derbyState.oobLeft, derbyState.demoLeft = nil, nil
   if derbyState.warnShown then derbyPushWarning() end
 end
@@ -3514,7 +3521,7 @@ end
 -- Local pid, so we can tell whether the server already eliminated us.
 local derbyLocalServerId = localServerId
 
-local function derbyUpdate(dt)
+derbyUpdate = function (dt)
   if derbyState.phase ~= 'running' or derbyState.out then
     derbyClearWarnings()
     return
@@ -3579,7 +3586,7 @@ end
 -- perimeter (closed loop), and a label above marker 1. Mirrors the race
 -- editor's Hide/Show Gates rule: unconditional while the derby runs (drivers
 -- must see the arena), the toggle only applies outside of one.
-local function derbyDrawBoundary()
+derbyDrawBoundary = function ()
   if not debugDrawer then return end
   if derbyState.phase ~= 'running' and not derbyState.visualize then return end
   -- Derby starting grid slots, numbered from slot 1. Setup furniture, the same
@@ -3889,7 +3896,7 @@ end
 
 -- --- Derby server -> client ------------------------------------------------
 
-local function onDerbyUpdate(rawData)
+onDerbyUpdate = function (rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
   if not fromCurrentServer(data) then return end
@@ -3981,7 +3988,7 @@ end
 -- Start Derby handed this client a start slot: stand the car on it, facing
 -- the placed heading. No freeze/hold — the derby's start grace period covers
 -- the line-up, and the teleport is flagged so it never counts as a reset.
-local function onDerbyGridAssign(rawData)
+onDerbyGridAssign = function (rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
   local slot = tonumber(data.slot)
@@ -4016,7 +4023,7 @@ end
 -- never release each other's cars. GO (0) or an abort (-1) ends the hold; the
 -- overlay itself is the shared UI one, since a countdown looks the same either
 -- way and there is nothing mode-specific about drawing 3, 2, 1.
-local function onDerbyCountdown(rawData)
+onDerbyCountdown = function (rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
   local count = tonumber(data.count)
@@ -4025,7 +4032,7 @@ local function onDerbyCountdown(rawData)
 end
 
 -- Map-filtered arena list from the server.
-local function onDerbyLayoutList(rawData)
+onDerbyLayoutList = function (rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then
     log('E', 'raceManager', 'RM_DerbyLayouts: undecodable payload')
@@ -4038,6 +4045,7 @@ end
 -- ===========================================================================
 -- End of DEMO DERBY module
 -- ===========================================================================
+end
 
 -- Post-join: ask the server for the current state once its socket has had a
 -- moment to come up, so a driver who joins a server mid-session sees the live
@@ -4480,6 +4488,19 @@ end
 -- ---------------------------------------------------------------------------
 -- Server -> client
 -- ---------------------------------------------------------------------------
+-- SCOPED, and that is not cosmetic. Lua allows 200 locals per function, the top
+-- level of this file IS a function, and it was within a couple of that ceiling
+-- -- going over is not a warning, the file does not compile and the whole mod is
+-- simply absent. The limit counts locals that are ACTIVE AT ONCE, so a `do ...
+-- end` block hands its registers back at `end` while the closures defined inside
+-- keep the values alive as upvalues.
+--
+-- Everything from here to the bottom of the file is the server -> client half:
+-- twenty-odd handlers, the dispatch table that routes to them, the teardown and
+-- the session hooks. Nothing above needs any of it by name -- the handlers are
+-- reached through DISPATCH and the lifecycle through M -- so the whole tail
+-- costs the outer function nothing.
+do
 local function onServerUpdate(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
@@ -5232,5 +5253,6 @@ end
 
 M.onBeamMPPostJoin = onSessionJoin       -- BeamMP v4.22.0+
 M.runPostJoin      = onSessionJoin       -- BeamMP v4.21.1 and earlier
+end
 
 return M
