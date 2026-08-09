@@ -6,6 +6,27 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 [← Back to the README](README.md)
 
+## Unreleased — checkpoint refactor
+
+### Added
+
+- **Race checkpoints now look like race checkpoints.** During a session a driver
+  sees BeamNG's own gate poles on the next two gates rather than the whole
+  circuit drawn as numbered rectangles. The rectangles are the editor's view and
+  only an admin with the editor open sees them — filled, translucent, numbered,
+  with an arrow showing which way through each gate counts.
+- **Point-to-point stages.** A toggle on the Main Route row switches a track
+  between a circuit and a sprint driven once from first gate to last. Saved with
+  the layout; the gates relabel to START/FINISH, the header carries a badge, and
+  the Laps field says "driven once" instead of accepting a number.
+- **Pit stalls.** An optional pit lane: drive into a stall and the car is held,
+  repaired in place and released. Stalls live outside the checkpoint list, so
+  they can never affect laps or splits, and a pit stop is not a driver reset.
+- Gate **height** gets the slider width already had, and per-checkpoint
+  overrides get sliders on the same ranges.
+- Layout selection moved out of the editor into the session controls, so running
+  a saved race never means opening the editor.
+
 ## 0.5.1 — Ghost release fix
 
 ### Fixed

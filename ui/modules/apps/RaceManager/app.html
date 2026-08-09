@@ -315,6 +315,12 @@
               title="Place the alternate rallycross route here. It is saved with the layout and must be driven exactly once per race (never on lap 1).">
         Joker Route ({{ jokerRoute.length }})
       </button>
+      <button class="rm-btn rm-btn-mini rm-route-tab-pit"
+              ng-class="{'rm-route-tab-pit-active': editorTarget === 'pit'}"
+              ng-click="setEditorTarget('pit')"
+              title="Place pit stalls: drive into each stall and press Place Pit Stall Here. Driving into one during a race stops the car, repairs it and releases it. Stalls are NOT checkpoints — they never affect laps or splits.">
+        Pit Stalls ({{ pitRoute.length }})
+      </button>
       <button class="rm-btn rm-btn-mini rm-route-tab-start"
               ng-class="{'rm-route-tab-start-active': editorTarget === 'start'}"
               ng-click="setEditorTarget('start')"
@@ -335,12 +341,15 @@
       <span class="rm-route-tab-note" ng-if="editorTarget === 'joker'">
         Joker gates are drawn violet. Enable the joker lap in Race settings to enforce it.
       </span>
+      <span class="rm-route-tab-note" ng-if="editorTarget === 'pit'">
+        Stalls are drawn amber. Driving into one repairs the car in place; they are not checkpoints.
+      </span>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'start'">
         Slot 1 is pole. Drivers are placed here and held until the countdown ends.
       </span>
     </div>
     <div class="rm-editor-controls">
-      <button class="rm-btn rm-btn-grid"  ng-click="editorAdd()">+ {{ editorTarget === 'joker' ? 'Joker Gate' : (editorTarget === 'start' ? 'Place Start Position' : 'Checkpoint') }} Here</button>
+      <button class="rm-btn rm-btn-grid"  ng-click="editorAdd()">+ {{ editorTarget === 'joker' ? 'Joker Gate' : (editorTarget === 'start' ? 'Place Start Position' : (editorTarget === 'pit' ? 'Place Pit Stall' : 'Checkpoint')) }} Here</button>
       <button class="rm-btn"              ng-click="editorUndo()"  ng-disabled="!editorWaypoints().length">Undo</button>
       <button class="rm-btn rm-btn-end"   ng-click="editorClear()" ng-disabled="!editorWaypoints().length">Clear</button>
       <button class="rm-btn rm-btn-start" ng-click="editorSave()"  ng-disabled="!routeWaypoints.length">Save</button>
@@ -787,6 +796,12 @@
   </div>
   <!-- Transient regulation notices (reset used/denied, joker rulings). -->
   <div class="rm-notice" ng-class="'rm-notice-' + notice.kind" ng-if="notice">{{ notice.msg }}</div>
+
+  <!-- Pit stop: this driver is held in a stall while the car is repaired. -->
+  <div class="rm-pit" ng-if="pitActive">
+    <span class="rm-pit-title">IN THE PITS</span>
+    <span class="rm-pit-clock">{{ pitLeft | number:1 }}s</span>
+  </div>
 
   <!-- Reset ghost: this driver's own countdown to contact resuming. Shown only
        to the ghosted driver — everyone else sees the car itself go translucent.
@@ -1332,6 +1347,20 @@
     background: rgba(126, 226, 168, 0.18);
     color: #7ee2a8;
   }
+  .rm-route-tab-pit-active { background: rgba(255, 184, 26, 0.22); color: #ffb81a; }
+  .rm-pit {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 5px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 184, 26, 0.16);
+    color: #ffb81a;
+  }
+  .rm-pit-clock { font-variant-numeric: tabular-nums; }
+  .rm-notice-pit { background: rgba(255, 184, 26, 0.16); color: #ffb81a; }
   .rm-p2p-note { color: #7ee2a8; }
   .rm-p2p-toggle.rm-p2p-on { background: rgba(126, 226, 168, 0.22); color: #7ee2a8; }
   .rm-cp-dim { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; }

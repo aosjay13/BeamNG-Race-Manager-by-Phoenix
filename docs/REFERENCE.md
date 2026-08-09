@@ -110,6 +110,28 @@ the layout**, so a sprint stage stays a sprint stage.
 Your lap setting is kept rather than overwritten, so switching a circuit layout
 back in restores it. The mode is locked once a countdown or race starts.
 
+#### Pit stalls
+
+Switch the editor to the **Pit Stalls** tab, drive into each stall and press
+**+ Place Pit Stall Here**. Stalls are drawn amber and labelled `PIT 1`, `PIT 2`.
+
+Driving into a stall during a race **holds the car for 5 seconds, repairs it in
+place, and releases it**. The repair lands part-way through, so the car is whole
+before the driver gets it back, and the same stall will not trigger again for 8
+seconds.
+
+**A stall is an area, not a checkpoint.** They are kept out of the checkpoint
+list entirely, so they can never affect laps, splits or the running order — you
+can place them wherever a pit lane belongs without touching the race. A pit stop
+is not a driver reset either: it spends no reset allowance and is never reported
+as one. Every stop is logged server-side with the driver, the stall and the lap.
+
+They are **not** respawn points. A stall repairs a car where it stands and does
+nothing else — a later reset still goes wherever the reset ruleset says.
+
+Drivers get a pole on the **nearest** stall so the lane can be found; a whole
+lane wearing poles would read as a wall of gates across the track.
+
 #### Placing the starting grid
 
 Switch the editor to the **Start Grid** tab, then drive to each grid slot

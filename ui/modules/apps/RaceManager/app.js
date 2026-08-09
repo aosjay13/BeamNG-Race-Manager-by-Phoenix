@@ -72,7 +72,7 @@ angular.module('beamng.apps')
       // the main lap, the joker route and the starting grid. Anything else is
       // not a target the client Lua knows about, so it falls back to the main
       // lap — the same normalisation raceManager.setEditorTarget applies.
-      var EDITOR_TARGETS = { main: true, joker: true, start: true };
+      var EDITOR_TARGETS = { main: true, joker: true, pit: true, start: true };
       function editorTargetOf(value) {
         return EDITOR_TARGETS[value] ? value : 'main';
       }
@@ -367,7 +367,7 @@ angular.module('beamng.apps')
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.5.4';
+      var APP_BUILD = '0.5.5';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -687,6 +687,9 @@ angular.module('beamng.apps')
         if (!data) { return; }
         $scope.$evalAsync(function () {
           $scope.routeWaypoints = data.waypoints || [];
+          $scope.pitRoute = data.pitRoute || [];
+          $scope.pitActive = !!data.pitActive;
+          $scope.pitLeft = data.pitLeft || 0;
           $scope.nextWp = data.nextWp || 1;
           $scope.visualize = data.visualize !== false;
           if (typeof data.pointToPoint === 'boolean') { $scope.pointToPoint = data.pointToPoint; }

@@ -87,12 +87,20 @@ local TUNE = {
   HOLD_SETTLE_MIN  = 1.0,   -- seconds before stillness counts as settled
   HOLD_REPORT_EVERY = 0.25, -- seconds between position reports while held
   HOLD_CORRECT_COOLDOWN = 0.5, -- seconds after a correction before another
+  -- Pit stalls. The dwell is what makes a stop cost something: long enough to
+  -- be a real decision against carrying damage, short enough not to be a
+  -- punishment. The repair lands part-way through so the car is whole before
+  -- the driver gets it back.
+  PIT_HOLD_SEC   = 5.0,
+  PIT_REPAIR_AT  = 2.0,   -- seconds remaining when the repair is issued
+  PIT_COOLDOWN   = 8.0,   -- before the same stall can trigger again
+  PIT_DEPTH      = 3.0,   -- metres along the stall a car counts as being in it
   ROUTE_FILE = 'settings/raceManager/route.json',
 }
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.5.4'
+local RM_BUILD = '0.5.5'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -251,6 +259,23 @@ local ghost = {
 -- Rallycross joker route (Module 2): a second, completely separate gate set
 -- describing the alternate route. Same checkpoint format as `route`; it travels
 -- with the track layout and is only policed when the server arms the rule.
+-- Pit stalls: a pit-lane AREA, deliberately kept out of `route`.
+--
+-- A pit stall is somewhere a driver may choose to go, not a checkpoint they
+-- must pass in order. Putting one in the main route would make it mandatory
+-- every lap and would put it inside lap and split validation, which is exactly
+-- the contamination this is meant to avoid -- so pit stalls live in their own
+-- list, like the joker route, and the checkpoint sequence never sees them.
+--
+-- Driving into one stops the car, repairs it in place and lets it go again.
+local pitRoute     = {}
+local pit = {
+  active   = false,  -- a stop is running
+  left     = 0,      -- seconds until release
+  repaired = false,  -- the repair has been issued for this stop
+  cooldown = 0,      -- stops the box you are standing in re-triggering
+  stops    = 0,      -- how many this session, for the log
+}
 local jokerRoute   = {}
 local jokerEnabled = false       -- mirrored from the server broadcast
 local jokerArmed   = 1           -- next joker gate the local car must cross
@@ -573,6 +598,9 @@ local function pushRouteState()
     entryMode    = entryMode,
     joined       = joined,
     -- Joker route (Module 2)
+    pitRoute     = pitRoute,
+    pitActive    = pit.active,
+    pitLeft      = pit.left,
     jokerRoute   = jokerRoute,
     jokerNext    = jokerArmed,
     jokerTaken   = jokerTaken,
@@ -1398,6 +1426,99 @@ local function isSelfTeleportEcho()
     return (dx * dx + dy * dy + dz * dz) <= allowed * allowed
   end)
   return ok and near == true
+end
+
+-- Is this car standing in that pit stall?
+--
+-- A box, not a plane. A checkpoint is crossed; a pit stall is DRIVEN INTO and
+-- occupied, so the test is "am I in it", measured on the stall's own axes so a
+-- stall angled to the lane still reads correctly. Using the crossing test here
+-- would let a car trigger a pit stop by clipping the box at racing speed, which
+-- is the opposite of what a pit stop is.
+function pit.inside(wp, pos)
+  local w, h = gateDims(wp)
+  local dx, dy, dz = pos.x - wp.x, pos.y - wp.y, pos.z - wp.z
+  local fx, fy = wp.hx or 0, wp.hy or 1
+  local lat = dx * fy - dy * fx          -- across the stall
+  local fwd = dx * fx + dy * fy          -- along it
+  return math.abs(lat) <= w * 0.5
+     and math.abs(fwd) <= TUNE.PIT_DEPTH
+     and math.abs(dz)  <= h * 0.5
+end
+
+-- Let a car go again, and forget the stop.
+function pit.release(reason)
+  if not pit.active then return end
+  pit.active   = false
+  pit.left     = 0
+  pit.repaired = false
+  pit.cooldown = TUNE.PIT_COOLDOWN
+  setLocalVehicleFrozen(false)
+  pushRouteState()
+  log('I', 'raceManager', 'Pit stop ended (' .. tostring(reason or 'complete') .. ')')
+end
+
+-- The pit stop itself: hold the car, repair it, hand it back.
+--
+-- Deliberately NOT a respawn anchor. A stall repairs the car where it stands
+-- and nothing more -- it does not become the place a later reset returns to,
+-- which keeps it clear of the reset ruleset entirely.
+function pit.update(dt)
+  if pit.cooldown > 0 then pit.cooldown = pit.cooldown - dt end
+
+  -- A stop cannot outlive the session it started in, or a driver is handed a
+  -- frozen car in the lobby.
+  if pit.active and not (sessionRunning() and not spectatorLock) then
+    pit.release('session ended')
+    return
+  end
+
+  if pit.active then
+    pit.left = pit.left - dt
+    if not pit.repaired and pit.left <= TUNE.PIT_REPAIR_AT then
+      pit.repaired = true
+      local veh = ownVehicle()
+      if veh then
+        -- The repair is a vehicle reset as far as BeamNG is concerned, and the
+        -- reset hook must recognise it as ours: a pit stop is not a driver
+        -- reset and must never spend a reset allowance or be reported as one.
+        local ok, p = pcall(function () return veh:getPosition() end)
+        if ok and p then noteSelfTeleport(p.x, p.y, p.z) end
+        pcall(function () veh:queueLuaCommand('recovery.recoverInPlace()') end)
+        -- The reset reloads the vehicle VM and takes the freeze with it, so it
+        -- goes straight back on -- the car must not be free to leave early.
+        setLocalVehicleFrozen(true, 'pit')
+      end
+      pushNotice('pit', 'Repaired — hold for the release')
+    end
+    if pit.left <= 0 then
+      pit.release('complete')
+      pushNotice('pit', 'GO!')
+    end
+    return
+  end
+
+  if #pitRoute == 0 or pit.cooldown > 0 then return end
+  if not sessionRunning() or spectatorLock or gridFrozen then return end
+  local veh, pos = sampledVehicle()
+  if not veh or not pos then return end
+  for i, wp in ipairs(pitRoute) do
+    if pit.inside(wp, pos) then
+      pit.active   = true
+      pit.left     = TUNE.PIT_HOLD_SEC
+      pit.repaired = false
+      pit.stops    = pit.stops + 1
+      setLocalVehicleFrozen(true, 'pit')
+      pushNotice('pit', string.format('PIT STOP — %.0fs', TUNE.PIT_HOLD_SEC))
+      pushRouteState()
+      log('I', 'raceManager', string.format(
+        'Pit stop %d started in stall %d', pit.stops, i))
+      if inMultiplayer() then
+        TriggerServerEvent('RM_PitStop', jsonEncode({ stall = i }))
+      end
+      return
+    end
+  end
 end
 
 -- Age out both reset-side timers.
@@ -2814,6 +2935,7 @@ local function palette()
     route     = ColorF(1, 0.4, 0, 0.7),        -- rest of route: orange
     joker     = ColorF(0.65, 0.3, 0.95, 0.8),  -- joker route: violet
     jokerUsed = ColorF(0.45, 0.45, 0.5, 0.45), -- joker already taken: dimmed
+    pit       = ColorF(1, 0.72, 0.1, 0.85),    -- pit stalls: amber
     text      = ColorF(1, 1, 1, 1),
     -- The editor gate's filled surface. Deliberately faint: it has to show the
     -- gate's extent without hiding the road it is judged against.
@@ -3200,6 +3322,26 @@ function poles.sync(editorView)
     poles.live[2] = nil
   end
 
+  -- The nearest pit stall, so a driver who needs a repair can find the lane.
+  -- Only the nearest: a lane of stalls all wearing poles would read as a wall
+  -- of gates across the track. 'recovery' is BeamNG's own colour for it.
+  local pn = #pitRoute
+  if pn > 0 then
+    local _, ppos = sampledVehicle()
+    local best, bestD = 1, math.huge
+    if ppos then
+      for i, wp in ipairs(pitRoute) do
+        local dx, dy = wp.x - ppos.x, wp.y - ppos.y
+        local d = dx * dx + dy * dy
+        if d < bestD then best, bestD = i, d end
+      end
+    end
+    poles.set(4, pitRoute[best], 'recovery', 'pit:' .. best)
+  elseif poles.live[4] then
+    pcall(poles.live[4].marker.clearMarkers, poles.live[4].marker)
+    poles.live[4] = nil
+  end
+
   -- The joker route, when one is armed and still owed.
   --
   -- This is not decoration. The server DISQUALIFIES a driver who does not take
@@ -3248,6 +3390,13 @@ local function drawGates()
       color = p.route
     end
     drawGate(wp, color, routeLabel(i, n), authoring)
+  end
+
+  -- Pit stalls. Amber, and labelled as stalls rather than numbered gates: they
+  -- are not part of the checkpoint sequence and must not look as though they
+  -- are. Editor only -- a driver gets a pole on the nearest one instead.
+  for i, wp in ipairs(pitRoute) do
+    drawGate(wp, p.pit, 'PIT ' .. i, authoring)
   end
 
   -- Joker route: violet, so it never reads as part of the main lap. The next
@@ -3915,6 +4064,7 @@ function M.onUpdate(dt)
   drawStartPositions()      -- starting grid slots
   fieldUpdate(dt)           -- ghosted, staggered grid placement / mass respawn
   holdUpdate(dt)            -- grid hold: verify it is holding, report position
+  pit.update(dt)            -- pit stalls: hold, repair in place, release
   snapshotUpdate(dt)        -- Module 1: rolling "last good position"
   resetGuardUpdate(dt)      -- Module 1: teleport-echo window + notice throttle
   resetInputBlockUpdate()   -- Module 1: dead reset keys once the allowance is gone
@@ -4018,7 +4168,7 @@ end
 
 function M.setEditorTarget(target)
   target = tostring(target or 'main')
-  if target ~= 'joker' and target ~= 'start' then target = 'main' end
+  if target ~= 'joker' and target ~= 'start' and target ~= 'pit' then target = 'main' end
   editorTarget = target
   pushRouteState()
   log('I', 'raceManager', 'Editor target: ' .. editorTarget)
@@ -4026,6 +4176,7 @@ end
 
 local function activeEditorRoute()
   if editorTarget == 'joker' then return jokerRoute end
+  if editorTarget == 'pit'   then return pitRoute end
   if editorTarget == 'start' then return startPositions end
   return route
 end
@@ -4056,6 +4207,12 @@ end
 
 function M.editorClear()
   -- Clearing the joker route or the grid on its own must not wipe the main lap.
+  if editorTarget == 'pit' then
+    pitRoute = {}
+    pushRouteState()
+    log('I', 'raceManager', 'Pit stalls cleared')
+    return
+  end
   if editorTarget == 'joker' then
     jokerRoute   = {}
     jokerArmed   = 1
@@ -4286,6 +4443,7 @@ function M.saveLayout(name)
     checkpoints = cps,
     joker       = jokerCps,
     startPositions = starts,
+    pits           = bundle(pitRoute, 'pit stall') or {},
     -- Whether this track is a sprint stage or a circuit is a property of the
     -- TRACK, so it is stored with it. An admin who built a point-to-point stage
     -- should not have to remember to set it again every race night.
@@ -4603,9 +4761,14 @@ local function onApplyLayout(rawData)
   if type(data.startPositions) == 'table' and #data.startPositions > 0 then
     starts = unbundle(data.startPositions, 'start position') or {}
   end
+  local pits = {}
+  if type(data.pits) == 'table' and #data.pits > 0 then
+    pits = unbundle(data.pits, 'pit stall') or {}
+  end
   clearTrackState('applying layout "' .. tostring(data.name) .. '"')
   route      = cps
   jokerRoute = jokerCps
+  pitRoute   = pits
   startPositions = starts
   checkpointWidth  = clampWidth(data.width or checkpointWidth)
   checkpointHeight = clampHeight(data.height or checkpointHeight)
@@ -4991,6 +5154,11 @@ local function resetToIdle(reason)
   selfTeleport.left = 0
   blockNoticeLeft = 0
   jokerEnabled    = false
+  pitRoute        = {}
+  pit.active      = false
+  pit.left        = 0
+  pit.repaired    = false
+  pit.cooldown    = 0
   editorTarget    = 'main'
   lastReportedSig = nil
   gridSlot        = nil
