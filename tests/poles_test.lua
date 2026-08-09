@@ -37,8 +37,25 @@ local VEH_ID = 7
 local madeMarkers = {}
 local sharedApiCalls = {}   -- any use of the SHARED (non-detached) API
 
+-- The real sideColumnMarker builds this in its init with
+-- `self.modeInfos = deepcopy(modeInfos)` -- a PER-INSTANCE copy of the eight
+-- stock mode colours. That copy is what makes recolouring one marker safe, so
+-- the stub reproduces it (a fresh table per marker, never a shared one) and the
+-- joker case below checks the recolour lands on it.
+local function stockModeInfos()
+  return {
+    default  = { color = { 1, 0.07, 0 },  baseColor = { 1, 1, 1 } },
+    next     = { color = { 0, 0, 0 },     baseColor = { 0, 0, 0 } },
+    lap      = { color = { 0.4, 1, 0.2 }, baseColor = { 1, 1, 1 } },
+    recovery = { color = { 1, 0.85, 0 },  baseColor = { 1, 1, 1 } },
+    branch   = { color = { 1, 0.6, 0 },   baseColor = { 1, 1, 1 } },
+    hidden   = { color = { 0, 0, 0 },     baseColor = { 0, 0, 0 } },
+  }
+end
+
 local function makeMarker(id)
-  local m = { id = id, alive = false, checkpoint = nil, mode = nil, updates = 0 }
+  local m = { id = id, alive = false, checkpoint = nil, mode = nil, updates = 0,
+              modeInfos = stockModeInfos() }
   function m:createMarkers() self.alive = true end
   function m:clearMarkers() self.alive = false end
   function m:setToCheckpoint(wp) self.checkpoint = wp end
@@ -219,7 +236,43 @@ frames(3)
 check(aliveMarkers() == plain + 1,
   'an armed joker route gets a marker of its own, beyond the two main ones')
 
--- Once taken, it stops being signposted.
+-- ...and it is VIOLET.
+--
+-- The marker's stock `branch` mode -- BeamNG's own alternate-route colour -- is
+-- orange (1, 0.6, 0), which sits right beside the main route's red-orange
+-- `default` (1, 0.07, 0). On track that made the joker read as more of the same
+-- lap, which is the one thing it must never read as. There is no violet mode to
+-- switch to, so the colour is written onto this marker's own copy of the table.
+local function jokerMarker()
+  for i = #madeMarkers, 1, -1 do
+    local m = madeMarkers[i]
+    if m.alive and m.mode == 'branch' then return m end
+  end
+end
+local jm = jokerMarker()
+check(jm ~= nil, 'the joker marker is the one in branch mode')
+local jc = jm and jm.modeInfos.branch.color
+check(jc and math.abs(jc[1] - 0.65) < 1e-9 and math.abs(jc[2] - 0.3) < 1e-9
+  and math.abs(jc[3] - 0.95) < 1e-9,
+  'the joker marker is repainted violet, not left on the stock branch orange')
+
+-- The repaint must land on THIS marker and nowhere else. If a build ever shared
+-- one colour table between markers, recolouring the joker would drag every
+-- other pole -- and every other mod's -- violet with it.
+local others = 0
+for _, m in ipairs(madeMarkers) do
+  if m ~= jm and m.modeInfos.branch.color[1] ~= 1 then others = others + 1 end
+end
+check(others == 0, 'and on no other marker: the colour table is per instance')
+
+-- NOT asserted here: that a joker already TAKEN stays signposted (dimmed
+-- rather than vanishing, so "you have taken it" is still readable). `jokerTaken`
+-- is set only by actually driving the joker route -- it is client-local and no
+-- server field sets it -- so the only honest way to reach that state from this
+-- file is to stage a real crossing, which is a different test's job. Asserting
+-- it by poking server state would pass without ever leaving the untaken case.
+
+-- Disarming the joker rule stops it being signposted at all.
 handlers['RM_ApplyLayout']({ name = 'j2', width = 20, height = 10,
   checkpoints = {
     { x = 100, y = 0, z = 0, hx = 1, hy = 0 },

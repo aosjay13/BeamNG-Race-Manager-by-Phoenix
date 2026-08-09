@@ -125,10 +125,27 @@ back in restores it. The mode is locked once a countdown or race starts.
 Switch the editor to the **Pit Stalls** tab, drive into each stall and press
 **+ Place Pit Stall Here**. Stalls are drawn amber and labelled `PIT 1`, `PIT 2`.
 
-Driving into a stall during a race **holds the car for 5 seconds, repairs it in
-place, and releases it**. The repair lands part-way through, so the car is whole
-before the driver gets it back, and the same stall will not trigger again for 8
-seconds.
+**You have to stop in the box yourself.** Driving into a stall is not enough —
+the car has to actually come to a stop inside it. While you are in the box and
+still rolling the panel says *"come to a stop inside the box"*; the moment you
+stop, the stop begins: the car is **held for 5 seconds, repaired in place, and
+released**. The repair lands part-way through, so the car is whole before the
+driver gets it back, and the same stall will not trigger again for 8 seconds.
+
+Run through a stall without stopping and you simply **miss it**. Nothing is
+seized, nothing is spent — no cooldown is started, so the stall is live again on
+the very next visit and you can come round. Making the box alone the trigger is
+what used to make a pit stop something that *happened to* a driver: clip a
+corner of a stall at racing speed and the car was frozen where it stood,
+mid-lane, at whatever angle it was travelling.
+
+**A car serving a stop is ghosted.** It is frozen, so it cannot move out of the
+way, and it is parked in the one part of the track everybody else arrives at
+slowly and off-line. The ghost lasts exactly as long as the stop and is lifted
+with the car. It rides the server's **reset-ghosting** switch: with that off,
+nothing is ghosted here either — ghosting is applied per vehicle by each client
+separately, so a car ghosted for its own driver and solid for everybody else is
+worse than one that was never ghosted at all.
 
 **A stall is an area, not a checkpoint.** They are kept out of the checkpoint
 list entirely, so they can never affect laps, splits or the running order — you
@@ -624,6 +641,20 @@ Switch **Joker lap** on in Race settings and the rule is enforced:
   **`Disqualified - Missed Joker`** (or `Disqualified - Extra Joker`), which
   goes straight into the results `.txt` alongside a `Joker` column showing the
   lap each driver used.
+
+**On track, the joker stays violet and keeps its wording.** Drivers get a gate
+pole on the joker like any other checkpoint, painted the same violet the editor
+uses rather than BeamNG's stock alternate-route orange — which sits close enough
+to the main route's colour that the joker read as more of the same lap, and this
+is the one route where that mistake is a disqualification. Above it sits the
+label the editor shows, in the same words: `JOKER 2/3`, `JOKER EXIT`,
+`(lap 1: closed)` while the opening lap forbids it, and `(used)` once it has been
+taken. The pole stays up after the joker has been taken, dimmed — *"you have
+taken it"* is as much a thing a driver needs to know as *"you still owe it"*.
+
+The label is drawn separately from the pole because BeamNG's gate markers render
+**no text at all** — a pole can say where the joker is and never what state it is
+in, which for the joker is the half that matters.
 
 ### Vehicle & setup locking (the Garage List)
 
