@@ -3092,6 +3092,20 @@ local DERBY_UNLIMITED_RESETS = -1
 local DERBY_MAX_RESET_LIMIT  = 99
 local DERBY_MAX_STARTS       = 64
 
+-- Rectangle arenas. A rectangle is authored from its centre outward, so these
+-- are HALF-extents: the sliders show the full width and length, which is what an
+-- admin measures an arena in, and the half is what the corner maths wants.
+local DERBY_MIN_EXTENT     = 5    -- metres; full width/length floor is 10 m
+local DERBY_MAX_EXTENT     = 250  -- ceiling is 500 m a side
+local DERBY_DEFAULT_EXTENT = 60
+-- Wall height is a VISUAL property of either arena kind, never a gameplay one:
+-- the out-of-bounds test is flat (see derbyPointInPolygon on the client), so a
+-- wall that reaches higher does not change who is in or out. It exists so a
+-- driver can see the edge of the arena from inside a car.
+local DERBY_MIN_WALL     = 2
+local DERBY_MAX_WALL     = 30
+local DERBY_DEFAULT_WALL = 6
+
 local derby = {
   phase     = 'idle',   -- idle | running | finished
   -- Who is in a derby. 'all' (the default) is the historical behaviour: every
@@ -3109,6 +3123,22 @@ local derby = {
   maxResets = DERBY_UNLIMITED_RESETS,  -- vehicle resets per driver per derby
   time      = 0,        -- seconds since Start Derby (advanced by RM_DerbyTick)
   boundary  = {},       -- ordered polygon vertices { x, y, z }
+  -- HOW that polygon was authored. The polygon above stays the single source of
+  -- truth for gameplay either way -- every client runs point-in-polygon against
+  -- it and nothing else -- so this only decides which editor the admin gets:
+  --
+  --   'polygon'  drive the perimeter and drop a marker at each corner. Arbitrary
+  --              shapes, which is the whole point: a demo arena is rarely a
+  --              rectangle, and this is the mode that has always worked.
+  --   'rect'     pick a centre and pull the extents out with sliders. Four
+  --              corners are DERIVED from `shape` below, so the markers are not
+  --              individually editable while this is on.
+  --
+  -- Old saved arenas carry neither field and load as 'polygon', which is what
+  -- they have always been.
+  boundaryMode = 'polygon',  -- polygon | rect
+  shape     = nil,      -- { cx, cy, cz, halfW, halfL, rot } while mode is 'rect'
+  wallHeight = DERBY_DEFAULT_WALL,  -- visual only; see the constant above
   startPositions = {},  -- derby starting grid { x, y, z, hx, hy }, slot 1 first
   winner    = nil,      -- winner's name once decided
 }
@@ -3142,6 +3172,108 @@ local function derbyClampLimit(n, default)
   if n < DERBY_MIN_LIMIT then return DERBY_MIN_LIMIT end
   if n > DERBY_MAX_LIMIT then return DERBY_MAX_LIMIT end
   return n
+end
+
+-- The same clamp against an arbitrary range, for the rectangle's extents and the
+-- wall height. A non-number falls back rather than erroring: every one of these
+-- arrives off a UI slider that an admin can also type into.
+local function derbyClampNum(n, lo, hi, default)
+  n = tonumber(n)
+  if not n then return default end
+  if n < lo then return lo end
+  if n > hi then return hi end
+  return n
+end
+
+-- Rotation is stored in radians and wrapped into [0, 2pi). The UI only offers
+-- 0-90 degrees because a rectangle repeats every 90 (a quarter turn just swaps
+-- width and length), but the wrap is done here so a hand-edited arenas file or a
+-- future control cannot feed the corner maths an unbounded angle.
+local function derbyWrapRot(n, default)
+  n = tonumber(n)
+  if not n then return default end
+  local tau = math.pi * 2
+  n = n % tau
+  if n < 0 then n = n + tau end
+  return n
+end
+
+-- The four corners of a rectangle authored from its centre.
+--
+-- All four sit at the CENTRE's z. That is deliberate and not a shortcut waiting
+-- to be fixed: the out-of-bounds test ignores z entirely, so corner height
+-- changes nothing about who is in the arena, and sampling terrain per corner
+-- would make the walls agree with the ground on a slope while still enclosing
+-- exactly the same footprint. A flat plane is the honest representation of what
+-- the rule actually is. On sloped ground the walls are drawn tall enough to
+-- intersect the terrain rather than hover over it (see the client's draw code).
+--
+-- Wound anticlockwise from the near-left corner so consecutive entries are
+-- always adjacent -- a ring, never a bowtie, whatever the rotation.
+local function derbyShapeToBoundary(shape)
+  if type(shape) ~= 'table' then return {} end
+  local rot = shape.rot or 0
+  local c, s = math.cos(rot), math.sin(rot)
+  local hw, hl = shape.halfW, shape.halfL
+  local corners = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, 1 } }
+  local out = {}
+  for i, sg in ipairs(corners) do
+    local ox, oy = sg[1] * hw, sg[2] * hl
+    out[i] = {
+      x = shape.cx + ox * c - oy * s,
+      y = shape.cy + ox * s + oy * c,
+      z = shape.cz,
+    }
+  end
+  return out
+end
+
+-- Fit a rectangle around an existing polygon, so switching a hand-driven arena
+-- to rectangle mode adapts the admin's work instead of discarding it. Axis
+-- aligned (rot 0) on purpose: a minimum-area fit could come back at some angle
+-- nobody asked for, and the rotation slider is right there.
+local function derbyShapeFromBoundary(poly)
+  if type(poly) ~= 'table' or #poly < 3 then return nil end
+  local minx, maxx = math.huge, -math.huge
+  local miny, maxy = math.huge, -math.huge
+  local zsum = 0
+  for _, m in ipairs(poly) do
+    if m.x < minx then minx = m.x end
+    if m.x > maxx then maxx = m.x end
+    if m.y < miny then miny = m.y end
+    if m.y > maxy then maxy = m.y end
+    zsum = zsum + m.z
+  end
+  return {
+    cx = (minx + maxx) * 0.5,
+    cy = (miny + maxy) * 0.5,
+    cz = zsum / #poly,
+    halfW = derbyClampNum((maxx - minx) * 0.5,
+      DERBY_MIN_EXTENT, DERBY_MAX_EXTENT, DERBY_DEFAULT_EXTENT),
+    halfL = derbyClampNum((maxy - miny) * 0.5,
+      DERBY_MIN_EXTENT, DERBY_MAX_EXTENT, DERBY_DEFAULT_EXTENT),
+    rot = 0,
+  }
+end
+
+-- Validate a rectangle off the wire (or out of a saved arena). `base` supplies
+-- the value for anything the payload leaves out, so a slider can send just the
+-- field it changed. Returns nil when there is no centre to work from at all.
+local function sanitizeDerbyShape(raw, base)
+  if type(raw) ~= 'table' then return nil end
+  base = base or {}
+  local cx = tonumber(raw.cx) or base.cx
+  local cy = tonumber(raw.cy) or base.cy
+  local cz = tonumber(raw.cz) or base.cz
+  if not (cx and cy and cz) then return nil end
+  return {
+    cx = cx, cy = cy, cz = cz,
+    halfW = derbyClampNum(raw.halfW, DERBY_MIN_EXTENT, DERBY_MAX_EXTENT,
+      base.halfW or DERBY_DEFAULT_EXTENT),
+    halfL = derbyClampNum(raw.halfL, DERBY_MIN_EXTENT, DERBY_MAX_EXTENT,
+      base.halfL or DERBY_DEFAULT_EXTENT),
+    rot = derbyWrapRot(raw.rot, base.rot or 0),
+  }
 end
 
 -- Participants ordered for display/results: winner first, then survivors,
@@ -3200,6 +3332,13 @@ local function broadcastDerbyState(targetPid)
     maxResets  = derby.maxResets,
     derbyTime  = derby.time,
     boundary   = derby.boundary,
+    -- The polygon above is what every client polices against, in both modes.
+    -- These three only tell it which editor to show and how tall to draw the
+    -- walls; a client too old to know about them reads `boundary` and behaves
+    -- exactly as it always has.
+    boundaryMode = derby.boundaryMode,
+    shape      = derby.shape,
+    wallHeight = derby.wallHeight,
     startPositions = derby.startPositions,
     winner     = derby.winner,
     players    = derbyClassification(),
@@ -3366,11 +3505,21 @@ function RM_onDerbySetConfig(pid, rawData)
     derby.maxResets < 0 and 'unlimited' or tostring(derby.maxResets)))
 end
 
+-- A rectangle's corners are derived from its shape, so the marker tools are
+-- refused while that mode is on -- moving one corner of a rectangle is not an
+-- operation that has an answer. The UI hides them too; this is the authoritative
+-- half, because a stale client must not be able to bend a rectangle into
+-- something `shape` no longer describes.
+local function derbyMarkersEditable()
+  return derby.boundaryMode ~= 'rect'
+end
+
 -- Admin dropped a boundary marker at their vehicle's position; the ordered
 -- marker list is the arena polygon every client runs point-in-polygon against.
 function RM_onDerbyAddMarker(pid, rawData)
   if not requireAuth(pid) then return end
   if derbyActive() then return end
+  if not derbyMarkersEditable() then return end
   if #derby.boundary >= DERBY_MAX_MARKERS then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
@@ -3383,12 +3532,101 @@ function RM_onDerbyAddMarker(pid, rawData)
     #derby.boundary, MP.GetPlayerName(pid) or pid, x, y))
 end
 
+-- Start over. This is the one boundary control that stays live in BOTH modes:
+-- clearing a rectangle drops the arena back to an empty drive-and-place one,
+-- which is the state a fresh server boots in. Anything else would leave the
+-- button either dead or lying about what it did.
 function RM_onDerbyClearBoundary(pid)
   if not requireAuth(pid) then return end
   if derbyActive() then return end
   derby.boundary = {}
+  derby.boundaryMode = 'polygon'
+  derby.shape = nil
   broadcastDerbyState()
   print('[RaceManager] Derby boundary cleared by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- Switch between the two arena editors. Neither direction throws the admin's
+-- work away, which is the whole reason this is a mode rather than two separate
+-- arenas: a rectangle becomes four ordinary markers you can then drag anywhere,
+-- and a hand-driven arena becomes the rectangle that bounds it.
+function RM_onDerbySetBoundaryMode(pid, rawData)
+  if not requireAuth(pid) then return end
+  if derbyActive() then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local mode = data.mode
+  if mode ~= 'rect' and mode ~= 'polygon' then return end
+  if mode == derby.boundaryMode then return end
+
+  if mode == 'polygon' then
+    -- The four derived corners stay exactly where they are and simply become
+    -- editable, so switching back is an edit and not a reset.
+    derby.boundaryMode = 'polygon'
+    derby.shape = nil
+  else
+    -- Fit the rectangle to whatever is already placed. With nothing to fit, the
+    -- client sends its own vehicle position as the centre -- the same "stand
+    -- where you want it and press the button" gesture every other placement in
+    -- this mod uses.
+    local shape = derbyShapeFromBoundary(derby.boundary)
+    if not shape then
+      local cx, cy, cz = tonumber(data.cx), tonumber(data.cy), tonumber(data.cz)
+      if not (cx and cy and cz) then
+        print('[RaceManager] Derby rectangle mode needs a centre: '
+          .. 'nothing placed to fit, and no vehicle position sent')
+        return
+      end
+      shape = { cx = cx, cy = cy, cz = cz,
+                halfW = DERBY_DEFAULT_EXTENT, halfL = DERBY_DEFAULT_EXTENT, rot = 0 }
+    end
+    derby.boundaryMode = 'rect'
+    derby.shape = shape
+    derby.boundary = derbyShapeToBoundary(shape)
+  end
+  broadcastDerbyState()
+  print(string.format('[RaceManager] Derby boundary mode set to "%s" by %s',
+    mode, MP.GetPlayerName(pid) or pid))
+end
+
+-- The rectangle editor's one write path: centre, extents, rotation and wall
+-- height all arrive here, and a payload may carry any subset of them (a slider
+-- sends only what it moved). Wall height is applied in either mode because it is
+-- a property of the arena's drawing, not of the rectangle.
+function RM_onDerbySetShape(pid, rawData)
+  if not requireAuth(pid) then return end
+  if derbyActive() then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+
+  local changed = false
+  if data.wallHeight ~= nil then
+    local h = derbyClampNum(data.wallHeight, DERBY_MIN_WALL, DERBY_MAX_WALL, derby.wallHeight)
+    if h ~= derby.wallHeight then derby.wallHeight = h; changed = true end
+  end
+
+  if derby.boundaryMode == 'rect' then
+    local shape = sanitizeDerbyShape(data, derby.shape)
+    if shape then
+      derby.shape = shape
+      derby.boundary = derbyShapeToBoundary(shape)
+      changed = true
+    end
+  end
+
+  if not changed then return end
+  broadcastDerbyState()
+  if derby.shape then
+    print(string.format(
+      '[RaceManager] Derby rectangle by %s: %.1f x %.1f m at %.1f, %.1f, %.0f deg, wall %.1f m',
+      MP.GetPlayerName(pid) or pid, derby.shape.halfW * 2, derby.shape.halfL * 2,
+      derby.shape.cx, derby.shape.cy, math.deg(derby.shape.rot), derby.wallHeight))
+  else
+    print(string.format('[RaceManager] Derby wall height set to %.1f m by %s',
+      derby.wallHeight, MP.GetPlayerName(pid) or pid))
+  end
 end
 
 -- Admin dropped a derby start position at their vehicle's placement (position
@@ -3442,6 +3680,7 @@ end
 function RM_onDerbyMoveMarker(pid, rawData)
   if not requireAuth(pid) then return end
   if derbyActive() then return end
+  if not derbyMarkersEditable() then return end
   local index, data = derbyEditRequest(rawData, derby.boundary)
   if not index then return end
   local x, y, z = tonumber(data.x), tonumber(data.y), tonumber(data.z)
@@ -3459,6 +3698,7 @@ end
 function RM_onDerbyRemoveMarker(pid, rawData)
   if not requireAuth(pid) then return end
   if derbyActive() then return end
+  if not derbyMarkersEditable() then return end
   local index = derbyEditRequest(rawData, derby.boundary)
   if not index then return end
   table.remove(derby.boundary, index)
@@ -3561,7 +3801,11 @@ local function saveDerbyLayoutsToDisk()
   ensureLayoutsDir()
   local f, ferr = io.open(DERBY_LAYOUTS_FILE, 'w')
   if not f then return false, tostring(ferr) end
-  f:write(jsonStringify({ version = 1, layouts = getDerbyLayouts() }))
+  -- version 2 added the optional boundaryMode/shape/wallHeight fields. A v1
+  -- entry is still a valid v2 entry -- it simply has none of them and loads as
+  -- the drive-and-place arena it always was -- so nothing migrates and an older
+  -- plugin reading this file still finds the `boundary` it cares about.
+  f:write(jsonStringify({ version = 2, layouts = getDerbyLayouts() }))
   f:close()
   return true
 end
@@ -3631,11 +3875,19 @@ function RM_onDerbySaveLayout(pid, rawData)
     if resets < 0 then resets = DERBY_UNLIMITED_RESETS
     elseif resets > DERBY_MAX_RESET_LIMIT then resets = DERBY_MAX_RESET_LIMIT end
   end
+  -- A rectangle is saved as BOTH its shape and the polygon derived from it. The
+  -- polygon is what makes the entry loadable by anything that has never heard of
+  -- a rectangle (including an older plugin); the shape is what makes it editable
+  -- with the sliders again instead of coming back as four loose markers.
+  local rect = (data.boundaryMode == 'rect') and sanitizeDerbyShape(data.shape) or nil
   local map = getCurrentMap()
   local entry = {
     name      = name,
     map       = map,
     boundary  = boundary,
+    boundaryMode = rect and 'rect' or 'polygon',
+    shape     = rect,
+    wallHeight = derbyClampNum(data.wallHeight, DERBY_MIN_WALL, DERBY_MAX_WALL, derby.wallHeight),
     oobLimit  = derbyClampLimit(data.oobLimit,  derby.oobLimit),
     demoLimit = derbyClampLimit(data.demoLimit, derby.demoLimit),
     maxResets = resets or derby.maxResets,
@@ -3686,6 +3938,21 @@ function RM_onDerbyLoadLayout(pid, rawData)
       -- has always come back from sanitizeCheckpoints as a fresh table; this
       -- is the same guarantee for the boundary.)
       derby.boundary  = sanitizeBoundary(l.boundary) or {}
+      -- A saved rectangle comes back as a rectangle, still editable by slider.
+      -- Its corners are re-derived from the shape rather than trusted from the
+      -- file: the two are written together, and if a hand-edited arenas file has
+      -- ever disagreed, the shape is the one the sliders will act on.
+      local rect = (l.boundaryMode == 'rect') and sanitizeDerbyShape(l.shape) or nil
+      if rect then
+        derby.boundaryMode = 'rect'
+        derby.shape    = rect
+        derby.boundary = derbyShapeToBoundary(rect)
+      else
+        derby.boundaryMode = 'polygon'
+        derby.shape    = nil
+      end
+      derby.wallHeight = derbyClampNum(l.wallHeight,
+        DERBY_MIN_WALL, DERBY_MAX_WALL, DERBY_DEFAULT_WALL)
       derby.oobLimit  = derbyClampLimit(l.oobLimit,  derby.oobLimit)
       derby.demoLimit = derbyClampLimit(l.demoLimit, derby.demoLimit)
       if type(l.maxResets) == 'number' then derby.maxResets = math.floor(l.maxResets) end
@@ -4112,6 +4379,8 @@ function onInit()
   MP.RegisterEvent('RM_DerbySetConfig',     'RM_onDerbySetConfig')
   MP.RegisterEvent('RM_DerbyAddMarker',     'RM_onDerbyAddMarker')
   MP.RegisterEvent('RM_DerbyClearBoundary', 'RM_onDerbyClearBoundary')
+  MP.RegisterEvent('RM_DerbySetBoundaryMode', 'RM_onDerbySetBoundaryMode')
+  MP.RegisterEvent('RM_DerbySetShape',      'RM_onDerbySetShape')
   MP.RegisterEvent('RM_DerbyAddStart',      'RM_onDerbyAddStart')
   MP.RegisterEvent('RM_DerbyClearStarts',   'RM_onDerbyClearStarts')
   MP.RegisterEvent('RM_DerbyMoveMarker',    'RM_onDerbyMoveMarker')

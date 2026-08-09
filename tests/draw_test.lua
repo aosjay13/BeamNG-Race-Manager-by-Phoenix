@@ -249,23 +249,28 @@ local function markers()
   return out
 end
 
+-- --- The driving view -------------------------------------------------------
+-- A live derby is gameplay, not an editor: translucent walls, a rail to read the
+-- edge by, and NOTHING else. No labels, no corner numbers, no floor -- an
+-- eliminated driver spectating an arena covered in authoring furniture is the
+-- exact thing this split exists to stop.
+-- Close the race editor first: its filled gate surfaces are quads too, and
+-- everything below counts quads to tell walls apart from floors.
+RM.setEditorOpen(false)
 derbyState({ derbyPhase = 'running', boundary = markers(), players = {},
   oobLimit = 5, demoLimit = 10 })
-cylinders, texts = {}, {}
+cylinders, texts, quads = {}, {}, {}
 RM.onUpdate(0.016)
--- 4 poles + 4 rope spans, and the route above is still drawn as well.
-local poles, ropes = 0, 0
-for _, c in ipairs(cylinders) do
-  if c.radius == 0.2 then poles = poles + 1 end
-  if math.abs(c.radius - 0.07) < 1e-9 then ropes = ropes + 1 end
+-- One panel per edge, drawn twice with the winding reversed: drivers stand
+-- INSIDE this box, which is the one view a single-sided quad is invisible from.
+check(#quads == 8, 'four walls, each drawn from both sides (got ' .. #quads .. ')')
+local back = 0
+for i = 1, #quads - 1, 2 do
+  local f, b = quads[i], quads[i + 1]
+  if f.a == b.d and f.b == b.c and f.c == b.b and f.d == b.a then back = back + 1 end
 end
-check(poles == 4, 'one pole per boundary marker')
-check(ropes == 4, 'and a closed loop of rope spans')
-local labelled = false
-for _, t in ipairs(texts) do
-  if t.text == 'DERBY BOUNDARY (4)' then labelled = true end
-end
-check(labelled, 'the arena is labelled with its marker count')
+check(back == 4, 'the second copy of each wall is wound the other way')
+check(#texts == 0, 'a live arena carries no labels at all')
 
 vec3Allocs, colorAllocs = 0, 0
 frame()
@@ -287,11 +292,11 @@ check(vec3Allocs <= 1,
 square[2].x = 250
 derbyState({ derbyPhase = 'running', boundary = markers(), players = {},
   oobLimit = 5, demoLimit = 10 })
-cylinders = {}
+quads = {}
 RM.onUpdate(0.016)
 local moved = false
-for _, c in ipairs(cylinders) do
-  if c.radius == 0.2 and math.abs(c.a.x - 250) < 1e-6 then moved = true end
+for _, q in ipairs(quads) do
+  if math.abs(q.a.x - 250) < 1e-6 then moved = true end
 end
 check(moved, 'a marker that moves is redrawn where it moved to')
 
@@ -299,18 +304,74 @@ check(moved, 'a marker that moves is redrawn where it moved to')
 square[#square + 1] = { x = 50, y = 150, z = 0 }
 derbyState({ derbyPhase = 'running', boundary = markers(), players = {},
   oobLimit = 5, demoLimit = 10 })
-cylinders, texts = {}, {}
+quads = {}
 RM.onUpdate(0.016)
-poles = 0
-for _, c in ipairs(cylinders) do
-  if c.radius == 0.2 then poles = poles + 1 end
+check(#quads == 10, 'a marker added to the arena grows the wall run')
+
+-- Wall height is server-owned and changes the geometry without any marker
+-- moving, so the cache has to key on it as well. It used to key on the boundary
+-- table alone, which would have redrawn a resized arena at its old height.
+derbyState({ derbyPhase = 'running', boundary = markers(), players = {},
+  oobLimit = 5, demoLimit = 10, wallHeight = 12 })
+quads = {}
+RM.onUpdate(0.016)
+local tallest = 0
+for _, q in ipairs(quads) do
+  if q.d.z > tallest then tallest = q.d.z end
 end
-check(poles == 5, 'a marker added to the arena is drawn')
-labelled = false
+check(near(tallest, 12), 'a wall height change is picked up (got ' .. tallest .. ')')
+
+-- --- The editor view --------------------------------------------------------
+-- The same boundary, drawn for somebody laying it out: the extent stated
+-- exactly, every corner numbered, and the arena named.
+square[#square] = nil                                  -- back to a four-corner box
+square[2].x = 100
+serverState({ phase = 'waiting', totalLaps = 3, maxResets = -1, drivers = {},
+  youAreAdmin = true })
+derbyState({ derbyPhase = 'idle', boundary = markers(), players = {},
+  oobLimit = 5, demoLimit = 10 })
+RM.setDerbyEditorOpen(true)
+cylinders, texts, quads = {}, {}, {}
+RM.onUpdate(0.016)
+local labelled, numbered = false, 0
 for _, t in ipairs(texts) do
-  if t.text == 'DERBY BOUNDARY (5)' then labelled = true end
+  if t.text == 'DERBY BOUNDARY (4)' then labelled = true end
+  if t.text:match('^M%d+$') then numbered = numbered + 1 end
 end
-check(labelled, 'and the label follows the new count')
+check(labelled, 'the editor names the arena and its marker count')
+check(numbered == 4, 'and numbers every corner (got ' .. numbered .. ')')
+
+-- The editor draws no floor for a hand-driven arena: filling an arbitrary
+-- polygon means triangulating it, and a fan from vertex 1 paints outside a
+-- concave shape -- which a demo arena very often is.
+check(#quads == 8, 'a drive-and-place arena is walls only, no floor')
+
+-- --- The rectangle ----------------------------------------------------------
+-- Four corners derived from a centre, and the one shape convex enough to fill
+-- safely. The dimensions go in the label, so the sliders have a readout.
+local rectBoundary = {
+  { x = -50, y = -30, z = 4 }, { x = 50, y = -30, z = 4 },
+  { x = 50,  y = 30,  z = 4 }, { x = -50, y = 30, z = 4 },
+}
+derbyState({ derbyPhase = 'idle', boundary = rectBoundary, players = {},
+  oobLimit = 5, demoLimit = 10, boundaryMode = 'rect', wallHeight = 6,
+  shape = { cx = 0, cy = 0, cz = 4, halfW = 50, halfL = 30, rot = 0 } })
+cylinders, texts, quads = {}, {}, {}
+RM.onUpdate(0.016)
+check(#quads == 9, 'a rectangle adds one floor quad to its four walls')
+local sized = false
+for _, t in ipairs(texts) do
+  if t.text == 'DERBY ARENA — 100 x 60 m' then sized = true end
+end
+check(sized, 'the editor reads the rectangle back in metres')
+
+-- Closing the editor drops every authoring visual, even standing still in an
+-- idle derby -- the panel is the gate, not the phase.
+RM.setDerbyEditorOpen(false)
+cylinders, texts, quads = {}, {}, {}
+RM.onUpdate(0.016)
+check(#texts == 0 and #quads == 8,
+  'closing the derby editor leaves the driving view behind')
 
 -- ===========================================================================
 -- A gate keeps its own size, and passes it to the next one placed

@@ -137,6 +137,11 @@ wired('derbyMoveMarker',        'derbyMoveMarker',   'Move derby boundary marker
 wired('derbyRemoveMarker',      'derbyRemoveMarker', 'Remove derby boundary marker')
 wired('derbyMoveStartPosition', 'derbyMoveStart',    'Move derby start position')
 wired('derbyRemoveStartPosition', 'derbyRemoveStart','Remove derby start position')
+-- The rectangle arena editor: a centre, and sliders for the rest.
+wired('derbySetBoundaryMode', 'derbySetBoundaryMode', 'Derby boundary mode')
+wired('derbySetShapeCenter',  'derbySetShapeCenter',  'Derby rectangle centre')
+wired('derbySetShape',        'derbyApplyShape',      'Derby rectangle size')
+wired('derbySetShape',        'derbyApplyWallHeight', 'Derby wall height')
 
 -- The lists themselves render the arrays the derby broadcast carries, not just
 -- the counts the header shows: a panel bound to `boundaryCount` alone can say
@@ -158,10 +163,87 @@ for _, handler in ipairs({ 'derbyMoveMarker', 'derbyRemoveMarker', 'derbyPreview
       .. 'the server will refuse while a derby is under way')
 end
 
-for _, field in ipairs({ 'entryMode', 'gridMode', 'ghostQuali', 'startSlots' }) do
+-- The rectangle's sliders are refused from form-up onward too: the arena cannot
+-- be resized under a field already standing on its grid, and a slider that
+-- moves while the server ignores it is worse than one that will not move.
+for _, handler in ipairs({ 'derbyApplyShape', 'derbyApplyWallHeight' }) do
+  local n = 0
+  for disabled in html:gmatch('ng%-change="' .. handler .. '%(%)"%s*ng%-disabled="([^"]*)"') do
+    n = n + 1
+    expect(disabled:find('derbyActive()', 1, true) ~= nil,
+      handler .. ' has a control that is not disabled by derbyActive()')
+  end
+  expect(n > 0, handler .. ' is not bound to any control')
+end
+
+-- The arena's own state has to come back off the broadcast, or the panel drifts
+-- from what every other client is drawing: which editor is in use, the
+-- rectangle itself, and how tall its walls are.
+for _, field in ipairs({ 'entryMode', 'gridMode', 'ghostQuali', 'startSlots',
+                         'boundaryMode', 'shape', 'wallHeight' }) do
   expect(js:find('data.' .. field, 1, true) ~= nil,
     field .. ' is mirrored from the server broadcast')
 end
+
+-- ---------------------------------------------------------------------------
+-- 4. Race and Derby are separated by mode, not just by tab
+-- ---------------------------------------------------------------------------
+-- The race session controls and the track layout picker sit ABOVE the tab bar,
+-- deliberately -- they are what an admin reaches for under time pressure. That
+-- put them over the Derby tab as well, offering a Load Layout button for a race
+-- nobody was setting up. They are race controls, so they belong to race mode.
+for _, row in ipairs({ 'rm%-controls"', 'rm%-controls rm%-controls%-layout"' }) do
+  local cond = html:match('<div class="' .. row .. '%s+ng%-if="([^"]*)"')
+  expect(cond ~= nil and cond:find("isMode('race')", 1, true) ~= nil,
+    'the ' .. row:gsub('%%', '') .. ' row is not scoped to race mode')
+end
+
+-- Both modes have an Editor sub-tab, so a panel keyed on the tab name alone
+-- would render both editors at once.
+for _, panel in ipairs({ 'rm%-editor', 'rm%-derby rm%-derby%-editor' }) do
+  local cond = html:match('<div class="' .. panel .. '" ng%-if="([^"]*)"')
+  expect(cond ~= nil and cond:find('isMode(', 1, true) ~= nil,
+    'the ' .. panel:gsub('%%', '') .. ' panel does not name its mode')
+end
+
+-- Each editor is a render gate in Lua. Both have to be pushed, or closing one
+-- panel leaves its authoring furniture drawn in the world for every driver.
+for _, cmd in ipairs({ 'setEditorOpen', 'setDerbyEditorOpen' }) do
+  expect(js:find('raceManager.' .. cmd, 1, true) ~= nil,
+    cmd .. ' is never pushed to Lua')
+  expect(js:find("raceManager." .. cmd .. "(false)", 1, true) ~= nil,
+    cmd .. ' is not cleared when the app is torn down')
+end
+
+-- The leaderboard at the bottom of the app is OUTSIDE the admin panel body, so
+-- it renders on every tab. Which board it shows has to follow the mode for an
+-- admin: the derby never touches race state, so a race table rendered under the
+-- derby panel is the LAST race's field, not anything live. That is exactly what
+-- it used to do -- the rule was `!isAdmin` alone, written for the driver HUD
+-- before the panel had modes.
+local board = js:match('%$scope%.derbyBoardOnly = function %(%)(.-)\n%s*};')
+expect(board ~= nil, 'derbyBoardOnly is missing')
+expect(board ~= nil and board:find('isMode(', 1, true) ~= nil,
+  "derbyBoardOnly does not consult the mode, so an admin's leaderboard does not "
+    .. 'follow the panel they are working in')
+
+-- Both of these gate driver-facing chrome on the derby, and a derby is live from
+-- FORM-UP, not from GO -- a driver held on the derby grid through the countdown
+-- must already be seeing the derby board, not the previous race's.
+for _, fn in ipairs({ 'derbyBoardOnly', 'sessionLive' }) do
+  local body = js:match('%$scope%.' .. fn .. ' = function %(%)(.-)\n%s*};')
+  expect(body ~= nil, fn .. ' is missing')
+  expect(body ~= nil and body:find("derby.phase === 'running'", 1, true) == nil,
+    fn .. " keys on derby.phase === 'running', which misses form-up and the "
+      .. 'countdown; use derbyActive()')
+end
+
+-- One copy of the derby standings, not two. The bottom board is the derby board
+-- in derby mode, so repeating the table inside the Derby panel put the field on
+-- screen twice on one tab and nowhere at all on the Derby Editor tab.
+local _, boards = html:gsub('ng%-repeat="p in derby%.players', '')
+expect(boards == 1,
+  'expected exactly one derby standings table in the app, found ' .. boards)
 
 -- ---------------------------------------------------------------------------
 -- 5. Editor tabs: Main Route / Joker Route / Start Grid
