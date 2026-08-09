@@ -687,12 +687,52 @@ impossible to lock the whole server out by accident.
   The driver bar also shows live joker/reset status and keeps a 🔒 button so
   the login prompt is always reachable.
 
+## Race and Derby are separate
+
+The admin panel is grouped by **mode** first. The bar under the session header
+picks one, and everything below it belongs to that mode:
+
+| Mode | Controls above the tabs | Sub-tabs |
+|---|---|---|
+| **🏁 Race** | Start Quali, Generate Grid, Start Countdown, End Session, Reset, and the **Track** layout picker | Race · Quali & Grid · Garage · **Race Editor** |
+| **💥 Derby** | Form Up, Start Derby, End Derby, and the live phase | Derby · **Derby Editor** |
+| **⚙ Admin** | — | Master password, results housekeeping |
+
+This is a change from earlier builds, where every panel shared one flat tab
+strip and the race session controls sat above all of them. That put the **Track
+layout picker over the Derby tab** — a *Load Layout* button for a race nobody was
+setting up — and made Derby read as one more race panel rather than the separate
+game mode it is. Nothing was removed in the regrouping: every control is still
+there, under the mode it belongs to.
+
+Both modes have an **Editor** sub-tab, and each one is a *render gate* as well as
+a panel: opening it is what puts that mode's authoring visuals in the world, and
+they belong to the admin who opened it. The **Race Entry** bar stays visible in
+every mode, because it is one entry list — a driver who pressed **Join Race**
+is entered for both, and never has to join twice.
+
+**The leaderboard at the bottom follows the mode too.** In Race mode it is the
+race (or qualifying) table; in Derby mode it is the **derby standings**, on both
+derby sub-tabs — so the field stays on screen while you are building an arena.
+There is one copy of each board in the app, not one per panel.
+
+A **driver's** leaderboard is not driven by the mode bar, which they never see:
+it follows the session. Once a derby forms up, their board is the derby
+standings, through the countdown and the derby itself.
+
+The mode you were last in, and the sub-tab you were last on **within each mode**,
+are both remembered — switching to Derby and back lands on the race panel you
+left.
+
 ## Demo Derby (parallel game mode)
 
 A completely separate last-man-standing mode, isolated from the circuit
 racing systems above (own server events, own UI panel, own results files —
-running a derby never touches qualifying/race state). Open it with the
-**Derby** tab in the app header.
+running a derby never touches qualifying/race state). Pick **💥 Derby** on the
+mode bar; its controls sit above the tab strip and its authoring tools are on
+the **Derby Editor** sub-tab. Race controls are not shown while you are in it,
+and derby controls are not shown while you are in Race — see
+[Race and Derby are separate](#race-and-derby-are-separate).
 
 1. **Set the rules**: *OOB timer* (seconds allowed outside the arena,
    default 5), *Demolished timer* (seconds a car may sit stopped before
@@ -700,21 +740,51 @@ running a derby never touches qualifying/race state). Open it with the
    unlimited, `0` none, `N` allowed — enforced exactly the way the race reset
    limit is, dead reset keys included), then **Set Rules**. When resets are
    limited the derby standings gain their own `Rst` column.
-2. **Build the arena**: drive to each corner of your intended arena and press
-   **+ Boundary Marker** — each press drops a red pole at your vehicle's
-   position, and the poles connect in order into a closed perimeter polygon
-   (3+ markers required; **Clear Boundary** starts over). Any shape works,
-   including non-convex ones. Optionally place a **starting grid**: drive to
-   each slot facing the way the car should point and press
-   **+ Start Position** (slot 1 first; **Clear Start Grid** starts over).
-   **Hide/Show Boundary** keeps the setup view clean. Once the derby starts the
-   **boundary is always drawn** — leaving it is what eliminates you, so you have
-   to be able to see it — while the **start slots are hidden**, since every car
-   has left its slot by then and the outlines would just clutter the arena.
+2. **Build the arena** on the **Derby Editor** sub-tab. There are two editors
+   for it, and they produce the same thing — an ordered perimeter every client
+   polices against — so pick whichever suits the ground:
 
-   Everything placed is **listed under the controls** — `M1…Mn` for the markers,
-   `P1…Pn` for the start slots — and every entry stays editable, exactly the way
-   the [starting grid](#placing-the-starting-grid) does. Click one to open its
+   **▭ Rectangle.** Stand your car where the middle of the arena should be and
+   the four corners are pulled out around you. **Set Centre Here** re-centres it
+   on your car at any time, keeping the size. Three sliders do the rest, each
+   with a number box beside it, the same pairing the per-gate size editor uses:
+
+   - **Width** and **Length**, 10–500 m, the full span across the arena.
+     **▣ Square** links the two so one slider drives both.
+   - **Rotation**, 0–90°, to line the arena up with the ground it sits on. A
+     rectangle repeats every quarter turn — 90° just swaps width and length.
+
+   The four corners all sit at the **centre's height**, so on a slope the arena
+   is a flat plane cut through the hill rather than a boundary that climbs it.
+   That matches the rule being enforced: the out-of-bounds test has always
+   ignored height, so a corner drawn further up the slope would not change who
+   is in or out. The walls are drawn tall enough to cut into the ground rather
+   than hover over it.
+
+   **✎ Drive & Place.** The original editor, and still the only way to build an
+   arena that is not a rectangle: drive to each corner and press
+   **+ Boundary Marker**. Markers connect in order into a closed perimeter
+   (3+ required). Any shape works, including non-convex ones.
+
+   **Switching between them keeps your work.** A rectangle becomes four ordinary
+   markers you can then drag anywhere; a hand-driven arena becomes the rectangle
+   that bounds it. **Clear Boundary** throws the arena away and starts over with
+   an empty drive-and-place one.
+
+   **Wall height** (2–30 m) belongs to both and is **visual only** — it is how
+   far up the walls are drawn, never what they enclose.
+
+   Optionally place a **starting grid**: drive to each slot facing the way the
+   car should point and press **+ Start Position** (slot 1 first;
+   **Clear Start Grid** starts over). **Hide/Show Arena** keeps the setup view
+   clean.
+
+   A rectangle's corners are **derived** from its centre and extents, so they are
+   not individually editable — the sliders are how it is changed, and the marker
+   list is only shown for a drive-and-place arena. Those markers are listed under
+   the controls — `M1…Mn`, with `P1…Pn` for the start slots — and every entry
+   stays editable, exactly the way the
+   [starting grid](#placing-the-starting-grid) does. Click one to open its
    controls:
 
    - **Go** puts your car on that entry. A start slot uses its own facing; a
@@ -738,6 +808,29 @@ running a derby never touches qualifying/race state). Open it with the
    so a prepped arena survives a restart. **Load Arena** pushes it to every
    connected client at once; **✕** deletes it. Loading is refused while a derby
    is running — the arena cannot move under the drivers.
+
+   A rectangle is stored as **both** its shape and the four corners it produced,
+   so it loads back editable by slider — and stays readable by anything that only
+   understands the polygon. **Arenas saved before rectangles existed load exactly
+   as they always have**, as drive-and-place arenas: there is no migration step
+   and nothing is lost.
+
+   **The arena is drawn two different ways**, because laying one out and driving
+   in one are different jobs — the same split the checkpoint editor already makes
+   between an authoring gate and a race one:
+
+   | | Derby Editor (admin, panel open) | During a derby (everyone) |
+   |---|---|---|
+   | Walls | Solid enough to read as a surface | **Translucent** — you can see the car on the other side of one |
+   | Corner posts and rails | Full height, bright | A dim ground rail and a short post |
+   | Floor | The enclosed area filled in, so the limits are exact — *rectangles only; filling an arbitrary polygon safely means triangulating it, and the cheap way paints outside a concave shape* | None |
+   | Labels, corner numbers, centre crosshair, size readout | Shown | **None** |
+   | Start slots | All of them, numbered | Only your own, and only until the derby starts |
+
+   The **boundary itself is always drawn** during a derby — leaving it is what
+   eliminates you, so you have to be able to see it — but nothing authoring-only
+   is. Closing the Derby Editor is enough to get the driving view: you do not
+   have to start a derby to see what your drivers will see.
 3. **Entry** decides who takes part. **Everyone** (the default) puts every
    connected player in the field, which is how the derby has always behaved.
    **Opt-in** honours the same **Join Race** button the circuit races use, so

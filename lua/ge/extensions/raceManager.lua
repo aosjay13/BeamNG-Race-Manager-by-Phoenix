@@ -2948,9 +2948,20 @@ local function palette()
     -- Demo derby arena. Its own entries rather than its own table: the derby
     -- module keeps its state and its logic separate, but a colour is a colour,
     -- and building these per frame is what this exists to stop.
-    derbyLive    = ColorF(0.9, 0.15, 0.15, 0.9),  -- live arena: red
-    derbySetup   = ColorF(0.9, 0.6, 0.1, 0.8),    -- setup/finished: amber
+    derbyLive    = ColorF(0.9, 0.15, 0.15, 0.9),  -- live arena edges: red
+    derbySetup   = ColorF(0.9, 0.6, 0.1, 0.8),    -- setup/finished edges: amber
     derbyLabelBg = ColorI(120, 0, 0, 180),
+    -- The arena WALL panels, and the pair of alphas that separate an editor
+    -- arena from a live one. The editor's is a surface you can see is there; the
+    -- live one is a haze you read the edge of. Anything much heavier than this
+    -- while driving turns a demo arena into a room with the lights off -- the
+    -- wall is a boundary marker, not scenery, and there is another car on the
+    -- far side of it that still has to be visible through it.
+    derbyWallEdit = ColorF(0.95, 0.55, 0.1, 0.30),
+    derbyWallLive = ColorF(0.9, 0.2, 0.15, 0.12),
+    -- Editor floor: the same near-transparent blue the authoring gate fill uses,
+    -- for the same reason -- show the extent without hiding the ground.
+    derbyFloor   = ColorF(0.35, 0.65, 1, 0.10),
   }
   return PALETTE
 end
@@ -3460,7 +3471,7 @@ local DERBY_STOP_SPEED    = 0.7   -- m/s; below this the car counts as stopped
 -- than retuned: it is a gameplay value, and shortening it is a balance call for
 -- an admin to ask for, not a side effect of adding a countdown.
 local DERBY_START_GRACE   = 5
-local DERBY_POLE_HEIGHT   = 6     -- boundary poles are taller than gate poles
+local DERBY_POLE_HEIGHT   = 6     -- fallback wall height, until the server says
 local DERBY_POLE_RADIUS   = 0.2
 
 -- One table rather than a dozen file-scope locals, for the same reason the
@@ -3471,6 +3482,16 @@ local DERBY_POLE_RADIUS   = 0.2
 derbyState = {
   phase     = 'idle',   -- idle | running | finished (mirrored from server)
   boundary  = {},       -- ordered polygon vertices { x, y, z }
+  -- Which editor authored the polygon above, mirrored from the server. Gameplay
+  -- reads `boundary` in both cases and nothing else -- these only decide what
+  -- the ARENA IS DRAWN LIKE, and which controls the admin panel offers.
+  boundaryMode = 'polygon',  -- polygon | rect
+  shape     = nil,      -- { cx, cy, cz, halfW, halfL, rot } while mode is 'rect'
+  wallHeight = DERBY_POLE_HEIGHT,
+  -- True while an admin has the Derby Editor sub-tab open. The editor's arena
+  -- and a driver's arena are different drawings of the same boundary, exactly
+  -- the way an authoring checkpoint and a race one are (see drawGate).
+  editorOpen = false,
   oobLimit  = 5,        -- seconds (mirrored from server config)
   demoLimit = 10,
   starts    = {},       -- derby starting grid { x, y, z, hx, hy } (mirrored)
@@ -3586,23 +3607,83 @@ derbyUpdate = function (dt)
   if changed then derbyPushWarning() end
 end
 
--- Boundary visualization: red poles at each marker, a rope along the
--- perimeter (closed loop), and a label above marker 1. Mirrors the race
--- editor's Hide/Show Gates rule: unconditional while the derby runs (drivers
--- must see the arena), the toggle only applies outside of one.
+-- Arena walls. The perimeter is drawn as a closed run of vertical panels -- one
+-- quad per edge, standing from the boundary up to the wall height -- rather than
+-- the poles and rope it used to be. The same builder serves both arena kinds,
+-- because by the time it runs a rectangle is just a four-vertex polygon.
+--
+-- Two things about the geometry are worth knowing before changing it:
+--
+--   * A rectangle's corners all sit at the CENTRE's z (see the server's
+--     derbyShapeToBoundary), so on sloped ground the ring is a flat plane cut
+--     through the hill. The walls therefore start BELOW the boundary z and run
+--     up from there: dropping the base by a skirt means the panel intersects the
+--     terrain on the uphill side instead of hovering over it, and the arena
+--     still reads as enclosed. A hand-placed polygon takes its z from the car
+--     that placed each marker, so it follows the ground already -- the skirt
+--     costs it nothing.
+--   * Every panel is emitted TWICE, with the winding reversed the second time.
+--     Drivers stand inside this box looking out, which is the one view a
+--     single-sided quad would be invisible from.
+local DERBY_WALL_SKIRT = 1.5   -- metres the wall drops below the boundary plane
+
+local function derbyBuildWalls(boundary, height)
+  local n = #boundary
+  local walls = {}
+  if n < 2 then return walls end
+  for i = 1, n do
+    local a = boundary[i]
+    local b = boundary[i % n + 1]
+    -- Two markers is a line, not a ring: draw the single panel once rather than
+    -- the same panel twice back to back.
+    if not (n == 2 and i == 2) then
+      local a0 = vec3(a.x, a.y, a.z - DERBY_WALL_SKIRT)
+      local b0 = vec3(b.x, b.y, b.z - DERBY_WALL_SKIRT)
+      local a1 = vec3(a.x, a.y, a.z + height)
+      local b1 = vec3(b.x, b.y, b.z + height)
+      walls[#walls + 1] = { bl = a0, br = b0, tr = b1, tl = a1 }
+    end
+  end
+  return walls
+end
+
+-- Boundary visualization. Mirrors the race editor's Hide/Show Gates rule:
+-- unconditional while the derby runs (drivers must see the arena), the toggle
+-- only applies outside of one.
 derbyDrawBoundary = function ()
   if not debugDrawer then return end
   if derbyState.phase ~= 'running' and not derbyState.visualize then return end
-  -- Derby starting grid slots, numbered from slot 1. Setup furniture, the same
-  -- as the race start grid: they exist to lay the slots out and check spacing,
-  -- so they stop being drawn once the derby is under way -- by then every car
-  -- has left its slot and the outlines are just clutter in a live arena.
-  -- (Reaching here while not running means derbyState.visualize is on, per the guard
-  -- above.) The boundary below is NOT hidden: leaving it is what eliminates
-  -- you, so a driver has to be able to see it.
+
+  -- Who is looking. An admin with the Derby Editor open is judging the arena and
+  -- needs its exact limits, its corners and its numbers; everyone else is
+  -- driving in it and needs to know where the edge is and nothing more. A derby
+  -- from form-up onward is always the driving view, even for that admin -- by
+  -- then cars are standing on the grid and the panel is not what anyone is
+  -- looking at.
+  local authoring = derbyState.editorOpen and isAdmin
+    and derbyState.phase ~= 'running' and derbyState.phase ~= 'countdown'
+    and derbyState.phase ~= 'forming'
+
+  -- Derby starting grid slots, numbered from slot 1. Authoring furniture: they
+  -- exist to lay the slots out and check spacing, so they belong to an admin
+  -- with the editor open -- the same rule drawStartPositions applies to the race
+  -- grid, which this used to be the exception to. Every driver on the server got
+  -- a field of numbered outlines whether or not a derby was anywhere near
+  -- starting, and they stayed up through form-up and the countdown.
+  --
+  -- The one case that is not authoring: a driver being PUT on a slot. While the
+  -- field forms up, your own slot is drawn for you and nobody else's is, so you
+  -- can see where you have been placed without the other nineteen outlines.
+  -- Once the derby runs, nothing here is drawn at all -- every car has left its
+  -- slot by then. The boundary below is NOT hidden: leaving it is what
+  -- eliminates you, so a driver has to be able to see it.
   if derbyState.phase ~= 'running' then
-    for i, sp in ipairs(derbyState.starts) do
-      drawStartPosition(sp, i, derbyState.slot == i)
+    if authoring then
+      for i, sp in ipairs(derbyState.starts) do
+        drawStartPosition(sp, i, derbyState.slot == i)
+      end
+    elseif derbyState.slot and derbyState.starts[derbyState.slot] then
+      drawStartPosition(derbyState.starts[derbyState.slot], derbyState.slot, true)
     end
   end
   local boundary = derbyState.boundary
@@ -3610,48 +3691,139 @@ derbyDrawBoundary = function ()
   if n == 0 then return end
 
   -- Same story as the race gates: an arena perimeter is fixed geometry redrawn
-  -- every frame, and it was rebuilding all of it each time -- a pole and a rope
-  -- span per marker, which is seven vectors a marker, plus the label and its
-  -- anchor. Over an eight-marker arena that is the best part of sixty tables a
-  -- frame, for the entire length of a derby.
+  -- every frame, and it was rebuilding all of it each time.
   --
   -- The cache lives on derbyState rather than in a new file-scope local, because
   -- this file is close enough to Lua's 200-local ceiling that a new one there is
   -- a cost of its own. It is keyed on the boundary table itself: onDerbyUpdate
   -- keeps the existing table when the markers have not moved, so identity is
-  -- enough to say "nothing about this arena has changed".
+  -- enough to say "nothing about this arena has changed". Wall height and the
+  -- authoring flag are part of the key too -- both change the geometry without
+  -- the boundary moving, and a cache that missed them would draw a resized
+  -- arena at its old height, or keep the editor's floor through a live derby.
+  local height = derbyState.wallHeight or DERBY_POLE_HEIGHT
   local cache = derbyState.draw
-  if not cache or cache.src ~= boundary then
-    local up   = vec3(0, 0, DERBY_POLE_HEIGHT)
-    local half = vec3(0, 0, DERBY_POLE_HEIGHT * 0.5)
-    cache = { src = boundary, poles = {}, ropes = {} }
+  if not cache or cache.src ~= boundary or cache.height ~= height
+      or cache.authoring ~= authoring then
+    cache = { src = boundary, height = height, authoring = authoring }
+    cache.walls = derbyBuildWalls(boundary, height)
+    -- Corner posts, the full height of the wall. Both views draw them -- they
+    -- are what stops a translucent wall from disappearing against a bright sky
+    -- -- but the driving view draws them thinner, so they mark the corners
+    -- without becoming scenery.
+    cache.posts = {}
     for i, m in ipairs(boundary) do
-      local base = vec3(m.x, m.y, m.z)
-      cache.poles[i] = { a = base, b = base + up }
-      local nxt = boundary[i % n + 1]
-      if nxt and n > 1 then
-        cache.ropes[#cache.ropes + 1] = {
-          a = base + half,
-          b = vec3(nxt.x, nxt.y, nxt.z) + half,
-        }
+      local base = vec3(m.x, m.y, m.z - DERBY_WALL_SKIRT)
+      cache.posts[i] = { a = base, b = vec3(m.x, m.y, m.z + height) }
+    end
+    -- A rail along the top of the wall, and one along the ground. The ground
+    -- rail is the line a driver actually judges the edge by at speed.
+    cache.topRail, cache.baseRail = {}, {}
+    if n > 1 then
+      for i = 1, n do
+        local a, b = boundary[i], boundary[i % n + 1]
+        if not (n == 2 and i == 2) then
+          cache.topRail[#cache.topRail + 1] = {
+            a = vec3(a.x, a.y, a.z + height), b = vec3(b.x, b.y, b.z + height) }
+          cache.baseRail[#cache.baseRail + 1] = {
+            a = vec3(a.x, a.y, a.z + 0.05), b = vec3(b.x, b.y, b.z + 0.05) }
+        end
       end
     end
-    local first = boundary[1]
-    cache.labelAt = vec3(first.x, first.y, first.z + DERBY_POLE_HEIGHT + 0.8)
-    cache.label   = 'DERBY BOUNDARY (' .. n .. ')'
+    if authoring then
+      -- Editor-only furniture, built once with everything else: a numbered label
+      -- over each corner, the arena's headline label, and -- for a rectangle --
+      -- the centre crosshair and a readout of what the sliders currently say.
+      local first = boundary[1]
+      cache.labelAt = vec3(first.x, first.y, first.z + height + 0.8)
+      local s = derbyState.shape
+      if derbyState.boundaryMode == 'rect' and s then
+        cache.label = string.format('DERBY ARENA — %.0f x %.0f m', s.halfW * 2, s.halfL * 2)
+        -- A rectangle is convex and has exactly four corners, so its floor is
+        -- one quad with no triangulation to get wrong.
+        if n == 4 then
+          cache.floor = {}
+          for i, m in ipairs(boundary) do
+            cache.floor[i] = vec3(m.x, m.y, m.z + 0.06)
+          end
+        end
+        cache.centre = {
+          at = vec3(s.cx, s.cy, s.cz),
+          -- A cross through the centre, turned with the rectangle, so the
+          -- rotation slider has something to visibly turn.
+          armA = { a = vec3(s.cx - math.cos(s.rot) * 3, s.cy - math.sin(s.rot) * 3, s.cz + 0.1),
+                   b = vec3(s.cx + math.cos(s.rot) * 3, s.cy + math.sin(s.rot) * 3, s.cz + 0.1) },
+          armB = { a = vec3(s.cx + math.sin(s.rot) * 3, s.cy - math.cos(s.rot) * 3, s.cz + 0.1),
+                   b = vec3(s.cx - math.sin(s.rot) * 3, s.cy + math.cos(s.rot) * 3, s.cz + 0.1) },
+          label = string.format('CENTRE — %.0f deg', math.deg(s.rot)),
+          labelAt = vec3(s.cx, s.cy, s.cz + 1.6),
+        }
+      else
+        cache.label = 'DERBY BOUNDARY (' .. n .. ')'
+      end
+      cache.cornerLabels = {}
+      for i, m in ipairs(boundary) do
+        cache.cornerLabels[i] = { at = vec3(m.x, m.y, m.z + height + 0.2), text = 'M' .. i }
+      end
+    end
     derbyState.draw = cache
   end
 
   local p = palette()
-  local color = (derbyState.phase == 'running') and p.derbyLive or p.derbySetup
-  for _, pole in ipairs(cache.poles) do
-    debugDrawer:drawCylinder(pole.a, pole.b, DERBY_POLE_RADIUS, color)
+  local edge = (derbyState.phase == 'running') and p.derbyLive or p.derbySetup
+  local face = authoring and p.derbyWallEdit or p.derbyWallLive
+
+  -- The walls themselves. Twice each, winding reversed, so the panel is there
+  -- from inside the arena as well as outside it.
+  for _, w in ipairs(cache.walls) do
+    debugDrawer:drawQuadSolid(w.bl, w.br, w.tr, w.tl, face)
+    debugDrawer:drawQuadSolid(w.tl, w.tr, w.br, w.bl, face)
   end
-  for _, rope in ipairs(cache.ropes) do
-    debugDrawer:drawCylinder(rope.a, rope.b, DERBY_POLE_RADIUS * 0.35, color)
+
+  if authoring then
+    -- The enclosed area, filled, so the extent is unmistakable. Editor-only: a
+    -- translucent floor over the whole playing surface is the last thing a
+    -- driver needs.
+    --
+    -- Rectangles only, and deliberately so. Filling an arbitrary polygon means
+    -- triangulating it, and the cheap way (a fan from vertex 1) paints OUTSIDE
+    -- the arena the moment the shape is concave -- which a hand-driven demo
+    -- arena very often is. A floor that lies about the limits is worse than no
+    -- floor, and the walls, posts and rails already state them exactly.
+    if cache.floor then
+      debugDrawer:drawQuadSolid(cache.floor[1], cache.floor[2],
+        cache.floor[3], cache.floor[4], p.derbyFloor)
+    end
+    for _, post in ipairs(cache.posts) do
+      debugDrawer:drawCylinder(post.a, post.b, DERBY_POLE_RADIUS, edge)
+    end
+    for _, r in ipairs(cache.topRail) do
+      debugDrawer:drawCylinder(r.a, r.b, DERBY_POLE_RADIUS * 0.5, edge)
+    end
+    for _, r in ipairs(cache.baseRail) do
+      debugDrawer:drawCylinder(r.a, r.b, DERBY_POLE_RADIUS * 0.5, edge)
+    end
+    debugDrawer:drawTextAdvanced(cache.labelAt, String(cache.label),
+      p.text, true, false, p.derbyLabelBg)
+    for _, cl in ipairs(cache.cornerLabels) do
+      debugDrawer:drawTextAdvanced(cl.at, String(cl.text), p.text, true, false, p.derbyLabelBg)
+    end
+    if cache.centre then
+      debugDrawer:drawCylinder(cache.centre.armA.a, cache.centre.armA.b, 0.12, edge)
+      debugDrawer:drawCylinder(cache.centre.armB.a, cache.centre.armB.b, 0.12, edge)
+      debugDrawer:drawTextAdvanced(cache.centre.labelAt, String(cache.centre.label),
+        p.text, true, false, p.derbyLabelBg)
+    end
+  else
+    -- Driving view: no labels, no corner numbers, no floor. Just enough edge to
+    -- read the wall against the sky and the ground.
+    for _, r in ipairs(cache.baseRail) do
+      debugDrawer:drawCylinder(r.a, r.b, DERBY_POLE_RADIUS * 0.4, edge)
+    end
+    for _, post in ipairs(cache.posts) do
+      debugDrawer:drawCylinder(post.a, post.b, DERBY_POLE_RADIUS * 0.5, edge)
+    end
   end
-  debugDrawer:drawTextAdvanced(cache.labelAt, String(cache.label),
-    p.text, true, false, p.derbyLabelBg)
 end
 
 -- --- Derby UI commands (called by the UI app) ------------------------------
@@ -3672,6 +3844,64 @@ end
 
 function M.derbyClearBoundary()
   if inMultiplayer() then TriggerServerEvent('RM_DerbyClearBoundary', '') end
+end
+
+-- --- Rectangle arena (the other boundary editor) ---------------------------
+-- Switch between driving the perimeter marker by marker and pulling a rectangle
+-- out from a centre. Neither loses the other's work: see the server handler.
+-- The vehicle position rides along as the centre to use when there is no
+-- existing arena to fit a rectangle around.
+function M.derbySetBoundaryMode(mode)
+  if not inMultiplayer() then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Demo Derby needs a BeamMP server' })
+    return
+  end
+  mode = (mode == 'rect') and 'rect' or 'polygon'
+  local payload = { mode = mode }
+  local veh = playerVehicle()
+  if veh then
+    local pos = veh:getPosition()
+    payload.cx, payload.cy, payload.cz = pos.x, pos.y, pos.z
+  elseif mode == 'rect' and #derbyState.boundary < 3 then
+    guihooks.trigger('RaceManagerEditorMsg', {
+      msg = 'Get in a vehicle first — the rectangle needs a centre' })
+    return
+  end
+  TriggerServerEvent('RM_DerbySetBoundaryMode', jsonEncode(payload))
+end
+
+-- Re-centre the rectangle on the car. The derby's "Move Here", and the same
+-- gesture every other placement in this mod uses.
+function M.derbySetShapeCenter()
+  if not inMultiplayer() then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Demo Derby needs a BeamMP server' })
+    return
+  end
+  local veh = playerVehicle()
+  if not veh then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
+    return
+  end
+  local pos = veh:getPosition()
+  TriggerServerEvent('RM_DerbySetShape',
+    jsonEncode({ cx = pos.x, cy = pos.y, cz = pos.z }))
+end
+
+-- Size, turn and wall height, straight off the sliders. Every argument is
+-- optional: the server keeps whatever this payload leaves out, so a slider only
+-- ever sends the thing it moved. Width and length arrive as the FULL span an
+-- admin reads off the panel; the server stores half-extents.
+function M.derbySetShape(width, length, rotDeg, wallHeight)
+  if not inMultiplayer() then return end
+  local payload = {}
+  local w, l = tonumber(width), tonumber(length)
+  local r, h = tonumber(rotDeg), tonumber(wallHeight)
+  if w then payload.halfW = w * 0.5 end
+  if l then payload.halfL = l * 0.5 end
+  if r then payload.rot = math.rad(r) end
+  if h then payload.wallHeight = h end
+  if next(payload) == nil then return end
+  TriggerServerEvent('RM_DerbySetShape', jsonEncode(payload))
 end
 
 function M.derbySetConfig(oobLimit, demoLimit, maxResets)
@@ -3788,6 +4018,14 @@ function M.derbyPreviewMarker(index)
   end
 end
 
+-- The Derby Editor sub-tab opening and closing. Client-local and purely a
+-- render gate, exactly like setEditorOpen for the race checkpoints: it decides
+-- whether this client draws the arena's authoring view or its driving view, and
+-- touches no derby state the server owns.
+function M.setDerbyEditorOpen(open)
+  derbyState.editorOpen = open == true
+end
+
 -- Hide/Show the derby boundary + start grid visuals (client-local, like the
 -- race editor's gate toggle). Pushed to the UI so the button label follows.
 function M.derbyToggleVisualize()
@@ -3826,6 +4064,7 @@ function M.derbyRequestState()
     guihooks.trigger('RaceManagerDerby', {
       derbyPhase = 'idle', oobLimit = derbyState.oobLimit, demoLimit = derbyState.demoLimit,
       maxResets = derbyMaxResets, derbyTime = 0, boundary = {},
+      boundaryMode = 'polygon', shape = nil, wallHeight = derbyState.wallHeight,
       startPositions = {}, players = {},
     })
   end
@@ -3869,8 +4108,14 @@ function M.derbySaveLayout(name)
       starts[i] = { x = sp.x, y = sp.y, z = sp.z, hx = sp.hx, hy = sp.hy }
     end
   end
+  -- A rectangle is saved as its shape AND the polygon it produced, so the arena
+  -- comes back editable by slider rather than as four loose markers -- and stays
+  -- loadable by anything that only knows about the polygon.
   TriggerServerEvent('RM_DerbySaveLayout', jsonEncode({
     name = name, boundary = markers,
+    boundaryMode = derbyState.boundaryMode,
+    shape = derbyState.shape,
+    wallHeight = derbyState.wallHeight,
     oobLimit = derbyState.oobLimit, demoLimit = derbyState.demoLimit,
     maxResets = derbyMaxResets, startPositions = starts,
   }))
@@ -3955,6 +4200,25 @@ onDerbyUpdate = function (rawData)
     end
   end
   if not same then derbyState.boundary = boundary end
+
+  -- Which editor authored that polygon, and how tall to draw its walls. Both are
+  -- server-owned so every client draws the same arena; neither affects the
+  -- out-of-bounds test, which reads `boundary` and nothing else.
+  derbyState.boundaryMode = (data.boundaryMode == 'rect') and 'rect' or 'polygon'
+  if type(data.wallHeight) == 'number' then derbyState.wallHeight = data.wallHeight end
+  if derbyState.boundaryMode == 'rect' and type(data.shape) == 'table' then
+    local s = data.shape
+    local cx, cy, cz = tonumber(s.cx), tonumber(s.cy), tonumber(s.cz)
+    if cx and cy and cz then
+      derbyState.shape = {
+        cx = cx, cy = cy, cz = cz,
+        halfW = tonumber(s.halfW) or 0, halfL = tonumber(s.halfL) or 0,
+        rot   = tonumber(s.rot) or 0,
+      }
+    end
+  else
+    derbyState.shape = nil
+  end
 
   -- Derby starting grid (a placement + a facing per slot, like the race grid).
   local starts = {}
@@ -5256,6 +5520,9 @@ local function resetToIdle(reason)
   -- survive into the next session.
   derbyState.phase    = 'idle'
   derbyState.boundary = {}
+  derbyState.boundaryMode = 'polygon'
+  derbyState.shape    = nil
+  derbyState.editorOpen = false
   -- Not invalidation (the empty table above already is that) -- this drops the
   -- cache's reference to the arena that has just gone, so it can be collected.
   derbyState.draw     = nil

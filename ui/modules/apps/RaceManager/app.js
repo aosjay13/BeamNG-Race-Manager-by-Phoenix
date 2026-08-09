@@ -214,33 +214,71 @@ angular.module('beamng.apps')
       // and with the editor and derby panels both open it was most of them.
       // One panel shows at a time now; the tab body scrolls as a safety net so
       // a long gate list or a full derby table can't clip at a small size.
-      var ADMIN_TABS = {
-        race: true, quali: true, garage: true, editor: true, derby: true, admin: true
+      //
+      // Those panels are now grouped by MODE first. Race and Derby are two
+      // independent game modes that share nothing but the entry list, and a flat
+      // tab strip put four race panels and one derby panel side by side — so the
+      // race session controls and the track layout picker sat above the Derby
+      // tab, offering an admin a Load Layout button for a race they were not
+      // setting up. Mode picks the world; the sub-tabs below pick the panel
+      // within it.
+      var MODES = { race: true, derby: true, admin: true };
+      var MODE_TABS = {
+        race:  { race: true, quali: true, garage: true, editor: true },
+        derby: { derby: true, editor: true },
+        admin: { admin: true }
       };
-      function adminTabOf(value) { return ADMIN_TABS[value] ? value : 'race'; }
-      // Persisted so an admin returns to the panel they were working in.
+      var DEFAULT_TAB = { race: 'race', derby: 'derby', admin: 'admin' };
+
+      function modeOf(value) { return MODES[value] ? value : 'race'; }
+      function adminTabOf(mode, value) {
+        return MODE_TABS[mode][value] ? value : DEFAULT_TAB[mode];
+      }
+      // Persisted so an admin returns to the panel they were working in — and
+      // per mode, so switching to Derby and back lands on the race panel they
+      // left rather than resetting to the first one.
       // (loadPref/savePref are declared further down; both are hoisted function
       // declarations, so calling them here is safe.)
-      $scope.adminTab = adminTabOf(loadPref('adminTab', 'race'));
+      $scope.mode = modeOf(loadPref('adminMode', 'race'));
+      $scope.adminTab = adminTabOf($scope.mode,
+        loadPref('adminTab.' + $scope.mode, DEFAULT_TAB[$scope.mode]));
+      $scope.isMode = function (mode) { return $scope.mode === mode; };
       $scope.isAdminTab = function (tab) { return $scope.adminTab === tab; };
-      // The start-slot markers are drawn from Lua, which has no idea whether the
-      // editor panel is on screen. Tell it, so that editor furniture stays in
-      // the editor instead of being drawn for every racer on the grid.
+      // Both editors are render gates in Lua, which has no idea whether its panel
+      // is on screen. Tell it, so authoring furniture — start-slot outlines, gate
+      // rectangles, arena corner labels — stays in the editor instead of being
+      // drawn for every driver on the server.
+      //
+      // The two are pushed together and are mutually exclusive by construction:
+      // one Editor sub-tab exists per mode, and only one mode is ever open.
       function pushEditorOpen() {
-        var open = $scope.isAdmin && $scope.adminTab === 'editor';
-        bngApi.engineLua('raceManager.setEditorOpen(' + (!!open) + ')');
+        var editing = $scope.isAdmin && $scope.adminTab === 'editor';
+        var race  = editing && $scope.mode === 'race';
+        var derby = editing && $scope.mode === 'derby';
+        bngApi.engineLua('raceManager.setEditorOpen(' + (!!race) + ')');
+        bngApi.engineLua('raceManager.setDerbyEditorOpen(' + (!!derby) + ')');
       }
-      $scope.selectAdminTab = function (tab) {
-        $scope.adminTab = adminTabOf(tab);
-        savePref('adminTab', $scope.adminTab);
+      // Panels that need a nudge as they re-enter the DOM: the track preview
+      // canvas has to be drawn once it exists, and the derby module pulls its
+      // state over its own channel.
+      function afterTabChange() {
         pushEditorOpen();
-        // Two panels need a nudge as they re-enter the DOM: the track preview
-        // canvas has to be drawn once it exists, and the derby module pulls its
-        // state over its own channel.
-        if ($scope.adminTab === 'editor') { schedulePreview(); }
-        if ($scope.adminTab === 'derby') {
+        if ($scope.mode === 'race' && $scope.adminTab === 'editor') { schedulePreview(); }
+        if ($scope.mode === 'derby') {
           bngApi.engineLua('raceManager.derbyRequestState()');
         }
+      }
+      $scope.selectMode = function (mode) {
+        $scope.mode = modeOf(mode);
+        savePref('adminMode', $scope.mode);
+        $scope.adminTab = adminTabOf($scope.mode,
+          loadPref('adminTab.' + $scope.mode, DEFAULT_TAB[$scope.mode]));
+        afterTabChange();
+      };
+      $scope.selectAdminTab = function (tab) {
+        $scope.adminTab = adminTabOf($scope.mode, tab);
+        savePref('adminTab.' + $scope.mode, $scope.adminTab);
+        afterTabChange();
       };
 
       // Checkpoint editor state
@@ -280,6 +318,13 @@ angular.module('beamng.apps')
         startPositions: [],   // [{ x, y, z, hx, hy }], slot 1 first
         boundaryCount: 0,
         startCount: 0,        // derby starting grid slots placed
+        // Which of the two boundary editors authored that polygon. 'polygon' is
+        // the drive-and-place one that has always existed and is still the only
+        // way to build a non-rectangular arena; 'rect' derives four corners from
+        // a centre and a pair of extents. Gameplay reads `boundary` either way.
+        boundaryMode: 'polygon',
+        shape: null,          // { cx, cy, cz, halfW, halfL, rot } while 'rect'
+        wallHeight: 6,        // how tall the arena walls are drawn (visual only)
         // Who takes part: 'all' (every connected player, the historical
         // behaviour) or 'join' (only drivers who pressed Join Race).
         entryMode: 'all',
@@ -291,6 +336,11 @@ angular.module('beamng.apps')
       };
       // Dot rule again: these inputs live inside the ng-if derby panel.
       $scope.derbyUi = { oob: 5, demo: 10, resets: -1, name: '', selected: '' };
+      // The rectangle sliders. Width and length are the FULL span in metres,
+      // which is what an admin measures an arena in — the server stores half
+      // extents and the conversion happens in the Lua command. `square` links
+      // the two so one slider drives both.
+      $scope.rectUi = { width: 120, length: 120, rot: 0, wall: 6, square: false };
       // Saved arenas for the hosted map (same workflow as track layouts).
       $scope.derbyLayouts = [];
       $scope.derbyLayoutMap = '';
@@ -299,6 +349,34 @@ angular.module('beamng.apps')
       // an input while it still shows the previous server value; an edit in
       // progress (field differs) survives marker drops and other rebroadcasts.
       var derbyCfgSeen = { oob: null, demo: null, resets: null };
+      // The rectangle sliders follow the same rule, and are declared up here
+      // beside it for the same reason: the broadcast handler reads this, and a
+      // `var` further down the controller is only assigned when execution
+      // reaches it.
+      var rectSeen = { width: null, length: null, rot: null, wall: null };
+      function syncRectField(key, value) {
+        if (typeof value !== 'number') { return; }
+        var rounded = Math.round(value * 10) / 10;
+        if (rectSeen[key] === null || Number($scope.rectUi[key]) === rectSeen[key]) {
+          $scope.rectUi[key] = rounded;
+        }
+        rectSeen[key] = rounded;
+      }
+      // Pull the sliders back into line with the arena the server just sent. A
+      // value the admin is in the middle of dragging is not overwritten, but
+      // anything that still matches what the server last said follows it —
+      // otherwise loading a saved arena would redraw the walls while the
+      // sliders went on showing the old numbers.
+      function syncRectUi() {
+        if ($scope.derby.wallHeight != null) {
+          syncRectField('wall', $scope.derby.wallHeight);
+        }
+        var s = $scope.derby.shape;
+        if (!s) { return; }
+        syncRectField('width', s.halfW * 2);
+        syncRectField('length', s.halfL * 2);
+        syncRectField('rot', s.rot * 180 / Math.PI);
+      }
       $scope.derbyWarning = null;  // { type: 'oob'|'stopped', remaining } or null
       // Which listed entry has its edit controls open, 1-based, or null. Two
       // selections rather than one shared "selected entry": the marker list and
@@ -489,9 +567,14 @@ angular.module('beamng.apps')
       // Module 3: minimalist driver view
       // ------------------------------------------------------------------
       // A live session is anything a driver is actively taking part in.
+      // A derby counts as live from FORM-UP, not from GO. It used to read
+      // `derby.phase === 'running'`, which predates the two-step start: a driver
+      // standing on the derby grid through the countdown was not in a live
+      // session by this test, so they kept the full spectator chrome and the
+      // leaderboard below it until the moment the field was released.
       $scope.sessionLive = function () {
         return $scope.phase === 'qualifying' || $scope.phase === 'countdown'
-          || $scope.phase === 'racing' || $scope.derby.phase === 'running';
+          || $scope.phase === 'racing' || $scope.derbyActive();
       };
       // A session whose rules are locked: the field is standing on the grid or
       // running. Start Quali and Generate Grid are refused by the server from
@@ -508,9 +591,23 @@ angular.module('beamng.apps')
       $scope.minimalMode = function () {
         return !$scope.isAdmin && $scope.sessionLive();
       };
-      // While a derby runs, a driver's leaderboard is the derby standings.
+      // Which board fills the leaderboard area below the panels. The two
+      // audiences ask different questions of it, so they key on different
+      // things:
+      //
+      //   * A DRIVER's board follows the SESSION. Once a derby has formed up,
+      //     the derby standings are the only standings that mean anything to
+      //     them.
+      //   * An ADMIN's board follows the MODE they are working in, because they
+      //     are usually setting a derby up long before one forms up. This used
+      //     to be `!isAdmin` alone -- written for the driver HUD, before the
+      //     panel had modes -- so the race table rendered under the derby panel
+      //     on every tab. Worse than irrelevant: a derby never touches race
+      //     state, so `drivers` still holds the LAST race's field, and what an
+      //     admin was reading during a derby was the previous race's results
+      //     (or the previous qualifying times, via isQualiView in 'waiting').
       $scope.derbyBoardOnly = function () {
-        return !$scope.isAdmin && $scope.derby.phase === 'running';
+        return $scope.isAdmin ? $scope.isMode('derby') : $scope.derbyActive();
       };
 
       // Qualifying view for the whole of a qualifying session — including its
@@ -932,6 +1029,13 @@ angular.module('beamng.apps')
           $scope.derby.boundaryCount = $scope.derby.boundary.length;
           $scope.derby.startCount = $scope.derby.startPositions.length;
           $scope.derby.players = toArray(data.players);
+          $scope.derby.boundaryMode = data.boundaryMode === 'rect' ? 'rect' : 'polygon';
+          $scope.derby.shape = (data.shape && typeof data.shape === 'object')
+            ? data.shape : null;
+          if (typeof data.wallHeight === 'number') {
+            $scope.derby.wallHeight = data.wallHeight;
+          }
+          syncRectUi();
           // Keep the open edit controls pointed at something that still exists.
           // An entry deleted here (by this admin or another one) must not leave
           // a panel of buttons hanging over the entry that took its number, and
@@ -1009,6 +1113,42 @@ angular.module('beamng.apps')
       $scope.derbyClearBoundary = function () {
         bngApi.engineLua('raceManager.derbyClearBoundary()');
       };
+
+      // --- The rectangle editor ---------------------------------------------
+      $scope.derbySetBoundaryMode = function (mode) {
+        if ($scope.derbyActive()) { return; }
+        bngApi.engineLua('raceManager.derbySetBoundaryMode("'
+          + (mode === 'rect' ? 'rect' : 'polygon') + '")');
+      };
+      $scope.derbySetShapeCenter = function () {
+        if ($scope.derbyActive()) { return; }
+        bngApi.engineLua('raceManager.derbySetShapeCenter()');
+      };
+      // Every slider lands here. Lua takes nil for "leave this alone", so only
+      // the fields that have a usable number are sent — and with Square linked,
+      // width drives length as well.
+      $scope.derbyApplyShape = function () {
+        if ($scope.derbyActive()) { return; }
+        var w = parseFloat($scope.rectUi.width);
+        var l = $scope.rectUi.square ? w : parseFloat($scope.rectUi.length);
+        var r = parseFloat($scope.rectUi.rot);
+        var h = parseFloat($scope.rectUi.wall);
+        if ($scope.rectUi.square && isFinite(w)) { $scope.rectUi.length = w; }
+        bngApi.engineLua('raceManager.derbySetShape('
+          + (isFinite(w) ? w : 'nil') + ', '
+          + (isFinite(l) ? l : 'nil') + ', '
+          + (isFinite(r) ? r : 'nil') + ', '
+          + (isFinite(h) ? h : 'nil') + ')');
+      };
+      // Wall height applies to a drive-and-place arena too, so it is its own
+      // call: the rectangle fields must not ride along and switch the mode.
+      $scope.derbyApplyWallHeight = function () {
+        if ($scope.derbyActive()) { return; }
+        var h = parseFloat($scope.rectUi.wall);
+        if (!isFinite(h)) { return; }
+        bngApi.engineLua('raceManager.derbySetShape(nil, nil, nil, ' + h + ')');
+      };
+      $scope.derbyIsRect = function () { return $scope.derby.boundaryMode === 'rect'; };
       // Derby starting grid: drive to each slot and place it; slot 1 first.
       $scope.derbyAddStart = function () {
         bngApi.engineLua('raceManager.derbyAddStartPosition()');
@@ -1816,10 +1956,12 @@ angular.module('beamng.apps')
         if (vehErrTimer) { clearTimeout(vehErrTimer); }
         if (goTimer) { clearTimeout(goTimer); }
         stopLapTicker();
-        // The app is going away (HUD teardown, pause menu, app closed), so the
-        // editor is not open any more. Without this the start-slot markers
-        // would stay drawn in the world with no panel behind them.
+        // The app is going away (HUD teardown, pause menu, app closed), so
+        // neither editor is open any more. Without this the start-slot markers
+        // and the arena's corner labels would stay drawn in the world with no
+        // panel behind them.
         bngApi.engineLua('raceManager.setEditorOpen(false)');
+        bngApi.engineLua('raceManager.setDerbyEditorOpen(false)');
       });
 
       // ------------------------------------------------------------------
@@ -1830,9 +1972,10 @@ angular.module('beamng.apps')
       bngApi.engineLua('extensions.load("raceManager"); raceManager.requestState()');
       // Demo Derby module: pull its state separately (isolated channel).
       bngApi.engineLua('raceManager.derbyRequestState()');
-      // Re-assert the editor flag on mount. The admin tab is restored from
-      // localStorage, so a rebuilt app can come straight back up on the Editor
-      // tab -- and the Lua side was told "closed" when the old one was torn down.
+      // Re-assert both editor flags on mount. The mode and its tab are restored
+      // from localStorage, so a rebuilt app can come straight back up on either
+      // Editor tab -- and the Lua side was told "closed" when the old one was
+      // torn down.
       pushEditorOpen();
     }]
   };

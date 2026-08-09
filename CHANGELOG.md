@@ -6,6 +6,71 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 [← Back to the README](README.md)
 
+## Unreleased — Derby arenas and mode separation
+
+### Added
+
+- **Rectangle arenas.** A derby boundary can now be pulled out from a centre
+  instead of driven corner by corner: stand where the middle should be, then set
+  Width, Length and Rotation on sliders (with **Square** linking the first two).
+  The four corners are derived from the shape and all sit at the centre's
+  height — the out-of-bounds test has always ignored height, so a flat plane is
+  what the rule actually is.
+- **The drive-and-place editor is unchanged and still there**, as the other half
+  of a mode toggle. It remains the only way to build a non-rectangular arena.
+  Switching between the two keeps the work: a rectangle becomes four ordinary
+  markers, and a hand-driven arena becomes the rectangle that bounds it.
+- **Wall height**, 2–30 m, for either kind of arena. Visual only.
+
+### Changed
+
+- **The derby arena is drawn as walls, not poles and rope** — a translucent
+  panel per edge, drawn from both sides so it is there from inside the arena as
+  well as outside it.
+- **An active derby no longer looks like an editor.** Authoring visuals — the
+  filled floor, corner numbers, the arena label, the centre crosshair, the full
+  set of numbered start slots — belong to an admin with the Derby Editor open.
+  Everyone else, including that admin once a field has formed up, gets faint
+  walls and a ground rail. The boundary itself is still always drawn during a
+  derby; leaving it is what eliminates you. Start slots used to be drawn for
+  every driver on the server whether or not a derby was near starting; now you
+  see your own slot as you are placed on it, and nothing after GO.
+- **Race and Derby are separated by mode.** A mode bar (🏁 Race · 💥 Derby ·
+  ⚙ Admin) sits above the tab strip, and each mode carries its own controls and
+  its own Editor sub-tab. The race session controls and the **Track layout
+  picker used to render over the Derby tab**, offering a Load Layout button for a
+  race nobody was setting up. Nothing was removed — every control is still there
+  under the mode it belongs to, and the last sub-tab per mode is remembered.
+- **The leaderboard follows the mode as well.** An admin in Derby mode was
+  looking at a race table below the derby panel — and since a derby never
+  touches race state, that table was the *last race's* field (or the last
+  qualifying times), presented as though it were live. Derby mode now shows the
+  derby standings there, on both derby sub-tabs, so the field is visible while
+  an arena is being built. The duplicate copy of the standings inside the Derby
+  panel is gone; there is one board, not two.
+
+### Fixed
+
+- **A derby is now "live" for the UI from Form Up, not from GO.** Both the
+  driver's minimal mode and their derby board keyed on `phase === 'running'`,
+  which predates the two-step start — so a driver held on the derby grid through
+  the countdown kept the full spectator chrome and the previous race's
+  leaderboard until the field was released.
+
+### Compatibility
+
+- **Saved arenas from earlier builds load unchanged**, as drive-and-place
+  arenas. `derbyArenas.json` moves to `version: 2` by adding three optional
+  fields; a v1 entry simply has none of them, so there is no migration step. A
+  rectangle is stored as *both* its shape and the polygon it produced, so it
+  loads back editable by slider and stays readable by anything that only
+  understands the polygon.
+- Gameplay reads `boundary` and nothing else, in both modes — the out-of-bounds
+  test, the broadcast and the results export are untouched.
+- Mixed client/server versions degrade cleanly: an older client ignores the new
+  fields and reads the four corners as an ordinary polygon; an older server
+  ignores the two new events.
+
 ## 0.6.0 — Checkpoint refactor
 
 ### Added

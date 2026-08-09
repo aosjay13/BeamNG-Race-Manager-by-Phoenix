@@ -109,11 +109,31 @@
     </button>
   </div>
 
-  <!-- ================= Session controls (admin only) =====================
+  <!-- ================= Mode tabs (admin only) ============================
+       Race and Derby are two independent game modes. They used to share one
+       flat tab strip, with the race session controls and the track layout
+       picker pinned above all of it — so an admin setting up a derby was
+       looking at a Load Layout button for a race, and the Derby tab read as one
+       more race panel. Everything below this bar belongs to the mode picked
+       here: its controls, and its own editor. -->
+  <div class="rm-mode-tabs" ng-if="isAdmin">
+    <button class="rm-btn rm-mode-tab" ng-class="{'rm-mode-tab-active': isMode('race')}"
+            ng-click="selectMode('race')"
+            title="Circuit racing: session controls, rules, the garage and the track editor">🏁 Race</button>
+    <button class="rm-btn rm-mode-tab" ng-class="{'rm-mode-tab-active': isMode('derby')}"
+            ng-click="selectMode('derby')"
+            title="Demo Derby: arena, rules, standings and the arena editor">💥 Derby</button>
+    <button class="rm-btn rm-mode-tab" ng-class="{'rm-mode-tab-active': isMode('admin')}"
+            ng-click="selectMode('admin')"
+            title="Master password and results housekeeping">⚙ Admin</button>
+  </div>
+
+  <!-- ================= Session controls (race mode, admin only) ==========
        These stay outside the tab bar on purpose: they are the buttons an
        admin reaches for under time pressure, so they must never be one click
-       away behind a tab. -->
-  <div class="rm-controls" ng-if="isAdmin">
+       away behind a tab. They are race controls, so they belong to race mode
+       and are gone while the derby is being run. -->
+  <div class="rm-controls" ng-if="isAdmin && isMode('race')">
     <button class="rm-btn rm-btn-quali" ng-click="startQualifying()" ng-disabled="sessionUnderWay()"
             title="Form the QUALIFYING grid: every entrant is stood on a start position and held. Press Start Countdown to run the session.">Start Quali</button>
     <button class="rm-btn rm-btn-grid"  ng-click="generateGrid()"    ng-disabled="sessionUnderWay()"
@@ -130,8 +150,11 @@
        ever opening the editor, which used to be the only place this lived —
        and opening the editor is what replaces the race checkpoint visuals with
        the authoring ones. Building layouts stays in the editor; choosing one
-       to race belongs next to Generate Grid and Start Countdown. -->
-  <div class="rm-controls rm-controls-layout" ng-if="isAdmin">
+       to race belongs next to Generate Grid and Start Countdown. It is a RACE
+       layout, though, so it lives in race mode with the rest of them — this
+       row being visible on the Derby tab is exactly the mixing the mode bar
+       above exists to end. -->
+  <div class="rm-controls rm-controls-layout" ng-if="isAdmin && isMode('race')">
     <span class="rm-controls-label">Track<span ng-if="layoutMap"> — {{ layoutMap }}</span></span>
     <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': layoutDropdownOpen}">
       <button type="button" class="rm-layout-trigger"
@@ -156,12 +179,38 @@
     </button>
   </div>
 
-  <!-- ================= Admin tab bar =====================================
+  <!-- ================= Derby controls (derby mode, admin only) ===========
+       The derby's equivalent of the race session controls above, and here for
+       the same reason: Form Up, Start and End are what an admin reaches for
+       with a field waiting, so they are not filed behind a tab. They used to
+       sit at the bottom of the derby settings block, under the arena tools. -->
+  <div class="rm-controls rm-derby-controls-bar" ng-if="isAdmin && isMode('derby')">
+    <span class="rm-controls-label">Derby
+      <span class="rm-derby-phase rm-derby-phase-{{ derby.phase }}">{{ derbyPhaseLabel() }}</span>
+    </span>
+    <button class="rm-btn rm-btn-grid" ng-click="derbyFormUp()"
+            ng-disabled="derbyActive()"
+            title="Stand every participant on a start slot and hold them there, ready for the countdown. The derby's Generate Grid.">
+      Form Up
+    </button>
+    <button class="rm-btn rm-btn-start" ng-click="derbyStart()"
+            ng-disabled="derby.phase !== 'forming'"
+            title="Release the field with a 3-2-1 countdown. Form Up first.">Start Derby</button>
+    <button class="rm-btn rm-btn-end" ng-click="derbyEnd()"
+            ng-disabled="derby.phase === 'idle'"
+            title="Formed up or counting down: abort and release the field. Running: end the derby now. Finished: reset back to setup.">
+      {{ derby.phase === 'finished' ? 'Reset Derby' : (derby.phase === 'forming' || derby.phase === 'countdown' ? 'Abort Start' : 'End Derby') }}
+    </button>
+    <span class="rm-derby-markers">{{ derby.entrants }} in</span>
+  </div>
+
+  <!-- ================= Sub-tab bar =======================================
        Every admin panel used to stack vertically, which overflowed the app
        window — .rm-root is overflow:hidden, so whatever ran past the bottom
        edge was simply unreachable. One panel shows at a time now, and the
-       body below scrolls as a safety net for the tall ones. -->
-  <div class="rm-admin-tabs" ng-if="isAdmin">
+       body below scrolls as a safety net for the tall ones.
+       The set shown depends on the mode picked above. -->
+  <div class="rm-admin-tabs" ng-if="isAdmin && isMode('race')">
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('race')}"
             ng-click="selectAdminTab('race')"
             title="Race distance, reset ruleset and the joker lap">Race</button>
@@ -173,20 +222,22 @@
             title="Allowed vehicles and setups">Garage <span class="rm-tab-count" ng-if="garage.length">{{ garage.length }}</span></button>
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('editor')}"
             ng-click="selectAdminTab('editor')"
-            title="Checkpoint editor, starting grid and saved track layouts">Editor <span class="rm-tab-count" ng-if="routeWaypoints.length">{{ routeWaypoints.length }}</span></button>
+            title="Checkpoint editor, starting grid and saved track layouts">Race Editor <span class="rm-tab-count" ng-if="routeWaypoints.length">{{ routeWaypoints.length }}</span></button>
+  </div>
+  <div class="rm-admin-tabs" ng-if="isAdmin && isMode('derby')">
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('derby')}"
             ng-click="selectAdminTab('derby')"
-            title="Demo Derby: arena, rules and standings">Derby</button>
-    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('admin')}"
-            ng-click="selectAdminTab('admin')"
-            title="Master password and results housekeeping">Admin</button>
+            title="Derby rules, entry and the live standings">Derby</button>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('editor')}"
+            ng-click="selectAdminTab('editor')"
+            title="Arena boundary, start grid and saved arenas">Derby Editor <span class="rm-tab-count" ng-if="derby.boundaryCount">{{ derby.boundaryCount }}</span></button>
   </div>
 
   <!-- ================= Admin tab body (scrolls) ========================== -->
   <div class="rm-admin-body" ng-if="isAdmin">
 
   <!-- ================= Race settings ================= -->
-  <div class="rm-settings" ng-if="isAdminTab('race')">
+  <div class="rm-settings" ng-if="isMode('race') && isAdminTab('race')">
     <!-- Laps mean nothing on a sprint stage, so the field says so rather than
          sitting there accepting a number that will be ignored. The setting is
          kept, not clamped, so switching a circuit layout back in restores it. -->
@@ -230,7 +281,7 @@
   </div>
 
   <!-- ================= Qualifying &amp; grid settings ===================== -->
-  <div class="rm-settings" ng-if="isAdminTab('quali')">
+  <div class="rm-settings" ng-if="isMode('race') && isAdminTab('quali')">
     <span class="rm-setting" title="Ghost mode: rival cars stop being obstacles during qualifying, so a flying lap can't be ruined by traffic.">
       <label>Ghost quali</label>
       <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': ghostQuali}"
@@ -266,12 +317,12 @@
       ⚠ {{ entrants }} entered but only {{ startSlots }} start positions placed
     </span>
     <span class="rm-setting-warn" ng-if="!startSlots">
-      ⚠ No start positions placed — open the Editor's Start Grid tab
+      ⚠ No start positions placed — open the Race Editor's Start Grid tab
     </span>
   </div>
 
   <!-- ================= Garage list (Module 4: vehicle & setup locking) ==== -->
-  <div class="rm-garage" ng-if="isAdminTab('garage')">
+  <div class="rm-garage" ng-if="isMode('race') && isAdminTab('garage')">
     <div class="rm-garage-head">
       <span class="rm-garage-title">Garage — allowed vehicles &amp; setups</span>
       <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': garageEnforce}"
@@ -304,7 +355,7 @@
   </div>
 
   <!-- ================= Checkpoint editor ================= -->
-  <div class="rm-editor" ng-if="isAdminTab('editor')">
+  <div class="rm-editor" ng-if="isMode('race') && isAdminTab('editor')">
     <!-- Which route is being built: the main lap or the rallycross joker -->
     <div class="rm-route-tabs">
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-route-tab-active': editorTarget === 'main'}"
@@ -469,7 +520,7 @@
   </div>
 
   <!-- ================= DEMO DERBY (isolated module) ================= -->
-  <div class="rm-derby" ng-if="isAdminTab('derby')">
+  <div class="rm-derby" ng-if="isMode('derby') && isAdminTab('derby')">
     <div class="rm-derby-title">
       Demo Derby
       <span class="rm-derby-phase rm-derby-phase-{{ derby.phase }}">{{ derbyPhaseLabel() }}</span>
@@ -513,38 +564,144 @@
       will have no field.
     </div>
 
-    <div class="rm-derby-controls">
+    <div class="rm-derby-winner" ng-if="derby.winner">🏆 WINNER: {{ derby.winner }}</div>
+
+    <!-- The standings themselves are NOT repeated here. In derby mode the
+         leaderboard at the bottom of the app IS the derby board, so an admin
+         reads the field from one place — and reads it from the Derby Editor
+         sub-tab too, rather than only from this one. There used to be a second
+         copy of the table right here, which meant the field was on screen twice
+         on this tab and nowhere at all while building an arena. -->
+    <div class="rm-derby-hint" ng-if="derby.phase === 'idle' && derby.boundaryCount < 3">
+      No arena yet — build one in the <b>Derby Editor</b> tab, then Form Up.
+    </div>
+  </div>
+
+  <!-- ================= DERBY EDITOR ==================================
+       The derby's answer to the Race Editor, and deliberately its twin: an
+       arena is authored here, and running one is done from the controls above.
+       Everything in this panel is refused from form-up onward — the arena
+       cannot move under a field that is already standing on its grid — so the
+       rows go read-only rather than disappearing, and the admin can still read
+       the arena off during a live derby. -->
+  <div class="rm-derby rm-derby-editor" ng-if="isMode('derby') && isAdminTab('editor')">
+    <div class="rm-derby-title">
+      Arena
+      <span class="rm-derby-markers">{{ derby.boundaryCount }} boundary marker{{ derby.boundaryCount === 1 ? '' : 's' }}</span>
+      <span class="rm-derby-markers">{{ derby.startCount }} start slot{{ derby.startCount === 1 ? '' : 's' }}</span>
+      <button class="rm-btn rm-btn-mini" ng-click="derbyToggleVisualize()"
+              title="Hide or show the arena walls and start slots (always shown while a derby is running)">
+        {{ derby.visualize ? 'Hide' : 'Show' }} Arena
+      </button>
+    </div>
+
+    <!-- ===== Which boundary editor. Two genuinely different tools, kept
+         because they are good at different things: a rectangle is three
+         sliders and covers most arenas, and driving the perimeter is the only
+         way to fit an odd-shaped one. Switching either way keeps the work —
+         a rectangle becomes four ordinary markers, and a driven arena becomes
+         the rectangle that bounds it. -->
+    <div class="rm-route-tabs">
+      <button class="rm-btn rm-btn-mini"
+              ng-class="{'rm-route-tab-active': derby.boundaryMode === 'rect'}"
+              ng-click="derbySetBoundaryMode('rect')" ng-disabled="derbyActive()"
+              title="Stand at the middle of the arena and pull a square or rectangle out around you.">
+        ▭ Rectangle
+      </button>
+      <button class="rm-btn rm-btn-mini"
+              ng-class="{'rm-route-tab-active': derby.boundaryMode === 'polygon'}"
+              ng-click="derbySetBoundaryMode('polygon')" ng-disabled="derbyActive()"
+              title="Drive the perimeter and drop a marker at each corner. Any shape you like.">
+        ✎ Drive &amp; Place ({{ derby.boundaryCount }})
+      </button>
+      <span class="rm-route-tab-note" ng-if="derby.boundaryMode === 'rect'">
+        Four corners are derived from the centre — move the sliders, not the markers.
+      </span>
+      <span class="rm-route-tab-note" ng-if="derby.boundaryMode === 'polygon'">
+        Markers connect in order into a closed perimeter. 3 or more make an arena.
+      </span>
+    </div>
+
+    <!-- ===== Rectangle mode: a centre and three sliders ===== -->
+    <div class="rm-derby-rect" ng-if="derby.boundaryMode === 'rect'">
+      <div class="rm-editor-controls">
+        <button class="rm-btn rm-btn-grid" ng-click="derbySetShapeCenter()"
+                ng-disabled="derbyActive()"
+                title="Move the middle of the arena to where your car is standing now. The size and rotation are kept.">
+          ◎ Set Centre Here
+        </button>
+        <span class="rm-setting" title="Link width and length so the arena stays square.">
+          <button class="rm-btn rm-btn-mini rm-btn-toggle"
+                  ng-class="{'rm-btn-toggle-on': rectUi.square}"
+                  ng-click="rectUi.square = !rectUi.square; derbyApplyShape()"
+                  ng-disabled="derbyActive()">
+            {{ rectUi.square ? '▣ Square' : '▭ Rectangle' }}
+          </button>
+        </span>
+        <span class="rm-setting-val" ng-if="derby.shape">
+          centre {{ derby.shape.cx.toFixed(1) }}, {{ derby.shape.cy.toFixed(1) }}
+        </span>
+      </div>
+      <!-- Same slider-plus-number pairing the per-gate size editor uses, so an
+           arena dimension is adjusted the same way every other dimension in
+           this mod is. Both halves write the same model, and both apply live. -->
+      <span class="rm-setting rm-cp-dim"><label>Width</label>
+        <input type="range" min="10" max="500" step="1" ng-model="rectUi.width"
+               ng-change="derbyApplyShape()" ng-disabled="derbyActive()">
+        <input type="number" min="10" max="500" ng-model="rectUi.width"
+               ng-change="derbyApplyShape()" ng-disabled="derbyActive()">
+        <span class="rm-setting-val">m</span></span>
+      <span class="rm-setting rm-cp-dim"><label>Length</label>
+        <input type="range" min="10" max="500" step="1" ng-model="rectUi.length"
+               ng-change="derbyApplyShape()" ng-disabled="derbyActive() || rectUi.square">
+        <input type="number" min="10" max="500" ng-model="rectUi.length"
+               ng-change="derbyApplyShape()" ng-disabled="derbyActive() || rectUi.square">
+        <span class="rm-setting-val">m</span></span>
+      <!-- A rectangle repeats every quarter turn, so 0-90 covers every angle it
+           has: 90 degrees simply swaps width and length. -->
+      <span class="rm-setting rm-cp-dim" title="Turn the arena to line it up with the ground it sits on. A rectangle repeats every 90°.">
+        <label>Rotation</label>
+        <input type="range" min="0" max="90" step="1" ng-model="rectUi.rot"
+               ng-change="derbyApplyShape()" ng-disabled="derbyActive()">
+        <input type="number" min="0" max="90" ng-model="rectUi.rot"
+               ng-change="derbyApplyShape()" ng-disabled="derbyActive()">
+        <span class="rm-setting-val">°</span></span>
+    </div>
+
+    <!-- ===== Drive-and-place mode: the marker tools ===== -->
+    <div class="rm-editor-controls" ng-if="derby.boundaryMode === 'polygon'">
       <button class="rm-btn rm-btn-grid" ng-click="derbyAddMarker()"
               ng-disabled="derbyActive()"
-              title="Drop a boundary pole at your vehicle's position; markers connect in order into the arena perimeter">
+              title="Drop a boundary marker at your vehicle's position; markers connect in order into the arena perimeter">
         + Boundary Marker
       </button>
+    </div>
+
+    <!-- Wall height belongs to both modes: it is how the arena is DRAWN, not
+         what it encloses. The out-of-bounds test is flat, so a taller wall
+         never changes who is in or out — it only decides how easily a driver
+         can see the edge from inside a car. -->
+    <span class="rm-setting rm-cp-dim" title="How tall the arena walls are drawn. Visual only — it does not change the boundary.">
+      <label>Wall height</label>
+      <input type="range" min="2" max="30" step="1" ng-model="rectUi.wall"
+             ng-change="derbyApplyWallHeight()" ng-disabled="derbyActive()">
+      <input type="number" min="2" max="30" ng-model="rectUi.wall"
+             ng-change="derbyApplyWallHeight()" ng-disabled="derbyActive()">
+      <span class="rm-setting-val">m</span></span>
+
+    <div class="rm-editor-controls">
       <button class="rm-btn rm-btn-end" ng-click="derbyClearBoundary()"
-              ng-disabled="derbyActive() || !derby.boundaryCount">Clear Boundary</button>
+              ng-disabled="derbyActive() || !derby.boundaryCount"
+              title="Throw the arena away and start over with an empty drive-and-place one.">
+        Clear Boundary
+      </button>
       <button class="rm-btn rm-btn-grid" ng-click="derbyAddStart()"
               ng-disabled="derbyActive()"
-              title="Place a derby start position at your vehicle (position + facing). Slot 1 first; drivers are stood on their slot at Start Derby.">
+              title="Place a derby start position at your vehicle (position + facing). Slot 1 first; drivers are stood on their slot at Form Up.">
         + Start Position
       </button>
       <button class="rm-btn rm-btn-end" ng-click="derbyClearStarts()"
               ng-disabled="derbyActive() || !derby.startCount">Clear Start Grid</button>
-      <button class="rm-btn" ng-click="derbyToggleVisualize()"
-              title="Hide or show the boundary poles and start slots (always shown while a derby is running)">
-        {{ derby.visualize ? 'Hide' : 'Show' }} Boundary
-      </button>
-      <button class="rm-btn rm-btn-grid" ng-click="derbyFormUp()"
-              ng-disabled="derbyActive()"
-              title="Stand every participant on a start slot and hold them there, ready for the countdown. The derby's Generate Grid.">
-        Form Up
-      </button>
-      <button class="rm-btn rm-btn-start" ng-click="derbyStart()"
-              ng-disabled="derby.phase !== 'forming'"
-              title="Release the field with a 3-2-1 countdown. Form Up first.">Start Derby</button>
-      <button class="rm-btn rm-btn-end" ng-click="derbyEnd()"
-              ng-disabled="derby.phase === 'idle'"
-              title="Formed up or counting down: abort and release the field. Running: end the derby now. Finished: reset back to setup.">
-        {{ derby.phase === 'finished' ? 'Reset Derby' : (derby.phase === 'forming' || derby.phase === 'countdown' ? 'Abort Start' : 'End Derby') }}
-      </button>
     </div>
 
     <!-- ===== Placed markers and start slots: each one stays editable =====
@@ -555,7 +712,12 @@
          so the rows go read-only rather than disappearing, and the admin can
          still read off the arena during a live derby. -->
     <div class="rm-derby-lists" ng-if="derby.boundary.length || derby.startPositions.length">
-      <div class="rm-derby-list" ng-if="derby.boundary.length">
+      <!-- The marker list is the drive-and-place editor's, and only its. A
+           rectangle's four corners are derived from its centre and extents, so
+           there is no answer to "move corner 2 over there" that leaves it a
+           rectangle — the sliders are how it is edited, and the server refuses
+           these commands in that mode anyway. -->
+      <div class="rm-derby-list" ng-if="derby.boundary.length && derby.boundaryMode !== 'rect'">
         <div class="rm-layouts-title">Boundary Markers</div>
         <div class="rm-editor-list">
           <div class="rm-editor-wp-wrap" ng-repeat="m in derby.boundary track by $index">
@@ -652,47 +814,24 @@
       </div>
     </div>
 
-    <div class="rm-derby-hint" ng-if="derby.phase === 'idle' && derby.boundaryCount < 3">
-      Drive around the arena edge and press <b>+ Boundary Marker</b> at each corner
-      (3+ markers make a polygon). Leaving it during the derby starts the
-      out-of-bounds countdown; stopping starts the demolished countdown.
-      Optionally place a starting grid with <b>+ Start Position</b> (slot 1 first,
-      facing the way the car should point) — Start Derby stands every driver on a slot.
+    <div class="rm-derby-hint" ng-if="derby.boundaryMode === 'rect' && derby.boundaryCount">
+      The four corners follow the centre and the sliders. Leaving the arena during
+      the derby starts the out-of-bounds countdown; stopping starts the demolished
+      countdown. Place a starting grid with <b>+ Start Position</b> (slot 1 first,
+      facing the way the car should point) — Form Up stands every driver on a slot.
     </div>
-
-    <div class="rm-derby-winner" ng-if="derby.winner">🏆 WINNER: {{ derby.winner }}</div>
-
-    <table class="rm-table rm-derby-table" ng-if="derby.players.length">
-      <thead>
-        <tr>
-          <th class="rm-col-grid">Pos</th>
-          <th class="rm-col-name">Driver</th>
-          <th class="rm-col-status">Status</th>
-          <th class="rm-col-reset" ng-if="derbyResetsLimited()" title="Vehicle resets used / allowed this derby">Rst</th>
-          <th class="rm-col-time">Out At</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr ng-repeat="p in derby.players track by p.id"
-            ng-class="{'rm-derby-row-out': p.status === 'eliminated', 'rm-derby-row-winner': p.status === 'winner'}">
-          <td class="rm-col-grid">{{ $index + 1 }}</td>
-          <td class="rm-col-name" title="{{ driverName(p) }}{{ realName(p) ? ' (' + realName(p) + ')' : '' }}">{{ driverName(p) }}</td>
-          <td class="rm-col-status">
-            <span class="rm-light" ng-class="{'rm-light-racing': p.status === 'alive', 'rm-light-dnf': p.status === 'eliminated', 'rm-light-finished': p.status === 'winner'}"></span>
-            <span class="rm-status-text">{{ derbyStatusLabel(p) }}</span>
-          </td>
-          <td class="rm-col-reset" ng-if="derbyResetsLimited()">{{ derbyResetLabel(p) }}</td>
-          <td class="rm-col-time">{{ p.status === 'eliminated' ? formatDerbyTime(p.elimTime) : '—' }}</td>
-        </tr>
-      </tbody>
-    </table>
-    <div class="rm-derby-hint" ng-if="!derby.players.length && derby.phase !== 'idle'">
-      No participants recorded.
+    <div class="rm-derby-hint" ng-if="derby.boundaryMode !== 'rect' && derby.boundaryCount < 3">
+      Drive around the arena edge and press <b>+ Boundary Marker</b> at each corner
+      (3+ markers make a perimeter) — or switch to <b>▭ Rectangle</b> and pull one
+      out from where you are standing. Leaving the arena during the derby starts
+      the out-of-bounds countdown; stopping starts the demolished countdown.
+      Optionally place a starting grid with <b>+ Start Position</b> (slot 1 first,
+      facing the way the car should point) — Form Up stands every driver on a slot.
     </div>
   </div>
 
   <!-- ================= Admin housekeeping ================================= -->
-  <div class="rm-adminbar-panel" ng-if="isAdminTab('admin')">
+  <div class="rm-adminbar-panel" ng-if="isMode('admin')">
     <div class="rm-adminbar">
       <span class="rm-adminbar-label">Change password</span>
       <input type="text" class="rm-login-input" ng-model="authUi.newPassword"
@@ -845,9 +984,12 @@
     <button class="rm-driverbar-btn" ng-click="openLogin()" title="Admin login">🔒</button>
   </div>
 
-  <!-- ================= Derby standings for drivers ======================== -->
+  <!-- ================= Derby standings ===================================
+       Shown to a driver from form-up onward, and to an admin for as long as
+       they are in Derby mode — so it is the board behind the Derby Editor as
+       well, and there is exactly one copy of it in the app. -->
   <div class="rm-table-wrap" ng-if="derbyBoardOnly()" ng-style="minimalMode() && lbStyle()">
-    <table class="rm-table">
+    <table class="rm-table" ng-if="derby.players.length">
       <thead>
         <tr>
           <th class="rm-col-grid">Pos</th>
@@ -871,6 +1013,15 @@
         </tr>
       </tbody>
     </table>
+    <!-- Empty states. An admin can sit in Derby mode with no derby run yet, and
+         a bare table header reads as something that failed to load. -->
+    <div class="rm-derby-hint" ng-if="!derby.players.length && derby.phase === 'idle'">
+      No derby yet. Set the rules, build an arena in the <b>Derby Editor</b>,
+      then <b>Form Up</b> — the field appears here.
+    </div>
+    <div class="rm-derby-hint" ng-if="!derby.players.length && derby.phase !== 'idle'">
+      No participants recorded.
+    </div>
     <div class="rm-lb-grip" ng-if="minimalMode()" ng-mousedown="startLeaderboardResize($event)"
          title="Drag to resize the leaderboard"></div>
   </div>
@@ -1149,6 +1300,35 @@
   /* One admin panel at a time. Before this, every panel stacked and the app
      window (overflow:hidden) simply clipped whatever ran past the bottom edge,
      with no scrollbar anywhere to reach it. */
+  /* Mode bar: the level above the sub-tabs. Deliberately heavier than they are
+     -- taller, bolder, its own top border -- because it switches which game
+     mode the whole panel below belongs to, and reading it as just another tab
+     is exactly the confusion that let a Load Layout button sit over a derby. */
+  .rm-mode-tabs {
+    display: flex;
+    align-items: stretch;
+    gap: 4px;
+    padding: 4px 8px 0;
+    background: rgba(0, 0, 0, 0.25);
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .rm-mode-tab {
+    flex: 1;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    padding: 5px 8px;
+    border-bottom: 2px solid transparent;
+    border-radius: 4px 4px 0 0;
+    color: #9aa0a6;
+  }
+  .rm-mode-tab-active {
+    background: rgba(255, 102, 0, 0.22);
+    border-color: rgba(255, 102, 0, 0.5);
+    border-bottom-color: #ff6600;
+    color: #ffb380;
+  }
   .rm-admin-tabs {
     display: flex;
     align-items: center;
@@ -1894,7 +2074,21 @@
   }
   .rm-derby-settings input[type="number"] { width: 52px; }
   .rm-derby-controls { display: flex; gap: 5px; flex-wrap: wrap; }
+  /* The derby's session-control row, sitting where the race one does. */
+  .rm-derby-controls-bar { border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+  /* The rectangle editor. Its sliders are stacked one per row rather than run
+     along a flex line: width, length and rotation each want the full panel to
+     be draggable at a useful resolution, and a 500 m range squeezed into a
+     third of a narrow HUD panel moves ~8 m a pixel. */
+  .rm-derby-rect { display: flex; flex-direction: column; gap: 4px; }
+  .rm-derby-rect .rm-cp-dim label,
+  .rm-derby-editor > .rm-cp-dim label { min-width: 62px; color: #9aa0a6; }
+  .rm-derby-editor > .rm-cp-dim { margin: 2px 0; }
   .rm-derby-hint { margin-top: 5px; font-size: 11px; color: #9aa0a6; }
+  /* The same hint used as the leaderboard's empty state. The panels it was
+     written for are padded; .rm-table-wrap is not, because a table brings its
+     own cell padding, so it needs its own inset here. */
+  .rm-table-wrap > .rm-derby-hint { padding: 6px 10px; }
   .rm-derby-winner {
     margin-top: 6px;
     padding: 5px 8px;
@@ -1905,7 +2099,6 @@
     font-weight: 700;
     letter-spacing: 0.5px;
   }
-  .rm-derby-table { margin-top: 6px; }
   .rm-derby-row-out td { opacity: 0.45; }
   .rm-derby-row-winner td { background: rgba(251, 188, 5, 0.08); }
 

@@ -337,6 +337,140 @@ RM_onDerbyLoadLayout(1, '{"name":"Pit Arena"}')
 check(#lastDerby.boundary == 3, 'the arena cannot change while a derby runs')
 RM_onDerbyEnd(1)
 RM_onDerbyEnd(1)                        -- finished -> idle
+
+-- ---------------------------------------------------------------------------
+-- The rectangle arena: a second EDITOR, not a second boundary
+-- ---------------------------------------------------------------------------
+-- An arena can be authored two ways -- driving the perimeter and dropping a
+-- marker at each corner, or standing in the middle and pulling a rectangle out
+-- around you. Both produce the SAME thing: an ordered polygon in
+-- derby.boundary, which is the only representation any gameplay code has ever
+-- read. Everything below is really one assertion said several ways: the mode
+-- decides which controls work, and never what the arena IS.
+RM_onDerbyClearBoundary(1)
+check(lastDerby.boundaryMode == 'polygon',
+  'a cleared arena is back to the drive-and-place editor')
+
+-- With nothing placed there is nothing to fit a rectangle around, so the client
+-- sends the position of the admin's car as the centre.
+RM_onDerbySetBoundaryMode(9, '{"mode":"rect","cx":0,"cy":0,"cz":5}')
+check(lastDerby.boundaryMode == 'polygon', 'mode switch ignored before authentication')
+RM_onDerbySetBoundaryMode(1, '{"mode":"rect","cx":10,"cy":20,"cz":5}')
+check(lastDerby.boundaryMode == 'rect', 'the rectangle editor can be switched on')
+check(#lastDerby.boundary == 4, 'a rectangle is four derived corners')
+check(lastDerby.shape.cx == 10 and lastDerby.shape.cy == 20,
+  'centred where the car was standing')
+
+-- Size. The client sends half-extents; the panel's sliders are the full span.
+RM_onDerbySetShape(1, '{"halfW":50,"halfL":30}')
+local minx, maxx, miny, maxy = math.huge, -math.huge, math.huge, -math.huge
+local zs = {}
+for _, m in ipairs(lastDerby.boundary) do
+  minx = math.min(minx, m.x); maxx = math.max(maxx, m.x)
+  miny = math.min(miny, m.y); maxy = math.max(maxy, m.y)
+  zs[#zs + 1] = m.z
+end
+check(maxx - minx == 100 and maxy - miny == 60,
+  'the extents come out as a 100 x 60 m rectangle')
+check(zs[1] == 5 and zs[2] == 5 and zs[3] == 5 and zs[4] == 5,
+  'every corner sits at the centre z -- the arena is a flat plane')
+
+-- The corners have to be a RING. A bowtie would still enclose an area to the
+-- eye and would fail point-in-polygon in the middle of it.
+check(pointInPolygon(10, 20, lastDerby.boundary), 'the centre is inside the arena')
+check(pointInPolygon(55, 20, lastDerby.boundary), 'and so is a point near the long edge')
+check(not pointInPolygon(70, 20, lastDerby.boundary), 'a point beyond the edge is outside')
+
+-- Rotation turns the same rectangle. A quarter turn swaps width and length,
+-- which is why the panel only offers 0-90 degrees.
+RM_onDerbySetShape(1, '{"rot":1.5707963267948966}')
+minx, maxx, miny, maxy = math.huge, -math.huge, math.huge, -math.huge
+for _, m in ipairs(lastDerby.boundary) do
+  minx = math.min(minx, m.x); maxx = math.max(maxx, m.x)
+  miny = math.min(miny, m.y); maxy = math.max(maxy, m.y)
+end
+check(math.abs((maxx - minx) - 60) < 1e-6 and math.abs((maxy - miny) - 100) < 1e-6,
+  'a quarter turn swaps the rectangle over')
+RM_onDerbySetShape(1, '{"rot":0}')
+
+-- Out-of-range values are clamped rather than refused: every one of these
+-- arrives off a slider an admin can also type into.
+RM_onDerbySetShape(1, '{"halfW":9000,"halfL":-4}')
+check(lastDerby.shape.halfW == 250 and lastDerby.shape.halfL == 5,
+  'extents are clamped to the allowed range')
+RM_onDerbySetShape(1, '{"halfW":50,"halfL":30}')
+
+-- Wall height is visual and belongs to BOTH editors, so it never switches modes
+-- and never touches the boundary.
+RM_onDerbySetShape(1, '{"wallHeight":14}')
+check(lastDerby.wallHeight == 14, 'wall height is server-owned and broadcast')
+check(#lastDerby.boundary == 4, 'and changes nothing about the boundary')
+
+-- A rectangle's corners are derived, so the marker tools have no answer for one
+-- and are refused. The UI hides them; this is the authoritative half.
+RM_onDerbyAddMarker(1, '{"x":500,"y":500,"z":0}')
+check(#lastDerby.boundary == 4, 'a marker cannot be added to a rectangle')
+RM_onDerbyMoveMarker(1, '{"index":1,"x":900,"y":900,"z":0}')
+check(lastDerby.boundary[1].x ~= 900, 'and a rectangle corner cannot be dragged')
+RM_onDerbyRemoveMarker(1, '{"index":1}')
+check(#lastDerby.boundary == 4, 'nor deleted')
+
+-- Switching back keeps the work: the four corners stay exactly where they are
+-- and simply become ordinary, editable markers again.
+RM_onDerbySetBoundaryMode(1, '{"mode":"polygon"}')
+check(lastDerby.boundaryMode == 'polygon' and #lastDerby.boundary == 4,
+  'leaving rectangle mode keeps the corners as markers')
+check(lastDerby.shape == nil, 'and drops the shape that derived them')
+RM_onDerbyMoveMarker(1, '{"index":1,"x":-90,"y":-90,"z":5}')
+check(lastDerby.boundary[1].x == -90, 'which are editable again')
+
+-- ...and switching TO rectangle mode with an arena already placed fits one
+-- around it rather than throwing it away.
+RM_onDerbySetBoundaryMode(1, '{"mode":"rect"}')
+check(lastDerby.boundaryMode == 'rect' and lastDerby.shape ~= nil,
+  'a placed arena can be adopted by the rectangle editor')
+check(lastDerby.shape.halfW > 50, 'the rectangle is fitted around what was there')
+
+-- A rectangle saves and loads as a rectangle, and comes back editable.
+RM_onDerbySetShape(1, '{"halfW":40,"halfL":25,"rot":0.5,"wallHeight":9}')
+RM_onDerbySaveLayout(1, '{"name":"Bowl","boundary":[{"x":0,"y":0,"z":5},'
+  .. '{"x":80,"y":0,"z":5},{"x":80,"y":50,"z":5},{"x":0,"y":50,"z":5}],'
+  .. '"boundaryMode":"rect","wallHeight":9,'
+  .. '"shape":{"cx":40,"cy":25,"cz":5,"halfW":40,"halfL":25,"rot":0.5}}')
+RM_onDerbyClearBoundary(1)
+check(lastDerby.boundaryMode == 'polygon' and #lastDerby.boundary == 0,
+  'cleared back to an empty drive-and-place arena')
+RM_onDerbyLoadLayout(1, '{"name":"Bowl"}')
+check(lastDerby.boundaryMode == 'rect', 'a saved rectangle loads as a rectangle')
+check(lastDerby.shape.halfW == 40 and lastDerby.shape.halfL == 25,
+  'with its extents intact')
+check(lastDerby.wallHeight == 9, 'and its wall height')
+check(#lastDerby.boundary == 4, 'and four corners re-derived from the shape')
+
+-- The compatibility case that matters: an arena saved before any of this
+-- existed has no boundaryMode, no shape and no wallHeight. It must load as
+-- exactly what it has always been -- a drive-and-place arena -- with no
+-- migration step and nothing lost.
+RM_onDerbyLoadLayout(1, '{"name":"Pit Arena"}')
+check(lastDerby.boundaryMode == 'polygon' and lastDerby.shape == nil,
+  'a pre-rectangle saved arena still loads as drive-and-place')
+check(#lastDerby.boundary == 3, 'with its markers untouched')
+RM_onDerbyMoveMarker(1, '{"index":1,"x":-5,"y":-5,"z":10}')
+check(lastDerby.boundary[1].x == -5, 'and still fully editable')
+
+-- Neither editor may be touched once a field is standing on the grid.
+RM_onDerbyFormUp(1)
+RM_onDerbySetBoundaryMode(1, '{"mode":"rect","cx":0,"cy":0,"cz":0}')
+check(lastDerby.boundaryMode == 'polygon',
+  'the arena editor cannot be switched under a formed-up field')
+RM_onDerbySetShape(1, '{"wallHeight":30}')
+check(lastDerby.wallHeight ~= 30, 'and nothing about the arena can be resized')
+RM_onDerbyEnd(1)
+RM_onDerbyEnd(1)
+-- Hand the arena store back the way this section found it: the sections below
+-- count the saved list and index into it.
+RM_onDerbyDeleteLayout(1, '{"name":"Bowl"}')
+check(#lastArenas.layouts == 1, 'the rectangle arena is cleaned up again')
 local ap = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
 if ap then os.remove(ap) end
 
