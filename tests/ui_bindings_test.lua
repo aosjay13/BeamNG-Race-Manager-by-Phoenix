@@ -200,6 +200,29 @@ if setTarget then
 end
 
 -- ===========================================================================
+-- Every editor target must have a case in editorWaypoints()
+-- ===========================================================================
+-- A missing case does not fail loudly. editorWaypoints() falls through to the
+-- main route, so the tab's own count still reads correctly off its real list
+-- while the list underneath shows the CHECKPOINTS -- which is how the pit tab
+-- came to show four stalls when one had been placed.
+local wpFn = js:match('editorWaypoints%s*=%s*function%s*%(%)(.-)end') or ''
+for target in accepted:gmatch('([%w_]+)%s*:%s*true') do
+  if target ~= 'main' then
+    expect(wpFn:find("'" .. target .. "'", 1, true) ~= nil,
+      'editorWaypoints() has no case for the "' .. target .. '" target, so that ' ..
+      'tab silently lists the main route instead of its own markers')
+  end
+end
+
+-- The adjust controls the starting grid has, on placed gates too.
+for _, fn in ipairs({ 'previewCheckpoint', 'moveCheckpoint' }) do
+  expect(html:find(fn .. '%(') ~= nil, 'the gate list offers ' .. fn)
+  expect(js:find('%$scope%.' .. fn .. '%s*=') ~= nil,
+    fn .. ' is bound on the controller scope')
+end
+
+-- ===========================================================================
 -- Running a saved race must not require the editor
 -- ===========================================================================
 -- The layout picker used to live inside the editor panel, which meant loading a

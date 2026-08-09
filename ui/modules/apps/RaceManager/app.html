@@ -391,6 +391,15 @@
             <span ng-class="{'rm-dim-set': wp.width != null}">W{{ cpDim(wp, 'width') }}</span>
             <span ng-class="{'rm-dim-set': wp.height != null}">H{{ cpDim(wp, 'height') }}</span>
           </span>
+          <!-- The same pair the starting grid has: stand the car on a placed
+               gate, or move the gate to where the car is. Without them a gate
+               that landed a metre wide meant deleting and re-driving the route.
+               ng-click stopPropagation so they do not also toggle the row's
+               width/height editor open and shut. -->
+          <button class="rm-btn rm-btn-mini" title="Put your car on this gate, facing the way through it"
+                  ng-click="$event.stopPropagation(); previewCheckpoint($index + 1)">Go</button>
+          <button class="rm-btn rm-btn-mini rm-btn-grid" title="Move this gate to where your car is standing now"
+                  ng-click="$event.stopPropagation(); moveCheckpoint($index + 1)">Move Here</button>
         </div>
         <!-- Per-checkpoint override editor (expands under the selected gate) -->
         <div class="rm-cp-edit" ng-if="selectedCp === $index + 1">

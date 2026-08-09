@@ -100,7 +100,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.5.5'
+local RM_BUILD = '0.5.6'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -4274,6 +4274,45 @@ function M.previewStartPosition(index)
   local sp = startPositions[index]
   if not sp then return end
   if not placeOnStartPosition(sp) then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Could not move the vehicle' })
+  end
+end
+
+-- Move a placed gate to where the car is standing, and stand the car on a
+-- placed gate. The same pair the starting grid has had all along -- an editor
+-- where a marker can be placed but never adjusted means deleting and re-driving
+-- the whole route to fix one gate that landed a metre wide.
+--
+-- Both work on whichever list the editor is pointed at, so they serve the main
+-- route, the joker route and the pit stalls without three copies of the code.
+-- The gate keeps its own width/height override: this moves it, nothing else.
+function M.moveCheckpoint(index)
+  index = math.floor(tonumber(index) or 0)
+  local list = activeEditorRoute()
+  local wp = list[index]
+  if not wp then
+    log('W', 'raceManager', 'moveCheckpoint: nothing at index ' .. tostring(index))
+    return
+  end
+  local place = vehiclePlacement()
+  if not place then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
+    return
+  end
+  wp.x, wp.y, wp.z = place.x, place.y, place.z
+  wp.hx, wp.hy = place.hx, place.hy
+  pushRouteState()
+  log('I', 'raceManager', string.format('%s %d moved to the current vehicle',
+    editorTarget, index))
+end
+
+-- Stand the car on a placed gate, facing the way through it, so the creator can
+-- see what a driver will see. Never freezes: this is an editor convenience.
+function M.previewCheckpoint(index)
+  index = math.floor(tonumber(index) or 0)
+  local wp = activeEditorRoute()[index]
+  if not wp then return end
+  if not placeOnStartPosition(wp) then
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Could not move the vehicle' })
   end
 end

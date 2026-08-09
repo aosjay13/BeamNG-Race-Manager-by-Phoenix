@@ -367,7 +367,7 @@ angular.module('beamng.apps')
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.5.5';
+      var APP_BUILD = '0.5.6';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -736,12 +736,27 @@ angular.module('beamng.apps')
         });
       });
 
-      // The list the editor panel shows: main lap, joker route or starting
-      // grid, whichever the editor is currently pointed at.
+      // The list the editor panel shows: main lap, joker route, pit stalls or
+      // starting grid, whichever the editor is currently pointed at.
+      //
+      // Every target needs a case here. A missing one does not fail loudly --
+      // it falls through to the main route, so the tab's own count reads
+      // correctly off its real list while the list underneath shows the
+      // checkpoints instead. That is exactly how the pit tab came to show four
+      // stalls when one had been placed.
       $scope.editorWaypoints = function () {
         if ($scope.editorTarget === 'joker') { return $scope.jokerRoute; }
+        if ($scope.editorTarget === 'pit')   { return $scope.pitRoute; }
         if ($scope.editorTarget === 'start') { return $scope.startPositions; }
         return $scope.routeWaypoints;
+      };
+
+      // Adjust a placed gate: stand the car on it, or move it to the car.
+      $scope.previewCheckpoint = function (i) {
+        bngApi.engineLua('raceManager.previewCheckpoint(' + i + ')');
+      };
+      $scope.moveCheckpoint = function (i) {
+        bngApi.engineLua('raceManager.moveCheckpoint(' + i + ')');
       };
 
       // Start positions are placements, not gates: the width/height override

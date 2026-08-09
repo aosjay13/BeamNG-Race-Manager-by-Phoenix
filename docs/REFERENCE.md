@@ -86,9 +86,13 @@ course you want to race:
    drawn in the world *is* the trigger, so you can verify it at a glance.
    Click any placed checkpoint in the list to **override its own
    Width / Height** (blank = inherit the default).
-4. **Undo** removes the last gate, **Clear** wipes the route,
+4. Every placed gate has **Go** (stand your car on it, facing the way through)
+   and **Move Here** (move the gate to where your car is standing) — the same
+   pair the starting grid has. A gate keeps its Width/Height override when it
+   moves. Both work on the joker route and pit stalls too.
+5. **Undo** removes the last gate, **Clear** wipes the route,
    **Hide/Show Gates** toggles the in-world drawing.
-5. **Save** / **Load** keep a personal scratch copy on your own machine
+6. **Save** / **Load** keep a personal scratch copy on your own machine
    (`settings/raceManager/route.json`) — handy while iterating on a design.
 
 #### Circuit or point to point
