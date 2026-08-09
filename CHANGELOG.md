@@ -6,7 +6,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 [← Back to the README](README.md)
 
-## Unreleased — checkpoint refactor
+## 0.6.0 — Checkpoint refactor
 
 ### Added
 
