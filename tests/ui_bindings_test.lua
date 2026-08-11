@@ -326,8 +326,8 @@ expect(js:find('data.dnfScoring', 1, true) ~= nil,
 -- as unassigned, which would offer their driver (and their points) to somebody
 -- else as free to take.
 -- ---------------------------------------------------------------------------
-expect(html:find('ng%-model="cupUi%.bindTo%[c%.pid%]"') ~= nil,
-  'the assignment dropdown binds cupUi.bindTo by player id')
+expect(html:find('cupUi.bindTo[c.pid]', 1, true) ~= nil,
+  'the assignment picker stores its choice in cupUi.bindTo by player id')
 wired('cupBindDriver',   'cupApplyBind',      'Assign a connection to a driver')
 wired('cupBindDriver',   'cupUnbind',         'Unassign a connection')
 wired('cupForgetDriver', 'cupForgetDriver',   'Delete a saved driver')
@@ -352,6 +352,34 @@ expect(html:find('e.boundPid', 1, true) == nil
     .. 'server is not rendered as unassigned')
 expect(html:match('ng%-if="e%.boundPid"') == nil,
   'no bare truthiness test on boundPid survives in the template')
+
+-- ---------------------------------------------------------------------------
+-- 4g. No native <select> anywhere in the app
+--
+-- BeamNG's UI is Chromium Embedded Framework, where a <select> popup is a
+-- separate OS window that never renders over the game surface: the box shows
+-- its value and clicking it does nothing whatsoever. There is no error and no
+-- console output -- and it works perfectly in a desktop browser, so neither a
+-- harness nor a code review catches it. Three of these reached a live server
+-- before anybody could open the panel in the game.
+--
+-- Every picker in this app is therefore a custom DOM menu (see
+-- .rm-layout-dropdown). This is the only cheap way to keep it that way.
+-- ---------------------------------------------------------------------------
+do
+  -- Strip comments first -- both kinds. The markup and the stylesheet both
+  -- explain WHY there are no selects, and those mentions are prose, not
+  -- elements. (The CSS block is a /* */ comment, which is how this check first
+  -- reported itself as failing against its own explanation.)
+  local stripped = html:gsub('<!%-%-.-%-%->', ''):gsub('/%*.-%*/', '')
+  local offender = stripped:match('<select')
+  expect(offender == nil,
+    'a native <select> element is present. Its popup is an OS window that CEF '
+      .. 'never draws over the game, so the control renders and then does '
+      .. 'nothing. Use the custom .rm-layout-dropdown menu instead.')
+  expect(stripped:find('<option', 1, true) == nil,
+    'a native <option> element is present, which means a <select> came back')
+end
 
 -- ---------------------------------------------------------------------------
 -- 4e. The driver payload carries every field the app reads off a driver row

@@ -98,6 +98,13 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 ### Changed
 
+- **The cup's dropdowns open.** The scoring presets and the driver picker were
+  native `<select>` elements. In BeamNG's UI — Chromium Embedded Framework — a
+  select popup is a separate OS window that never renders over the game, so the
+  box showed its value and clicking it did nothing at all, with no error
+  anywhere. They are now the same custom menu the track-layout picker has always
+  used, and `ui_bindings_test` fails if a native `<select>` reappears.
+
 - **The release package now spells the two folders `Client/` and `Server/`.**
   They map straight onto a BeamMP server's `Resources/Client` and
   `Resources/Server`, and Linux — where a good share of servers are hosted —

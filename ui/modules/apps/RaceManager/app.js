@@ -469,14 +469,72 @@ angular.module('beamng.apps')
         cupSeeded = true;
       }
 
+      // Cup dropdowns.
+      //
+      // Custom DOM menus rather than a native <select>, for the reason the
+      // track-layout picker already documents: BeamNG's UI is Chromium Embedded
+      // Framework, where a <select> popup is a separate OS window that never
+      // renders over the game surface. The box shows its value and clicking it
+      // does nothing at all -- which is exactly how these shipped, because a
+      // native select works perfectly in a desktop browser and so nothing
+      // caught it until the panel was opened in the game.
+      //
+      // One flag for all of them, keyed by name, so only one menu is ever open:
+      // 'race', 'derby', or 'bind:<pid>' for a connected driver's picker.
+      $scope.cupOpenMenu = null;
+      $scope.cupMenuOpen = function (key) { return $scope.cupOpenMenu === key; };
+      $scope.cupToggleMenu = function (key) {
+        $scope.cupOpenMenu = ($scope.cupOpenMenu === key) ? null : key;
+        if ($scope.cupOpenMenu) { revealDropdown('.rm-cup .rm-layout-menu'); }
+      };
+      $scope.cupPickPreset = function (which, preset) {
+        if (which === 'derby') { $scope.cupUi.derbyPreset = preset.key; }
+        else { $scope.cupUi.preset = preset.key; }
+        $scope.cupOpenMenu = null;
+      };
+      // Picking a driver only fills the box; Assign commits it. Assigning
+      // merges a placeholder's points into the driver and retires it, which is
+      // not something a stray click should be able to do.
+      $scope.cupPickEntry = function (conn, entry) {
+        $scope.cupUi.bindTo[conn.pid] = entry.id;
+        $scope.cupOpenMenu = null;
+      };
+      $scope.cupBindLabel = function (conn) {
+        var id = $scope.cupUi.bindTo[conn.pid];
+        if (!id) { return 'pick a driver…'; }
+        for (var i = 0; i < $scope.cup.roster.length; i++) {
+          if ($scope.cup.roster[i].id === id) {
+            var e = $scope.cup.roster[i];
+            return e.provisional ? (e.name + ' (placeholder)') : e.name;
+          }
+        }
+        return 'pick a driver…';
+      };
+
       function cupLabelFor(key) {
         for (var i = 0; i < $scope.cup.presets.length; i++) {
           if ($scope.cup.presets[i].key === key) { return $scope.cup.presets[i].label; }
         }
         return 'Custom';
       }
+      // Two different questions, and they need two different answers.
+      //
+      //   *Label()  -- what the server is actually scoring with. The summary
+      //               line reports this, and it must not move because somebody
+      //               opened a menu.
+      //   *Pick()   -- what is currently chosen in the dropdown, which is what
+      //               its own closed box has to show. A picker that still reads
+      //               "30P Aggressive" after you picked "35P Folk Race" looks
+      //               like it ignored the click; the native <select> this
+      //               replaced showed the pick immediately, and so does this.
       $scope.cupPresetLabel = function () { return cupLabelFor($scope.cup.preset); };
       $scope.cupDerbyPresetLabel = function () { return cupLabelFor($scope.cup.derbyPreset); };
+      $scope.cupPresetPick = function () {
+        return cupLabelFor($scope.cupUi.preset || $scope.cup.preset);
+      };
+      $scope.cupDerbyPresetPick = function () {
+        return cupLabelFor($scope.cupUi.derbyPreset || $scope.cup.derbyPreset);
+      };
       // How deep each table actually pays, which is the one number an admin
       // needs to sanity-check a preset against their field size.
       $scope.cupScoringDepth = function () { return $scope.cup.racePoints.length; };

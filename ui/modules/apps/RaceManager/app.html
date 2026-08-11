@@ -417,10 +417,27 @@
         <label title="The random name BeamMP gave this connection">{{ c.guest }}</label>
         <span class="rm-cup-racingas" ng-if="cupConnLabel(c)">racing as <b>{{ cupConnLabel(c) }}</b></span>
         <span class="rm-cup-racingas rm-cup-off" ng-if="!cupConnLabel(c)">unassigned</span>
-        <select ng-model="cupUi.bindTo[c.pid]"
-                ng-options="e.id as (e.name + (e.provisional ? ' (placeholder)' : '')) for e in cupFreeEntries(c)">
-          <option value="">— pick a driver —</option>
-        </select>
+        <!-- Custom menu, not a native <select>: in BeamNG's CEF UI a select
+             popup is a separate OS window that never draws over the game. -->
+        <div class="rm-layout-dropdown rm-cup-picker"
+             ng-class="{'rm-layout-dropdown-open': cupMenuOpen('bind:' + c.pid)}">
+          <button type="button" class="rm-layout-trigger"
+                  ng-class="{'rm-layout-trigger-empty': !cupUi.bindTo[c.pid]}"
+                  ng-click="cupToggleMenu('bind:' + c.pid)">
+            <span class="rm-layout-trigger-label">{{ cupBindLabel(c) }}</span>
+            <span class="rm-layout-caret">▾</span>
+          </button>
+          <div class="rm-layout-menu" ng-if="cupMenuOpen('bind:' + c.pid)">
+            <div class="rm-layout-option" ng-repeat="e in cupFreeEntries(c) track by e.id"
+                 ng-class="{'rm-layout-option-active': e.id === cupUi.bindTo[c.pid]}"
+                 ng-click="cupPickEntry(c, e)">
+              {{ e.name }}<span ng-if="e.provisional"> (placeholder)</span>
+            </div>
+            <div class="rm-layout-option rm-cup-off" ng-if="!cupFreeEntries(c).length">
+              No saved drivers are free
+            </div>
+          </div>
+        </div>
         <button class="rm-btn rm-btn-mini" ng-click="cupApplyBind(c)"
                 ng-disabled="!cupUi.bindTo[c.pid]">Assign</button>
         <button class="rm-btn rm-btn-mini rm-btn-end" ng-if="c.entryId"
@@ -471,8 +488,18 @@
       <div class="rm-cup-sep">Race</div>
       <div class="rm-cup-row">
         <label>Preset</label>
-        <select ng-model="cupUi.preset"
-                ng-options="p.key as p.label for p in cup.presets"></select>
+        <div class="rm-layout-dropdown rm-cup-picker"
+             ng-class="{'rm-layout-dropdown-open': cupMenuOpen('race')}">
+          <button type="button" class="rm-layout-trigger" ng-click="cupToggleMenu('race')">
+            <span class="rm-layout-trigger-label">{{ cupPresetPick() }}</span>
+            <span class="rm-layout-caret">▾</span>
+          </button>
+          <div class="rm-layout-menu" ng-if="cupMenuOpen('race')">
+            <div class="rm-layout-option" ng-repeat="p in cup.presets track by p.key"
+                 ng-class="{'rm-layout-option-active': p.key === cupUi.preset}"
+                 ng-click="cupPickPreset('race', p)">{{ p.label }}</div>
+          </div>
+        </div>
         <button class="rm-btn rm-btn-mini" ng-click="cupApplyPreset()"
                 ng-disabled="!cupUi.preset">Load</button>
         <span class="rm-cup-hint">Loading a preset fills the table below — edit it afterwards if you like.</span>
@@ -538,8 +565,18 @@
       <div class="rm-cup-sep">Derby</div>
       <div class="rm-cup-row">
         <label>Preset</label>
-        <select ng-model="cupUi.derbyPreset"
-                ng-options="p.key as p.label for p in cup.presets"></select>
+        <div class="rm-layout-dropdown rm-cup-picker"
+             ng-class="{'rm-layout-dropdown-open': cupMenuOpen('derby')}">
+          <button type="button" class="rm-layout-trigger" ng-click="cupToggleMenu('derby')">
+            <span class="rm-layout-trigger-label">{{ cupDerbyPresetPick() }}</span>
+            <span class="rm-layout-caret">▾</span>
+          </button>
+          <div class="rm-layout-menu" ng-if="cupMenuOpen('derby')">
+            <div class="rm-layout-option" ng-repeat="p in cup.presets track by p.key"
+                 ng-class="{'rm-layout-option-active': p.key === cupUi.derbyPreset}"
+                 ng-click="cupPickPreset('derby', p)">{{ p.label }}</div>
+          </div>
+        </div>
         <button class="rm-btn rm-btn-mini" ng-click="cupApplyDerbyPreset()"
                 ng-disabled="!cupUi.derbyPreset">Load</button>
         <span class="rm-cup-hint">Derby position is survival order — the winner, then whoever lasted longest.</span>
@@ -2436,6 +2473,10 @@
   }
   .rm-cup-ledby { color: #5f6368; }
   .rm-cup-racingas { font-size: 10px; color: #9aa0a6; min-width: 90px; }
+  /* The cup pickers reuse the track-layout dropdown, which exists because a
+     native <select> popup never renders in BeamNG's CEF UI. Narrower here:
+     these sit inline in a settings row rather than filling a control bar. */
+  .rm-cup-picker { min-width: 150px; max-width: 210px; }
   .rm-cup-sttotal { width: 42px; text-align: right; color: #e8eaed; font-weight: 700; }
 
   /* Garage list */
