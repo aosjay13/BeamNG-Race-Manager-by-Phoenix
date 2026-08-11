@@ -383,18 +383,39 @@ The name is **display only**. Timing, checkpoints, scoring and the starting grid
 all key on the BeamMP player id exactly as before — an alias is never used as a
 lookup, so renaming somebody mid-session moves nothing but the text on screen.
 
-**Names last as long as the connection does.** They survive Start Quali,
-Generate Grid, a whole race, **Reset**, and a second race after that — a name
-is bound to the BeamMP player id in a registry that outlives the per-session
-driver records, and never to a vehicle (a vehicle id changes on every
-respawn, so a name attached to one would not survive a single reset).
+**Names are saved on the server and survive a restart.** They live through Start
+Quali, Generate Grid, a whole race, **Reset**, a second race after that, and the
+server going down and coming back up. Every name an admin sets is written to
+`Resources/Server/RaceManager/roster.json` as a **roster entry** — the driver,
+the name, and the guest name they were using at the time.
 
-They do **not** survive a reconnect, and that is a consequence of the accounts
-restriction rather than a choice: every player is a guest, BeamMP recycles
-session ids between players, and a guest name is regenerated on every join, so
-there is nothing stable to attach a lasting name to. If a driver reconnects,
-set their name again. The account id BeamMP exposes for a *logged-in* player
-would be the right anchor, and is where this goes when the restriction lifts.
+The roster is also what cup points hang off, so an entry is a driver's identity
+for a whole season, not just an evening.
+
+**After a reconnect there are two ways back:**
+
+- **Automatically**, if BeamMP hands the driver the same guest name they had
+  before. The server recognises them and puts the name straight back.
+- **By setting the name again**, which is the usual case, because a guest name
+  is regenerated on every join. Type the same name into the same box and the
+  driver is reattached to their *existing* roster entry — a name already in the
+  roster is matched rather than duplicated, so anything keyed on that entry
+  (their cup points) comes back with it. Matching ignores capitalisation.
+
+This is why it has to be an admin action rather than something automatic: every
+player is a guest, BeamMP recycles session ids between players, and a guest name
+means nothing across sessions — so the only trustworthy anchor is a person
+deciding. The account id BeamMP exposes for a *logged-in* player would let the
+server do it unaided, and is where this goes when the accounts restriction
+lifts.
+
+- **A recycled session id still never inherits a name.** The roster is not a way
+  around that: it only recognises a returning driver when the guest name matches
+  as well, which is the same evidence used before the roster existed.
+- **Clearing a name does not delete the roster entry.** It stops the name being
+  shown and unbinds the driver; the entry — and any points on it — waits to be
+  bound again.
+- **Ending a cup does not clear the roster.** Names are not cup property.
 
 - **Fallback** — a driver with no name set simply shows their guest name. It can
   never render blank.
@@ -717,6 +738,201 @@ impossible to lock the whole server out by accident.
 
   The driver bar also shows live joker/reset status and keeps a 🔒 button so
   the login prompt is always reachable.
+
+## Cup points
+
+A **cup** is a championship run across several events. It can be **all races,
+all derbies, or a mixture of both** — points accumulate per driver and nothing
+but ending the cup clears them.
+
+It is **off by default and entirely optional** — with no cup running, races
+behave exactly as they do without the feature. Everything below lives on the
+**Cup** tab under Race mode.
+
+### Running a cup
+
+1. Set a **display name** for every driver first (Admin tab). Points attach to
+   the name, which is what carries them across reconnects — see
+   [Display names](#display-names). A driver with no name still scores; they are
+   entered under their guest name and can be renamed later without losing
+   anything.
+2. Press **Start New Cup**, optionally naming it.
+3. Run races and derbies as normal. Each finished event banks a **round**.
+4. Watch the standings on the same tab.
+5. **End Cup** deletes every point in it. It asks twice, because nothing else
+   in the app throws away a season.
+
+**Pause without losing anything** with the Scoring toggle: a race finished while
+it is off scores nothing, and the standings are untouched.
+
+### Scoring
+
+Points come off the **finishing position**. A driver who did not finish — DNF or
+disqualified — scores nothing rather than being paid for last place.
+
+Five presets ship. Loading one **fills** the table so you can then edit it; a
+preset is a starting point, not a mode.
+
+| Preset | P1 | P2 | P3 | P4 | P5 | … | Pays down to |
+|---|---|---|---|---|---|---|---|
+| 30P Aggressive | 30 | 27 | 25 | 23 | 20 | … | P24 |
+| 25P Aggressive | 25 | 18 | 15 | 12 | 10 | … | P10 |
+| 25P Moderate | 25 | 20 | 16 | 11 | 10 | … | P14 |
+| 24P Linear | 24 | 23 | 22 | 21 | 20 | … | P24 |
+| 35P Folk Race | 35 | 30 | 25 | 20 | 18 | … | P21 |
+
+A position past the last non-zero entry scores **nothing**, which is what makes
+a short table legal: 25P Aggressive simply pays no-one from P11 back.
+
+### What a DNF is worth
+
+**A retirement is not always a nil score.** A driver taken out of second place
+has not had the same afternoon as one who never turned up, and which of those a
+series pays for is a league decision — so it is a setting.
+
+The place a driver was **running in when they stopped** is recorded whatever
+ended their race — a disconnection, the admin closing the session, anything
+added later. It appears in the results file beside the reason (`DNF -
+Disconnected (was P2)`), and three rules decide what it is worth:
+
+| Setting | A DNF scores |
+|---|---|
+| **Nothing** (default) | 0, as it always did |
+| **Classified place** | its place in the final order, below everyone who finished |
+| **Place when they stopped** | the position it was actually running in |
+
+**Place when they stopped** can pay two drivers for the same position — a
+retirement from second and a finish in second both score second. That is exactly
+what the option is for; pick one of the other two if it isn't what you want.
+
+A DNF is **never counted as a win**, however it is scored, and a
+**disqualification always scores nothing** — that is what the penalty is.
+
+### Qualifying points
+
+Off by default. Give the quali table some values and qualifying starts scoring,
+ordered by **best lap** — not by grid slot, which at the end of a qualifying
+session is only where each driver started it.
+
+Qualifying points are **held, not banked immediately**: they belong to the race
+that follows and are added to that round when it finishes. The panel shows how
+many results are waiting. Run a qualifying session with no race after it and
+they are simply superseded by the next one.
+
+### Derby points
+
+Derbies score on a **table of their own**, because a cup may be all races, all
+derbies or a mixture, and lasting eight minutes in a banger is not the same
+achievement as winning a ten-lap race. It uses the same five presets and starts
+out matching the race table, so an all-derby cup scores sensibly the moment you
+start it.
+
+Position is **survival order**: the last driver running, then whoever lasted
+longest, and so on. The one place derby scoring genuinely differs from a race:
+
+> **Everybody scores.** In a race, a driver who did not finish scores nothing —
+> not finishing is a failure to produce a result. In a derby, being eliminated
+> *is* the result, and the position it produces is worth points.
+
+**Turn derby points off** and derbies are simply not part of the cup: no round
+is banked and no derby bonus is paid. Races go on scoring normally.
+
+**Winning is not the same as finishing first.** A derby an admin ends early is
+topped by whoever was still running, but nobody was the last one standing — so
+that driver takes P1 points without it counting as a win, and without the
+last-man-standing bonus.
+
+### Bonus points
+
+Bonuses belong to a **discipline**: race bonuses are only ever paid on a race
+and derby bonuses only on a derby, so a derby can never collect a fastest-lap
+bonus. Each is worth whatever you set it to and **worth nothing at zero**.
+
+**Races:**
+
+- **Fastest Lap** — the quickest lap of the race.
+- **Halfway Led** — first to complete the half-distance lap. A one-lap race has
+  no half way and awards none.
+- **Hard Charger** — the classified finisher who gained the most places from
+  their grid slot.
+
+These are the same three the results file already reports; the cup consumes that
+answer rather than working it out a second time.
+
+**Fastest lap rule** — by default the fastest lap bonus is withheld from a driver
+who did not finish. Switch it to *Any driver* if you would rather not.
+
+**Derbies:**
+
+- **Last Man Standing** — awarded only when somebody actually survived. A derby
+  ended early by an admin has no winner and pays none.
+
+Bonuses are defined as data on the server and the panel builds itself from that
+list, so more can be added later without redesigning anything.
+
+### What points survive
+
+Everything except ending the cup:
+
+| | Points kept? |
+|---|---|
+| Start Qualifying | ✅ |
+| Generate Grid | ✅ |
+| A countdown / phase change | ✅ |
+| **Reset** (session reset) | ✅ |
+| Server restart | ✅ |
+| **End Cup** | ❌ — this is the only thing that clears them |
+
+Cup state lives in `Resources/Server/RaceManager/cup.json`, written on every
+change. It is deliberately **not** in the `results/` folder, because
+[Clear Results Cache](#step-7--results) deletes everything there.
+
+### Standings
+
+**Race and derby are kept separate, and summarised together.** The default
+**Combined** table shows events scored, wins, race points, derby points, manual
+adjustments and the grand total — so a total can always be accounted for.
+
+Once a cup has held **both** kinds of event, two more tabs appear:
+
+- **Races** — races scored, race wins, position points, qualifying points and
+  race bonuses, ranked on the race total alone.
+- **Derbies** — derbies scored, derbies won outright, survival points and derby
+  bonuses, ranked on the derby total alone.
+
+A mixed cup therefore contains a race championship and a derby championship as
+well as an overall one, and you can read any of the three. A cup that only ever
+held one kind shows just the combined table, without an empty column for the
+discipline it never ran.
+
+Ties break on wins. Manual adjustments sit outside both disciplines — a penalty
+applies to a driver's standing in the cup, not to one half of it.
+
+Drivers who are not admins see a read-only copy between sessions. It is hidden
+during a live session, where the leaderboard is what matters.
+
+### Adjusting points by hand
+
+Drivers disconnect, races get administered badly, penalties are agreed after the
+fact. Press **±** on any standings row to open that driver's adjustment panel.
+
+- Type a number and a reason, then **Apply**. A negative number takes points
+  away.
+- Or use the **quick buttons** (−1, −5, −10, +1, +5, +10) with the reason still
+  in the box.
+- Every adjustment is kept as its own **ledger entry** with its reason, who made
+  it and when. The standings show earned points and adjustments as separate
+  columns, so a total can always be accounted for.
+- **✕** removes an adjustment outright rather than posting an opposite one: a
+  mistake in the ledger is not an event that happened.
+
+Adjustments are keyed to the driver's **cup entry**, not to their connection, so
+they survive a reconnect and a server restart like everything else.
+
+> **To fix a race that was scored wrongly**, drop that round and run it again
+> rather than posting a compensating adjustment — the breakdown should describe
+> what actually happened. The cup's round count is deliberately left alone;
+> renumbering later rounds to close the gap would hide the correction.
 
 ## Race and Derby are separate
 

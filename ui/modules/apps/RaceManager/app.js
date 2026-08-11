@@ -224,7 +224,11 @@ angular.module('beamng.apps')
       // within it.
       var MODES = { race: true, derby: true, admin: true };
       var MODE_TABS = {
-        race:  { race: true, quali: true, garage: true, editor: true },
+        // Cup sits under Race rather than beside it as a fourth mode: a cup is
+        // a property of a race night, not a parallel game mode the way a derby
+        // is. Nothing in it applies to a derby, and it wraps the races that the
+        // other tabs here configure.
+        race:  { race: true, quali: true, cup: true, garage: true, editor: true },
         derby: { derby: true, editor: true },
         admin: { admin: true }
       };
@@ -267,6 +271,12 @@ angular.module('beamng.apps')
         if ($scope.mode === 'derby') {
           bngApi.engineLua('raceManager.derbyRequestState()');
         }
+        // The cup is pushed only when it changes, so a panel opened long after
+        // the last change would otherwise render an empty table until the next
+        // race finished. Same reason the derby pulls its own state here.
+        if ($scope.mode === 'race' && $scope.adminTab === 'cup') {
+          bngApi.engineLua('raceManager.cupRequestState()');
+        }
       }
       $scope.selectMode = function (mode) {
         $scope.mode = modeOf(mode);
@@ -303,6 +313,331 @@ angular.module('beamng.apps')
       // surface — the box shows a value but clicking it does nothing. We open
       // and close this menu ourselves so it lives inside the app's own DOM.
       $scope.layoutDropdownOpen = false;
+
+      // ----------------------------------------------------------------
+      // CUP / SERIES POINTS — mirrored from RM_CupUpdate, its own channel.
+      //
+      // Everything here is read-only state from the server. The panel never
+      // computes a total or decides a position: it renders the standings it is
+      // sent, and sends the admin's edits back. That is the same split the
+      // server side keeps, and it is what stops the app and the plugin from
+      // ever disagreeing about who is leading.
+      // ----------------------------------------------------------------
+      $scope.cup = {
+        enabled: false,
+        name: '',
+        round: 0,              // rounds scored so far; the next race is round + 1
+        preset: '',            // key of the active preset, or 'custom'
+        racePoints: [],        // position -> points; past the end scores nothing
+        // Derbies score on a table of their own: a cup may be all races, all
+        // derbies or a mixture, and lasting eight minutes in a banger is not
+        // the same achievement as winning a ten-lap race.
+        derbyPreset: '',
+        derbyPoints: [],       // empty = derbies do not score
+        qualiPoints: [],       // empty = qualifying does not score
+        // The preset and bonus lists come FROM the server rather than being
+        // duplicated here, so adding a bonus or a preset later needs no change
+        // in this file at all.
+        presets: [],           // [{ key, label }]
+        bonuses: [],           // [{ key, label, value }]
+        fastestLapRequiresFinish: true,
+        // What a DNF is worth: 'none' | 'classified' | 'held'.
+        dnfScoring: 'none',
+        pendingQuali: 0,       // drivers holding quali points for the next race
+        standings: []          // [{ pos, name, rounds, racePts, ..., total }]
+      };
+      // Dot rule: every one of these lives inside the ng-if cup panel, whose
+      // child scope would shadow a bare primitive.
+      //
+      // `points` and `quali` are edit buffers, not mirrors. They are only
+      // re-seeded from the server when the admin is not mid-edit (see
+      // cupSeedEditors), because a broadcast landing between two keystrokes
+      // must not wipe a table being typed.
+      $scope.cupUi = {
+        name: '',
+        preset: '',
+        derbyPreset: '',
+        points: [],
+        derby: [],
+        quali: [],
+        bonus: {},
+        confirmReset: false,
+        showScoring: false,
+        // Which driver's adjustment panel is open, and what is being typed into
+        // it. One at a time: an inline editor per standings row would put a
+        // text box on every line of the table.
+        adjustFor: null,       // entryId, or null
+        adjustDelta: '',
+        adjustReason: '',
+        // Which standings table is on screen. A mixed cup contains a race
+        // championship and a derby championship as well as an overall one, and
+        // three narrow tables read far better in a HUD-sized window than one
+        // very wide one.
+        view: 'combined'       // combined | race | derby
+      };
+      // How many positions the editor offers. Long enough for any grid this mod
+      // can hold and short enough to stay one screen; a position past the end of
+      // the table scores nothing, which is what makes a shorter table legal.
+      var CUP_EDIT_POSITIONS = 24;
+      $scope.cupPositions = [];
+      for (var cupPos = 1; cupPos <= CUP_EDIT_POSITIONS; cupPos++) {
+        $scope.cupPositions.push(cupPos);
+      }
+
+      // True while a table the admin has typed differs from the server's, which
+      // is what the Apply button keys off — and what stops a rebroadcast from
+      // overwriting an edit in progress.
+      function cupTableDiffers(buffer, authoritative) {
+        for (var i = 0; i < CUP_EDIT_POSITIONS; i++) {
+          var typed = Number(buffer[i] || 0);
+          var live  = Number(authoritative[i] || 0);
+          if (typed !== live) { return true; }
+        }
+        return false;
+      }
+      // "Differs from the server", which is what the Apply buttons key off. An
+      // unseeded buffer is not an edit, so these all read clean until the first
+      // broadcast has filled the fields — otherwise Apply would be live over
+      // blank inputs.
+      $scope.cupPointsDirty = function () {
+        return cupSeeded && cupTableDiffers($scope.cupUi.points, $scope.cup.racePoints);
+      };
+      $scope.cupDerbyDirty = function () {
+        return cupSeeded && cupTableDiffers($scope.cupUi.derby, $scope.cup.derbyPoints);
+      };
+      $scope.cupQualiDirty = function () {
+        return cupSeeded && cupTableDiffers($scope.cupUi.quali, $scope.cup.qualiPoints);
+      };
+      $scope.cupBonusDirty = function () {
+        if (!cupSeeded) { return false; }
+        for (var i = 0; i < $scope.cup.bonuses.length; i++) {
+          var b = $scope.cup.bonuses[i];
+          if (Number($scope.cupUi.bonus[b.key] || 0) !== Number(b.value || 0)) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      // Have the edit buffers ever been filled from the server?
+      //
+      // This flag is load-bearing, and its absence was a genuine bug: the
+      // "is the admin mid-edit?" test below compares the buffer against the
+      // server's table, and an EMPTY buffer differs from every non-empty table
+      // — so it read as an edit in progress, seeding was skipped forever, and
+      // the fields stayed blank. Pressing Apply then sent that blank table and
+      // wiped the scoring system. The first broadcast always seeds; only after
+      // that does "differs from the server" mean somebody typed something.
+      var cupSeeded = false;
+
+      // Re-seed the editors from the server, skipping any the admin is part way
+      // through changing. Called on every cup broadcast.
+      function cupSeedEditors() {
+        var i;
+        if (!cupSeeded || !$scope.cupPointsDirty()) {
+          for (i = 0; i < CUP_EDIT_POSITIONS; i++) {
+            $scope.cupUi.points[i] = Number($scope.cup.racePoints[i] || 0);
+          }
+        }
+        if (!cupSeeded || !$scope.cupDerbyDirty()) {
+          for (i = 0; i < CUP_EDIT_POSITIONS; i++) {
+            $scope.cupUi.derby[i] = Number($scope.cup.derbyPoints[i] || 0);
+          }
+        }
+        if (!cupSeeded || !$scope.cupQualiDirty()) {
+          for (i = 0; i < CUP_EDIT_POSITIONS; i++) {
+            $scope.cupUi.quali[i] = Number($scope.cup.qualiPoints[i] || 0);
+          }
+        }
+        if (!cupSeeded || !$scope.cupBonusDirty()) {
+          for (i = 0; i < $scope.cup.bonuses.length; i++) {
+            $scope.cupUi.bonus[$scope.cup.bonuses[i].key] =
+              Number($scope.cup.bonuses[i].value || 0);
+          }
+        }
+        $scope.cupUi.preset = $scope.cup.preset;
+        $scope.cupUi.derbyPreset = $scope.cup.derbyPreset;
+        cupSeeded = true;
+      }
+
+      function cupLabelFor(key) {
+        for (var i = 0; i < $scope.cup.presets.length; i++) {
+          if ($scope.cup.presets[i].key === key) { return $scope.cup.presets[i].label; }
+        }
+        return 'Custom';
+      }
+      $scope.cupPresetLabel = function () { return cupLabelFor($scope.cup.preset); };
+      $scope.cupDerbyPresetLabel = function () { return cupLabelFor($scope.cup.derbyPreset); };
+      // How deep each table actually pays, which is the one number an admin
+      // needs to sanity-check a preset against their field size.
+      $scope.cupScoringDepth = function () { return $scope.cup.racePoints.length; };
+      $scope.cupDerbyDepth = function () { return $scope.cup.derbyPoints.length; };
+      $scope.cupQualiEnabled = function () { return $scope.cup.qualiPoints.length > 0; };
+      $scope.cupDerbyEnabled = function () { return $scope.cup.derbyPoints.length > 0; };
+      $scope.cupNextRound = function () { return ($scope.cup.round || 0) + 1; };
+
+      // Bonus rows for one discipline, so the panel can file them under the
+      // table they belong to. The server says which is which; nothing here
+      // knows what an individual bonus means.
+      $scope.cupBonusesFor = function (kind) {
+        var out = [];
+        for (var i = 0; i < $scope.cup.bonuses.length; i++) {
+          if ($scope.cup.bonuses[i].kind === kind) { out.push($scope.cup.bonuses[i]); }
+        }
+        return out;
+      };
+
+      // Which standings table is showing, and how it is ordered. Every number
+      // in it is the server's; only the choice of column and the sort key are
+      // decided here, and the server sends a ready-made position for each of
+      // the three orderings so even the ranking rule lives in one place.
+      $scope.cupSetView = function (v) { $scope.cupUi.view = v; };
+      $scope.cupIsView = function (v) { return $scope.cupUi.view === v; };
+      $scope.cupSortKey = function () {
+        if ($scope.cupUi.view === 'race')  { return 'racePos'; }
+        if ($scope.cupUi.view === 'derby') { return 'derbyPos'; }
+        return 'pos';
+      };
+      // Has this cup actually seen both kinds of event? A cup of nothing but
+      // races has no reason to offer a derby table, and vice versa.
+      $scope.cupHasRaces = function () {
+        for (var i = 0; i < $scope.cup.standings.length; i++) {
+          if ($scope.cup.standings[i].raceRounds > 0) { return true; }
+        }
+        return false;
+      };
+      $scope.cupHasDerbies = function () {
+        for (var i = 0; i < $scope.cup.standings.length; i++) {
+          if ($scope.cup.standings[i].derbyRounds > 0) { return true; }
+        }
+        return false;
+      };
+      $scope.cupIsMixed = function () {
+        return $scope.cupHasRaces() && $scope.cupHasDerbies();
+      };
+
+      $scope.cupStart = function () {
+        bngApi.engineLua('raceManager.cupStart("'
+          + String($scope.cupUi.name || '').replace(/"/g, '') + '")');
+        $scope.cupUi.confirmReset = false;
+      };
+      $scope.cupSetEnabled = function (on) {
+        bngApi.engineLua('raceManager.cupSetEnabled(' + (!!on) + ')');
+      };
+      $scope.cupToggleEnabled = function () { $scope.cupSetEnabled(!$scope.cup.enabled); };
+      // Two presses, because this is the only control in the app that destroys
+      // a season's worth of points.
+      $scope.cupAskReset = function () { $scope.cupUi.confirmReset = true; };
+      $scope.cupCancelReset = function () { $scope.cupUi.confirmReset = false; };
+      $scope.cupReset = function () {
+        bngApi.engineLua('raceManager.cupReset()');
+        $scope.cupUi.confirmReset = false;
+      };
+      $scope.cupApplyPreset = function () {
+        if (!$scope.cupUi.preset) { return; }
+        bngApi.engineLua('raceManager.cupSetPreset("' + $scope.cupUi.preset + '", "race")');
+      };
+      $scope.cupApplyDerbyPreset = function () {
+        if (!$scope.cupUi.derbyPreset) { return; }
+        bngApi.engineLua('raceManager.cupSetPreset("' + $scope.cupUi.derbyPreset + '", "derby")');
+      };
+      $scope.cupToggleScoring = function () {
+        $scope.cupUi.showScoring = !$scope.cupUi.showScoring;
+      };
+
+      // A points table crosses to Lua as a comma-separated string rather than a
+      // structure. Every other command in this app passes numbers and strings,
+      // and a table would mean serialising one into a Lua literal by hand --
+      // more ways to be wrong than a list of integers is worth. The client
+      // bridge parses it back into an array.
+      //
+      // Trailing zeroes are dropped on the way out: a position past the end of
+      // the table scores nothing anyway, so "25,18,15" and the same followed by
+      // twenty-one zeroes are the same scoring system, and the short form is
+      // what the panel gets back.
+      function cupCsv(buffer) {
+        var out = [];
+        for (var i = 0; i < CUP_EDIT_POSITIONS; i++) {
+          out.push(Math.max(0, Math.floor(Number(buffer[i]) || 0)));
+        }
+        while (out.length > 0 && out[out.length - 1] === 0) { out.pop(); }
+        return out.join(',');
+      }
+      $scope.cupApplyPoints = function () {
+        bngApi.engineLua('raceManager.cupSetRacePoints("' + cupCsv($scope.cupUi.points) + '")');
+      };
+      $scope.cupApplyDerby = function () {
+        bngApi.engineLua('raceManager.cupSetDerbyPoints("' + cupCsv($scope.cupUi.derby) + '")');
+      };
+      $scope.cupDisableDerby = function () {
+        bngApi.engineLua('raceManager.cupSetDerbyPoints("")');
+      };
+      $scope.cupApplyQuali = function () {
+        bngApi.engineLua('raceManager.cupSetQualiPoints("' + cupCsv($scope.cupUi.quali) + '")');
+      };
+      // One Apply per bonus row. The rows are generated from the server's
+      // registry, so a bonus added later gets its control for free -- and a
+      // single number field per row is better edited on its own than behind one
+      // Apply covering all of them.
+      $scope.cupApplyBonus = function (row) {
+        if (!row) { return; }
+        var value = Math.max(0, Math.floor(Number($scope.cupUi.bonus[row.key]) || 0));
+        bngApi.engineLua('raceManager.cupSetBonus("' + row.key + '", ' + value + ')');
+      };
+      $scope.cupBonusRowDirty = function (row) {
+        if (!row || !cupSeeded) { return false; }
+        return Number($scope.cupUi.bonus[row.key] || 0) !== Number(row.value || 0);
+      };
+      // --- Manual adjustments ---------------------------------------------
+      // Correcting a cup by hand. The ledger lives on the server; this only
+      // opens an editor for one driver at a time and posts what was typed.
+      $scope.cupOpenAdjust = function (row) {
+        $scope.cupUi.adjustFor = ($scope.cupUi.adjustFor === row.entryId) ? null : row.entryId;
+        $scope.cupUi.adjustDelta = '';
+        $scope.cupUi.adjustReason = '';
+      };
+      $scope.cupAdjustOpen = function (row) {
+        return $scope.cupUi.adjustFor === row.entryId;
+      };
+      $scope.cupAdjustValid = function () {
+        var d = Number($scope.cupUi.adjustDelta);
+        return !!d && isFinite(d);
+      };
+      $scope.cupApplyAdjust = function (row) {
+        if (!$scope.cupAdjustValid()) { return; }
+        var delta = Math.round(Number($scope.cupUi.adjustDelta));
+        var reason = String($scope.cupUi.adjustReason || '').replace(/["\\]/g, '');
+        bngApi.engineLua('raceManager.cupAdjust(' + row.entryId + ', ' + delta
+          + ', "' + reason + '")');
+        $scope.cupUi.adjustDelta = '';
+        $scope.cupUi.adjustReason = '';
+      };
+      // Convenience for the common case: a flat penalty or credit with the
+      // reason still typed in the box.
+      $scope.cupQuickAdjust = function (row, delta) {
+        var reason = String($scope.cupUi.adjustReason || '').replace(/["\\]/g, '');
+        bngApi.engineLua('raceManager.cupAdjust(' + row.entryId + ', ' + delta
+          + ', "' + reason + '")');
+      };
+      $scope.cupRemoveAdjust = function (row, index) {
+        // The ledger is 1-based on the server (a Lua array); ng-repeat is 0-based.
+        bngApi.engineLua('raceManager.cupRemoveAdjust(' + row.entryId + ', ' + (index + 1) + ')');
+      };
+
+      $scope.cupToggleFlRule = function () {
+        bngApi.engineLua('raceManager.cupSetFastestLapRule('
+          + (!$scope.cup.fastestLapRequiresFinish) + ')');
+      };
+      $scope.cupSetDnfScoring = function (mode) {
+        bngApi.engineLua('raceManager.cupSetDnfScoring("' + mode + '")');
+      };
+      $scope.cupDnfIs = function (mode) { return $scope.cup.dnfScoring === mode; };
+      // Turning qualifying points off is sending an EMPTY table, not a separate
+      // flag: on the server the presence of a table is the switch, so there is
+      // only one thing that can be true and nothing to keep in step.
+      $scope.cupDisableQuali = function () {
+        bngApi.engineLua('raceManager.cupSetQualiPoints("")');
+      };
 
       // ----------------------------------------------------------------
       // DEMO DERBY (isolated module) — separate state, events and commands;
@@ -445,7 +780,7 @@ angular.module('beamng.apps')
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.6.0';
+      var APP_BUILD = '0.7.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -486,14 +821,22 @@ angular.module('beamng.apps')
       // Live positions
       // ------------------------------------------------------------------
       // The server sends the driver array already sorted leader-first with a
-      // `position` integer on every row. The table still sorts by that integer
-      // explicitly, so the view is correct even if a payload ever arrives out
-      // of order — and combined with `track by row.id` in the ng-repeat,
-      // Angular MOVES the existing <tr> nodes instead of rebuilding them, which
-      // is what keeps the reordering smooth instead of flickering.
-      $scope.positionOrder = function (row) {
-        return (typeof row.position === 'number') ? row.position : 9999;
-      };
+      // `position` integer on every row — and that integer is the row's index,
+      // because assignPositions stamps it while walking the sorted array. The
+      // table therefore renders the array as it arrives.
+      //
+      // It used to re-sort by that integer as well, defensively, "in case a
+      // payload ever arrives out of order". It cannot: the order and the number
+      // come from the same loop on the server. What the guard did cost was a
+      // sort of the whole field on every digest — three times a second for the
+      // length of a race, on every machine connected — to reproduce an order it
+      // had already been handed. tests/stress_test.lua checks the invariant on
+      // every broadcast it makes, in every phase, so this is pinned down rather
+      // than assumed.
+      //
+      // `track by row.id` in the ng-repeat is what makes Angular MOVE the
+      // existing <tr> nodes instead of rebuilding them, which is what keeps the
+      // reordering smooth instead of flickering.
 
       // Movement indicator: remembers the last position seen for each driver
       // and flags gains/losses for a few seconds.
@@ -1016,6 +1359,30 @@ angular.module('beamng.apps')
       // ------------------------------------------------------------------
       // DEMO DERBY bridge + commands (isolated from the racing handlers)
       // ------------------------------------------------------------------
+      $scope.$on('RaceManagerCup', function (event, data) {
+        if (!data) { return; }
+        $scope.$evalAsync(function () {
+          $scope.cup.enabled = !!data.cupEnabled;
+          $scope.cup.name = data.cupName || '';
+          $scope.cup.round = data.round || 0;
+          $scope.cup.preset = data.preset || 'custom';
+          $scope.cup.derbyPreset = data.derbyPreset || 'custom';
+          $scope.cup.racePoints = toArray(data.racePoints);
+          $scope.cup.derbyPoints = toArray(data.derbyPoints);
+          $scope.cup.qualiPoints = toArray(data.qualiPoints);
+          $scope.cup.presets = toArray(data.presets);
+          $scope.cup.bonuses = toArray(data.bonuses);
+          $scope.cup.standings = toArray(data.standings);
+          $scope.cup.pendingQuali = data.pendingQuali || 0;
+          $scope.cup.fastestLapRequiresFinish = data.fastestLapRequiresFinish !== false;
+          $scope.cup.dnfScoring = data.dnfScoring || 'none';
+          // Re-seed the edit fields, skipping anything mid-edit. A broadcast
+          // arriving between two keystrokes must not wipe a table being typed —
+          // the same rule the derby config inputs follow.
+          cupSeedEditors();
+        });
+      });
+
       $scope.$on('RaceManagerDerby', function (event, data) {
         if (!data) { return; }
         $scope.$evalAsync(function () {

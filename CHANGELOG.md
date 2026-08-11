@@ -6,9 +6,76 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 [← Back to the README](README.md)
 
-## Unreleased — Derby arenas, mode separation, joker and pit fixes
+## 0.7.0 — Cup points, persistent names, derby arenas
 
 ### Added
+
+- **Display names are now saved on the server and survive a restart.** Every
+  name an admin sets is written to `Resources/Server/RaceManager/roster.json`
+  as a roster entry. A driver who reconnects under the same guest name is
+  recognised automatically; otherwise setting the same name again reattaches
+  them to their existing entry rather than making a second one, so anything
+  keyed on that entry follows them back. A recycled session id still never
+  inherits a name — the roster only recognises a driver when the guest name
+  matches too, which is the same evidence used before it existed. This reverses
+  a documented limitation; see
+  [Display names](docs/REFERENCE.md#display-names).
+- **The live timing broadcast is about 20% smaller.** A player record carries
+  audit counters and comparator scratch that no client renders, and all of it
+  was being serialised for the whole field three times a second. The broadcast
+  now sends only what the app reads: ~4.7 KB instead of ~5.9 KB for a 20-car
+  field. The saving is **bandwidth** — roughly 3.5 Mbit/s instead of 4.4 for a
+  full grid, which is what a home-hosted server's uplink notices. Client-side
+  the difference is immaterial (measured at hundredths of a millisecond per
+  second), and CPU was never the constraint here.
+- **The leaderboard no longer re-sorts itself.** It was ordering the driver
+  array by a position integer that *is* that array's index, so the sort could
+  never change anything. Removed as dead work rather than as an optimisation:
+  the measured saving is 0.004 ms per second, which is nothing. The invariant it
+  was guarding against is now checked directly, on every broadcast the stress
+  test makes, in every phase.
+- **A DNF keeps the place it was running in**, whatever ended the race — a
+  disconnection, the admin closing the session, anything else. The results file
+  records it beside the reason (`DNF - Disconnected (was P2)`).
+- **A DNF is not always a nil score.** Three settings decide what one is worth:
+  nothing (the default, as before), its place in the final classification, or
+  the place it was actually running in when it stopped. The last of those can
+  pay two drivers for the same position, which is what a series choosing it is
+  asking for. A DNF is never counted as a win, and a disqualification still
+  scores nothing.
+- **Manual point adjustments.** Press ± on any standings row to add or remove
+  points by hand, with a reason. Adjustments are kept as a ledger beside the
+  points a driver earned and never folded into them, each with its reason and
+  author, so a total can always be taken apart and checked — and removing one
+  deletes it rather than posting an opposite entry. A whole round can be dropped
+  from a driver's record when a race was scored wrongly.
+- **Derbies score into the cup too.** A cup can be all races, all derbies or a
+  mixture. Derbies score on a points table of their own (same presets, starting
+  out matching the race table) on survival order — and unlike a race, *every*
+  driver scores, because being eliminated is the result of a derby rather than a
+  failure to produce one. Bonuses now belong to a discipline, so a derby can
+  never collect a fastest-lap bonus; **Last Man Standing** is the derby one, and
+  it pays only when somebody actually survived. Turning derby points off leaves
+  derbies out of the cup entirely.
+- **Standings keep race and derby apart and summarise them together.** The
+  Combined table totals both; once a cup has held both kinds of event, Races and
+  Derbies tabs show each championship on its own, each ranked on its own total.
+- **Cup points.** A cup scores a championship across several races: position
+  points for the race and optionally for qualifying, configurable bonus points
+  for Fastest Lap, Halfway Led and Hard Charger, and standings that only an
+  admin ending the cup can clear. Points survive Start Qualifying, Reset
+  Session, a phase change and a server restart, because cup state lives in its
+  own module and its own file (`cup.json`, kept out of the results directory so
+  Clear Results Cache cannot reach it). Five scoring presets ship: 30P
+  Aggressive, 25P Aggressive, 25P Moderate, 24P Linear and 35P Folk Race —
+  loading one fills the table, which you can then edit. With no cup running a
+  race behaves exactly as it did. See [Cup points](docs/REFERENCE.md#cup-points).
+- **A Cup tab**, under Race, with the scoring editor collapsed behind a toggle
+  so the panel is one row until you want it. Drivers who are not admins see the
+  standings read-only between sessions, and never during a live one.
+- **Bonus points are configured, not coded.** The server ships a registry of
+  bonus achievements and the panel builds a control per entry from it, so
+  adding another kind of bonus later needs no UI work.
 
 - **Rectangle arenas.** A derby boundary can now be pulled out from a centre
   instead of driven corner by corner: stand where the middle should be, then set

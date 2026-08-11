@@ -126,7 +126,8 @@ would expect without touching any of it.
 | **[Reset ghosting](docs/REFERENCE.md#reset-ghosting)** | A driver who resets is intangible for a few seconds instead of reappearing solid in the racing line. Collisions come back only once the space around them is provably clear — never while another car is inside them. |
 | **[Rallycross joker laps](docs/REFERENCE.md#rallycross-joker-laps)** | A second gate route that must be taken exactly once per race. Lap 1 is closed, and the server disqualifies anyone who missed it or took it twice. |
 | **[Garage List](docs/REFERENCE.md#vehicle--setup-locking-the-garage-list)** | Lock the session to exact cars *and* exact tunes. Anything not on the list gets deleted and the driver is told why. |
-| **[Display names](docs/REFERENCE.md#display-names)** | Give `Guest_4471` a readable name for the leaderboard and the results file. |
+| **[Cup points](docs/REFERENCE.md#cup-points)** | Championship points across several events — all races, all derbies, or a mixture. Scoring presets, qualifying points and bonuses; race and derby standings kept separate with a combined total. Points survive resets and a server restart; only ending the cup clears them. |
+| **[Display names](docs/REFERENCE.md#display-names)** | Give `Guest_4471` a readable name for the leaderboard and the results file. Saved on the server, so it survives a restart. |
 | **[Live position tracking](docs/REFERENCE.md#live-position-tracking)** | True running order from laps, checkpoints cleared and distance to the next gate — not just the grid order. |
 | **[Demo Derby](docs/REFERENCE.md#demo-derby-parallel-game-mode)** | A separate last-man-standing mode with its own arena, timers and results, fully isolated from the racing. |
 | **[Driver UI](docs/REFERENCE.md#driver-ui-non-admins)** | Non-admins see just the leaderboard during a session. Resizable, and fades so it doesn't block the view. |

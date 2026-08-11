@@ -115,7 +115,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.6.0'
+local RM_BUILD = '0.7.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -5286,6 +5286,28 @@ local function onLayoutList(rawData)
   guihooks.trigger('RaceManagerLayouts', data)
 end
 
+-- Cup standings and scoring rules, on their own channel.
+--
+-- A pure relay, and it stays one: the cup is decided entirely on the server,
+-- this client owns nothing about it and caches nothing. There is no physics
+-- here to police and no local rule to mirror, which is exactly why the cup
+-- needs none of the machinery the derby needs.
+local function onCupUpdate(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then
+    log('E', 'raceManager', 'RM_CupUpdate: undecodable payload')
+    return
+  end
+  if not fromCurrentServer(data) then return end
+  -- Empty arrays can arrive JSON-encoded as {} rather than []; hand the UI a
+  -- real array either way so an ng-repeat never sees an object.
+  for _, key in ipairs({ 'standings', 'presets', 'bonuses',
+                         'racePoints', 'derbyPoints', 'qualiPoints' }) do
+    if type(data[key]) ~= 'table' or #data[key] == 0 then data[key] = {} end
+  end
+  guihooks.trigger('RaceManagerCup', data)
+end
+
 -- Server pushed a layout to everyone: purge the current track state, then
 -- spawn the saved gates immediately.
 local function onApplyLayout(rawData)
@@ -5607,11 +5629,162 @@ function M.clearResults()
   if inMultiplayer() then TriggerServerEvent('RM_ClearResults', '') end
 end
 
+-- ---------------------------------------------------------------------------
+-- Cup / series points (called by the UI app) -- all go to the server
+-- ---------------------------------------------------------------------------
+-- Thin relays with no local state behind them. The cup is scored, stored and
+-- decided entirely on the server; this client only forwards the admin's
+-- intention and renders whatever comes back on RM_CupUpdate.
+function M.cupRequestState()
+  if inMultiplayer() then TriggerServerEvent('RM_CupRequestState', '') end
+end
+
+function M.cupSetEnabled(enabled)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetEnabled',
+      jsonEncode({ enabled = enabled and true or false }))
+  end
+end
+
+function M.cupStart(name)
+  if not inMultiplayer() then
+    editorMsg('Cup points need a BeamMP server')
+    return
+  end
+  TriggerServerEvent('RM_CupStart', jsonEncode({ name = tostring(name or '') }))
+end
+
+function M.cupReset()
+  if inMultiplayer() then TriggerServerEvent('RM_CupReset', '') end
+end
+
+-- `target` picks which points table the preset fills: 'race' (the default) or
+-- 'derby'. A cup can be all races, all derbies or a mixture, and the two score
+-- on separate tables.
+function M.cupSetPreset(preset, target)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetPreset', jsonEncode({
+      preset = tostring(preset or ''),
+      target = (tostring(target or 'race') == 'derby') and 'derby' or 'race',
+    }))
+  end
+end
+
+-- A points table arrives from the app as "30,27,25,..." and goes up as an
+-- array. A comma-separated string rather than a structure because every other
+-- command in this bridge takes numbers and strings, and the app would otherwise
+-- have to hand-build a Lua table literal.
+--
+-- Only the shape is fixed here. Range clamping stays on the server, which has
+-- to do it anyway for anything arriving from a client it did not write.
+local function cupParsePoints(csv)
+  local out = {}
+  for field in tostring(csv or ''):gmatch('[^,]+') do
+    local n = tonumber(field)
+    out[#out + 1] = n and math.floor(n) or 0
+  end
+  return out
+end
+
+-- Each of these sends ONE part of the scoring rules. The server replaces just
+-- the part it is given, so a panel that edits the bonus values never has to
+-- resend the position table it did not touch.
+function M.cupSetRacePoints(csv)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetScoring', jsonEncode({ race = cupParsePoints(csv) }))
+  end
+end
+
+-- Derbies score on a table of their own. An empty string switches derby scoring
+-- off, exactly as it does for qualifying.
+function M.cupSetDerbyPoints(csv)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetScoring', jsonEncode({ derby = cupParsePoints(csv) }))
+  end
+end
+
+-- An empty string is how qualifying points are switched OFF: it sends an empty
+-- table, and on the server an empty table is what "qualifying does not score"
+-- means. One representation, no separate flag to disagree with it.
+function M.cupSetQualiPoints(csv)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetScoring', jsonEncode({ quali = cupParsePoints(csv) }))
+  end
+end
+
+function M.cupSetBonus(key, value)
+  key = tostring(key or '')
+  if key == '' then return end
+  local n = math.floor(tonumber(value) or 0)
+  if n < 0 then n = 0 end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetScoring', jsonEncode({ bonus = { [key] = n } }))
+  end
+end
+
+-- What a DNF is worth: 'none', 'classified' (its place in the final order) or
+-- 'held' (the place it was running in when it stopped).
+function M.cupSetDnfScoring(mode)
+  mode = tostring(mode or 'none')
+  if mode ~= 'none' and mode ~= 'classified' and mode ~= 'held' then return end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetScoring', jsonEncode({ dnfScoring = mode }))
+  end
+end
+
+function M.cupSetFastestLapRule(required)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetScoring',
+      jsonEncode({ fastestLapRequiresFinish = required and true or false }))
+  end
+end
+
+-- --- Manual adjustments ----------------------------------------------------
+-- Correcting a cup by hand: a penalty, a driver who dropped out through no
+-- fault of their own, a race administered badly. Keyed on the CUP ENTRY, not on
+-- a session id, so an adjustment lands on the driver rather than on whoever
+-- currently holds that connection.
+function M.cupAdjust(entryId, delta, reason)
+  entryId = tonumber(entryId)
+  delta   = tonumber(delta)
+  if not entryId or not delta or delta == 0 then return end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupAdjust', jsonEncode({
+      entryId = math.floor(entryId),
+      delta   = math.floor(delta),
+      reason  = tostring(reason or ''),
+    }))
+  end
+end
+
+function M.cupRemoveAdjust(entryId, index)
+  entryId = tonumber(entryId)
+  index   = tonumber(index)
+  if not entryId or not index then return end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupRemoveAdjust', jsonEncode({
+      entryId = math.floor(entryId), index = math.floor(index),
+    }))
+  end
+end
+
+function M.cupDropRound(entryId, round)
+  entryId = tonumber(entryId)
+  round   = tonumber(round)
+  if not entryId or not round then return end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupDropRound', jsonEncode({
+      entryId = math.floor(entryId), round = math.floor(round),
+    }))
+  end
+end
+
 function M.requestState()
   pushRouteState()
   if inMultiplayer() then
     TriggerServerEvent('RM_RequestState', '')
     TriggerServerEvent('RM_RequestLayouts', '')
+    TriggerServerEvent('RM_CupRequestState', '')
   else
     -- Not on a BeamMP server: still push a state so the UI renders, and the
     -- editor remains fully usable for building circuits offline. Grant local
@@ -5664,6 +5837,8 @@ local DISPATCH = {
   RM_Ghost           = onGhost,
   -- Grid hold: the server pulling a car back onto its slot.
   RM_HoldCorrect     = onHoldCorrect,
+  -- Cup / series points
+  RM_CupUpdate       = onCupUpdate,
   -- Demo Derby module
   RM_DerbyUpdate     = onDerbyUpdate,
   RM_DerbyLayouts    = onDerbyLayoutList,

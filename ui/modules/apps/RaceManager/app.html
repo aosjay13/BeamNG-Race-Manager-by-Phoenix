@@ -109,6 +109,29 @@
     </button>
   </div>
 
+  <!-- ================= Cup standings (drivers) ===========================
+       Read-only, and only between sessions: minimalMode() is the driver HUD
+       during a live session, where the leaderboard is the whole point and a
+       championship table would be in the way. Admins have the full panel under
+       the Cup tab, so this is for everybody else — a driver should be able to
+       see where they stand without asking. -->
+  <div class="rm-cup-driver" ng-if="!isAdmin && cup.enabled && !minimalMode()">
+    <div class="rm-cup-head">
+      <span class="rm-cup-title">{{ cup.name || 'Cup' }} — standings</span>
+      <span class="rm-cup-state">after {{ cup.round }} round{{ cup.round === 1 ? '' : 's' }}</span>
+    </div>
+    <div class="rm-cup-standings" ng-if="cup.standings.length">
+      <div class="rm-cup-strow" ng-repeat="s in cup.standings track by s.entryId">
+        <span class="rm-cup-stpos">{{ s.pos }}</span>
+        <span class="rm-cup-stname">{{ s.name }}</span>
+        <span class="rm-cup-sttotal">{{ s.total }}</span>
+      </div>
+    </div>
+    <div class="rm-cup-hint" ng-if="!cup.standings.length">
+      No points yet — the standings appear here after the first race.
+    </div>
+  </div>
+
   <!-- ================= Mode tabs (admin only) ============================
        Race and Derby are two independent game modes. They used to share one
        flat tab strip, with the race session controls and the track layout
@@ -217,6 +240,9 @@
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('quali')}"
             ng-click="selectAdminTab('quali')"
             title="Qualifying rules and how the starting grid is filled">Quali &amp; Grid</button>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('cup')}"
+            ng-click="selectAdminTab('cup')"
+            title="Championship points across several races: scoring, bonuses and standings">Cup <span class="rm-tab-count" ng-if="cup.enabled">R{{ cup.round }}</span></button>
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('garage')}"
             ng-click="selectAdminTab('garage')"
             title="Allowed vehicles and setups">Garage <span class="rm-tab-count" ng-if="garage.length">{{ garage.length }}</span></button>
@@ -319,6 +345,344 @@
     <span class="rm-setting-warn" ng-if="!startSlots">
       ⚠ No start positions placed — open the Race Editor's Start Grid tab
     </span>
+  </div>
+
+  <!-- ================= Cup / series points ===============================
+       A championship across several races. Everything past the enable row is
+       hidden until a cup exists, so an admin who does not run one sees a
+       single button and nothing else. The scoring editor is collapsed on top
+       of that: it is twenty-four number fields, and it is set once a season.
+       Standings and the scoring rules both come from the server; nothing here
+       works out a total of its own. -->
+  <div class="rm-cup" ng-if="isMode('race') && isAdminTab('cup')">
+    <div class="rm-cup-head">
+      <span class="rm-cup-title">Cup — points across races</span>
+      <span class="rm-cup-state" ng-if="cup.enabled">
+        <b>{{ cup.name || 'Unnamed cup' }}</b> · {{ cup.round }} round{{ cup.round === 1 ? '' : 's' }} scored
+      </span>
+      <span class="rm-cup-state rm-cup-off" ng-if="!cup.enabled">No cup running</span>
+    </div>
+
+    <!-- Start / continue. Starting a cup clears any previous one, so the
+         button says so rather than being an innocuous "Start". -->
+    <div class="rm-cup-controls" ng-if="!cup.enabled">
+      <input type="text" class="rm-cup-name" maxlength="40" placeholder="Cup name (optional)"
+             ng-model="cupUi.name">
+      <button class="rm-btn rm-btn-grid" ng-click="cupStart()"
+              title="Begin a new cup. Points accumulate from the next race onward and survive resets, phase changes and a server restart.">
+        Start New Cup
+      </button>
+    </div>
+
+    <div class="rm-cup-controls" ng-if="cup.enabled">
+      <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': cup.enabled}"
+              ng-click="cupToggleEnabled()"
+              title="Pause scoring without losing the standings. A race finished while this is off scores nothing.">
+        {{ cup.enabled ? '✓ Scoring' : 'Paused' }}
+      </button>
+      <span class="rm-cup-next">Next race is round {{ cupNextRound() }}</span>
+      <span class="rm-cup-pending" ng-if="cup.pendingQuali">
+        {{ cup.pendingQuali }} qualifying result{{ cup.pendingQuali === 1 ? '' : 's' }} waiting to be banked
+      </span>
+      <button class="rm-btn rm-btn-end" ng-if="!cupUi.confirmReset" ng-click="cupAskReset()"
+              title="End the cup and delete every point in it. Display names are not affected.">
+        End Cup
+      </button>
+      <span class="rm-cup-confirm" ng-if="cupUi.confirmReset">
+        Delete all {{ cup.standings.length }} standings?
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="cupReset()">Yes, end it</button>
+        <button class="rm-btn rm-btn-mini" ng-click="cupCancelReset()">Cancel</button>
+      </span>
+    </div>
+
+    <!-- Scoring rules, collapsed by default. -->
+    <div class="rm-cup-controls" ng-if="cup.enabled">
+      <button class="rm-btn rm-btn-mini" ng-click="cupToggleScoring()">
+        {{ cupUi.showScoring ? '▾' : '▸' }} Scoring
+      </button>
+      <span class="rm-setting-val">
+        Race: {{ cupPresetLabel() }} to P{{ cupScoringDepth() }}<span ng-if="cupQualiEnabled()"> (+quali to P{{ cup.qualiPoints.length }})</span>
+        · Derby: <span ng-if="cupDerbyEnabled()">{{ cupDerbyPresetLabel() }} to P{{ cupDerbyDepth() }}</span><span ng-if="!cupDerbyEnabled()">off</span>
+      </span>
+    </div>
+
+    <div class="rm-cup-scoring" ng-if="cup.enabled && cupUi.showScoring">
+      <div class="rm-cup-sep">Race</div>
+      <div class="rm-cup-row">
+        <label>Preset</label>
+        <select ng-model="cupUi.preset"
+                ng-options="p.key as p.label for p in cup.presets"></select>
+        <button class="rm-btn rm-btn-mini" ng-click="cupApplyPreset()"
+                ng-disabled="!cupUi.preset">Load</button>
+        <span class="rm-cup-hint">Loading a preset fills the table below — edit it afterwards if you like.</span>
+      </div>
+
+      <div class="rm-cup-row rm-cup-table-row">
+        <label>Race points</label>
+        <span class="rm-cup-cell" ng-repeat="p in cupPositions track by $index">
+          <span class="rm-cup-pos">P{{ p }}</span>
+          <input type="number" class="rm-cup-num" min="0" max="9999" step="1"
+                 ng-model="cupUi.points[$index]">
+        </span>
+      </div>
+      <div class="rm-cup-row">
+        <button class="rm-btn rm-btn-mini" ng-click="cupApplyPoints()"
+                ng-disabled="!cupPointsDirty()">Apply race points</button>
+        <span class="rm-cup-hint">A position past the last non-zero entry scores nothing.</span>
+      </div>
+
+      <!-- Race bonuses, filed under the race table they belong to. Generated
+           from the server registry, filtered by discipline. -->
+      <div class="rm-cup-row" ng-repeat="b in cupBonusesFor('race') track by b.key">
+        <label>{{ b.label }}</label>
+        <input type="number" class="rm-cup-num" min="0" max="9999" step="1"
+               ng-model="cupUi.bonus[b.key]">
+        <button class="rm-btn rm-btn-mini" ng-click="cupApplyBonus(b)"
+                ng-disabled="!cupBonusRowDirty(b)">Apply</button>
+        <span class="rm-cup-hint" ng-if="!b.value">Off — pays nothing</span>
+      </div>
+      <div class="rm-cup-row">
+        <label>Fastest lap rule</label>
+        <button class="rm-btn rm-btn-mini rm-btn-toggle"
+                ng-class="{'rm-btn-toggle-on': cup.fastestLapRequiresFinish}"
+                ng-click="cupToggleFlRule()">
+          {{ cup.fastestLapRequiresFinish ? '✓ Must finish' : 'Any driver' }}
+        </button>
+        <span class="rm-cup-hint">Withhold the fastest lap bonus from a driver who did not finish.</span>
+      </div>
+      <!-- A retirement is not always a nil score: plenty of series pay a driver
+           for the place they were running when they stopped. -->
+      <div class="rm-cup-row">
+        <label>DNF scores</label>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': cupDnfIs('none')}"
+                ng-click="cupSetDnfScoring('none')"
+                title="A driver who does not finish scores nothing.">Nothing</button>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': cupDnfIs('classified')}"
+                ng-click="cupSetDnfScoring('classified')"
+                title="Scores for their place in the final classification, which is below everyone who finished.">Classified place</button>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': cupDnfIs('held')}"
+                ng-click="cupSetDnfScoring('held')"
+                title="Scores for the place they were running in at the moment they stopped. Two drivers can score the same position this way.">Place when they stopped</button>
+      </div>
+      <div class="rm-cup-row" ng-if="cupDnfIs('held')">
+        <span class="rm-cup-hint">
+          A retirement from second and a finish in second both score second — which is
+          what this option is for.
+        </span>
+      </div>
+
+      <!-- ---- Derby ------------------------------------------------------
+           A cup can be all races, all derbies or a mixture, so derbies score
+           on a table of their own. -->
+      <div class="rm-cup-sep">Derby</div>
+      <div class="rm-cup-row">
+        <label>Preset</label>
+        <select ng-model="cupUi.derbyPreset"
+                ng-options="p.key as p.label for p in cup.presets"></select>
+        <button class="rm-btn rm-btn-mini" ng-click="cupApplyDerbyPreset()"
+                ng-disabled="!cupUi.derbyPreset">Load</button>
+        <span class="rm-cup-hint">Derby position is survival order — the winner, then whoever lasted longest.</span>
+      </div>
+      <div class="rm-cup-row rm-cup-table-row">
+        <label>Derby points</label>
+        <span class="rm-cup-cell" ng-repeat="p in cupPositions track by $index">
+          <span class="rm-cup-pos">P{{ p }}</span>
+          <input type="number" class="rm-cup-num" min="0" max="9999" step="1"
+                 ng-model="cupUi.derby[$index]">
+        </span>
+      </div>
+      <div class="rm-cup-row">
+        <button class="rm-btn rm-btn-mini" ng-click="cupApplyDerby()"
+                ng-disabled="!cupDerbyDirty()">Apply derby points</button>
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="cupDisableDerby()"
+                ng-disabled="!cupDerbyEnabled()">Turn derby points off</button>
+        <span class="rm-cup-hint">
+          Every driver scores: in a derby, being eliminated is the result, not a failure to produce one.
+        </span>
+      </div>
+      <div class="rm-cup-row" ng-repeat="b in cupBonusesFor('derby') track by b.key">
+        <label>{{ b.label }}</label>
+        <input type="number" class="rm-cup-num" min="0" max="9999" step="1"
+               ng-model="cupUi.bonus[b.key]">
+        <button class="rm-btn rm-btn-mini" ng-click="cupApplyBonus(b)"
+                ng-disabled="!cupBonusRowDirty(b)">Apply</button>
+        <span class="rm-cup-hint" ng-if="!b.value">Off — pays nothing</span>
+        <span class="rm-cup-hint" ng-if="b.value">Only when somebody actually survived.</span>
+      </div>
+
+      <div class="rm-cup-sep">Qualifying</div>
+
+      <div class="rm-cup-row rm-cup-table-row">
+        <label>Quali points</label>
+        <span class="rm-cup-cell" ng-repeat="p in cupPositions track by $index">
+          <span class="rm-cup-pos">P{{ p }}</span>
+          <input type="number" class="rm-cup-num" min="0" max="9999" step="1"
+                 ng-model="cupUi.quali[$index]">
+        </span>
+      </div>
+      <div class="rm-cup-row">
+        <button class="rm-btn rm-btn-mini" ng-click="cupApplyQuali()"
+                ng-disabled="!cupQualiDirty()">Apply quali points</button>
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="cupDisableQuali()"
+                ng-disabled="!cupQualiEnabled()">Turn quali points off</button>
+        <span class="rm-cup-hint">
+          Scored when qualifying ends and banked by the race that follows, as part of the same round.
+        </span>
+      </div>
+
+    </div>
+
+    <!-- ---- Standings ----------------------------------------------------
+         Three views over the same server-sent numbers. A mixed cup holds a
+         race championship and a derby championship as well as an overall one,
+         and three narrow tables read far better at HUD width than one very
+         wide one. The per-discipline tabs only appear once the cup has
+         actually held events of both kinds — an all-race cup has no reason to
+         offer a derby table. Every figure here comes off the broadcast; the
+         only thing decided locally is which column to show. -->
+    <div ng-if="cup.enabled && cup.standings.length">
+      <div class="rm-cup-views" ng-if="cupIsMixed()">
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': cupIsView('combined')}"
+                ng-click="cupSetView('combined')"
+                title="Race and derby points added together">Combined</button>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': cupIsView('race')}"
+                ng-click="cupSetView('race')" title="Races only">Races</button>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': cupIsView('derby')}"
+                ng-click="cupSetView('derby')" title="Derbies only">Derbies</button>
+      </div>
+
+      <!-- Combined summary -->
+      <div class="rm-cup-standings" ng-if="!cupIsMixed() || cupIsView('combined')">
+        <div class="rm-cup-strow rm-cup-sthead">
+          <span class="rm-cup-stpos">#</span>
+          <span class="rm-cup-stname">Driver</span>
+          <span class="rm-cup-stnum" title="Events scored">Ev</span>
+          <span class="rm-cup-stnum" title="Wins across races and derbies">Won</span>
+          <!-- A discipline the cup has never held gets no column: an all-race
+               cup should not carry a Derby column of zeroes. -->
+          <span class="rm-cup-stnum" ng-if="cupHasRaces()" title="Points from races, including qualifying and race bonuses">Race</span>
+          <span class="rm-cup-stnum" ng-if="cupHasDerbies()" title="Points from derbies, including derby bonuses">Derby</span>
+          <span class="rm-cup-stnum" title="Manual admin adjustments">Adj</span>
+          <span class="rm-cup-sttotal">Total</span>
+        </div>
+        <!-- No orderBy: the server ranks the combined table last and hands the
+             array over already in that order. An orderBy here would re-sort it
+             on every digest — and a digest runs three times a second while a
+             race is on, for a table that changes once a round. -->
+        <div ng-repeat="s in cup.standings track by s.entryId">
+          <div class="rm-cup-strow">
+            <span class="rm-cup-stpos">{{ s.pos }}</span>
+            <span class="rm-cup-stname">{{ s.name }}</span>
+            <span class="rm-cup-stnum">{{ s.rounds }}</span>
+            <span class="rm-cup-stnum">{{ s.wins }}</span>
+            <span class="rm-cup-stnum" ng-if="cupHasRaces()">{{ s.raceTotal }}</span>
+            <span class="rm-cup-stnum" ng-if="cupHasDerbies()">{{ s.derbyTotal }}</span>
+            <span class="rm-cup-stnum" ng-class="{'rm-cup-adj': s.adjustPts}">{{ s.adjustPts }}</span>
+            <span class="rm-cup-sttotal">{{ s.total }}</span>
+            <button class="rm-btn rm-btn-mini rm-cup-adjbtn" ng-click="cupOpenAdjust(s)"
+                    title="Adjust this driver's points by hand — a penalty, a correction, or an allowance for something outside their control.">±</button>
+          </div>
+
+          <!-- Adjustment editor for this driver. One open at a time; an inline
+               box on every row would put a text field on every line. -->
+          <div class="rm-cup-adjust" ng-if="cupAdjustOpen(s)">
+            <div class="rm-cup-row">
+              <label>Adjust</label>
+              <input type="number" class="rm-cup-num" step="1" placeholder="±"
+                     ng-model="cupUi.adjustDelta">
+              <input type="text" class="rm-cup-reason" maxlength="60"
+                     placeholder="Reason (shown in the standings)"
+                     ng-model="cupUi.adjustReason">
+              <button class="rm-btn rm-btn-mini" ng-click="cupApplyAdjust(s)"
+                      ng-disabled="!cupAdjustValid()">Apply</button>
+            </div>
+            <div class="rm-cup-row">
+              <span class="rm-cup-hint">Quick:</span>
+              <button class="rm-btn rm-btn-mini" ng-click="cupQuickAdjust(s, -1)">−1</button>
+              <button class="rm-btn rm-btn-mini" ng-click="cupQuickAdjust(s, -5)">−5</button>
+              <button class="rm-btn rm-btn-mini" ng-click="cupQuickAdjust(s, -10)">−10</button>
+              <button class="rm-btn rm-btn-mini" ng-click="cupQuickAdjust(s, 1)">+1</button>
+              <button class="rm-btn rm-btn-mini" ng-click="cupQuickAdjust(s, 5)">+5</button>
+              <button class="rm-btn rm-btn-mini" ng-click="cupQuickAdjust(s, 10)">+10</button>
+            </div>
+            <!-- The ledger. Every adjustment keeps its reason and its author, so
+                 a total can be accounted for and the wrong entry removed rather
+                 than cancelled out by another one. -->
+            <div class="rm-cup-ledger" ng-if="s.adjustments.length">
+              <div class="rm-cup-ledrow" ng-repeat="a in s.adjustments track by $index">
+                <span class="rm-cup-leddelta" ng-class="{'rm-cup-adj': a.delta}">{{ a.delta > 0 ? '+' : '' }}{{ a.delta }}</span>
+                <span class="rm-cup-ledwhy">{{ a.reason || 'no reason given' }}</span>
+                <span class="rm-cup-ledby">{{ a.by }}</span>
+                <button class="rm-btn rm-btn-mini rm-btn-end"
+                        ng-click="cupRemoveAdjust(s, $index)"
+                        title="Remove this adjustment. A mistake in the ledger is not an event that happened, so it is deleted rather than cancelled out.">✕</button>
+              </div>
+            </div>
+            <div class="rm-cup-hint" ng-if="!s.adjustments.length">
+              No manual adjustments for {{ s.name }}.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Races only -->
+      <div class="rm-cup-standings" ng-if="cupIsMixed() && cupIsView('race')">
+        <div class="rm-cup-strow rm-cup-sthead">
+          <span class="rm-cup-stpos">#</span>
+          <span class="rm-cup-stname">Driver</span>
+          <span class="rm-cup-stnum" title="Races scored">Rc</span>
+          <span class="rm-cup-stnum" title="Race wins">Won</span>
+          <span class="rm-cup-stnum" title="Points from finishing positions">Pos</span>
+          <span class="rm-cup-stnum" title="Points from qualifying">Qual</span>
+          <span class="rm-cup-stnum" title="Points from race bonuses">Bonus</span>
+          <span class="rm-cup-sttotal">Total</span>
+        </div>
+        <div class="rm-cup-strow" ng-repeat="s in cup.standings | orderBy:'racePos' track by s.entryId">
+          <span class="rm-cup-stpos">{{ s.racePos }}</span>
+          <span class="rm-cup-stname">{{ s.name }}</span>
+          <span class="rm-cup-stnum">{{ s.raceRounds }}</span>
+          <span class="rm-cup-stnum">{{ s.raceWins }}</span>
+          <span class="rm-cup-stnum">{{ s.racePts }}</span>
+          <span class="rm-cup-stnum">{{ s.qualiPts }}</span>
+          <span class="rm-cup-stnum">{{ s.raceBonusPts }}</span>
+          <span class="rm-cup-sttotal">{{ s.raceTotal }}</span>
+        </div>
+      </div>
+
+      <!-- Derbies only -->
+      <div class="rm-cup-standings" ng-if="cupIsMixed() && cupIsView('derby')">
+        <div class="rm-cup-strow rm-cup-sthead">
+          <span class="rm-cup-stpos">#</span>
+          <span class="rm-cup-stname">Driver</span>
+          <span class="rm-cup-stnum" title="Derbies scored">Db</span>
+          <span class="rm-cup-stnum" title="Derbies won outright">Won</span>
+          <span class="rm-cup-stnum" title="Points from survival order">Pos</span>
+          <span class="rm-cup-stnum" title="Points from derby bonuses">Bonus</span>
+          <span class="rm-cup-sttotal">Total</span>
+        </div>
+        <div class="rm-cup-strow" ng-repeat="s in cup.standings | orderBy:'derbyPos' track by s.entryId">
+          <span class="rm-cup-stpos">{{ s.derbyPos }}</span>
+          <span class="rm-cup-stname">{{ s.name }}</span>
+          <span class="rm-cup-stnum">{{ s.derbyRounds }}</span>
+          <span class="rm-cup-stnum">{{ s.derbyWins }}</span>
+          <span class="rm-cup-stnum">{{ s.derbyPts }}</span>
+          <span class="rm-cup-stnum">{{ s.derbyBonusPts }}</span>
+          <span class="rm-cup-sttotal">{{ s.derbyTotal }}</span>
+        </div>
+      </div>
+    </div>
+    <div class="rm-cup-hint rm-cup-empty" ng-if="cup.enabled && !cup.standings.length">
+      No points yet. Finish a race and the standings appear here.
+      Points survive Start Quali, Reset, a phase change and a server restart — only
+      <b>End Cup</b> clears them.
+    </div>
+    <div class="rm-cup-hint rm-cup-empty" ng-if="!cup.enabled">
+      A cup adds championship points on top of normal races. With no cup running,
+      races behave exactly as they do today.
+      Drivers are identified by their <b>display name</b>, so set one for each
+      driver (Admin tab) before the first round — that is what their points stay
+      attached to across reconnects.
+    </div>
   </div>
 
   <!-- ================= Garage list (Module 4: vehicle & setup locking) ==== -->
@@ -1081,10 +1445,17 @@
         </tr>
       </thead>
       <tbody>
-        <!-- Sorted by the server's live position integer. `track by row.id`
-             makes Angular move the existing rows rather than rebuild them, so
-             overtakes reorder the table without flicker. -->
-        <tr ng-repeat="row in drivers | orderBy:positionOrder track by row.id"
+        <!-- Rendered in the order the server sent, which IS position order:
+             assignPositions stamps `position = i` while walking the sorted
+             array, so the two cannot disagree. This used to carry an
+             `orderBy:positionOrder`, which re-sorted the whole field on every
+             digest -- three times a second for the length of a race, on every
+             machine on the server -- to reproduce an order it had already been
+             given. tests/stress_test.lua pins the invariant down across every
+             phase, including a finish with finishers, DSQs and DNFs mixed.
+             `track by row.id` makes Angular move the existing rows rather than
+             rebuild them, so overtakes reorder the table without flicker. -->
+        <tr ng-repeat="row in drivers track by row.id"
             ng-class="{'rm-row-finished': row.status === 'finished', 'rm-row-dnf': row.status === 'dnf', 'rm-row-dsq': row.status === 'dsq'}">
           <td class="rm-col-pos">
             <span class="rm-pos" ng-class="{'rm-pos-leader': row.position === 1 && row.status === 'racing'}">{{ positionLabel(row) }}</span>
@@ -1826,6 +2197,183 @@
   }
   .rm-route-tab-note { font-size: 10px; color: #9aa0a6; }
   .rm-editor-joker { color: #d1a8ff; }
+
+  /* Cup / series points. Gold, because a championship is the one thing in this
+     app that outlives the session — it should not read as another race setting. */
+  .rm-cup {
+    padding: 6px 10px;
+    border-bottom: 1px solid rgba(251, 188, 5, 0.3);
+    background: rgba(251, 188, 5, 0.05);
+  }
+  /* The driver-facing copy: same rows, no controls, and only between sessions. */
+  .rm-cup-driver {
+    padding: 5px 10px;
+    border-bottom: 1px solid rgba(251, 188, 5, 0.25);
+    background: rgba(251, 188, 5, 0.04);
+  }
+  .rm-cup-driver .rm-cup-standings { max-height: 110px; }
+  .rm-cup-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+  .rm-cup-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #fbbc05;
+    font-weight: 700;
+  }
+  .rm-cup-state { color: #e8eaed; font-size: 11px; margin-left: auto; }
+  .rm-cup-off { color: #9aa0a6; }
+  .rm-cup-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+  }
+  .rm-cup-name {
+    width: 150px;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 3px;
+    color: #e8eaed;
+    font-size: 11px;
+    padding: 2px 5px;
+  }
+  .rm-cup-next { color: #9aa0a6; font-size: 10px; }
+  .rm-cup-pending { color: #fdd663; font-size: 10px; }
+  .rm-cup-confirm {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: #f28b82;
+  }
+  .rm-cup-hint { font-size: 10px; color: #9aa0a6; }
+  /* Discipline heading inside the scoring editor. */
+  .rm-cup-sep {
+    margin: 6px 0 4px;
+    padding-top: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #fbbc05;
+    font-weight: 700;
+  }
+  .rm-cup-sep:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+  .rm-cup-views { display: flex; gap: 4px; margin: 5px 0 2px; }
+  .rm-cup-empty { margin-top: 5px; font-size: 11px; line-height: 1.4; }
+
+  /* Scoring editor */
+  .rm-cup-scoring {
+    margin: 4px 0 6px;
+    padding: 5px 6px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.2);
+  }
+  .rm-cup-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+  }
+  .rm-cup-row > label {
+    min-width: 84px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: #9aa0a6;
+  }
+  /* Twenty-four cells wrap onto as many lines as the app is wide enough for,
+     rather than forcing a horizontal scrollbar into a narrow HUD app. */
+  .rm-cup-table-row { gap: 3px; }
+  .rm-cup-cell { display: inline-flex; align-items: center; gap: 2px; }
+  .rm-cup-pos { font-size: 9px; color: #5f6368; width: 20px; text-align: right; }
+  .rm-cup-num {
+    width: 38px;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 3px;
+    color: #e8eaed;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    padding: 1px 3px;
+    text-align: right;
+  }
+
+  /* Standings */
+  .rm-cup-standings { margin-top: 5px; max-height: 150px; overflow-y: auto; }
+  .rm-cup-strow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 4px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .rm-cup-strow:hover { background: rgba(255, 255, 255, 0.05); }
+  .rm-cup-sthead {
+    color: #9aa0a6;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  .rm-cup-sthead:hover { background: none; }
+  .rm-cup-stpos { width: 20px; text-align: right; color: #fbbc05; font-weight: 700; }
+  .rm-cup-stname {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #e8eaed;
+  }
+  .rm-cup-stnum { width: 36px; text-align: right; color: #9aa0a6; }
+  .rm-cup-adj { color: #fdd663; }
+  .rm-cup-adjbtn { margin-left: 4px; padding: 0 5px; }
+  /* Manual adjustment editor, opened from a standings row. */
+  .rm-cup-adjust {
+    margin: 2px 0 6px 20px;
+    padding: 5px 6px;
+    border-left: 2px solid rgba(251, 188, 5, 0.5);
+    background: rgba(0, 0, 0, 0.25);
+  }
+  .rm-cup-reason {
+    flex: 1;
+    min-width: 120px;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 3px;
+    color: #e8eaed;
+    font-size: 11px;
+    padding: 2px 5px;
+  }
+  .rm-cup-ledger { margin-top: 4px; max-height: 90px; overflow-y: auto; }
+  .rm-cup-ledrow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 1px 2px;
+    font-size: 10px;
+  }
+  .rm-cup-leddelta {
+    width: 34px;
+    text-align: right;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .rm-cup-ledwhy {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #e8eaed;
+  }
+  .rm-cup-ledby { color: #5f6368; }
+  .rm-cup-sttotal { width: 42px; text-align: right; color: #e8eaed; font-weight: 700; }
 
   /* Garage list */
   .rm-garage {
