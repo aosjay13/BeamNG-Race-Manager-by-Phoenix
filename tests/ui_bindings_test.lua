@@ -354,6 +354,43 @@ expect(html:match('ng%-if="e%.boundPid"') == nil,
   'no bare truthiness test on boundPid survives in the template')
 
 -- ---------------------------------------------------------------------------
+-- 4h. Loading a preset actually refills the boxes
+--
+-- The scoring editors are re-seeded from the server, and the rule for when has
+-- to be "the server's value changed", not "the buffer differs from the server".
+-- Those look the same and are not: pressing Load replaces the table ON THE
+-- SERVER, which the second rule reads as an edit in progress -- so the boxes
+-- kept the old preset, and pressing Apply then posted those stale numbers back
+-- and turned the table into a hand-edited "Custom" one. Loading a preset
+-- appeared to do nothing, then appeared to corrupt itself.
+--
+-- The fix is to remember what the server last said (cupSeen) and compare
+-- against that. This checks the seeding does not go back to asking the dirty
+-- helpers, which is the shape of the bug.
+-- ---------------------------------------------------------------------------
+do
+  expect(js:find('function cupSeedEditors', 1, true) ~= nil,
+    'found the cup seeding function')
+  expect(js:find('cupSeen', 1, true) ~= nil,
+    'cup editors are re-seeded by comparing against the last value the SERVER '
+      .. 'sent, so a preset load reaches the boxes')
+  -- The exact gate that caused it. Seeding "unless the buffer differs from the
+  -- server" treats a preset load as an edit in progress and skips it.
+  for _, gate in ipairs({ '!$scope.cupPointsDirty()', '!$scope.cupDerbyDirty()',
+                          '!$scope.cupQualiDirty()', '!$scope.cupBonusDirty()' }) do
+    expect(js:find(gate, 1, true) == nil,
+      'the seeding gates on "' .. gate .. '": a preset load changes the server '
+        .. 'value, which that reads as an edit in progress, so the boxes keep '
+        .. 'showing the old preset')
+  end
+  -- Asking for a preset must take the server's answer even when the table it
+  -- replaces happens to be identical.
+  expect(js:find('cupExpectReseed', 1, true) ~= nil,
+    'loading a preset marks that table for re-seeding, so Load resets the boxes '
+      .. 'even when the server value does not change')
+end
+
+-- ---------------------------------------------------------------------------
 -- 4g. No native <select> anywhere in the app
 --
 -- BeamNG's UI is Chromium Embedded Framework, where a <select> popup is a

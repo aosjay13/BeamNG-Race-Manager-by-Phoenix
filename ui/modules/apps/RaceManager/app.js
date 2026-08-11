@@ -409,16 +409,15 @@ angular.module('beamng.apps')
       // broadcast has filled the fields — otherwise Apply would be live over
       // blank inputs.
       $scope.cupPointsDirty = function () {
-        return cupSeeded && cupTableDiffers($scope.cupUi.points, $scope.cup.racePoints);
+        return cupTableDiffers($scope.cupUi.points, $scope.cup.racePoints);
       };
       $scope.cupDerbyDirty = function () {
-        return cupSeeded && cupTableDiffers($scope.cupUi.derby, $scope.cup.derbyPoints);
+        return cupTableDiffers($scope.cupUi.derby, $scope.cup.derbyPoints);
       };
       $scope.cupQualiDirty = function () {
-        return cupSeeded && cupTableDiffers($scope.cupUi.quali, $scope.cup.qualiPoints);
+        return cupTableDiffers($scope.cupUi.quali, $scope.cup.qualiPoints);
       };
       $scope.cupBonusDirty = function () {
-        if (!cupSeeded) { return false; }
         for (var i = 0; i < $scope.cup.bonuses.length; i++) {
           var b = $scope.cup.bonuses[i];
           if (Number($scope.cupUi.bonus[b.key] || 0) !== Number(b.value || 0)) {
@@ -428,46 +427,84 @@ angular.module('beamng.apps')
         return false;
       };
 
-      // Have the edit buffers ever been filled from the server?
+      // What the server last told us each editable thing was.
       //
-      // This flag is load-bearing, and its absence was a genuine bug: the
-      // "is the admin mid-edit?" test below compares the buffer against the
-      // server's table, and an EMPTY buffer differs from every non-empty table
-      // — so it read as an edit in progress, seeding was skipped forever, and
-      // the fields stayed blank. Pressing Apply then sent that blank table and
-      // wiped the scoring system. The first broadcast always seeds; only after
-      // that does "differs from the server" mean somebody typed something.
-      var cupSeeded = false;
+      // Re-seeding the boxes cannot simply be "unless the buffer differs from
+      // the server", because that question has two very different answers with
+      // the same symptom:
+      //
+      //   * the admin is part way through typing  -> leave the boxes alone
+      //   * the server's own value has changed     -> the boxes MUST follow
+      //
+      // Comparing buffer against server conflates them, and the second case is
+      // what Load is: it replaces the table on the server, which then looks
+      // exactly like an edit in progress, so the boxes were left showing the
+      // old preset. Pressing Apply afterwards sent those stale numbers straight
+      // back and the server correctly marked the table hand-edited -- which is
+      // why loading a preset appeared to do nothing and then turned itself into
+      // "Custom".
+      //
+      // Remembering what the server last said separates the two: if that has
+      // moved, the server changed and the buffer follows; if it has not, any
+      // difference is the admin's typing and is left alone.
+      var cupSeen = { race: null, derby: null, quali: null, bonus: null,
+                      preset: null, derbyPreset: null };
 
-      // Re-seed the editors from the server, skipping any the admin is part way
-      // through changing. Called on every cup broadcast.
+      function cupSig(list) { return (list || []).join(','); }
+      function cupBonusSig(list) {
+        var parts = [];
+        for (var i = 0; i < (list || []).length; i++) {
+          parts.push(list[i].key + ':' + list[i].value);
+        }
+        return parts.join(',');
+      }
+
+      function cupFill(buffer, source) {
+        for (var i = 0; i < CUP_EDIT_POSITIONS; i++) {
+          buffer[i] = Number(source[i] || 0);
+        }
+      }
+
+      // Called on every cup broadcast.
       function cupSeedEditors() {
-        var i;
-        if (!cupSeeded || !$scope.cupPointsDirty()) {
-          for (i = 0; i < CUP_EDIT_POSITIONS; i++) {
-            $scope.cupUi.points[i] = Number($scope.cup.racePoints[i] || 0);
-          }
-        }
-        if (!cupSeeded || !$scope.cupDerbyDirty()) {
-          for (i = 0; i < CUP_EDIT_POSITIONS; i++) {
-            $scope.cupUi.derby[i] = Number($scope.cup.derbyPoints[i] || 0);
-          }
-        }
-        if (!cupSeeded || !$scope.cupQualiDirty()) {
-          for (i = 0; i < CUP_EDIT_POSITIONS; i++) {
-            $scope.cupUi.quali[i] = Number($scope.cup.qualiPoints[i] || 0);
-          }
-        }
-        if (!cupSeeded || !$scope.cupBonusDirty()) {
-          for (i = 0; i < $scope.cup.bonuses.length; i++) {
+        var sig;
+
+        sig = cupSig($scope.cup.racePoints);
+        if (cupSeen.race !== sig) { cupFill($scope.cupUi.points, $scope.cup.racePoints); cupSeen.race = sig; }
+
+        sig = cupSig($scope.cup.derbyPoints);
+        if (cupSeen.derby !== sig) { cupFill($scope.cupUi.derby, $scope.cup.derbyPoints); cupSeen.derby = sig; }
+
+        sig = cupSig($scope.cup.qualiPoints);
+        if (cupSeen.quali !== sig) { cupFill($scope.cupUi.quali, $scope.cup.qualiPoints); cupSeen.quali = sig; }
+
+        sig = cupBonusSig($scope.cup.bonuses);
+        if (cupSeen.bonus !== sig) {
+          for (var i = 0; i < $scope.cup.bonuses.length; i++) {
             $scope.cupUi.bonus[$scope.cup.bonuses[i].key] =
               Number($scope.cup.bonuses[i].value || 0);
           }
+          cupSeen.bonus = sig;
         }
-        $scope.cupUi.preset = $scope.cup.preset;
-        $scope.cupUi.derbyPreset = $scope.cup.derbyPreset;
-        cupSeeded = true;
+
+        // The pending dropdown pick follows the same rule: a race being scored
+        // must not throw away a preset somebody has chosen but not loaded yet.
+        if (cupSeen.preset !== $scope.cup.preset) {
+          $scope.cupUi.preset = $scope.cup.preset;
+          cupSeen.preset = $scope.cup.preset;
+        }
+        if (cupSeen.derbyPreset !== $scope.cup.derbyPreset) {
+          $scope.cupUi.derbyPreset = $scope.cup.derbyPreset;
+          cupSeen.derbyPreset = $scope.cup.derbyPreset;
+        }
       }
+
+      // Take the server's next answer for one table whatever it is, discarding
+      // whatever is in the box. Used by the controls that ASK the server to
+      // replace a table: loading a preset that is already active leaves the
+      // server value unchanged, and without this the boxes would keep local
+      // edits the admin had just asked to overwrite.
+      function cupExpectReseed(which) { cupSeen[which] = null; }
 
       // Cup dropdowns.
       //
@@ -602,10 +639,12 @@ angular.module('beamng.apps')
       };
       $scope.cupApplyPreset = function () {
         if (!$scope.cupUi.preset) { return; }
+        cupExpectReseed('race');
         bngApi.engineLua('raceManager.cupSetPreset("' + $scope.cupUi.preset + '", "race")');
       };
       $scope.cupApplyDerbyPreset = function () {
         if (!$scope.cupUi.derbyPreset) { return; }
+        cupExpectReseed('derby');
         bngApi.engineLua('raceManager.cupSetPreset("' + $scope.cupUi.derbyPreset + '", "derby")');
       };
       $scope.cupToggleScoring = function () {
@@ -637,6 +676,7 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.cupSetDerbyPoints("' + cupCsv($scope.cupUi.derby) + '")');
       };
       $scope.cupDisableDerby = function () {
+        cupExpectReseed('derby');
         bngApi.engineLua('raceManager.cupSetDerbyPoints("")');
       };
       $scope.cupApplyQuali = function () {
@@ -652,7 +692,7 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.cupSetBonus("' + row.key + '", ' + value + ')');
       };
       $scope.cupBonusRowDirty = function (row) {
-        if (!row || !cupSeeded) { return false; }
+        if (!row) { return false; }
         return Number($scope.cupUi.bonus[row.key] || 0) !== Number(row.value || 0);
       };
       // --- Driver identity -------------------------------------------------
@@ -765,6 +805,7 @@ angular.module('beamng.apps')
       // flag: on the server the presence of a table is the switch, so there is
       // only one thing that can be true and nothing to keep in step.
       $scope.cupDisableQuali = function () {
+        cupExpectReseed('quali');
         bngApi.engineLua('raceManager.cupSetQualiPoints("")');
       };
 

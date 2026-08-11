@@ -98,6 +98,14 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 ### Changed
 
+- **Loading a scoring preset fills the boxes.** The editors were re-seeded from
+  the server "unless the buffer differs from it" — but pressing Load is exactly
+  a case where the server's value changes, which that rule reads as an edit in
+  progress. The boxes kept the old preset, and pressing Apply then posted those
+  stale numbers back and turned the table into a hand-edited "Custom" one. The
+  panel now re-seeds when the *server's* value has moved, so Load lands and
+  typing is still safe from a broadcast arriving mid-edit. Both tables affected;
+  both fixed.
 - **The cup's dropdowns open.** The scoring presets and the driver picker were
   native `<select>` elements. In BeamNG's UI — Chromium Embedded Framework — a
   select popup is a separate OS window that never renders over the game, so the
