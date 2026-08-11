@@ -5301,7 +5301,7 @@ local function onCupUpdate(rawData)
   if not fromCurrentServer(data) then return end
   -- Empty arrays can arrive JSON-encoded as {} rather than []; hand the UI a
   -- real array either way so an ng-repeat never sees an object.
-  for _, key in ipairs({ 'standings', 'presets', 'bonuses',
+  for _, key in ipairs({ 'standings', 'presets', 'bonuses', 'roster', 'connected',
                          'racePoints', 'derbyPoints', 'qualiPoints' }) do
     if type(data[key]) ~= 'table' or #data[key] == 0 then data[key] = {} end
   end
@@ -5736,6 +5736,34 @@ function M.cupSetFastestLapRule(required)
   if inMultiplayer() then
     TriggerServerEvent('RM_CupSetScoring',
       jsonEncode({ fastestLapRequiresFinish = required and true or false }))
+  end
+end
+
+-- --- Driver identity (admin-controlled) ------------------------------------
+-- Assign a connected player to a roster entry, which is how a driver gets
+-- their name and their accumulated points back after a reconnect. An admin has
+-- to do this: BeamMP issues a fresh random guest name on every join, so nothing
+-- on either side can tell a returning regular from a stranger.
+--
+-- entryId 0 unassigns.
+function M.cupBindDriver(targetPid, entryId)
+  targetPid = tonumber(targetPid)
+  if not targetPid or targetPid < 0 then return end
+  if not inMultiplayer() then
+    editorMsg('Driver assignment needs a BeamMP server')
+    return
+  end
+  TriggerServerEvent('RM_CupBindDriver', jsonEncode({
+    pid     = math.floor(targetPid),
+    entryId = math.floor(tonumber(entryId) or 0),
+  }))
+end
+
+function M.cupForgetDriver(entryId)
+  entryId = tonumber(entryId)
+  if not entryId then return end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupForgetDriver', jsonEncode({ entryId = math.floor(entryId) }))
   end
 end
 

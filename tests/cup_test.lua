@@ -189,6 +189,21 @@ local function bootPlugin()
   RM_onSetEntryMode(ADMIN, '{"mode":"all"}')
 end
 
+-- Put the names back after a restart.
+--
+-- Nothing does this automatically, and deliberately so: BeamMP reissues guest
+-- names at random, so the server cannot tell who has come back. Naming a driver
+-- again is the admin action that reattaches them to their saved entry -- and
+-- therefore to the points already on it.
+local NAMES = { [0] = 'Phoenix', [1] = 'Ryder', [2] = 'Nomad', [3] = 'Falcon' }
+local function identifyAll()
+  for pid, name in pairs(NAMES) do
+    if connected[pid] then
+      RM_onSetAlias(ADMIN, '{"target":' .. pid .. ',"alias":"' .. name .. '"}')
+    end
+  end
+end
+
 -- Drive a complete race. `order` is the pids in the order they take the flag;
 -- anyone connected and not listed is left out on track and ends up a DNF.
 --
@@ -284,6 +299,10 @@ check(totalFor('Phoenix') == beforeReset, 'Reset Session does not disturb cup po
 
 bootPlugin()
 check(readCup().round == 2, 'the round count survives a server restart')
+check(driver(0) ~= nil and driver(0).alias == nil,
+  'a restart does not re-identify anybody on its own — guest names are reissued '
+    .. 'at random, so only an admin can say who has come back')
+identifyAll()
 check(totalFor('Phoenix') == beforeReset, 'and so do the points')
 check(readCup().name == 'Winter Series', 'and the cup keeps its name')
 
@@ -706,6 +725,7 @@ check(#cupEntry('Phoenix').adjustments == 1, 'a non-admin cannot adjust points')
 
 -- Adjustments survive a restart, like everything else in a cup.
 bootPlugin()
+identifyAll()
 check(totalFor('Phoenix') == 2, 'adjustments survive a server restart')
 check(#cupEntry('Phoenix').adjustments == 1, 'and keep their ledger')
 

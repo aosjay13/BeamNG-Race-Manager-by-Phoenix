@@ -344,6 +344,11 @@ angular.module('beamng.apps')
         // What a DNF is worth: 'none' | 'classified' | 'held'.
         dnfScoring: 'none',
         pendingQuali: 0,       // drivers holding quali points for the next race
+        // The saved drivers, and who is connected right now. The panel pairs
+        // them up by hand because nothing else can: a guest name is reissued at
+        // random on every join, so it identifies nobody.
+        roster: [],            // [{ id, name, guest, provisional, boundPid }]
+        connected: [],         // [{ pid, guest, alias, entryId }]
         standings: []          // [{ pos, name, rounds, racePts, ..., total }]
       };
       // Dot rule: every one of these lives inside the ng-if cup panel, whose
@@ -363,6 +368,10 @@ angular.module('beamng.apps')
         bonus: {},
         confirmReset: false,
         showScoring: false,
+        showDrivers: false,
+        // Which roster entry each connected driver is about to be assigned to,
+        // keyed by pid. Bound through cupUi so the ng-if panel cannot shadow it.
+        bindTo: {},
         // Which driver's adjustment panel is open, and what is being typed into
         // it. One at a time: an inline editor per standings row would put a
         // text box on every line of the table.
@@ -588,6 +597,68 @@ angular.module('beamng.apps')
         if (!row || !cupSeeded) { return false; }
         return Number($scope.cupUi.bonus[row.key] || 0) !== Number(row.value || 0);
       };
+      // --- Driver identity -------------------------------------------------
+      // Assigning a connection to a saved driver. This is an admin decision and
+      // cannot be anything else: BeamMP issues a fresh random guest name on
+      // every join, so the server has no way to tell a returning regular from
+      // somebody who has never raced here. Guessing would eventually hand one
+      // player another's name and their championship points.
+      $scope.cupToggleDrivers = function () {
+        $scope.cupUi.showDrivers = !$scope.cupUi.showDrivers;
+      };
+      // The saved driver a connection is currently racing as, or null.
+      $scope.cupEntryOf = function (conn) {
+        for (var i = 0; i < $scope.cup.roster.length; i++) {
+          if ($scope.cup.roster[i].id === conn.entryId) { return $scope.cup.roster[i]; }
+        }
+        return null;
+      };
+      // Entries free to be assigned: not already held by someone else on the
+      // server. The driver's own current entry stays in their list so the
+      // dropdown can show what they are now.
+      //
+      // `boundPid == null` and NOT `!boundPid`: BeamMP player ids are
+      // ZERO-BASED, so the first player on the server is id 0 and a falsy test
+      // reads them as nobody -- which would offer their driver to everyone else
+      // as unclaimed. This mod has been bitten by that exact assumption before.
+      $scope.cupFreeEntries = function (conn) {
+        var out = [];
+        for (var i = 0; i < $scope.cup.roster.length; i++) {
+          var e = $scope.cup.roster[i];
+          if (e.boundPid == null || e.boundPid === conn.pid) { out.push(e); }
+        }
+        return out;
+      };
+      // What to show beside a connection: the driver they are assigned to. A
+      // placeholder has no display name of its own, so the entry name is the
+      // only honest thing to show.
+      $scope.cupConnLabel = function (conn) {
+        var e = $scope.cupEntryOf(conn);
+        if (!e) { return null; }
+        return e.provisional ? (e.name + ' (placeholder)') : e.name;
+      };
+      $scope.cupApplyBind = function (conn) {
+        var id = Number($scope.cupUi.bindTo[conn.pid] || 0);
+        bngApi.engineLua('raceManager.cupBindDriver(' + conn.pid + ', ' + id + ')');
+      };
+      $scope.cupUnbind = function (conn) {
+        bngApi.engineLua('raceManager.cupBindDriver(' + conn.pid + ', 0)');
+      };
+      $scope.cupForgetDriver = function (entry) {
+        bngApi.engineLua('raceManager.cupForgetDriver(' + entry.id + ')');
+      };
+      // Connections nobody has identified yet -- unassigned, or parked on a
+      // placeholder. Both mean the same thing to an admin: their points are
+      // being kept somewhere that is not a real driver.
+      $scope.cupUnclaimed = function () {
+        var n = 0;
+        for (var i = 0; i < $scope.cup.connected.length; i++) {
+          var e = $scope.cupEntryOf($scope.cup.connected[i]);
+          if (!e || e.provisional) { n++; }
+        }
+        return n;
+      };
+
       // --- Manual adjustments ---------------------------------------------
       // Correcting a cup by hand. The ledger lives on the server; this only
       // opens an editor for one driver at a time and posts what was typed.
@@ -1373,6 +1444,8 @@ angular.module('beamng.apps')
           $scope.cup.presets = toArray(data.presets);
           $scope.cup.bonuses = toArray(data.bonuses);
           $scope.cup.standings = toArray(data.standings);
+          $scope.cup.roster = toArray(data.roster);
+          $scope.cup.connected = toArray(data.connected);
           $scope.cup.pendingQuali = data.pendingQuali || 0;
           $scope.cup.fastestLapRequiresFinish = data.fastestLapRequiresFinish !== false;
           $scope.cup.dnfScoring = data.dnfScoring || 'none';

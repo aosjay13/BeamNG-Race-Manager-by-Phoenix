@@ -413,11 +413,6 @@ local function ensurePlayer(pid)
       rec.joined = ident.joined == true
     end
     players[pid] = rec
-    -- Nothing in the registry (a server that has just restarted has an empty
-    -- one) but the roster on disk may still know this connection. Same evidence
-    -- either way -- the guest name has to match -- so this restores a display
-    -- name across a restart without ever handing one to a recycled session id.
-    if rec.alias == nil and rosterAdopt then rosterAdopt(rec) end
     rememberIdentity(rec)
   end
   return players[pid]
@@ -439,9 +434,14 @@ local derbyEntryListChanged
 --   rosterRemember(rec)   a driver was given a display name: bind them to their
 --                         roster entry, creating it if this is a new name
 --   rosterUnbind(pid)     their display name was cleared, or they left
---   rosterAdopt(rec)      a driver connected: hand back the name they raced
---                         under before, if this is provably the same connection
 --   rosterEntryFor(rec)   the roster entry a driver is bound to, or nil
+--
+-- There is deliberately NO "recognise this driver automatically" here. BeamMP
+-- issues a fresh random guest name on every join, so a name proves nothing
+-- about who is behind it: matching on one would usually fail to spot a
+-- returning driver, and would occasionally hand a stranger somebody else's
+-- identity and the championship points attached to it. Binding a connection to
+-- a roster entry is an admin's decision, and only an admin's.
 --   cupOnSessionComplete  a session finished: score it into the cup, if one is
 --                         running. Called from finishSession and nowhere else.
 --   cupOnDerbyComplete    the same for a demo derby, called from finishDerby.
@@ -449,7 +449,8 @@ local derbyEntryListChanged
 --                         rather than reading derbyPlayers, so the cup never
 --                         reaches into the derby module's tables and the derby
 --                         module hands over a result instead of exposing state.
-local rosterRemember, rosterUnbind, rosterAdopt, rosterEntryFor
+local rosterRemember, rosterUnbind, rosterEntryFor
+local rosterBindTo, rosterList, rosterForget
 local cupOnSessionComplete, cupOnDerbyComplete
 -- Boot-time cache warm for the two, called from onInit. They exist because both
 -- modules are wrapped in a `do ... end` block: Lua allows 200 locals per
@@ -4427,10 +4428,20 @@ end
 -- merely promised.
 local function installRosterAndCup()
 
+-- Assigned by the CUP section below. When an admin binds a connection to a real
+-- driver, any provisional entry that connection had been scoring into has to
+-- hand its rounds over -- otherwise naming somebody halfway through an evening
+-- strands everything they scored before you got to them.
+local cupAbsorbEntry
+
 local ROSTER_FILE = LAYOUTS_DIR .. '/roster.json'
 local MAX_ROSTER_ENTRIES = 200
 
-local roster       = nil   -- lazy-loaded array of { id, name, guest }
+-- Declared ahead of rosterRemember, which uses it: naming a driver who has been
+-- scoring under a placeholder is one of the two ways a merge happens.
+local rosterAbsorb
+
+local roster       = nil   -- lazy-loaded array of { id, name, guest, provisional }
 local rosterNextId = 1     -- persisted, so an id is never reused after a restart
 -- [pid] = entry id. Runtime only and deliberately not persisted: a binding is a
 -- claim about a LIVE connection, and a stale one restored from disk would hand
@@ -4503,14 +4514,6 @@ local function rosterByName(name)
   return nil
 end
 
-local function rosterByGuest(guest)
-  if type(guest) ~= 'string' or guest == '' then return nil end
-  for _, e in ipairs(getRoster()) do
-    if e.guest == guest then return e end
-  end
-  return nil
-end
-
 -- Is this entry already claimed by somebody else who is connected right now?
 local function rosterClaimedBy(entryId, exceptPid)
   for pid, id in pairs(rosterBound) do
@@ -4548,6 +4551,9 @@ rosterRemember = function (rec)
     if bound and bound.id ~= named.id then
       print(string.format('[RaceManager] Roster: %s re-bound from "%s" to the existing entry "%s"',
         rec.name, bound.name, named.name))
+      -- Naming a driver who has already been scoring under a provisional entry
+      -- is the admin saying "this is who that was". Their points move with them.
+      rosterAbsorb(bound, named)
     end
     -- Matching is case-insensitive but the spelling just typed is the one that
     -- sticks, so the entry and the leaderboard can never end up showing the
@@ -4570,27 +4576,112 @@ rosterRemember = function (rec)
     list[#list + 1] = entry
     print(string.format('[RaceManager] Roster: new entry #%d "%s"', entry.id, entry.name))
   end
-  -- Always refreshed: it is the automatic-reattach hint, and it is only ever as
-  -- good as the last connection the name was used on.
+  -- An admin has put a name to this entry, so it is no longer a guess.
+  entry.provisional = nil
+  -- Recorded for the ADMIN's benefit, never matched on: it is what the panel
+  -- shows beside a driver so a human can tell who is who. See rosterEnsure for
+  -- why a guest name is not evidence of identity.
   entry.guest = rec.name
   rosterBound[rec.id] = entry.id
   saveRosterToDisk()
   return entry
 end
 
--- A driver connected without a display name of their own. Hand back the one
--- they raced under before IF the guest name still matches -- and only if
--- nobody else on the server is already using that entry or that name.
-rosterAdopt = function (rec)
-  if not rec or rec.alias then return nil end
-  local entry = rosterByGuest(rec.name)
-  if not entry then return nil end
-  if rosterClaimedBy(entry.id, rec.id) then return nil end
-  if aliasInUse(entry.name, rec.id) then return nil end
+-- Move everything a provisional entry accumulated onto the entry it turned out
+-- to belong to, then retire it. Points follow the driver; the placeholder goes.
+--
+-- Only ever applied to a PROVISIONAL entry. Two entries an admin has named are
+-- two drivers, and quietly merging them because a connection moved between them
+-- would destroy exactly the record this roster exists to keep.
+rosterAbsorb = function (from, into)
+  if not from or not into or from.id == into.id then return false end
+  if not from.provisional then return false end
+  if cupAbsorbEntry then cupAbsorbEntry(from.id, into.id) end
+  local list = getRoster()
+  for i = #list, 1, -1 do
+    if list[i].id == from.id then table.remove(list, i) end
+  end
+  for pid, id in pairs(rosterBound) do
+    if id == from.id then rosterBound[pid] = into.id end
+  end
+  print(string.format('[RaceManager] Roster: provisional entry "%s" merged into "%s"',
+    from.name, into.name))
+  return true
+end
+
+-- Bind a connected driver to a roster entry outright. THE admin control for
+-- "this player is that driver", and the answer to a reconnect: BeamMP issues a
+-- new random guest name every join, so nothing but a person can make this call.
+--
+-- Refuses rather than guesses. Handing an entry to the wrong connection hands
+-- over a season of points with it, so every way that could happen is a refusal
+-- with a reason attached.
+rosterBindTo = function (rec, entryId)
+  if not rec then return false, 'That driver is no longer on the server.' end
+  local entry = rosterById(entryId)
+  if not entry then return false, 'No such driver in the roster.' end
+  local heldBy = rosterClaimedBy(entry.id, rec.id)
+  if heldBy then
+    local other = players[heldBy]
+    return false, '"' .. entry.name .. '" is already assigned to '
+      .. (other and other.name or ('player ' .. tostring(heldBy)))
+      .. ' — unassign them first.'
+  end
+  if aliasInUse(entry.name, rec.id) then
+    return false, 'The name "' .. entry.name .. '" is in use by somebody else on the server.'
+  end
+  local previous = rosterById(rosterBound[rec.id])
+  if previous and previous.id ~= entry.id then
+    rosterAbsorb(previous, entry)
+  end
   rec.alias = entry.name
+  entry.guest = rec.name
   rosterBound[rec.id] = entry.id
-  print(string.format('[RaceManager] Roster: %s recognised as "%s"', rec.name, entry.name))
-  return entry
+  rememberIdentity(rec)
+  saveRosterToDisk()
+  print(string.format('[RaceManager] Roster: %s bound to "%s"', rec.name, entry.name))
+  return true, rec.name .. ' is now racing as "' .. entry.name .. '".'
+end
+
+-- Delete an entry. Used for placeholders left behind by drivers who never came
+-- back, and for pruning a roster that has filled up. The cup removes its own
+-- side separately -- this owns names, not points.
+rosterForget = function (entryId)
+  local list = getRoster()
+  for i = #list, 1, -1 do
+    if list[i].id == entryId then
+      local gone = table.remove(list, i)
+      for pid, id in pairs(rosterBound) do
+        if id == entryId then
+          rosterBound[pid] = nil
+          local rec = players[pid]
+          if rec then rec.alias = nil; rememberIdentity(rec) end
+        end
+      end
+      saveRosterToDisk()
+      print('[RaceManager] Roster: entry "' .. gone.name .. '" forgotten')
+      return true
+    end
+  end
+  return false
+end
+
+-- The roster as the admin panel sees it: who exists, who is connected right now
+-- and under which guest name, and which entries are still guesses.
+rosterList = function ()
+  local out = {}
+  for i, e in ipairs(getRoster()) do
+    out[i] = {
+      id = e.id, name = e.name, guest = e.guest,
+      provisional = e.provisional == true,
+      boundPid = rosterClaimedBy(e.id, nil),
+    }
+  end
+  table.sort(out, function (a, b)
+    if a.provisional ~= b.provisional then return b.provisional end
+    return a.name:lower() < b.name:lower()
+  end)
+  return out
 end
 
 -- The entry a driver should be scored against, creating one if they have no
@@ -4608,20 +4699,38 @@ local function rosterEnsure(rec)
   local entry = rosterEntryFor(rec)
   if entry then return entry end
   local list = getRoster()
-  -- The DISPLAY NAME first, and it matters more than it looks. A driver who
-  -- disconnects mid-race has their live binding dropped (it is a claim about a
-  -- connection, and that connection is gone) but their record survives to be
-  -- classified -- so at the moment the cup scores them they are named and
-  -- unbound. Matching on the guest name alone would file that driver under a
-  -- brand new "Guest_4471" entry and strand the season they had been building.
-  entry = (rec.alias and rosterByName(rec.alias)) or rosterByName(rec.name)
+
+  -- Only the DISPLAY NAME may find an existing entry, because a display name is
+  -- something an admin typed. A driver who disconnects mid-race has their live
+  -- binding dropped -- it is a claim about a connection, and that connection is
+  -- gone -- but their record survives to be classified, so at the moment the cup
+  -- scores them they are named and unbound. Matching the name they raced under
+  -- puts them back on their own entry.
+  --
+  -- The GUEST name is never matched against anything. BeamMP issues a fresh
+  -- random one on every join, so it identifies nobody: it would miss a returning
+  -- driver almost every time, and on the occasion two people were ever issued
+  -- the same one it would quietly merge two strangers' seasons.
+  entry = rec.alias and rosterByName(rec.alias) or nil
   if entry and rosterClaimedBy(entry.id, rec.id) then entry = nil end
+
   if not entry then
-    if #list >= MAX_ROSTER_ENTRIES then return nil end
-    entry = { id = rosterNextId, name = rec.name }
+    -- Nobody this driver can safely be identified as, so they get an entry of
+    -- their own. PROVISIONAL: it is a place to keep points that would otherwise
+    -- be dropped on the floor, not a claim about who this is. An admin can bind
+    -- the driver to their real entry later and the points follow (see
+    -- rosterBindTo), which is why losing them here would be the worse failure.
+    if #list >= MAX_ROSTER_ENTRIES then
+      print('[RaceManager] Roster full (' .. MAX_ROSTER_ENTRIES
+        .. ' entries) — ' .. rec.name .. ' could not be entered')
+      return nil
+    end
+    entry = { id = rosterNextId, name = rec.name, provisional = true }
     rosterNextId = rosterNextId + 1
     list[#list + 1] = entry
-    print(string.format('[RaceManager] Roster: auto-entered #%d "%s" (no display name set)',
+    print(string.format(
+      '[RaceManager] Roster: provisional entry #%d for %s (no display name set) — '
+        .. 'bind them to a driver to keep their points together',
       entry.id, entry.name))
   end
   entry.guest = rec.name
@@ -5096,6 +5205,21 @@ broadcastCupState = function (targetPid)
     -- race. The admin needs to see that a quali "counted" before the race runs.
     pendingQuali = #cup.pendingQuali,
     standings    = cupStandings(),
+    -- The roster, and who is connected right now. The admin panel pairs the two
+    -- up: a driver on the server has to be told which roster entry they are,
+    -- because nothing on the wire can work that out for itself.
+    roster       = rosterList and rosterList() or {},
+    connected    = (function ()
+      local out = {}
+      for _, rec in pairs(players) do
+        out[#out + 1] = {
+          pid = rec.id, guest = rec.name, alias = rec.alias,
+          entryId = rosterEntryFor and (rosterEntryFor(rec) or {}).id or nil,
+        }
+      end
+      table.sort(out, function (a, b) return a.pid < b.pid end)
+      return out
+    end)(),
   }))
 end
 
@@ -5523,6 +5647,102 @@ function RM_onCupSetScoring(pid, rawData)
     .. (#cup.scoring.quali > 0 and (#cup.scoring.quali .. ' deep') or 'off') .. ')')
 end
 
+-- Fold one cup entry into another, filling the forward declaration the roster
+-- makes. Called when a provisional entry turns out to have been a driver the
+-- admin can name: the rounds and adjustments move, the placeholder goes.
+--
+-- Rounds are appended rather than merged by round number. A driver can only
+-- have raced one of them, so there is nothing to reconcile -- and if a cup ever
+-- does end up with two rows for one round, an admin can see both and drop one,
+-- which is a better outcome than this silently picking a winner.
+cupAbsorbEntry = function (fromId, toId)
+  getCup()
+  local from = cupFindEntry(fromId)
+  if not from then return false end
+  local into = cupFindEntry(toId)
+  if not into then
+    -- Nothing to merge into yet: the entry simply changes hands. Its points
+    -- were earned by this driver either way.
+    from.entryId = toId
+    saveCupToDisk()
+    return true
+  end
+  for _, r in ipairs(from.rounds) do into.rounds[#into.rounds + 1] = r end
+  for _, a in ipairs(from.adjustments) do into.adjustments[#into.adjustments + 1] = a end
+  for i = #cup.entries, 1, -1 do
+    if cup.entries[i].entryId == fromId then table.remove(cup.entries, i) end
+  end
+  print(string.format('[RaceManager] Cup: %d round(s) and %d adjustment(s) moved to "%s"',
+    #from.rounds, #from.adjustments, into.name))
+  saveCupToDisk()
+  return true
+end
+
+-- ---------------------------------------------------------------------------
+-- Driver identity (admin-controlled)
+-- ---------------------------------------------------------------------------
+-- Assign a connected player to a roster entry. This is how a driver gets their
+-- name -- and their points -- back after a reconnect, and it is an admin action
+-- because nothing else can know: BeamMP hands out a fresh random guest name
+-- every join, so the server cannot tell a returning regular from a stranger.
+function RM_onCupBindDriver(pid, rawData)
+  if not requireAuth(pid) then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local target = tonumber(data.pid)
+  local entryId = tonumber(data.entryId)
+  if not target then return end
+  local rec = players[math.floor(target)]
+  if not rec then
+    MP.TriggerClientEvent(pid, 'RM_AliasResult', Util.JsonEncode({
+      success = false, message = 'That driver is no longer on the server.' }))
+    return
+  end
+
+  -- entryId 0 (or absent) means "unassign": drop the binding and the name, and
+  -- leave the entry -- and everything on it -- where it is.
+  if not entryId or entryId <= 0 then
+    rosterUnbind(rec.id)
+    rec.alias = nil
+    rememberIdentity(rec)
+    broadcastState()
+    if broadcastCupState then broadcastCupState() end
+    MP.TriggerClientEvent(pid, 'RM_AliasResult', Util.JsonEncode({
+      success = true, message = rec.name .. ' is unassigned.' }))
+    print('[RaceManager] Roster: ' .. rec.name .. ' unassigned by '
+      .. (MP.GetPlayerName(pid) or pid))
+    return
+  end
+
+  local bound, msg = rosterBindTo(rec, math.floor(entryId))
+  if bound then
+    broadcastState()
+    if broadcastCupState then broadcastCupState() end
+  end
+  MP.TriggerClientEvent(pid, 'RM_AliasResult', Util.JsonEncode({
+    success = bound, message = msg }))
+end
+
+-- Delete a roster entry outright, and everything the cup holds against it.
+-- The way to clear out placeholders left by drivers who never came back.
+function RM_onCupForgetDriver(pid, rawData)
+  if not requireAuth(pid) then return end
+  local entryId = decodeNumber(rawData, 'entryId')
+  if not entryId then return end
+  entryId = math.floor(entryId)
+  if rosterForget(entryId) then
+    getCup()
+    for i = #cup.entries, 1, -1 do
+      if cup.entries[i].entryId == entryId then table.remove(cup.entries, i) end
+    end
+    saveCupToDisk()
+    broadcastState()
+    print('[RaceManager] Roster: entry ' .. entryId .. ' forgotten by '
+      .. (MP.GetPlayerName(pid) or pid))
+  end
+end
+
 -- ---------------------------------------------------------------------------
 -- Manual adjustments
 -- ---------------------------------------------------------------------------
@@ -5729,10 +5949,6 @@ function RM_onPlayerJoin(pid)
   end
   local rec = ensurePlayer(pid)
   if not rec then return end
-  -- An existing record with no name of its own may still be a connection the
-  -- roster recognises (ensurePlayer only gets to try this for records it
-  -- creates). No-ops when they already have one.
-  if rec.alias == nil and rosterAdopt then rosterAdopt(rec) end
   -- Connecting is not entering: in the default opt-in mode a new arrival is a
   -- spectator until they press Join Race. In 'all' mode they are in the field
   -- straight away, which is what that mode means.
@@ -5878,6 +6094,8 @@ function onInit()
   MP.RegisterEvent('RM_CupAdjust',        'RM_onCupAdjust')
   MP.RegisterEvent('RM_CupRemoveAdjust',  'RM_onCupRemoveAdjust')
   MP.RegisterEvent('RM_CupDropRound',     'RM_onCupDropRound')
+  MP.RegisterEvent('RM_CupBindDriver',    'RM_onCupBindDriver')
+  MP.RegisterEvent('RM_CupForgetDriver',  'RM_onCupForgetDriver')
   MP.RegisterEvent('onPlayerJoin',        'RM_onPlayerJoin')
   MP.RegisterEvent('onPlayerDisconnect',  'RM_onPlayerDisconnect')
   MP.RegisterEvent('RM_Tick',             'RM_Tick')

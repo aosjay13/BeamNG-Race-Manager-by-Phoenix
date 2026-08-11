@@ -395,6 +395,67 @@
       </span>
     </div>
 
+    <!-- ---- Drivers -------------------------------------------------------
+         Which connection is which driver. An admin decides this and nothing
+         else can: BeamMP issues a fresh random guest name on every join, so a
+         returning regular looks exactly like a stranger. Guessing would
+         eventually hand somebody another driver's name and points. -->
+    <div class="rm-cup-controls" ng-if="cup.enabled">
+      <button class="rm-btn rm-btn-mini" ng-click="cupToggleDrivers()">
+        {{ cupUi.showDrivers ? '▾' : '▸' }} Drivers
+      </button>
+      <span class="rm-setting-val">{{ cup.roster.length }} saved · {{ cup.connected.length }} connected</span>
+      <span class="rm-cup-pending" ng-if="cupUnclaimed()">
+        ⚠ {{ cupUnclaimed() }} unassigned — their points will be kept separately until you assign them
+      </span>
+    </div>
+
+    <div class="rm-cup-scoring" ng-if="cup.enabled && cupUi.showDrivers">
+      <div class="rm-cup-sep">On the server now</div>
+      <div class="rm-cup-hint" ng-if="!cup.connected.length">Nobody is connected.</div>
+      <div class="rm-cup-row" ng-repeat="c in cup.connected track by c.pid">
+        <label title="The random name BeamMP gave this connection">{{ c.guest }}</label>
+        <span class="rm-cup-racingas" ng-if="cupConnLabel(c)">racing as <b>{{ cupConnLabel(c) }}</b></span>
+        <span class="rm-cup-racingas rm-cup-off" ng-if="!cupConnLabel(c)">unassigned</span>
+        <select ng-model="cupUi.bindTo[c.pid]"
+                ng-options="e.id as (e.name + (e.provisional ? ' (placeholder)' : '')) for e in cupFreeEntries(c)">
+          <option value="">— pick a driver —</option>
+        </select>
+        <button class="rm-btn rm-btn-mini" ng-click="cupApplyBind(c)"
+                ng-disabled="!cupUi.bindTo[c.pid]">Assign</button>
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-if="c.entryId"
+                ng-click="cupUnbind(c)"
+                title="Detach this connection from that driver. The driver, and every point they have, stays.">
+          Unassign
+        </button>
+      </div>
+      <div class="rm-cup-row">
+        <span class="rm-cup-hint">
+          Assigning moves any points this connection has already scored under a
+          placeholder onto the driver you pick. To create a new driver, set a
+          display name on the Admin tab instead.
+        </span>
+      </div>
+
+      <div class="rm-cup-sep">Saved drivers</div>
+      <div class="rm-cup-hint" ng-if="!cup.roster.length">
+        No saved drivers yet. Give someone a display name and they appear here.
+      </div>
+      <div class="rm-cup-ledrow" ng-repeat="e in cup.roster track by e.id">
+        <span class="rm-cup-ledwhy">
+          {{ e.name }}<span class="rm-cup-off" ng-if="e.provisional"> (placeholder)</span>
+        </span>
+        <!-- `!= null`, not a truthiness test: BeamMP player ids start at ZERO,
+             so the first player on the server would otherwise read as nobody
+             and their driver would look free to take. -->
+        <span class="rm-cup-ledby" ng-if="e.boundPid != null">connected</span>
+        <span class="rm-cup-ledby" ng-if="e.boundPid == null">last seen as {{ e.guest || '?' }}</span>
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="cupForgetDriver(e)"
+                ng-disabled="e.boundPid != null"
+                title="Delete this driver and every cup point they hold. Only available while they are not connected.">✕</button>
+      </div>
+    </div>
+
     <!-- Scoring rules, collapsed by default. -->
     <div class="rm-cup-controls" ng-if="cup.enabled">
       <button class="rm-btn rm-btn-mini" ng-click="cupToggleScoring()">
@@ -679,9 +740,10 @@
     <div class="rm-cup-hint rm-cup-empty" ng-if="!cup.enabled">
       A cup adds championship points on top of normal races. With no cup running,
       races behave exactly as they do today.
-      Drivers are identified by their <b>display name</b>, so set one for each
-      driver (Admin tab) before the first round — that is what their points stay
-      attached to across reconnects.
+      Points attach to a <b>saved driver</b>, not to a connection. Give everyone a
+      display name before the first round, and assign them again after a
+      reconnect — BeamMP reissues guest names at random, so nobody is recognised
+      automatically. The <b>Drivers</b> panel above does both.
     </div>
   </div>
 
@@ -2373,6 +2435,7 @@
     color: #e8eaed;
   }
   .rm-cup-ledby { color: #5f6368; }
+  .rm-cup-racingas { font-size: 10px; color: #9aa0a6; min-width: 90px; }
   .rm-cup-sttotal { width: 42px; text-align: right; color: #e8eaed; font-weight: 700; }
 
   /* Garage list */

@@ -317,6 +317,43 @@ expect(js:find('data.dnfScoring', 1, true) ~= nil,
   'the DNF rule is mirrored from the cup broadcast')
 
 -- ---------------------------------------------------------------------------
+-- 4f. Driver identity is an ADMIN decision
+--
+-- BeamMP issues a fresh random guest name on every join, so nothing can work
+-- out who has come back. The panel therefore has to offer an explicit
+-- assignment, and it must never treat player id 0 as "nobody" -- ids are
+-- zero-based, and a truthiness test on one reads the first player on the server
+-- as unassigned, which would offer their driver (and their points) to somebody
+-- else as free to take.
+-- ---------------------------------------------------------------------------
+expect(html:find('ng%-model="cupUi%.bindTo%[c%.pid%]"') ~= nil,
+  'the assignment dropdown binds cupUi.bindTo by player id')
+wired('cupBindDriver',   'cupApplyBind',      'Assign a connection to a driver')
+wired('cupBindDriver',   'cupUnbind',         'Unassign a connection')
+wired('cupForgetDriver', 'cupForgetDriver',   'Delete a saved driver')
+
+expect(html:find('c in cup.connected', 1, true) ~= nil,
+  'the panel lists who is connected right now')
+expect(html:find('e in cup.roster', 1, true) ~= nil,
+  'and the saved drivers they can be assigned to')
+for _, field in ipairs({ 'roster', 'connected' }) do
+  expect(js:find('data.' .. field, 1, true) ~= nil,
+    'cup field ' .. field .. ' is mirrored from the RaceManagerCup broadcast')
+end
+
+-- The zero-based id trap, in both files.
+expect(js:find('e.boundPid == null', 1, true) ~= nil,
+  'the free-entry filter tests boundPid against null, not truthiness — player '
+    .. 'id 0 is a real driver')
+expect(html:find('e.boundPid', 1, true) == nil
+  or (html:find('e.boundPid != null', 1, true) ~= nil
+      and html:find('e.boundPid == null', 1, true) ~= nil),
+  'the template compares boundPid against null too, so the first player on the '
+    .. 'server is not rendered as unassigned')
+expect(html:match('ng%-if="e%.boundPid"') == nil,
+  'no bare truthiness test on boundPid survives in the template')
+
+-- ---------------------------------------------------------------------------
 -- 4e. The driver payload carries every field the app reads off a driver row
 --
 -- The state broadcast sends a TRIMMED projection of each player record rather

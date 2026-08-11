@@ -12,14 +12,21 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 - **Display names are now saved on the server and survive a restart.** Every
   name an admin sets is written to `Resources/Server/RaceManager/roster.json`
-  as a roster entry. A driver who reconnects under the same guest name is
-  recognised automatically; otherwise setting the same name again reattaches
-  them to their existing entry rather than making a second one, so anything
-  keyed on that entry follows them back. A recycled session id still never
-  inherits a name — the roster only recognises a driver when the guest name
-  matches too, which is the same evidence used before it existed. This reverses
-  a documented limitation; see
+  as a saved driver, and cup points attach to that driver rather than to a
+  connection. This reverses a documented limitation; see
   [Display names](docs/REFERENCE.md#display-names).
+- **Who is who is an admin decision, never a guess.** BeamMP issues a fresh
+  random guest name on every join, so a guest name identifies nobody: matching
+  on one would miss a returning driver almost every time, and on the occasion
+  two people were ever issued the same name it would hand a stranger somebody
+  else's identity and their championship points. Nothing is assigned
+  automatically. After a reconnect or a restart an admin either sets the name
+  again or picks the driver from the Cup tab's new **Drivers** panel, which also
+  warns how many connections are still unidentified.
+- **Nobody loses points by being identified late.** A driver who races
+  unassigned scores into a **placeholder**; assigning them afterwards moves
+  those points onto the real driver and retires the placeholder. Placeholders
+  left by drivers who never returned can be deleted outright.
 - **The live timing broadcast is about 20% smaller.** A player record carries
   audit counters and comparator scratch that no client renders, and all of it
   was being serialised for the whole field three times a second. The broadcast

@@ -1,22 +1,27 @@
 -- Headless test for the persistent driver roster in server/RaceManager/main.lua.
 --
 -- Display names used to last exactly as long as a connection did, and the
--- reference documented that as a limitation: everyone is a guest, BeamMP
--- recycles session ids, and guest names are regenerated on every join, so there
--- was nothing to bind a lasting name to.
+-- reference documented that as a limitation. The roster is the anchor that was
+-- missing: a name an admin gave somebody, written to disk, and the thing cup
+-- points hang off.
 --
--- The roster is the anchor that was missing. It is an admin's decision written
--- to disk, and it is what cup points hang off -- so the properties below are not
--- cosmetic. If a name can be inherited by the wrong player, so can a
--- championship lead.
+-- What it must NEVER do is guess. BeamMP issues a fresh random guest name on
+-- every join, so a guest name identifies nobody: matching on one would miss a
+-- returning driver almost every time, and on the occasion two people were ever
+-- issued the same name it would hand a stranger somebody else's identity and
+-- the championship attached to it. Binding a connection to a driver is
+-- therefore an admin action and only an admin action, and these are the
+-- properties that keeps true:
 --
 --   * a name an admin sets is written to roster.json and survives a restart
---   * a driver whose guest name still matches gets their name back automatically
---   * a RECYCLED session id does not, which is the impersonation case
---   * retyping an existing name BINDS to that entry rather than duplicating it
---     (this is how a reconnected driver returns to their points)
---   * renaming a bound driver renames their entry, it does not make a new one
---   * clearing a name unbinds but keeps the entry, points and all
+--   * NOTHING is auto-assigned on join, however suggestive the guest name is
+--   * a guest name that collides with one the roster has seen inherits nothing
+--   * an admin can assign a connection to a saved driver, and their points
+--     come with them
+--   * an entry already held by a connected player cannot be taken
+--   * points scored under a placeholder move onto the real driver when the
+--     admin assigns them
+--   * renaming a driver renames their entry rather than making a second one
 --
 -- Run from the repo root: lua5.3 tests/roster_test.lua
 
@@ -184,6 +189,28 @@ local function setName(target, name)
   RM_onSetAlias(9, '{"target":' .. target .. ',"alias":"' .. name .. '"}')
 end
 
+-- The admin control: assign a connection to a saved driver (entryId 0 clears).
+local function assign(targetPid, entryId)
+  RM_onCupBindDriver(9, '{"pid":' .. targetPid .. ',"entryId":' .. entryId .. '}')
+end
+
+-- Total race points held by one cup entry, read back off cup.json.
+local function cupTotal(entryId)
+  local f = io.open('Resources/Server/RaceManager/cup.json', 'r')
+  if not f then return nil end
+  local okp, data = pcall(jsonDecode, f:read('*a'))
+  f:close()
+  if not okp or type(data) ~= 'table' then return nil end
+  for _, e in ipairs(data.entries or {}) do
+    if e.entryId == entryId then
+      local t = 0
+      for _, r in ipairs(e.rounds or {}) do t = t + (r.racePts or 0) end
+      return t
+    end
+  end
+  return nil
+end
+
 bootPlugin()
 
 -- ---------------------------------------------------------------------------
@@ -201,60 +228,96 @@ local phoenixId = entryNamed('Phoenix').id
 check(type(phoenixId) == 'number', 'the entry carries a stable numeric id')
 
 -- ---------------------------------------------------------------------------
--- 2. The name survives a server restart.
+-- 2. The entry survives a restart -- but is NOT handed back automatically.
 --
--- This is the whole point of the file on disk: the in-memory identity registry
--- is empty on a fresh boot, so anything that comes back came back from roster.json.
+-- The file on disk is the point. What must not happen is the server deciding
+-- for itself that whichever connection now holds "Guest_A" is Phoenix: after a
+-- restart that name has been reissued at random and means nothing.
 -- ---------------------------------------------------------------------------
 lastState = nil
 bootPlugin()
-check(driver(0).alias == 'Phoenix', 'a display name survives a server restart')
-check(driver(1).alias == 'Ryder', 'and so does the second one')
-check(entryNamed('Phoenix').id == phoenixId, 'the entry keeps its id across the restart')
+check(entryNamed('Phoenix') ~= nil, 'the saved driver survives a server restart')
+check(entryNamed('Phoenix').id == phoenixId, 'and keeps its id')
+check(driver(0).alias == nil,
+  'but nobody is auto-assigned to it, even on the same guest name -- a guest '
+    .. 'name is reissued at random and identifies no one')
+
+-- The admin puts them back, which is the supported path.
+assign(0, phoenixId)
+check(driver(0).alias == 'Phoenix', 'an admin can assign a connection to a saved driver')
+check(entryNamed('Phoenix').guest == 'Guest_A', 'and the entry notes who is on it now')
 
 -- ---------------------------------------------------------------------------
--- 3. A recycled session id must NOT adopt the previous player's name.
+-- 3. A colliding guest name inherits NOTHING.
 --
--- BeamMP hands session ids out again, and the roster must not become a way to
--- inherit somebody else's identity -- or, once a cup is running, their points.
+-- The impersonation case, and the reason automatic matching was removed. A
+-- different person turning up on a guest name the roster has seen before must
+-- not become that driver -- or, once a cup is running, take their points.
 -- ---------------------------------------------------------------------------
 RM_onPlayerDisconnect(1)
-connected[1] = 'Guest_STRANGER'
+connected[1] = 'Guest_A'            -- the exact name Phoenix's entry recorded
 RM_onPlayerJoin(1)
-check(driver(1).alias == nil, 'a recycled session id does not adopt the roster name')
-check(driver(1).name == 'Guest_STRANGER', 'the new player shows under their own guest name')
-check(entryNamed('Ryder') ~= nil, 'the roster entry itself is kept, unclaimed')
+check(driver(1).alias == nil,
+  'a stranger issued a guest name the roster has seen is not assigned to it')
+check(driver(0).alias == 'Phoenix', 'and the real driver keeps their name')
+
+-- Nor can an admin hand it over while it is in use: the same protection from
+-- the other direction.
+assign(1, phoenixId)
+check(driver(1).alias == nil, 'an entry held by a connected player cannot be taken')
+local takeMsg = aliasMsg[9]
+check(takeMsg and takeMsg.success == false
+  and tostring(takeMsg.message):find('already assigned'),
+  'and the admin is told why')
 
 -- ---------------------------------------------------------------------------
--- 4. Retyping an existing name BINDS to that entry rather than duplicating it.
+-- 4. Assigning carries the driver's points with them.
 --
--- This is the reconnect path, and it is the one that matters most: a driver
--- comes back under a fresh guest name, the admin types the name they had, and
--- they must land on the SAME entry -- that is what returns their points.
+-- A driver who reconnects mid-cup scores under a placeholder until an admin
+-- recognises them. Assigning has to move that, or an admin who gets to them
+-- after a race has stranded everything they won.
 -- ---------------------------------------------------------------------------
-connected[2] = 'Guest_REJOINED'
-RM_onPlayerDisconnect(2)
-RM_onPlayerJoin(2)
-local before = #(readRoster().entries)
-setName(2, 'Ryder')
-check(#(readRoster().entries) == before, 'retyping a known name creates no second entry')
-check(entryNamed('Ryder').guest == 'Guest_REJOINED',
-  'the entry is re-pointed at the connection now using it')
-check(driver(2).alias == 'Ryder', 'the driver is shown under the name again')
+RM_onCupStart(9, '{"name":"Roster Cup"}')
+RM_onCupSetScoring(9, '{"race":[30,27,25]}')
+RM_onSetEntryMode(9, '{"mode":"all"}')
+RM_onPlayerDisconnect(1)
+connected[1] = 'Guest_LATE'
+RM_onPlayerJoin(1)
+check(driver(1).alias == nil, 'the returning driver arrives unassigned')
 
--- Case-insensitively, so an admin does not have to reproduce the capitalisation.
-connected[1] = 'Guest_THIRD'
-RM_onPlayerDisconnect(1)
-RM_onPlayerJoin(1)
-setName(1, 'Nomad')
-local nomadId = entryNamed('Nomad').id
-connected[1] = 'Guest_FOURTH'
-RM_onPlayerDisconnect(1)
-RM_onPlayerJoin(1)
-setName(1, 'nOmAd')
-check(entryNamed('Nomad') == nil, 'the stored name follows the latest spelling')
-check(entryNamed('nOmAd') ~= nil and entryNamed('nOmAd').id == nomadId,
-  'a name matched case-insensitively binds to the same entry, not a new one')
+RM_onSetTotalLaps(9, '{"laps":1}')
+RM_onGenerateGrid(9)
+RM_onStartCountdown(9)
+for _ = 1, 4 do RM_CountdownTick() end
+RM_Tick(); RM_onLap(1, '{"lapTime":60.0}')
+RM_Tick(); RM_onLap(0, '{"lapTime":61.0}')
+RM_Tick(); RM_onLap(2, '{"lapTime":62.0}')
+
+local placeholder = nil
+for _, e in ipairs(readRoster().entries) do
+  if e.name == 'Guest_LATE' then placeholder = e end
+end
+check(placeholder ~= nil, 'an unassigned driver is scored under a placeholder entry')
+check(placeholder.provisional == true, 'which is marked a placeholder, not a claim')
+check(cupTotal(placeholder.id) == 30, 'and holds the points they won')
+
+-- Now the admin recognises them. Ryder's entry is free -- nobody is on it.
+local ryderId = entryNamed('Ryder').id
+assign(1, ryderId)
+check(driver(1).alias == 'Ryder', 'the admin assigns them to the right driver')
+check(cupTotal(ryderId) == 30, 'and the points they scored come with them')
+local stillThere = false
+for _, e in ipairs(readRoster().entries) do
+  if e.id == placeholder.id then stillThere = true end
+end
+check(not stillThere, 'the placeholder is retired once its points have moved')
+
+-- Unassigning detaches the connection and leaves the driver intact.
+assign(1, 0)
+check(driver(1).alias == nil, 'unassigning clears the name from the connection')
+check(entryNamed('Ryder') ~= nil, 'the saved driver stays')
+check(cupTotal(ryderId) == 30, 'and keeps every point')
+RM_onCupReset(9)
 
 -- ---------------------------------------------------------------------------
 -- 5. Renaming a bound driver renames their entry.
@@ -283,7 +346,10 @@ check(entryNamed('Phoenix Rising') ~= nil, 'the roster entry survives the clear'
 --
 -- The roster must not become a back door around the impersonation guard.
 -- ---------------------------------------------------------------------------
-setName(0, 'Ryder')   -- pid 2 is bound to Ryder and connected
+-- Put somebody on Ryder first, so the name really is taken.
+assign(2, entryNamed('Ryder').id)
+check(driver(2).alias == 'Ryder', 'a driver is assigned to Ryder')
+setName(0, 'Ryder')
 check(driver(0).alias == nil, 'a name held by a connected driver is refused')
 local msg = aliasMsg[9]
 check(msg and msg.success == false and tostring(msg.message):find('already in use'),
