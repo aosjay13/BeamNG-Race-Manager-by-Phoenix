@@ -98,6 +98,16 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 ### Changed
 
+- **The release package now spells the two folders `Client/` and `Server/`.**
+  They map straight onto a BeamMP server's `Resources/Client` and
+  `Resources/Server`, and Linux — where a good share of servers are hosted —
+  cares about the difference: the old lowercase folders dropped into
+  `Resources/` looked installed and were simply never read, with no error to go
+  on. It matched on Windows, which is why it survived this long. Upgrading on a
+  Linux host, delete any leftover lowercase `Resources/client` or
+  `Resources/server`. The packaging workflow now prints the layout on every run
+  and refuses to publish a package missing either folder.
+
 - **The derby arena is drawn as walls, not poles and rope** — a translucent
   panel per edge, drawn from both sides so it is there from inside the arena as
   well as outside it.

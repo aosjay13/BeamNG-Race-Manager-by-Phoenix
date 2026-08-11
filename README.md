@@ -46,6 +46,13 @@ an update overwrites the old one instead of leaving two copies side by side.
 > something didn't get copied. A stale file fails *silently*: a button just
 > stops doing anything, with no error anywhere.
 
+> **Upgrading from 0.6.0 or earlier on Linux?** Those packages spelled the two
+> folders `client/` and `server/` in lower case. BeamMP reads `Resources/Client`
+> and `Resources/Server`, so if your server is Linux-hosted, check for a stray
+> lowercase `Resources/client` or `Resources/server` left over from an older
+> install and delete it. On Windows the two spellings are the same folder and
+> there is nothing to do.
+
 > **Change the password before your first public session.** It ships as
 > `phoenix`. Log in, then set a new one from the **Change password** bar — it
 > applies immediately.

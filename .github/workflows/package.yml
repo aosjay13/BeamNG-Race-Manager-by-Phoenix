@@ -34,11 +34,20 @@ jobs:
           DEFAULT_BUMP: ${{ inputs.bump }}
           WITH_V: true
 
-      # --- Build client/RaceManager.zip (stays zipped) ---
+      # --- Build Client/RaceManager.zip (stays zipped) ---
+      #
+      # Client and Server are CAPITALISED, and that is not cosmetic. The two
+      # folders in this package map straight onto a BeamMP server's
+      # Resources/Client and Resources/Server, which is where BeamMP looks --
+      # and Linux, where a good share of servers are hosted, cares about the
+      # difference. Lowercase folders drop into Resources/ looking installed
+      # and are simply never read: no error, no mod, nothing to go on.
+      #
+      # It matched on Windows, which is why it survived this long.
       - name: Create client zip
         run: |
-          mkdir -p package/client
-          zip package/client/RaceManager.zip \
+          mkdir -p package/Client
+          zip package/Client/RaceManager.zip \
             lua/ge/extensions/raceManager.lua \
             scripts/raceManager/modScript.lua \
             ui/modules/apps/RaceManager/app.html \
@@ -49,14 +58,28 @@ jobs:
       # --- Copy server file, renamed to main.lua ---
       - name: Copy server files
         run: |
-          mkdir -p package/server/RaceManager
-          cp server/RaceManager/main.lua package/server/RaceManager/
+          mkdir -p package/Server/RaceManager
+          cp server/RaceManager/main.lua package/Server/RaceManager/
 
       # --- Create the main downloadable zip ---
       - name: Create main zip
         run: |
           cd package
           zip -r ../RaceManager-${{ steps.version.outputs.new_tag }}.zip .
+
+      # --- Show what shipped, and fail if the layout is wrong ---
+      # The paths in this package are install instructions: they are copied
+      # as-is into a server's Resources/. A silent change to either of them
+      # produces a release that installs into nothing on a Linux host, so the
+      # run prints the layout and refuses to publish a package missing it.
+      - name: Verify package layout
+        run: |
+          unzip -l RaceManager-${{ steps.version.outputs.new_tag }}.zip
+          unzip -l package/Client/RaceManager.zip
+          test -f package/Client/RaceManager.zip \
+            || { echo "::error::Client/RaceManager.zip missing (check the folder case)"; exit 1; }
+          test -f package/Server/RaceManager/main.lua \
+            || { echo "::error::Server/RaceManager/main.lua missing (check the folder case)"; exit 1; }
 
       # --- Publish as a Release ---
       - name: Create Release
