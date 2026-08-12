@@ -150,6 +150,16 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 ### Fixed
 
+- **A car left parked in a pit stall no longer serves stop after stop.** The
+  cooldown was meant to stop the box you are standing in re-triggering, but a
+  timer only delays that: a car still in the stall when it expires is caught
+  again, and again. Each stop freezes and ghosts it, so the car appears stuck as
+  a ghost for the rest of the race — the reset ghost would count down, flash
+  solid, and go straight back. Resetting in the pits is how a driver ends up
+  parked there, since a reset in place leaves the car exactly where it stood.
+  A stall now re-arms when the car **leaves** it, which is what "live on the
+  next visit" always meant. Driving out and coming back still works normally.
+
 - **A derby is now "live" for the UI from Form Up, not from GO.** Both the
   driver's minimal mode and their derby board keyed on `phase === 'running'`,
   which predates the two-step start — so a driver held on the derby grid through

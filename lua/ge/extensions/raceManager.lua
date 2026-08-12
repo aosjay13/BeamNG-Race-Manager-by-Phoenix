@@ -288,7 +288,19 @@ local pit = {
   active   = false,  -- a stop is running
   left     = 0,      -- seconds until release
   repaired = false,  -- the repair has been issued for this stop
-  cooldown = 0,      -- stops the box you are standing in re-triggering
+  cooldown = 0,      -- a short delay before the same stall is live again
+  -- The car has to LEAVE a stall before it can serve another stop in one.
+  --
+  -- The cooldown above was meant to be what stopped the box you are standing in
+  -- re-triggering, but a timer only delays that: a car still parked in the
+  -- stall when it expires is simply caught again, and again, forever -- frozen
+  -- and ghosted each time, which reads from the driver's seat as "my car is
+  -- stuck as a ghost for the rest of the race". Resetting in the pits puts you
+  -- there, because a reset in place leaves the car exactly where it stood.
+  --
+  -- A stop is something a driver DRIVES INTO. Arriving is the trigger, so
+  -- having left is the thing that re-arms it.
+  mustLeave = false,
   stops    = 0,      -- how many this session, for the log
   -- Standing in a stall but still rolling. Held so the "stop in the box"
   -- reminder can be throttled: without it the prompt is a push per frame for
@@ -1531,6 +1543,9 @@ function pit.release(reason)
   pit.left     = 0
   pit.repaired = false
   pit.cooldown = TUNE.PIT_COOLDOWN
+  -- The car is standing in the box it just used. It does not get another stop
+  -- out of that box until it has driven out of it.
+  pit.mustLeave = true
   pit.setGhost(false)
   setLocalVehicleFrozen(false)
   pushRouteState()
@@ -1587,10 +1602,24 @@ function pit.update(dt)
 
   if pit.promptLeft > 0 then pit.promptLeft = pit.promptLeft - dt end
 
-  if #pitRoute == 0 or pit.cooldown > 0 then return end
+  if #pitRoute == 0 then return end
   if not sessionRunning() or spectatorLock or gridFrozen then return end
   local veh, pos = sampledVehicle()
   if not veh or not pos then return end
+
+  -- Which stall the car is standing in, if any. Worked out BEFORE the cooldown
+  -- is consulted, so driving out during it still re-arms the stall: leaving is
+  -- what makes the next entry a fresh visit, and a driver who has left and come
+  -- back has done the thing a stop asks for.
+  local inStall = nil
+  for i, wp in ipairs(pitRoute) do
+    if pit.inside(wp, pos) then inStall = i; break end
+  end
+  if not inStall then
+    pit.mustLeave = false
+    return
+  end
+  if pit.mustLeave or pit.cooldown > 0 then return end
 
   -- Being in the box is no longer enough to be serving a stop.
   --
@@ -1609,35 +1638,30 @@ function pit.update(dt)
   end)
   if not ok or not speed then return end
 
-  for i, wp in ipairs(pitRoute) do
-    if pit.inside(wp, pos) then
-      if speed > TUNE.PIT_STOP_SPEED then
-        -- In the box and still rolling. Say so, throttled -- unthrottled this is
-        -- a UI push every frame for as long as a car creeps across the stall.
-        if pit.promptLeft <= 0 then
-          pit.promptLeft = TUNE.PIT_PROMPT_EVERY
-          pushNotice('pit', 'PIT STALL — come to a stop inside the box')
-        end
-        return
-      end
-      pit.active   = true
-      pit.left     = TUNE.PIT_HOLD_SEC
-      pit.repaired = false
-      pit.stops    = pit.stops + 1
-      pit.promptLeft = 0
-      setLocalVehicleFrozen(true, 'pit')
-      -- Ghost before the notice, so a car that is about to sit frozen in the
-      -- lane stops being solid on the same frame it stops being able to move.
-      pit.setGhost(true)
-      pushNotice('pit', string.format('PIT STOP — %.0fs', TUNE.PIT_HOLD_SEC))
-      pushRouteState()
-      log('I', 'raceManager', string.format(
-        'Pit stop %d started in stall %d', pit.stops, i))
-      if inMultiplayer() then
-        TriggerServerEvent('RM_PitStop', jsonEncode({ stall = i }))
-      end
-      return
+  if speed > TUNE.PIT_STOP_SPEED then
+    -- In the box and still rolling. Say so, throttled -- unthrottled this is a
+    -- UI push every frame for as long as a car creeps across the stall.
+    if pit.promptLeft <= 0 then
+      pit.promptLeft = TUNE.PIT_PROMPT_EVERY
+      pushNotice('pit', 'PIT STALL — come to a stop inside the box')
     end
+    return
+  end
+  pit.active   = true
+  pit.left     = TUNE.PIT_HOLD_SEC
+  pit.repaired = false
+  pit.stops    = pit.stops + 1
+  pit.promptLeft = 0
+  setLocalVehicleFrozen(true, 'pit')
+  -- Ghost before the notice, so a car that is about to sit frozen in the lane
+  -- stops being solid on the same frame it stops being able to move.
+  pit.setGhost(true)
+  pushNotice('pit', string.format('PIT STOP — %.0fs', TUNE.PIT_HOLD_SEC))
+  pushRouteState()
+  log('I', 'raceManager', string.format(
+    'Pit stop %d started in stall %d', pit.stops, inStall))
+  if inMultiplayer() then
+    TriggerServerEvent('RM_PitStop', jsonEncode({ stall = inStall }))
   end
 end
 
