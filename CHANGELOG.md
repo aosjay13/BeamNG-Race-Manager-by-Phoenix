@@ -150,6 +150,20 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 ### Fixed
 
+- **A car could be left ghosted for the rest of a race, and no reset would fix
+  it.** The field-wide ghost reasons ("rivals are ghosts" during a mass respawn
+  or qualifying) skip your own car when applying — but your car is identified by
+  asking BeamMP who owns it, and a respawn opens a window where that question
+  has no answer yet. The re-assert sweep fires inside that window and the reason
+  lands on your own car; lifting it later skipped your car, because by then
+  ownership *had* resolved. Nothing could take it off after that. A reset ghost
+  layered on top came and went, and the car underneath stayed held — so it
+  flashed solid as the timer ended and went straight back to being a ghost.
+  Lifting a reason now skips nothing.
+- **Reset Session clears the ghost roster.** A ghost ends when the client that
+  owns it reports its car is clear, and a client that has been through a session
+  reset has no such report to give — so a stuck ghost survived the reset and
+  every other client kept seeing that car as intangible.
 - **A car left parked in a pit stall no longer serves stop after stop.** The
   cooldown was meant to stop the box you are standing in re-triggering, but a
   timer only delays that: a car still in the stall when it expires is caught

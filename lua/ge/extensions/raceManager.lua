@@ -2752,15 +2752,37 @@ end
 -- file. These two reasons are field-wide: they ghost every car this client can
 -- see other than its own, which is what "rivals are ghosts" means locally.
 setGhostReason = function (reason, on)
+  -- Turning a reason ON skips our own car: "rivals are ghosts" is what these
+  -- reasons mean, and ghosting ourselves would make us intangible to the field
+  -- rather than the other way round.
+  --
   -- ownVehicle() and not playerVehicle(), for the reason set out at the top of
   -- the file: the moment our car is deleted the game attaches this client to
   -- somebody else's, and "the car I am attached to" would then exclude a RIVAL
   -- from the ghost -- leaving the one car we are about to be respawned next to
   -- as the only solid thing on track. With no car of our own the answer is nil,
   -- and everything gets ghosted, which is exactly right for a mass respawn.
-  local mine = ownVehicle()
-  local myId = mine and vehicleId(mine) or nil
-  forEachVehicle(myId, function (veh, id) ghost.reason(id, reason, on, veh) end)
+  --
+  -- Turning a reason OFF skips NOTHING, and that asymmetry is the whole point.
+  -- The ON path above can reach our own car -- whenever ownVehicle() cannot
+  -- name it, which is exactly the window a respawn opens: the car exists, its
+  -- ownership has not resolved yet, and the two-second re-assert sweep fires in
+  -- the middle of it. If the OFF path then skips our car because ownership HAS
+  -- resolved by the time the reason is lifted, the reason stays on it forever.
+  --
+  -- Nothing can clear it after that. A reset ghost layered on top comes and
+  -- goes, and the car underneath is still held by a field reason nobody will
+  -- ever take off -- which is a car that flashes solid as its reset timer ends
+  -- and goes straight back to being a ghost for the rest of the race.
+  --
+  -- Clearing a reason from a car that never had it is free: ghost.reason
+  -- returns without touching anything when the set is already absent.
+  local skipId = nil
+  if on then
+    local mine = ownVehicle()
+    skipId = mine and vehicleId(mine) or nil
+  end
+  forEachVehicle(skipId, function (veh, id) ghost.reason(id, reason, on, veh) end)
   if on then ghost.field[reason] = true else ghost.field[reason] = nil end
 end
 

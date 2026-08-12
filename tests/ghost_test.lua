@@ -699,5 +699,54 @@ local after = countSent('RM_Lap') + countSent('RM_QualiLap')
 check(after == 0, 'ghosting scores no laps of its own')
 check(countSent('RM_VehicleReset') >= 0, 'and leaves the reset accounting alone')
 
+-- ===========================================================================
+-- A field-wide reason must come OFF the car it went ON
+-- ===========================================================================
+-- The field reasons ('placement' during a mass respawn, 'quali') ghost every
+-- car EXCEPT our own -- that is what "rivals are ghosts" means. Our own car is
+-- identified by asking BeamMP who owns it, and there is a window where that
+-- question has no answer: the car exists, its ownership has not resolved yet.
+-- A respawn opens that window, and the two-second re-assert sweep fires inside
+-- it, so the reason lands on our own car.
+--
+-- Applying the reason skips our car when it can be named; LIFTING it must skip
+-- nothing, or a reason that reached our own car during that window stays on it
+-- forever. Nothing can clear it afterwards: a reset ghost layered on top comes
+-- and goes, and the car underneath is still held -- which is a car that flashes
+-- solid as its reset timer ends and returns to being a ghost for the rest of
+-- the race.
+clearLog()
+racing()
+-- Let any ghost still running from the case above expire, so this one starts
+-- from a car that is genuinely solid.
+frames(12.0)
+check(world[OWN_ID].ghosted ~= true, 'starting from a solid car')
+
+-- The window: our car exists but nobody can say it is ours.
+local realIsOwn = MPVehicleGE.isOwn
+MPVehicleGE.isOwn = function () return false end
+RM.setGhostQuali(true)                      -- any field-wide reason will do
+serverState({ phase = 'qualifying', ghostQuali = true, maxResets = -1,
+              totalLaps = 3, drivers = {} })
+frames(0.5)
+MPVehicleGE.isOwn = realIsOwn               -- ownership resolves again
+
+-- Lift it. Our own car must not be left holding the reason.
+serverState({ phase = 'racing', ghostQuali = false, maxResets = -1,
+              totalLaps = 3, drivers = {} })
+frames(0.5)
+check(world[OWN_ID].ghosted ~= true,
+  'a field reason applied to our own car while its ownership was unresolved is '
+    .. 'lifted again -- otherwise the car is ghosted for the rest of the race '
+    .. 'and no reset ghost can clear it')
+
+-- And the ordinary case still works: a reset ghost on top comes and goes.
+clearLog()
+driverReset(0, 0)
+frames(0.3)
+check(world[OWN_ID].ghosted == true, 'a reset still ghosts our own car')
+frames(9.0)
+check(world[OWN_ID].ghosted ~= true, 'and still restores contact when it ends')
+
 print(string.format('ghost_test: %d checks, %d failures', checks, fails))
 if fails > 0 then os.exit(1) end

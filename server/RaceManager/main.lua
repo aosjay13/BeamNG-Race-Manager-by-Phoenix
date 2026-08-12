@@ -2372,6 +2372,14 @@ function RM_onResetLeaderboard(pid)
   if not requireAuth(pid) then return end
   MP.CancelEventTimer('RM_CountdownTick')
   broadcastCountdown(-1)
+  -- Reset Session is the "start the evening again" button, so nothing stays
+  -- ghosted through it. A ghost is ended by the client that owns it reporting
+  -- the space around its car is clear, and a client that has been through a
+  -- session reset -- or a driver who has quit and come back -- has no such
+  -- report left to give. Without this the roster could hold a ghost nobody was
+  -- ever going to clear, and every other client would go on seeing that car as
+  -- intangible for the rest of the night.
+  clearAllGhosts('session reset')
   players = {}
   lapFirsts = {}
   race.bestLapTime, race.bestLapPid = nil, nil
