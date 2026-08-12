@@ -98,6 +98,17 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 ### Changed
 
+- **No car is handed its collisions back while another car is inside it — for
+  any ghosted condition.** Previously only the driver's own reset ghost waited
+  for a clear space; the field-wide ghosts (mass respawn, ghost qualifying) and
+  the pit ghost were released on a timer, so cars could go solid still
+  overlapping. And the clear check deliberately ignored cars that were
+  themselves ghosts, which made it useless exactly where it is needed most:
+  after a race the whole field is respawned at once, so every car was a ghost
+  and every car looked clear to every other one. Every ghost now returns through
+  one gate that asks one question, and a car that cannot go solid yet is retried
+  until it can. Two overlapping ghosts cannot deadlock — being intangible is
+  what lets them drive apart.
 - **Loading a scoring preset fills the boxes.** The editors were re-seeded from
   the server "unless the buffer differs from it" — but pressing Load is exactly
   a case where the server's value changes, which that rule reads as an edit in

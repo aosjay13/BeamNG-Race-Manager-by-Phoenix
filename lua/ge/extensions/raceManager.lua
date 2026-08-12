@@ -219,6 +219,10 @@ local ghost = {
   -- independent ghosts and neither may end the other's.
   veh     = {},
   applied = {},   -- [gameVehId] = true while the ghost is actually applied
+  -- Cars whose reasons have all gone but which still had another car inside
+  -- them when the moment came. They stay ghosts and are retried until the space
+  -- is clear -- no car is handed its collisions back with something in it.
+  pending = {},
   -- Seconds of ghost left per vehicle, which is what the fade reads. Only reset
   -- ghosts have a remaining time; a quali or placement ghost has no clock and
   -- sits at a flat alpha until the reason is dropped.
@@ -2580,12 +2584,69 @@ function ghost.reason(vehId, reason, on, veh)
     if next(set) == nil then ghost.veh[vehId] = nil end
   end
   local want = ghost.veh[vehId] ~= nil
+  if want then ghost.pending[vehId] = nil end
   if want == (ghost.applied[vehId] == true) then return end
   if not veh then
     local got, found = pcall(getObjectByID, vehId)
     veh = got and found or nil
   end
+  -- THE gate every ghost passes through on its way back to solid, and the only
+  -- one: no car is handed its collisions back while another car is inside it.
+  --
+  -- Every reason funnels through here -- the driver's own reset ghost, the pit
+  -- stop, and the field-wide ones that ghost rivals during a mass respawn or
+  -- qualifying -- so the rule holds for all of them without each having to
+  -- remember it. The reason itself is already gone from the set above; what is
+  -- deferred is only the moment the car stops being intangible.
+  --
+  -- A car that cannot go solid yet is parked in `pending` and retried by the
+  -- update loop. It cannot get stuck: the cars involved are ghosts, which is
+  -- precisely what lets them drive out of each other.
+  if not want and veh and ghost.wouldWeld(vehId, veh) then
+    ghost.pending[vehId] = true
+    return
+  end
+  ghost.pending[vehId] = nil
   ghost.apply(vehId, veh, want, ghost.alphaFor(vehId))
+end
+
+-- Is another car inside this one? Ghost status is deliberately not consulted:
+-- see the note in ghost.occupied for why an intangible car in the same space is
+-- still a car in the same space.
+--
+-- Used for cars this client does not own, where there is no countdown and no
+-- driver to warn -- just "not yet". ghost.occupied does the same job for our own
+-- car and additionally explains itself, because that one has a driver waiting.
+function ghost.wouldWeld(vehId, veh)
+  local c1, x1, y1, z1 = ghost.bounds(veh, TUNE.GHOST_OVERLAP_MARGIN)
+  local mine = ghost.centre(veh)
+  -- A car the engine will not place at all is no evidence that anything is
+  -- inside it, so it does not block. That asymmetry with ghost.occupied is
+  -- deliberate: there, the car that cannot be located is OUR OWN and a driver
+  -- is waiting on the answer, so the conservative reading is the safe one and a
+  -- retry next frame will resolve it. Here the subject is somebody else's car,
+  -- usually one mid-spawn or mid-delete, and "stay a ghost until we can measure
+  -- you" is how a car ends up intangible for a whole race with nothing able to
+  -- undo it -- which is the failure this file has already been through once.
+  if not c1 and not mine then return false end
+  local weld = false
+  forEachVehicle(vehId, function (other)
+    if weld then return end
+    local c2, x2, y2, z2 = ghost.bounds(other, 0)
+    if c1 and c2 and type(overlapsOBB_OBB) == 'function' then
+      local okHit, hit = pcall(overlapsOBB_OBB, c1, x1, y1, z1, c2, x2, y2, z2)
+      if not okHit or hit then weld = true end
+      return
+    end
+    local theirs = ghost.centre(other)
+    if not (mine and theirs) then return end
+    local dx, dy, dz = mine.x - theirs.x, mine.y - theirs.y, mine.z - theirs.z
+    if (dx * dx + dy * dy + dz * dz)
+        <= (TUNE.GHOST_FALLBACK_RADIUS * TUNE.GHOST_FALLBACK_RADIUS) then
+      weld = true
+    end
+  end)
+  return weld
 end
 
 -- Alpha for a car mid-ghost. Translucent for most of the ghost, then fading
@@ -2704,7 +2765,21 @@ function ghost.occupied(vehId, veh)
   local blocked, sawAny, reason = false, false, nil
   forEachVehicle(vehId, function (other, otherId)
     if blocked then return end
-    if ghost.veh[otherId] then return end          -- a ghost cannot weld
+    -- A car inside this one blocks the restore whether or not it is ITSELF a
+    -- ghost right now.
+    --
+    -- This used to skip ghosts, on the reasoning that a ghost cannot weld: an
+    -- intangible car inside ours cannot hit us, so why wait for it. The flaw is
+    -- that the other car's ghost is not ours to rely on -- it ends on its own
+    -- clock, decided by its own client, and the instant it does there are two
+    -- solid bodies in the same space. It also made the rule unusable in the one
+    -- place it is needed most: after a race everybody is respawned at once, so
+    -- every car is a ghost, so every car looked clear to every other one.
+    --
+    -- The rule is now simply that a car does not become solid while another car
+    -- is inside it, for any ghosted condition. Two ghosts overlapping can always
+    -- separate -- being ghosts is exactly what lets them drive apart -- so
+    -- waiting for that cannot deadlock.
     sawAny = true
     local c2, x2, y2, z2 = ghost.bounds(other, 0)
     -- The precise test, when both cars can be measured. The margin is on OUR
@@ -2789,6 +2864,7 @@ end
 local function clearGhostReasons()
   ghost.field = {}
   ghost.remote = {}
+  ghost.pending = {}
   ghost.left = {}
   ghost.blockReason = nil
   ghost.own = { settling = false, left = 0, total = 0, blocked = 0, warned = false }
@@ -2805,6 +2881,7 @@ local function clearGhostReasons()
   forEachVehicle(nil, function (veh, id) ghost.apply(id, veh, false) end)
   ghost.applied = {}
   ghost.alpha = {}
+  ghost.pending = {}
 end
 
 -- Arm this client's own reset ghost. Called straight from the reset hook and
@@ -3070,6 +3147,34 @@ local function ghostUpdate(dt)
   -- --- re-assert sweep ----------------------------------------------------
   -- Cars appear (a join, a respawn) after the event that ghosted them, so what
   -- is wanted is re-applied on a slow timer rather than assumed to have stuck.
+  -- --- cars still waiting to go solid ------------------------------------
+  -- A ghost whose reasons have all gone but which had a car inside it when the
+  -- moment came. Retried until the space is clear, because "not while somebody
+  -- is inside you" is the whole rule and a timer cannot honour it.
+  --
+  -- Faster than the re-assert sweep below and slower than a frame: a driver
+  -- rolling clear should get their collisions back promptly, and the check
+  -- measures every car on track, so it is not something to do sixty times a
+  -- second with a full grid.
+  ghost.pendingIn = (ghost.pendingIn or 0) - dt
+  if ghost.pendingIn <= 0 then
+    ghost.pendingIn = 0.2
+    for vehId in pairs(ghost.pending) do
+      local got, veh = pcall(getObjectByID, vehId)
+      veh = got and veh or nil
+      if not veh then
+        ghost.pending[vehId] = nil
+      elseif ghost.veh[vehId] then
+        -- A reason came back while it waited; it is a ghost again on its own
+        -- account and no longer pending anything.
+        ghost.pending[vehId] = nil
+      elseif not ghost.wouldWeld(vehId, veh) then
+        ghost.pending[vehId] = nil
+        ghost.apply(vehId, veh, false, 1)
+      end
+    end
+  end
+
   ghost.refresh = ghost.refresh - dt
   if ghost.refresh > 0 then return end
   ghost.refresh = 2.0
