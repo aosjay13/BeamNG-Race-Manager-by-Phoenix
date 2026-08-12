@@ -27,6 +27,7 @@
 
 local connected = { [0] = 'Guest_A', [1] = 'Guest_B', [2] = 'Guest_C' }
 local lastState = nil
+local lastCup   = nil  -- last RM_CupUpdate payload
 local aliasMsg  = {}   -- [pid] = last RM_AliasResult payload
 
 local function jsonDecode(text)
@@ -122,6 +123,7 @@ MP = {
   end,
   TriggerClientEvent = function (target, event, payload)
     if event == 'RM_Update'      then lastState = payload end
+    if event == 'RM_CupUpdate'   then lastCup = payload end
     if event == 'RM_AliasResult' then aliasMsg[target] = payload end
   end,
   RegisterEvent = function () end,
@@ -367,6 +369,57 @@ for _ = 1, 4 do RM_CountdownTick() end
 RM_onLap(2, '{"lapTime":61.5}')
 check(driver(2).raceBest == 61.5, 'lap data still lands on the driver by session id')
 RM_onEndRace(9)
+
+-- ---------------------------------------------------------------------------
+-- 4b. A placeholder is still a placeholder after a restart.
+--
+-- The flag is what lets its points be moved onto a real driver later. Lose it
+-- across a restart and the entry loads as an ordinary saved driver: the merge
+-- refuses (two named drivers are two people), the panel stops marking it, and
+-- the points it is holding for somebody are stranded with nothing to say why.
+-- ---------------------------------------------------------------------------
+RM_onCupStart(9, '{"name":"Restart Cup"}')
+RM_onCupSetScoring(9, '{"race":[30,27,25]}')
+RM_onSetEntryMode(9, '{"mode":"all"}')
+connected[1] = 'Guest_UNNAMED'
+RM_onPlayerDisconnect(1)
+RM_onPlayerJoin(1)
+RM_onSetTotalLaps(9, '{"laps":1}')
+RM_onGenerateGrid(9)
+RM_onStartCountdown(9)
+for _ = 1, 4 do RM_CountdownTick() end
+RM_Tick(); RM_onLap(1, '{"lapTime":60.0}')
+RM_Tick(); RM_onLap(0, '{"lapTime":61.0}')
+RM_Tick(); RM_onLap(2, '{"lapTime":62.0}')
+
+local ph = nil
+for _, e in ipairs(readRoster().entries) do
+  if e.name == 'Guest_UNNAMED' then ph = e end
+end
+check(ph ~= nil and ph.provisional == true, 'an unassigned driver gets a placeholder')
+
+bootPlugin()
+-- Read back what the server LOADED, not what is on disk. The flag is written
+-- correctly either way; the bug was dropping it on the way back in, so only the
+-- in-memory view can see it. rosterList() is what the admin panel is given.
+RM_onCupRequestState(9)
+local phAfter = nil
+for _, e in ipairs((lastCup and lastCup.roster) or {}) do
+  if e.id == ph.id then phAfter = e end
+end
+check(phAfter ~= nil, 'the placeholder survives a restart')
+check(phAfter ~= nil and phAfter.provisional == true,
+  'and is still marked as a placeholder in the state the panel is given')
+
+-- Which is what lets its points move when the admin finally identifies them.
+local nomadId = entryNamed('Nomad') and entryNamed('Nomad').id
+if nomadId then
+  local before = cupTotal(ph.id) or 0
+  assign(1, nomadId)
+  check(cupTotal(nomadId) == before,
+    'and the points move onto the real driver after a restart, not just before one')
+end
+RM_onCupReset(9)
 
 removeTree('Resources')
 

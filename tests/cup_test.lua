@@ -729,6 +729,102 @@ identifyAll()
 check(totalFor('Phoenix') == 2, 'adjustments survive a server restart')
 check(#cupEntry('Phoenix').adjustments == 1, 'and keep their ledger')
 
+-- ---------------------------------------------------------------------------
+-- 13. Held qualifying points follow a driver who is identified mid-round.
+--
+-- Qualifying is scored when it ends and banked by the race that follows, keyed
+-- on the entry it was scored against. A driver identified in that window --
+-- which is exactly what the Drivers panel is for -- changes entry, so the held
+-- row has to come with them. It is looked up by entry id, and a stale one is
+-- simply never found again: the driver quietly qualifies for nothing.
+-- ---------------------------------------------------------------------------
+RM_onCupStart(ADMIN, '{"name":"Mid-round"}')
+RM_onCupSetScoring(ADMIN,
+  '{"race":[30,27,25,23],"quali":[5,3,1],'
+  .. '"bonus":{"fastestLap":0,"halfwayLed":0,"hardCharger":0,"derbyWin":0}}')
+for id in pairs(connected) do RM_onPlayerJoin(id) end
+identifyAll()
+
+-- One driver loses their name: they come back on a new guest name, unassigned.
+-- From the ROSTER, not the standings: a fresh cup has no standings yet, but the
+-- saved drivers are exactly what the panel offers to assign.
+RM_onCupRequestState(ADMIN)
+local ryderId = nil
+for _, e in ipairs(lastCup.roster or {}) do
+  if e.name == 'Ryder' then ryderId = e.id end
+end
+check(ryderId ~= nil, 'the saved driver is on the roster the panel is given')
+RM_onPlayerDisconnect(1)
+connected[1] = 'Guest_RETURNED'
+RM_onPlayerJoin(1)
+check(driver(1) ~= nil and driver(1).alias == nil, 'the returning driver is unassigned')
+
+-- They qualify on pole while still unassigned, so the held points are scored
+-- against a placeholder.
+runQuali(1, { [0] = 95.0, [1] = 90.0, [2] = 92.0, [3] = 99.0 })
+check(#readCup().pendingQuali > 0, 'qualifying is held for the race that follows')
+
+-- The admin recognises them BEFORE the race, which is the whole point of the
+-- panel: it should cost them nothing.
+if ryderId then RM_onCupBindDriver(ADMIN, '{"pid":1,"entryId":' .. ryderId .. '}') end
+check(driver(1).alias == 'Ryder', 'and is assigned to their saved driver')
+
+runRace(1, { 1, 0, 2, 3 })
+local round = cupEntry('Ryder').rounds[#cupEntry('Ryder').rounds]
+check(round ~= nil and round.racePts == 30, 'they are scored for winning the race')
+check(round.qualiPos == 1, 'and the pole they took while unassigned is still theirs')
+check(round.qualiPts == 5, 'with the points it was worth')
+RM_onCupReset(ADMIN)
+
+-- ---------------------------------------------------------------------------
+-- 14. A named driver who drops mid-derby is still scored as themselves.
+--
+-- A derby does not put anyone on track as far as the racing state machine is
+-- concerned, so every racing record reads 'waiting' -- and a disconnecting
+-- 'waiting' driver has their record deleted outright, display name and all.
+-- The derby result is classified afterwards, so if the name goes with the
+-- record the cup has nothing left to identify them by: no binding, no name to
+-- match, and their round is filed against a placeholder they can never be
+-- joined to again, because assigning needs a live connection.
+-- ---------------------------------------------------------------------------
+RM_onCupStart(ADMIN, '{"name":"Derby Drop"}')
+RM_onCupSetScoring(ADMIN,
+  '{"derby":[30,27,25,23],"bonus":{"fastestLap":0,"halfwayLed":0,"hardCharger":0,"derbyWin":0}}')
+for id in pairs(connected) do RM_onPlayerJoin(id) end
+identifyAll()
+RM_onCupRequestState(ADMIN)
+local rosterBefore = #(lastCup.roster or {})
+
+-- An all-derby cup: no race has run, so nobody is on track as far as the racing
+-- state machine is concerned. Reset Session puts every record back to 'waiting',
+-- which is the state a derby night actually runs in -- and the one whose record
+-- is deleted outright when a connection drops.
+RM_onResetLeaderboard(ADMIN)
+RM_onSetEntryMode(ADMIN, '{"mode":"all"}')
+
+RM_onDerbySetEntryMode(ADMIN, '{"mode":"all"}')
+RM_onDerbyFormUp(ADMIN)
+RM_onDerbyStart(ADMIN)
+for _ = 1, 5 do RM_DerbyCountdownTick() end
+RM_DerbyTick(); RM_onDerbyDemolished(3)
+-- The precondition that makes this bite: a derby leaves the racing record
+-- 'waiting', which is the status whose record is deleted outright on a drop.
+check(driver(1) ~= nil and driver(1).status == 'waiting',
+  'a driver in a derby is still "waiting" to the racing state machine')
+-- Ryder's connection drops while the derby is still running.
+RM_onPlayerDisconnect(1)
+RM_Derby_onPlayerDisconnect(1)
+connected[1] = nil
+RM_DerbyTick(); RM_onDerbyDemolished(2)     -- leaves one alive: the derby ends
+
+check(cupEntry('Ryder') ~= nil,
+  'the driver who dropped mid-derby is scored against their own saved driver')
+RM_onCupRequestState(ADMIN)
+check(#(lastCup.roster or {}) == rosterBefore,
+  'and no placeholder is invented for them')
+connected[1] = 'Guest_B'
+RM_onCupReset(ADMIN)
+
 removeTree('Resources')
 
 if fails == 0 then

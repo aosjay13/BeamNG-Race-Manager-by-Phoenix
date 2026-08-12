@@ -3495,8 +3495,17 @@ local function derbyClassification()
     -- Carry the display name onto the derby board. Re-read from the racing
     -- record every time rather than merging: a stamped value would go sticky
     -- and a name the admin CLEARED would never disappear from the standings.
+    --
+    -- Only while there IS a racing record, though. A driver who disconnects
+    -- mid-derby has theirs deleted outright (they were 'waiting' as far as the
+    -- racing state machine is concerned -- a derby does not put anyone on
+    -- track), and nulling the name here would leave the cup scoring their
+    -- result against nobody: no binding, no name to match on, so a fresh
+    -- placeholder named after their guest name and a season parked on an entry
+    -- they can no longer be joined to. The last name we knew is the right
+    -- answer for a driver who has left.
     local owner = players[rec.id]
-    rec.alias = owner and owner.alias or nil
+    if owner then rec.alias = owner.alias end
     list[#list + 1] = rec
   end
   table.sort(list, function (a, b)
@@ -4475,6 +4484,11 @@ local function loadRosterFromDisk()
         id    = math.floor(id),
         name  = e.name,
         guest = (type(e.guest) == 'string' and e.guest ~= '') and e.guest or nil,
+        -- Reloaded, not dropped. A placeholder that comes back as a real driver
+        -- is one rosterAbsorb will refuse to merge, so the points it is holding
+        -- for somebody are stranded on it the moment an admin identifies them --
+        -- and the panel stops marking it, so nothing says why.
+        provisional = e.provisional == true,
       }
       if id > highest then highest = math.floor(id) end
     end
@@ -5663,6 +5677,17 @@ end
 -- have raced one of them, so there is nothing to reconcile -- and if a cup ever
 -- does end up with two rows for one round, an admin can see both and drop one,
 -- which is a better outcome than this silently picking a winner.
+-- Qualifying points are HELD between the session that scored them and the race
+-- that banks them, keyed on the entry they were scored against. A driver
+-- identified in that window changes entry, so the held row has to come with
+-- them -- it is looked up by entry id, and a stale one is simply never found
+-- again, which reads as the driver having qualified for nothing.
+local function cupRepointPending(fromId, toId)
+  for _, q in ipairs(cup.pendingQuali) do
+    if q.entryId == fromId then q.entryId = toId end
+  end
+end
+
 cupAbsorbEntry = function (fromId, toId)
   getCup()
   local from = cupFindEntry(fromId)
@@ -5672,11 +5697,13 @@ cupAbsorbEntry = function (fromId, toId)
     -- Nothing to merge into yet: the entry simply changes hands. Its points
     -- were earned by this driver either way.
     from.entryId = toId
+    cupRepointPending(fromId, toId)
     saveCupToDisk()
     return true
   end
   for _, r in ipairs(from.rounds) do into.rounds[#into.rounds + 1] = r end
   for _, a in ipairs(from.adjustments) do into.adjustments[#into.adjustments + 1] = a end
+  cupRepointPending(fromId, toId)
   for i = #cup.entries, 1, -1 do
     if cup.entries[i].entryId == fromId then table.remove(cup.entries, i) end
   end
