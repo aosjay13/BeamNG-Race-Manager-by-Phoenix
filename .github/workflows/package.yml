@@ -61,6 +61,15 @@ jobs:
           mkdir -p package/Server/RaceManager
           cp server/RaceManager/main.lua package/Server/RaceManager/
 
+      # --- Ship the license with the download ---
+      #
+      # The zip is extracted straight into Resources/ and then passed around
+      # between server owners, so it is the only copy of the mod most people
+      # ever see. MIT asks for the notice to travel with it; at the package
+      # root it sits beside Client/ and Server/ without landing in either.
+      - name: Copy license
+        run: cp LICENSE package/
+
       # --- Create the main downloadable zip ---
       - name: Create main zip
         run: |

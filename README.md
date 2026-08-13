@@ -163,3 +163,9 @@ mismatched or duplicated versions installed — see the note under
 update renamed some vehicle parts, which changes the configuration signature.
 Re-capture the list. See
 [Game version compatibility](docs/COMPATIBILITY.md).
+
+## License
+
+Race Manager is released under the [MIT License](LICENSE) — use it, fork it,
+run it on your own server, ship it in your own mod, so long as the copyright
+notice travels with it. Contributions are accepted under the same license.
