@@ -186,6 +186,287 @@ for _, field in ipairs({ 'entryMode', 'gridMode', 'ghostQuali', 'startSlots',
 end
 
 -- ---------------------------------------------------------------------------
+-- 4b. Cup / series points
+--
+-- The cup panel is entirely server-driven: it renders standings it is sent and
+-- posts the admin's edits back, and it must never compute a total of its own.
+-- The wiring below is what makes that round trip real rather than intended.
+-- ---------------------------------------------------------------------------
+expect(bound('cupUi.name'), 'the cup name input binds cupUi.name')
+expect(html:find('ng%-model="cupUi%.points%[%$index%]"') ~= nil,
+  'the race points editor binds cupUi.points by index')
+expect(html:find('ng%-model="cupUi%.quali%[%$index%]"') ~= nil,
+  'the quali points editor binds cupUi.quali by index')
+expect(html:find('ng%-model="cupUi%.bonus%[b%.key%]"') ~= nil,
+  'each bonus row binds cupUi.bonus by its registry key')
+
+wired('cupStart',              'cupStart',          'Start cup')
+wired('cupReset',              'cupReset',          'End cup')
+wired('cupSetEnabled',         'cupToggleEnabled',  'Pause/resume scoring')
+wired('cupSetPreset',          'cupApplyPreset',    'Scoring preset')
+wired('cupSetRacePoints',      'cupApplyPoints',    'Race points table')
+wired('cupSetQualiPoints',     'cupApplyQuali',     'Quali points table')
+wired('cupSetBonus',           'cupApplyBonus',     'Bonus value')
+wired('cupSetFastestLapRule',  'cupToggleFlRule',   'Fastest lap rule')
+
+-- Ending a cup destroys a season of points, so it must not be a single click.
+expect(html:find('cupAskReset()', 1, true) ~= nil and html:find('cupCancelReset()', 1, true) ~= nil,
+  'End Cup is behind a confirmation step, not a bare button')
+
+-- The panel renders the ARRAYS the broadcast carries, not just summary counts:
+-- a standings block bound to a total alone can say "5 drivers" and list none.
+expect(html:find('cup.standings.length', 1, true) ~= nil
+  and html:find('s in cup.standings', 1, true) ~= nil,
+  'the cup panel lists cup.standings rather than only counting it')
+-- Bonus controls are generated from the server registry, filtered by the
+-- discipline each bonus declares -- so a race bonus is never offered under the
+-- derby table and vice versa, and a new bonus needs no template change.
+expect(html:find("b in cupBonusesFor('race')", 1, true) ~= nil,
+  'race bonus controls are generated from the server registry')
+expect(html:find("b in cupBonusesFor('derby')", 1, true) ~= nil,
+  'derby bonus controls are generated from the same registry, filtered by kind')
+expect(html:find('b in cup.bonuses', 1, true) == nil,
+  'no control renders the whole bonus registry ungrouped: a race bonus under '
+    .. 'the derby table would offer points the server will never award')
+expect(html:find('p in cup.presets', 1, true) ~= nil,
+  'the preset picker is filled from the server list')
+
+-- ---------------------------------------------------------------------------
+-- 4c. Derbies score into the same cup
+--
+-- A cup may be all races, all derbies or a mixture. The two score on separate
+-- tables and are reported separately, with a combined summary over both.
+-- ---------------------------------------------------------------------------
+expect(html:find('ng%-model="cupUi%.derby%[%$index%]"') ~= nil,
+  'the derby points editor binds cupUi.derby by index')
+wired('cupSetDerbyPoints', 'cupApplyDerby',       'Derby points table')
+wired('cupSetDerbyPoints', 'cupDisableDerby',     'Derby points off')
+wired('cupSetPreset',      'cupApplyDerbyPreset', 'Derby scoring preset')
+
+-- Three views over one set of server-sent numbers.
+for _, view in ipairs({ 'combined', 'race', 'derby' }) do
+  expect(html:find("cupSetView('" .. view .. "')", 1, true) ~= nil,
+    'the standings offer a ' .. view .. ' view')
+end
+expect(html:find("orderBy:'racePos'", 1, true) ~= nil
+  and html:find("orderBy:'derbyPos'", 1, true) ~= nil,
+  'the per-discipline tables are ordered by the position the SERVER ranked, '
+    .. 'not by one the app worked out for itself')
+-- The per-discipline tabs are pointless in a cup that only ever held one kind.
+expect(html:find('cupIsMixed()', 1, true) ~= nil,
+  'the discipline tabs only appear once the cup has held both kinds of event')
+
+-- Race and derby totals are reported separately AND combined.
+for _, field in ipairs({ 'raceTotal', 'derbyTotal', 'raceRounds', 'derbyRounds',
+                         'raceWins', 'derbyWins' }) do
+  expect(html:find('s.' .. field, 1, true) ~= nil,
+    'the standings report ' .. field .. ', so race and derby stay separable')
+end
+for _, field in ipairs({ 'derbyPoints', 'derbyPreset' }) do
+  expect(js:find('data.' .. field, 1, true) ~= nil,
+    'cup field ' .. field .. ' is mirrored from the RaceManagerCup broadcast')
+end
+
+-- Every field the panel shows has to come off the cup broadcast, or it drifts
+-- from what the server actually has.
+for _, field in ipairs({ 'cupEnabled', 'cupName', 'round', 'preset', 'racePoints',
+                         'qualiPoints', 'presets', 'bonuses', 'standings',
+                         'pendingQuali', 'fastestLapRequiresFinish' }) do
+  expect(js:find('data.' .. field, 1, true) ~= nil,
+    'cup field ' .. field .. ' is mirrored from the RaceManagerCup broadcast')
+end
+
+-- The cup is a race-mode tab. It has nothing to say about a derby, and putting
+-- it anywhere else would repeat the mistake the mode split fixed.
+expect(html:match('ng%-click="selectAdminTab%(\'cup\'%)"') ~= nil,
+  'there is a Cup tab button')
+expect(html:find("isMode('race') && isAdminTab('cup')", 1, true) ~= nil,
+  'the cup panel is scoped to race mode')
+expect(js:find('cup: true', 1, true) ~= nil,
+  'the cup tab is registered in MODE_TABS for race mode')
+
+-- ---------------------------------------------------------------------------
+-- 4d. Manual adjustments and the DNF rule
+--
+-- An admin has to be able to correct a cup by hand, and the ledger has to stay
+-- visible: a total nobody can take apart is a total nobody can check.
+-- ---------------------------------------------------------------------------
+expect(bound('cupUi.adjustDelta') and bound('cupUi.adjustReason'),
+  'the adjustment editor binds its inputs through cupUi')
+wired('cupAdjust',       'cupApplyAdjust',  'Manual adjustment')
+wired('cupAdjust',       'cupQuickAdjust',  'Quick adjustment')
+wired('cupRemoveAdjust', 'cupRemoveAdjust', 'Remove an adjustment')
+
+-- The ledger is rendered, not just its net total: an admin removing the wrong
+-- adjustment because the panel only showed a number is the failure this avoids.
+expect(html:find('a in s.adjustments', 1, true) ~= nil,
+  'the adjustment ledger is listed per driver')
+expect(html:find('a.reason', 1, true) ~= nil and html:find('a.by', 1, true) ~= nil,
+  'each adjustment shows what it was for and who made it')
+expect(js:find('$scope.cup.standings = toArray(data.standings)', 1, true) ~= nil,
+  'standings (and the ledger they carry) come from the server')
+
+-- A DNF is not always a nil score, so which of the three rules applies is a
+-- setting rather than an assumption.
+wired('cupSetDnfScoring', 'cupSetDnfScoring', 'DNF scoring rule')
+for _, mode in ipairs({ 'none', 'classified', 'held' }) do
+  expect(html:find("cupSetDnfScoring('" .. mode .. "')", 1, true) ~= nil,
+    'the DNF rule offers "' .. mode .. '"')
+end
+expect(js:find('data.dnfScoring', 1, true) ~= nil,
+  'the DNF rule is mirrored from the cup broadcast')
+
+-- ---------------------------------------------------------------------------
+-- 4f. Driver identity is an ADMIN decision
+--
+-- BeamMP issues a fresh random guest name on every join, so nothing can work
+-- out who has come back. The panel therefore has to offer an explicit
+-- assignment, and it must never treat player id 0 as "nobody" -- ids are
+-- zero-based, and a truthiness test on one reads the first player on the server
+-- as unassigned, which would offer their driver (and their points) to somebody
+-- else as free to take.
+-- ---------------------------------------------------------------------------
+expect(html:find('cupUi.bindTo[c.pid]', 1, true) ~= nil,
+  'the assignment picker stores its choice in cupUi.bindTo by player id')
+wired('cupBindDriver',   'cupApplyBind',      'Assign a connection to a driver')
+wired('cupBindDriver',   'cupUnbind',         'Unassign a connection')
+wired('cupForgetDriver', 'cupForgetDriver',   'Delete a saved driver')
+
+expect(html:find('c in cup.connected', 1, true) ~= nil,
+  'the panel lists who is connected right now')
+expect(html:find('e in cup.roster', 1, true) ~= nil,
+  'and the saved drivers they can be assigned to')
+for _, field in ipairs({ 'roster', 'connected' }) do
+  expect(js:find('data.' .. field, 1, true) ~= nil,
+    'cup field ' .. field .. ' is mirrored from the RaceManagerCup broadcast')
+end
+
+-- The zero-based id trap, in both files.
+expect(js:find('e.boundPid == null', 1, true) ~= nil,
+  'the free-entry filter tests boundPid against null, not truthiness — player '
+    .. 'id 0 is a real driver')
+expect(html:find('e.boundPid', 1, true) == nil
+  or (html:find('e.boundPid != null', 1, true) ~= nil
+      and html:find('e.boundPid == null', 1, true) ~= nil),
+  'the template compares boundPid against null too, so the first player on the '
+    .. 'server is not rendered as unassigned')
+expect(html:match('ng%-if="e%.boundPid"') == nil,
+  'no bare truthiness test on boundPid survives in the template')
+
+-- ---------------------------------------------------------------------------
+-- 4h. Loading a preset actually refills the boxes
+--
+-- The scoring editors are re-seeded from the server, and the rule for when has
+-- to be "the server's value changed", not "the buffer differs from the server".
+-- Those look the same and are not: pressing Load replaces the table ON THE
+-- SERVER, which the second rule reads as an edit in progress -- so the boxes
+-- kept the old preset, and pressing Apply then posted those stale numbers back
+-- and turned the table into a hand-edited "Custom" one. Loading a preset
+-- appeared to do nothing, then appeared to corrupt itself.
+--
+-- The fix is to remember what the server last said (cupSeen) and compare
+-- against that. This checks the seeding does not go back to asking the dirty
+-- helpers, which is the shape of the bug.
+-- ---------------------------------------------------------------------------
+do
+  expect(js:find('function cupSeedEditors', 1, true) ~= nil,
+    'found the cup seeding function')
+  expect(js:find('cupSeen', 1, true) ~= nil,
+    'cup editors are re-seeded by comparing against the last value the SERVER '
+      .. 'sent, so a preset load reaches the boxes')
+  -- The exact gate that caused it. Seeding "unless the buffer differs from the
+  -- server" treats a preset load as an edit in progress and skips it.
+  for _, gate in ipairs({ '!$scope.cupPointsDirty()', '!$scope.cupDerbyDirty()',
+                          '!$scope.cupQualiDirty()', '!$scope.cupBonusDirty()' }) do
+    expect(js:find(gate, 1, true) == nil,
+      'the seeding gates on "' .. gate .. '": a preset load changes the server '
+        .. 'value, which that reads as an edit in progress, so the boxes keep '
+        .. 'showing the old preset')
+  end
+  -- Asking for a preset must take the server's answer even when the table it
+  -- replaces happens to be identical.
+  expect(js:find('cupExpectReseed', 1, true) ~= nil,
+    'loading a preset marks that table for re-seeding, so Load resets the boxes '
+      .. 'even when the server value does not change')
+end
+
+-- ---------------------------------------------------------------------------
+-- 4g. No native <select> anywhere in the app
+--
+-- BeamNG's UI is Chromium Embedded Framework, where a <select> popup is a
+-- separate OS window that never renders over the game surface: the box shows
+-- its value and clicking it does nothing whatsoever. There is no error and no
+-- console output -- and it works perfectly in a desktop browser, so neither a
+-- harness nor a code review catches it. Three of these reached a live server
+-- before anybody could open the panel in the game.
+--
+-- Every picker in this app is therefore a custom DOM menu (see
+-- .rm-layout-dropdown). This is the only cheap way to keep it that way.
+-- ---------------------------------------------------------------------------
+do
+  -- Strip comments first -- both kinds. The markup and the stylesheet both
+  -- explain WHY there are no selects, and those mentions are prose, not
+  -- elements. (The CSS block is a /* */ comment, which is how this check first
+  -- reported itself as failing against its own explanation.)
+  local stripped = html:gsub('<!%-%-.-%-%->', ''):gsub('/%*.-%*/', '')
+  local offender = stripped:match('<select')
+  expect(offender == nil,
+    'a native <select> element is present. Its popup is an OS window that CEF '
+      .. 'never draws over the game, so the control renders and then does '
+      .. 'nothing. Use the custom .rm-layout-dropdown menu instead.')
+  expect(stripped:find('<option', 1, true) == nil,
+    'a native <option> element is present, which means a <select> came back')
+end
+
+-- ---------------------------------------------------------------------------
+-- 4e. The driver payload carries every field the app reads off a driver row
+--
+-- The state broadcast sends a TRIMMED projection of each player record rather
+-- than the whole thing: a record holds audit counters and comparator scratch
+-- that no client renders, and shipping them cost about a fifth of the busiest
+-- message the plugin sends, three times a second, to every driver.
+--
+-- The hazard that creates is a quiet one. A field left off the list does not
+-- error anywhere; it simply arrives as undefined, and a column goes blank.
+-- This checks the template against the list so that cannot happen unnoticed.
+-- ---------------------------------------------------------------------------
+local server = readFile('server/RaceManager/main.lua')
+local wireBlock = server:match('local DRIVER_WIRE_FIELDS = {(.-)\n}')
+expect(wireBlock ~= nil, 'found DRIVER_WIRE_FIELDS in the server plugin')
+
+local onWire = {}
+for name in (wireBlock or ''):gmatch("'([%w_]+)'") do onWire[name] = true end
+expect(next(onWire) ~= nil, 'the driver wire-field list is not empty')
+
+-- Every `row.<field>` the template reads, where `row` is the driver row the
+-- leaderboard repeats over.
+local rowFields = {}
+for field in html:gmatch('row%.([%w_]+)') do rowFields[field] = true end
+expect(next(rowFields) ~= nil, 'found driver row field reads in the template')
+for field in pairs(rowFields) do
+  expect(onWire[field],
+    'the leaderboard reads row.' .. field .. ' but the server does not send it — '
+      .. 'add it to DRIVER_WIRE_FIELDS or that column renders blank with no error')
+end
+
+-- And the ones the controller reads off a driver row it was handed.
+for _, field in ipairs({ 'alias', 'currentLap', 'finishTime', 'id', 'jokerLap',
+                         'jokerTaken', 'name', 'outReason', 'position', 'resets',
+                         'status', 'qualiBest' }) do
+  expect(onWire[field],
+    'the controller reads ' .. field .. ' off a driver row, so it must be on the wire')
+end
+
+-- The converse: fields that exist only for this plugin's own bookkeeping must
+-- NOT be shipped. Each of these is read solely inside the server.
+for _, field in ipairs({ 'pitStops', 'holdCorrections',
+                         'holdCorrectedAt', 'distNext' }) do
+  expect(not onWire[field],
+    field .. ' is server-side bookkeeping and should not be broadcast to every '
+      .. 'client three times a second')
+end
+
+-- ---------------------------------------------------------------------------
 -- 4. Race and Derby are separated by mode, not just by tab
 -- ---------------------------------------------------------------------------
 -- The race session controls and the track layout picker sit ABOVE the tab bar,

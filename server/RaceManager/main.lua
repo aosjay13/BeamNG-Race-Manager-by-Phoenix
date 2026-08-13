@@ -209,6 +209,15 @@ local function newRecord(pid)
     jokerTaken = 0,          -- completed runs of the joker route this race
     jokerLap   = nil,        -- lap the joker route was taken on
     outReason  = nil,        -- why this driver is dnf/dsq (results + UI text)
+    -- The place this driver was running in at the moment they retired.
+    --
+    -- Kept because the live order does NOT keep it: a driver who stops is sorted
+    -- to the bottom of the table on the very next broadcast, and `position` is
+    -- overwritten with where they ended up rather than where they were. That is
+    -- right for a leaderboard of who is still racing and wrong for a record of
+    -- what happened -- a driver who was second when their engine let go was
+    -- second, whatever the reason they stopped.
+    dnfPos     = nil,
     -- Live position tracking (see the "Running order" section below).
     position   = nil,        -- current place in the running order (1 = leader)
     cpCleared  = 0,          -- checkpoints passed on the current lap
@@ -417,6 +426,40 @@ end
 -- the garage store uses to be reachable from the state broadcast above it.
 local derbyEntryListChanged
 
+-- Forward declarations for the two modules at the bottom of this file. Both
+-- need the JSON codec and the layout directory, which are defined far below the
+-- code that has to reach them -- the same reason garageSnapshot and formGrid are
+-- declared up here and assigned further down.
+--
+--   rosterRemember(rec)   a driver was given a display name: bind them to their
+--                         roster entry, creating it if this is a new name
+--   rosterUnbind(pid)     their display name was cleared, or they left
+--   rosterEntryFor(rec)   the roster entry a driver is bound to, or nil
+--
+-- There is deliberately NO "recognise this driver automatically" here. BeamMP
+-- issues a fresh random guest name on every join, so a name proves nothing
+-- about who is behind it: matching on one would usually fail to spot a
+-- returning driver, and would occasionally hand a stranger somebody else's
+-- identity and the championship points attached to it. Binding a connection to
+-- a roster entry is an admin's decision, and only an admin's.
+--   cupOnSessionComplete  a session finished: score it into the cup, if one is
+--                         running. Called from finishSession and nowhere else.
+--   cupOnDerbyComplete    the same for a demo derby, called from finishDerby.
+--                         Takes the finished classification as an argument
+--                         rather than reading derbyPlayers, so the cup never
+--                         reaches into the derby module's tables and the derby
+--                         module hands over a result instead of exposing state.
+local rosterRemember, rosterUnbind, rosterEntryFor
+local rosterBindTo, rosterList, rosterForget
+local cupOnSessionComplete, cupOnDerbyComplete
+-- Boot-time cache warm for the two, called from onInit. They exist because both
+-- modules are wrapped in a `do ... end` block: Lua allows 200 locals per
+-- function and this chunk was already close to it, so everything those modules
+-- need internally is scoped to the block and released at its end. Only the
+-- handful of names declared here cross the boundary -- which is the isolation
+-- those sections claim, made structural rather than promised.
+local rosterWarm, cupWarm
+
 -- ---------------------------------------------------------------------------
 -- Race entry list
 -- ---------------------------------------------------------------------------
@@ -510,6 +553,48 @@ local function assignPositions(list)
   return list
 end
 
+-- The driver fields that actually go over the wire.
+--
+-- A player record carries a good deal that only this file ever reads: pit and
+-- grid-hold audit counters, the hold rate-limiter's timestamp, and distNext,
+-- which exists so the comparator above can order two cars on the same lap.
+-- None of it is rendered anywhere, and all of it was
+-- being serialised for twenty drivers, three times a second, for the length of
+-- a race -- then parsed again by every client that received it.
+--
+-- Sending what is read instead of everything that exists cuts roughly a fifth
+-- off the busiest message this plugin produces. That is bandwidth on a
+-- home-hosted server and JSON parsing on whatever machine a driver is running,
+-- which is where it matters most.
+--
+-- ANY field the UI reads off a driver row must be listed here or it silently
+-- becomes nil in the app; tests/ui_bindings_test.lua checks the template
+-- against this list so that cannot happen quietly.
+local DRIVER_WIRE_FIELDS = {
+  'id', 'name', 'alias', 'status', 'joined',
+  'gridPos', 'customGrid', 'position',
+  'qualiBest', 'qualiLaps', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
+  'finishTime', 'resets', 'resetsBlocked',
+  'jokerTaken', 'jokerLap', 'outReason', 'dnfPos',
+}
+
+-- Projection buffers are kept ON the record and reused, so a broadcast costs no
+-- allocations at all: the whole point of trimming the payload is to do less
+-- work, and churning twenty short-lived tables three times a second to save
+-- bandwidth would be trading one cost for another.
+local function driverForWire(rec)
+  local wire = rec.wire
+  if not wire then
+    wire = {}
+    rec.wire = wire
+  end
+  for i = 1, #DRIVER_WIRE_FIELDS do
+    local key = DRIVER_WIRE_FIELDS[i]
+    wire[key] = rec[key]
+  end
+  return wire
+end
+
 local function buildDrivers()
   local list = {}
   for _, rec in pairs(players) do
@@ -532,9 +617,16 @@ local function buildDrivers()
     -- (joker ruling) drivers, DNFs last.
     table.sort(list, raceOrderLess)
   end
+  -- Positions are stamped on the REAL records, not on the projections: the rest
+  -- of this file reads rec.position (retireAsDnf snapshots it, among others),
+  -- and a number written only onto a copy that is thrown away after encoding
+  -- would leave every one of those readers looking at a stale value.
+  assignPositions(list)
   -- The array clients receive is already sorted leader-first, and every driver
   -- carries the matching position integer.
-  return assignPositions(list)
+  local wire = {}
+  for i = 1, #list do wire[i] = driverForWire(list[i]) end
+  return wire
 end
 
 -- Forward declaration: the garage store lives further down the file (its own
@@ -575,7 +667,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.6.0'
+local RM_BUILD = '0.7.0'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -930,6 +1022,65 @@ local function raceClassification()
   return list
 end
 
+-- The three things a race decides beyond the finishing order: who set the
+-- fastest lap, who led at half distance, and who gained the most places.
+--
+-- These used to be worked out inside the results writer and thrown away with
+-- the string it built. They are pulled out here because there is now a SECOND
+-- consumer -- the cup scorer awards bonus points for exactly these three -- and
+-- two implementations of "who is the hard charger" is two rules that can drift
+-- apart. One function, one answer, and the results file keeps reading it the
+-- way it always did.
+--
+-- Pure: every value is a player id (or nil) plus the numbers needed to describe
+-- it, and nothing here writes to a record. `final` is the race classification,
+-- taken as an argument so the caller that has already built one does not pay
+-- for a second sort.
+local function sessionAwards(final)
+  final = final or raceClassification()
+  local awards = {
+    -- Tracked incrementally as laps are scored (see RM_onLap), so this is a
+    -- read rather than a scan of the field.
+    fastestLapPid = race.bestLapPid,
+    fastestLapTime = race.bestLapTime,
+  }
+
+  -- Half-distance leader: whoever completed the half-way lap first.
+  --
+  -- Half of an odd distance is not a lap, so it rounds UP -- a 5-lap race is
+  -- decided at lap 3, the same as a 6-lap one. That is the lap on which a driver
+  -- has more of the race behind them than in front, which is what "half way"
+  -- means when laps are the only unit available.
+  --
+  -- lapFirsts already records the first driver to complete each lap (it is what
+  -- Laps Led is counted from), so this is a lookup rather than a second pass.
+  -- A one-lap race has no half way: lap 1 is the flag.
+  awards.halfWayLap = math.ceil(race.totalLaps / 2)
+  awards.halfWayPid = (race.totalLaps >= 2) and lapFirsts[awards.halfWayLap] or nil
+
+  -- Hard Charger: most places gained from the grid slot to the finish.
+  --
+  -- Only a classified finisher can have gained places: a driver who did not
+  -- finish has no finishing position to have gained them to. A gain of zero or
+  -- less is not a charge, so nobody is awarded it rather than it going to
+  -- whoever went backwards least. Ties go to the higher finisher, which is `i`
+  -- ascending -- a later driver has to beat the gain outright to take it.
+  for i, rec in ipairs(final) do
+    local classified = rec.finishTime ~= nil and rec.status ~= 'dsq'
+    local start = rec.gridPos
+    if classified and start then
+      local gain = start - i
+      if gain > 0 and (awards.hardChargerGain == nil or gain > awards.hardChargerGain) then
+        awards.hardChargerPid  = rec.id
+        awards.hardChargerGain = gain
+        awards.hardChargerFrom = start
+        awards.hardChargerTo   = i
+      end
+    end
+  end
+  return awards
+end
+
 local function buildResultsText()
   local quali = qualiClassification()
   local final = raceClassification()
@@ -967,9 +1118,9 @@ local function buildResultsText()
   local resetCol  = race.maxResets >= 0 and string.format(' %-6s', 'Resets') or ''
   add(string.format('%-5s %-6s %-22s %-10s %-9s %s%s%s',
     'Pos', 'Start', 'Driver', 'Best Lap', 'Laps Led', 'Finish', jokerCol, resetCol))
-  -- Hard Charger: most places gained from the grid slot to the finish. Worked
-  -- out in the same pass that writes the rows, so the table is walked once.
-  local hcRec, hcGain, hcPos = nil, nil, nil
+  -- Fastest lap, half-way leader and Hard Charger, decided once for this
+  -- session (see sessionAwards) rather than worked out again here.
+  local awards = sessionAwards(final)
   for i, rec in ipairs(final) do
     local excluded   = rec.status == 'dsq'
     local classified = rec.finishTime ~= nil and not excluded
@@ -979,22 +1130,20 @@ local function buildResultsText()
     elseif classified then
       pos, finish = 'P' .. i, fmtLap(rec.finishTime)
     else
-      pos, finish = 'DNF', rec.outReason or 'DNF'
+      -- A DNF keeps the place it was running in when it stopped, so the file
+      -- records what happened rather than only that it happened: "was P2" and
+      -- "was P11" are very different afternoons. Finishers are still listed
+      -- above every retirement -- a driver who stopped on lap two did not beat
+      -- one who took the flag.
+      --
+      -- It goes with the reason rather than in the Pos column because that
+      -- column is padded to a fixed width and every row after a wider one would
+      -- shear. The reason text is already the variable-width field on this row.
+      pos = 'DNF'
+      finish = (rec.outReason or 'DNF')
+        .. (rec.dnfPos and (' (was P' .. rec.dnfPos .. ')') or '')
     end
     local tag = (i == 1 and classified) and '  << RACE WINNER' or ''
-    -- Only a classified finisher can have gained places: a driver who did not
-    -- finish has no finishing position to have gained them to. A gain of zero or
-    -- less is not a charge, so the line is omitted entirely rather than awarded
-    -- to whoever went backwards least.
-    local start = rec.gridPos
-    if classified and start then
-      local gain = start - i
-      -- Ties go to the higher finisher, which is `i` ascending -- so a later
-      -- driver has to beat the gain outright to take it.
-      if gain > 0 and (hcGain == nil or gain > hcGain) then
-        hcRec, hcGain, hcPos = rec, gain, i
-      end
-    end
     local jokerVal = race.jokerEnabled
       and string.format(' %-7s', (rec.jokerTaken or 0) == 0 and 'missed'
         or ('lap ' .. tostring(rec.jokerLap or '?'))) or ''
@@ -1010,32 +1159,20 @@ local function buildResultsText()
       jokerVal, resetVal, aliasNote(rec), tag))
   end
   if #final == 0 then add('(no drivers)') end
-  -- Half-distance leader: whoever completed the half-way lap first.
-  --
-  -- Half of an odd distance is not a lap, so it rounds UP -- a 5-lap race is
-  -- decided at lap 3, the same as a 6-lap one. That is the lap on which a driver
-  -- has more of the race behind them than in front, which is what "half way"
-  -- means when laps are the only unit available.
-  --
-  -- lapFirsts already records the first driver to complete each lap (it is what
-  -- Laps Led is counted from), so this is a lookup rather than a second pass:
-  -- the leader at half distance is by definition the first to get there.
-  -- A one-lap race has no half way: lap 1 is the flag, and reporting the winner
-  -- a second time under another heading says nothing.
-  local halfLap = math.ceil(race.totalLaps / 2)
-  local halfPid = (race.totalLaps >= 2) and lapFirsts[halfLap] or nil
-  local halfRec = halfPid and players[halfPid] or nil
+  -- The two award lines. Both are omitted rather than guessed at when there is
+  -- no answer -- a race stopped before half distance has no half-way leader,
+  -- and a race where nobody gained a place has no hard charger.
+  local halfRec = awards.halfWayPid and players[awards.halfWayPid] or nil
+  local hcRec   = awards.hardChargerPid and players[awards.hardChargerPid] or nil
   if halfRec or hcRec then add('') end
-  -- Omitted rather than guessed at when nobody reached half distance -- a race
-  -- stopped early has no half-way leader, and the shortest race that can have
-  -- one is two laps (a one-lap race is decided at the flag).
   if halfRec then
     add(string.format(' HALF-WAY LEADER: %s  (led at lap %d of %d)',
-      displayName(halfRec), halfLap, race.totalLaps))
+      displayName(halfRec), awards.halfWayLap, race.totalLaps))
   end
   if hcRec then
     add(string.format(' HARD CHARGER: %s  (P%d -> P%d, %+d place%s)',
-      displayName(hcRec), hcRec.gridPos, hcPos, hcGain, hcGain == 1 and '' or 's'))
+      displayName(hcRec), awards.hardChargerFrom, awards.hardChargerTo,
+      awards.hardChargerGain, awards.hardChargerGain == 1 and '' or 's'))
   end
   add('')
   return table.concat(lines, '\n') .. '\n'
@@ -1152,6 +1289,28 @@ local function retireDriver(rec, reason)
   return true
 end
 
+-- Retire a driver from the session without a finish: THE one way a record
+-- becomes a DNF, whatever ended it -- the admin closing the session, a
+-- disconnection, or anything added later.
+--
+-- It exists to make the position snapshot unconditional. Setting `status` by
+-- hand in each of those places is how one of them ends up forgetting, and a
+-- driver's classified position quietly depending on which way their race
+-- happened to end is exactly the bug this prevents.
+--
+-- `position` is stamped on every state broadcast (three times a second while a
+-- session runs), so it is at most a fraction of a second old here. Before the
+-- lights there is no running order yet, so the grid slot is the honest answer.
+local function retireAsDnf(rec, reason)
+  if not rec then return false end
+  rec.status = 'dnf'
+  rec.outReason = rec.outReason or reason
+  if rec.dnfPos == nil then
+    rec.dnfPos = rec.position or rec.gridPos
+  end
+  return true
+end
+
 -- Forward declaration: the grid is formed by one function used by BOTH entry
 -- points (Generate Grid and Start Qualifying), and it needs the ordering rules
 -- that are defined further down the file.
@@ -1234,6 +1393,10 @@ local function finishSession(reason)
     for _, rec in pairs(players) do
       if onTrack(rec) then rec.status = 'waiting' end
     end
+    -- Qualifying points are held, not banked: they belong to the round the race
+    -- that follows will be. Scored here rather than at the grid because this is
+    -- where the times are final. Does nothing at all unless a cup is running.
+    if cupOnSessionComplete then cupOnSessionComplete('quali') end
     respawnAll('race')
     broadcastState()
     MP.SendChatMessage(-1, '[RaceManager] Qualifying is over — ' .. reason .. '.')
@@ -1243,6 +1406,11 @@ local function finishSession(reason)
 
   local excluded = applyJokerRuling()
   race.phase = 'finished'
+  -- Score the cup AFTER the joker ruling and not before: that ruling is what
+  -- turns a finisher into a disqualification, and a driver scored ahead of it
+  -- would bank winner's points for a race they were excluded from. Does nothing
+  -- at all unless a cup is running.
+  if cupOnSessionComplete then cupOnSessionComplete('race') end
   -- The session is over: every car taken off the track comes back.
   respawnAll('race')
   broadcastState()
@@ -1581,6 +1749,7 @@ formGrid = function (kind, byName)
     rec.jokerTaken = 0
     rec.jokerLap   = nil
     rec.outReason  = nil
+    rec.dnfPos     = nil
     -- A qualifying grid also clears the times it is about to replace.
     if isQualiSession() then
       rec.qualiBest = nil
@@ -1838,6 +2007,46 @@ local function aliasResult(pid, ok, msg)
   print('[RaceManager] Alias: ' .. msg)
 end
 
+-- Apply a display name to one driver, or clear it when `raw` is blank.
+--
+-- THE single place a display name changes, and factored out of the event
+-- handler for that reason: the cup roster has to be told whenever one does, or
+-- a name an admin set would not be the name that survives a restart. Returns
+-- `ok, message` -- the caller decides who hears about it.
+local function applyAlias(rec, raw)
+  raw = tostring(raw or '')
+  if raw:gsub('%s', '') == '' then
+    if not rec.alias then
+      return true, rec.name .. ' has no display name to clear.'
+    end
+    local was = rec.alias
+    rec.alias = nil
+    rememberIdentity(rec)
+    -- The roster entry is NOT deleted here. Clearing a name says "stop showing
+    -- this on the leaderboard", not "throw away the cup points earned under
+    -- it"; the binding is dropped and the entry waits to be bound again.
+    if rosterUnbind then rosterUnbind(rec.id) end
+    return true, 'Display name cleared for ' .. rec.name .. ' (was "' .. was .. '").'
+  end
+
+  local clean, why = sanitizeAlias(raw)
+  if not clean then return false, 'Name rejected: ' .. why .. '.' end
+  if aliasInUse(clean, rec.id) then
+    return false, 'Name rejected: "' .. clean .. '" is already in use.'
+  end
+
+  rec.alias = clean
+  -- Into the registry, not just onto the record: the record is rebuilt by the
+  -- next Start Qualifying and the name has to outlive that.
+  rememberIdentity(rec)
+  -- And into the roster, which outlives the server process. This is also what
+  -- reattaches a reconnected driver to the cup points they already have: the
+  -- roster matches on the name, so typing it again binds them back to the same
+  -- entry rather than starting them a new one.
+  if rosterRemember then rosterRemember(rec) end
+  return true, 'Display name "' .. clean .. '" set for ' .. rec.name .. '.'
+end
+
 function RM_onSetAlias(pid, rawData)
   -- Not "return quietly": a client can believe it is an admin while the server
   -- disagrees (a restart empties authenticatedPlayers while the client bridge
@@ -1862,36 +2071,9 @@ function RM_onSetAlias(pid, rawData)
   end
 
   -- A blank alias clears it and falls back to the real guest name.
-  local raw = decodeString(rawData, 'alias') or ''
-  if raw:gsub('%s', '') == '' then
-    if rec.alias then
-      local was = rec.alias
-      rec.alias = nil
-      rememberIdentity(rec)
-      broadcastState()
-      aliasResult(pid, true, 'Display name cleared for ' .. rec.name .. ' (was "' .. was .. '").')
-    else
-      aliasResult(pid, true, rec.name .. ' has no display name to clear.')
-    end
-    return
-  end
-
-  local clean, why = sanitizeAlias(raw)
-  if not clean then
-    aliasResult(pid, false, 'Name rejected: ' .. why .. '.')
-    return
-  end
-  if aliasInUse(clean, rec.id) then
-    aliasResult(pid, false, 'Name rejected: "' .. clean .. '" is already in use.')
-    return
-  end
-
-  rec.alias = clean
-  -- Into the registry, not just onto the record: the record is rebuilt by the
-  -- next Start Qualifying and the name has to outlive that.
-  rememberIdentity(rec)
-  broadcastState()
-  aliasResult(pid, true, 'Display name "' .. clean .. '" set for ' .. rec.name .. '.')
+  local ok, msg = applyAlias(rec, decodeString(rawData, 'alias') or '')
+  if ok then broadcastState() end
+  aliasResult(pid, ok, msg)
 end
 
 -- Host sets the race distance. Locked once the countdown/race is under way.
@@ -2137,6 +2319,7 @@ function RM_CountdownTick()
       rec.jokerTaken = 0
       rec.jokerLap   = nil
       rec.outReason  = nil
+      rec.dnfPos     = nil
       if isQualiSession() then
         rec.qualiBest = nil
         rec.qualiLaps = 0
@@ -2179,8 +2362,7 @@ function RM_onEndRace(pid)
   end
   for _, rec in pairs(players) do
     if onTrack(rec) or rec.status == 'gridded' then
-      rec.status = 'dnf'
-      rec.outReason = rec.outReason or 'DNF - Session ended'
+      retireAsDnf(rec, 'DNF - Session ended')
     end
   end
   finishSession('ended by ' .. (MP.GetPlayerName(pid) or pid))
@@ -2190,6 +2372,14 @@ function RM_onResetLeaderboard(pid)
   if not requireAuth(pid) then return end
   MP.CancelEventTimer('RM_CountdownTick')
   broadcastCountdown(-1)
+  -- Reset Session is the "start the evening again" button, so nothing stays
+  -- ghosted through it. A ghost is ended by the client that owns it reporting
+  -- the space around its car is clear, and a client that has been through a
+  -- session reset -- or a driver who has quit and come back -- has no such
+  -- report left to give. Without this the roster could hold a ghost nobody was
+  -- ever going to clear, and every other client would go on seeing that car as
+  -- intangible for the rest of the night.
+  clearAllGhosts('session reset')
   players = {}
   lapFirsts = {}
   race.bestLapTime, race.bestLapPid = nil, nil
@@ -3305,8 +3495,17 @@ local function derbyClassification()
     -- Carry the display name onto the derby board. Re-read from the racing
     -- record every time rather than merging: a stamped value would go sticky
     -- and a name the admin CLEARED would never disappear from the standings.
+    --
+    -- Only while there IS a racing record, though. A driver who disconnects
+    -- mid-derby has theirs deleted outright (they were 'waiting' as far as the
+    -- racing state machine is concerned -- a derby does not put anyone on
+    -- track), and nulling the name here would leave the cup scoring their
+    -- result against nobody: no binding, no name to match on, so a fresh
+    -- placeholder named after their guest name and a season parked on an entry
+    -- they can no longer be joined to. The last name we knew is the right
+    -- answer for a driver who has left.
     local owner = players[rec.id]
-    rec.alias = owner and owner.alias or nil
+    if owner then rec.alias = owner.alias end
     list[#list + 1] = rec
   end
   table.sort(list, function (a, b)
@@ -3437,6 +3636,16 @@ local function finishDerby(reason)
   respawnDerbyField()
   broadcastDerbyState()
   print('[RaceManager] Derby over: ' .. reason)
+  -- Score it into the cup, if one is running. Only real derbies reach here --
+  -- aborting before GO returns out of RM_onDerbyEnd without calling this -- so
+  -- a start that never happened can never bank a round.
+  --
+  -- The classification is handed over rather than the cup coming to fetch it:
+  -- this module's tables stay private, and the cup goes on being a consumer of
+  -- results exactly as it is for a race. Does nothing unless a cup is running.
+  if cupOnDerbyComplete then
+    cupOnDerbyComplete(derbyClassification(), { duration = derby.time })
+  end
   local ok, wrote, pathOrErr = pcall(writeDerbyResults)
   if ok and wrote then
     local msg = derby.winner
@@ -4198,6 +4407,1500 @@ end
 -- End of DEMO DERBY module
 -- ===========================================================================
 
+-- ===========================================================================
+-- DRIVER ROSTER (persistent display names)
+-- ===========================================================================
+-- Display names used to last exactly as long as a connection did. That was not
+-- a choice so much as a consequence: everyone on this server is a guest, BeamMP
+-- recycles session ids, and a guest name is regenerated on every join, so there
+-- was nothing stable to bind a lasting name to (see the identity registry near
+-- the top of this file, which is the in-memory half of the same problem).
+--
+-- A cup changes what that costs. Points have to follow a driver across races
+-- and across a restart, and a name that evaporates takes the points with it.
+-- So the anchor becomes the thing that IS stable: an admin's decision, written
+-- down. A roster entry is a name an admin gave somebody, kept on disk with the
+-- guest name they were using at the time.
+--
+-- Two ways a driver gets reattached to their entry:
+--
+--   * automatically, when the guest name still matches -- the same evidence
+--     identityFor uses, so a recycled session id can no more inherit a name
+--     here than it can there;
+--   * by an admin typing the name in again. That is the ordinary case after a
+--     reconnect, and it needs no new control: the existing Set box already
+--     goes through applyAlias, which lands here. Matching an existing entry by
+--     name is what binds the driver back to the points already under it.
+--
+-- Nothing in this section touches race state. It is read by the cup module and
+-- written by applyAlias, and that is the whole of its contact with the rest of
+-- the file.
+--
+-- Everything from here to the end of the CUP module lives inside one installer
+-- function, called immediately below it. That is not decoration: Lua allows 200
+-- locals per function and this chunk was already near the ceiling, so a module
+-- written at file level would not compile. A function body gets its own budget,
+-- and the only names that escape are the ones forward-declared far above --
+-- which makes the isolation these two sections claim structural rather than
+-- merely promised.
+local function installRosterAndCup()
+
+-- Assigned by the CUP section below. When an admin binds a connection to a real
+-- driver, any provisional entry that connection had been scoring into has to
+-- hand its rounds over -- otherwise naming somebody halfway through an evening
+-- strands everything they scored before you got to them.
+local cupAbsorbEntry
+
+local ROSTER_FILE = LAYOUTS_DIR .. '/roster.json'
+local MAX_ROSTER_ENTRIES = 200
+
+-- Declared ahead of rosterRemember, which uses it: naming a driver who has been
+-- scoring under a placeholder is one of the two ways a merge happens.
+local rosterAbsorb
+
+local roster       = nil   -- lazy-loaded array of { id, name, guest, provisional }
+local rosterNextId = 1     -- persisted, so an id is never reused after a restart
+-- [pid] = entry id. Runtime only and deliberately not persisted: a binding is a
+-- claim about a LIVE connection, and a stale one restored from disk would hand
+-- a name to whoever happened to inherit that session id.
+local rosterBound  = {}
+
+local function loadRosterFromDisk()
+  local f = io.open(ROSTER_FILE, 'r')
+  if not f then return {} end
+  local text = f:read('*a')
+  f:close()
+  local ok, data = pcall(jsonParse, text)
+  if not ok or type(data) ~= 'table' or type(data.entries) ~= 'table' then
+    print('[RaceManager] Could not parse ' .. ROSTER_FILE .. ', starting with an empty roster')
+    return {}
+  end
+  local out = {}
+  local highest = 0
+  for _, e in ipairs(data.entries) do
+    local id = tonumber(e and e.id)
+    if id and type(e.name) == 'string' and e.name ~= '' then
+      out[#out + 1] = {
+        id    = math.floor(id),
+        name  = e.name,
+        guest = (type(e.guest) == 'string' and e.guest ~= '') and e.guest or nil,
+        -- Reloaded, not dropped. A placeholder that comes back as a real driver
+        -- is one rosterAbsorb will refuse to merge, so the points it is holding
+        -- for somebody are stranded on it the moment an admin identifies them --
+        -- and the panel stops marking it, so nothing says why.
+        provisional = e.provisional == true,
+      }
+      if id > highest then highest = math.floor(id) end
+    end
+  end
+  rosterNextId = math.max(tonumber(data.nextId) or 0, highest + 1)
+  return out
+end
+
+local function getRoster()
+  if not roster then
+    roster = loadRosterFromDisk()
+    print('[RaceManager] Driver roster: ' .. #roster .. ' saved display name(s) from ' .. ROSTER_FILE)
+  end
+  return roster
+end
+
+local function saveRosterToDisk()
+  ensureLayoutsDir()
+  local f, ferr = io.open(ROSTER_FILE, 'w')
+  if not f then
+    print('[RaceManager] Could not write ' .. ROSTER_FILE .. ': ' .. tostring(ferr))
+    return false
+  end
+  f:write(jsonStringify({ version = 1, nextId = rosterNextId, entries = getRoster() }))
+  f:close()
+  return true
+end
+
+local function rosterById(id)
+  if not id then return nil end
+  for _, e in ipairs(getRoster()) do
+    if e.id == id then return e end
+  end
+  return nil
+end
+
+-- Case-insensitively, because an admin retyping a name after a reconnect should
+-- not have to reproduce the capitalisation to get the points back.
+local function rosterByName(name)
+  if type(name) ~= 'string' then return nil end
+  local lower = name:lower()
+  for _, e in ipairs(getRoster()) do
+    if e.name:lower() == lower then return e end
+  end
+  return nil
+end
+
+-- Is this entry already claimed by somebody else who is connected right now?
+local function rosterClaimedBy(entryId, exceptPid)
+  for pid, id in pairs(rosterBound) do
+    if id == entryId and pid ~= exceptPid then return pid end
+  end
+  return nil
+end
+
+rosterEntryFor = function (rec)
+  if not rec then return nil end
+  return rosterById(rosterBound[rec.id])
+end
+
+rosterUnbind = function (pid)
+  if pid == nil then return end
+  rosterBound[pid] = nil
+end
+
+-- A driver was given a display name. Three cases, and the order matters:
+--
+--   1. the name is already in the roster -- bind to THAT entry. This is the
+--      reconnect, and binding rather than renaming is what returns a driver to
+--      the points they have already scored.
+--   2. this connection is bound to an entry under a different name -- rename
+--      it. This is an admin naming somebody who was auto-entered under their
+--      guest name, and the points move with them because the entry is the same.
+--   3. neither -- a new driver, so a new entry.
+rosterRemember = function (rec)
+  if not rec or not rec.alias then return nil end
+  local list  = getRoster()
+  local named = rosterByName(rec.alias)
+  local bound = rosterById(rosterBound[rec.id])
+  local entry
+  if named then
+    if bound and bound.id ~= named.id then
+      print(string.format('[RaceManager] Roster: %s re-bound from "%s" to the existing entry "%s"',
+        rec.name, bound.name, named.name))
+      -- Naming a driver who has already been scoring under a provisional entry
+      -- is the admin saying "this is who that was". Their points move with them.
+      rosterAbsorb(bound, named)
+    end
+    -- Matching is case-insensitive but the spelling just typed is the one that
+    -- sticks, so the entry and the leaderboard can never end up showing the
+    -- same driver under two different capitalisations -- which would also mean
+    -- the next restart handed back a name the admin had not typed.
+    named.name = rec.alias
+    entry = named
+  elseif bound then
+    print(string.format('[RaceManager] Roster: entry "%s" renamed to "%s"', bound.name, rec.alias))
+    bound.name = rec.alias
+    entry = bound
+  else
+    if #list >= MAX_ROSTER_ENTRIES then
+      print('[RaceManager] Roster full (' .. MAX_ROSTER_ENTRIES .. ' entries) — "'
+        .. rec.alias .. '" not saved. Reset the cup or prune the roster.')
+      return nil
+    end
+    entry = { id = rosterNextId, name = rec.alias }
+    rosterNextId = rosterNextId + 1
+    list[#list + 1] = entry
+    print(string.format('[RaceManager] Roster: new entry #%d "%s"', entry.id, entry.name))
+  end
+  -- An admin has put a name to this entry, so it is no longer a guess.
+  entry.provisional = nil
+  -- Recorded for the ADMIN's benefit, never matched on: it is what the panel
+  -- shows beside a driver so a human can tell who is who. See rosterEnsure for
+  -- why a guest name is not evidence of identity.
+  entry.guest = rec.name
+  rosterBound[rec.id] = entry.id
+  saveRosterToDisk()
+  return entry
+end
+
+-- Move everything a provisional entry accumulated onto the entry it turned out
+-- to belong to, then retire it. Points follow the driver; the placeholder goes.
+--
+-- Only ever applied to a PROVISIONAL entry. Two entries an admin has named are
+-- two drivers, and quietly merging them because a connection moved between them
+-- would destroy exactly the record this roster exists to keep.
+rosterAbsorb = function (from, into)
+  if not from or not into or from.id == into.id then return false end
+  if not from.provisional then return false end
+  if cupAbsorbEntry then cupAbsorbEntry(from.id, into.id) end
+  local list = getRoster()
+  for i = #list, 1, -1 do
+    if list[i].id == from.id then table.remove(list, i) end
+  end
+  for pid, id in pairs(rosterBound) do
+    if id == from.id then rosterBound[pid] = into.id end
+  end
+  print(string.format('[RaceManager] Roster: provisional entry "%s" merged into "%s"',
+    from.name, into.name))
+  return true
+end
+
+-- Bind a connected driver to a roster entry outright. THE admin control for
+-- "this player is that driver", and the answer to a reconnect: BeamMP issues a
+-- new random guest name every join, so nothing but a person can make this call.
+--
+-- Refuses rather than guesses. Handing an entry to the wrong connection hands
+-- over a season of points with it, so every way that could happen is a refusal
+-- with a reason attached.
+rosterBindTo = function (rec, entryId)
+  if not rec then return false, 'That driver is no longer on the server.' end
+  local entry = rosterById(entryId)
+  if not entry then return false, 'No such driver in the roster.' end
+  local heldBy = rosterClaimedBy(entry.id, rec.id)
+  if heldBy then
+    local other = players[heldBy]
+    return false, '"' .. entry.name .. '" is already assigned to '
+      .. (other and other.name or ('player ' .. tostring(heldBy)))
+      .. ' — unassign them first.'
+  end
+  if aliasInUse(entry.name, rec.id) then
+    return false, 'The name "' .. entry.name .. '" is in use by somebody else on the server.'
+  end
+  local previous = rosterById(rosterBound[rec.id])
+  if previous and previous.id ~= entry.id then
+    rosterAbsorb(previous, entry)
+  end
+  rec.alias = entry.name
+  entry.guest = rec.name
+  rosterBound[rec.id] = entry.id
+  rememberIdentity(rec)
+  saveRosterToDisk()
+  print(string.format('[RaceManager] Roster: %s bound to "%s"', rec.name, entry.name))
+  return true, rec.name .. ' is now racing as "' .. entry.name .. '".'
+end
+
+-- Delete an entry. Used for placeholders left behind by drivers who never came
+-- back, and for pruning a roster that has filled up. The cup removes its own
+-- side separately -- this owns names, not points.
+rosterForget = function (entryId)
+  local list = getRoster()
+  for i = #list, 1, -1 do
+    if list[i].id == entryId then
+      local gone = table.remove(list, i)
+      for pid, id in pairs(rosterBound) do
+        if id == entryId then
+          rosterBound[pid] = nil
+          local rec = players[pid]
+          if rec then rec.alias = nil; rememberIdentity(rec) end
+        end
+      end
+      saveRosterToDisk()
+      print('[RaceManager] Roster: entry "' .. gone.name .. '" forgotten')
+      return true
+    end
+  end
+  return false
+end
+
+-- The roster as the admin panel sees it: who exists, who is connected right now
+-- and under which guest name, and which entries are still guesses.
+rosterList = function ()
+  local out = {}
+  for i, e in ipairs(getRoster()) do
+    out[i] = {
+      id = e.id, name = e.name, guest = e.guest,
+      provisional = e.provisional == true,
+      boundPid = rosterClaimedBy(e.id, nil),
+    }
+  end
+  table.sort(out, function (a, b)
+    if a.provisional ~= b.provisional then return b.provisional end
+    return a.name:lower() < b.name:lower()
+  end)
+  return out
+end
+
+-- The entry a driver should be scored against, creating one if they have no
+-- display name at all.
+--
+-- Auto-creating is deliberate. The alternative is dropping the points of any
+-- driver an admin forgot to name, silently, and discovering it at the end of a
+-- cup -- far worse than a roster line reading "Guest_4471", which an admin can
+-- rename later with the points following it (case 2 in rosterRemember).
+--
+-- It does NOT set an alias: the leaderboard and the results file go on showing
+-- the guest name exactly as they do today.
+local function rosterEnsure(rec)
+  if not rec then return nil end
+  local entry = rosterEntryFor(rec)
+  if entry then return entry end
+  local list = getRoster()
+
+  -- Only the DISPLAY NAME may find an existing entry, because a display name is
+  -- something an admin typed. A driver who disconnects mid-race has their live
+  -- binding dropped -- it is a claim about a connection, and that connection is
+  -- gone -- but their record survives to be classified, so at the moment the cup
+  -- scores them they are named and unbound. Matching the name they raced under
+  -- puts them back on their own entry.
+  --
+  -- The GUEST name is never matched against anything. BeamMP issues a fresh
+  -- random one on every join, so it identifies nobody: it would miss a returning
+  -- driver almost every time, and on the occasion two people were ever issued
+  -- the same one it would quietly merge two strangers' seasons.
+  entry = rec.alias and rosterByName(rec.alias) or nil
+  if entry and rosterClaimedBy(entry.id, rec.id) then entry = nil end
+
+  if not entry then
+    -- Nobody this driver can safely be identified as, so they get an entry of
+    -- their own. PROVISIONAL: it is a place to keep points that would otherwise
+    -- be dropped on the floor, not a claim about who this is. An admin can bind
+    -- the driver to their real entry later and the points follow (see
+    -- rosterBindTo), which is why losing them here would be the worse failure.
+    if #list >= MAX_ROSTER_ENTRIES then
+      print('[RaceManager] Roster full (' .. MAX_ROSTER_ENTRIES
+        .. ' entries) — ' .. rec.name .. ' could not be entered')
+      return nil
+    end
+    entry = { id = rosterNextId, name = rec.name, provisional = true }
+    rosterNextId = rosterNextId + 1
+    list[#list + 1] = entry
+    print(string.format(
+      '[RaceManager] Roster: provisional entry #%d for %s (no display name set) — '
+        .. 'bind them to a driver to keep their points together',
+      entry.id, entry.name))
+  end
+  entry.guest = rec.name
+  rosterBound[rec.id] = entry.id
+  saveRosterToDisk()
+  return entry
+end
+
+-- ===========================================================================
+-- End of DRIVER ROSTER module
+-- ===========================================================================
+
+-- ===========================================================================
+-- CUP / SERIES POINTS (isolated module)
+-- ===========================================================================
+-- A cup is a championship run across several races: points accumulate per
+-- driver and only an admin ending the cup clears them.
+--
+-- This module is a CONSUMER of race results and nothing else. It is entered
+-- from exactly one place -- cupOnSessionComplete, called at the end of
+-- finishSession -- and it reads the classification the results file is built
+-- from rather than recomputing anything. That is what keeps scoring separate
+-- from the logic that decides a race, and it is why a bad scoring rule can
+-- never affect who won.
+--
+-- What it does NOT do, deliberately:
+--
+--   * touch `race`, `players` or `lapFirsts`. It reads them; it writes only its
+--     own tables and the roster.
+--   * run anything on a tick. Everything here happens once per session end or
+--     once per admin action, so a race with a cup running costs exactly what a
+--     race without one costs, plus one boolean test.
+--   * survive on session state. Cup points live in this module's own table and
+--     on disk, so Start Qualifying, Generate Grid, a countdown, Reset Session
+--     and a server restart all pass straight through them. Only RM_CupReset
+--     clears a cup.
+
+local CUP_FILE = LAYOUTS_DIR .. '/cup.json'
+local MAX_CUP_POSITIONS = 60     -- how deep a points table may go
+local MAX_CUP_POINTS    = 9999   -- per position, and per bonus
+local MAX_CUP_NAME      = 40
+local MAX_CUP_ROUNDS    = 200
+
+-- Pre-configured scoring systems, so an admin does not have to type 24 numbers
+-- to run a normal championship. Selecting one FILLS the table rather than
+-- locking it: the point of a preset is somewhere to start.
+--
+-- A position past the end of an array scores nothing, which is why the shorter
+-- tables simply stop rather than carrying a tail of zeroes.
+local CUP_PRESETS = {
+  { key = '30p-aggressive', label = '30P Aggressive',
+    race = { 30, 27, 25, 23, 20, 19, 18, 17, 16, 15, 14, 13,
+             12, 11, 10,  9,  8,  7,  6,  5,  4,  3,  2,  1 } },
+  { key = '25p-aggressive', label = '25P Aggressive',
+    race = { 25, 18, 15, 12, 10, 8, 6, 4, 2, 1 } },
+  { key = '25p-moderate',   label = '25P Moderate',
+    race = { 25, 20, 16, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1 } },
+  { key = '24p-linear',     label = '24P Linear',
+    race = { 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13,
+             12, 11, 10,  9,  8,  7,  6,  5,  4,  3,  2,  1 } },
+  { key = '35p-folk',       label = '35P Folk Race',
+    race = { 35, 30, 25, 20, 18, 16, 15, 14, 13, 12, 11,
+             10,  9,  8,  7,  6,  5,  4,  3,  2,  1 } },
+}
+
+-- Bonus achievements, as DATA. Each entry names a configurable pot of points,
+-- says which DISCIPLINE it belongs to, and says which driver wins it given the
+-- awards that session produced.
+--
+-- `kind` is what keeps a mixed cup honest: a race bonus is not offered to a
+-- derby and a derby bonus is not offered to a race, so "fastest lap" can never
+-- be quietly paid out on a session that has no laps. The scorer only ever walks
+-- the entries matching the session it is scoring.
+--
+-- Adding another one later -- pole position, most laps led, a clean race -- is
+-- one row here plus nothing else. This module never names a bonus outside this
+-- table, and the UI builds a control per row, so no new code is written per
+-- bonus at either end.
+local CUP_BONUSES = {
+  { key = 'fastestLap',  kind = 'race',  label = 'Fastest Lap',
+    award = function (ctx) return ctx.awards.fastestLapPid end },
+  { key = 'halfwayLed',  kind = 'race',  label = 'Halfway Led',
+    award = function (ctx) return ctx.awards.halfWayPid end },
+  { key = 'hardCharger', kind = 'race',  label = 'Hard Charger',
+    award = function (ctx) return ctx.awards.hardChargerPid end },
+  -- Derby. Deliberately NOT the same thing as finishing first: a derby can end
+  -- with no survivors at all (everybody demolished), and the driver who lasted
+  -- longest then tops the classification without having won it. This pays only
+  -- when somebody actually survived, which is what "last man standing" means.
+  { key = 'derbyWin',    kind = 'derby', label = 'Last Man Standing',
+    award = function (ctx) return ctx.winnerPid end },
+}
+
+local function cupBonusesFor(kind)
+  local out = {}
+  for _, b in ipairs(CUP_BONUSES) do
+    if b.kind == kind then out[#out + 1] = b end
+  end
+  return out
+end
+
+local function cupDefaultBonus()
+  local t = {}
+  for _, b in ipairs(CUP_BONUSES) do t[b.key] = 0 end
+  return t
+end
+
+local function cupPresetByKey(key)
+  for _, p in ipairs(CUP_PRESETS) do
+    if p.key == key then return p end
+  end
+  return nil
+end
+
+local function cupCopyTable(src)
+  local out = {}
+  for i, v in ipairs(src or {}) do out[i] = v end
+  return out
+end
+
+local cup = {
+  enabled = false,
+  name    = '',
+  round   = 0,        -- rounds SCORED so far; the next race is round + 1
+  scoring = {
+    preset = '30p-aggressive',
+    race   = cupCopyTable(cupPresetByKey('30p-aggressive').race),
+    -- Derbies score on a table of their OWN, because a cup may be all races,
+    -- all derbies, or a mixture, and the two are not the same event: a derby
+    -- field is usually a different size and lasting eight minutes in a banger
+    -- is not worth what winning a ten-lap race is worth. It defaults to the
+    -- same preset so an all-derby cup works the moment it is started, and an
+    -- admin who wants derbies to count for less (or nothing) edits or empties
+    -- it without touching the race table.
+    derbyPreset = '30p-aggressive',
+    derby  = cupCopyTable(cupPresetByKey('30p-aggressive').race),
+    -- Empty means qualifying scores nothing, which is the default: a cup that
+    -- has not been told to pay for qualifying does not pay for it.
+    quali  = {},
+    bonus  = cupDefaultBonus(),
+    -- The usual league qualification on a fastest-lap bonus: set the fastest
+    -- lap and then park it, and you have not really earned anything.
+    fastestLapRequiresFinish = true,
+    -- What a DNF is worth. A retirement is not always a nil score -- plenty of
+    -- series pay a driver for the place they were running when they stopped,
+    -- because being taken out of second place is not the same as never turning
+    -- up -- and which of these a league wants is a league decision, not
+    -- something this plugin should assume:
+    --
+    --   'none'       a DNF scores nothing. The default, and what every cup
+    --                scored before this was configurable.
+    --   'classified' a DNF scores for its place in the final classification,
+    --                which is below every driver who finished.
+    --   'held'       a DNF scores for the place it was RUNNING in when it
+    --                stopped. This is the one that can pay two drivers for the
+    --                same position -- a retirement from second and a finish in
+    --                second both score second -- and that is exactly what a
+    --                series choosing it is asking for.
+    dnfScoring = 'none',
+  },
+  -- An ARRAY, not a map keyed by id: the persistence codec only emits string
+  -- keys for a table, so an integer-keyed map would serialise to {} and every
+  -- point in the cup would vanish on the next restart.
+  entries = {},       -- { { entryId, name, rounds = {}, adjustments = {} } }
+  -- Qualifying is scored when it ends, but it belongs to the round the race
+  -- that follows will be -- so it is held here until that race banks it.
+  pendingQuali = {},  -- { { entryId, pos, pts } }
+}
+local cupLoaded = false
+-- Assigned further down, once the standings it has to serialise exist. Declared
+-- here because saving and publishing are the same event (see saveCupToDisk).
+local broadcastCupState
+
+-- ---------------------------------------------------------------------------
+-- Persistence
+-- ---------------------------------------------------------------------------
+-- Kept beside layouts.json and NOT under the results directory: Clear Results
+-- Cache deletes every .txt it finds there, and a cup that could be destroyed by
+-- routine housekeeping is not persistent in any sense that matters.
+local function cupSanitizeTable(raw, cap)
+  local out = {}
+  for i, v in ipairs(type(raw) == 'table' and raw or {}) do
+    if i > (cap or MAX_CUP_POSITIONS) then break end
+    local n = math.floor(tonumber(v) or 0)
+    if n < 0 then n = 0 elseif n > MAX_CUP_POINTS then n = MAX_CUP_POINTS end
+    out[i] = n
+  end
+  -- Trailing zeroes carry no information (past the end scores nothing anyway)
+  -- and would otherwise grow the file a little on every save.
+  while #out > 0 and out[#out] == 0 do out[#out] = nil end
+  return out
+end
+
+local function loadCupFromDisk()
+  local f = io.open(CUP_FILE, 'r')
+  if not f then return end
+  local text = f:read('*a')
+  f:close()
+  local ok, data = pcall(jsonParse, text)
+  if not ok or type(data) ~= 'table' then
+    print('[RaceManager] Could not parse ' .. CUP_FILE .. ', starting with no cup')
+    return
+  end
+  cup.enabled = data.enabled == true
+  cup.name    = type(data.name) == 'string' and data.name:sub(1, MAX_CUP_NAME) or ''
+  cup.round   = math.max(math.floor(tonumber(data.round) or 0), 0)
+
+  -- Only replaced when the file actually carries a scoring block. A cup.json
+  -- written by something else, or truncated, must not silently leave the cup
+  -- with an empty points table -- that reads as "a race was run and nobody
+  -- scored", which is a great deal harder to notice than a parse error.
+  if type(data.scoring) == 'table' then
+    local s = data.scoring
+    cup.scoring.preset = type(s.preset) == 'string' and s.preset or 'custom'
+    cup.scoring.race   = cupSanitizeTable(s.race)
+    cup.scoring.quali  = cupSanitizeTable(s.quali)
+    -- A cup saved before derbies could be scored carries no derby table. Fall
+    -- back to the race table rather than to nothing: a file written by an
+    -- earlier build describes a cup whose derbies were never scored at all, and
+    -- silently loading "derbies are worth zero" would be a scoring change
+    -- nobody asked for the next time one was run.
+    if s.derby ~= nil then
+      cup.scoring.derby = cupSanitizeTable(s.derby)
+      cup.scoring.derbyPreset = type(s.derbyPreset) == 'string' and s.derbyPreset or 'custom'
+    else
+      cup.scoring.derby = cupCopyTable(cup.scoring.race)
+      cup.scoring.derbyPreset = cup.scoring.preset
+    end
+    cup.scoring.bonus  = cupDefaultBonus()
+    for _, b in ipairs(CUP_BONUSES) do
+      local n = math.floor(tonumber(type(s.bonus) == 'table' and s.bonus[b.key] or 0) or 0)
+      if n < 0 then n = 0 elseif n > MAX_CUP_POINTS then n = MAX_CUP_POINTS end
+      cup.scoring.bonus[b.key] = n
+    end
+    cup.scoring.fastestLapRequiresFinish = s.fastestLapRequiresFinish ~= false
+    local dnf = tostring(s.dnfScoring or 'none')
+    cup.scoring.dnfScoring =
+      (dnf == 'classified' or dnf == 'held') and dnf or 'none'
+  end
+
+  cup.entries = {}
+  for _, e in ipairs(type(data.entries) == 'table' and data.entries or {}) do
+    local id = tonumber(e and e.entryId)
+    if id and type(e.name) == 'string' then
+      local entry = {
+        entryId = math.floor(id),
+        name    = e.name,
+        rounds  = {},
+        adjustments = {},
+      }
+      for _, r in ipairs(type(e.rounds) == 'table' and e.rounds or {}) do
+        if type(r) == 'table' then entry.rounds[#entry.rounds + 1] = r end
+      end
+      for _, a in ipairs(type(e.adjustments) == 'table' and e.adjustments or {}) do
+        if type(a) == 'table' and tonumber(a.delta) then
+          entry.adjustments[#entry.adjustments + 1] = a
+        end
+      end
+      cup.entries[#cup.entries + 1] = entry
+    end
+  end
+
+  cup.pendingQuali = {}
+  for _, q in ipairs(type(data.pendingQuali) == 'table' and data.pendingQuali or {}) do
+    if type(q) == 'table' and tonumber(q.entryId) then
+      cup.pendingQuali[#cup.pendingQuali + 1] = {
+        entryId = math.floor(tonumber(q.entryId)),
+        pos     = math.floor(tonumber(q.pos) or 0),
+        pts     = math.floor(tonumber(q.pts) or 0),
+      }
+    end
+  end
+end
+
+local function getCup()
+  if not cupLoaded then
+    cupLoaded = true
+    loadCupFromDisk()
+    if cup.enabled then
+      print(string.format('[RaceManager] Cup "%s" resumed: round %d, %d driver(s)',
+        cup.name ~= '' and cup.name or 'unnamed', cup.round, #cup.entries))
+    end
+  end
+  return cup
+end
+
+-- Persisting the cup and publishing it are ONE event, deliberately: every path
+-- that changes a cup has to come through here or the change would not survive a
+-- restart either, so there is no second rule to remember about telling the
+-- clients. Same reasoning the garage uses for invalidating its cached view.
+local function saveCupToDisk()
+  if broadcastCupState then broadcastCupState() end
+  ensureLayoutsDir()
+  local f, ferr = io.open(CUP_FILE, 'w')
+  if not f then
+    print('[RaceManager] Could not write ' .. CUP_FILE .. ': ' .. tostring(ferr))
+    return false
+  end
+  f:write(jsonStringify({
+    version      = 1,
+    enabled      = getCup().enabled,
+    name         = cup.name,
+    round        = cup.round,
+    scoring      = cup.scoring,
+    entries      = cup.entries,
+    pendingQuali = cup.pendingQuali,
+  }))
+  f:close()
+  return true
+end
+
+-- ---------------------------------------------------------------------------
+-- Standings
+-- ---------------------------------------------------------------------------
+-- Totals are DERIVED, never stored. A cup entry keeps the per-round breakdown
+-- and the list of manual adjustments, and the total is the sum of both every
+-- time it is asked for -- a few dozen integer additions over a field of
+-- drivers. Keeping a running total instead would make the breakdown and the
+-- number disagree the first time anything was corrected, and the breakdown is
+-- the whole point: an admin has to be able to see where a total came from.
+-- Race and derby are totalled SEPARATELY and then combined, rather than being
+-- summed into one number and split for display afterwards. A mixed cup has two
+-- championships inside it and an admin has to be able to read either on its
+-- own, so the per-discipline figures are the primary ones and the grand total
+-- is derived from them.
+--
+-- A round records which kind it was; rounds written before derbies could be
+-- scored carry no kind and are races, which is what they were.
+local function cupEntryTotals(e)
+  local t = {
+    race  = { rounds = 0, wins = 0, points = 0, quali = 0, bonus = 0, total = 0 },
+    derby = { rounds = 0, wins = 0, points = 0, bonus = 0, total = 0 },
+    adjust = 0, rounds = #e.rounds, total = 0,
+  }
+  for _, r in ipairs(e.rounds) do
+    local derbyRound = r.kind == 'derby'
+    local side = derbyRound and t.derby or t.race
+    side.rounds = side.rounds + 1
+    side.points = side.points + (tonumber(r.racePts) or 0)
+    -- What counts as a win differs by discipline, and deliberately so. A race
+    -- is won by finishing first. A derby is won by being the last one running --
+    -- which is NOT the same as topping the classification, because a derby an
+    -- admin ends early is topped by somebody who was merely still going. That
+    -- driver has not won anything, and a wins column that said otherwise would
+    -- disagree with the last-man-standing bonus sitting next to it.
+    if derbyRound then
+      if r.status == 'winner' then side.wins = side.wins + 1 end
+    elseif tonumber(r.racePos) == 1 then
+      side.wins = side.wins + 1
+    end
+    for _, b in ipairs(CUP_BONUSES) do
+      side.bonus = side.bonus + (tonumber(r.bonus and r.bonus[b.key]) or 0)
+    end
+    if r.kind ~= 'derby' then
+      t.race.quali = t.race.quali + (tonumber(r.qualiPts) or 0)
+    end
+  end
+  t.race.total  = t.race.points + t.race.quali + t.race.bonus
+  t.derby.total = t.derby.points + t.derby.bonus
+  for _, a in ipairs(e.adjustments) do
+    t.adjust = t.adjust + (tonumber(a.delta) or 0)
+  end
+  -- Manual adjustments sit outside both disciplines. They are a correction to a
+  -- driver's standing in the CUP, not to one of its halves, and pretending to
+  -- know which half a penalty belonged to would be inventing information.
+  t.total = t.race.total + t.derby.total + t.adjust
+  return t
+end
+
+-- Cup standings, best first. Ties break on wins, then on the earlier entry --
+-- deterministic either way, so the same cup always renders in the same order.
+--
+-- Each row carries THREE positions: the combined one, and one for each
+-- discipline. A mixed cup contains a race championship and a derby
+-- championship as well as an overall one, and all three ranking rules stay
+-- here rather than being re-derived by whatever is displaying them.
+local function cupStandings()
+  local list = {}
+  for _, e in ipairs(getCup().entries) do
+    local t = cupEntryTotals(e)
+    list[#list + 1] = {
+      entryId  = e.entryId,
+      name     = e.name,
+      rounds   = t.rounds,
+      -- Race side.
+      raceRounds = t.race.rounds, raceWins = t.race.wins,
+      racePts  = t.race.points, qualiPts = t.race.quali,
+      raceBonusPts = t.race.bonus, raceTotal = t.race.total,
+      -- Derby side.
+      derbyRounds = t.derby.rounds, derbyWins = t.derby.wins,
+      derbyPts = t.derby.points, derbyBonusPts = t.derby.bonus,
+      derbyTotal = t.derby.total,
+      -- Combined.
+      wins      = t.race.wins + t.derby.wins,
+      bonusPts  = t.race.bonus + t.derby.bonus,
+      adjustPts = t.adjust,
+      total     = t.total,
+      -- The ledger itself, so an admin can see what each adjustment was for
+      -- and remove the wrong one rather than guessing from a net figure.
+      adjustments = e.adjustments,
+    }
+  end
+  local function rank(field, winField, posField)
+    table.sort(list, function (a, b)
+      if a[field] ~= b[field] then return a[field] > b[field] end
+      if a[winField] ~= b[winField] then return a[winField] > b[winField] end
+      return a.entryId < b.entryId
+    end)
+    for i, row in ipairs(list) do row[posField] = i end
+  end
+  rank('raceTotal',  'raceWins',  'racePos')
+  rank('derbyTotal', 'derbyWins', 'derbyPos')
+  -- Combined last, so the array is left in the order the summary shows.
+  rank('total', 'wins', 'pos')
+  return list
+end
+
+-- ---------------------------------------------------------------------------
+-- Broadcast
+-- ---------------------------------------------------------------------------
+-- The cup has a channel of its own (RM_CupUpdate), pushed only when something
+-- changes, and it is deliberately NOT folded into the main state broadcast.
+-- That one goes out three times a second to every client for the whole of a
+-- race; hanging a standings table off it would be the one genuinely expensive
+-- thing this feature could do. A cup changes a handful of times an evening.
+--
+-- The preset and bonus lists ride along so the panel renders itself from what
+-- the server actually supports, rather than from a copy of the list kept in the
+-- UI that has to be edited in step. Adding a bonus later is then a row in
+-- CUP_BONUSES and nothing else.
+local function cupPresetList()
+  local out = {}
+  for i, p in ipairs(CUP_PRESETS) do
+    out[i] = { key = p.key, label = p.label }
+  end
+  return out
+end
+
+-- The bonus registry as the panel sees it: key, label, the discipline it
+-- belongs to, and what it is currently worth. The `kind` is what lets the panel
+-- group race bonuses under the race table and derby bonuses under the derby
+-- one, without knowing what any individual bonus means.
+local function cupBonusList()
+  local out = {}
+  for i, b in ipairs(CUP_BONUSES) do
+    out[i] = {
+      key   = b.key,
+      kind  = b.kind,
+      label = b.label,
+      value = cup.scoring.bonus[b.key] or 0,
+    }
+  end
+  return out
+end
+
+broadcastCupState = function (targetPid)
+  MP.TriggerClientEvent(targetPid or -1, 'RM_CupUpdate', Util.JsonEncode({
+    rmProtocol   = RM_PROTOCOL,
+    cupEnabled   = getCup().enabled,
+    cupName      = cup.name,
+    round        = cup.round,
+    preset       = cup.scoring.preset,
+    racePoints   = cup.scoring.race,
+    derbyPreset  = cup.scoring.derbyPreset,
+    derbyPoints  = cup.scoring.derby,
+    qualiPoints  = cup.scoring.quali,
+    bonuses      = cupBonusList(),
+    presets      = cupPresetList(),
+    fastestLapRequiresFinish = cup.scoring.fastestLapRequiresFinish,
+    dnfScoring   = cup.scoring.dnfScoring,
+    -- How many drivers have qualifying points waiting to be banked by the next
+    -- race. The admin needs to see that a quali "counted" before the race runs.
+    pendingQuali = #cup.pendingQuali,
+    standings    = cupStandings(),
+    -- The roster, and who is connected right now. The admin panel pairs the two
+    -- up: a driver on the server has to be told which roster entry they are,
+    -- because nothing on the wire can work that out for itself.
+    roster       = rosterList and rosterList() or {},
+    connected    = (function ()
+      local out = {}
+      for _, rec in pairs(players) do
+        out[#out + 1] = {
+          pid = rec.id, guest = rec.name, alias = rec.alias,
+          entryId = rosterEntryFor and (rosterEntryFor(rec) or {}).id or nil,
+        }
+      end
+      table.sort(out, function (a, b) return a.pid < b.pid end)
+      return out
+    end)(),
+  }))
+end
+
+function RM_onCupRequestState(pid)
+  broadcastCupState(pid)
+end
+
+-- ---------------------------------------------------------------------------
+-- Scoring
+-- ---------------------------------------------------------------------------
+local function cupFindEntry(entryId)
+  for _, e in ipairs(getCup().entries) do
+    if e.entryId == entryId then return e end
+  end
+  return nil
+end
+
+-- The cup entry for a driver, created on first sight. Its identity comes from
+-- the roster, which is what makes points survive a reconnect: bind the same
+-- driver back to the same roster entry and they land on the same cup entry.
+local function cupEntryFor(rec)
+  local rosterEntry = rosterEnsure(rec)
+  if not rosterEntry then return nil end
+  local e = cupFindEntry(rosterEntry.id)
+  if e then
+    -- The roster is the authority on the name, so a rename shows up in the
+    -- standings without the cup having to be told separately.
+    e.name = rosterEntry.name
+    return e
+  end
+  e = { entryId = rosterEntry.id, name = rosterEntry.name, rounds = {}, adjustments = {} }
+  cup.entries[#cup.entries + 1] = e
+  return e
+end
+
+local function cupPointsFor(tableRef, pos)
+  if not pos or pos < 1 then return 0 end
+  return tonumber(tableRef[pos]) or 0
+end
+
+-- The qualifying ORDER, by best lap.
+--
+-- Deliberately not qualiClassification(): that one sorts by grid slot first,
+-- which is right for the results file (by the time it is written the grid is
+-- the locked race grid) and wrong here. Qualifying is scored the moment the
+-- session ends, and at that moment a driver's grid slot is where they STARTED
+-- qualifying -- so scoring off it would pay out the order the session began in.
+--
+-- Drivers with no lap are left out entirely rather than sorted to the back:
+-- they did not qualify, and there is no position to pay them for.
+local function cupQualiOrder()
+  local list = {}
+  for _, rec in pairs(players) do
+    if rec.qualiBest then list[#list + 1] = rec end
+  end
+  table.sort(list, function (a, b)
+    if a.qualiBest ~= b.qualiBest then return a.qualiBest < b.qualiBest end
+    return a.id < b.id
+  end)
+  return list
+end
+
+-- Qualifying just ended. Work out the qualifying points and HOLD them: they are
+-- banked by the race that follows, as part of that round.
+local function cupScoreQuali()
+  if #cup.scoring.quali == 0 then return end   -- qualifying points are off
+  cup.pendingQuali = {}
+  for i, rec in ipairs(cupQualiOrder()) do
+    local entry = cupEntryFor(rec)
+    if entry then
+      cup.pendingQuali[#cup.pendingQuali + 1] = {
+        entryId = entry.entryId,
+        pos     = i,
+        pts     = cupPointsFor(cup.scoring.quali, i),
+      }
+    end
+  end
+  saveCupToDisk()
+  print(string.format('[RaceManager] Cup: qualifying scored for %d driver(s), held for round %d',
+    #cup.pendingQuali, cup.round + 1))
+end
+
+local function cupPendingFor(entryId)
+  for _, q in ipairs(cup.pendingQuali) do
+    if q.entryId == entryId then return q end
+  end
+  return nil
+end
+
+-- Pay out every bonus belonging to one discipline.
+--
+-- Shared by both scorers, and it walks only the registry entries whose `kind`
+-- matches -- so a derby can never be handed a fastest-lap bonus and a race can
+-- never be handed a last-man-standing one. A bonus set to zero costs a table
+-- lookup and pays nothing, which is how the whole set stays inert until an
+-- admin turns one on.
+--
+-- `byPid` maps a player id to the round row being written for them, so an
+-- award naming a driver who was not scored (already gone, never entered) simply
+-- finds nothing and is dropped.
+local function cupAwardBonuses(kind, ctx, byPid)
+  for _, b in ipairs(cupBonusesFor(kind)) do
+    local worth = tonumber(cup.scoring.bonus[b.key]) or 0
+    if worth > 0 then
+      local ok, winner = pcall(b.award, ctx)
+      local target = ok and winner and byPid[winner] or nil
+      if target then
+        if b.key == 'fastestLap' and cup.scoring.fastestLapRequiresFinish
+            and not target.classified then
+          print('[RaceManager] Cup: fastest lap bonus withheld — ' .. target.entry.name
+            .. ' did not finish')
+        else
+          target.row.bonus[b.key] = worth
+          print(string.format('[RaceManager] Cup: %s +%d (%s)',
+            target.entry.name, worth, b.label))
+        end
+      end
+    end
+  end
+end
+
+-- A race ended. This is the only place a race round is banked.
+local function cupScoreRace()
+  if cup.round >= MAX_CUP_ROUNDS then
+    print('[RaceManager] Cup: round limit reached (' .. MAX_CUP_ROUNDS .. '), not scoring')
+    return
+  end
+  local final  = raceClassification()
+  local awards = sessionAwards(final)
+  local round  = cup.round + 1
+  local ctx    = { awards = awards, final = final }
+
+  -- Position points.
+  --
+  -- A classified finisher scores for where they finished. A disqualification
+  -- scores nothing, always -- that is what the penalty is. A DNF depends on the
+  -- league's dnfScoring rule (see the scoring table): nothing, its place in the
+  -- classification, or the place it was running in when it stopped.
+  local scored, byPid = 0, {}
+  for i, rec in ipairs(final) do
+    local classified = rec.finishTime ~= nil and rec.status ~= 'dsq'
+    local dnf = rec.status == 'dnf'
+    -- The position this driver is credited with, or nil for none at all.
+    local scorePos = classified and i or nil
+    if dnf then
+      if cup.scoring.dnfScoring == 'classified' then
+        scorePos = i
+      elseif cup.scoring.dnfScoring == 'held' then
+        -- Falls back to the classification when the driver stopped before a
+        -- running order existed -- there is no held position to honour then.
+        scorePos = rec.dnfPos or i
+      end
+    end
+    local entry = cupEntryFor(rec)
+    if entry then
+      local pending = cupPendingFor(entry.entryId)
+      local row = {
+        kind     = 'race',
+        round    = round,
+        -- Only a real finish counts as a finishing position (and so as a win).
+        -- A DNF paid under 'held' is scored at a position; it did not take it.
+        racePos  = classified and i or nil,
+        dnfPos   = dnf and scorePos or nil,
+        racePts  = scorePos and cupPointsFor(cup.scoring.race, scorePos) or 0,
+        qualiPos = pending and pending.pos or nil,
+        qualiPts = pending and pending.pts or 0,
+        bonus    = {},
+        status   = classified and 'classified' or (rec.status == 'dsq' and 'dsq' or 'dnf'),
+      }
+      entry.rounds[#entry.rounds + 1] = row
+      byPid[rec.id] = { entry = entry, row = row, classified = classified }
+      scored = scored + 1
+    end
+  end
+
+  cupAwardBonuses('race', ctx, byPid)
+
+  cup.round = round
+  cup.pendingQuali = {}
+  saveCupToDisk()
+
+  local standings = cupStandings()
+  local leader = standings[1]
+  print(string.format('[RaceManager] Cup "%s" round %d scored for %d driver(s)',
+    cup.name ~= '' and cup.name or 'unnamed', round, scored))
+  if leader then
+    MP.SendChatMessage(-1, string.format(
+      '[RaceManager] Cup round %d scored — %s leads on %d point%s.',
+      round, leader.name, leader.total, leader.total == 1 and '' or 's'))
+  end
+end
+
+-- A derby ended. Banks one round, on the derby side of the cup.
+--
+-- `classification` is the finished order the derby module handed over: the
+-- winner first, then anyone still running, then the eliminated in reverse order
+-- of elimination -- surviving longer is finishing higher. That IS the result of
+-- a derby, which is the one place derby scoring genuinely differs from a race:
+--
+--   * in a race, a driver who did not finish scores nothing, because not
+--     finishing is a failure to produce a result;
+--   * in a derby, being eliminated is the normal way to end and the position it
+--     produces is the result. Everybody in the classification scores.
+--
+-- The winner is distinct from finishing first: a derby can end with nobody left
+-- alive, and then the driver who lasted longest tops the table without having
+-- won it. Only a real survivor carries `status == 'winner'`.
+local function cupScoreDerby(classification, info)
+  if cup.round >= MAX_CUP_ROUNDS then
+    print('[RaceManager] Cup: round limit reached (' .. MAX_CUP_ROUNDS .. '), not scoring')
+    return
+  end
+  local round = cup.round + 1
+  local winnerPid = nil
+  for _, rec in ipairs(classification) do
+    if rec.status == 'winner' then winnerPid = rec.id; break end
+  end
+
+  local scored, byPid = 0, {}
+  for i, rec in ipairs(classification) do
+    local entry = cupEntryFor(rec)
+    if entry then
+      local row = {
+        kind    = 'derby',
+        round   = round,
+        racePos = i,
+        racePts = cupPointsFor(cup.scoring.derby, i),
+        bonus   = {},
+        status  = rec.status == 'winner' and 'winner'
+          or (rec.status == 'alive' and 'survived' or 'eliminated'),
+      }
+      entry.rounds[#entry.rounds + 1] = row
+      -- `classified` is what the fastest-lap rule reads, and it is a race
+      -- concept; every derby row is a real result, so it is simply true here.
+      byPid[rec.id] = { entry = entry, row = row, classified = true }
+      scored = scored + 1
+    end
+  end
+
+  cupAwardBonuses('derby', { winnerPid = winnerPid, duration = info and info.duration }, byPid)
+
+  cup.round = round
+  -- A derby does not consume held qualifying points: those belong to a RACE
+  -- round, and a derby run between qualifying and its race must not eat them.
+  saveCupToDisk()
+
+  local standings = cupStandings()
+  local leader = standings[1]
+  print(string.format('[RaceManager] Cup "%s" round %d (derby) scored for %d driver(s)',
+    cup.name ~= '' and cup.name or 'unnamed', round, scored))
+  if leader then
+    MP.SendChatMessage(-1, string.format(
+      '[RaceManager] Cup round %d (derby) scored — %s leads on %d point%s.',
+      round, leader.name, leader.total, leader.total == 1 and '' or 's'))
+  end
+end
+
+-- THE entry points, filling the forward declarations beside the entry list.
+-- One call at the end of finishSession for each kind of session, one at the end
+-- of finishDerby, and one boolean test when no cup is running.
+cupOnSessionComplete = function (kind)
+  if not getCup().enabled then return end
+  if kind == 'quali' then
+    cupScoreQuali()
+  else
+    cupScoreRace()
+  end
+end
+
+cupOnDerbyComplete = function (classification, info)
+  if not getCup().enabled then return end
+  -- An empty derby points table means derbies are not part of THIS cup, and it
+  -- means it completely: no round is banked and no derby bonus is paid.
+  --
+  -- The alternative -- an empty position table with the bonuses left live -- is
+  -- the shape of trap that gets noticed three rounds later. An admin who presses
+  -- "Turn derby points off" has said derbies do not count here, and a survivor
+  -- quietly collecting a last-man-standing bonus afterwards would contradict
+  -- them. Same rule qualifying already follows.
+  if #cup.scoring.derby == 0 then return end
+  if type(classification) ~= 'table' or #classification == 0 then return end
+  cupScoreDerby(classification, info)
+end
+
+-- ---------------------------------------------------------------------------
+-- Admin events
+-- ---------------------------------------------------------------------------
+-- No UI reaches these yet: the controls arrive with the cup panel, and until
+-- then the server console is the feedback. They are registered and complete so
+-- the whole module is exercisable exactly the way every other handler in this
+-- file is tested -- by calling it.
+function RM_onCupSetEnabled(pid, rawData)
+  if not requireAuth(pid) then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  getCup().enabled = data.enabled == true or data.enabled == 1
+  saveCupToDisk()
+  print('[RaceManager] Cup points ' .. (cup.enabled and 'ENABLED' or 'disabled')
+    .. ' by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- Start a NEW cup: everything a previous one accumulated goes, which is why
+-- this is separate from enabling scoring. Continuing an existing cup is simply
+-- not pressing it.
+function RM_onCupStart(pid, rawData)
+  if not requireAuth(pid) then return end
+  local name = decodeString(rawData, 'name') or ''
+  name = name:gsub('%s+', ' '):gsub('^%s', ''):gsub('%s$', ''):sub(1, MAX_CUP_NAME)
+  if name:find('[^%w %-%_%.]') then
+    print('[RaceManager] Cup name rejected: letters, digits, spaces and - _ . only')
+    return
+  end
+  getCup()
+  cup.name    = name
+  cup.round   = 0
+  cup.entries = {}
+  cup.pendingQuali = {}
+  cup.enabled = true
+  saveCupToDisk()
+  MP.SendChatMessage(-1, '[RaceManager] Cup started: '
+    .. (name ~= '' and name or 'unnamed') .. '. Points now count across races.')
+  print('[RaceManager] Cup "' .. name .. '" started by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- End the cup and clear its points. THE only thing that clears them -- a race
+-- reset, a phase change and a restart all leave a cup exactly where it was.
+--
+-- The roster is untouched: display names are not cup property, and an admin who
+-- ends a championship has not asked to re-name their whole grid.
+function RM_onCupReset(pid)
+  if not requireAuth(pid) then return end
+  getCup()
+  local was, rounds = cup.name, cup.round
+  cup.enabled = false
+  cup.name    = ''
+  cup.round   = 0
+  cup.entries = {}
+  cup.pendingQuali = {}
+  saveCupToDisk()
+  MP.SendChatMessage(-1, '[RaceManager] Cup ended and standings cleared.')
+  print(string.format('[RaceManager] Cup "%s" (%d round(s)) reset by %s',
+    was ~= '' and was or 'unnamed', rounds, MP.GetPlayerName(pid) or pid))
+end
+
+-- Load a preset into one of the two points tables. `target` picks which; it
+-- defaults to the race table, so a client that does not send one behaves the
+-- way it did before derbies could be scored.
+function RM_onCupSetPreset(pid, rawData)
+  if not requireAuth(pid) then return end
+  local key = decodeString(rawData, 'preset')
+  local preset = key and cupPresetByKey(key)
+  if not preset then
+    print('[RaceManager] Unknown cup scoring preset: ' .. tostring(key))
+    return
+  end
+  local target = decodeString(rawData, 'target') == 'derby' and 'derby' or 'race'
+  getCup()
+  if target == 'derby' then
+    cup.scoring.derbyPreset = preset.key
+    cup.scoring.derby = cupCopyTable(preset.race)
+  else
+    cup.scoring.preset = preset.key
+    cup.scoring.race = cupCopyTable(preset.race)
+  end
+  saveCupToDisk()
+  print('[RaceManager] Cup ' .. target .. ' scoring preset "' .. preset.label
+    .. '" applied by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- Custom scoring. Every field is optional, so the UI can send just the part the
+-- admin edited; anything present replaces that part outright.
+function RM_onCupSetScoring(pid, rawData)
+  if not requireAuth(pid) then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  getCup()
+  local touched = false
+  if type(data.race) == 'table' then
+    cup.scoring.race = cupSanitizeTable(data.race)
+    -- Hand-edited: it is no longer any of the presets, and saying so is what
+    -- stops the UI showing "30P Aggressive" over a table that is not it.
+    cup.scoring.preset = 'custom'
+    touched = true
+  end
+  if type(data.derby) == 'table' then
+    cup.scoring.derby = cupSanitizeTable(data.derby)
+    cup.scoring.derbyPreset = 'custom'
+    touched = true
+  end
+  if type(data.quali) == 'table' then
+    cup.scoring.quali = cupSanitizeTable(data.quali)
+    touched = true
+  end
+  if type(data.bonus) == 'table' then
+    for _, b in ipairs(CUP_BONUSES) do
+      local v = data.bonus[b.key]
+      if v ~= nil then
+        local n = math.floor(tonumber(v) or 0)
+        if n < 0 then n = 0 elseif n > MAX_CUP_POINTS then n = MAX_CUP_POINTS end
+        cup.scoring.bonus[b.key] = n
+      end
+    end
+    touched = true
+  end
+  if data.fastestLapRequiresFinish ~= nil then
+    cup.scoring.fastestLapRequiresFinish =
+      data.fastestLapRequiresFinish == true or data.fastestLapRequiresFinish == 1
+    touched = true
+  end
+  if data.dnfScoring ~= nil then
+    local mode = tostring(data.dnfScoring)
+    if mode == 'none' or mode == 'classified' or mode == 'held' then
+      cup.scoring.dnfScoring = mode
+      touched = true
+    end
+  end
+  if not touched then return end
+  saveCupToDisk()
+  print('[RaceManager] Cup scoring updated by ' .. (MP.GetPlayerName(pid) or pid)
+    .. ' (race ' .. #cup.scoring.race .. ' deep, derby '
+    .. (#cup.scoring.derby > 0 and (#cup.scoring.derby .. ' deep') or 'off')
+    .. ', quali '
+    .. (#cup.scoring.quali > 0 and (#cup.scoring.quali .. ' deep') or 'off') .. ')')
+end
+
+-- Fold one cup entry into another, filling the forward declaration the roster
+-- makes. Called when a provisional entry turns out to have been a driver the
+-- admin can name: the rounds and adjustments move, the placeholder goes.
+--
+-- Rounds are appended rather than merged by round number. A driver can only
+-- have raced one of them, so there is nothing to reconcile -- and if a cup ever
+-- does end up with two rows for one round, an admin can see both and drop one,
+-- which is a better outcome than this silently picking a winner.
+-- Qualifying points are HELD between the session that scored them and the race
+-- that banks them, keyed on the entry they were scored against. A driver
+-- identified in that window changes entry, so the held row has to come with
+-- them -- it is looked up by entry id, and a stale one is simply never found
+-- again, which reads as the driver having qualified for nothing.
+local function cupRepointPending(fromId, toId)
+  for _, q in ipairs(cup.pendingQuali) do
+    if q.entryId == fromId then q.entryId = toId end
+  end
+end
+
+cupAbsorbEntry = function (fromId, toId)
+  getCup()
+  local from = cupFindEntry(fromId)
+  if not from then return false end
+  local into = cupFindEntry(toId)
+  if not into then
+    -- Nothing to merge into yet: the entry simply changes hands. Its points
+    -- were earned by this driver either way.
+    from.entryId = toId
+    cupRepointPending(fromId, toId)
+    saveCupToDisk()
+    return true
+  end
+  for _, r in ipairs(from.rounds) do into.rounds[#into.rounds + 1] = r end
+  for _, a in ipairs(from.adjustments) do into.adjustments[#into.adjustments + 1] = a end
+  cupRepointPending(fromId, toId)
+  for i = #cup.entries, 1, -1 do
+    if cup.entries[i].entryId == fromId then table.remove(cup.entries, i) end
+  end
+  print(string.format('[RaceManager] Cup: %d round(s) and %d adjustment(s) moved to "%s"',
+    #from.rounds, #from.adjustments, into.name))
+  saveCupToDisk()
+  return true
+end
+
+-- ---------------------------------------------------------------------------
+-- Driver identity (admin-controlled)
+-- ---------------------------------------------------------------------------
+-- Assign a connected player to a roster entry. This is how a driver gets their
+-- name -- and their points -- back after a reconnect, and it is an admin action
+-- because nothing else can know: BeamMP hands out a fresh random guest name
+-- every join, so the server cannot tell a returning regular from a stranger.
+function RM_onCupBindDriver(pid, rawData)
+  if not requireAuth(pid) then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local target = tonumber(data.pid)
+  local entryId = tonumber(data.entryId)
+  if not target then return end
+  local rec = players[math.floor(target)]
+  if not rec then
+    MP.TriggerClientEvent(pid, 'RM_AliasResult', Util.JsonEncode({
+      success = false, message = 'That driver is no longer on the server.' }))
+    return
+  end
+
+  -- entryId 0 (or absent) means "unassign": drop the binding and the name, and
+  -- leave the entry -- and everything on it -- where it is.
+  if not entryId or entryId <= 0 then
+    rosterUnbind(rec.id)
+    rec.alias = nil
+    rememberIdentity(rec)
+    broadcastState()
+    if broadcastCupState then broadcastCupState() end
+    MP.TriggerClientEvent(pid, 'RM_AliasResult', Util.JsonEncode({
+      success = true, message = rec.name .. ' is unassigned.' }))
+    print('[RaceManager] Roster: ' .. rec.name .. ' unassigned by '
+      .. (MP.GetPlayerName(pid) or pid))
+    return
+  end
+
+  local bound, msg = rosterBindTo(rec, math.floor(entryId))
+  if bound then
+    broadcastState()
+    if broadcastCupState then broadcastCupState() end
+  end
+  MP.TriggerClientEvent(pid, 'RM_AliasResult', Util.JsonEncode({
+    success = bound, message = msg }))
+end
+
+-- Delete a roster entry outright, and everything the cup holds against it.
+-- The way to clear out placeholders left by drivers who never came back.
+function RM_onCupForgetDriver(pid, rawData)
+  if not requireAuth(pid) then return end
+  local entryId = decodeNumber(rawData, 'entryId')
+  if not entryId then return end
+  entryId = math.floor(entryId)
+  if rosterForget(entryId) then
+    getCup()
+    for i = #cup.entries, 1, -1 do
+      if cup.entries[i].entryId == entryId then table.remove(cup.entries, i) end
+    end
+    saveCupToDisk()
+    broadcastState()
+    print('[RaceManager] Roster: entry ' .. entryId .. ' forgotten by '
+      .. (MP.GetPlayerName(pid) or pid))
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Manual adjustments
+-- ---------------------------------------------------------------------------
+-- An admin has to be able to correct a cup by hand. Drivers disconnect, a race
+-- gets administered badly, a penalty is agreed after the fact -- and a scoring
+-- system with no way to say "minus five, track limits" is one an admin has to
+-- work around by rescoring an entire round.
+--
+-- Adjustments are kept as a LEDGER, separate from the points a driver earned,
+-- and never folded into them. A total that cannot be taken apart is a total
+-- nobody can check: the standings show what was earned and what was adjusted as
+-- two numbers, and every adjustment keeps its reason, its author and its time.
+--
+-- Removing an adjustment deletes the entry rather than posting an opposite one,
+-- because a mistake in the ledger is not an event that happened.
+local MAX_ADJUST      = 9999
+local MAX_ADJUST_NOTE = 60
+
+local function cupCleanNote(raw)
+  local s = tostring(raw or ''):gsub('%s+', ' '):gsub('^%s', ''):gsub('%s$', '')
+  -- Same character class the display names use, and for the same reason: this
+  -- text reaches a fixed-width results export and the server console.
+  s = s:gsub('[^%w %-%_%.%,%:%(%)/]', '')
+  return s:sub(1, MAX_ADJUST_NOTE)
+end
+
+-- Adjust one driver's total. A positive delta adds points, a negative one takes
+-- them away. Identified by cup entry id -- the roster entry -- so an adjustment
+-- lands on the driver and not on whoever happens to hold a session id.
+function RM_onCupAdjust(pid, rawData)
+  if not requireAuth(pid) then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  getCup()
+  if not cup.enabled then
+    print('[RaceManager] Cup adjustment ignored: no cup is running')
+    return
+  end
+  local entryId = tonumber(data.entryId)
+  local delta   = tonumber(data.delta)
+  if not entryId or not delta then return end
+  delta = math.floor(delta)
+  if delta == 0 then return end
+  if delta > MAX_ADJUST then delta = MAX_ADJUST end
+  if delta < -MAX_ADJUST then delta = -MAX_ADJUST end
+  local entry = cupFindEntry(math.floor(entryId))
+  if not entry then
+    print('[RaceManager] Cup adjustment ignored: no entry ' .. tostring(entryId))
+    return
+  end
+  entry.adjustments[#entry.adjustments + 1] = {
+    delta  = delta,
+    reason = cupCleanNote(data.reason),
+    by     = MP.GetPlayerName(pid) or ('Player ' .. tostring(pid)),
+    at     = os.time(),
+  }
+  saveCupToDisk()
+  local msg = string.format('[RaceManager] Cup: %s %s%d point%s%s',
+    entry.name, delta > 0 and '+' or '', delta,
+    (delta == 1 or delta == -1) and '' or 's',
+    cupCleanNote(data.reason) ~= '' and (' — ' .. cupCleanNote(data.reason)) or '')
+  MP.SendChatMessage(-1, msg)
+  print(msg .. ' (by ' .. (MP.GetPlayerName(pid) or pid) .. ')')
+end
+
+-- Remove one adjustment from a driver's ledger, by its index in that ledger.
+function RM_onCupRemoveAdjust(pid, rawData)
+  if not requireAuth(pid) then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  getCup()
+  local entry = cupFindEntry(math.floor(tonumber(data.entryId) or -1))
+  local index = math.floor(tonumber(data.index) or 0)
+  if not entry or index < 1 or index > #entry.adjustments then return end
+  local removed = table.remove(entry.adjustments, index)
+  saveCupToDisk()
+  print(string.format('[RaceManager] Cup: adjustment of %+d removed from %s by %s',
+    removed.delta or 0, entry.name, MP.GetPlayerName(pid) or pid))
+end
+
+-- Drop a whole round from a driver's record.
+--
+-- The honest way to fix a race that was scored wrongly: remove the round and
+-- run it again, rather than posting a compensating adjustment that leaves the
+-- breakdown describing something that never happened. The cup's round COUNT is
+-- deliberately left alone -- the event did take place, and renumbering every
+-- later round to close the gap would rewrite history to hide a correction.
+function RM_onCupDropRound(pid, rawData)
+  if not requireAuth(pid) then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  getCup()
+  local entry = cupFindEntry(math.floor(tonumber(data.entryId) or -1))
+  local round = math.floor(tonumber(data.round) or 0)
+  if not entry or round < 1 then return end
+  local dropped = 0
+  for i = #entry.rounds, 1, -1 do
+    if tonumber(entry.rounds[i].round) == round then
+      table.remove(entry.rounds, i)
+      dropped = dropped + 1
+    end
+  end
+  if dropped == 0 then return end
+  saveCupToDisk()
+  print(string.format('[RaceManager] Cup: round %d dropped from %s by %s',
+    round, entry.name, MP.GetPlayerName(pid) or pid))
+end
+
+-- The last thing the installer does: hand the two lazy loaders out to onInit,
+-- which warms them at boot the way it warms the layouts, the garage and the
+-- saved arenas.
+rosterWarm, cupWarm = getRoster, getCup
+
+end
+installRosterAndCup()
+
+-- ===========================================================================
+-- End of CUP module
+-- ===========================================================================
+
 -- ---------------------------------------------------------------------------
 -- Clock + lifecycle
 -- ---------------------------------------------------------------------------
@@ -4273,6 +5976,9 @@ function RM_onPlayerJoin(pid)
       existing.name  = current
       existing.alias = nil
       existing.joined = false
+      -- A different person now holds this id, so whatever the departed player
+      -- was bound to in the roster is emphatically not theirs.
+      if rosterUnbind then rosterUnbind(pid) end
       rememberIdentity(existing)
     end
   end
@@ -4298,6 +6004,10 @@ function RM_onPlayerDisconnect(pid)
   -- id, who would arrive already intangible and with no way to end it -- the
   -- client that could run the occupancy check for it has gone.
   clearGhost(pid, 'player disconnected')
+  -- The binding is a live association between a connection and a roster entry,
+  -- so it goes with the connection. The ENTRY stays, with every point it has
+  -- earned -- that is the whole reason it lives on disk.
+  if rosterUnbind then rosterUnbind(pid) end
   local rec = players[pid]
   if not rec then
     -- Non-racer admin (e.g. a spectating host) left: still refresh adminPresent.
@@ -4305,8 +6015,7 @@ function RM_onPlayerDisconnect(pid)
     return
   end
   if onTrack(rec) or rec.status == 'gridded' then
-    rec.status = 'dnf'
-    rec.outReason = rec.outReason or 'DNF - Disconnected'
+    retireAsDnf(rec, 'DNF - Disconnected')
   elseif rec.status == 'waiting' then
     players[pid] = nil
   end
@@ -4408,6 +6117,20 @@ function onInit()
   MP.RegisterEvent('RM_DerbyCountdownTick', 'RM_DerbyCountdownTick')
   MP.RegisterEvent('onPlayerJoin',          'RM_Derby_onPlayerJoin')
   MP.RegisterEvent('onPlayerDisconnect',    'RM_Derby_onPlayerDisconnect')
+  -- Cup / series points (isolated module; see the CUP section). No client sends
+  -- these yet -- the admin panel comes with the UI work -- but the handlers are
+  -- registered so the module is complete and reachable the moment it does.
+  MP.RegisterEvent('RM_CupSetEnabled',    'RM_onCupSetEnabled')
+  MP.RegisterEvent('RM_CupStart',         'RM_onCupStart')
+  MP.RegisterEvent('RM_CupReset',         'RM_onCupReset')
+  MP.RegisterEvent('RM_CupSetPreset',     'RM_onCupSetPreset')
+  MP.RegisterEvent('RM_CupSetScoring',    'RM_onCupSetScoring')
+  MP.RegisterEvent('RM_CupRequestState',  'RM_onCupRequestState')
+  MP.RegisterEvent('RM_CupAdjust',        'RM_onCupAdjust')
+  MP.RegisterEvent('RM_CupRemoveAdjust',  'RM_onCupRemoveAdjust')
+  MP.RegisterEvent('RM_CupDropRound',     'RM_onCupDropRound')
+  MP.RegisterEvent('RM_CupBindDriver',    'RM_onCupBindDriver')
+  MP.RegisterEvent('RM_CupForgetDriver',  'RM_onCupForgetDriver')
   MP.RegisterEvent('onPlayerJoin',        'RM_onPlayerJoin')
   MP.RegisterEvent('onPlayerDisconnect',  'RM_onPlayerDisconnect')
   MP.RegisterEvent('RM_Tick',             'RM_Tick')
@@ -4419,6 +6142,8 @@ function onInit()
   getLayouts()       -- warm the layout cache so saved tracks survive the restart visibly
   getGarage()        -- and the approved vehicle list (Module 4)
   getDerbyLayouts()  -- and the saved derby arenas
+  rosterWarm()       -- and the display names an admin has already assigned
+  cupWarm()          -- and a cup left running when the server went down
   print('[RaceManager] Server plugin loaded (build ' .. RM_BUILD
     .. ', circuit edition, map: ' .. getCurrentMap() .. ')')
 end

@@ -183,8 +183,13 @@ check(attached ~= nil and attached:getID() == RESPAWNED_ID,
 check(freeCam == false, 'the driving camera is restored')
 check(ghosts[RIVAL_ID] == true, 'collisions stay off until the whole field has settled')
 
--- ...and come back once it has. Deliberately a timer, not a "have the cars
--- stopped moving" test: on a grid they are frozen for the standing start.
+-- ...and come back once it has, AND once the cars are off each other. Landing
+-- is what the placement timer waits for; being clear of the car next to you is
+-- the gate every ghost passes through on its way back to solid. The mock spawns
+-- every car at the origin, so they are put on their own ground here -- which is
+-- what a grid of start slots is.
+world[RIVAL_ID].x = 40
+if world[RESPAWNED_ID] then world[RESPAWNED_ID].x = 80 end
 frames(3.0)
 check(ghosts[RIVAL_ID] == nil, 'collisions come back once the field is placed and settled')
 

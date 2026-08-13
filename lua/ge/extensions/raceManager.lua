@@ -115,7 +115,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.6.0'
+local RM_BUILD = '0.7.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -219,6 +219,10 @@ local ghost = {
   -- independent ghosts and neither may end the other's.
   veh     = {},
   applied = {},   -- [gameVehId] = true while the ghost is actually applied
+  -- Cars whose reasons have all gone but which still had another car inside
+  -- them when the moment came. They stay ghosts and are retried until the space
+  -- is clear -- no car is handed its collisions back with something in it.
+  pending = {},
   -- Seconds of ghost left per vehicle, which is what the fade reads. Only reset
   -- ghosts have a remaining time; a quali or placement ghost has no clock and
   -- sits at a flat alpha until the reason is dropped.
@@ -288,7 +292,19 @@ local pit = {
   active   = false,  -- a stop is running
   left     = 0,      -- seconds until release
   repaired = false,  -- the repair has been issued for this stop
-  cooldown = 0,      -- stops the box you are standing in re-triggering
+  cooldown = 0,      -- a short delay before the same stall is live again
+  -- The car has to LEAVE a stall before it can serve another stop in one.
+  --
+  -- The cooldown above was meant to be what stopped the box you are standing in
+  -- re-triggering, but a timer only delays that: a car still parked in the
+  -- stall when it expires is simply caught again, and again, forever -- frozen
+  -- and ghosted each time, which reads from the driver's seat as "my car is
+  -- stuck as a ghost for the rest of the race". Resetting in the pits puts you
+  -- there, because a reset in place leaves the car exactly where it stood.
+  --
+  -- A stop is something a driver DRIVES INTO. Arriving is the trigger, so
+  -- having left is the thing that re-arms it.
+  mustLeave = false,
   stops    = 0,      -- how many this session, for the log
   -- Standing in a stall but still rolling. Held so the "stop in the box"
   -- reminder can be throttled: without it the prompt is a push per frame for
@@ -1531,6 +1547,9 @@ function pit.release(reason)
   pit.left     = 0
   pit.repaired = false
   pit.cooldown = TUNE.PIT_COOLDOWN
+  -- The car is standing in the box it just used. It does not get another stop
+  -- out of that box until it has driven out of it.
+  pit.mustLeave = true
   pit.setGhost(false)
   setLocalVehicleFrozen(false)
   pushRouteState()
@@ -1587,10 +1606,24 @@ function pit.update(dt)
 
   if pit.promptLeft > 0 then pit.promptLeft = pit.promptLeft - dt end
 
-  if #pitRoute == 0 or pit.cooldown > 0 then return end
+  if #pitRoute == 0 then return end
   if not sessionRunning() or spectatorLock or gridFrozen then return end
   local veh, pos = sampledVehicle()
   if not veh or not pos then return end
+
+  -- Which stall the car is standing in, if any. Worked out BEFORE the cooldown
+  -- is consulted, so driving out during it still re-arms the stall: leaving is
+  -- what makes the next entry a fresh visit, and a driver who has left and come
+  -- back has done the thing a stop asks for.
+  local inStall = nil
+  for i, wp in ipairs(pitRoute) do
+    if pit.inside(wp, pos) then inStall = i; break end
+  end
+  if not inStall then
+    pit.mustLeave = false
+    return
+  end
+  if pit.mustLeave or pit.cooldown > 0 then return end
 
   -- Being in the box is no longer enough to be serving a stop.
   --
@@ -1609,35 +1642,30 @@ function pit.update(dt)
   end)
   if not ok or not speed then return end
 
-  for i, wp in ipairs(pitRoute) do
-    if pit.inside(wp, pos) then
-      if speed > TUNE.PIT_STOP_SPEED then
-        -- In the box and still rolling. Say so, throttled -- unthrottled this is
-        -- a UI push every frame for as long as a car creeps across the stall.
-        if pit.promptLeft <= 0 then
-          pit.promptLeft = TUNE.PIT_PROMPT_EVERY
-          pushNotice('pit', 'PIT STALL — come to a stop inside the box')
-        end
-        return
-      end
-      pit.active   = true
-      pit.left     = TUNE.PIT_HOLD_SEC
-      pit.repaired = false
-      pit.stops    = pit.stops + 1
-      pit.promptLeft = 0
-      setLocalVehicleFrozen(true, 'pit')
-      -- Ghost before the notice, so a car that is about to sit frozen in the
-      -- lane stops being solid on the same frame it stops being able to move.
-      pit.setGhost(true)
-      pushNotice('pit', string.format('PIT STOP — %.0fs', TUNE.PIT_HOLD_SEC))
-      pushRouteState()
-      log('I', 'raceManager', string.format(
-        'Pit stop %d started in stall %d', pit.stops, i))
-      if inMultiplayer() then
-        TriggerServerEvent('RM_PitStop', jsonEncode({ stall = i }))
-      end
-      return
+  if speed > TUNE.PIT_STOP_SPEED then
+    -- In the box and still rolling. Say so, throttled -- unthrottled this is a
+    -- UI push every frame for as long as a car creeps across the stall.
+    if pit.promptLeft <= 0 then
+      pit.promptLeft = TUNE.PIT_PROMPT_EVERY
+      pushNotice('pit', 'PIT STALL — come to a stop inside the box')
     end
+    return
+  end
+  pit.active   = true
+  pit.left     = TUNE.PIT_HOLD_SEC
+  pit.repaired = false
+  pit.stops    = pit.stops + 1
+  pit.promptLeft = 0
+  setLocalVehicleFrozen(true, 'pit')
+  -- Ghost before the notice, so a car that is about to sit frozen in the lane
+  -- stops being solid on the same frame it stops being able to move.
+  pit.setGhost(true)
+  pushNotice('pit', string.format('PIT STOP — %.0fs', TUNE.PIT_HOLD_SEC))
+  pushRouteState()
+  log('I', 'raceManager', string.format(
+    'Pit stop %d started in stall %d', pit.stops, inStall))
+  if inMultiplayer() then
+    TriggerServerEvent('RM_PitStop', jsonEncode({ stall = inStall }))
   end
 end
 
@@ -2556,12 +2584,69 @@ function ghost.reason(vehId, reason, on, veh)
     if next(set) == nil then ghost.veh[vehId] = nil end
   end
   local want = ghost.veh[vehId] ~= nil
+  if want then ghost.pending[vehId] = nil end
   if want == (ghost.applied[vehId] == true) then return end
   if not veh then
     local got, found = pcall(getObjectByID, vehId)
     veh = got and found or nil
   end
+  -- THE gate every ghost passes through on its way back to solid, and the only
+  -- one: no car is handed its collisions back while another car is inside it.
+  --
+  -- Every reason funnels through here -- the driver's own reset ghost, the pit
+  -- stop, and the field-wide ones that ghost rivals during a mass respawn or
+  -- qualifying -- so the rule holds for all of them without each having to
+  -- remember it. The reason itself is already gone from the set above; what is
+  -- deferred is only the moment the car stops being intangible.
+  --
+  -- A car that cannot go solid yet is parked in `pending` and retried by the
+  -- update loop. It cannot get stuck: the cars involved are ghosts, which is
+  -- precisely what lets them drive out of each other.
+  if not want and veh and ghost.wouldWeld(vehId, veh) then
+    ghost.pending[vehId] = true
+    return
+  end
+  ghost.pending[vehId] = nil
   ghost.apply(vehId, veh, want, ghost.alphaFor(vehId))
+end
+
+-- Is another car inside this one? Ghost status is deliberately not consulted:
+-- see the note in ghost.occupied for why an intangible car in the same space is
+-- still a car in the same space.
+--
+-- Used for cars this client does not own, where there is no countdown and no
+-- driver to warn -- just "not yet". ghost.occupied does the same job for our own
+-- car and additionally explains itself, because that one has a driver waiting.
+function ghost.wouldWeld(vehId, veh)
+  local c1, x1, y1, z1 = ghost.bounds(veh, TUNE.GHOST_OVERLAP_MARGIN)
+  local mine = ghost.centre(veh)
+  -- A car the engine will not place at all is no evidence that anything is
+  -- inside it, so it does not block. That asymmetry with ghost.occupied is
+  -- deliberate: there, the car that cannot be located is OUR OWN and a driver
+  -- is waiting on the answer, so the conservative reading is the safe one and a
+  -- retry next frame will resolve it. Here the subject is somebody else's car,
+  -- usually one mid-spawn or mid-delete, and "stay a ghost until we can measure
+  -- you" is how a car ends up intangible for a whole race with nothing able to
+  -- undo it -- which is the failure this file has already been through once.
+  if not c1 and not mine then return false end
+  local weld = false
+  forEachVehicle(vehId, function (other)
+    if weld then return end
+    local c2, x2, y2, z2 = ghost.bounds(other, 0)
+    if c1 and c2 and type(overlapsOBB_OBB) == 'function' then
+      local okHit, hit = pcall(overlapsOBB_OBB, c1, x1, y1, z1, c2, x2, y2, z2)
+      if not okHit or hit then weld = true end
+      return
+    end
+    local theirs = ghost.centre(other)
+    if not (mine and theirs) then return end
+    local dx, dy, dz = mine.x - theirs.x, mine.y - theirs.y, mine.z - theirs.z
+    if (dx * dx + dy * dy + dz * dz)
+        <= (TUNE.GHOST_FALLBACK_RADIUS * TUNE.GHOST_FALLBACK_RADIUS) then
+      weld = true
+    end
+  end)
+  return weld
 end
 
 -- Alpha for a car mid-ghost. Translucent for most of the ghost, then fading
@@ -2680,7 +2765,21 @@ function ghost.occupied(vehId, veh)
   local blocked, sawAny, reason = false, false, nil
   forEachVehicle(vehId, function (other, otherId)
     if blocked then return end
-    if ghost.veh[otherId] then return end          -- a ghost cannot weld
+    -- A car inside this one blocks the restore whether or not it is ITSELF a
+    -- ghost right now.
+    --
+    -- This used to skip ghosts, on the reasoning that a ghost cannot weld: an
+    -- intangible car inside ours cannot hit us, so why wait for it. The flaw is
+    -- that the other car's ghost is not ours to rely on -- it ends on its own
+    -- clock, decided by its own client, and the instant it does there are two
+    -- solid bodies in the same space. It also made the rule unusable in the one
+    -- place it is needed most: after a race everybody is respawned at once, so
+    -- every car is a ghost, so every car looked clear to every other one.
+    --
+    -- The rule is now simply that a car does not become solid while another car
+    -- is inside it, for any ghosted condition. Two ghosts overlapping can always
+    -- separate -- being ghosts is exactly what lets them drive apart -- so
+    -- waiting for that cannot deadlock.
     sawAny = true
     local c2, x2, y2, z2 = ghost.bounds(other, 0)
     -- The precise test, when both cars can be measured. The margin is on OUR
@@ -2728,21 +2827,44 @@ end
 -- file. These two reasons are field-wide: they ghost every car this client can
 -- see other than its own, which is what "rivals are ghosts" means locally.
 setGhostReason = function (reason, on)
+  -- Turning a reason ON skips our own car: "rivals are ghosts" is what these
+  -- reasons mean, and ghosting ourselves would make us intangible to the field
+  -- rather than the other way round.
+  --
   -- ownVehicle() and not playerVehicle(), for the reason set out at the top of
   -- the file: the moment our car is deleted the game attaches this client to
   -- somebody else's, and "the car I am attached to" would then exclude a RIVAL
   -- from the ghost -- leaving the one car we are about to be respawned next to
   -- as the only solid thing on track. With no car of our own the answer is nil,
   -- and everything gets ghosted, which is exactly right for a mass respawn.
-  local mine = ownVehicle()
-  local myId = mine and vehicleId(mine) or nil
-  forEachVehicle(myId, function (veh, id) ghost.reason(id, reason, on, veh) end)
+  --
+  -- Turning a reason OFF skips NOTHING, and that asymmetry is the whole point.
+  -- The ON path above can reach our own car -- whenever ownVehicle() cannot
+  -- name it, which is exactly the window a respawn opens: the car exists, its
+  -- ownership has not resolved yet, and the two-second re-assert sweep fires in
+  -- the middle of it. If the OFF path then skips our car because ownership HAS
+  -- resolved by the time the reason is lifted, the reason stays on it forever.
+  --
+  -- Nothing can clear it after that. A reset ghost layered on top comes and
+  -- goes, and the car underneath is still held by a field reason nobody will
+  -- ever take off -- which is a car that flashes solid as its reset timer ends
+  -- and goes straight back to being a ghost for the rest of the race.
+  --
+  -- Clearing a reason from a car that never had it is free: ghost.reason
+  -- returns without touching anything when the set is already absent.
+  local skipId = nil
+  if on then
+    local mine = ownVehicle()
+    skipId = mine and vehicleId(mine) or nil
+  end
+  forEachVehicle(skipId, function (veh, id) ghost.reason(id, reason, on, veh) end)
   if on then ghost.field[reason] = true else ghost.field[reason] = nil end
 end
 
 local function clearGhostReasons()
   ghost.field = {}
   ghost.remote = {}
+  ghost.pending = {}
   ghost.left = {}
   ghost.blockReason = nil
   ghost.own = { settling = false, left = 0, total = 0, blocked = 0, warned = false }
@@ -2759,6 +2881,7 @@ local function clearGhostReasons()
   forEachVehicle(nil, function (veh, id) ghost.apply(id, veh, false) end)
   ghost.applied = {}
   ghost.alpha = {}
+  ghost.pending = {}
 end
 
 -- Arm this client's own reset ghost. Called straight from the reset hook and
@@ -3024,6 +3147,34 @@ local function ghostUpdate(dt)
   -- --- re-assert sweep ----------------------------------------------------
   -- Cars appear (a join, a respawn) after the event that ghosted them, so what
   -- is wanted is re-applied on a slow timer rather than assumed to have stuck.
+  -- --- cars still waiting to go solid ------------------------------------
+  -- A ghost whose reasons have all gone but which had a car inside it when the
+  -- moment came. Retried until the space is clear, because "not while somebody
+  -- is inside you" is the whole rule and a timer cannot honour it.
+  --
+  -- Faster than the re-assert sweep below and slower than a frame: a driver
+  -- rolling clear should get their collisions back promptly, and the check
+  -- measures every car on track, so it is not something to do sixty times a
+  -- second with a full grid.
+  ghost.pendingIn = (ghost.pendingIn or 0) - dt
+  if ghost.pendingIn <= 0 then
+    ghost.pendingIn = 0.2
+    for vehId in pairs(ghost.pending) do
+      local got, veh = pcall(getObjectByID, vehId)
+      veh = got and veh or nil
+      if not veh then
+        ghost.pending[vehId] = nil
+      elseif ghost.veh[vehId] then
+        -- A reason came back while it waited; it is a ghost again on its own
+        -- account and no longer pending anything.
+        ghost.pending[vehId] = nil
+      elseif not ghost.wouldWeld(vehId, veh) then
+        ghost.pending[vehId] = nil
+        ghost.apply(vehId, veh, false, 1)
+      end
+    end
+  end
+
   ghost.refresh = ghost.refresh - dt
   if ghost.refresh > 0 then return end
   ghost.refresh = 2.0
@@ -5286,6 +5437,28 @@ local function onLayoutList(rawData)
   guihooks.trigger('RaceManagerLayouts', data)
 end
 
+-- Cup standings and scoring rules, on their own channel.
+--
+-- A pure relay, and it stays one: the cup is decided entirely on the server,
+-- this client owns nothing about it and caches nothing. There is no physics
+-- here to police and no local rule to mirror, which is exactly why the cup
+-- needs none of the machinery the derby needs.
+local function onCupUpdate(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then
+    log('E', 'raceManager', 'RM_CupUpdate: undecodable payload')
+    return
+  end
+  if not fromCurrentServer(data) then return end
+  -- Empty arrays can arrive JSON-encoded as {} rather than []; hand the UI a
+  -- real array either way so an ng-repeat never sees an object.
+  for _, key in ipairs({ 'standings', 'presets', 'bonuses', 'roster', 'connected',
+                         'racePoints', 'derbyPoints', 'qualiPoints' }) do
+    if type(data[key]) ~= 'table' or #data[key] == 0 then data[key] = {} end
+  end
+  guihooks.trigger('RaceManagerCup', data)
+end
+
 -- Server pushed a layout to everyone: purge the current track state, then
 -- spawn the saved gates immediately.
 local function onApplyLayout(rawData)
@@ -5607,11 +5780,190 @@ function M.clearResults()
   if inMultiplayer() then TriggerServerEvent('RM_ClearResults', '') end
 end
 
+-- ---------------------------------------------------------------------------
+-- Cup / series points (called by the UI app) -- all go to the server
+-- ---------------------------------------------------------------------------
+-- Thin relays with no local state behind them. The cup is scored, stored and
+-- decided entirely on the server; this client only forwards the admin's
+-- intention and renders whatever comes back on RM_CupUpdate.
+function M.cupRequestState()
+  if inMultiplayer() then TriggerServerEvent('RM_CupRequestState', '') end
+end
+
+function M.cupSetEnabled(enabled)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetEnabled',
+      jsonEncode({ enabled = enabled and true or false }))
+  end
+end
+
+function M.cupStart(name)
+  if not inMultiplayer() then
+    editorMsg('Cup points need a BeamMP server')
+    return
+  end
+  TriggerServerEvent('RM_CupStart', jsonEncode({ name = tostring(name or '') }))
+end
+
+function M.cupReset()
+  if inMultiplayer() then TriggerServerEvent('RM_CupReset', '') end
+end
+
+-- `target` picks which points table the preset fills: 'race' (the default) or
+-- 'derby'. A cup can be all races, all derbies or a mixture, and the two score
+-- on separate tables.
+function M.cupSetPreset(preset, target)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetPreset', jsonEncode({
+      preset = tostring(preset or ''),
+      target = (tostring(target or 'race') == 'derby') and 'derby' or 'race',
+    }))
+  end
+end
+
+-- A points table arrives from the app as "30,27,25,..." and goes up as an
+-- array. A comma-separated string rather than a structure because every other
+-- command in this bridge takes numbers and strings, and the app would otherwise
+-- have to hand-build a Lua table literal.
+--
+-- Only the shape is fixed here. Range clamping stays on the server, which has
+-- to do it anyway for anything arriving from a client it did not write.
+local function cupParsePoints(csv)
+  local out = {}
+  for field in tostring(csv or ''):gmatch('[^,]+') do
+    local n = tonumber(field)
+    out[#out + 1] = n and math.floor(n) or 0
+  end
+  return out
+end
+
+-- Each of these sends ONE part of the scoring rules. The server replaces just
+-- the part it is given, so a panel that edits the bonus values never has to
+-- resend the position table it did not touch.
+function M.cupSetRacePoints(csv)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetScoring', jsonEncode({ race = cupParsePoints(csv) }))
+  end
+end
+
+-- Derbies score on a table of their own. An empty string switches derby scoring
+-- off, exactly as it does for qualifying.
+function M.cupSetDerbyPoints(csv)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetScoring', jsonEncode({ derby = cupParsePoints(csv) }))
+  end
+end
+
+-- An empty string is how qualifying points are switched OFF: it sends an empty
+-- table, and on the server an empty table is what "qualifying does not score"
+-- means. One representation, no separate flag to disagree with it.
+function M.cupSetQualiPoints(csv)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetScoring', jsonEncode({ quali = cupParsePoints(csv) }))
+  end
+end
+
+function M.cupSetBonus(key, value)
+  key = tostring(key or '')
+  if key == '' then return end
+  local n = math.floor(tonumber(value) or 0)
+  if n < 0 then n = 0 end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetScoring', jsonEncode({ bonus = { [key] = n } }))
+  end
+end
+
+-- What a DNF is worth: 'none', 'classified' (its place in the final order) or
+-- 'held' (the place it was running in when it stopped).
+function M.cupSetDnfScoring(mode)
+  mode = tostring(mode or 'none')
+  if mode ~= 'none' and mode ~= 'classified' and mode ~= 'held' then return end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetScoring', jsonEncode({ dnfScoring = mode }))
+  end
+end
+
+function M.cupSetFastestLapRule(required)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetScoring',
+      jsonEncode({ fastestLapRequiresFinish = required and true or false }))
+  end
+end
+
+-- --- Driver identity (admin-controlled) ------------------------------------
+-- Assign a connected player to a roster entry, which is how a driver gets
+-- their name and their accumulated points back after a reconnect. An admin has
+-- to do this: BeamMP issues a fresh random guest name on every join, so nothing
+-- on either side can tell a returning regular from a stranger.
+--
+-- entryId 0 unassigns.
+function M.cupBindDriver(targetPid, entryId)
+  targetPid = tonumber(targetPid)
+  if not targetPid or targetPid < 0 then return end
+  if not inMultiplayer() then
+    editorMsg('Driver assignment needs a BeamMP server')
+    return
+  end
+  TriggerServerEvent('RM_CupBindDriver', jsonEncode({
+    pid     = math.floor(targetPid),
+    entryId = math.floor(tonumber(entryId) or 0),
+  }))
+end
+
+function M.cupForgetDriver(entryId)
+  entryId = tonumber(entryId)
+  if not entryId then return end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupForgetDriver', jsonEncode({ entryId = math.floor(entryId) }))
+  end
+end
+
+-- --- Manual adjustments ----------------------------------------------------
+-- Correcting a cup by hand: a penalty, a driver who dropped out through no
+-- fault of their own, a race administered badly. Keyed on the CUP ENTRY, not on
+-- a session id, so an adjustment lands on the driver rather than on whoever
+-- currently holds that connection.
+function M.cupAdjust(entryId, delta, reason)
+  entryId = tonumber(entryId)
+  delta   = tonumber(delta)
+  if not entryId or not delta or delta == 0 then return end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupAdjust', jsonEncode({
+      entryId = math.floor(entryId),
+      delta   = math.floor(delta),
+      reason  = tostring(reason or ''),
+    }))
+  end
+end
+
+function M.cupRemoveAdjust(entryId, index)
+  entryId = tonumber(entryId)
+  index   = tonumber(index)
+  if not entryId or not index then return end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupRemoveAdjust', jsonEncode({
+      entryId = math.floor(entryId), index = math.floor(index),
+    }))
+  end
+end
+
+function M.cupDropRound(entryId, round)
+  entryId = tonumber(entryId)
+  round   = tonumber(round)
+  if not entryId or not round then return end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupDropRound', jsonEncode({
+      entryId = math.floor(entryId), round = math.floor(round),
+    }))
+  end
+end
+
 function M.requestState()
   pushRouteState()
   if inMultiplayer() then
     TriggerServerEvent('RM_RequestState', '')
     TriggerServerEvent('RM_RequestLayouts', '')
+    TriggerServerEvent('RM_CupRequestState', '')
   else
     -- Not on a BeamMP server: still push a state so the UI renders, and the
     -- editor remains fully usable for building circuits offline. Grant local
@@ -5664,6 +6016,8 @@ local DISPATCH = {
   RM_Ghost           = onGhost,
   -- Grid hold: the server pulling a car back onto its slot.
   RM_HoldCorrect     = onHoldCorrect,
+  -- Cup / series points
+  RM_CupUpdate       = onCupUpdate,
   -- Demo Derby module
   RM_DerbyUpdate     = onDerbyUpdate,
   RM_DerbyLayouts    = onDerbyLayoutList,

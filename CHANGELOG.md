@@ -6,9 +6,83 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 [← Back to the README](README.md)
 
-## Unreleased — Derby arenas, mode separation, joker and pit fixes
+## 0.7.0 — Cup points, persistent names, derby arenas
 
 ### Added
+
+- **Display names are now saved on the server and survive a restart.** Every
+  name an admin sets is written to `Resources/Server/RaceManager/roster.json`
+  as a saved driver, and cup points attach to that driver rather than to a
+  connection. This reverses a documented limitation; see
+  [Display names](docs/REFERENCE.md#display-names).
+- **Who is who is an admin decision, never a guess.** BeamMP issues a fresh
+  random guest name on every join, so a guest name identifies nobody: matching
+  on one would miss a returning driver almost every time, and on the occasion
+  two people were ever issued the same name it would hand a stranger somebody
+  else's identity and their championship points. Nothing is assigned
+  automatically. After a reconnect or a restart an admin either sets the name
+  again or picks the driver from the Cup tab's new **Drivers** panel, which also
+  warns how many connections are still unidentified.
+- **Nobody loses points by being identified late.** A driver who races
+  unassigned scores into a **placeholder**; assigning them afterwards moves
+  those points onto the real driver and retires the placeholder. Placeholders
+  left by drivers who never returned can be deleted outright.
+- **The live timing broadcast is about 20% smaller.** A player record carries
+  audit counters and comparator scratch that no client renders, and all of it
+  was being serialised for the whole field three times a second. The broadcast
+  now sends only what the app reads: ~4.7 KB instead of ~5.9 KB for a 20-car
+  field. The saving is **bandwidth** — roughly 3.5 Mbit/s instead of 4.4 for a
+  full grid, which is what a home-hosted server's uplink notices. Client-side
+  the difference is immaterial (measured at hundredths of a millisecond per
+  second), and CPU was never the constraint here.
+- **The leaderboard no longer re-sorts itself.** It was ordering the driver
+  array by a position integer that *is* that array's index, so the sort could
+  never change anything. Removed as dead work rather than as an optimisation:
+  the measured saving is 0.004 ms per second, which is nothing. The invariant it
+  was guarding against is now checked directly, on every broadcast the stress
+  test makes, in every phase.
+- **A DNF keeps the place it was running in**, whatever ended the race — a
+  disconnection, the admin closing the session, anything else. The results file
+  records it beside the reason (`DNF - Disconnected (was P2)`).
+- **A DNF is not always a nil score.** Three settings decide what one is worth:
+  nothing (the default, as before), its place in the final classification, or
+  the place it was actually running in when it stopped. The last of those can
+  pay two drivers for the same position, which is what a series choosing it is
+  asking for. A DNF is never counted as a win, and a disqualification still
+  scores nothing.
+- **Manual point adjustments.** Press ± on any standings row to add or remove
+  points by hand, with a reason. Adjustments are kept as a ledger beside the
+  points a driver earned and never folded into them, each with its reason and
+  author, so a total can always be taken apart and checked — and removing one
+  deletes it rather than posting an opposite entry. A whole round can be dropped
+  from a driver's record when a race was scored wrongly.
+- **Derbies score into the cup too.** A cup can be all races, all derbies or a
+  mixture. Derbies score on a points table of their own (same presets, starting
+  out matching the race table) on survival order — and unlike a race, *every*
+  driver scores, because being eliminated is the result of a derby rather than a
+  failure to produce one. Bonuses now belong to a discipline, so a derby can
+  never collect a fastest-lap bonus; **Last Man Standing** is the derby one, and
+  it pays only when somebody actually survived. Turning derby points off leaves
+  derbies out of the cup entirely.
+- **Standings keep race and derby apart and summarise them together.** The
+  Combined table totals both; once a cup has held both kinds of event, Races and
+  Derbies tabs show each championship on its own, each ranked on its own total.
+- **Cup points.** A cup scores a championship across several races: position
+  points for the race and optionally for qualifying, configurable bonus points
+  for Fastest Lap, Halfway Led and Hard Charger, and standings that only an
+  admin ending the cup can clear. Points survive Start Qualifying, Reset
+  Session, a phase change and a server restart, because cup state lives in its
+  own module and its own file (`cup.json`, kept out of the results directory so
+  Clear Results Cache cannot reach it). Five scoring presets ship: 30P
+  Aggressive, 25P Aggressive, 25P Moderate, 24P Linear and 35P Folk Race —
+  loading one fills the table, which you can then edit. With no cup running a
+  race behaves exactly as it did. See [Cup points](docs/REFERENCE.md#cup-points).
+- **A Cup tab**, under Race, with the scoring editor collapsed behind a toggle
+  so the panel is one row until you want it. Drivers who are not admins see the
+  standings read-only between sessions, and never during a live one.
+- **Bonus points are configured, not coded.** The server ships a registry of
+  bonus achievements and the panel builds a control per entry from it, so
+  adding another kind of bonus later needs no UI work.
 
 - **Rectangle arenas.** A derby boundary can now be pulled out from a centre
   instead of driven corner by corner: stand where the middle should be, then set
@@ -23,6 +97,42 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 - **Wall height**, 2–30 m, for either kind of arena. Visual only.
 
 ### Changed
+
+- **No car is handed its collisions back while another car is inside it — for
+  any ghosted condition.** Previously only the driver's own reset ghost waited
+  for a clear space; the field-wide ghosts (mass respawn, ghost qualifying) and
+  the pit ghost were released on a timer, so cars could go solid still
+  overlapping. And the clear check deliberately ignored cars that were
+  themselves ghosts, which made it useless exactly where it is needed most:
+  after a race the whole field is respawned at once, so every car was a ghost
+  and every car looked clear to every other one. Every ghost now returns through
+  one gate that asks one question, and a car that cannot go solid yet is retried
+  until it can. Two overlapping ghosts cannot deadlock — being intangible is
+  what lets them drive apart.
+- **Loading a scoring preset fills the boxes.** The editors were re-seeded from
+  the server "unless the buffer differs from it" — but pressing Load is exactly
+  a case where the server's value changes, which that rule reads as an edit in
+  progress. The boxes kept the old preset, and pressing Apply then posted those
+  stale numbers back and turned the table into a hand-edited "Custom" one. The
+  panel now re-seeds when the *server's* value has moved, so Load lands and
+  typing is still safe from a broadcast arriving mid-edit. Both tables affected;
+  both fixed.
+- **The cup's dropdowns open.** The scoring presets and the driver picker were
+  native `<select>` elements. In BeamNG's UI — Chromium Embedded Framework — a
+  select popup is a separate OS window that never renders over the game, so the
+  box showed its value and clicking it did nothing at all, with no error
+  anywhere. They are now the same custom menu the track-layout picker has always
+  used, and `ui_bindings_test` fails if a native `<select>` reappears.
+
+- **The release package now spells the two folders `Client/` and `Server/`.**
+  They map straight onto a BeamMP server's `Resources/Client` and
+  `Resources/Server`, and Linux — where a good share of servers are hosted —
+  cares about the difference: the old lowercase folders dropped into
+  `Resources/` looked installed and were simply never read, with no error to go
+  on. It matched on Windows, which is why it survived this long. Upgrading on a
+  Linux host, delete any leftover lowercase `Resources/client` or
+  `Resources/server`. The packaging workflow now prints the layout on every run
+  and refuses to publish a package missing either folder.
 
 - **The derby arena is drawn as walls, not poles and rope** — a translucent
   panel per edge, drawn from both sides so it is there from inside the arena as
@@ -50,6 +160,30 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   panel is gone; there is one board, not two.
 
 ### Fixed
+
+- **A car could be left ghosted for the rest of a race, and no reset would fix
+  it.** The field-wide ghost reasons ("rivals are ghosts" during a mass respawn
+  or qualifying) skip your own car when applying — but your car is identified by
+  asking BeamMP who owns it, and a respawn opens a window where that question
+  has no answer yet. The re-assert sweep fires inside that window and the reason
+  lands on your own car; lifting it later skipped your car, because by then
+  ownership *had* resolved. Nothing could take it off after that. A reset ghost
+  layered on top came and went, and the car underneath stayed held — so it
+  flashed solid as the timer ended and went straight back to being a ghost.
+  Lifting a reason now skips nothing.
+- **Reset Session clears the ghost roster.** A ghost ends when the client that
+  owns it reports its car is clear, and a client that has been through a session
+  reset has no such report to give — so a stuck ghost survived the reset and
+  every other client kept seeing that car as intangible.
+- **A car left parked in a pit stall no longer serves stop after stop.** The
+  cooldown was meant to stop the box you are standing in re-triggering, but a
+  timer only delays that: a car still in the stall when it expires is caught
+  again, and again. Each stop freezes and ghosts it, so the car appears stuck as
+  a ghost for the rest of the race — the reset ghost would count down, flash
+  solid, and go straight back. Resetting in the pits is how a driver ends up
+  parked there, since a reset in place leaves the car exactly where it stood.
+  A stall now re-arms when the car **leaves** it, which is what "live on the
+  next visit" always meant. Driving out and coming back still works normally.
 
 - **A derby is now "live" for the UI from Form Up, not from GO.** Both the
   driver's minimal mode and their derby board keyed on `phase === 'running'`,

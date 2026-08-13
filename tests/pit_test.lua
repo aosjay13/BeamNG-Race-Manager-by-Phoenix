@@ -180,6 +180,50 @@ check(st and (st.resetsUsed or 0) == 0, 'and spends no reset allowance')
 frames(3.0)
 
 -- ===========================================================================
+-- A car has to LEAVE a stall before it can serve another stop in it
+-- ===========================================================================
+-- The cooldown was meant to stop the box you are standing in re-triggering, but
+-- a timer only delays that: a car still parked in the stall when it expires is
+-- caught again, and again. Each stop freezes and ghosts it, so from the
+-- driver's seat the car is stuck as a ghost for the rest of the race -- and the
+-- server, told about each new ghost, never sees the end of the last one.
+--
+-- Resetting in the pits is how a driver ends up parked there: a reset in place
+-- leaves the car exactly where it stood, which is in the box it just used.
+serverState({ phase = 'racing', maxResets = -1, totalLaps = 3, drivers = {},
+              ghostOnReset = true, ghostMinSec = 5, ghostMaxSec = 15, ghosts = {} })
+veh.x, veh.y = 0, 0
+frames(9.0)                          -- well clear of any earlier stop
+veh.x, veh.y = 50, 0                 -- into the stall
+frames(0.3)
+check(lastRoute().pitActive == true, 'a stop starts on arrival')
+frames(6.0)                          -- the stop runs and releases
+check(lastRoute().pitActive ~= true, 'and ends')
+
+-- Stay exactly where the stop left the car, and wait out the cooldown twice
+-- over. Nothing may start again.
+local stopsBefore = countSent('RM_PitStop')
+frames(20.0)
+check(lastRoute().pitActive ~= true,
+  'a car left parked in the stall does not serve a second stop')
+check(countSent('RM_PitStop') == stopsBefore,
+  'and no further stop is reported to the server')
+check(frozen ~= true, 'nor is it frozen again')
+check(ghosted ~= true, 'nor ghosted again -- this is the stuck-as-a-ghost report')
+
+-- Driving out and coming back IS a fresh visit, and must still work.
+veh.x, veh.y = 0, 0
+frames(0.5)
+veh.x, veh.y = 50, 0
+frames(0.3)
+check(lastRoute().pitActive == true, 'leaving and returning starts a new stop')
+check(countSent('RM_PitStop') == stopsBefore + 1, 'which is reported once')
+frames(6.0)
+check(lastRoute().pitActive ~= true, 'and that one ends too')
+veh.x, veh.y = 0, 0
+frames(1.0)
+
+-- ===========================================================================
 -- Stalls never touch the checkpoint sequence
 -- ===========================================================================
 -- The whole reason they are a separate list: lap and split validation must not

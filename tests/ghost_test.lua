@@ -312,9 +312,20 @@ check(own.ghosted == false, 'and clear of it, collisions come back')
 -- ===========================================================================
 -- Three cars stacked: ghosts do not block each other into a deadlock
 -- ===========================================================================
--- A ghost cannot weld to anything, so a ghosted car is not a hazard and must not
--- count as one. If it did, two overlapping ghosts would each wait for the other
--- forever and neither would ever go solid again.
+-- A car inside us blocks the restore whether or not it is itself a ghost
+-- ===========================================================================
+-- This used to go the other way: a ghosted car was deliberately invisible to
+-- the occupancy check, on the reasoning that a ghost cannot weld.
+--
+-- The other car's ghost is not ours to rely on. It ends on its own clock,
+-- decided by its own client, and the instant it does there are two solid bodies
+-- in the same space. It also made the rule useless exactly where it is needed
+-- most: after a race the whole field is respawned at once, so every car is a
+-- ghost, so every car looked clear to every other one.
+--
+-- The worry it was written for -- two overlapping ghosts each waiting for the
+-- other forever -- does not survive contact with what a ghost is: being
+-- intangible is precisely what lets them drive out of each other.
 clearLog()
 world[THIRD_ID] = makeVehicle(THIRD_ID, 0, 0)
 local third = world[THIRD_ID]
@@ -331,9 +342,14 @@ check(own.ghosted == true,
   'still blocked: the THIRD car is solid and we are inside it')
 
 third.x = 500                 -- the solid one leaves; the ghosted rival stays
-frames(0.3)
-check(own.ghosted == false,
-  'with only a ghosted car overlapping us, collisions come back — a ghost cannot weld')
+frames(0.5)
+check(own.ghosted == true,
+  'a ghosted car still inside us keeps us ghosted — its ghost is not ours to '
+    .. 'rely on, and it can end at any moment')
+
+rival.x, rival.y = 500, 0     -- it drives clear, which a ghost can always do
+frames(0.5)
+check(own.ghosted == false, 'and collisions come back the moment it is out')
 
 -- ===========================================================================
 -- Fail safe: uncertainty is resolved conservatively, but it IS resolved
@@ -344,9 +360,8 @@ check(own.ghosted == false,
 -- verdict, and a car that could not be measured left the driver ghosted for the
 -- whole race with nothing able to undo it.
 --
--- The rival is put back to SOLID first. It is still carrying the broadcast ghost
--- from the stacked case above, and a ghosted car is deliberately invisible to
--- the occupancy check -- so leaving it ghosted here would test nothing.
+-- The rival is put back to solid and moved away, so this case starts from a
+-- genuinely clear space rather than the pile the case above left behind.
 clearLog()
 handlers['RM_Ghost']({ pid = RIVAL_PID, active = false })
 rival.x, rival.y = 500, 0
@@ -520,8 +535,17 @@ check(rival.ghosted == true, 'a rival mid-ghost is ghosted here too')
 frames(20.0)
 check(rival.ghosted == true,
   'a lapsed remote ghost is NOT restored locally: only its owner can end it')
+-- ...and the owner saying so is still not enough on its own. If the car is
+-- inside OURS in this world, making it solid here welds it here -- which is the
+-- very thing the paragraph above is about, applied to the other direction.
+rival.x, rival.y = 0, 0
 handlers['RM_Ghost']({ pid = RIVAL_PID, active = false })
-check(rival.ghosted == false, 'it is restored when its owner says so, and not before')
+frames(0.3)
+check(rival.ghosted == true,
+  'its owner says clear, but it is inside our car HERE, so it stays a ghost here')
+rival.x, rival.y = 700, 0     -- its own patch of ground: `third` is parked at 500
+frames(0.3)
+check(rival.ghosted == false, 'it is restored once it is out, and not before')
 
 -- ===========================================================================
 -- Joining mid-ghost: the state broadcast carries the roster
@@ -533,9 +557,12 @@ racing({ ghosts = { { pid = RIVAL_PID, endsAt = raceTime + 4.0 } } })
 frames(0.1)
 check(rival.ghosted == true, 'a client joining mid-ghost learns about it from the roster')
 
--- The roster is authoritative: a pid absent from it has no ghost.
+-- The roster is authoritative: a pid absent from it has no ghost. Tested with
+-- the car well clear of ours, so what is being measured is the roster and not
+-- the "nothing goes solid with a car inside it" gate.
+rival.x, rival.y = 700, 0
 racing({ ghosts = {} })
-frames(0.1)
+frames(0.3)
 check(rival.ghosted == false, 'and a ghost missing from the roster is dropped')
 
 -- ===========================================================================
@@ -564,7 +591,11 @@ RM.onVehicleSpawned(LATE_ID)
 check(world[LATE_ID].ghosted == true,
   'a car spawning mid-respawn is ghosted immediately')
 
--- ...and it all comes back once the field has landed.
+-- ...and it all comes back once the field has landed AND the cars are off each
+-- other. Landing is the placement's business; being clear is the gate every
+-- ghost passes through, so the field is spread out here the way a grid is.
+rival.x, rival.y = 700, 0
+world[LATE_ID].x, world[LATE_ID].y = 900, 0
 frames(6.0)
 check(rival.ghosted == false, 'collisions return once the respawn has settled')
 check(world[LATE_ID].ghosted == false, 'for the late arrival too')
@@ -619,10 +650,19 @@ driverReset(0, 0)
 frames(20.0)
 check(own.ghosted == true, 'a genuinely blocked car stays ghosted during the race')
 
+-- The end of the race does NOT hand a blocked car its collisions back. Nothing
+-- does: a car with another car inside it stays intangible until that stops
+-- being true, whatever else has happened. The race ending is not a reason to
+-- weld two cars together, and the respawn that follows would ghost them again
+-- anyway.
 serverState({ phase = 'finished', maxResets = -1, totalLaps = 3, drivers = {} })
-frames(0.2)
-check(own.ghosted == false,
-  'and is solid again the moment the race ends, blocked or not')
+frames(0.5)
+check(own.ghosted == true,
+  'a car with another inside it is still a ghost after the race ends')
+
+rival.x, rival.y = 500, 0     -- the other car moves off
+frames(0.5)
+check(own.ghosted == false, 'and goes solid as soon as the space is clear')
 
 -- Even a ghost the bookkeeping has lost track of is cleared. A vehicle id that
 -- has been reused, or a ghost left by an instance of the extension that has
@@ -698,6 +738,94 @@ frames(1.0)
 local after = countSent('RM_Lap') + countSent('RM_QualiLap')
 check(after == 0, 'ghosting scores no laps of its own')
 check(countSent('RM_VehicleReset') >= 0, 'and leaves the reset accounting alone')
+
+-- ===========================================================================
+-- A field-wide reason must come OFF the car it went ON
+-- ===========================================================================
+-- The field reasons ('placement' during a mass respawn, 'quali') ghost every
+-- car EXCEPT our own -- that is what "rivals are ghosts" means. Our own car is
+-- identified by asking BeamMP who owns it, and there is a window where that
+-- question has no answer: the car exists, its ownership has not resolved yet.
+-- A respawn opens that window, and the two-second re-assert sweep fires inside
+-- it, so the reason lands on our own car.
+--
+-- Applying the reason skips our car when it can be named; LIFTING it must skip
+-- nothing, or a reason that reached our own car during that window stays on it
+-- forever. Nothing can clear it afterwards: a reset ghost layered on top comes
+-- and goes, and the car underneath is still held -- which is a car that flashes
+-- solid as its reset timer ends and returns to being a ghost for the rest of
+-- the race.
+clearLog()
+racing()
+-- Let any ghost still running from the case above expire, so this one starts
+-- from a car that is genuinely solid.
+frames(12.0)
+check(world[OWN_ID].ghosted ~= true, 'starting from a solid car')
+
+-- The window: our car exists but nobody can say it is ours.
+local realIsOwn = MPVehicleGE.isOwn
+MPVehicleGE.isOwn = function () return false end
+RM.setGhostQuali(true)                      -- any field-wide reason will do
+serverState({ phase = 'qualifying', ghostQuali = true, maxResets = -1,
+              totalLaps = 3, drivers = {} })
+frames(0.5)
+MPVehicleGE.isOwn = realIsOwn               -- ownership resolves again
+
+-- Lift it. Our own car must not be left holding the reason.
+serverState({ phase = 'racing', ghostQuali = false, maxResets = -1,
+              totalLaps = 3, drivers = {} })
+frames(0.5)
+check(world[OWN_ID].ghosted ~= true,
+  'a field reason applied to our own car while its ownership was unresolved is '
+    .. 'lifted again -- otherwise the car is ghosted for the rest of the race '
+    .. 'and no reset ghost can clear it')
+
+-- And the ordinary case still works: a reset ghost on top comes and goes.
+clearLog()
+driverReset(0, 0)
+frames(0.3)
+check(world[OWN_ID].ghosted == true, 'a reset still ghosts our own car')
+frames(9.0)
+check(world[OWN_ID].ghosted ~= true, 'and still restores contact when it ends')
+
+-- ===========================================================================
+-- THE rule: nothing goes solid with a car inside it, whatever ghosted it
+-- ===========================================================================
+-- Every ghost -- the driver's own reset ghost, a pit stop, and the field-wide
+-- ones that ghost rivals through a mass respawn or ghost qualifying -- comes
+-- back through one gate, and the gate asks one question.
+clearLog()
+racing()
+frames(12.0)                       -- start from a settled, solid car
+own.x, own.y = 0, 0
+rival.x, rival.y = 700, 0
+world[THIRD_ID].x, world[THIRD_ID].y = 900, 0
+frames(0.5)
+check(own.ghosted ~= true and rival.ghosted ~= true, 'everything solid to begin with')
+
+-- A field-wide reason, lifted while a rival is sitting inside our car.
+serverState({ phase = 'qualifying', ghostQuali = true, maxResets = -1,
+              totalLaps = 3, drivers = {} })
+frames(0.3)
+check(rival.ghosted == true, 'ghost qualifying ghosts the rival')
+rival.x, rival.y = 0, 0            -- it parks inside us
+serverState({ phase = 'racing', ghostQuali = false, maxResets = -1,
+              totalLaps = 3, drivers = {} })
+frames(0.5)
+check(rival.ghosted == true,
+  'the reason is gone but the car is inside ours, so it stays intangible')
+rival.x, rival.y = 700, 0          -- and drives out
+frames(0.5)
+check(rival.ghosted == false, 'and goes solid the moment it is clear')
+
+-- The same rule, on our own car, through the reset ghost.
+rival.x, rival.y = 0, 0
+driverReset(0, 0)
+frames(12.0)
+check(own.ghosted == true, 'our own reset ghost waits on the same question')
+rival.x, rival.y = 700, 0
+frames(0.5)
+check(own.ghosted == false, 'and answers it the same way')
 
 print(string.format('ghost_test: %d checks, %d failures', checks, fails))
 if fails > 0 then os.exit(1) end
