@@ -106,25 +106,32 @@ RM_onStartCountdown(1)
 RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
 check(lastState.phase == 'qualifying', 'the qualifying session is running')
 check(driver('Alice').status == 'qualifying', 'entrants are out on track')
-check(driver('Alice').currentLap == 1, 'lap 1 starts at the line, with no out-lap')
+check(driver('Alice').currentLap == 1, 'lap 1 starts at the line, from the grid')
 check(driver('Dan').status == 'waiting', 'a non-entrant stays a spectator')
 
 -- A non-entrant's lap is not recorded at all.
 RM_onLap(4, '{"lapTime":50.0}')
 check(driver('Dan').qualiBest == nil, 'a non-entrant cannot set a qualifying time')
 
--- Alice: two laps, then her session is done and a third lap is ignored.
+-- The out lap, taken by everyone who is entered. It is the standing start being
+-- given away, so it sets nothing and spends nothing.
+for pid = 1, 3 do RM_onLap(pid, '{"lapTime":60.0}') end
+check(driver('Alice').qualiBest == nil and driver('Alice').qualiLaps == 0,
+  'the out lap sets no time and spends none of the allowance')
+check(driver('Alice').status == 'qualifying', 'and does not end anyone\'s session')
+
+-- Alice: two timed laps, then her session is done and a third lap is ignored.
 RM_onLap(1, '{"lapTime":95.0}')
 RM_onLap(1, '{"lapTime":93.0}')
-check(driver('Alice').qualiLaps == 2, 'both of Alice\'s laps counted')
+check(driver('Alice').qualiLaps == 2, 'both of Alice\'s timed laps counted')
 check(driver('Alice').status == 'finished', 'Alice used her lap allowance')
 check(spectated[1] ~= nil, 'a driver who is done is taken off the track')
 RM_onLap(1, '{"lapTime":80.0}')
 check(driver('Alice').qualiBest == 93.0, 'a lap past the allowance is ignored')
 check(driver('Alice').qualiLaps == 2, 'and does not add to the lap count')
 
-RM_onLap(2, '{"lapTime":91.0}')   -- Bob, one lap: fastest so far
-RM_onLap(3, '{"lapTime":97.0}')   -- Cara, one lap
+RM_onLap(2, '{"lapTime":91.0}')   -- Bob, one timed lap: fastest so far
+RM_onLap(3, '{"lapTime":97.0}')   -- Cara, one timed lap
 
 -- The session closes itself once every entrant has used their allowance.
 check(lastState.phase == 'qualifying', 'the session runs while drivers have laps left')
@@ -229,9 +236,18 @@ check(lastState.phase == 'qualifying',
 check(lastState.finalLap == true, 'it arms the final lap instead')
 check(type(lastChat) == 'string' and lastChat:find('FINAL LAP', 1, true) ~= nil,
   'chat tells every driver the lap they are on is their last')
--- The crossing is what ends it, and it takes the car off the track.
+-- The crossing is what ends it, and it takes the car off the track — but not
+-- the OUT lap crossing. This driver was still on their out lap when the clock
+-- expired, and a session that had already promised not to score that lap must
+-- not turn round and end them on it: they get the flying lap the final-lap rule
+-- gives everybody else.
+RM_onLap(1, '{"lapTime":88}')
+check(lastState.phase == 'qualifying',
+  'the out lap is never the crossing that ends a driver\'s session')
+check(driver('Alice').qualiBest == nil, 'and it still sets no time')
 RM_onLap(1, '{"lapTime":88}')
 check(lastState.phase == 'waiting', 'the last driver home closes qualifying')
+check(driver('Alice').qualiBest == 88.0, 'the timed lap after it counts in full')
 
 -- Limits cannot be changed while qualifying is running.
 RM_onStartQualifying(1)

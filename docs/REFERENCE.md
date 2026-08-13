@@ -37,8 +37,10 @@ Build/Load a track  →  Start Quali  →  Start Countdown  →  Qualifying
 
 Qualifying and the race run the **same** session lifecycle: form the grid,
 hold the field, count down, run, take finished cars off the track, give
-everybody their car back. The only things that differ are the lap target and
-how a lap is scored (best lap in qualifying, running order in the race).
+everybody their car back. The only things that differ are the lap target, how
+a lap is scored (best lap in qualifying, running order in the race), and the
+qualifying **out lap** — the first lap of a qualifying session is not timed,
+because it starts from a standing grid (see [Step 5](#step-5--qualifying)).
 
 ### Step 1 — Open the app
 
@@ -214,10 +216,41 @@ qualifying grid exactly the way Generate Grid forms a race one — every
 entrant is stood on a start position and held — and the countdown releases
 the field.
 
-Lap 1 starts at the line, so **three qualifying laps means three laps**.
-There is no out-lap: qualifying used to begin wherever each driver happened
-to be parked, which cost everyone a lap before their first one counted and
-made a "3 lap" session take five or six.
+**The out lap.** The field starts from a standing grid, so the first lap is
+the lap you spent getting off the line. It is given away: **not timed, not
+scored, and not counted against the lap allowance.** Your clock starts as you
+cross the line for the first time, and **three qualifying laps still means
+three timed laps** — four trips past the line in total.
+
+This is not the out-lap the mod used to have. That one existed because
+qualifying began wherever each driver happened to be parked, so the first
+crossing arrived at a different point of the circuit for everybody and a
+"3 lap" session took five or six laps to finish. This one starts on the grid
+with everyone else's and is counted *separately* from the allowance, so
+nothing is taken out of a driver's session — only the standing start is
+excluded from the timing.
+
+Drivers are told, rather than left to work it out from a lap time that never
+appears:
+
+- chat announces it at **GO**, and again to each driver as they complete it
+  (`Out lap complete — your next lap is TIMED`);
+- the driver's own lap readout shows `OUT LAP — NOT TIMED` in place of the
+  running clock, then `OUT LAP DONE — TIMING` as they cross the line;
+- the timing table shows `OUT LAP` in the Best Lap column for every driver
+  still on theirs, and an **OUT LAP RULE** badge sits in the header for the
+  session;
+- the results file records `out lap not timed` in the qualifying format line,
+  so a lap count read months later still adds up.
+
+**A point-to-point stage has no out lap.** A sprint is driven once, first gate
+to last — a lap given away there is the whole session given away, and there is
+no line to come back past to start a timed one.
+
+The out lap is also never the crossing that *ends* a driver's session. If the
+qualifying clock expires while you are still on it (see the final lap below),
+you complete it, start your flying lap, and take the flag on that — the same
+one timed lap everybody else on track gets.
 
 Each full lap through all gates posts to the server — the table shows
 everyone's **Best Lap**, laps run and live provisional grid order, fastest on
@@ -230,7 +263,7 @@ Three qualifying options sit in the admin settings:
 | Setting | What it does |
 |---------|--------------|
 | **Ghost quali** | Rival cars stop being obstacles for the session, so a flying lap can't be ruined by traffic. Ghosted cars are faded so you can see who they are. |
-| **Quali laps** | Timed laps each driver gets. Their session ends when they use them up; the whole session closes once nobody has laps left. `0` = unlimited. |
+| **Quali laps** | **Timed** laps each driver gets — the out lap is not one of them, so `3` gives an out lap and then 3 flying laps. Their session ends when they use them up; the whole session closes once nobody has laps left. `0` = unlimited. |
 | **Quali mins** | Wall-clock limit. The header shows the countdown; when it expires the session runs a **final lap** (below) rather than stopping dead. `0` = no limit. |
 
 **The final lap.** When a timed session's clock expires it does not end the
@@ -251,7 +284,10 @@ the last driver has taken the flag.
 Two rules keep it from hanging. A crossing the server sees *after* expiry is
 terminal — there is no extra lap for whoever was closest to the line, and
 arrival order at the server decides it, the same way it decides every other
-question of who was first. And a driver who never comes round (parked, in the
+question of who was first. (The one exception is the out lap, which is never
+terminal: a driver still on theirs at expiry would otherwise be stood down
+with no time at all, eliminated by the one lap the session had already
+promised not to score.) And a driver who never comes round (parked, in the
 pits, never left the grid) is bounded by a **3 minute grace**, after which
 the stragglers are taken where they stand and the session closes normally.
 

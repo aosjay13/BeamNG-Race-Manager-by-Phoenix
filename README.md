@@ -102,9 +102,13 @@ client at once.
 gets a **Join Race** button. Or flip the mode to **Everyone races** and skip
 it. Entry survives Start Quali, so drivers only join once per event.
 
-**5. Qualifying.** Press **Start Quali**, then **Start Countdown**. Lap 1
-starts at the line, so *three qualifying laps means three laps* — there's no
-out-lap. The table shows everyone's best lap, fastest on top. Optional
+**5. Qualifying.** Press **Start Quali**, then **Start Countdown**. The field
+starts from the grid, so the first lap is an **out lap**: it's not timed, not
+scored, and not counted against the lap allowance — *three qualifying laps
+still means three timed laps*, run after it. Drivers are told, in chat and on
+their own lap readout, which shows `OUT LAP — NOT TIMED` instead of a running
+clock until they cross the line. (A point-to-point stage is driven once, so it
+has no out lap.) The table shows everyone's best lap, fastest on top. Optional
 settings: **Ghost quali** (rivals stop being obstacles), **Quali laps**, and
 **Quali mins** (which triggers a proper final lap rather than stopping dead).
 

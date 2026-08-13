@@ -103,9 +103,18 @@ local race = {
   startPositions = {},
   -- Qualifying session rules.
   ghostQuali     = false,    -- rivals are ghosts during qualifying
+  -- qualiLapLimit counts TIMED laps, which is not the same as crossings: every
+  -- driver owes an OUT LAP first (see qualiOutLap below), so a 3 lap session is
+  -- four trips past the line and three times that can go on the board.
   qualiLapLimit  = 0,        -- timed laps allowed per driver (0 = unlimited)
   qualiTimeLimit = 0,        -- seconds the session runs for (0 = unlimited)
   qualiTime      = 0.0,      -- seconds elapsed in the current quali session
+  -- Did the qualifying session that produced the times on the board give an out
+  -- lap away? A RECORD of what was run, not the rule: the results file is
+  -- written at the end of the RACE, by which point the live rule reads 'race'
+  -- and the track underneath may even have been swapped. The file has to
+  -- describe the session the times came from.
+  qualiOutLapRun = false,
   -- Post-expiry state for a TIMED session, and the one piece of the lifecycle a
   -- lap-limited session has no equivalent of.
   --
@@ -157,6 +166,30 @@ local MAX_QUALI_TIME   = 7200   -- seconds (2 h)
 -- the session closes normally.
 local FINAL_LAP_GRACE  = 180    -- seconds
 
+-- Does the session now running open with an OUT LAP -- one trip past the line
+-- that is neither timed nor scored nor counted against the lap allowance?
+--
+-- Qualifying starts from a standing grid, so a driver's first crossing is the
+-- lap they spent getting off the line: it is a measure of a launch, not of a
+-- car and a driver over a circuit, and on any track with a slow first corner it
+-- is a time nobody can beat later in the session for reasons that have nothing
+-- to do with pace. Every real qualifying session gives that lap away, and this
+-- one does too -- the clock starts when the driver next crosses the line.
+--
+-- Nothing here is the out lap of the version this replaced. That one existed
+-- because qualifying had no defined starting point at all (drivers began from
+-- wherever they were parked), so the first crossing was arbitrary and a "3 lap"
+-- session took five or six laps to get through. This out lap starts on the
+-- grid, ends at the line, and is COUNTED SEPARATELY from the allowance, so
+-- three qualifying laps still means three timed laps.
+--
+-- A sprint stage is the exception and has to be: a point-to-point run is driven
+-- once, first gate to last, so a lap given away is the whole session given
+-- away. There is no line to come back past either.
+local function qualiOutLap()
+  return race.sessionKind == 'quali' and not race.pointToPoint
+end
+
 -- ---------------------------------------------------------------------------
 -- Admin authentication
 -- ---------------------------------------------------------------------------
@@ -196,6 +229,12 @@ local function newRecord(pid)
     customGrid = nil,        -- slot the admin pinned this driver to (custom mode)
     qualiBest  = nil,        -- best qualifying lap (seconds)
     qualiLaps  = 0,          -- timed qualifying laps completed this session
+    -- This driver still owes the out lap: their next crossing is the one that
+    -- starts their timing rather than one that records anything. Per driver and
+    -- not a session-wide flag, because the field is spread around the circuit --
+    -- one driver can be two flying laps in while another is still on their out
+    -- lap, and each of them has to be told the truth about their own lap.
+    outLap     = false,
     raceBest   = nil,        -- best race lap (seconds)
     currentLap = 0,          -- lap the driver is currently on (1-based once racing)
     lapsLed    = 0,          -- laps this driver crossed the line first on
@@ -573,7 +612,7 @@ end
 local DRIVER_WIRE_FIELDS = {
   'id', 'name', 'alias', 'status', 'joined',
   'gridPos', 'customGrid', 'position',
-  'qualiBest', 'qualiLaps', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
+  'qualiBest', 'qualiLaps', 'outLap', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
   'finishTime', 'resets', 'resetsBlocked',
   'jokerTaken', 'jokerLap', 'outReason', 'dnfPos',
 }
@@ -667,7 +706,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.7.0'
+local RM_BUILD = '0.8.0'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -773,6 +812,11 @@ local function broadcastState(targetPid)
     ghosts       = ghostRoster(),
     -- Qualifying rules and clock.
     ghostQuali     = race.ghostQuali,
+    -- Whether this session opens with an out lap, so a client can say so before
+    -- the driver has crossed anything -- and can stop saying it on the sprint
+    -- stage that has none. The per-driver half of this rides on the driver rows
+    -- (`outLap`), because who is still owing one is a per-driver question.
+    qualiOutLap    = qualiOutLap(),
     qualiLapLimit  = race.qualiLapLimit,
     qualiTimeLimit = race.qualiTimeLimit,
     qualiTime      = race.qualiTime,
@@ -1099,9 +1143,14 @@ local function buildResultsText()
   add('==================================================')
   add('')
   add('--- QUALIFYING RESULTS ---')
-  add(string.format(' Format: %s%s%s',
+  -- The lap limit is a limit on TIMED laps, and the out lap is not one of them.
+  -- Spelled out because a results file is read months later by somebody who was
+  -- not there: "3 lap limit" beside a driver who crossed the line four times is
+  -- a discrepancy nobody can settle after the fact.
+  add(string.format(' Format: %s%s%s%s',
     race.ghostQuali and 'ghost mode' or 'standard',
-    race.qualiLapLimit > 0 and (', ' .. race.qualiLapLimit .. ' lap limit') or '',
+    race.qualiOutLapRun and ', out lap not timed' or '',
+    race.qualiLapLimit > 0 and (', ' .. race.qualiLapLimit .. ' timed lap limit') or '',
     race.qualiTimeLimit > 0 and (', ' .. race.qualiTimeLimit .. 's limit') or ''))
   add(string.format('%-5s %-22s %-10s %s', 'Pos', 'Driver', 'Best Lap', 'Laps'))
   for i, rec in ipairs(quali) do
@@ -1233,7 +1282,13 @@ local function sessionLapTarget()
   -- switching a circuit layout back in.
   if race.pointToPoint then return 1 end
   if isQualiSession() then
-    return race.qualiLapLimit > 0 and race.qualiLapLimit or nil
+    if race.qualiLapLimit <= 0 then return nil end
+    -- Crossings, not timed laps. The allowance is expressed in laps that COUNT,
+    -- and the out lap is one every driver has to make and none of them is
+    -- scored for, so it is added on top rather than taken out of the allowance:
+    -- a 3 lap session is three flying laps, and the fourth crossing is the one
+    -- that ends it.
+    return race.qualiLapLimit + (qualiOutLap() and 1 or 0)
   end
   return race.totalLaps
 end
@@ -1459,12 +1514,14 @@ function RM_onStartQualifying(pid)
   if not formGrid('quali', MP.GetPlayerName(pid) or pid) then return end
   print(string.format('[RaceManager] Qualifying grid formed by %s (%d entrant(s), entry: %s%s%s)',
     MP.GetPlayerName(pid) or pid, entrantCount(), race.entryMode,
-    race.qualiLapLimit > 0 and (', ' .. race.qualiLapLimit .. ' lap limit') or '',
+    race.qualiLapLimit > 0 and (', ' .. race.qualiLapLimit .. ' timed lap limit') or '',
     race.qualiTimeLimit > 0 and (', ' .. race.qualiTimeLimit .. 's limit') or ''))
   MP.SendChatMessage(-1, string.format(
-    '[RaceManager] Qualifying grid formed (%s). Start Countdown to begin the session.',
-    race.qualiLapLimit > 0 and (race.qualiLapLimit .. ' lap' .. (race.qualiLapLimit == 1 and '' or 's'))
-      or 'unlimited laps'))
+    '[RaceManager] Qualifying grid formed (%s%s). Start Countdown to begin the session.',
+    race.qualiLapLimit > 0
+      and (race.qualiLapLimit .. ' timed lap' .. (race.qualiLapLimit == 1 and '' or 's'))
+      or 'unlimited laps',
+    qualiOutLap() and ' + an out lap that is not timed' or ''))
 end
 
 -- ---------------------------------------------------------------------------
@@ -1755,6 +1812,10 @@ formGrid = function (kind, byName)
       rec.qualiBest = nil
       rec.qualiLaps = 0
     end
+    -- Everyone stood on the grid owes the out lap (and nobody in a race does).
+    -- Set here as well as at GO so the timing screen can say so while the field
+    -- is still being held, rather than only once the lights have gone out.
+    rec.outLap = qualiOutLap()
     clearProgress(rec)
     -- Put the car on its start position and hold it there until GO. The order
     -- and the field size travel with the slot so the client can stagger its
@@ -2324,13 +2385,36 @@ function RM_CountdownTick()
         rec.qualiBest = nil
         rec.qualiLaps = 0
       end
+      rec.outLap     = qualiOutLap()
       clearProgress(rec)
     end
   end
+  -- What this session is about to run under, kept for the results file that is
+  -- written long after the rule has moved on (see race.qualiOutLapRun).
+  if isQualiSession() then race.qualiOutLapRun = qualiOutLap() end
   broadcastState()
+  -- The out lap is the first thing that happens in a qualifying session, so it
+  -- is announced at GO rather than left for drivers to work out from a clock
+  -- that never started. Chat, because it reaches a driver who has not opened the
+  -- app; the app itself says it again on the driver's own timing readout.
+  if isQualiSession() and qualiOutLap() then
+    MP.SendChatMessage(-1, '[RaceManager] GO! Your first lap is an OUT LAP — it is '
+      .. 'not timed and does not count. Timing starts as you cross the line.')
+  end
   local target = sessionLapTarget()
+  -- The target is a count of CROSSINGS, so a qualifying session logs the two
+  -- halves it is made of rather than a number that matches neither the setting
+  -- an admin typed nor the laps that will appear on the board.
+  local lapNote
+  if isQualiSession() then
+    lapNote = (race.qualiLapLimit > 0 and (race.qualiLapLimit .. ' timed lap'
+      .. (race.qualiLapLimit == 1 and '' or 's')) or 'unlimited timed laps')
+      .. (qualiOutLap() and ' + out lap' or '')
+  else
+    lapNote = target and (target .. ' laps') or 'unlimited laps'
+  end
   print('[RaceManager] GO! (' .. (isQualiSession() and 'qualifying' or 'race') .. ', '
-    .. (target and (target .. ' laps') or 'unlimited laps') .. ')'
+    .. lapNote .. ')'
     .. (race.jokerEnabled and not isQualiSession() and ' — JOKER LAP REQUIRED' or '')
     .. (race.maxResets >= 0 and (' — resets limited to ' .. race.maxResets) or ''))
 end
@@ -2387,6 +2471,7 @@ function RM_onResetLeaderboard(pid)
   race.sessionKind = 'race'
   race.time = 0.0
   race.qualiTime = 0.0
+  race.qualiOutLapRun = false
   race.finalLap     = false
   race.finalLapLeft = 0
   -- The records are gone and so is the entry list, but the display names are
@@ -2454,6 +2539,38 @@ function RM_onLap(pid, rawData)
   local rec = ensurePlayer(pid)
   if not rec or not onTrack(rec) then return end
   local quali = isQualiSession()
+
+  -- THE OUT LAP, and every rule about it in one place.
+  --
+  -- A driver's first crossing of a qualifying session ends the lap they spent
+  -- getting off the grid. It is thrown away entirely: no Best Lap, no session
+  -- fastest lap, nothing against the allowance -- and, because this returns
+  -- before the terminal check below, it can never be the crossing that ends a
+  -- driver's session either.
+  --
+  -- That last one matters most when the clock has expired. `race.finalLap` makes
+  -- the next crossing terminal for everybody still out, and a driver who was on
+  -- their out lap when it expired would otherwise be stood down with no time at
+  -- all -- eliminated by the one lap the session had already promised not to
+  -- score. They finish the out lap, start the flying lap, and take the flag on
+  -- that, which is what every other driver on track gets.
+  --
+  -- The crossing still counts as a crossing: the lap counter advances and the
+  -- checkpoint telemetry is cleared, exactly as it would for a scored lap.
+  if quali and rec.outLap then
+    rec.outLap = false
+    clearProgress(rec)
+    rec.currentLap = rec.currentLap + 1
+    broadcastState()
+    -- Told to that driver alone. The out lap is a per-driver event twenty
+    -- drivers reach at twenty different moments, and announcing each of them to
+    -- the whole server would bury the messages that are everybody's business.
+    MP.SendChatMessage(rec.id,
+      '[RaceManager] Out lap complete — your next lap is TIMED.')
+    print(string.format('[RaceManager] %s completed their out lap (not timed)', rec.name))
+    return
+  end
+
   local lapTime = decodeNumber(rawData, 'lapTime')
   if lapTime and lapTime > 0 then
     if not rec.raceBest or lapTime < rec.raceBest then rec.raceBest = lapTime end
@@ -2522,8 +2639,12 @@ function RM_onLap(pid, rawData)
     print(string.format('[RaceManager] %s completed %d lap(s) at %.3fs (led %d)%s',
       rec.name, completed, race.time, rec.lapsLed, race.finalLap and ' [final lap]' or ''))
     if quali and target and completed >= target then
+      -- The ALLOWANCE, not the crossing target it was turned into: a driver told
+      -- they have used all four laps of a session an admin set to three would be
+      -- right to ask which one they were given.
+      local used = race.qualiLapLimit
       MP.SendChatMessage(-1, string.format('[RaceManager] %s has used all %d qualifying lap%s.',
-        displayName(rec), target, target == 1 and '' or 's'))
+        displayName(rec), used, used == 1 and '' or 's'))
     elseif race.finalLap then
       MP.SendChatMessage(-1, string.format('[RaceManager] %s has taken the flag (%d still out).',
         displayName(rec), driversOnTrack()))

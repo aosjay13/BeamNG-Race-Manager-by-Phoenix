@@ -6,6 +6,54 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 [← Back to the README](README.md)
 
+## 0.8.0 — The qualifying out lap
+
+### Changed
+
+- **The first lap of a qualifying session is now an out lap: not timed, not
+  scored, and not counted against the lap allowance.** Qualifying starts from a
+  standing grid, so that lap measured a launch rather than a car and a driver
+  over a circuit — and on any track with a slow first corner it set a time
+  nobody could beat later in the session for reasons that had nothing to do with
+  pace. The clock starts as a driver crosses the line for the first time.
+
+  **The lap allowance is unchanged in meaning: three qualifying laps still means
+  three timed laps**, now run after the out lap rather than including it. The
+  session target counts crossings, so a 3 lap session ends on the fourth.
+
+  This is not a return to the out-lap this mod removed. That one existed because
+  qualifying had no defined start at all — drivers began from wherever they were
+  parked, so the first crossing arrived at a different point of the circuit for
+  everybody and a "3 lap" session took five or six laps to get through. This one
+  starts on the grid with everyone else's and is counted separately from the
+  allowance, so nothing is taken out of a driver's session.
+
+- **A point-to-point stage has no out lap.** A sprint is driven once, first gate
+  to last: a lap given away there is the whole session given away, and there is
+  no line to come back past to start a timed one.
+
+- **The out lap is never the crossing that ends a driver's session.** When a
+  timed session's clock expires the next crossing is terminal for everyone still
+  out — but a driver still on their out lap would have been stood down with no
+  time at all, eliminated by the one lap the session had already promised not to
+  score. They complete it, start their flying lap, and take the flag on that:
+  the same one timed lap every other driver on track gets.
+
+### Added
+
+- **Drivers are told, rather than left to infer it from a time that never
+  appears.** The lap readout shows `OUT LAP — NOT TIMED` in place of the running
+  clock, then `OUT LAP DONE — TIMING` as they cross the line — a ticking clock
+  on a lap that is not being timed is worse than no readout at all, because it
+  is a number a driver will drive to. Chat announces the rule at GO and confirms
+  each driver's out lap as they complete it, so it reaches a driver with no app
+  open. The timing table shows `OUT LAP` in the Best Lap column for everyone
+  still on theirs, so a blank is never mistaken for a lap gone wrong, and an
+  **OUT LAP RULE** badge sits in the header for the session.
+- **The results file records it.** The qualifying format line carries
+  `out lap not timed`, so a lap count read months later by somebody who was not
+  there still adds up against the number of times a driver crossed the line.
+
 ## 0.7.0 — Cup points, persistent names, derby arenas
 
 ### Added

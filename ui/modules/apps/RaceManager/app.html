@@ -21,11 +21,23 @@
     <!-- Own lap clock (same feed the driver bar uses; the header is the
          admin/spectator equivalent, since minimal mode removes it). -->
     <span class="rm-laptime" ng-if="showLapTime()">
-      <span class="rm-laptime-hold" ng-if="lapHolding()"
+      <!-- The out lap, ending: no time to hold, because none was taken. The slot
+           says what the lap was and that the next one counts. -->
+      <span class="rm-laptime-out" ng-if="lapHolding() && outLapDone()"
+            title="Your out lap is over — the lap you are on now is being timed">
+        OUT LAP DONE — TIMING
+      </span>
+      <span class="rm-laptime-hold" ng-if="lapHolding() && !outLapDone()"
             title="Lap just completed — held briefly so it can be read">
         LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}
       </span>
-      <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive"
+      <!-- A running clock reads as a time being taken, so the out lap does not
+           get one. The driver is told what the lap is for instead. -->
+      <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
+            title="Qualifying gives the first lap away: it starts from a standing grid, so it measures the launch rather than the lap. Timing starts as you cross the line.">
+        OUT LAP — NOT TIMED
+      </span>
+      <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()"
             title="Time on the current lap">
         LAP {{ formatLapLive(lapElapsed()) }}
       </span>
@@ -38,6 +50,11 @@
     <span class="rm-clock rm-final-lap" ng-if="phase === 'qualifying' && finalLap"
           title="The qualifying clock has expired — the lap you are on is your last">FINAL LAP</span>
     <span class="rm-ghost-badge" ng-if="phase === 'qualifying' && ghostQuali" title="Rival cars are ghosted this session">GHOST</span>
+    <!-- Session rule, not this driver's state: it stands for the whole session
+         so a spectator or an admin can see which rules are in force. Whether the
+         driver is on their own out lap right now is the readout above. -->
+    <span class="rm-out-badge" ng-if="phase === 'qualifying' && qualiOutLap"
+          title="The first lap of this session is an out lap: not timed, not scored, and not counted against the lap allowance.">OUT LAP RULE</span>
     <!-- Your own grid slot, and the hold before the lights go out -->
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
       START P{{ gridSlot }}<b ng-if="gridFrozen"> — HOLD</b>
@@ -315,7 +332,7 @@
         {{ ghostQuali ? '✓ Enabled' : 'Disabled' }}
       </button>
     </span>
-    <span class="rm-setting" title="Timed laps each driver gets in qualifying. 0 = unlimited. Their session ends when they use them up.">
+    <span class="rm-setting" title="TIMED laps each driver gets in qualifying. 0 = unlimited. Their session ends when they use them up. The first lap of the session is an out lap — it starts from the grid, so it is not timed, not scored and not one of these: set 3 and drivers get an out lap and then 3 flying laps. (A point-to-point stage has no out lap: it is driven once.)">
       <label>Quali laps</label>
       <input type="number" class="rm-width-num" min="0" max="99" step="1" ng-model="settingsUi.qualiLaps"
              ng-disabled="phase === 'qualifying'">
@@ -1425,10 +1442,21 @@
          few seconds and is styled differently so it never reads as a stalled
          clock; the live clock underneath never stops. -->
     <span class="rm-laptime" ng-if="showLapTime()">
-      <span class="rm-laptime-hold" ng-if="lapHolding()">
+      <span class="rm-laptime-out" ng-if="lapHolding() && outLapDone()"
+            title="Your out lap is over — the lap you are on now is being timed">
+        OUT LAP DONE — TIMING
+      </span>
+      <span class="rm-laptime-hold" ng-if="lapHolding() && !outLapDone()">
         LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}
       </span>
-      <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive">
+      <!-- No clock on the out lap. This bar is the whole HUD for a driver in
+           minimal mode, so a running number here is the only thing they have to
+           go on — and on a lap that is not being timed it would be a lie. -->
+      <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
+            title="Qualifying gives the first lap away: it starts from a standing grid, so it measures the launch rather than the lap. Timing starts as you cross the line.">
+        OUT LAP — NOT TIMED
+      </span>
+      <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()">
         LAP {{ formatLapLive(lapElapsed()) }}
       </span>
     </span>
@@ -1497,7 +1525,7 @@
           <th class="rm-col-grid">Grid</th>
           <th class="rm-col-name">Driver</th>
           <th class="rm-col-time">Best Lap</th>
-          <th class="rm-col-led" title="Timed qualifying laps completed">Laps</th>
+          <th class="rm-col-led" title="Timed qualifying laps completed. The out lap is not one of them.">Laps</th>
           <th class="rm-col-status">Status</th>
         </tr>
       </thead>
@@ -1508,7 +1536,15 @@
           <!-- Fastest lap of the session, in gold. Qualifying is scored on the
                quali best, so that is the number highlighted here; the race table
                below highlights the race best. One id from the server either way. -->
-          <td class="rm-col-time" ng-class="{'rm-best-lap': row.id === bestLapPid && row.qualiBest}"
+          <!-- A driver still on their out lap has no time and is not going to
+               have one this lap. An em dash says "no time yet" and leaves the
+               reason open; this says which of the two it is, which is what
+               stops a spectator (or the driver's own team) reading a blank as a
+               lap gone wrong. -->
+          <td class="rm-col-time rm-col-outlap" ng-if="showOutLap(row)"
+              title="On the out lap: not timed, not scored, and not counted against the lap allowance">OUT LAP</td>
+          <td class="rm-col-time" ng-if="!showOutLap(row)"
+              ng-class="{'rm-best-lap': row.id === bestLapPid && row.qualiBest}"
               title="{{ row.id === bestLapPid && row.qualiBest ? 'Fastest lap of the session' : '' }}">{{ formatLap(row.qualiBest) }}</td>
           <td class="rm-col-led">{{ row.qualiLaps || 0 }}{{ qualiLapLimit > 0 ? '/' + qualiLapLimit : '' }}</td>
           <td class="rm-col-status">
@@ -1518,7 +1554,9 @@
         </tr>
         <tr ng-if="!drivers.length">
           <td colspan="5" class="rm-empty">
-            No drivers on track yet — lap times appear as drivers cross the start/finish gate.
+            No drivers on track yet — lap times appear on the <b>second</b> crossing of the
+            start/finish gate. The first is the out lap: it starts from a standing grid, so
+            it is not timed and does not count.
           </td>
         </tr>
       </tbody>
@@ -1708,6 +1746,21 @@
     animation: rm-lap-pop 0.25s ease-out;
   }
   .rm-laptime-hold b { font-weight: 700; }
+  /* The out lap takes the same slot as both of those and must not be mistaken
+     for either: not the quiet grey of a clock that is running, and not the amber
+     box of a time that was set. Purple is qualifying's colour throughout this
+     app (the phase chip, the session clock), and this is a qualifying rule. */
+  .rm-laptime-out {
+    display: inline-block;
+    padding: 0 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: #ce93d8;
+    background: rgba(171, 71, 188, 0.18);
+    border: 1px solid rgba(171, 71, 188, 0.55);
+  }
   @keyframes rm-lap-pop {
     0%   { transform: scale(1.12); opacity: 0.6; }
     100% { transform: scale(1);    opacity: 1; }
@@ -2110,6 +2163,25 @@
     border-radius: 8px;
     background: rgba(138, 180, 248, 0.2);
     color: #8ab4f8;
+  }
+  /* Same shape as the ghost badge — both are "a rule is in force this session" —
+     in qualifying's purple. */
+  .rm-out-badge {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: rgba(171, 71, 188, 0.22);
+    color: #ce93d8;
+  }
+  /* The timing table's own out-lap cell: a state, not a time, so it does not
+     borrow the tabular figures the times beside it are set in. */
+  .rm-col-outlap {
+    color: #ce93d8;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
   }
   .rm-gridslot {
     font-size: 10px;

@@ -100,6 +100,14 @@ angular.module('beamng.apps')
       $scope.qualiTimeLimit = 0;
       $scope.qualiLeft = null;        // seconds remaining, null = no limit
       $scope.finalLap  = false;       // quali clock expired: this lap is the last
+      // Does the session on track open with an out lap — one trip past the line
+      // that is not timed and does not count? Mirrored from the server (it is
+      // off on a point-to-point stage, which is driven once) and shown as a
+      // header badge, so a spectator or an admin can see which rules the session
+      // is running under. Whether THIS driver is on theirs right now is a
+      // separate question, answered by the lap clock feed below, which is
+      // instant rather than a broadcast behind.
+      $scope.qualiOutLap = false;
       // Forced spectator mode.
       $scope.spectating = false;
       $scope.spectatorReason = null;
@@ -157,6 +165,19 @@ angular.module('beamng.apps')
       $scope.showLapTime = function () {
         return !!$scope.lapLive || !!$scope.lapHold;
       };
+      // Is this driver on the out lap right now? The lap clock feed carries it,
+      // which is what makes this instant: the bridge knows the moment the car
+      // crosses the line, while the driver row that also carries it arrives on a
+      // broadcast up to a third of a second later. A readout still reading NOT
+      // TIMED into a lap that is being timed is the one error this must not make.
+      $scope.onOutLap = function () {
+        return !!($scope.lapLive && $scope.lapLive.outLap);
+      };
+      // ...and the moment it ENDS, held on screen for a few seconds in place of
+      // the lap time a scored lap would leave there.
+      $scope.outLapDone = function () {
+        return !!($scope.lapHold && $scope.lapHold.outLap);
+      };
 
       // Live lap clock from the bridge (250 ms), interpolated between pushes.
       $scope.$on('RaceManagerLapTime', function (event, data) {
@@ -169,7 +190,8 @@ angular.module('beamng.apps')
           $scope.lapLive = {
             elapsed: data.elapsed || 0,
             at: Date.now(),
-            lap: data.lap || null
+            lap: data.lap || null,
+            outLap: !!data.outLap
           };
           startLapTicker();
         });
@@ -177,11 +199,18 @@ angular.module('beamng.apps')
 
       // A lap just completed: hold its time on screen. The live clock above is
       // already counting the new lap — this only parks a copy of the old one.
+      //
+      // An out lap arrives here with NO time, deliberately: it was not timed, so
+      // there is nothing to hold, and the slot says what the lap was instead. A
+      // time shown for it — even a greyed-out one — is a number a driver will
+      // try to beat.
       $scope.$on('RaceManagerLapDone', function (event, data) {
-        if (!data || typeof data.lapTime !== 'number') { return; }
+        if (!data) { return; }
+        if (!data.outLap && typeof data.lapTime !== 'number') { return; }
         $scope.$evalAsync(function () {
           $scope.lapHold = {
-            lapTime: data.lapTime,
+            lapTime: data.outLap ? null : data.lapTime,
+            outLap: !!data.outLap,
             lap: data.lap || null,
             until: Date.now() + LAP_HOLD_MS
           };
@@ -950,7 +979,7 @@ angular.module('beamng.apps')
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.7.0';
+      var APP_BUILD = '0.8.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -978,6 +1007,19 @@ angular.module('beamng.apps')
         return PHASE_LABELS[$scope.phase] || $scope.phase;
       };
       $scope.statusLabel = function (s) { return STATUS_LABELS[s] || s; };
+
+      // Should this driver's row read OUT LAP where its lap time goes?
+      //
+      // The server's flag answers "does this driver's next crossing complete an
+      // out lap", which is only a statement about somebody still in the session.
+      // A driver who withdrew, went out, or was taken by the grace timeout keeps
+      // it set — they never completed one — and their row would otherwise
+      // announce an out lap they are no longer driving, next to a status of DNF
+      // or Not entered.
+      $scope.showOutLap = function (row) {
+        if (!row || !row.outLap) { return false; }
+        return row.status === 'qualifying' || row.status === 'gridded';
+      };
 
       // Full text for a driver's status cell: the server's ruling reason wins
       // (e.g. "Disqualified - Missed Joker") so the live table matches the
@@ -1221,6 +1263,7 @@ angular.module('beamng.apps')
           // and resets fields are: only when the server's value actually moved,
           // so an edit in progress is never yanked out from under the admin.
           $scope.ghostQuali = !!data.ghostQuali;
+          $scope.qualiOutLap = !!data.qualiOutLap;
           if (typeof data.qualiLapLimit === 'number') {
             if ($scope.qualiLapLimit !== data.qualiLapLimit) {
               $scope.settingsUi.qualiLaps = data.qualiLapLimit;
@@ -2033,11 +2076,20 @@ angular.module('beamng.apps')
         if ($scope.qualiLeft === null || $scope.qualiLeft === undefined) { return ''; }
         return $scope.formatRaceTime($scope.qualiLeft);
       };
+      // The lap allowance is an allowance of TIMED laps, so the label says so
+      // and names the out lap that sits in front of them: an admin setting 3 and
+      // then watching drivers cross the line four times is owed the arithmetic.
       $scope.qualiLimitLabel = function () {
         var bits = [];
-        if ($scope.qualiLapLimit > 0) { bits.push($scope.qualiLapLimit + ' laps'); }
+        if ($scope.qualiLapLimit > 0) { bits.push($scope.qualiLapLimit + ' timed laps'); }
         if ($scope.qualiTimeLimit > 0) { bits.push(Math.round($scope.qualiTimeLimit / 60) + ' min'); }
-        return bits.length ? bits.join(' / ') : 'open';
+        var base = bits.length ? bits.join(' / ') : 'open';
+        // Keyed on the TRACK, not on the running session: this label is read
+        // while setting a session up, when the session running is a race or
+        // nothing at all. `qualiOutLap` on the broadcast answers the other
+        // question — whether the session on track right now has one — and is
+        // what the driver-facing chrome uses.
+        return $scope.pointToPoint ? base : (base + ' + out lap');
       };
 
       // ------------------------------------------------------------------

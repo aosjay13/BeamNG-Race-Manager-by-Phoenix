@@ -230,6 +230,11 @@ local function runQuali(laps, times)
   RM_onStartQualifying(ADMIN)
   RM_onStartCountdown(ADMIN)
   for _ = 1, 4 do RM_CountdownTick() end
+  -- The out lap. Qualifying opens with one crossing that is not timed and not
+  -- part of the allowance, so a session of `laps` timed laps takes laps + 1
+  -- trips past the line. The time given here is discarded by the server, which
+  -- is what the quali scoring below is entitled to rely on.
+  for pid in pairs(times) do RM_onLap(pid, '{"lapTime":50}') end
   for _ = 1, laps do
     for pid, t in pairs(times) do
       RM_onLap(pid, '{"lapTime":' .. t .. '}')

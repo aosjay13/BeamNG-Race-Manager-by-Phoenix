@@ -11,8 +11,9 @@
 --      the frame-to-frame movement segment with that rectangle (the server has
 --      no physics access). The last checkpoint placed is the start/finish line;
 --      completing the checkpoint sequence and crossing it again scores a lap,
---      which is timed locally and reported upstream (RM_QualiLap during
---      qualifying, RM_Lap in race).
+--      which is timed locally and reported upstream on RM_Lap. ONE event for
+--      both kinds of session: which laps count is the server's rule, not this
+--      file's (qualifying, for one, does not count the first).
 --   3. Starting grid: place start positions along the grid, then put the local
 --      car on the slot the server assigns and hold it there until GO.
 --   4. Receive the server's state broadcasts, reset local lap tracking on
@@ -115,7 +116,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.7.0'
+local RM_BUILD = '0.8.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -426,6 +427,11 @@ local lastBestLapTime = nil
 local ghostQuali     = false
 local qualiLapLimit  = 0         -- 0 = unlimited
 local qualiTimeLimit = 0         -- seconds, 0 = unlimited
+-- Does this session open with an out lap -- one trip past the line that is not
+-- timed and not scored? The server decides (it is off on a sprint stage, which
+-- is driven once), and this client mirrors the answer so it can say so on the
+-- driver's own readout before they have crossed anything.
+local qualiOutLap    = false
 
 -- Forced spectator mode (Module 1). Non-nil while this client is out of the
 -- session: it holds the source ('race' or 'derby') that imposed the penalty, so
@@ -732,10 +738,16 @@ end
 -- ---------------------------------------------------------------------------
 -- One session is running (the lights are out and laps count). Qualifying and
 -- racing are the same thing here on purpose: both start from the grid, both
--- count a lap per completed circuit of the route, and both report it upstream on
--- the same event. Qualifying used to have detection of its own -- an out-lap
+-- report a lap per completed circuit of the route, and both report it upstream
+-- on the same event. Qualifying used to have detection of its own -- an out-lap
 -- before the clock started, and no defined starting point because there was no
 -- grid -- which is why a three-lap session took five or six laps to get through.
+--
+-- Qualifying's first lap is given away again (see onOutLap), and deliberately
+-- not by going back to that: the crossing is still detected here, still reported
+-- on the same event, and the SERVER decides it does not count. What this file
+-- does about it is presentation -- it does not show the driver a time for a lap
+-- that was not timed.
 local function sessionRunning()
   return phase == 'racing' or phase == 'qualifying'
 end
@@ -757,9 +769,13 @@ local function resetLapTracking()
   -- so the leaderboard has a distance for this driver from the first moments.
   progressLeft = 0
   -- Cars launch from the grid at the line, so the first target is checkpoint 1
-  -- and the clock is already running — for a qualifying session exactly as much
-  -- as for a race. Outside a running session the start/finish line is armed, so
-  -- a driver pottering about before the lights still gets sensible gate colours.
+  -- and detection is live from GO — for a qualifying session exactly as much as
+  -- for a race. (In qualifying that first circuit is the out lap: it is detected
+  -- and reported like any other, and the server is what declines to score it.
+  -- Nothing here stops timing, because a lap the client did not measure is a lap
+  -- the client cannot report.) Outside a running session the start/finish line is
+  -- armed, so a driver pottering about before the lights still gets sensible
+  -- gate colours.
   if sessionRunning() then
     armedWp = 1
     timingActive = true
@@ -802,6 +818,18 @@ function M.clearTrackState()
   if inMultiplayer() then TriggerServerEvent('RM_ClearTrackState', '') end
 end
 
+-- Is the lap this driver is on the out lap -- the one qualifying gives away?
+--
+-- Worked out locally rather than read off this client's own driver row, and the
+-- distinction matters: the row is authoritative but arrives on a broadcast three
+-- times a second, so a readout driven by it would go on saying NOT TIMED for up
+-- to a third of a second after the driver had crossed the line and started a
+-- lap that very much was. The two agree by construction — both count crossings
+-- from the grid, and the server's rule (qualiOutLap) is what gates this.
+local function onOutLap()
+  return qualiOutLap and phase == 'qualifying' and localLap <= 1
+end
+
 local function onLapCompleted()
   local lapTime = localTime - lapStart
   if timingActive and lapTime < TUNE.LAP_DEBOUNCE then return end  -- double-fire guard
@@ -814,18 +842,33 @@ local function onLapCompleted()
     guihooks.trigger('RaceManagerLapDone', { lapTime = lapTime, lap = n })
   end
 
-  -- ONE report, for both kinds of session. The server knows which one is
-  -- running and scores the lap accordingly (best lap in qualifying, running
-  -- order and laps led in a race); the client's job is only to say "that was a
+  -- ONE report, for both kinds of session, and for the out lap as much as for a
+  -- scored one. The server knows which session is running and scores the lap
+  -- accordingly (best lap in qualifying, running order and laps led in a race,
+  -- nothing at all for the out lap); the client's job is only to say "that was a
   -- lap, and it took this long". The separate RM_QualiLap channel this replaced
-  -- is what let qualifying's lap counting drift away from the race's.
+  -- is what let qualifying's lap counting drift away from the race's, and a
+  -- client that withheld the out lap because it knew it would not be scored
+  -- would be the same mistake in a new place -- the server needs the crossing
+  -- either way, to advance the lap counter and clear the checkpoint telemetry.
   if not sessionRunning() then return end
+  local outLap = onOutLap()
   if inMultiplayer() then
     TriggerServerEvent('RM_Lap', jsonEncode({ lapTime = lapTime }))
   end
-  announceLap(localLap)
-  log('I', 'raceManager', string.format('Lap %d done: %.3fs (%s)',
-    localLap, lapTime, phase))
+  if outLap then
+    -- No time is presented for a lap that was not timed. The readout says what
+    -- happened instead, and the notice channel says what happens next -- this is
+    -- the moment the driver most needs to know their timing has started, and it
+    -- is the moment they are least able to go looking for it.
+    guihooks.trigger('RaceManagerLapDone', { outLap = true, lap = localLap })
+    pushNotice('session', 'OUT LAP COMPLETE — you are on a TIMED lap now')
+    log('I', 'raceManager', string.format('Out lap done: %.3fs (not timed)', lapTime))
+  else
+    announceLap(localLap)
+    log('I', 'raceManager', string.format('Lap %d done: %.3fs (%s)',
+      localLap, lapTime, phase))
+  end
   localLap = localLap + 1
   lapStart = localTime
 end
@@ -937,6 +980,11 @@ local function lapTimerUpdate(dt)
     running = true,
     lap     = localLap,
     elapsed = localTime - lapStart,
+    -- The clock still runs and is still sent; what changes is what the app is
+    -- allowed to do with it. On the out lap it shows the lap for what it is
+    -- instead of a number that looks like a time being taken -- a driver
+    -- watching a lap clock tick has every reason to think it counts.
+    outLap  = onOutLap(),
   })
 end
 
@@ -5225,6 +5273,7 @@ local function onServerUpdate(rawData)
   if type(data.entryMode) == 'string' then entryMode = data.entryMode end
   if type(data.pointToPoint) == 'boolean' then pointToPoint = data.pointToPoint end
   ghostQuali = data.ghostQuali == true
+  qualiOutLap = data.qualiOutLap == true
   if type(data.qualiLapLimit)  == 'number' then qualiLapLimit  = data.qualiLapLimit  end
   if type(data.qualiTimeLimit) == 'number' then qualiTimeLimit = data.qualiTimeLimit end
   -- Reset-ghosting rules are the server's, so every client in a league runs the
@@ -5275,8 +5324,15 @@ local function onServerUpdate(rawData)
   if newPhase ~= phase then
     phase = newPhase
     -- Any session transition re-arms local detection from a clean slate:
-    -- quali start begins a fresh out-lap, GO starts lap 1 at the line.
+    -- lap 1 starts at the line, from the grid, for both kinds of session.
     resetLapTracking()
+    -- Qualifying opens on the out lap, so say so at the moment the lights go
+    -- out. The lap readout carries it for the whole lap; this is the one push
+    -- that arrives while the driver is still stationary and reading.
+    if newPhase == 'qualifying' and qualiOutLap then
+      pushNotice('session',
+        'OUT LAP — this lap is NOT timed. Timing starts as you cross the line.')
+    end
     -- Leaving the start procedure must never leave a car frozen.
     if newPhase ~= 'grid' and newPhase ~= 'countdown' then releaseGridHold('race') end
     if newPhase ~= 'grid' and newPhase ~= 'countdown' and not sessionRunning() then

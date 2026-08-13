@@ -186,6 +186,59 @@ for _, field in ipairs({ 'entryMode', 'gridMode', 'ghostQuali', 'startSlots',
 end
 
 -- ---------------------------------------------------------------------------
+-- 4a2. The qualifying out lap is SHOWN, not just enforced
+--
+-- The rule is worth nothing to a driver who cannot tell it is in force: a lap
+-- clock ticking away on a lap that is not being timed is worse than no readout
+-- at all, because it is a number they will drive to. So the app has to render
+-- the out lap as a state, and must never render a time in its place.
+-- ---------------------------------------------------------------------------
+expect(js:find('data.qualiOutLap', 1, true) ~= nil,
+  'the out-lap rule is mirrored from the server broadcast')
+for _, fn in ipairs({ 'onOutLap', 'outLapDone' }) do
+  expect(html:find(fn .. '()', 1, true) ~= nil and js:find('$scope.' .. fn, 1, true) ~= nil,
+    'the template calls ' .. fn .. '() and the controller defines it — an '
+      .. 'undefined one is not an error in Angular, it is a readout that '
+      .. 'silently never appears')
+end
+expect(html:find('showOutLap(row)', 1, true) ~= nil
+  and js:find('$scope.showOutLap', 1, true) ~= nil,
+  'the qualifying table shows which drivers are still on their out lap')
+-- ...and only for drivers who are actually in the session. The server's flag
+-- stays set on a driver who withdrew or was taken by the grace timeout — they
+-- never completed one — so a row announcing an out lap beside a status of DNF
+-- is what this guards against.
+do
+  local body = js:match('%$scope%.showOutLap = function %(row%)(.-)\n%s*};')
+  expect(body ~= nil, 'found showOutLap in the controller')
+  expect(body ~= nil and body:find("'qualifying'", 1, true) ~= nil
+    and body:find("'gridded'", 1, true) ~= nil,
+    'showOutLap does not check the driver is still in the session')
+end
+
+-- The live clock and the out-lap label share one slot. Both rendering at once
+-- is the failure this prevents, and it is invisible until a qualifying session
+-- is actually running in the game.
+do
+  local live = 0
+  for cond in html:gmatch('class="rm%-laptime%-live"%s+ng%-if="([^"]*)"') do
+    live = live + 1
+    expect(cond:find('!onOutLap()', 1, true) ~= nil,
+      'a live lap clock renders without excluding the out lap, so a driver on '
+        .. 'an untimed lap is shown a running time: ' .. cond)
+  end
+  expect(live >= 2, 'found the lap clock in both the header and the driver bar '
+    .. '(found ' .. live .. ')')
+
+  -- ...and the out-lap slot itself must not format a lap time into the gap.
+  for block in html:gmatch('class="rm%-laptime%-out"(.-)</span>') do
+    expect(block:find('formatLap', 1, true) == nil,
+      'the out-lap readout renders a lap time, which is exactly the number that '
+        .. 'lap does not have')
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- 4b. Cup / series points
 --
 -- The cup panel is entirely server-driven: it renders standings it is sent and
@@ -452,7 +505,7 @@ end
 -- And the ones the controller reads off a driver row it was handed.
 for _, field in ipairs({ 'alias', 'currentLap', 'finishTime', 'id', 'jokerLap',
                          'jokerTaken', 'name', 'outReason', 'position', 'resets',
-                         'status', 'qualiBest' }) do
+                         'status', 'qualiBest', 'outLap' }) do
   expect(onWire[field],
     'the controller reads ' .. field .. ' off a driver row, so it must be on the wire')
 end
