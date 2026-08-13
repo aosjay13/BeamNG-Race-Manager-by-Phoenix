@@ -164,6 +164,15 @@ update renamed some vehicle parts, which changes the configuration signature.
 Re-capture the list. See
 [Game version compatibility](docs/COMPATIBILITY.md).
 
+## Support development
+
+Race Manager is free and always will be. If it's improved your race nights and
+you'd like to put something toward the hosting and the hours, these go straight
+into further development and upkeep:
+
+- **PayPal** — [krossx13](https://www.paypal.me/krossx13)
+- **Cash App** — [$disciplejtmay](https://cash.app/$disciplejtmay)
+
 ## License
 
 Race Manager is released under the [MIT License](LICENSE) — use it, fork it,

@@ -1,0 +1,7 @@
+# Renders the "Sponsor" button on the repo page and sidebar. GitHub only
+# reads this file from the default branch, so the button stays missing until
+# it lands on main. PayPal and Cash App are not platforms GitHub knows by
+# name, so they go under custom: as plain URLs.
+custom:
+  - https://www.paypal.me/krossx13
+  - https://cash.app/$disciplejtmay
