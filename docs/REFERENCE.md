@@ -854,21 +854,30 @@ so the eleventh crossing is the one that ends it.
 Placing slots one car at a time is the tedious part, so the **Start Grid** tab
 does it in bulk.
 
-**Generate N slots from** either your car or a **start position you have already
-placed**. Pole is then a decision you make once, by standing on it — everything
-behind it is arithmetic. Generating from a placed slot rebuilds the grid from
-there and leaves every slot before it alone.
+**Generate N slots, W abreast, from** either your car or a **start position you
+have already placed**. Pole is then a decision you make once, by standing on it —
+everything behind it is arithmetic. Generating from a placed slot rebuilds the
+grid from there and leaves every slot before it alone.
 
-Once a grid has been generated, two **sliders** appear: how far apart the rows
-sit, and how wide the stagger is. Drag them and the grid moves under you — no
-driving back to pole to try a different spacing. They only ever touch slots the
-generator laid out; anything placed by hand is left where you put it, and moving
-or deleting a slot by hand hands the block back so the sliders stop claiming it.
+**Rows can be any width from single file to eight abreast.** Two is a road-race
+grid and an oval's, three and four are short-track and dirt formats, and one is a
+stage start. Each row is **centred on the anchor**, so an odd width puts a car on
+the spot you stood and the rest either side, and an even width straddles it —
+changing the width never walks the grid sideways off the track.
+
+Once a grid has been generated, three **sliders** appear: how far apart the rows
+sit, how much room each car has beside the next, and how many are abreast. Drag
+them and the grid moves under you — no driving back to pole to try a different
+shape. They only ever touch slots the generator laid out; anything placed by hand
+is left where you put it, and moving or deleting a slot by hand hands the block
+back so the sliders stop claiming it.
 
 **Lane tags and headings survive a respace**, which is what makes the head-on
 flow work: **Generate** the block, **Turn Around** the back half, **Set Lane** on
 it, and *then* spread the grid out — the turned-around half stays turned around
-and keeps its lane.
+and keeps its lane. That holds when the **width** changes too: the tags follow the
+slot, not the row, so "slots 7 to 12 go the other way" stays true whether those
+twelve cars are in six rows of two or four rows of three.
 
 Every placed gate and grid slot also has **✕** (delete just this one),
 **+ Before** (insert at your car) and **▲ ▼** (reorder). Editing the main route

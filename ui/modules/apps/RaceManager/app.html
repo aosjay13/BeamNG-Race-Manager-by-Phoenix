@@ -998,7 +998,10 @@
       <div class="rm-lanes-row">
         <label class="rm-lane-label">Generate</label>
         <input type="number" class="rm-lane-num" min="1" max="60" ng-model="gridGen.count">
-        <label class="rm-lane-label">slots from</label>
+        <label class="rm-lane-label">slots,</label>
+        <input type="number" class="rm-lane-num" min="1" max="8" ng-model="gridGen.width"
+               title="Cars per row. Two is a road-race grid and an oval's; three and four are short-track and dirt formats; one is single file.">
+        <label class="rm-lane-label">abreast, from</label>
         <!-- Pole is a decision you make once, by standing on it. Anchoring on a
              placed slot is what lets the sliders below re-lay the grid out
              without driving back there to do it. -->
@@ -1030,10 +1033,21 @@
         <input type="range" class="rm-grid-slider" min="2" max="40" step="0.5"
                ng-model="gridGen.spacing" ng-change="respaceGrid()">
         <span class="rm-setting-val">{{ gridGen.spacing }}m apart</span>
-        <label class="rm-lane-label">Stagger</label>
-        <input type="range" class="rm-grid-slider" min="0" max="20" step="0.5"
+        <label class="rm-lane-label">Cars</label>
+        <input type="range" class="rm-grid-slider" min="0" max="30" step="0.5"
                ng-model="gridGen.stagger" ng-change="respaceGrid()">
-        <span class="rm-setting-val">{{ gridGen.stagger }}m wide</span>
+        <span class="rm-setting-val">{{ gridGen.stagger }}m across</span>
+      </div>
+      <!-- Width is a slider too: changing it re-flows the same slots into
+           different rows, and the lane tags and headings follow the SLOT rather
+           than the row, so a head-on grid keeps its split whatever shape the
+           rows end up. -->
+      <div class="rm-lanes-row" ng-if="gridGenerated">
+        <label class="rm-lane-label">Abreast</label>
+        <input type="range" class="rm-grid-slider" min="1" max="8" step="1"
+               ng-model="gridGen.width" ng-change="respaceGrid()">
+        <span class="rm-setting-val">{{ gridGen.width }} car{{ gridGen.width === 1 ? '' : 's' }} per row
+          · {{ gridRows() }} row{{ gridRows() === 1 ? '' : 's' }}</span>
       </div>
       <div class="rm-lanes-row" ng-if="startPositions.length">
         <label class="rm-lane-label">Slots</label>

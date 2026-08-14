@@ -67,6 +67,9 @@ local TUNE = {
   -- 250, so past this the grid is somewhere else on the circuit and the first
   -- crossing is a part lap (see branch.gridIsOff).
   GRID_ON_LINE_RANGE = 250,
+  -- Most cars a generated grid may put in one row. Two is a road-race grid and
+  -- an oval's; three and four are short-track and dirt formats.
+  GRID_MAX_WIDTH = 8,
   PROGRESS_EVERY = 0.3,   -- seconds between live-position reports
   -- Live lap clock for the driver's own HUD. Pushed on a slow cadence and
   -- INTERPOLATED in the UI between pushes, which keeps the readout smooth
@@ -760,6 +763,7 @@ local function pushRouteState()
     gridGenerated = branch.gridTool.generated,
     gridSpacing   = branch.gridTool.spacing,
     gridStagger   = branch.gridTool.stagger,
+    gridWidth     = branch.gridTool.width,
     -- Reset ruleset (Module 1)
     maxResets    = maxResets,
     resetsUsed   = resetsUsed,
@@ -5775,23 +5779,40 @@ branch.gridTool = {
   anchor    = nil,     -- { x, y, z, hx, hy } the row-1 slot it was built from
   count     = 0,
   spacing   = 8,       -- metres between rows
-  stagger   = 3,       -- metres either side of the centre line
+  stagger   = 6,       -- metres between the cars ACROSS a row
+  width     = 2,       -- cars per row
 }
 
--- Lay N slots out from an anchor, back down its heading, in the two-by-two
--- stagger a race grid uses. Nothing here is novel geometry: it is a placement
--- plus arithmetic on the heading it already carries.
-function branch.layOutGrid(anchor, count, spacing, stagger, replace)
+-- Lay N slots out from an anchor, back down its heading, `width` cars abreast.
+-- Nothing here is novel geometry: it is a placement plus arithmetic on the
+-- heading it already carries.
+--
+-- The row is CENTRED on the anchor, whatever it is made of. Two abreast puts a
+-- car half a gap either side of where the creator stood; three puts one on that
+-- spot and one either side; one puts every car on it, single file. Centring is
+-- what makes the width a free choice -- a row that grew off one edge would walk
+-- the whole grid sideways every time it changed, and on an oval it would walk it
+-- into the wall.
+--
+-- `stagger` is the gap between ADJACENT cars across a row, not the distance from
+-- some centre line. That is the measurement a creator can actually check against
+-- the track: it is how much room each car has beside the one next to it.
+function branch.layOutGrid(anchor, count, spacing, stagger, width, replace)
   local fx, fy = anchor.hx, anchor.hy
   local rx, ry = fy, -fx        -- the right-hand perpendicular
+  width = math.floor(tonumber(width) or 2)
+  if width < 1 then width = 1 end
+  if width > TUNE.GRID_MAX_WIDTH then width = TUNE.GRID_MAX_WIDTH end
   if replace then startPositions = {} end
+  local mid = (width - 1) * 0.5
   for i = 0, count - 1 do
-    local row  = math.floor(i / 2)
-    local side = (i % 2 == 0) and -1 or 1
+    local row  = math.floor(i / width)
+    local col  = i % width
     local back = row * spacing
+    local side = (col - mid) * stagger
     startPositions[#startPositions + 1] = {
-      x  = anchor.x - fx * back + rx * stagger * side,
-      y  = anchor.y - fy * back + ry * stagger * side,
+      x  = anchor.x - fx * back + rx * side,
+      y  = anchor.y - fy * back + ry * side,
       z  = anchor.z,
       hx = fx, hy = fy,
     }
@@ -5804,10 +5825,13 @@ end
 -- and its heading, and anything else uses the car. Anchoring on a placed slot is
 -- what makes the sliders below work -- pole is a decision the creator makes once,
 -- by standing on it, and everything after it is arithmetic.
-function M.generateGrid(count, spacing, stagger, from)
+function M.generateGrid(count, spacing, stagger, from, width)
   count   = math.floor(tonumber(count) or 0)
   spacing = tonumber(spacing) or 8
-  stagger = tonumber(stagger) or 3
+  stagger = tonumber(stagger) or 6
+  width   = math.floor(tonumber(width) or 2)
+  if width < 1 then width = 1 end
+  if width > TUNE.GRID_MAX_WIDTH then width = TUNE.GRID_MAX_WIDTH end
   if count < 1 then return end
   if count > 60 then count = 60 end
 
@@ -5828,7 +5852,7 @@ function M.generateGrid(count, spacing, stagger, from)
     replace = false
   end
 
-  branch.layOutGrid(anchor, count, spacing, stagger, replace)
+  branch.layOutGrid(anchor, count, spacing, stagger, width, replace)
   -- Remembered so the sliders can re-lay the same grid out without the creator
   -- driving back to pole to do it.
   branch.gridTool.generated = true
@@ -5836,12 +5860,14 @@ function M.generateGrid(count, spacing, stagger, from)
   branch.gridTool.count     = count
   branch.gridTool.spacing   = spacing
   branch.gridTool.stagger   = stagger
+  branch.gridTool.width     = width
   pushRouteState()
   guihooks.trigger('RaceManagerEditorMsg', {
-    msg = 'Generated ' .. count .. ' start positions (' .. spacing .. 'm apart, '
-      .. stagger .. 'm stagger)',
+    msg = 'Generated ' .. count .. ' start positions, ' .. width .. ' abreast ('
+      .. spacing .. 'm between rows, ' .. stagger .. 'm across)',
   })
-  log('I', 'raceManager', 'Generated ' .. count .. ' start positions')
+  log('I', 'raceManager', 'Generated ' .. count .. ' start positions, '
+    .. width .. ' abreast')
 end
 
 -- Re-lay the generated grid out at a new spacing. What the sliders drive.
@@ -5849,14 +5875,17 @@ end
 -- Only ever touches a grid this generator built, and only the slots it built:
 -- respacing a grid somebody placed by hand would throw their work away, and the
 -- sliders are hidden until there is a generated one to move.
-function M.respaceGrid(spacing, stagger)
+function M.respaceGrid(spacing, stagger, width)
   if not branch.gridTool.generated or not branch.gridTool.anchor then return end
   spacing = tonumber(spacing) or branch.gridTool.spacing
   stagger = tonumber(stagger) or branch.gridTool.stagger
+  width   = math.floor(tonumber(width) or branch.gridTool.width)
   if spacing < 1 then spacing = 1 end
   if spacing > 60 then spacing = 60 end
   if stagger < 0 then stagger = 0 end
   if stagger > 30 then stagger = 30 end
+  if width < 1 then width = 1 end
+  if width > TUNE.GRID_MAX_WIDTH then width = TUNE.GRID_MAX_WIDTH end
   -- The slots this generator owns are the last `count` of them; anything placed
   -- before the generate stays exactly where the creator put it.
   local keep = #startPositions - branch.gridTool.count
@@ -5875,7 +5904,8 @@ function M.respaceGrid(spacing, stagger)
     held[i - keep] = sp and { branch = sp.branch, hx = sp.hx, hy = sp.hy } or nil
   end
   for i = #startPositions, keep + 1, -1 do table.remove(startPositions, i) end
-  branch.layOutGrid(branch.gridTool.anchor, branch.gridTool.count, spacing, stagger, false)
+  branch.layOutGrid(branch.gridTool.anchor, branch.gridTool.count,
+    spacing, stagger, width, false)
   for i = 1, branch.gridTool.count do
     local sp, was = startPositions[keep + i], held[i]
     if sp and was then
@@ -5883,7 +5913,14 @@ function M.respaceGrid(spacing, stagger)
       if was.hx and was.hy then sp.hx, sp.hy = was.hx, was.hy end
     end
   end
-  branch.gridTool.spacing, branch.gridTool.stagger = spacing, stagger
+  -- Changing the width re-flows the SAME slots into different rows -- slot 5 of a
+  -- three-wide grid is row 2 where it was row 3 two-wide -- and the tag and
+  -- heading above follow the slot, not the row. That is the right way round: a
+  -- head-on grid is tagged "slots 7 to 12 go the other way", and it stays that
+  -- way whatever shape the rows are.
+  branch.gridTool.spacing = spacing
+  branch.gridTool.stagger = stagger
+  branch.gridTool.width   = width
   pushRouteState()
 end
 

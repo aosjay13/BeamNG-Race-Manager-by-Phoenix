@@ -452,20 +452,24 @@ end
 -- survive a slider drag is not the positions, it is everything the creator did
 -- to the slots AFTER they were laid out.
 local starts = {}
-local function layOut(anchor, count, spacing, stagger)
+-- `width` cars abreast, the row CENTRED on the anchor, and `stagger` the gap
+-- between adjacent cars across it.
+local function layOut(anchor, count, spacing, stagger, width)
   local fx, fy = anchor.hx, anchor.hy
   local rx, ry = fy, -fx
+  width = width or 2
+  local mid = (width - 1) * 0.5
   for i = 0, count - 1 do
-    local row  = math.floor(i / 2)
-    local side = (i % 2 == 0) and -1 or 1
+    local row  = math.floor(i / width)
+    local side = (i % width - mid) * stagger
     starts[#starts + 1] = {
-      x = anchor.x - fx * (row * spacing) + rx * stagger * side,
-      y = anchor.y - fy * (row * spacing) + ry * stagger * side,
+      x = anchor.x - fx * (row * spacing) + rx * side,
+      y = anchor.y - fy * (row * spacing) + ry * side,
       z = anchor.z, hx = fx, hy = fy,
     }
   end
 end
-local function respace(anchor, count, spacing, stagger)
+local function respace(anchor, count, spacing, stagger, width)
   local keep = #starts - count
   if keep < 0 then keep = 0 end
   local held = {}
@@ -474,7 +478,7 @@ local function respace(anchor, count, spacing, stagger)
     held[i - keep] = { branch = sp.branch, hx = sp.hx, hy = sp.hy }
   end
   for i = #starts, keep + 1, -1 do table.remove(starts, i) end
-  layOut(anchor, count, spacing, stagger)
+  layOut(anchor, count, spacing, stagger, width)
   for i = 1, count do
     local sp, was = starts[keep + i], held[i]
     if sp and was then
@@ -485,12 +489,13 @@ local function respace(anchor, count, spacing, stagger)
 end
 
 do
-  -- Pole on the front straight, facing +X.
+  -- Pole on the front straight, facing +X. Two abreast, 6 m across, 8 m rows.
   local anchor = { x = 0, y = -100, z = 0, hx = 1, hy = 0 }
-  layOut(anchor, 12, 8, 3)
+  layOut(anchor, 12, 8, 6, 2)
   check(#starts == 12, 'twelve slots generated from one anchor')
   check(starts[1].x == 0 and starts[2].x == 0, 'row 1 is two abreast at the anchor')
-  check(starts[1].y == -97 and starts[2].y == -103, 'and staggered either side of it')
+  check(starts[1].y == -97 and starts[2].y == -103,
+    'and centred on it, half a gap either side')
   check(starts[3].x == -8, 'row 2 sits one spacing back down the heading')
 
   -- The head-on grid: turn the back half round and tag it.
@@ -500,11 +505,11 @@ do
   end
   check(starts[7].hx == -1 and starts[1].hx == 1, 'half the grid faces the other way')
 
-  -- Now drag the spacing slider. Positions move; everything else must not.
-  respace(anchor, 12, 16, 5)
+  -- Now drag the spacing sliders. Positions move; everything else must not.
+  respace(anchor, 12, 16, 10, 2)
   check(#starts == 12, 'respacing keeps the same number of slots')
   check(starts[3].x == -16, 'rows spread out to the new spacing')
-  check(starts[1].y == -95 and starts[2].y == -105, 'and the stagger widens')
+  check(starts[1].y == -95 and starts[2].y == -105, 'and the row widens')
   check(starts[7].hx == -1 and starts[8].hx == -1,
     'the turned-around half stays turned around -- otherwise a slider drag would '
       .. 'send both directions off the same way')
@@ -514,14 +519,67 @@ do
   check(starts[1].branch == nil, 'and untagged slots stay untagged')
 end
 
+-- --- 13. Rows wider than two --------------------------------------------
+-- An oval short-track format starts three and four abreast, and a rally stage
+-- starts single file. The row is CENTRED on the anchor whatever it is made of:
+-- a row that grew off one edge would walk the whole grid sideways every time the
+-- width changed, and on an oval it would walk it into the wall.
+do
+  starts = {}
+  local anchor = { x = 0, y = 0, z = 0, hx = 1, hy = 0 }
+  layOut(anchor, 9, 10, 4, 3)
+  check(#starts == 9, 'nine slots, three abreast')
+  -- Row 1 straddles the anchor: one car on it, one either side.
+  check(starts[1].y == 4 and starts[2].y == 0 and starts[3].y == -4,
+    'an odd row puts a car ON the anchor and one either side')
+  check(starts[1].x == 0 and starts[2].x == 0 and starts[3].x == 0,
+    'and all three sit level with each other')
+  check(starts[4].x == -10 and starts[6].x == -10, 'row 2 is one spacing back')
+  check(starts[7].x == -20, 'row 3 is two back -- nine cars in three rows')
+
+  -- Four abreast: no car on the centre line, two either side.
+  starts = {}
+  layOut(anchor, 8, 10, 4, 4)
+  check(starts[1].y == 6 and starts[2].y == 2 and starts[3].y == -2 and starts[4].y == -6,
+    'an even row straddles the anchor with no car on it')
+  check(starts[5].x == -10, 'and eight cars four abreast is two rows')
+
+  -- Single file, for a stage start.
+  starts = {}
+  layOut(anchor, 4, 12, 4, 1)
+  check(starts[1].y == 0 and starts[2].y == 0, 'single file puts every car on the line')
+  check(starts[1].x == 0 and starts[2].x == -12 and starts[4].x == -36,
+    'one car per row, a spacing apart')
+end
+
+-- Changing the WIDTH re-flows the same slots into different rows, and the tags
+-- follow the slot rather than the row -- which is what keeps a head-on split
+-- ("slots 7 to 12 go the other way") true whatever shape the rows are.
+do
+  starts = {}
+  local anchor = { x = 0, y = 0, z = 0, hx = 1, hy = 0 }
+  layOut(anchor, 12, 8, 6, 2)
+  for i = 7, 12 do
+    starts[i].hx, starts[i].hy = -starts[i].hx, -starts[i].hy
+    starts[i].branch = 'ccw'
+  end
+  respace(anchor, 12, 8, 6, 3)     -- two abreast -> three abreast
+  check(#starts == 12, 're-flowing to three abreast keeps every slot')
+  check(starts[4].x == -8, 'slot 4 is now row 2 rather than row 2 of a pair')
+  check(starts[7].branch == 'ccw' and starts[12].branch == 'ccw',
+    'the lane split survives a width change')
+  check(starts[7].hx == -1 and starts[6].hx == 1,
+    'and so does which way each slot faces')
+end
+
 do
   -- Slots placed BEFORE a generate are not the generator's to move.
   starts = {}
   starts[1] = { x = 500, y = 500, z = 0, hx = 0, hy = 1 }   -- hand-placed
   local anchor = { x = 0, y = 0, z = 0, hx = 1, hy = 0 }
-  layOut(anchor, 4, 8, 3)
+  layOut(anchor, 4, 8, 6, 2)
   check(#starts == 5, 'the generated block is appended to what was there')
-  respace(anchor, 4, 20, 6)
+  respace(anchor, 4, 20, 12, 2)
   check(starts[1].x == 500 and starts[1].y == 500,
     'the hand-placed slot is left exactly where the creator put it')
   check(#starts == 5, 'and the grid does not grow on a respace')

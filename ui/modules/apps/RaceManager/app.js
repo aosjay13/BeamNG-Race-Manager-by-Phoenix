@@ -94,7 +94,7 @@ angular.module('beamng.apps')
       // Angular creates, leaving the control editing a copy nobody reads.
       $scope.laneUi = { newName: '', menu: null };
       $scope.laneRange = { from: 1, to: 1, id: '' };   // bulk lane tagging
-      $scope.gridGen = { count: 12, spacing: 8, stagger: 3, from: 0 };
+      $scope.gridGen = { count: 12, spacing: 8, stagger: 6, width: 2, from: 0 };
       $scope.gridGenerated = false;   // is there a generated grid the sliders may move?
       // Garage list (approved vehicles/setups).
       $scope.garage = [];             // [{ model, label }]
@@ -1430,6 +1430,7 @@ angular.module('beamng.apps')
             // one starts from the same numbers rather than snapping back.
             if (typeof data.gridSpacing === 'number') { $scope.gridGen.spacing = data.gridSpacing; }
             if (typeof data.gridStagger === 'number') { $scope.gridGen.stagger = data.gridStagger; }
+            if (typeof data.gridWidth === 'number') { $scope.gridGen.width = data.gridWidth; }
           }
           if (typeof data.resetsUsed === 'number') { $scope.resetsUsed = data.resetsUsed; }
           if (data.resetMode === 'checkpoint' || data.resetMode === 'inplace') {
@@ -1553,8 +1554,8 @@ angular.module('beamng.apps')
       $scope.generateGrid = function () {
         var g = $scope.gridGen;
         bngApi.engineLua('raceManager.generateGrid(' + (parseInt(g.count, 10) || 0) + ', '
-          + (parseFloat(g.spacing) || 8) + ', ' + (parseFloat(g.stagger) || 3) + ', '
-          + (parseInt(g.from, 10) || 0) + ')');
+          + (parseFloat(g.spacing) || 8) + ', ' + (parseFloat(g.stagger) || 6) + ', '
+          + (parseInt(g.from, 10) || 0) + ', ' + (parseInt(g.width, 10) || 2) + ')');
       };
       $scope.pickGridAnchor = function (slot) {
         $scope.laneUi.menu = null;
@@ -1568,7 +1569,13 @@ angular.module('beamng.apps')
       $scope.respaceGrid = function () {
         var g = $scope.gridGen;
         bngApi.engineLua('raceManager.respaceGrid(' + (parseFloat(g.spacing) || 8)
-          + ', ' + (parseFloat(g.stagger) || 3) + ')');
+          + ', ' + (parseFloat(g.stagger) || 6) + ', ' + (parseInt(g.width, 10) || 2) + ')');
+      };
+      // How many rows the generated block comes out as, so the width slider says
+      // what it is actually doing to the grid.
+      $scope.gridRows = function () {
+        var w = parseInt($scope.gridGen.width, 10) || 1;
+        return Math.ceil((parseInt($scope.gridGen.count, 10) || 0) / w);
       };
       $scope.flipStartPositions = function () {
         var r = $scope.laneRange;
