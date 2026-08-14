@@ -56,6 +56,11 @@ local MAX_RESET_LIMIT    = 99
 -- nearly-identical sanitizer sitting up here would be one more thing to keep in
 -- step with the first.
 local sanitizeCheckpoints
+local sanitizeBranches
+-- One table rather than two constants: the top level of this file is a function
+-- and Lua allows it 200 locals, which this chunk is close enough to that every
+-- new name has to earn its register (see docs/ARCHITECTURE.md).
+local BRANCH_LIMIT       = { id = 24, name = 40 }
 local HOLD_TOLERANCE     = 0.5   -- metres a held car may be off its slot
 local HOLD_CORRECT_EVERY = 0.5   -- seconds between corrections for one driver
 local GHOST_ON_RESET     = true
@@ -106,10 +111,31 @@ local race = {
   -- one-lap circuit everywhere, and this is the difference being made explicit.
   -- It belongs to the track, so it arrives with the layout.
   pointToPoint = false,
-  -- WHERE those start positions are: { x, y, z, hx, hy } per slot, slot 1 first.
-  -- Reported by a client when a track is loaded or edited, and set directly when
-  -- a saved layout is loaded. The count above is enough to warn that a field is
-  -- bigger than its grid; policing the hold needs the coordinates.
+  -- BRANCHING ROUTES. A branch is a sparse set of per-slot gate overrides on the
+  -- main route: at slot i a driver on that branch must cross the branch's gate
+  -- for slot i, or the main gate when it has none. Every lane therefore has the
+  -- SAME NUMBER OF SLOTS, which is the whole reason the running order below needs
+  -- no changes at all -- cpCleared means the same thing whichever way round a
+  -- driver is going.
+  --
+  -- Held here only to be validated, persisted and handed back out: the server has
+  -- no physics and never tests a crossing. Shape:
+  --   { { id = 'ccw', name = 'Counter-clockwise',
+  --       gates = { { slot = 1, x, y, z, hx, hy, width?, height?, oneWay? }, ... } } }
+  branches     = {},
+  -- Slots in a lap on the loaded track, or 0 when no layout came through this
+  -- server. Used only to clamp reported progress (see RM_onProgress).
+  slotCount    = 0,
+  -- Does this track grid its cars somewhere other than the start/finish line? A
+  -- head-on layout has to -- two directions cannot share one row of slots -- and
+  -- then the run from the grid to the first crossing is a part lap that must not
+  -- be timed. See outLapOwed.
+  gridOffLine  = false,
+  -- WHERE those start positions are: { x, y, z, hx, hy, branch? } per slot, slot
+  -- 1 first. Reported by a client when a track is loaded or edited, and set
+  -- directly when a saved layout is loaded. The count above is enough to warn
+  -- that a field is bigger than its grid; policing the hold needs the
+  -- coordinates, and splitting the field needs the branch tag.
   startPositions = {},
   -- Qualifying session rules.
   ghostQuali     = false,    -- rivals are ghosts during qualifying
@@ -125,6 +151,8 @@ local race = {
   -- and the track underneath may even have been swapped. The file has to
   -- describe the session the times came from.
   qualiOutLapRun = false,
+  -- The same record for a race that gave one away (see race.gridOffLine).
+  raceOutLapRun  = false,
   -- Post-expiry state for a TIMED session, and the one piece of the lifecycle a
   -- lap-limited session has no equivalent of.
   --
@@ -196,8 +224,56 @@ local FINAL_LAP_GRACE  = 180    -- seconds
 -- A sprint stage is the exception and has to be: a point-to-point run is driven
 -- once, first gate to last, so a lap given away is the whole session given
 -- away. There is no line to come back past either.
-local function qualiOutLap()
-  return race.sessionKind == 'quali' and not race.pointToPoint
+--
+-- A RACE owes one too, whenever the track says its grid is not on the line.
+--
+-- That is not a qualifying rule wearing a different hat, it is the same problem:
+-- a lap is only a lap if it starts where it ends. Park the field around a circuit
+-- rather than on the start line -- which a head-on layout must, since the two
+-- directions cannot share one row of slots -- and the run from the grid to the
+-- first crossing is a fraction of a lap. Timed, it goes on the board as the
+-- fastest lap of the race, every race, and no honest lap can ever beat it.
+--
+-- It belongs to the TRACK, so it travels with the layout (race.gridOffLine, set
+-- by the layout as it loads) rather than being a switch an admin has to
+-- remember on the night. The same reasoning pointToPoint is stored under.
+local function outLapOwed()
+  if race.pointToPoint then return false end
+  return race.sessionKind == 'quali' or race.gridOffLine == true
+end
+
+-- Which lane a grid slot puts a driver in.
+--
+-- The tag lives ON the start position rather than in a slot -> lane map beside
+-- it, and that is deliberate: removing or reordering a slot uses table.remove,
+-- which reindexes everything after it. A field on the record travels with it
+-- through that; a parallel map silently comes to describe the wrong slots.
+--
+-- Splitting a field in half is therefore authoring, not code -- tag slots 1-6
+-- one way and 7-12 the other -- and it keeps working under every grid mode,
+-- because reverse/random/custom reorder DRIVERS ACROSS SLOTS while slot -> lane
+-- belongs to the track and does not move.
+-- One table rather than two functions, for the register budget noted beside
+-- BRANCH_LIMIT above.
+local lanes = {}
+
+function lanes.forSlot(slot)
+  if not slot then return nil end
+  local sp = race.startPositions[slot]
+  if type(sp) ~= 'table' then return nil end
+  local id = sp.branch
+  if type(id) ~= 'string' or id == '' then return nil end
+  return id
+end
+
+-- The display name of a lane, for chat and the results file. Falls back to the
+-- id, so a branch saved without a name is still legible rather than blank.
+function lanes.name(id)
+  if not id then return nil end
+  for _, b in ipairs(race.branches) do
+    if b.id == id then return b.name or b.id end
+  end
+  return id
 end
 
 -- ---------------------------------------------------------------------------
@@ -257,6 +333,12 @@ local function newRecord(pid)
     holdCorrectedAt = nil,   -- race.time of the last correction (rate limiting)
     jokerTaken = 0,          -- completed runs of the joker route this race
     jokerLap   = nil,        -- lap the joker route was taken on
+    -- Which way round this driver is going: the id of the branch their start
+    -- position was tagged with, or nil for the main route. Decided by the SERVER
+    -- when it hands out grid slots and never reported by the client, so a driver
+    -- cannot pick their own line by asking for it. Display and results only --
+    -- the whole field is scored together, on one clock, into one classification.
+    lane       = nil,
     outReason  = nil,        -- why this driver is dnf/dsq (results + UI text)
     -- The place this driver was running in at the moment they retired.
     --
@@ -631,7 +713,7 @@ local DRIVER_WIRE_FIELDS = {
   'gridPos', 'customGrid', 'position',
   'qualiBest', 'qualiLaps', 'outLap', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
   'finishTime', 'resets', 'resetsBlocked',
-  'jokerTaken', 'jokerLap', 'outReason', 'dnfPos',
+  'jokerTaken', 'jokerLap', 'outReason', 'dnfPos', 'lane',
 }
 
 -- Projection buffers are kept ON the record and reused, so a broadcast costs no
@@ -815,6 +897,12 @@ local function broadcastState(targetPid)
     gridMode     = race.gridMode,
     startSlots   = race.startSlots,
     pointToPoint = race.pointToPoint,
+    -- Branching routes: whether this track has other lanes at all, and whether
+    -- its grid gives an out lap away. The gates themselves ride with the layout
+    -- (RM_ApplyLayout) exactly as the joker route's do -- this is the part the UI
+    -- needs on every tick to know whether to show a lane column at all.
+    hasBranches  = #race.branches > 0,
+    gridOffLine  = race.gridOffLine,
     -- Fastest lap of the session: whose row the leaderboard paints gold, and
     -- how quick it was. One driver id on a payload that already goes out.
     bestLapPid   = race.bestLapPid,
@@ -833,7 +921,13 @@ local function broadcastState(targetPid)
     -- the driver has crossed anything -- and can stop saying it on the sprint
     -- stage that has none. The per-driver half of this rides on the driver rows
     -- (`outLap`), because who is still owing one is a per-driver question.
-    qualiOutLap    = qualiOutLap(),
+    --
+    -- The name is historical: this used to be a qualifying-only rule, and a RACE
+    -- on a track that grids its cars away from the start/finish line owes one for
+    -- exactly the same reason (see outLapOwed). Kept as it is so every client and
+    -- every binding that already reads it starts honouring the race case without
+    -- being changed to do it.
+    qualiOutLap    = outLapOwed(),
     qualiLapLimit  = race.qualiLapLimit,
     qualiTimeLimit = race.qualiTimeLimit,
     qualiTime      = race.qualiTime,
@@ -1182,8 +1276,13 @@ local function buildResultsText(cupRound)
   -- so a plain race exports exactly the same table it always did.
   local jokerCol  = race.jokerEnabled and string.format(' %-7s', 'Joker') or ''
   local resetCol  = race.maxResets >= 0 and string.format(' %-6s', 'Resets') or ''
-  add(string.format('%-5s %-6s %-22s %-10s %-9s %s%s%s',
-    'Pos', 'Start', 'Driver', 'Best Lap', 'Laps Led', 'Finish', jokerCol, resetCol))
+  -- Which way round each driver went. Present only on a track that has other
+  -- lanes, so an ordinary race exports exactly the table it always did. Purely a
+  -- record: the whole field is scored together, on one clock, and a lane has
+  -- never been worth a place either way.
+  local laneCol   = #race.branches > 0 and string.format(' %-14s', 'Line') or ''
+  add(string.format('%-5s %-6s %-22s %-10s %-9s %s%s%s%s',
+    'Pos', 'Start', 'Driver', 'Best Lap', 'Laps Led', 'Finish', laneCol, jokerCol, resetCol))
   -- Fastest lap, half-way leader and Hard Charger, decided once for this
   -- session (see sessionAwards) rather than worked out again here.
   local awards = sessionAwards(final)
@@ -1219,10 +1318,12 @@ local function buildResultsText(cupRound)
     local resetVal = race.maxResets >= 0
       and string.format(' %-6s', string.format('%d/%d%s', rec.resets or 0, race.maxResets,
         (rec.resetsBlocked or 0) > 0 and ('+' .. rec.resetsBlocked) or '')) or ''
-    add(string.format('%-5s %-6s %-22s %-10s %-9d %-10s%s%s%s%s',
+    local laneVal = #race.branches > 0
+      and string.format(' %-14s', lanes.name(rec.lane) or 'Main') or ''
+    add(string.format('%-5s %-6s %-22s %-10s %-9d %-10s%s%s%s%s%s',
       pos, rec.gridPos and ('P' .. rec.gridPos) or '-',
       displayName(rec), fmtLap(rec.raceBest), rec.lapsLed or 0, finish,
-      jokerVal, resetVal, aliasNote(rec), tag))
+      laneVal, jokerVal, resetVal, aliasNote(rec), tag))
   end
   if #final == 0 then add('(no drivers)') end
   -- The two award lines. Both are omitted rather than guessed at when there is
@@ -1311,9 +1412,13 @@ local function sessionLapTarget()
     -- scored for, so it is added on top rather than taken out of the allowance:
     -- a 3 lap session is three flying laps, and the fourth crossing is the one
     -- that ends it.
-    return race.qualiLapLimit + (qualiOutLap() and 1 or 0)
+    return race.qualiLapLimit + (outLapOwed() and 1 or 0)
   end
-  return race.totalLaps
+  -- Same arithmetic on the race side, for the same reason: the lap field is what
+  -- an admin typed and it means laps that COUNT. A track that grids its cars away
+  -- from the line owes a part lap to get to it, and adding that on top is what
+  -- keeps a 10 lap race ten racing laps rather than nine and a bit.
+  return race.totalLaps + (outLapOwed() and 1 or 0)
 end
 
 -- The status a driver carries while they are circulating. Presentation only --
@@ -1548,7 +1653,7 @@ function RM_onStartQualifying(pid)
     race.qualiLapLimit > 0
       and (race.qualiLapLimit .. ' timed lap' .. (race.qualiLapLimit == 1 and '' or 's'))
       or 'unlimited laps',
-    qualiOutLap() and ' + an out lap that is not timed' or ''))
+    outLapOwed() and ' + an out lap that is not timed' or ''))
 end
 
 -- ---------------------------------------------------------------------------
@@ -1864,10 +1969,15 @@ formGrid = function (kind, byName)
       rec.qualiBest = nil
       rec.qualiLaps = 0
     end
-    -- Everyone stood on the grid owes the out lap (and nobody in a race does).
-    -- Set here as well as at GO so the timing screen can say so while the field
-    -- is still being held, rather than only once the lights have gone out.
-    rec.outLap = qualiOutLap()
+    -- Everyone stood on the grid owes the out lap, when the session or the track
+    -- says one is owed. Set here as well as at GO so the timing screen can say so
+    -- while the field is still being held, rather than only once the lights have
+    -- gone out.
+    rec.outLap = outLapOwed()
+    -- Which way this driver is going round, taken from the slot they were just
+    -- put on. The server hands out the slots, so it is the server that knows the
+    -- lane -- nothing is asked of the client and nothing has to be trusted.
+    rec.lane = lanes.forSlot(gridPos)
     clearProgress(rec)
     -- Put the car on its start position and hold it there until GO. The order
     -- and the field size travel with the slot so the client can stagger its
@@ -1960,6 +2070,30 @@ function RM_onStartPositionCount(pid, rawData)
     if ok and type(data) == 'table' then
       if type(data.positions) == 'table' then
         race.startPositions = sanitizeCheckpoints(data.positions) or {}
+        -- Whether the grid sits off the line rides along with the same report, so
+        -- a track built in the editor and raced without ever being saved as a
+        -- named layout still gives its out lap away. A saved layout sets it again
+        -- as it loads; this is the unsaved path.
+        --
+        -- The branch GATES deliberately do not come this way. The server never
+        -- tests a crossing, so the only thing it needs a lane for is the name in
+        -- the results file, and laneName already falls back to the id. Sending a
+        -- gate list the server would have to validate against a route length it
+        -- does not hold would be validation theatre.
+        race.gridOffLine = data.gridOffLine == true
+        if type(data.laneNames) == 'table' then
+          local named = {}
+          for _, b in ipairs(data.laneNames) do
+            if type(b) == 'table' and type(b.id) == 'string' and b.id ~= '' then
+              named[#named + 1] = {
+                id    = b.id:sub(1, BRANCH_LIMIT.id),
+                name  = type(b.name) == 'string' and b.name:sub(1, BRANCH_LIMIT.name) or b.id,
+                gates = {},
+              }
+            end
+          end
+          race.branches = named
+        end
       elseif n ~= #race.startPositions then
         -- A count that no longer matches the coordinates we hold, from a report
         -- that carried none -- an older client, or a build predating the
@@ -2439,19 +2573,24 @@ function RM_CountdownTick()
         rec.qualiBest = nil
         rec.qualiLaps = 0
       end
-      rec.outLap     = qualiOutLap()
+      rec.outLap     = outLapOwed()
+      rec.lane       = lanes.forSlot(rec.gridPos)
       clearProgress(rec)
     end
   end
   -- What this session is about to run under, kept for the results file that is
   -- written long after the rule has moved on (see race.qualiOutLapRun).
-  if isQualiSession() then race.qualiOutLapRun = qualiOutLap() end
+  if isQualiSession() then race.qualiOutLapRun = outLapOwed() end
+  -- The same record for the race half of the file. A ten lap race that ran
+  -- eleven crossings should say which one it gave away, or the lap column and
+  -- the setting an admin typed disagree with nothing to explain it.
+  if not isQualiSession() then race.raceOutLapRun = outLapOwed() end
   broadcastState()
   -- The out lap is the first thing that happens in a qualifying session, so it
   -- is announced at GO rather than left for drivers to work out from a clock
   -- that never started. Chat, because it reaches a driver who has not opened the
   -- app; the app itself says it again on the driver's own timing readout.
-  if isQualiSession() and qualiOutLap() then
+  if outLapOwed() then
     MP.SendChatMessage(-1, '[RaceManager] GO! Your first lap is an OUT LAP — it is '
       .. 'not timed and does not count. Timing starts as you cross the line.')
   end
@@ -2463,9 +2602,10 @@ function RM_CountdownTick()
   if isQualiSession() then
     lapNote = (race.qualiLapLimit > 0 and (race.qualiLapLimit .. ' timed lap'
       .. (race.qualiLapLimit == 1 and '' or 's')) or 'unlimited timed laps')
-      .. (qualiOutLap() and ' + out lap' or '')
+      .. (outLapOwed() and ' + out lap' or '')
   else
-    lapNote = target and (target .. ' laps') or 'unlimited laps'
+    lapNote = (target and (target .. ' laps') or 'unlimited laps')
+      .. (outLapOwed() and ' (incl. out lap)' or '')
   end
   print('[RaceManager] GO! (' .. (isQualiSession() and 'qualifying' or 'race') .. ', '
     .. lapNote .. ')'
@@ -2569,10 +2709,20 @@ function RM_onProgress(pid, rawData)
   local lap = tonumber(data.lap)
   if lap and math.floor(lap) ~= rec.currentLap then return end
 
+  -- Slots cleared on this lap. SLOTS, not gates: a branch substitutes a gate
+  -- into a slot that already exists rather than adding one, so every lane has the
+  -- same count and this number means the same thing whichever way round a driver
+  -- is going. That is the whole reason the running order needs no changes for
+  -- branching -- and the reason the clamp below is a slot count too.
   local cp = tonumber(data.cp)
   if cp then
     cp = math.floor(cp)
-    if cp < 0 then cp = 0 elseif cp > MAX_CHECKPOINTS then cp = MAX_CHECKPOINTS end
+    -- Clamped to the loaded track's own length when the server knows it, which
+    -- is tighter than the flat ceiling and free: a layout that came through
+    -- RM_LoadLayout told us exactly how many slots a lap has. The scalar stays
+    -- as the fallback for a route placed in the editor that the server never saw.
+    local ceiling = race.slotCount > 0 and race.slotCount or MAX_CHECKPOINTS
+    if cp < 0 then cp = 0 elseif cp > ceiling then cp = ceiling end
     rec.cpCleared = cp
   end
 
@@ -2596,11 +2746,17 @@ function RM_onLap(pid, rawData)
 
   -- THE OUT LAP, and every rule about it in one place.
   --
-  -- A driver's first crossing of a qualifying session ends the lap they spent
-  -- getting off the grid. It is thrown away entirely: no Best Lap, no session
-  -- fastest lap, nothing against the allowance -- and, because this returns
-  -- before the terminal check below, it can never be the crossing that ends a
-  -- driver's session either.
+  -- A driver's first crossing ends the lap they spent getting off the grid, in
+  -- any session that owes one -- every qualifying session, and a race on a track
+  -- whose grid is not on the start/finish line. It is thrown away entirely: no
+  -- Best Lap, no session fastest lap, nothing against the allowance -- and,
+  -- because this returns before the terminal check below, it can never be the
+  -- crossing that ends a driver's session either.
+  --
+  -- On a head-on layout that is the difference between a working race and a
+  -- broken one. The cars are gridded around the circuit rather than on the line,
+  -- so the first crossing comes after a fraction of a lap; timed, it would take
+  -- fastest lap off every driver who ever set an honest one.
   --
   -- That last one matters most when the clock has expired. `race.finalLap` makes
   -- the next crossing terminal for everybody still out, and a driver who was on
@@ -2611,7 +2767,7 @@ function RM_onLap(pid, rawData)
   --
   -- The crossing still counts as a crossing: the lap counter advances and the
   -- checkpoint telemetry is cleared, exactly as it would for a scored lap.
-  if quali and rec.outLap then
+  if rec.outLap then
     rec.outLap = false
     clearProgress(rec)
     rec.currentLap = rec.currentLap + 1
@@ -2956,6 +3112,68 @@ sanitizeCheckpoints = function (raw)
     out[i] = { x = x, y = y, z = z, hx = tonumber(cp.hx) or 0, hy = tonumber(cp.hy) or 1 }
     if tonumber(cp.width)  then out[i].width  = tonumber(cp.width)  end
     if tonumber(cp.height) then out[i].height = tonumber(cp.height) end
+    -- Gates score in either direction; oneWay puts one back for the geometry
+    -- where direction is the only thing separating two legs of a track. Carried
+    -- only when set, like the size overrides above.
+    if cp.oneWay == true then out[i].oneWay = true end
+    -- START POSITIONS ONLY: which lane a car put on this slot is driving. Kept
+    -- here rather than in a map beside the array because table.remove reindexes
+    -- (see laneForSlot). A gate never carries one, and the derby -- which shares
+    -- this sanitizer -- never sets one.
+    if type(cp.branch) == 'string' and cp.branch ~= '' then
+      out[i].branch = cp.branch:sub(1, BRANCH_LIMIT.id)
+    end
+  end
+  if #out == 0 then return nil end
+  return out
+end
+
+-- Branching routes: a list of lanes, each a sparse set of per-slot gate
+-- overrides on the main route. Rejects rather than repairs, like every other
+-- sanitizer here -- a layout that half-loaded would put drivers on a track that
+-- is not the one that was saved.
+--
+-- `slotCount` is the main route's length, and every slot number is checked
+-- against it: an override for a slot that does not exist is a gate no driver can
+-- ever be asked for, which on a fully branched layout means a lane that can
+-- never complete a lap.
+sanitizeBranches = function (raw, slotCount)
+  if raw == nil then return nil end
+  if type(raw) ~= 'table' then return nil end
+  local out = {}
+  local seenId = {}
+  for i, b in ipairs(raw) do
+    if type(b) ~= 'table' then return nil end
+    local id = type(b.id) == 'string' and b.id:gsub('^%s+', ''):gsub('%s+$', ''):sub(1, BRANCH_LIMIT.id) or ''
+    if id == '' or seenId[id:lower()] then return nil end
+    seenId[id:lower()] = true
+    if type(b.gates) ~= 'table' then return nil end
+    local gates, seenSlot = {}, {}
+    for j, g in ipairs(b.gates) do
+      if type(g) ~= 'table' then return nil end
+      local slot = tonumber(g.slot)
+      if not slot then return nil end
+      slot = math.floor(slot)
+      if slot < 1 or slot > slotCount or seenSlot[slot] then return nil end
+      seenSlot[slot] = true
+      local x, y, z = tonumber(g.x), tonumber(g.y), tonumber(g.z)
+      if not (x and y and z) then return nil end
+      gates[j] = {
+        slot = slot, x = x, y = y, z = z,
+        hx = tonumber(g.hx) or 0, hy = tonumber(g.hy) or 1,
+      }
+      if tonumber(g.width)  then gates[j].width  = tonumber(g.width)  end
+      if tonumber(g.height) then gates[j].height = tonumber(g.height) end
+      if g.oneWay == true   then gates[j].oneWay = true end
+    end
+    -- A lane with no overrides is the main route under another name, and one
+    -- saved by accident would put half the field on a line that does not exist.
+    if #gates == 0 then return nil end
+    out[i] = {
+      id    = id,
+      name  = type(b.name) == 'string' and b.name:sub(1, BRANCH_LIMIT.name) or id,
+      gates = gates,
+    }
   end
   if #out == 0 then return nil end
   return out
@@ -3054,7 +3272,23 @@ function RM_onSaveLayout(pid, rawData)
     pits         = sanitizeCheckpoints(data.pits),
     -- Sprint stage or circuit. A property of the track, not of the session.
     pointToPoint = data.pointToPoint == true,
+    -- Optional branching routes: the other ways round this track. Validated
+    -- against the main route's length, so a slot number can never point past the
+    -- end of the lap it is overriding.
+    branches     = sanitizeBranches(data.branches, #checkpoints),
+    -- Does the grid sit somewhere other than the start/finish line? Decides
+    -- whether a race gives its first lap away (see outLapOwed) -- and a head-on
+    -- layout, whose two directions cannot share a row of slots, always does.
+    gridOffLine  = data.gridOffLine == true,
   }
+  -- A branch array that was sent but did not survive validation is a rejected
+  -- save, not a track quietly saved without its other lane: half the field would
+  -- be gridded onto a line that is not there.
+  if data.branches ~= nil and not entry.branches then
+    print('[RaceManager] Save rejected: branch list malformed '
+      .. '(bad slot number, duplicate slot, duplicate id or empty lane)')
+    return
+  end
   -- Saving is also the moment the server learns this track's grid size, so the
   -- "more drivers than start positions" warning is accurate straight away.
   race.startSlots = starts and #starts or 0
@@ -3107,6 +3341,12 @@ function RM_onLoadLayout(pid, rawData)
       -- not from whichever client happens to report next.
       race.startPositions = (type(l.startPositions) == 'table') and l.startPositions or {}
       race.pointToPoint = l.pointToPoint == true
+      -- The lanes and the grid's relationship to the line arrive with the track,
+      -- so an admin who built a head-on oval gets one back rather than a circuit
+      -- that has forgotten half of what makes it work.
+      race.branches    = (type(l.branches) == 'table') and l.branches or {}
+      race.gridOffLine = l.gridOffLine == true
+      race.slotCount   = #l.checkpoints
       print(string.format('[RaceManager] Broadcasting RM_ApplyLayout: "%s", %d checkpoint(s), %d start position(s), width %s',
         l.name, #l.checkpoints, race.startSlots, tostring(l.width)))
       MP.TriggerClientEvent(-1, 'RM_ApplyLayout', Util.JsonEncode(l))

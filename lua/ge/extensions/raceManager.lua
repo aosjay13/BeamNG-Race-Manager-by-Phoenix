@@ -718,20 +718,46 @@ end
 --   lateral r = (hy, -hx)     span = width
 --   up      z                 span = height  (covers the banking)
 -- The car scores the gate when its frame-to-frame movement segment crosses the
--- rectangle's plane in the FORWARD direction (so a reversing car can never
--- score one) and the intersection point lands inside the width/height
+-- rectangle's plane and the intersection point lands inside the width/height
 -- half-extents. Sampling the segment rather than the position means the test
 -- never tunnels, no matter how fast the car is going or how thin the gate is.
 -- Dimensions are passed in so the same math can be unit-tested headlessly
 -- (see tests/gate_test.lua); the live caller feeds gateDims(wp).
+--
+-- EITHER DIRECTION COUNTS, unless the gate is marked one-way.
+--
+-- A driver who misses a checkpoint is already driving back to get it. Under the
+-- old forward-only rule they reached it, passed through the rectangle the wrong
+-- way, scored nothing, and had to carry on past, turn round a second time and
+-- come back through -- two three-point turns to be credited with a gate they had
+-- by then physically driven through twice.
+--
+-- Nothing was protecting anything: a gate is only ever ARMED once, and it is
+-- that, not the direction test, which stops one being scored twice. The one
+-- place the old rule looked load-bearing is a one-gate route, where the finish
+-- re-arms immediately -- and that could be farmed on forward passes alone
+-- already. TUNE.LAP_DEBOUNCE is what guards it, then and now.
+--
+-- `oneWay` is the escape hatch, per gate and off by default, for the geometry
+-- where direction really is the only thing separating two legs of a track: a
+-- hairpin or a figure-8 crossover, where the other leg can pass through this
+-- gate's rectangle pointing roughly backwards.
+--
+-- Returns (crossed, backwards). The second value matters: a gate SHARED between
+-- two lanes of a branching route (see gateForSlot) is stored with one heading
+-- and driven both ways, so "which way was this car actually going" cannot be
+-- read off the gate afterwards -- and relocateToGate needs exactly that to
+-- respawn a car facing the way it was travelling rather than the way the gate
+-- happens to point.
 local function rectCrossesGate(wp, prev, cur, w, h)
   local fx, fy = wp.hx, wp.hy
 
   -- Signed distance to the gate plane before and after this frame's movement.
   local dPrev = (prev.x - wp.x) * fx + (prev.y - wp.y) * fy
   local dCur  = (cur.x  - wp.x) * fx + (cur.y  - wp.y) * fy
-  -- Forward crossing only: behind the plane last frame, on/past it now.
-  if not (dPrev < 0 and dCur >= 0) then return false end
+  local forward  = (dPrev < 0 and dCur >= 0)
+  local backward = (not wp.oneWay) and (dPrev > 0 and dCur <= 0)
+  if not (forward or backward) then return false end
 
   local t  = dPrev / (dPrev - dCur)
   local ix = prev.x + (cur.x - prev.x) * t
@@ -740,11 +766,12 @@ local function rectCrossesGate(wp, prev, cur, w, h)
   local lateral = (ix - wp.x) * fy - (iy - wp.y) * fx
   if math.abs(lateral) > w * 0.5 then return false end
   if math.abs(iz - wp.z) > h * 0.5 then return false end
-  return true
+  return true, backward
 end
 
 -- Live wrapper: resolve the gate's effective rectangle dimensions, then run the
--- crossing test. Keeps callers unchanged (segmentCrossesGate(wp, a, b)).
+-- crossing test. Keeps callers unchanged (segmentCrossesGate(wp, a, b)), and
+-- passes the backwards flag straight back out.
 local function segmentCrossesGate(wp, prev, cur)
   local w, h = gateDims(wp)
   return rectCrossesGate(wp, prev, cur, w, h)
