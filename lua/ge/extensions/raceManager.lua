@@ -109,8 +109,8 @@ local TUNE = {
   -- Plain {r, g, b} arrays rather than ColorF: these are written into the engine
   -- marker's own colour table, which is three numbers. They match palette()'s
   -- `joker` and `jokerUsed` so the editor and the track agree.
-  JOKER_POLE_RGB      = { 0.65, 0.3, 0.95 },
-  JOKER_POLE_USED_RGB = { 0.45, 0.45, 0.5 },
+  JOKER_POLE_RGB      = { 0.72, 0.35, 1 },
+  JOKER_POLE_USED_RGB = { 0.62, 0.62, 0.7 },
   ROUTE_FILE = 'settings/raceManager/route.json',
 }
 
@@ -3248,13 +3248,29 @@ local PALETTE = nil
 
 local function palette()
   if PALETTE then return PALETTE end
+  -- Every gate colour is at FULL VALUE: the brightest form of its own hue,
+  -- rather than that hue mixed with black. The hues themselves are unchanged --
+  -- green next, orange route, white line, violet joker, amber pit -- because
+  -- what a colour means here is learned, and a driver who has learned that
+  -- green is the gate they are heading for should not have to learn it twice.
+  --
+  -- What moved is value and alpha. These are drawn over whatever the map
+  -- happens to be, in whatever light the level has: a gate at 70% alpha in a
+  -- hue two thirds of the way to black is legible against tarmac at noon and
+  -- close to invisible against a bright desert, a snow map, or a low sun. There
+  -- is no cost to being certain here -- the shapes are thin cylinder edges, not
+  -- fills, so a fully opaque gate still shows the track through the middle of
+  -- itself, which is the part that matters.
   PALETTE = {
-    finish    = ColorF(1, 1, 1, 0.9),          -- start/finish: white
-    armed     = ColorF(0.2, 0.85, 0.35, 0.9),  -- next target: green
-    route     = ColorF(1, 0.4, 0, 0.7),        -- rest of route: orange
-    joker     = ColorF(0.65, 0.3, 0.95, 0.8),  -- joker route: violet
-    jokerUsed = ColorF(0.45, 0.45, 0.5, 0.45), -- joker already taken: dimmed
-    pit       = ColorF(1, 0.72, 0.1, 0.85),    -- pit stalls: amber
+    finish    = ColorF(1, 1, 1, 1),            -- start/finish: white
+    armed     = ColorF(0.25, 1, 0.45, 1),      -- next target: green
+    route     = ColorF(1, 0.45, 0.05, 0.95),   -- rest of route: orange
+    joker     = ColorF(0.72, 0.35, 1, 1),      -- joker route: violet
+    -- Still visibly duller than the rest, because "already taken" is what it
+    -- has to say at a glance -- but lifted with everything else, so it reads as
+    -- a gate that is spent rather than one that failed to draw.
+    jokerUsed = ColorF(0.62, 0.62, 0.7, 0.6),  -- joker already taken: dimmed
+    pit       = ColorF(1, 0.78, 0.15, 1),      -- pit stalls: amber
     text      = ColorF(1, 1, 1, 1),
     -- The editor gate's filled surface. Deliberately faint: it has to show the
     -- gate's extent without hiding the road it is judged against.

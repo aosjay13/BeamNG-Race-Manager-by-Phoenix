@@ -1999,15 +1999,40 @@ angular.module('beamng.apps')
       // ------------------------------------------------------------------
       // UI -> LUA commands (race settings)
       // ------------------------------------------------------------------
+      // ------------------------------------------------------------------
+      // Session settings apply themselves
+      // ------------------------------------------------------------------
+      // These used to sit behind a Set button, and forgetting to press it is a
+      // silent failure that only shows up as the wrong race distance. A commit
+      // button earns its place when an edit is multi-field and only makes sense
+      // applied together -- the cup points tables, where 24 boxes are one
+      // decision -- or when applying is expensive or destructive. A single
+      // number that is cheap to send, trivially changed again, and displayed
+      // back from the server right beside the box is none of those things.
+      //
+      // The inputs carry ng-model-options="{ debounce: { default: 500, blur: 0
+      // } }": the model settles half a second after typing stops, or instantly
+      // when the field loses focus, and ng-change sends it. Debounce is what
+      // makes this safe rather than chatty -- without it "12" would be sent as
+      // 1 and then 12, and every one of those is a broadcast to every client.
+      //
+      // An empty box is NEVER sent. It is a field mid-edit, not an instruction:
+      // a driver clearing 5 to type 12 must not spend the half second in
+      // between racing to whatever an empty box would mean.
       $scope.applyTotalLaps = function () {
         var n = parseInt($scope.settingsUi.laps, 10);
         if (!n || n < 1) { return; }
         bngApi.engineLua('raceManager.setTotalLaps(' + n + ')');
       };
       // Module 1: reset allowance. Blank or negative = unlimited, 0 = none.
+      // Unlimited is -1, and only -1. A blank box used to mean it too, which
+      // cannot survive auto-apply: clearing the field to retype a number would
+      // spend the moment in between setting the allowance to unlimited, and
+      // announce it. Blank is now "still typing" here, exactly as it is for the
+      // laps field, and the one documented way to say unlimited is to type -1.
       $scope.applyMaxResets = function () {
         var n = parseInt($scope.settingsUi.resets, 10);
-        if (isNaN(n)) { n = -1; }
+        if (isNaN(n)) { return; }
         if (n < 0) { n = -1; }
         bngApi.engineLua('raceManager.setMaxResets(' + n + ')');
       };
@@ -2121,7 +2146,19 @@ angular.module('beamng.apps')
         var secs = $scope.qualiUi.mode === 'timed' ? qualiSecondsInput() : 0;
         bngApi.engineLua('raceManager.setQualiLimits(' + laps + ', ' + secs + ')');
       }
-      $scope.applyQualiLimits = pushQualiLimits;
+      // Typing in the box that is on screen. An empty box is skipped, for the
+      // same reason it is on the laps and resets fields — here it would read as
+      // 0, which in a qualifying session means UNLIMITED, so clearing "3" to
+      // type "12" would spend the half second in between running an open
+      // session. (Switching MODE goes straight to pushQualiLimits below and is
+      // not skipped: that call has to land even with an empty box, because
+      // zeroing the limit the panel has stopped showing is the point of it.)
+      $scope.applyQualiLimits = function () {
+        var box = $scope.qualiUi.mode === 'laps'
+          ? $scope.settingsUi.qualiLaps : $scope.settingsUi.qualiMins;
+        if (box === '' || box === null || box === undefined) { return; }
+        pushQualiLimits();
+      };
       // Switching mode applies immediately, like every other toggle in this
       // panel. Waiting for Set would leave the old limit live underneath a
       // panel showing the new mode's empty box — which is the state this whole

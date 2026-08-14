@@ -249,11 +249,32 @@ local function jokerMarker()
     if m.alive and m.mode == 'branch' then return m end
   end
 end
+-- The colour is read out of the extension rather than repeated here. A test
+-- holding its own copy of a colour is a test that fails the day somebody tunes
+-- one, which says nothing about whether the repaint still works -- the property
+-- worth pinning is "the marker gets the colour the mod declares", not "the
+-- marker is this exact violet".
+local clientSrc
+do
+  local f = assert(io.open('lua/ge/extensions/raceManager.lua', 'r'))
+  clientSrc = f:read('*a')
+  f:close()
+end
+local function rgbFromSource(pattern, what)
+  local r, g, b = clientSrc:match(pattern)
+  check(r ~= nil, 'found ' .. what .. ' in the client extension')
+  return { tonumber(r), tonumber(g), tonumber(b) }
+end
+local JOKER_RGB = rgbFromSource(
+  'JOKER_POLE_RGB%s*=%s*{%s*([%d%.]+),%s*([%d%.]+),%s*([%d%.]+)%s*}',
+  "the joker gate's pole colour")
+
 local jm = jokerMarker()
 check(jm ~= nil, 'the joker marker is the one in branch mode')
 local jc = jm and jm.modeInfos.branch.color
-check(jc and math.abs(jc[1] - 0.65) < 1e-9 and math.abs(jc[2] - 0.3) < 1e-9
-  and math.abs(jc[3] - 0.95) < 1e-9,
+check(jc and math.abs(jc[1] - JOKER_RGB[1]) < 1e-9
+  and math.abs(jc[2] - JOKER_RGB[2]) < 1e-9
+  and math.abs(jc[3] - JOKER_RGB[3]) < 1e-9,
   'the joker marker is repainted violet, not left on the stock branch orange')
 
 -- The repaint must land on THIS marker and nowhere else. If a build ever shared
@@ -362,6 +383,38 @@ check(#madeMarkers - madeSoFar <= 2,
 -- many times the markers come and go.
 check(requireCalls == 1,
   'the marker module is looked up once, not per frame (was ' .. requireCalls .. ')')
+
+-- ===========================================================================
+-- The joker's pole colour and its editor colour are the same colour
+-- ===========================================================================
+-- They are two separate literals in two forms -- a {r,g,b} array written into
+-- the engine marker's own colour table, and a ColorF in the drawing palette --
+-- because the two renderers take colours differently. Nothing but this check
+-- keeps them in step, and drifting is not a visible bug while you are looking
+-- at either one on its own: the joker gate is simply a slightly different
+-- violet in the editor than it is on track, which is exactly the kind of
+-- difference a driver reads as two different things.
+do
+  local rgbOf = rgbFromSource
+  local pairsToCheck = {
+    { tune = 'JOKER_POLE_RGB%s*=%s*{%s*([%d%.]+),%s*([%d%.]+),%s*([%d%.]+)%s*}',
+      pal  = 'joker%s*=%s*ColorF%(([%d%.]+),%s*([%d%.]+),%s*([%d%.]+)',
+      what = 'the joker gate' },
+    { tune = 'JOKER_POLE_USED_RGB%s*=%s*{%s*([%d%.]+),%s*([%d%.]+),%s*([%d%.]+)%s*}',
+      pal  = 'jokerUsed%s*=%s*ColorF%(([%d%.]+),%s*([%d%.]+),%s*([%d%.]+)',
+      what = 'a joker already taken' },
+  }
+  for _, p in ipairs(pairsToCheck) do
+    local pole = rgbOf(p.tune, p.what .. "'s pole colour")
+    local pal  = rgbOf(p.pal,  p.what .. "'s palette colour")
+    for i = 1, 3 do
+      check(pole[i] == pal[i],
+        p.what .. ' is a different colour on track than in the editor '
+          .. '(channel ' .. i .. ': pole ' .. tostring(pole[i])
+          .. ' vs palette ' .. tostring(pal[i]) .. ')')
+    end
+  end
+end
 
 print(string.format('poles_test: %d checks, %d failures', checks, fails))
 if fails > 0 then os.exit(1) end

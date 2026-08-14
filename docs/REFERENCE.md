@@ -314,8 +314,10 @@ the stragglers are taken where they stand and the session closes normally.
 
 ### Step 6 — Grid and race
 
-1. Set the race distance with the **Laps** field + **Set** (visible to
-   everyone as `race: N`).
+1. Set the race distance in the **Laps** field. It applies as you type — there
+   is no Set button (see [Settings apply
+   themselves](#settings-apply-themselves)) — and the value in force is shown
+   beside the box, and to everyone else, as `race: N`.
 2. Choose the **Grid order**:
    - **Quali** — fastest-first from quali bests; drivers without a time go to
      the back (the default, and with no qualifying at all it falls back to
@@ -551,9 +553,13 @@ resets/repairs each driver gets per session:
 
 | Value | Meaning |
 |-------|---------|
-| `-1` (or blank) | Unlimited — the default |
+| `-1` | Unlimited — the default |
 | `0` | No resets at all: the reset button does nothing |
 | `N` | `N` resets; every press after that is blocked |
+
+The field applies itself as you type (see [Settings apply
+themselves](#settings-apply-themselves)), so an **empty** box means "still
+typing" and is never sent — `-1` is how you ask for unlimited.
 
 The BeamMP server never sees a reset happen, so the **client** polices it.
 Every reset inside the allowance is counted and reported (the leaderboard
@@ -806,6 +812,33 @@ introspection of its own:
 Authenticated admins are exempt (otherwise you could never spawn the car you
 are about to whitelist), and an empty list never enforces anything, so it is
 impossible to lock the whole server out by accident.
+
+### Settings apply themselves
+
+**Laps**, **Max resets** and the qualifying **Laps / Minutes** boxes have no Set
+button. Type a number and it applies — half a second after you stop typing, or
+immediately if you click away from the box. The value the server actually holds
+is displayed beside each field, so what is in force is always readable.
+
+A Set button earns its place when an edit is several fields that only make sense
+applied together, which is why the **cup points tables keep theirs**. A single
+number that is cheap to send and trivially changed again is not that, and
+forgetting to press the button is a silent failure that turns up as the wrong
+race distance.
+
+Two consequences worth knowing:
+
+- **An empty box is never sent.** It means "still typing", not zero and not
+  unlimited — clearing `5` to type `12` must not spend the moment in between
+  running an open session or an unlimited reset allowance. Type `-1` for
+  unlimited resets, or `0` for an unlimited qualifying session.
+- **Settings stay put for the whole event.** They live on the server, not in
+  the app, and nothing but changing them again moves them: they survive Start
+  Quali, Generate Grid, a countdown and **Reset**, and every admin's panel
+  shows the same values because all of them are reading the server's. (They are
+  *not* written to disk — restarting the server returns them to their
+  defaults. Track layouts, the garage, the roster and the cup are the things
+  that survive that.)
 
 ### Driver UI (non-admins)
 

@@ -283,23 +283,29 @@
   <div class="rm-settings" ng-if="isMode('race') && isAdminTab('race')">
     <!-- Laps mean nothing on a sprint stage, so the field says so rather than
          sitting there accepting a number that will be ignored. The setting is
-         kept, not clamped, so switching a circuit layout back in restores it. -->
-    <span class="rm-setting">
+         kept, not clamped, so switching a circuit layout back in restores it.
+
+         No Set button here or on any other single-value setting: they apply
+         themselves. See the note in app.js — the value settles half a second
+         after typing stops (or instantly on leaving the field), and the
+         authoritative value the server holds is displayed beside the box, so
+         what is in force is always readable. -->
+    <span class="rm-setting" title="Race distance. Applies as you type — the value beside the box is what the server has.">
       <label>Laps</label>
       <input type="number" min="1" max="500" ng-model="settingsUi.laps"
+             ng-model-options="{ debounce: { default: 500, blur: 0 } }"
+             ng-change="applyTotalLaps()"
              ng-disabled="pointToPoint || phase === 'countdown' || phase === 'racing'">
-      <button class="rm-btn rm-btn-mini" ng-click="applyTotalLaps()"
-              ng-disabled="pointToPoint || phase === 'countdown' || phase === 'racing'">Set</button>
       <span class="rm-setting-val" ng-if="!pointToPoint">race: {{ totalLaps }}</span>
       <span class="rm-setting-val rm-p2p-note" ng-if="pointToPoint">point to point — driven once</span>
     </span>
     <!-- Module 1: vehicle reset ruleset -->
-    <span class="rm-setting" title="How many vehicle resets/repairs each driver gets this session. 0 = no resets at all; -1 (or blank) = unlimited. Once the allowance is gone the reset button is blocked — the car is put straight back where it was. Nobody is disqualified for it.">
+    <span class="rm-setting" title="How many vehicle resets/repairs each driver gets this session. 0 = no resets at all; -1 = unlimited. Once the allowance is gone the reset button is blocked — the car is put straight back where it was. Nobody is disqualified for it. Applies as you type.">
       <label>Max resets</label>
       <input type="number" class="rm-width-num" min="-1" max="99" step="1" ng-model="settingsUi.resets"
+             ng-model-options="{ debounce: { default: 500, blur: 0 } }"
+             ng-change="applyMaxResets()"
              ng-disabled="phase === 'countdown' || phase === 'racing'">
-      <button class="rm-btn rm-btn-mini" ng-click="applyMaxResets()"
-              ng-disabled="phase === 'countdown' || phase === 'racing'">Set</button>
       <span class="rm-setting-val">{{ resetRuleLabel() }}</span>
     </span>
     <span class="rm-setting" title="What a legal reset does while racing: repair the car where it stands, or respawn it at the last checkpoint it crossed (falls back to in-place before the first checkpoint).">
@@ -346,19 +352,21 @@
               title="The session runs to a clock. When it expires everyone still out runs a final lap rather than stopping dead.">Timed</button>
 
       <span class="rm-setting-sub" ng-if="isQualiLimitMode('laps')"
-            title="TIMED laps each driver gets. 0 = unlimited. The first lap of the session is an out lap — it starts from the grid, so it is not timed, not scored and not one of these: set 3 and drivers get an out lap and then 3 flying laps. (A point-to-point stage has no out lap: it is driven once.)">
+            title="TIMED laps each driver gets. 0 = unlimited. The first lap of the session is an out lap — it starts from the grid, so it is not timed, not scored and not one of these: set 3 and drivers get an out lap and then 3 flying laps. (A point-to-point stage has no out lap: it is driven once.) Applies as you type.">
         <label>Laps</label>
         <input type="number" class="rm-width-num" min="0" max="99" step="1" ng-model="settingsUi.qualiLaps"
+               ng-model-options="{ debounce: { default: 500, blur: 0 } }"
+               ng-change="applyQualiLimits()"
                ng-disabled="phase === 'qualifying'">
       </span>
       <span class="rm-setting-sub" ng-if="isQualiLimitMode('timed')"
-            title="Minutes the session runs for. 0 = no limit. When the clock expires the session does not stop dead — everyone still out finishes the lap they are on as their final lap.">
+            title="Minutes the session runs for. 0 = no limit. When the clock expires the session does not stop dead — everyone still out finishes the lap they are on as their final lap. Applies as you type.">
         <label>Minutes</label>
         <input type="number" class="rm-width-num" min="0" max="120" step="1" ng-model="settingsUi.qualiMins"
+               ng-model-options="{ debounce: { default: 500, blur: 0 } }"
+               ng-change="applyQualiLimits()"
                ng-disabled="phase === 'qualifying'">
       </span>
-      <button class="rm-btn rm-btn-mini" ng-click="applyQualiLimits()"
-              ng-disabled="phase === 'qualifying'">Set</button>
       <span class="rm-setting-val">{{ qualiLimitLabel() }}</span>
     </span>
     <span class="rm-setting" title="How the starting grid is filled when you press Generate Grid.">

@@ -8,6 +8,28 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 ## 0.8.0 — The qualifying out lap, reverse grids, cup points in results
 
+### Changed (settings and visibility)
+
+- **Session settings apply themselves — the Set buttons are gone.** **Laps**,
+  **Max resets** and the qualifying **Laps / Minutes** boxes now apply half a
+  second after you stop typing, or immediately when you click away from the
+  box. Forgetting to press Set is a silent failure that turns up as the wrong
+  race distance, and a commit button only earns its place when an edit is
+  several fields that must land together — which is why the cup points tables
+  keep theirs. An **empty box is never sent**: it means "still typing", so
+  clearing `5` to type `12` cannot spend the moment in between running an open
+  session. Unlimited resets is `-1` (a blank box used to mean it too, which
+  cannot survive auto-apply).
+- **Every checkpoint colour is brighter.** The hues are unchanged — green for
+  the gate you are heading for, orange for the rest of the route, white for the
+  start/finish line, violet for the joker, amber for a pit stall — but each is
+  now at full value and near-full opacity instead of being that hue mixed with
+  black. A gate at 70% alpha two thirds of the way to black is legible against
+  tarmac at noon and close to invisible against snow, sand or a low sun. The
+  shapes are thin edges rather than fills, so a brighter gate still shows the
+  track through the middle of itself. The joker's on-track pole colour moved
+  with its editor colour, and a test now pins the two together.
+
 ### Changed (defaults)
 
 - **Everyone on the server races by default.** Race entry used to default to

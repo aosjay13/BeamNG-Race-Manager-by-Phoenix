@@ -122,11 +122,48 @@ expect(not html:find('settingsUi.depth', 1, true), 'the gate depth input is gone
 expect(not js:find('setCheckpointDepth', 1, true), 'the depth command is gone from the controller')
 expect(not html:find('cpEdit.depth', 1, true), 'the per-gate depth override is gone')
 
--- UI -> server: the Set handlers read the value the inputs actually write.
+-- UI -> server: the apply handlers read the value the inputs actually write.
 expect(js:find('$scope.settingsUi.laps', 1, true) ~= nil,
   'applyTotalLaps reads settingsUi.laps')
 expect(js:find('$scope.settingsUi.resets', 1, true) ~= nil,
   'applyMaxResets reads settingsUi.resets')
+
+-- ---------------------------------------------------------------------------
+-- 3b. The session settings apply themselves, and they debounce
+--
+-- They used to sit behind a Set button, and forgetting to press it is a silent
+-- failure that surfaces as the wrong race distance. They now apply on change --
+-- which is only safe with a debounce: without one, typing "125" sends 1, then
+-- 12, then 125, and each of those is a setting the server really applied and
+-- really broadcast to every client on the way past.
+-- ---------------------------------------------------------------------------
+do
+  local applying = 0
+  for tag in html:gmatch('<input[^>]->') do
+    if tag:find('ng%-change=') and tag:find('ng%-model="settingsUi%.') then
+      applying = applying + 1
+      local field = tag:match('ng%-model="(settingsUi%.[%w_]+)"') or '?'
+      expect(tag:find('ng%-model%-options=') ~= nil and tag:find('debounce', 1, true) ~= nil,
+        field .. ' applies on change with no debounce: every keystroke would be '
+          .. 'a separate setting, applied and broadcast')
+      -- blur has to commit immediately, or clicking away from a box leaves the
+      -- typed value sitting there unapplied -- the same failure as the button.
+      expect(tag:find('blur', 1, true) ~= nil,
+        field .. ' debounces without a blur:0 rule, so leaving the field does '
+          .. 'not commit what was typed')
+    end
+  end
+  expect(applying >= 4,
+    'expected the laps, resets and both qualifying inputs to apply themselves '
+      .. '(found ' .. applying .. ')')
+  -- ...and the buttons they replaced are gone, or the panel still teaches that
+  -- a typed number does nothing until something is pressed.
+  for _, fn in ipairs({ 'applyTotalLaps', 'applyMaxResets', 'applyQualiLimits' }) do
+    expect(html:find('ng%-click="' .. fn .. '%(%)"') == nil,
+      fn .. ' is still on a button: the field applies itself now, and a Set '
+        .. 'button beside it says otherwise')
+  end
+end
 
 -- server -> UI: the state broadcast re-seeds the same inputs, so a clamped or
 -- another admin's value shows up in the panel.
