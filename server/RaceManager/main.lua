@@ -84,6 +84,10 @@ local race = {
   maxResets    = UNLIMITED_RESETS,  -- vehicle resets allowed per driver per session
   resetMode    = 'inplace',  -- what a legal reset does: 'inplace' | 'checkpoint'
   jokerEnabled = false,      -- rallycross joker lap required exactly once per race
+  -- Joker gates the loaded track actually has. The joker lap cannot be armed
+  -- without them: the rule disqualifies anyone who did not complete the route,
+  -- and with no route that is the whole field.
+  jokerGates   = 0,
   -- Race entry. 'all' (default): every connected session is a participant, so a
   -- server that never touches this setting grids everybody who is there. 'join':
   -- drivers opt in with the UI's Join Race button and only they are gridded.
@@ -903,6 +907,9 @@ local function broadcastState(targetPid)
     -- needs on every tick to know whether to show a lane column at all.
     hasBranches  = #race.branches > 0,
     gridOffLine  = race.gridOffLine,
+    -- So the panel can grey the joker toggle out and say why, rather than
+    -- offering a switch the server is going to refuse.
+    jokerGates   = race.jokerGates,
     -- Fastest lap of the session: whose row the leaderboard paints gold, and
     -- how quick it was. One driver id on a payload that already goes out.
     bestLapPid   = race.bestLapPid,
@@ -1372,6 +1379,16 @@ end
 -- written straight into the results .txt.
 local function applyJokerRuling()
   if not race.jokerEnabled then return 0 end
+  -- And never on a track with no joker route. Arming it is refused up front
+  -- (RM_onSetJokerEnabled) and dropped when a layout without one loads, so this
+  -- is the last line rather than the first -- but it is the line that matters,
+  -- because everything it guards against happens HERE: a rule with nothing to
+  -- complete disqualifies every driver who finishes, and the only place that is
+  -- ever explained is a results file written after they have all gone.
+  if race.jokerGates == 0 then
+    print('[RaceManager] Joker ruling skipped: the track has no joker gates')
+    return 0
+  end
   local excluded = 0
   for _, rec in pairs(players) do
     if rec.status == 'finished' and (rec.jokerTaken or 0) ~= 1 then
@@ -2081,6 +2098,25 @@ function RM_onStartPositionCount(pid, rawData)
         -- gate list the server would have to validate against a route length it
         -- does not hold would be validation theatre.
         race.gridOffLine = data.gridOffLine == true
+        -- How many joker gates this client has placed, so the joker lap can be
+        -- refused on a track that has none even when it was never saved as a
+        -- named layout (see RM_onSetJokerEnabled).
+        local jg = tonumber(data.jokerGates)
+        if jg then
+          race.jokerGates = math.max(math.floor(jg), 0)
+          if race.jokerGates == 0 and race.jokerEnabled then
+            race.jokerEnabled = false
+            MP.SendChatMessage(-1, '[RaceManager] Joker lap switched off: '
+              .. 'the Joker Route was cleared.')
+            print('[RaceManager] Joker lap auto-disabled: the joker route was cleared')
+            -- Broadcast HERE rather than leaving it to the tail of this handler,
+            -- which returns early when the slot count has not changed -- and
+            -- clearing a joker route usually does not touch the grid at all. The
+            -- toggle has to flip on the admin's panel as it happens, not next
+            -- time something unrelated moves.
+            broadcastState()
+          end
+        end
         if type(data.laneNames) == 'table' then
           local named = {}
           for _, b in ipairs(data.laneNames) do
@@ -2503,7 +2539,25 @@ function RM_onSetJokerEnabled(pid, rawData)
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
-  race.jokerEnabled = data.enabled == true or data.enabled == 1
+  local want = data.enabled == true or data.enabled == 1
+  -- A JOKER LAP WITH NO JOKER ROUTE DISQUALIFIES THE ENTIRE FIELD.
+  --
+  -- The rule is "complete the joker exactly once, or you are reclassified at the
+  -- flag" (applyJokerRuling). With no gates placed there is nothing to complete,
+  -- so every driver who finishes is disqualified for missing a route that does
+  -- not exist -- and nothing says why until the results file is written.
+  --
+  -- Refused rather than accepted-and-ignored: an admin who armed this meant to
+  -- arm something, and silently having it off would be its own surprise.
+  if want and race.jokerGates == 0 then
+    MP.SendChatMessage(pid, '[RaceManager] This track has no Joker Route. '
+      .. 'Place joker gates in the editor first — arming the joker lap without '
+      .. 'them would disqualify everyone who finishes.')
+    print('[RaceManager] Joker lap refused: the loaded track has no joker gates')
+    broadcastState()
+    return
+  end
+  race.jokerEnabled = want
   broadcastState()
   print('[RaceManager] Joker lap ' .. (race.jokerEnabled and 'ENABLED' or 'disabled')
     .. ' by ' .. (MP.GetPlayerName(pid) or pid))
@@ -3347,6 +3401,16 @@ function RM_onLoadLayout(pid, rawData)
       race.branches    = (type(l.branches) == 'table') and l.branches or {}
       race.gridOffLine = l.gridOffLine == true
       race.slotCount   = #l.checkpoints
+      -- The joker arms against the track that is loaded, not the one that was.
+      -- Loading a circuit with no joker route while the joker lap is switched on
+      -- would otherwise disqualify the whole field at the flag.
+      race.jokerGates  = (type(l.joker) == 'table') and #l.joker or 0
+      if race.jokerGates == 0 and race.jokerEnabled then
+        race.jokerEnabled = false
+        MP.SendChatMessage(-1, '[RaceManager] Joker lap switched off: "' .. l.name
+          .. '" has no Joker Route.')
+        print('[RaceManager] Joker lap auto-disabled: the loaded track has no joker gates')
+      end
       print(string.format('[RaceManager] Broadcasting RM_ApplyLayout: "%s", %d checkpoint(s), %d start position(s), width %s',
         l.name, #l.checkpoints, race.startSlots, tostring(l.width)))
       MP.TriggerClientEvent(-1, 'RM_ApplyLayout', Util.JsonEncode(l))

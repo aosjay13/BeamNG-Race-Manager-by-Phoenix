@@ -174,8 +174,31 @@ check(#released > 0, 'ending the race releases forced spectators')
 -- ===========================================================================
 RM_onResetLeaderboard(1)
 RM_onSetMaxResets(1, '{"maxResets":-1}')
+
+-- THE TRACK HAS TO HAVE A JOKER ROUTE FIRST.
+--
+-- The rule reclassifies anyone who did not complete the joker exactly once, so
+-- arming it on a track with no joker gates disqualifies every driver who
+-- finishes -- for missing a route that does not exist, with nothing saying why
+-- until the results file is written. The server refuses it outright.
+RM_onSetJokerEnabled(1, '{"enabled":true}')
+check(lastState.jokerEnabled == false,
+  'the joker lap cannot be armed on a track with no joker gates')
+
+-- Tell the server the track has them, as a client with a joker route placed does.
+RM_onStartPositionCount(1, '{"count":0,"positions":[],"jokerGates":3}')
 RM_onSetJokerEnabled(1, '{"enabled":true}')
 check(lastState.jokerEnabled == true, 'joker lap armed by the admin')
+check(lastState.jokerGates == 3, 'the panel is told how many gates the track has')
+
+-- Clearing the route while the rule is armed disarms it rather than leaving a
+-- race pointed at a disqualification nobody can avoid.
+RM_onStartPositionCount(1, '{"count":0,"positions":[],"jokerGates":0}')
+check(lastState.jokerEnabled == false,
+  'clearing the joker route switches the rule back off')
+RM_onStartPositionCount(1, '{"count":0,"positions":[],"jokerGates":3}')
+RM_onSetJokerEnabled(1, '{"enabled":true}')
+check(lastState.jokerEnabled == true, 'and it can be armed again once gates are back')
 
 startRace(3)
 RM_onSetJokerEnabled(1, '{"enabled":false}')

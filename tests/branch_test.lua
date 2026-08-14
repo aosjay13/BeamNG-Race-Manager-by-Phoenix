@@ -446,6 +446,87 @@ do
   check(S.scored == 1, 'split: one lap, four slots, one of them taken the other way')
 end
 
+-- --- 12. Generating a grid, and moving it without driving anywhere ---------
+-- Mirror of layOutGrid/respaceGrid. A head-on grid is generated as one block,
+-- half of it turned around and half of it tagged -- so the thing that has to
+-- survive a slider drag is not the positions, it is everything the creator did
+-- to the slots AFTER they were laid out.
+local starts = {}
+local function layOut(anchor, count, spacing, stagger)
+  local fx, fy = anchor.hx, anchor.hy
+  local rx, ry = fy, -fx
+  for i = 0, count - 1 do
+    local row  = math.floor(i / 2)
+    local side = (i % 2 == 0) and -1 or 1
+    starts[#starts + 1] = {
+      x = anchor.x - fx * (row * spacing) + rx * stagger * side,
+      y = anchor.y - fy * (row * spacing) + ry * stagger * side,
+      z = anchor.z, hx = fx, hy = fy,
+    }
+  end
+end
+local function respace(anchor, count, spacing, stagger)
+  local keep = #starts - count
+  if keep < 0 then keep = 0 end
+  local held = {}
+  for i = keep + 1, #starts do
+    local sp = starts[i]
+    held[i - keep] = { branch = sp.branch, hx = sp.hx, hy = sp.hy }
+  end
+  for i = #starts, keep + 1, -1 do table.remove(starts, i) end
+  layOut(anchor, count, spacing, stagger)
+  for i = 1, count do
+    local sp, was = starts[keep + i], held[i]
+    if sp and was then
+      sp.branch = was.branch
+      if was.hx and was.hy then sp.hx, sp.hy = was.hx, was.hy end
+    end
+  end
+end
+
+do
+  -- Pole on the front straight, facing +X.
+  local anchor = { x = 0, y = -100, z = 0, hx = 1, hy = 0 }
+  layOut(anchor, 12, 8, 3)
+  check(#starts == 12, 'twelve slots generated from one anchor')
+  check(starts[1].x == 0 and starts[2].x == 0, 'row 1 is two abreast at the anchor')
+  check(starts[1].y == -97 and starts[2].y == -103, 'and staggered either side of it')
+  check(starts[3].x == -8, 'row 2 sits one spacing back down the heading')
+
+  -- The head-on grid: turn the back half round and tag it.
+  for i = 7, 12 do
+    starts[i].hx, starts[i].hy = -starts[i].hx, -starts[i].hy
+    starts[i].branch = 'ccw'
+  end
+  check(starts[7].hx == -1 and starts[1].hx == 1, 'half the grid faces the other way')
+
+  -- Now drag the spacing slider. Positions move; everything else must not.
+  respace(anchor, 12, 16, 5)
+  check(#starts == 12, 'respacing keeps the same number of slots')
+  check(starts[3].x == -16, 'rows spread out to the new spacing')
+  check(starts[1].y == -95 and starts[2].y == -105, 'and the stagger widens')
+  check(starts[7].hx == -1 and starts[8].hx == -1,
+    'the turned-around half stays turned around -- otherwise a slider drag would '
+      .. 'send both directions off the same way')
+  check(starts[1].hx == 1, 'and the front half still faces the way it was built')
+  check(starts[7].branch == 'ccw' and starts[12].branch == 'ccw',
+    'lane tags survive the move: they belong to the slot')
+  check(starts[1].branch == nil, 'and untagged slots stay untagged')
+end
+
+do
+  -- Slots placed BEFORE a generate are not the generator's to move.
+  starts = {}
+  starts[1] = { x = 500, y = 500, z = 0, hx = 0, hy = 1 }   -- hand-placed
+  local anchor = { x = 0, y = 0, z = 0, hx = 1, hy = 0 }
+  layOut(anchor, 4, 8, 3)
+  check(#starts == 5, 'the generated block is appended to what was there')
+  respace(anchor, 4, 20, 6)
+  check(starts[1].x == 500 and starts[1].y == 500,
+    'the hand-placed slot is left exactly where the creator put it')
+  check(#starts == 5, 'and the grid does not grow on a respace')
+end
+
 if fails == 0 then
   print('branch_test: ' .. checks .. ' checks, 0 failures')
 else

@@ -64,6 +64,7 @@ angular.module('beamng.apps')
       $scope.resetMode = 'inplace';
       // Rallycross joker lap.
       $scope.jokerEnabled = false;
+      $scope.jokerGates = 0;      // joker gates the LOADED TRACK has (server's count)
       $scope.jokerRoute = [];     // joker gates placed/loaded on this client
       $scope.jokerNext = 1;
       $scope.jokerTaken = false;
@@ -93,7 +94,8 @@ angular.module('beamng.apps')
       // Angular creates, leaving the control editing a copy nobody reads.
       $scope.laneUi = { newName: '', menu: null };
       $scope.laneRange = { from: 1, to: 1, id: '' };   // bulk lane tagging
-      $scope.gridGen = { count: 12, spacing: 8, stagger: 3 };
+      $scope.gridGen = { count: 12, spacing: 8, stagger: 3, from: 0 };
+      $scope.gridGenerated = false;   // is there a generated grid the sliders may move?
       // Garage list (approved vehicles/setups).
       $scope.garage = [];             // [{ model, label }]
       $scope.garageEnforce = false;
@@ -1277,6 +1279,10 @@ angular.module('beamng.apps')
           // leaderboard shows a Line column — on an ordinary circuit it is a
           // column that would say the same thing on every row.
           $scope.hasBranches = !!data.hasBranches;
+          // Joker gates the LOADED TRACK has, which is not the same as the ones
+          // this client happens to have placed in its editor: the toggle has to
+          // reflect what the server would actually enforce.
+          $scope.jokerGates = data.jokerGates || 0;
           // Race entry + starting grid.
           $scope.entryMode = data.entryMode === 'all' ? 'all' : 'join';
           $scope.entrants = data.entrants || 0;
@@ -1416,6 +1422,15 @@ angular.module('beamng.apps')
           $scope.laneName = data.laneName || null;
           $scope.laneLocked = !!data.laneLocked;
           $scope.gridOffLine = !!data.gridOffLine;
+          // The spacing sliders are only offered while the generator owns a
+          // block of slots; hand-placing, moving or dropping one lets go of it.
+          $scope.gridGenerated = !!data.gridGenerated;
+          if (!$scope.gridGenerated) {
+            // Keep the inputs showing what the last generate used, so the next
+            // one starts from the same numbers rather than snapping back.
+            if (typeof data.gridSpacing === 'number') { $scope.gridGen.spacing = data.gridSpacing; }
+            if (typeof data.gridStagger === 'number') { $scope.gridGen.stagger = data.gridStagger; }
+          }
           if (typeof data.resetsUsed === 'number') { $scope.resetsUsed = data.resetsUsed; }
           if (data.resetMode === 'checkpoint' || data.resetMode === 'inplace') {
             $scope.resetMode = data.resetMode;
@@ -1538,7 +1553,22 @@ angular.module('beamng.apps')
       $scope.generateGrid = function () {
         var g = $scope.gridGen;
         bngApi.engineLua('raceManager.generateGrid(' + (parseInt(g.count, 10) || 0) + ', '
-          + (parseFloat(g.spacing) || 8) + ', ' + (parseFloat(g.stagger) || 3) + ')');
+          + (parseFloat(g.spacing) || 8) + ', ' + (parseFloat(g.stagger) || 3) + ', '
+          + (parseInt(g.from, 10) || 0) + ')');
+      };
+      $scope.pickGridAnchor = function (slot) {
+        $scope.laneUi.menu = null;
+        $scope.gridGen.from = slot;
+      };
+      $scope.gridAnchorLabel = function () {
+        return $scope.gridGen.from ? ('Slot P' + $scope.gridGen.from) : 'My car';
+      };
+      // Dragged live, so it goes straight to the client Lua on every change: the
+      // grid moves under the slider rather than after it.
+      $scope.respaceGrid = function () {
+        var g = $scope.gridGen;
+        bngApi.engineLua('raceManager.respaceGrid(' + (parseFloat(g.spacing) || 8)
+          + ', ' + (parseFloat(g.stagger) || 3) + ')');
       };
       $scope.flipStartPositions = function () {
         var r = $scope.laneRange;

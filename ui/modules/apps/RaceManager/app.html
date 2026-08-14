@@ -320,12 +320,20 @@
     <!-- Module 2: rallycross joker lap -->
     <span class="rm-setting" title="Rallycross joker lap: every finisher must take the Joker Route exactly once (never on lap 1) or the server disqualifies them at the flag.">
       <label>Joker lap</label>
+      <!-- Never armable on a track with no joker gates. The rule disqualifies
+           anyone who did not complete the route, so with no route that is every
+           driver who finishes — and nothing says why until the results are
+           written. The server refuses it too; this is so the switch does not
+           look available in the first place. -->
       <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': jokerEnabled}"
               ng-click="toggleJoker()"
-              ng-disabled="phase === 'countdown' || phase === 'racing'">
+              ng-disabled="phase === 'countdown' || phase === 'racing' || !jokerGates">
         {{ jokerEnabled ? '✓ Enabled' : 'Disabled' }}
       </button>
-      <span class="rm-setting-val" ng-if="jokerEnabled">{{ jokerRoute.length }} gates</span>
+      <span class="rm-setting-val" ng-if="jokerEnabled">{{ jokerGates }} gates</span>
+      <span class="rm-setting-warn" ng-if="!jokerGates">
+        No Joker Route on this track — place joker gates in the editor first.
+      </span>
     </span>
   </div>
 
@@ -990,13 +998,42 @@
       <div class="rm-lanes-row">
         <label class="rm-lane-label">Generate</label>
         <input type="number" class="rm-lane-num" min="1" max="60" ng-model="gridGen.count">
-        <label class="rm-lane-label">slots,</label>
-        <input type="number" class="rm-lane-num" min="2" max="40" ng-model="gridGen.spacing">
-        <label class="rm-lane-label">m apart,</label>
-        <input type="number" class="rm-lane-num" min="0" max="20" ng-model="gridGen.stagger">
-        <label class="rm-lane-label">m stagger</label>
+        <label class="rm-lane-label">slots from</label>
+        <!-- Pole is a decision you make once, by standing on it. Anchoring on a
+             placed slot is what lets the sliders below re-lay the grid out
+             without driving back there to do it. -->
+        <div class="rm-layout-dropdown rm-lane-picker"
+             ng-class="{'rm-layout-dropdown-open': laneMenuOpen('anchor')}">
+          <button type="button" class="rm-layout-trigger" ng-click="laneToggleMenu('anchor')"
+                  title="Where the front row goes: your car, or a start position you have already placed.">
+            <span class="rm-layout-trigger-label">{{ gridAnchorLabel() }}</span>
+            <span class="rm-layout-caret">▾</span>
+          </button>
+          <div class="rm-layout-menu" ng-if="laneMenuOpen('anchor')">
+            <div class="rm-layout-option" ng-class="{'rm-layout-option-active': !gridGen.from}"
+                 ng-click="pickGridAnchor(0)">My car</div>
+            <div class="rm-layout-option" ng-repeat="sp in startPositions track by $index"
+                 ng-class="{'rm-layout-option-active': gridGen.from === $index + 1}"
+                 ng-click="pickGridAnchor($index + 1)">Slot P{{ $index + 1 }}</div>
+          </div>
+        </div>
         <button class="rm-btn rm-btn-grid" ng-click="generateGrid()"
-                title="Lay out a two-by-two grid running back from where your car is standing, down its own heading.">Generate Here</button>
+                title="Lay out a two-by-two grid running back from the anchor, down its own heading. Generating from a placed slot rebuilds the grid from there and keeps everything before it.">Generate</button>
+      </div>
+      <!-- The spacing sliders. Only offered once there is a generated grid to
+           move: they own the block the generator laid out, and respacing a grid
+           somebody placed by hand would throw that work away. Lane tags and
+           headings survive the move, so a head-on grid keeps its turned-around
+           half and its lane tags while you drag. -->
+      <div class="rm-lanes-row" ng-if="gridGenerated">
+        <label class="rm-lane-label">Rows</label>
+        <input type="range" class="rm-grid-slider" min="2" max="40" step="0.5"
+               ng-model="gridGen.spacing" ng-change="respaceGrid()">
+        <span class="rm-setting-val">{{ gridGen.spacing }}m apart</span>
+        <label class="rm-lane-label">Stagger</label>
+        <input type="range" class="rm-grid-slider" min="0" max="20" step="0.5"
+               ng-model="gridGen.stagger" ng-change="respaceGrid()">
+        <span class="rm-setting-val">{{ gridGen.stagger }}m wide</span>
       </div>
       <div class="rm-lanes-row" ng-if="startPositions.length">
         <label class="rm-lane-label">Slots</label>
@@ -2457,6 +2494,7 @@
   }
   .rm-lane-label { font-size: 10px; color: #9aa0a6; white-space: nowrap; }
   .rm-lane-num { width: 46px; }
+  .rm-grid-slider { width: 110px; }
   .rm-lane-picker { min-width: 96px; }
   .rm-editor-lanes {
     font-size: 10px;

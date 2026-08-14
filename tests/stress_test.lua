@@ -491,6 +491,10 @@ RM_onEndRace(ADMIN)
 -- by the joker ruling for never taking the route, and the rest are retired
 -- where they stand. Armed BEFORE the grid forms -- the regulations are locked
 -- once a session is under way, which is the whole point of that guard.
+-- The track needs a joker route before the rule can be armed: without one the
+-- ruling would disqualify the whole field for missing a route that is not there,
+-- so the server refuses it.
+RM_onStartPositionCount(ADMIN, '{"count":0,"positions":[],"jokerGates":3}')
 RM_onSetJokerEnabled(ADMIN, '{"enabled":true}')
 RM_onSetTotalLaps(ADMIN, '{"laps":2}')
 RM_onGenerateGrid(ADMIN)

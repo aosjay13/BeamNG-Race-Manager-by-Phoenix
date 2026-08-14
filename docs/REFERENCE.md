@@ -760,6 +760,13 @@ the alternate rallycross line. Build it in the editor with the **Joker Route**
 tab (gates are drawn violet in the world), and it is saved and loaded together
 with the track layout — one layout carries both routes.
 
+**The joker lap cannot be armed on a track that has no joker gates.** The rule
+reclassifies anyone who did not complete the route exactly once, so with no route
+that is every driver who finishes — disqualified for missing something that was
+never there, and not told why until the results file is written. The toggle is
+greyed out until gates are placed, the server refuses it if asked anyway, and
+loading a track without a joker route switches it back off.
+
 Switch **Joker lap** on in Race settings and the rule is enforced:
 
 - The joker route must be completed **exactly once per race**.
@@ -844,11 +851,24 @@ so the eleventh crossing is the one that ends it.
 
 #### Building the grid
 
-Placing two blocks of slots one car at a time is the tedious part, so the
-**Start Grid** tab can do it in bulk: **Generate Here** lays out a two-by-two
-grid running back from where your car is standing, **Turn Around** flips a range
-of slots 180°, and **Set Lane** tags a range. A head-on grid is two Generates,
-one Turn Around and one Set Lane.
+Placing slots one car at a time is the tedious part, so the **Start Grid** tab
+does it in bulk.
+
+**Generate N slots from** either your car or a **start position you have already
+placed**. Pole is then a decision you make once, by standing on it — everything
+behind it is arithmetic. Generating from a placed slot rebuilds the grid from
+there and leaves every slot before it alone.
+
+Once a grid has been generated, two **sliders** appear: how far apart the rows
+sit, and how wide the stagger is. Drag them and the grid moves under you — no
+driving back to pole to try a different spacing. They only ever touch slots the
+generator laid out; anything placed by hand is left where you put it, and moving
+or deleting a slot by hand hands the block back so the sliders stop claiming it.
+
+**Lane tags and headings survive a respace**, which is what makes the head-on
+flow work: **Generate** the block, **Turn Around** the back half, **Set Lane** on
+it, and *then* spread the grid out — the turned-around half stays turned around
+and keeps its lane.
 
 Every placed gate and grid slot also has **✕** (delete just this one),
 **+ Before** (insert at your car) and **▲ ▼** (reorder). Editing the main route

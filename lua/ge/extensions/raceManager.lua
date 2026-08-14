@@ -710,6 +710,10 @@ local function reportStartCount()
     count = n, positions = positions,
     laneNames = laneNames,
     gridOffLine = branch.gridIsOff(),
+    -- The joker lap cannot be armed on a track with no joker route: the rule
+    -- disqualifies anyone who did not complete it, and with no route that is
+    -- everyone. The server needs the count to refuse it.
+    jokerGates  = #jokerRoute,
   }))
 end
 
@@ -751,6 +755,11 @@ local function pushRouteState()
     laneLocked   = branch.lock,
     laneName     = branch.nameOf(branch.lane),
     gridOffLine  = branch.gridIsOff(),
+    -- Is there a GENERATED grid the spacing sliders may move? They only ever
+    -- touch slots the generator laid out; a grid placed by hand is left alone.
+    gridGenerated = branch.gridTool.generated,
+    gridSpacing   = branch.gridTool.spacing,
+    gridStagger   = branch.gridTool.stagger,
     -- Reset ruleset (Module 1)
     maxResets    = maxResets,
     resetsUsed   = resetsUsed,
@@ -5481,6 +5490,9 @@ function M.editorAdd()
     return
   end
   target[#target + 1] = place
+  -- A slot placed by hand after a generate leaves the generator's block no
+  -- longer the last `count` of them, so it stops claiming to own one.
+  if editorTarget == 'start' then branch.gridTool.generated = false end
   pushRouteState()
 end
 
@@ -5520,6 +5532,7 @@ function M.editorClear()
   if editorTarget == 'start' then
     startPositions = {}
     gridSlot = nil
+    branch.gridTool.generated = false
     pushRouteState()
     log('I', 'raceManager', 'Start positions cleared')
     return
@@ -5555,6 +5568,9 @@ function M.moveStartPosition(index)
     return
   end
   startPositions[index] = place
+  -- Hand-placed now, so the sliders let go of it: they own a block of slots by
+  -- count, and a slot moved by hand is no longer where that count says it is.
+  branch.gridTool.generated = false
   pushRouteState()
   log('I', 'raceManager', 'Start position ' .. index .. ' moved to the current vehicle')
 end
@@ -5564,6 +5580,7 @@ function M.removeStartPosition(index)
   if not startPositions[index] then return end
   table.remove(startPositions, index)
   if gridSlot and gridSlot > #startPositions then gridSlot = nil end
+  branch.gridTool.generated = false
   pushRouteState()
 end
 
@@ -5749,43 +5766,125 @@ end
 -- A head-on layout needs two blocks of slots facing opposite ways, and placing
 -- them one car at a time is the tedious part of authoring one.
 
--- Lay out N slots from where the car is standing, back down its own heading, in
--- the two-by-two stagger a race grid uses. Nothing here is novel geometry: it is
--- vehiclePlacement plus arithmetic on the heading it already returns.
-function M.generateGrid(count, spacing, stagger)
-  count   = math.floor(tonumber(count) or 0)
-  spacing = tonumber(spacing) or 8
-  stagger = tonumber(stagger) or 3
-  if count < 1 then return end
-  if count > 60 then count = 60 end
-  local place = vehiclePlacement()
-  if not place then
-    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
-    return
-  end
-  -- Forward is the car's heading; right is its perpendicular, the same pair the
-  -- gate rectangles are built from.
-  local fx, fy = place.hx, place.hy
-  local rx, ry = fy, -fx
-  local added = 0
+-- The grid generator's own state. One table for the register budget, and
+-- because these three genuinely travel together: what was generated, from where,
+-- and how far apart -- which is exactly what the sliders need to re-lay it out
+-- without the creator driving anywhere again.
+branch.gridTool = {
+  generated = false,   -- was this grid laid out by the generator?
+  anchor    = nil,     -- { x, y, z, hx, hy } the row-1 slot it was built from
+  count     = 0,
+  spacing   = 8,       -- metres between rows
+  stagger   = 3,       -- metres either side of the centre line
+}
+
+-- Lay N slots out from an anchor, back down its heading, in the two-by-two
+-- stagger a race grid uses. Nothing here is novel geometry: it is a placement
+-- plus arithmetic on the heading it already carries.
+function branch.layOutGrid(anchor, count, spacing, stagger, replace)
+  local fx, fy = anchor.hx, anchor.hy
+  local rx, ry = fy, -fx        -- the right-hand perpendicular
+  if replace then startPositions = {} end
   for i = 0, count - 1 do
     local row  = math.floor(i / 2)
     local side = (i % 2 == 0) and -1 or 1
     local back = row * spacing
     startPositions[#startPositions + 1] = {
-      x  = place.x - fx * back + rx * stagger * side,
-      y  = place.y - fy * back + ry * stagger * side,
-      z  = place.z,
+      x  = anchor.x - fx * back + rx * stagger * side,
+      y  = anchor.y - fy * back + ry * stagger * side,
+      z  = anchor.z,
       hx = fx, hy = fy,
     }
-    added = added + 1
   end
+end
+
+-- Generate a grid.
+--
+-- `from` picks the anchor: a slot number uses that ALREADY PLACED start position
+-- and its heading, and anything else uses the car. Anchoring on a placed slot is
+-- what makes the sliders below work -- pole is a decision the creator makes once,
+-- by standing on it, and everything after it is arithmetic.
+function M.generateGrid(count, spacing, stagger, from)
+  count   = math.floor(tonumber(count) or 0)
+  spacing = tonumber(spacing) or 8
+  stagger = tonumber(stagger) or 3
+  if count < 1 then return end
+  if count > 60 then count = 60 end
+
+  local anchor, replace
+  local slot = math.floor(tonumber(from) or 0)
+  if startPositions[slot] then
+    -- Rebuild the grid from an existing slot, keeping everything before it.
+    local sp = startPositions[slot]
+    anchor = { x = sp.x, y = sp.y, z = sp.z, hx = sp.hx, hy = sp.hy }
+    for i = #startPositions, slot, -1 do table.remove(startPositions, i) end
+    replace = false
+  else
+    anchor = vehiclePlacement()
+    if not anchor then
+      guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
+      return
+    end
+    replace = false
+  end
+
+  branch.layOutGrid(anchor, count, spacing, stagger, replace)
+  -- Remembered so the sliders can re-lay the same grid out without the creator
+  -- driving back to pole to do it.
+  branch.gridTool.generated = true
+  branch.gridTool.anchor    = anchor
+  branch.gridTool.count     = count
+  branch.gridTool.spacing   = spacing
+  branch.gridTool.stagger   = stagger
   pushRouteState()
   guihooks.trigger('RaceManagerEditorMsg', {
-    msg = 'Added ' .. added .. ' start positions (' .. spacing .. 'm apart, '
+    msg = 'Generated ' .. count .. ' start positions (' .. spacing .. 'm apart, '
       .. stagger .. 'm stagger)',
   })
-  log('I', 'raceManager', 'Generated ' .. added .. ' start positions')
+  log('I', 'raceManager', 'Generated ' .. count .. ' start positions')
+end
+
+-- Re-lay the generated grid out at a new spacing. What the sliders drive.
+--
+-- Only ever touches a grid this generator built, and only the slots it built:
+-- respacing a grid somebody placed by hand would throw their work away, and the
+-- sliders are hidden until there is a generated one to move.
+function M.respaceGrid(spacing, stagger)
+  if not branch.gridTool.generated or not branch.gridTool.anchor then return end
+  spacing = tonumber(spacing) or branch.gridTool.spacing
+  stagger = tonumber(stagger) or branch.gridTool.stagger
+  if spacing < 1 then spacing = 1 end
+  if spacing > 60 then spacing = 60 end
+  if stagger < 0 then stagger = 0 end
+  if stagger > 30 then stagger = 30 end
+  -- The slots this generator owns are the last `count` of them; anything placed
+  -- before the generate stays exactly where the creator put it.
+  local keep = #startPositions - branch.gridTool.count
+  if keep < 0 then keep = 0 end
+  -- LANE TAGS AND HEADINGS SURVIVE THE MOVE. Both belong to the slot, and
+  -- respacing moves slots rather than replacing them.
+  --
+  -- The heading matters as much as the tag, and for the same layout: a head-on
+  -- grid is generated as one block, half of it turned around, and half of it
+  -- tagged. Re-laying it from the anchor alone would face every car the anchor's
+  -- way again, so nudging a slider would silently un-turn half the field and the
+  -- two directions would set off together.
+  local held = {}
+  for i = keep + 1, #startPositions do
+    local sp = startPositions[i]
+    held[i - keep] = sp and { branch = sp.branch, hx = sp.hx, hy = sp.hy } or nil
+  end
+  for i = #startPositions, keep + 1, -1 do table.remove(startPositions, i) end
+  branch.layOutGrid(branch.gridTool.anchor, branch.gridTool.count, spacing, stagger, false)
+  for i = 1, branch.gridTool.count do
+    local sp, was = startPositions[keep + i], held[i]
+    if sp and was then
+      sp.branch = was.branch
+      if was.hx and was.hy then sp.hx, sp.hy = was.hx, was.hy end
+    end
+  end
+  branch.gridTool.spacing, branch.gridTool.stagger = spacing, stagger
+  pushRouteState()
 end
 
 -- Turn a range of grid slots around. Build one block, then flip half of it: the
