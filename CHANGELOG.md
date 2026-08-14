@@ -20,15 +20,31 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   clearing `5` to type `12` cannot spend the moment in between running an open
   session. Unlimited resets is `-1` (a blank box used to mean it too, which
   cannot survive auto-apply).
-- **Every checkpoint colour is brighter.** The hues are unchanged — green for
-  the gate you are heading for, orange for the rest of the route, white for the
-  start/finish line, violet for the joker, amber for a pit stall — but each is
-  now at full value and near-full opacity instead of being that hue mixed with
-  black. A gate at 70% alpha two thirds of the way to black is legible against
-  tarmac at noon and close to invisible against snow, sand or a low sun. The
-  shapes are thin edges rather than fills, so a brighter gate still shows the
-  track through the middle of itself. The joker's on-track pole colour moved
-  with its editor colour, and a test now pins the two together.
+- **Every checkpoint is brighter, in both of the ways one is drawn.** The hues
+  are unchanged throughout — what a colour means here is learned, and a driver
+  who has learned that green is the gate they are heading for should not have to
+  learn it twice.
+  - **The editor rectangles** (white line, orange route, green next target,
+    violet joker, amber pit) are each now at full value and near-full opacity
+    instead of being that hue mixed with black. A gate at 70% alpha two thirds
+    of the way to black is legible against tarmac at noon and close to invisible
+    against snow, sand or a low sun. They are thin edges rather than fills, so a
+    brighter gate still shows the track through the middle of itself.
+  - **The race poles** are BeamNG's own markers, and its palette is built for
+    its own races: `default` is a deep red-orange that reads as a silhouette
+    against a bright map. Every mode is now lifted to the luminous version of
+    the same colour as the marker is created — once, on its own private copy of
+    the table, so re-pointing a marker at the next gate can never wash it out
+    further.
+  - **The gate after the one you are on is no longer invisible.** The engine
+    ships that mode black, because in its own races that gate is not your
+    concern yet. This mod puts a marker there deliberately, so the line through
+    the corner reads before the driver arrives — a job a black pole cannot do.
+    It is painted the orange of the route ahead, a shade under the gate actually
+    being aimed at.
+  - The joker's on-track pole colour moved with its editor colour, and a test
+    now pins the two together — a comment had claimed for a long time that they
+    were the same colour with nothing checking it.
 
 ### Changed (defaults)
 

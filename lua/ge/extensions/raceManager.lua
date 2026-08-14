@@ -111,6 +111,23 @@ local TUNE = {
   -- `joker` and `jokerUsed` so the editor and the track agree.
   JOKER_POLE_RGB      = { 0.72, 0.35, 1 },
   JOKER_POLE_USED_RGB = { 0.62, 0.62, 0.7 },
+  -- How far each stock pole colour is lifted toward white once it has been
+  -- taken to full value (see poles.brighten). This is the difference between a
+  -- saturated colour and a luminous one; past about a third it starts costing
+  -- more in hue than it buys in visibility.
+  POLE_LIFT = 0.25,
+  -- Pole colours set outright rather than lifted, because their stock value is
+  -- black and there is no brighter version of black to compute.
+  --
+  -- `next` is the gate AFTER the one being aimed at. The engine ships it black
+  -- because in its own races that gate is not your concern yet; this mod puts a
+  -- marker there on purpose, so the line through the corner reads before the
+  -- driver gets there. Orange, matching the editor's colour for the route
+  -- ahead, and a shade under the gate actually being aimed at so the two are
+  -- never confused for one another.
+  POLE_MODE_RGB = {
+    next = { 0.95, 0.45, 0.12 },
+  },
   ROUTE_FILE = 'settings/raceManager/route.json',
 }
 
@@ -3561,6 +3578,10 @@ function poles.create()
   if not mod then return nil end
   local made, marker = pcall(mod.createRaceMarker, true, 'sideColumnMarker')
   if not made or type(marker) ~= 'table' then return nil end
+  -- Brighten the whole mode table now, while it is a fresh per-instance copy
+  -- and before anything has been put on screen. Once per marker, which is what
+  -- keeps repeated re-pointing from washing the colours out (see brighten).
+  poles.brighten(marker)
   return marker
 end
 
@@ -3593,6 +3614,78 @@ end
 -- both directions: a build that renames, restructures or shares that table
 -- leaves the pole on its stock mode colour, which is exactly where it was
 -- before any of this existed.
+-- Lift one colour to the brightest form of ITS OWN hue.
+--
+-- Two steps, and neither of them changes the hue. Scale so the strongest
+-- channel is full -- a colour that was that hue mixed with black becomes the
+-- pure article -- then mix the result toward white by `lift`, which raises the
+-- weakest channels and is what turns a saturated colour into a luminous one.
+-- Adding equal whiteness to every channel is a saturation change, so the hue
+-- comes through both steps untouched: a red pole stays exactly as red, it just
+-- stops being dark red.
+--
+-- Black is returned unchanged and that is not an oversight. Black has no hue to
+-- preserve, so there is no "brighter version of it" to compute -- anything this
+-- produced would be a colour invented here rather than one lifted. The modes
+-- that ship black are handled by name below.
+local function brighterRGB(c, lift)
+  local r, g, b = tonumber(c[1]) or 0, tonumber(c[2]) or 0, tonumber(c[3]) or 0
+  local mx = math.max(r, g, b)
+  if mx <= 0 then return nil end
+  local s = 1 / mx
+  r, g, b = r * s, g * s, b * s
+  return { r + (1 - r) * lift, g + (1 - g) * lift, b + (1 - b) * lift }
+end
+
+-- Brighten every mode this marker can be put into, ONCE, as it is created.
+--
+-- The race poles are BeamNG's own, and its palette is built for its own races:
+-- `default` is a deep red-orange (1, 0.07, 0), which is a strong colour and a
+-- dark one -- against a bright map, a low sun or a pale road surface it is a
+-- silhouette rather than a marker. Every mode with a colour is lifted to the
+-- luminous version of that same colour, so a driver's learned meanings survive
+-- and the poles stop disappearing into the scenery.
+--
+-- Done at CREATION and never again, which is what keeps it correct: lifting a
+-- colour that has already been lifted would wash it out a little further every
+-- time a marker was re-pointed at a new gate, and a marker is re-pointed every
+-- time the driver clears a checkpoint. One pass, on a fresh table, per marker.
+--
+-- Two modes are handled by name:
+--   hidden -- ships black and is MEANT to be invisible. Left alone.
+--   next   -- ships black too, which is the engine saying "not your gate yet".
+--             This mod puts a marker there deliberately, so the line through
+--             the corner reads before the driver arrives, and a black pole is
+--             the one thing that cannot do that job. It gets a colour of its
+--             own: the route ahead, plainly visible but subordinate to the gate
+--             actually being aimed at.
+local POLE_KEEP_BLACK = { hidden = true }
+
+function poles.brighten(marker)
+  local ok, done = pcall(function ()
+    local infos = marker.modeInfos
+    if type(infos) ~= 'table' then return false end
+    local touched = false
+    for mode, info in pairs(infos) do
+      if type(info) == 'table' and type(info.color) == 'table'
+          and not POLE_KEEP_BLACK[mode] then
+        local rgb = TUNE.POLE_MODE_RGB[mode] or brighterRGB(info.color, TUNE.POLE_LIFT)
+        if rgb then
+          info.color[1], info.color[2], info.color[3] = rgb[1], rgb[2], rgb[3]
+          touched = true
+        end
+      end
+    end
+    return touched
+  end)
+  if (not ok or not done) and not poles.brightenFailed then
+    poles.brightenFailed = true
+    log('W', 'raceManager', 'Race marker colours could not be brightened on this '
+      .. 'build — the poles keep their stock colours')
+  end
+  return ok and done
+end
+
 function poles.tint(marker, mode, rgb)
   local ok, done = pcall(function ()
     local infos = marker.modeInfos

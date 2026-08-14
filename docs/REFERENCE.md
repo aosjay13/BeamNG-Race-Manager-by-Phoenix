@@ -840,6 +840,28 @@ Two consequences worth knowing:
   defaults. Track layouts, the garage, the roster and the cup are the things
   that survive that.)
 
+### What a checkpoint looks like
+
+Two different drawings of the same checkpoint, for two different jobs:
+
+- **In the editor** — the flat rectangle the crossing test actually uses, with
+  its number and a direction arrow, drawn for the whole route at once so a
+  layout can be checked. White is the start/finish line, orange the rest of the
+  route, green your next target, violet the joker, amber a pit stall.
+- **On track during a session** — BeamNG's own **gate poles**, two columns
+  either side of the racing line, on the gate you are heading for and the one
+  after it. Only those two: a whole circuit wearing poles is a wall of gates.
+
+Both are as bright as their colour allows. The poles take BeamNG's palette and
+lift each colour to the luminous version of itself — the hue is the engine's,
+and the meanings a BeamNG driver already knows still hold, but a marker that was
+a dark silhouette against a pale road or a low sun is now plainly a marker. The
+one pole that is not merely brightened is **the gate after the one you are on**:
+the engine ships that mode black, because in its own races it is not your
+concern yet. This mod puts a marker there specifically so the line through the
+corner reads before you arrive, so it is painted the orange of the route ahead
+instead — visible, and a shade under the gate actually being aimed at.
+
 ### Driver UI (non-admins)
 
 - **Checkpoint gates are drawn for everyone.** During a countdown, qualifying
