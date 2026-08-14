@@ -2762,7 +2762,20 @@ local function applyGridSlot(slot, order, count)
   local lane = (type(sp) == 'table' and type(sp.branch) == 'string' and sp.branch ~= '')
     and sp.branch or nil
   branch.lane = lane
-  branch.lock = lane ~= nil
+  -- LOCKED FOR EVERYONE ON A GRID-ASSIGNED TRACK, including the drivers on the
+  -- main route.
+  --
+  -- Locking only the tagged half would leave a clockwise driver "undecided", and
+  -- an undecided car is moved onto whichever lane's gate it crosses first. Spin
+  -- one round on a head-on oval and it would pick up the oncoming lane and start
+  -- scoring laps the other way. If the track assigns lanes at the grid at all,
+  -- then no lane on it is a choice -- untagged means the main route, and that is
+  -- just as much an assignment as the tag is.
+  local assigned = false
+  for _, s in ipairs(startPositions) do
+    if type(s.branch) == 'string' and s.branch ~= '' then assigned = true; break end
+  end
+  branch.lock = assigned
   if lane then
     pushNotice('branch', 'You are racing the ' .. branch.nameOf(lane) .. ' line')
     log('I', 'raceManager', 'Grid slot ' .. tostring(slot) .. ' puts this car on lane ' .. lane)

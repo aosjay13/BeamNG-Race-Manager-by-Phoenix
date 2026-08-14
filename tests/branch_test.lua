@@ -269,6 +269,11 @@ do
   check(through(gateFor(1, 'ccw')) == true, 'CCW: its own slot 1 still scores')
 end
 
+-- The main-route half of a head-on grid is locked too, and that is the point.
+-- Locking only the TAGGED half would leave a clockwise driver undecided, and an
+-- undecided car is moved onto whichever lane's gate it crosses first: spin one
+-- round on a head-on oval and it picks up the oncoming lane and starts scoring
+-- laps the other way. Untagged means the main route, which is an assignment.
 do
   local route, branches = oval()
   reset(route, branches)
@@ -276,6 +281,13 @@ do
   check(through(gateFor(1, 'ccw')) == false, "CW: the ccw lane's gate is inert")
   check(S.armedWp == 1, 'CW: and the slot did not advance')
   check(S.lane == nil, 'CW: a locked main-route car is never moved onto a lane')
+
+  -- The same car, WITHOUT the lock, is exactly the failure that guards against.
+  reset(route, branches)
+  S.lock, S.lane = false, nil
+  check(through(gateFor(1, 'ccw')) == true,
+    'unlocked: the oncoming lane is live -- which is why a grid-assigned track locks everyone')
+  check(S.lane == 'ccw', 'unlocked: and the car is dragged onto it')
 end
 
 -- --- 5. Both lanes complete the same number of laps ------------------------
