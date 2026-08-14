@@ -1020,8 +1020,8 @@
                  ng-click="pickGridAnchor($index + 1)">Slot P{{ $index + 1 }}</div>
           </div>
         </div>
-        <button class="rm-btn rm-btn-grid" ng-click="generateGrid()"
-                title="Lay out a two-by-two grid running back from the anchor, down its own heading. Generating from a placed slot rebuilds the grid from there and keeps everything before it.">Generate</button>
+        <button class="rm-btn rm-btn-grid" ng-click="generateStartPositions()"
+                title="Lay out a grid running back from the anchor, down its own heading. Generating from a placed slot rebuilds the grid from there and keeps everything before it. This places START POSITIONS in the editor — it does not form the race grid.">Generate Slots</button>
       </div>
       <!-- The spacing sliders. Only offered once there is a generated grid to
            move: they own the block the generator laid out, and respacing a grid

@@ -196,6 +196,34 @@ wired('setEntryMode',       'toggleEntryMode',    'Entry mode')
 wired('setGridMode',        'setGridMode',        'Grid order')
 wired('setDriverGridSlot',  'pinGridSlot',        'Custom grid slot')
 wired('setGhostQuali',      'toggleGhostQuali',   'Ghost qualifying')
+-- NO HANDLER MAY BE DEFINED TWICE ON $scope.
+--
+-- Assigning the same key twice is last-one-wins and silent: no error, no console
+-- line, nothing in any log. The button keeps working, it just runs somebody
+-- else's function.
+--
+-- This has already happened once and it was expensive. The Start Grid tab's
+-- "Generate" button was written as $scope.generateGrid -- a name this file
+-- already used, further down, for the admin control that FORMS THE RACE GRID.
+-- The later definition won, so pressing Generate in the editor teleported the
+-- admin onto a grid slot and froze them there for a countdown, and placed no
+-- start positions at all. The symptom pointed at the editor; the cause was a
+-- name three hundred lines away.
+--
+-- State fields are exempt: `$scope.drivers = []` at init and `$scope.drivers =
+-- data.drivers` in the broadcast handler is the normal shape of every mirror in
+-- this file. Only FUNCTIONS are checked, because only a function is a behaviour
+-- that can be silently replaced by a different one.
+do
+  local seen, dupes = {}, {}
+  for name in js:gmatch('%$scope%.([%a_][%w_]*)%s*=%s*function') do
+    if seen[name] then dupes[#dupes + 1] = name else seen[name] = true end
+  end
+  expect(#dupes == 0,
+    'these $scope handlers are defined more than once, so the later one silently '
+      .. 'replaces the earlier: ' .. table.concat(dupes, ', '))
+end
+
 -- Every grid order the panel offers must be one the server accepts. A button
 -- for a mode its validator drops is a dead button: the panel un-highlights the
 -- old mode, the server keeps it, and the next broadcast puts it back.

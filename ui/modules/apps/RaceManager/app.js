@@ -1551,7 +1551,13 @@ angular.module('beamng.apps')
         if (to < 1 || to > list.length) { return; }
         bngApi.engineLua('raceManager.reorderCheckpoint(' + from + ', ' + to + ')');
       };
-      $scope.generateGrid = function () {
+      // NOT generateGrid. That name was already taken, further down this file, by
+      // the admin button that FORMS THE RACE GRID -- it teleports the whole field
+      // onto its slots and holds them there for the countdown. Two functions on
+      // one scope key is last-one-wins, and the other one is defined later, so
+      // this button quietly became "start the race": it froze the admin in place
+      // and placed no start positions at all.
+      $scope.generateStartPositions = function () {
         var g = $scope.gridGen;
         bngApi.engineLua('raceManager.generateGrid(' + (parseInt(g.count, 10) || 0) + ', '
           + (parseFloat(g.spacing) || 8) + ', ' + (parseFloat(g.stagger) || 6) + ', '
