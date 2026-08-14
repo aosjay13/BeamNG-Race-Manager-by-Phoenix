@@ -127,6 +127,23 @@ wired('setEntryMode',       'toggleEntryMode',    'Entry mode')
 wired('setGridMode',        'setGridMode',        'Grid order')
 wired('setDriverGridSlot',  'pinGridSlot',        'Custom grid slot')
 wired('setGhostQuali',      'toggleGhostQuali',   'Ghost qualifying')
+-- Every grid order the panel offers must be one the server accepts. A button
+-- for a mode its validator drops is a dead button: the panel un-highlights the
+-- old mode, the server keeps it, and the next broadcast puts it back.
+do
+  local modes = {}
+  for mode in html:gmatch("setGridMode%('([%w_]+)'%)") do modes[mode] = true end
+  expect(modes.quali and modes.reverse and modes.random and modes.custom,
+    'the panel offers Quali, Reverse, Random and Custom grid orders')
+  local validator = readFile('server/RaceManager/main.lua')
+    :match('function RM_onSetGridMode.-\n(.-)\nend')
+  expect(validator ~= nil, 'found RM_onSetGridMode in the server plugin')
+  for mode in pairs(modes) do
+    expect(validator ~= nil and validator:find("'" .. mode .. "'", 1, true) ~= nil,
+      'the panel offers the "' .. mode .. '" grid order but RM_onSetGridMode '
+        .. 'never names it, so pressing it changes nothing')
+  end
+end
 wired('setQualiLimits',     'applyQualiLimits',   'Qualifying limits')
 wired('moveStartPosition',  'moveStartPosition',  'Move start position')
 wired('removeStartPosition','removeStartPosition','Remove start position')
@@ -265,6 +282,35 @@ wired('cupSetFastestLapRule',  'cupToggleFlRule',   'Fastest lap rule')
 -- Ending a cup destroys a season of points, so it must not be a single click.
 expect(html:find('cupAskReset()', 1, true) ~= nil and html:find('cupCancelReset()', 1, true) ~= nil,
   'End Cup is behind a confirmation step, not a bare button')
+
+-- ---------------------------------------------------------------------------
+-- 4d2. Every irreversible control is behind a confirmation
+--
+-- Two controls in this app destroy something no undo can bring back: End Cup
+-- deletes a season of points, and Clear Results Cache deletes every saved
+-- results file -- which, once a session is over, is the only record a league
+-- has that the race happened. Both sit in panels an admin opens for other
+-- things, one click away from a mis-aimed press.
+-- ---------------------------------------------------------------------------
+for _, c in ipairs({
+  { ask = 'cupAskReset',     cancel = 'cupCancelReset',     go = 'cupReset',     what = 'End Cup' },
+  { ask = 'askClearResults', cancel = 'cancelClearResults', go = 'clearResults', what = 'Clear Results Cache' },
+}) do
+  for _, fn in ipairs({ c.ask, c.cancel, c.go }) do
+    expect(html:find(fn .. '()', 1, true) ~= nil,
+      c.what .. ': the template has no ' .. fn .. '() control')
+    expect(js:find('$scope.' .. fn .. ' ', 1, true) ~= nil
+      or js:find('$scope.' .. fn .. '=', 1, true) ~= nil,
+      c.what .. ': ' .. fn .. ' is not defined on the controller')
+  end
+  -- The destructive call must be reachable ONLY from the confirmed branch. A
+  -- second bare button calling it directly would make the confirmation
+  -- decorative, which is the way this protection actually gets lost.
+  local _, bare = html:gsub('ng%-click="' .. c.go .. '%(%)"', '')
+  expect(bare == 1,
+    c.what .. ': expected exactly one control calling ' .. c.go
+      .. '() (the confirmed one), found ' .. bare)
+end
 
 -- The panel renders the ARRAYS the broadcast carries, not just summary counts:
 -- a standings block bound to a total alone can say "5 drivers" and list none.

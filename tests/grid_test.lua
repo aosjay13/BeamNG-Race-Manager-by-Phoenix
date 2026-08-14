@@ -160,6 +160,33 @@ check(gridAssign[3] == false, 'withdrawing clears the start position')
 check(lastState.entrants == 2, 'the field shrinks to two')
 RM_onJoinRace(3, '{"join":true}')
 
+-- ===========================================================================
+-- Reverse grid: slowest on pole, fastest at the back
+-- ===========================================================================
+-- The format inverts the TIMES and nothing else. A driver who set no time is
+-- still gridded last, because a literal reversal would put them on pole -- and
+-- then the quickest way to start first is to sit in the pits and set nothing. A
+-- reverse grid is meant to reward the slow, not the absent.
+RM_onJoinRace(4, '{"join":true}')            -- Dan: entered, never set a time
+RM_onSetGridMode(1, '{"mode":"reverse"}')
+check(lastState.gridMode == 'reverse', 'grid mode switched to a reverse grid')
+RM_onGenerateGrid(1)
+check(driver('Cara').gridPos == 1, 'the slowest qualifier (97.0) takes pole')
+check(driver('Alice').gridPos == 2, 'the middle time (93.0) stays in the middle')
+check(driver('Bob').gridPos == 3,
+  'the fastest qualifier (91.0) starts last of the drivers who set a time')
+check(driver('Dan').gridPos == 4,
+  'and a driver with no time is still at the back, not on pole')
+check(gridAssign[3] == 1 and gridAssign[2] == 3,
+  'the reversed order is what gets sent to the clients')
+
+-- Nothing about it is sticky: the same field grids the other way round again.
+RM_onSetGridMode(1, '{"mode":"quali"}')
+RM_onGenerateGrid(1)
+check(driver('Bob').gridPos == 1 and driver('Cara').gridPos == 3,
+  'switching back to quali order puts the fastest on pole again')
+RM_onJoinRace(4, '{"join":false}')           -- Dan back out
+
 -- Random draw: still a complete 1..N permutation of the entry list.
 RM_onSetGridMode(1, '{"mode":"random"}')
 check(lastState.gridMode == 'random', 'grid mode switched to a random draw')

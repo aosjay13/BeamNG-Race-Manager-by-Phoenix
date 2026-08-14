@@ -6,7 +6,39 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 [← Back to the README](README.md)
 
-## 0.8.0 — The qualifying out lap
+## 0.8.0 — The qualifying out lap, reverse grids, cup points in results
+
+### Added
+
+- **Reverse grids.** A fourth **Grid order**: slowest qualifier on pole, fastest
+  at the back, so the quick drivers have to come through the field. It inverts
+  the *times* and nothing else — a driver who set no time still starts at the
+  back, behind everyone who did. A literal reversal would put them on pole, and
+  then the quickest way to start first is to sit in the pits and set nothing; a
+  reverse grid is meant to reward the slow, not the absent.
+- **The qualifying table stops calling its first column "Grid" when the grid is
+  not going to match it.** Under a reverse, random or custom order that column
+  is the qualifying position and now says so — it promised a slot the grid was
+  about to contradict, which reverse grids made obvious but random and custom
+  had been doing all along.
+- **Every results file ends with the cup round it banked**, when a cup is
+  running: the standings after the round, what each driver scored in it broken
+  into race, qualifying and bonus points, the bonuses listed by name and
+  recipient, and any manual adjustments. A championship that only exists inside
+  the game leaves whoever compiles the standings retyping numbers off a
+  screenshot. Derby results files carry the same section in the same layout —
+  a derby banks a round exactly as a race does, and a league reading two files
+  from one evening should not have to learn two formats. The numbers come from
+  the cup's own tables, so a file and the Cup panel cannot disagree about a
+  total. The round is the one the event actually banked rather than "the round
+  the cup is on", so an event that scored nothing prints nothing instead of the
+  previous one's points; a race night with no cup running produces exactly the
+  file it always did.
+- **Clear Results Cache asks first.** It now takes two presses, the same step
+  End Cup is behind, and for the same reason: it deletes every saved results
+  file on the server, there is no undo, and once a session is over that file is
+  the only record a league has that the race happened. The button sits one row
+  under Set Password in a panel an admin opens for other things.
 
 ### Changed
 

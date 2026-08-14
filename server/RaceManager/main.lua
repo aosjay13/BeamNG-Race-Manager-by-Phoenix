@@ -84,9 +84,10 @@ local race = {
   -- which is how the plugin behaved before entry lists existed.
   entryMode    = 'join',
   -- Starting grid. gridMode decides how the slots are filled:
-  --   quali  -- fastest qualifying lap first (the classic behaviour)
-  --   random -- a random draw, for when no qualifying was run
-  --   custom -- the order the admin set by hand (RM_SetDriverGrid)
+  --   quali   -- fastest qualifying lap first (the classic behaviour)
+  --   reverse -- slowest qualifying lap first, so the fastest starts last
+  --   random  -- a random draw, for when no qualifying was run
+  --   custom  -- the order the admin set by hand (RM_SetDriverGrid)
   gridMode     = 'quali',
   startSlots   = 0,          -- start positions the loaded track layout has
   -- Is the loaded track a sprint stage rather than a circuit? A point-to-point
@@ -488,9 +489,16 @@ local derbyEntryListChanged
 --                         rather than reading derbyPlayers, so the cup never
 --                         reaches into the derby module's tables and the derby
 --                         module hands over a result instead of exposing state.
+--   cupResultsLines       the round just banked, as text lines for the results
+--                         file. The traffic goes the other way here -- results
+--                         asking the cup, rather than the cup being told -- and
+--                         it is still a read of a finished round, after the
+--                         cars have stopped. It returns nil when no cup is
+--                         running, which is what keeps a plain race night's
+--                         results file byte-for-byte what it always was.
 local rosterRemember, rosterUnbind, rosterEntryFor
 local rosterBindTo, rosterList, rosterForget
-local cupOnSessionComplete, cupOnDerbyComplete
+local cupOnSessionComplete, cupOnDerbyComplete, cupResultsLines
 -- Boot-time cache warm for the two, called from onInit. They exist because both
 -- modules are wrapped in a `do ... end` block: Lua allows 200 locals per
 -- function and this chunk was already close to it, so everything those modules
@@ -1125,7 +1133,7 @@ local function sessionAwards(final)
   return awards
 end
 
-local function buildResultsText()
+local function buildResultsText(cupRound)
   local quali = qualiClassification()
   local final = raceClassification()
   local lines = {}
@@ -1223,14 +1231,20 @@ local function buildResultsText()
       displayName(hcRec), awards.hardChargerFrom, awards.hardChargerTo,
       awards.hardChargerGain, awards.hardChargerGain == 1 and '' or 's'))
   end
+  -- The championship this race just fed, if there is one. Asked for rather than
+  -- assembled here: the points, the order and the ledger all belong to the cup
+  -- module, and a second copy of its arithmetic living in the results writer is
+  -- how two totals for the same driver come to disagree.
+  local cupLines = cupResultsLines and cupResultsLines(cupRound) or nil
+  for _, l in ipairs(cupLines or {}) do add(l) end
   add('')
   return table.concat(lines, '\n') .. '\n'
 end
 
-local function writeResults()
+local function writeResults(cupRound)
   ensureResultsDir()
   local path = uniqueResultsPath('results')
-  local text = buildResultsText()
+  local text = buildResultsText(cupRound)
   local f, err = io.open(path, 'w')
   if not f then return false, tostring(err) end
   f:write(text)
@@ -1465,7 +1479,11 @@ local function finishSession(reason)
   -- turns a finisher into a disqualification, and a driver scored ahead of it
   -- would bank winner's points for a race they were excluded from. Does nothing
   -- at all unless a cup is running.
-  if cupOnSessionComplete then cupOnSessionComplete('race') end
+  --
+  -- The round it banks is carried to the results file below rather than looked
+  -- up there: a cup at its round cap scores nothing, and a file that asked the
+  -- cup for "the current round" would then print the previous race's points.
+  local cupRound = cupOnSessionComplete and cupOnSessionComplete('race') or nil
   -- The session is over: every car taken off the track comes back.
   respawnAll('race')
   broadcastState()
@@ -1475,7 +1493,7 @@ local function finishSession(reason)
       excluded, excluded == 1 and '' or 's'))
   end
   print('[RaceManager] Race over: ' .. reason)
-  local ok, wrote, pathOrErr = pcall(writeResults)
+  local ok, wrote, pathOrErr = pcall(writeResults, cupRound)
   if ok and wrote then
     MP.SendChatMessage(-1, '[RaceManager] Session complete! Results saved on the server: ' .. pathOrErr)
     print('[RaceManager] Results written to ' .. pathOrErr)
@@ -1680,18 +1698,37 @@ local function shuffle(list)
 end
 
 -- Fill the grid in the order race.gridMode asks for:
---   quali  -- fastest qualifying Best Lap first, no-time last (join order breaks ties)
---   random -- a random draw, for a race with no qualifying behind it
---   custom -- slots the admin pinned by hand come first, in slot order; anyone
---             unpinned falls in behind them, still by quali time
+--   quali   -- fastest qualifying Best Lap first, no-time last (join order breaks ties)
+--   reverse -- SLOWEST Best Lap first, so the fastest qualifier starts last;
+--              no-time drivers still line up at the back (see below)
+--   random  -- a random draw, for a race with no qualifying behind it
+--   custom  -- slots the admin pinned by hand come first, in slot order; anyone
+--              unpinned falls in behind them, still by quali time
 local function orderForGrid(ordered)
   if race.gridMode == 'random' then
     return shuffle(ordered)
   end
+  -- Reverse grids invert ONE of the two rules below, and which one is the whole
+  -- design of the mode.
+  --
+  -- Inverted: the times. Slowest qualifier on pole, fastest at the back, which
+  -- is the format -- the quick drivers have to come through the field.
+  --
+  -- NOT inverted: where a driver with no time at all goes. They stay at the
+  -- back, behind everyone who set one, exactly as they do in a normal grid. A
+  -- literal reversal would put them on pole, and then the fastest way to start
+  -- first is to sit in the pits and set nothing -- a reverse grid is meant to
+  -- reward the slow, not the absent. It also means the fastest qualifier is last
+  -- of the drivers who ran, rather than last on the road, which is the honest
+  -- reading of "fastest starts last".
+  local reverse = race.gridMode == 'reverse'
   local function byQuali(a, b)
     local ta, tb = a.qualiBest, b.qualiBest
     if ta and tb then
-      if ta ~= tb then return ta < tb end
+      if ta ~= tb then
+        if reverse then return ta > tb end
+        return ta < tb
+      end
     elseif ta ~= tb then
       return ta ~= nil
     end
@@ -1854,7 +1891,9 @@ function RM_onSetGridMode(pid, rawData)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
   local mode = decodeString(rawData, 'mode')
-  if mode ~= 'quali' and mode ~= 'random' and mode ~= 'custom' then return end
+  if mode ~= 'quali' and mode ~= 'reverse' and mode ~= 'random' and mode ~= 'custom' then
+    return
+  end
   race.gridMode = mode
   broadcastState()
   print('[RaceManager] Grid mode set to "' .. mode .. '" by ' .. (MP.GetPlayerName(pid) or pid))
@@ -3679,7 +3718,7 @@ local function derbyFmtTime(t)
   return string.format('%d:%02d', m, math.floor(t - m * 60))
 end
 
-local function buildDerbyResultsText()
+local function buildDerbyResultsText(cupRound)
   local list = derbyClassification()
   local lines = {}
   local function add(s) lines[#lines + 1] = s end
@@ -3709,16 +3748,21 @@ local function buildDerbyResultsText()
       i, displayName(rec), result, elimAt, resetVal, aliasNote(rec), tag))
   end
   if #list == 0 then add('(no drivers)') end
+  -- A derby banks a cup round exactly as a race does, so its results file
+  -- carries the same section. Same call, same numbers, same layout -- a league
+  -- reading two files from one evening should not have to learn two formats.
+  local cupLines = cupResultsLines and cupResultsLines(cupRound) or nil
+  for _, l in ipairs(cupLines or {}) do add(l) end
   add('')
   return table.concat(lines, '\n') .. '\n'
 end
 
-local function writeDerbyResults()
+local function writeDerbyResults(cupRound)
   ensureResultsDir()
   local path = uniqueResultsPath('derby_results')
   local f, err = io.open(path, 'w')
   if not f then return false, tostring(err) end
-  f:write(buildDerbyResultsText())
+  f:write(buildDerbyResultsText(cupRound))
   f:close()
   return true, path
 end
@@ -3764,10 +3808,15 @@ local function finishDerby(reason)
   -- The classification is handed over rather than the cup coming to fetch it:
   -- this module's tables stay private, and the cup goes on being a consumer of
   -- results exactly as it is for a race. Does nothing unless a cup is running.
+  --
+  -- The round it banks is carried to the results file, for the same reason the
+  -- racing side carries it: a cup at its round cap scores nothing, and a file
+  -- that asked for "the current round" would print the last event's points.
+  local cupRound = nil
   if cupOnDerbyComplete then
-    cupOnDerbyComplete(derbyClassification(), { duration = derby.time })
+    cupRound = cupOnDerbyComplete(derbyClassification(), { duration = derby.time })
   end
-  local ok, wrote, pathOrErr = pcall(writeDerbyResults)
+  local ok, wrote, pathOrErr = pcall(writeDerbyResults, cupRound)
   if ok and wrote then
     local msg = derby.winner
       and ('[RaceManager] DEMO DERBY WINNER: ' .. derby.winner .. '! Results saved: ' .. pathOrErr)
@@ -5553,6 +5602,8 @@ local function cupScoreRace()
       '[RaceManager] Cup round %d scored — %s leads on %d point%s.',
       round, leader.name, leader.total, leader.total == 1 and '' or 's'))
   end
+  -- The round this race banked, for the results file about to be written.
+  return round
 end
 
 -- A derby ended. Banks one round, on the derby side of the cup.
@@ -5618,22 +5669,142 @@ local function cupScoreDerby(classification, info)
       '[RaceManager] Cup round %d (derby) scored — %s leads on %d point%s.',
       round, leader.name, leader.total, leader.total == 1 and '' or 's'))
   end
+  -- The round this derby banked, for the results file about to be written.
+  return round
 end
 
 -- THE entry points, filling the forward declarations beside the entry list.
 -- One call at the end of finishSession for each kind of session, one at the end
 -- of finishDerby, and one boolean test when no cup is running.
+--
+-- Returns the round number a RACE banked, so the results file written moments
+-- later can report that round specifically (see cupResultsLines). Qualifying
+-- banks no round -- its points are held for the race that follows -- and
+-- returns nothing, which is also what a cup that is switched off or at its
+-- round cap returns.
 cupOnSessionComplete = function (kind)
-  if not getCup().enabled then return end
+  if not getCup().enabled then return nil end
   if kind == 'quali' then
     cupScoreQuali()
-  else
-    cupScoreRace()
+    return nil
   end
+  return cupScoreRace()
 end
 
+-- The round just banked, as lines for the results file.
+--
+-- This is the cup being READ rather than told, and it is the only call that
+-- goes that way. It stays inside the module's rules all the same: it is called
+-- from the two results writers, after the classification is final and the round
+-- is scored, so nothing cup-shaped runs while cars are on track. It computes
+-- nothing new -- the numbers are the ones already banked and the order is
+-- cupStandings' own.
+--
+-- `round` is the round the finished session actually banked, handed down from
+-- finishSession (or finishDerby) rather than read from cup.round here. Those
+-- differ in exactly the case that matters: a cup at the round cap scores
+-- nothing, and asking for "the current round" would then print the PREVIOUS
+-- event's points onto this one's results file.
+--
+-- Returns nil when there is nothing to say, which is the normal case: no cup
+-- running, nothing banked, or a round nobody scored in. A race night without a
+-- championship gets exactly the results file it always got.
+cupResultsLines = function (round)
+  if not getCup().enabled or not round then return nil end
+
+  -- What each driver took out of THIS round, keyed by entry. Read off the round
+  -- rows the scoring wrote; a driver with no row simply did not score here.
+  local roundBy, anyRow = {}, false
+  for _, e in ipairs(cup.entries) do
+    for _, r in ipairs(e.rounds) do
+      if r.round == round then
+        roundBy[e.entryId] = r
+        anyRow = true
+        break
+      end
+    end
+  end
+  if not anyRow then return nil end
+
+  local lines = {}
+  local function add(s) lines[#lines + 1] = s end
+  local function bonusOf(r)
+    local n = 0
+    for _, b in ipairs(CUP_BONUSES) do n = n + (tonumber(r.bonus and r.bonus[b.key]) or 0) end
+    return n
+  end
+
+  local preset = cupPresetByKey(cup.scoring.preset)
+  add('')
+  add(string.format('--- CUP: %s (round %d) ---',
+    cup.name ~= '' and cup.name or 'unnamed cup', round))
+  add(string.format(' Scoring: %s to P%d%s | DNF: %s',
+    preset and preset.label or 'custom', #cup.scoring.race,
+    #cup.scoring.quali > 0 and (', qualifying to P' .. #cup.scoring.quali) or '',
+    cup.scoring.dnfScoring))
+  -- One table, ordered by championship position after this round. It answers
+  -- both questions a league asks of a results file -- what did each driver score
+  -- today, and where does that leave them -- without printing the same field
+  -- twice in two orders.
+  add(string.format('%-5s %-22s %-6s %-6s %-6s %-7s %s',
+    'Pos', 'Driver', 'Race', 'Quali', 'Bonus', 'Round', 'Total'))
+  for _, s in ipairs(cupStandings()) do
+    local r = roundBy[s.entryId]
+    local racePts  = r and (tonumber(r.racePts) or 0) or 0
+    local qualiPts = r and (tonumber(r.qualiPts) or 0) or 0
+    local bonusPts = r and bonusOf(r) or 0
+    local roundPts = racePts + qualiPts + bonusPts
+    -- A driver who was not in this round is shown with dashes rather than
+    -- zeroes: not scoring and not being there are different facts, and a column
+    -- of noughts against a name that never appeared reads as the first.
+    add(string.format('P%-4d %-22s %-6s %-6s %-6s %-7s %d',
+      s.pos, s.name,
+      r and tostring(racePts)  or '-',
+      r and tostring(qualiPts) or '-',
+      r and tostring(bonusPts) or '-',
+      r and tostring(roundPts) or '-',
+      s.total))
+  end
+  -- Which bonuses were paid, and to whom. The table above can only show a total,
+  -- and "+2" against a name does not say what it was for -- the one question
+  -- somebody checking a championship a month later will actually have.
+  local paid = {}
+  for _, b in ipairs(CUP_BONUSES) do
+    for _, e in ipairs(cup.entries) do
+      local r = roundBy[e.entryId]
+      local worth = r and tonumber(r.bonus and r.bonus[b.key]) or nil
+      if worth and worth > 0 then
+        paid[#paid + 1] = string.format(' %s: %s (+%d)', b.label, e.name, worth)
+      end
+    end
+  end
+  if #paid > 0 then
+    add('')
+    add(' BONUSES THIS ROUND')
+    for _, l in ipairs(paid) do add(l) end
+  end
+  -- Adjustments are part of a total and are invisible in it. A standings table
+  -- nobody can take apart is a standings table nobody can check.
+  local adjusted = {}
+  for _, s in ipairs(cupStandings()) do
+    if (s.adjustPts or 0) ~= 0 then
+      adjusted[#adjusted + 1] = string.format(' %s: %+d (manual adjustment%s)',
+        s.name, s.adjustPts, #(s.adjustments or {}) == 1 and '' or 's')
+    end
+  end
+  if #adjusted > 0 then
+    add('')
+    add(' ADJUSTMENTS INCLUDED IN THE TOTALS')
+    for _, l in ipairs(adjusted) do add(l) end
+  end
+  return lines
+end
+
+-- Returns the round a derby banked, on the same contract cupOnSessionComplete
+-- follows: nil when nothing was scored, which includes a cup that does not pay
+-- for derbies at all.
 cupOnDerbyComplete = function (classification, info)
-  if not getCup().enabled then return end
+  if not getCup().enabled then return nil end
   -- An empty derby points table means derbies are not part of THIS cup, and it
   -- means it completely: no round is banked and no derby bonus is paid.
   --
@@ -5642,9 +5813,9 @@ cupOnDerbyComplete = function (classification, info)
   -- "Turn derby points off" has said derbies do not count here, and a survivor
   -- quietly collecting a last-man-standing bonus afterwards would contradict
   -- them. Same rule qualifying already follows.
-  if #cup.scoring.derby == 0 then return end
-  if type(classification) ~= 'table' or #classification == 0 then return end
-  cupScoreDerby(classification, info)
+  if #cup.scoring.derby == 0 then return nil end
+  if type(classification) ~= 'table' or #classification == 0 then return nil end
+  return cupScoreDerby(classification, info)
 end
 
 -- ---------------------------------------------------------------------------

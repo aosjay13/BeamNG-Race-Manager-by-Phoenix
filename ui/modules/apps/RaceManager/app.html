@@ -347,13 +347,20 @@
       <label>Grid order</label>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'quali'}"
               ng-click="setGridMode('quali')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'">Quali</button>
+              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              title="Fastest qualifier on pole. Drivers with no time line up at the back.">Quali</button>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'reverse'}"
+              ng-click="setGridMode('reverse')"
+              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              title="Reverse grid: SLOWEST qualifier on pole, fastest at the back, so the quick drivers have to come through the field. Drivers with no time still start at the back — a reverse grid rewards the slow, not the absent.">Reverse</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'random'}"
               ng-click="setGridMode('random')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'">Random</button>
+              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              title="A random draw, for a race with no qualifying behind it.">Random</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'custom'}"
               ng-click="setGridMode('custom')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'">Custom</button>
+              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              title="The order you set by hand: type a slot number next to any driver in the Start column. Unpinned drivers fall in behind by quali time.">Custom</button>
       <span class="rm-setting-val">{{ startSlots }} start position{{ startSlots === 1 ? '' : 's' }}</span>
     </span>
     <span class="rm-setting-warn" ng-if="startSlots > 0 && entrants > startSlots">
@@ -405,7 +412,7 @@
               title="End the cup and delete every point in it. Display names are not affected.">
         End Cup
       </button>
-      <span class="rm-cup-confirm" ng-if="cupUi.confirmReset">
+      <span class="rm-confirm" ng-if="cupUi.confirmReset">
         Delete all {{ cup.standings.length }} standings?
         <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="cupReset()">Yes, end it</button>
         <button class="rm-btn rm-btn-mini" ng-click="cupCancelReset()">Cancel</button>
@@ -1322,8 +1329,16 @@
     </div>
     <div class="rm-adminbar">
       <span class="rm-adminbar-label">Results</span>
-      <button class="rm-btn rm-btn-reset rm-btn-mini" ng-click="clearResults()"
+      <!-- Two presses. The file this deletes is the only record a league has of
+           a race night once the session is over, and there is no undo. -->
+      <button class="rm-btn rm-btn-reset rm-btn-mini" ng-if="!resultsUi.confirmClear"
+              ng-click="askClearResults()"
               title="Delete all saved result .txt files on the server">Clear Results Cache</button>
+      <span class="rm-confirm" ng-if="resultsUi.confirmClear">
+        Delete every saved results file on the server?
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="clearResults()">Yes, clear them</button>
+        <button class="rm-btn rm-btn-mini" ng-click="cancelClearResults()">Cancel</button>
+      </span>
       <span class="rm-layouts-hint">
         Result files are written automatically when a session closes; this only
         clears the ones already saved on the server.
@@ -1522,7 +1537,12 @@
     <table class="rm-table">
       <thead>
         <tr>
-          <th class="rm-col-grid">Grid</th>
+          <!-- This column is the provisional GRID only when the grid is filled
+               from the qualifying order. Under a reverse, random or custom grid
+               it is the qualifying position and nothing more — labelling it Grid
+               there would promise a slot the grid is about to contradict. -->
+          <th class="rm-col-grid"
+              title="{{ qualiOrderIsGrid() ? 'Provisional grid: this order is what Generate Grid will use' : 'Qualifying position. The grid is filled by ' + gridModeLabel() + ', so it will not match this order.' }}">{{ qualiOrderIsGrid() ? 'Grid' : 'Pos' }}</th>
           <th class="rm-col-name">Driver</th>
           <th class="rm-col-time">Best Lap</th>
           <th class="rm-col-led" title="Timed qualifying laps completed. The out lap is not one of them.">Laps</th>
@@ -2411,7 +2431,10 @@
   }
   .rm-cup-next { color: #9aa0a6; font-size: 10px; }
   .rm-cup-pending { color: #fdd663; font-size: 10px; }
-  .rm-cup-confirm {
+  /* The "are you sure" row, shared by every control in the app that destroys
+     something with no undo (End Cup, Clear Results Cache). One class, so a
+     second irreversible button cannot end up looking like an ordinary one. */
+  .rm-confirm {
     display: flex;
     align-items: center;
     gap: 5px;

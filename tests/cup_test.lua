@@ -362,6 +362,47 @@ check(totalFor('Falcon') == flBefore + falconRound.racePts + 5 + 3,
   'the total is the sum of its recorded parts')
 
 -- ---------------------------------------------------------------------------
+-- 6b. The results file carries the championship the race just fed.
+--
+-- A results file is what a league keeps; a cup that only exists inside the game
+-- leaves the person compiling the standings retyping numbers off a screenshot.
+-- The section is written from the cup's own tables, so the file and the panel
+-- can never disagree about a total.
+-- ---------------------------------------------------------------------------
+local RESULTS_DIR = 'Resources/Server/RaceManager/results'
+local resultsPath = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
+check(resultsPath ~= nil, 'the race announced a results file')
+local rf = resultsPath and io.open(resultsPath, 'r')
+check(rf ~= nil, 'and it exists on disk')
+local results = rf and rf:read('a') or ''
+if rf then rf:close() end
+
+local cupSec = results:match('\n(%-%-%- CUP:.*)$') or ''
+check(cupSec ~= '', 'the results file has a cup section')
+check(cupSec:find('Winter Series', 1, true) and cupSec:find('round 4', 1, true),
+  'named, and for the round this race actually banked')
+check(cupSec:find('Pos', 1, true) and cupSec:find('Quali', 1, true)
+  and cupSec:find('Bonus', 1, true) and cupSec:find('Total', 1, true),
+  'with a column for each part of a score and the championship total')
+
+-- The numbers are the cup's, not a second copy worked out here: every driver's
+-- Total in the file has to be the total the standings hold.
+for _, who in ipairs({ 'Phoenix', 'Ryder', 'Nomad', 'Falcon' }) do
+  local total = cupSec:match('\n' .. 'P%d+%s+' .. who .. '%s+%S+%s+%S+%s+%S+%s+%S+%s+(%d+)')
+  check(tonumber(total) == totalFor(who),
+    'the file reports ' .. who .. "'s championship total as the cup holds it ("
+      .. tostring(total) .. ' vs ' .. totalFor(who) .. ')')
+end
+
+-- Falcon's round: 35 for the win on the folk preset is not in force yet, so the
+-- race points are whatever the current table pays -- but the bonuses are the
+-- two just awarded, and they are named rather than buried in a total.
+check(cupSec:find('BONUSES THIS ROUND', 1, true), 'the bonuses paid are listed')
+check(cupSec:match('Fastest Lap: Falcon %(%+5%)'),
+  'each one says what it was for, who got it and what it was worth')
+check(cupSec:match('Hard Charger: Falcon %(%+3%)'), 'both of them')
+
+-- ---------------------------------------------------------------------------
 -- 7. Presets fill the table, and hand-editing marks it custom.
 -- ---------------------------------------------------------------------------
 RM_onCupSetPreset(ADMIN, '{"preset":"35p-folk"}')
@@ -517,6 +558,25 @@ local pRound = cupEntry('Phoenix').rounds[#cupEntry('Phoenix').rounds]
 check(pRound.bonus.derbyWin == 7, 'a derby bonus is paid to the survivor')
 check((pRound.bonus.fastestLap or 0) == 0,
   'a RACE bonus is never paid on a derby, even when it is switched on')
+
+-- A derby banks a cup round exactly as a race does, so its results file carries
+-- the same section. A league reading two files from one evening should not have
+-- to learn two formats -- or find the championship in only one of them.
+do
+  local path = lastChat and lastChat:match('(Resources/Server/RaceManager/results/[%w%-_%.]+%.txt)')
+  check(path ~= nil and path:find('derby_results', 1, true),
+    'the derby announced a derby results file')
+  local f = path and io.open(path, 'r')
+  local text = f and f:read('a') or ''
+  if f then f:close() end
+  local sec = text:match('\n(%-%-%- CUP:.*)$') or ''
+  check(sec ~= '', 'the derby results file has a cup section too')
+  check(sec:find('Last Man Standing: Phoenix (+7)', 1, true),
+    'and it names the derby bonus that was paid, like a race file names its own')
+  local total = sec:match('\nP%d+%s+Phoenix%s+%S+%s+%S+%s+%S+%s+%S+%s+(%d+)')
+  check(tonumber(total) == totalFor('Phoenix'),
+    'with the same totals the cup holds')
+end
 
 -- A derby ENDED EARLY by an admin has no last man standing: several drivers are
 -- still running, so somebody tops the classification without having won it.

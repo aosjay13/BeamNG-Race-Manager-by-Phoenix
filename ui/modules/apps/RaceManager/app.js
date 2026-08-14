@@ -86,7 +86,7 @@ angular.module('beamng.apps')
       $scope.joined = false;          // is THIS client in the field?
       $scope.entrants = 0;
       // Starting grid.
-      $scope.gridMode = 'quali';      // quali | random | custom
+      $scope.gridMode = 'quali';      // quali | reverse | random | custom
       $scope.startSlots = 0;          // start positions the loaded track has
       $scope.startPositions = [];     // placed on this client
       $scope.gridSlot = null;         // the slot this client was given
@@ -658,8 +658,8 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.cupSetEnabled(' + (!!on) + ')');
       };
       $scope.cupToggleEnabled = function () { $scope.cupSetEnabled(!$scope.cup.enabled); };
-      // Two presses, because this is the only control in the app that destroys
-      // a season's worth of points.
+      // Two presses, because one press destroys a season's worth of points.
+      // Clear Results Cache is behind the same pattern for the same reason.
       $scope.cupAskReset = function () { $scope.cupUi.confirmReset = true; };
       $scope.cupCancelReset = function () { $scope.cupUi.confirmReset = false; };
       $scope.cupReset = function () {
@@ -1971,7 +1971,17 @@ angular.module('beamng.apps')
       $scope.resetLeaderboard = function () {
         bngApi.engineLua('raceManager.resetLeaderboard()');
       };
+      // Clear Results Cache, behind the same two-press confirmation End Cup
+      // uses, and for the same reason: it deletes every saved .txt in the
+      // results folder on the server, there is no undo, and the button sits one
+      // row under Set Password in a panel an admin opens for other things. A
+      // results file is the only record a league has of a race night once the
+      // session is over.
+      $scope.resultsUi = { confirmClear: false };
+      $scope.askClearResults    = function () { $scope.resultsUi.confirmClear = true; };
+      $scope.cancelClearResults = function () { $scope.resultsUi.confirmClear = false; };
       $scope.clearResults = function () {
+        $scope.resultsUi.confirmClear = false;
         bngApi.engineLua('raceManager.clearResults()');
       };
 
@@ -2043,10 +2053,17 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.setGridMode("' + mode + '")');
       };
       $scope.gridModeLabel = function () {
-        if ($scope.gridMode === 'random') { return 'Random draw'; }
-        if ($scope.gridMode === 'custom') { return 'Custom order'; }
+        if ($scope.gridMode === 'random')  { return 'Random draw'; }
+        if ($scope.gridMode === 'custom')  { return 'Custom order'; }
+        if ($scope.gridMode === 'reverse') { return 'Reversed quali order'; }
         return 'Qualifying order';
       };
+      // Does the provisional order shown in the qualifying table double as the
+      // starting grid? Only under 'quali'. Every other mode decides the grid
+      // somewhere else — a draw that has not happened, pins the table does not
+      // show, or a reversal — so the column stops calling itself Grid rather
+      // than showing a number the grid will contradict.
+      $scope.qualiOrderIsGrid = function () { return $scope.gridMode === 'quali'; };
       // Custom grid: pin one driver to one slot.
       $scope.pinGridSlot = function (row) {
         var n = parseInt($scope.gridUi.slot[row.id], 10);

@@ -112,15 +112,17 @@ has no out lap.) The table shows everyone's best lap, fastest on top. Optional
 settings: **Ghost quali** (rivals stop being obstacles), **Quali laps**, and
 **Quali mins** (which triggers a proper final lap rather than stopping dead).
 
-**6. Grid and race.** Set **Laps**, pick a **Grid order** (Quali / Random /
-Custom), then **Generate Grid** — every driver is placed on their slot and
+**6. Grid and race.** Set **Laps**, pick a **Grid order** (Quali / Reverse /
+Random / Custom — *Reverse* puts the slowest qualifier on pole and the fastest
+at the back), then **Generate Grid** — every driver is placed on their slot and
 **held** there, so nobody can jump the start. **Start Countdown** gives
 everyone a synchronised 3‑2‑1‑**GO!** and releases the whole field on the same
 broadcast. The table re-sorts leader-first in real time as places change.
 
 **7. Results.** At the flag the server writes a results file to
 `Resources/Server/RaceManager/results/` and announces the path in chat, ready
-for league standings. **Reset** clears the session for the next one.
+for league standings — with the cup round it just banked appended if a cup is
+running. **Reset** clears the session for the next one.
 
 > Each step above has a lot more to it — grid pinning, the final-lap rules,
 > what happens to a driver who disconnects. It's all in
@@ -137,7 +139,7 @@ would expect without touching any of it.
 | **[Reset ghosting](docs/REFERENCE.md#reset-ghosting)** | A driver who resets is intangible for a few seconds instead of reappearing solid in the racing line. Collisions come back only once the space around them is provably clear — never while another car is inside them. |
 | **[Rallycross joker laps](docs/REFERENCE.md#rallycross-joker-laps)** | A second gate route that must be taken exactly once per race. Lap 1 is closed, and the server disqualifies anyone who missed it or took it twice. |
 | **[Garage List](docs/REFERENCE.md#vehicle--setup-locking-the-garage-list)** | Lock the session to exact cars *and* exact tunes. Anything not on the list gets deleted and the driver is told why. |
-| **[Cup points](docs/REFERENCE.md#cup-points)** | Championship points across several events — all races, all derbies, or a mixture. Scoring presets, qualifying points and bonuses; race and derby standings kept separate with a combined total. Points survive resets and a server restart; only ending the cup clears them. |
+| **[Cup points](docs/REFERENCE.md#cup-points)** | Championship points across several events — all races, all derbies, or a mixture. Scoring presets, qualifying points and bonuses; race and derby standings kept separate with a combined total. Every race results file ends with the round it banked, so the standings leave the game with the result. Points survive resets and a server restart; only ending the cup clears them. |
 | **[Display names](docs/REFERENCE.md#display-names)** | Give `Guest_4471` a readable name for the leaderboard and the results file. Saved on the server, so it survives a restart. |
 | **[Live position tracking](docs/REFERENCE.md#live-position-tracking)** | True running order from laps, checkpoints cleared and distance to the next gate — not just the grid order. |
 | **[Demo Derby](docs/REFERENCE.md#demo-derby-parallel-game-mode)** | A separate last-man-standing mode with its own arena, timers and results, fully isolated from the racing. |

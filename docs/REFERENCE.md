@@ -302,6 +302,14 @@ the rug pulled mid-lap.
    - **Quali** — fastest-first from quali bests; drivers without a time go to
      the back (the default, and with no qualifying at all it falls back to
      join order).
+   - **Reverse** — a reverse grid: **slowest qualifier on pole, fastest at the
+     back**, so the quick drivers have to come through the field. It inverts
+     the *times* and nothing else — a driver who set no time still starts at
+     the back, behind everyone who did. A literal reversal would put them on
+     pole, and then the quickest way to start first is to sit in the pits and
+     set nothing; a reverse grid is meant to reward the slow, not the absent.
+     (Which also means the fastest qualifier lines up last of the drivers who
+     actually ran.)
    - **Random** — a random draw, for a race with no qualifying behind it.
    - **Custom** — type a slot number next to any driver in the **Start**
      column and press Enter. Pinning a slot someone else holds takes it off
@@ -379,11 +387,18 @@ finish are not eligible — there is no finishing position to have gained to —
 if nobody gained a place the line is left out rather than given to whoever lost
 the fewest.
 
+**If a cup is running**, the file ends with the championship round this race
+just banked — see [Cup points in the results file](#cup-points-in-the-results-file).
+
 Housekeeping:
 
 - **Reset** wipes the session back to Waiting with fresh driver records.
 - **Clear Results Cache** deletes all saved result `.txt` files on the
-  server (chat confirms how many were removed).
+  server (chat confirms how many were removed). It asks first: the button is
+  replaced by *Delete every saved results file on the server?* with **Yes,
+  clear them** and **Cancel**, the same two-press step **End Cup** is behind.
+  Once a session is over that file is the only record a league has that the
+  race happened, and there is no undo.
 
 ## Live position tracking
 
@@ -976,6 +991,51 @@ A mixed cup therefore contains a race championship and a derby championship as
 well as an overall one, and you can read any of the three. A cup that only ever
 held one kind shows just the combined table, without an empty column for the
 discipline it never ran.
+
+### Cup points in the results file
+
+When a cup is running, every results file ends with the round that event
+banked — so the standings leave the game with the result, instead of being
+retyped off a screenshot by whoever compiles them. **Derby results files carry
+the same section**, in the same layout: a league reading two files from one
+evening should not have to learn two formats, or find the championship in only
+one of them.
+
+```
+--- CUP: Winter Series (round 4) ---
+ Scoring: 30P Aggressive to P24, qualifying to P3 | DNF: none
+Pos   Driver                 Race   Quali  Bonus  Round   Total
+P1    Ryder                  25     0      0      25      110
+P2    Phoenix                27     0      0      27      108
+P3    Falcon                 30     0      8      38      91
+P4    Nomad                  23     0      0      23      77
+
+ BONUSES THIS ROUND
+ Fastest Lap: Falcon (+5)
+ Hard Charger: Falcon (+3)
+```
+
+- **Pos** is the championship position *after* this round, not the finishing
+  position — the table is the standings, with what each driver scored today
+  broken out beside their total.
+- **Race / Quali / Bonus** are the parts of this round's score; **Round** is
+  their sum. A driver who was not in this round shows `-` in all four rather
+  than `0`: not scoring and not being there are different facts.
+- Bonuses are **listed by name and recipient** underneath. A `+8` in a column
+  does not say what it was for, which is the question somebody checking a
+  championship a month later actually has.
+- Manual adjustments, if any, are listed the same way — a total nobody can take
+  apart is a total nobody can check.
+- The numbers come from the cup's own tables, so the file and the Cup panel can
+  never disagree about a total.
+
+A race night with no cup running produces exactly the results file it always
+did; the section is simply absent. Qualifying does not get one either — its
+points are [held, not banked](#qualifying-points), and they appear in the
+**Quali** column of the race that banks them. Nor does an event that scored
+nothing (a cup that is switched off, one at its round cap, or a derby in a cup
+whose derby points are off): the file reports the round that was actually
+banked, never "the round the cup is on".
 
 Ties break on wins. Manual adjustments sit outside both disciplines — a penalty
 applies to a driver's standing in the cup, not to one half of it.
