@@ -1559,7 +1559,8 @@ angular.module('beamng.apps')
       // and placed no start positions at all.
       $scope.generateStartPositions = function () {
         var g = $scope.gridGen;
-        bngApi.engineLua('raceManager.generateGrid(' + (parseInt(g.count, 10) || 0) + ', '
+        bngApi.engineLua('raceManager.generateStartPositions('
+          + (parseInt(g.count, 10) || 0) + ', '
           + (parseFloat(g.spacing) || 8) + ', ' + (parseFloat(g.stagger) || 6) + ', '
           + (parseInt(g.from, 10) || 0) + ', ' + (parseInt(g.width, 10) || 2) + ')');
       };

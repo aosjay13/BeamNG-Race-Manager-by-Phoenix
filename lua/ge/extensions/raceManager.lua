@@ -5825,7 +5825,16 @@ end
 -- and its heading, and anything else uses the car. Anchoring on a placed slot is
 -- what makes the sliders below work -- pole is a decision the creator makes once,
 -- by standing on it, and everything after it is arithmetic.
-function M.generateGrid(count, spacing, stagger, from, width)
+-- NOT M.generateGrid. That name belongs to the admin control further down this
+-- file which asks the SERVER to form the race grid -- it teleports the whole
+-- field onto its slots and holds them for the countdown. Lua assignment is
+-- last-one-wins and that one is defined later, so a start-position generator
+-- called generateGrid was simply erased at load: pressing Generate Slots sent
+-- RM_GenerateGrid and started the race instead.
+--
+-- The same collision happened one layer up, in app.js, and was renamed there
+-- first -- which fixed nothing, because both layers had it.
+function M.generateStartPositions(count, spacing, stagger, from, width)
   count   = math.floor(tonumber(count) or 0)
   spacing = tonumber(spacing) or 8
   stagger = tonumber(stagger) or 6
