@@ -212,6 +212,20 @@ do
       'the panel offers the "' .. mode .. '" grid order but RM_onSetGridMode '
         .. 'never names it, so pressing it changes nothing')
   end
+  -- ...and so must the CLIENT RELAY between them, which is where this went
+  -- wrong. Checking the panel against the server skipped the one layer in the
+  -- middle: M.setGridMode normalises anything it does not recognise back to
+  -- 'quali', so Reverse -- a mode both ends knew about -- was rewritten on the
+  -- way out and the panel lit Quali up instead. Every hop has to name the mode,
+  -- not just the two ends.
+  local relay = readFile('lua/ge/extensions/raceManager.lua')
+    :match('function M%.setGridMode.-\n(.-)\nend')
+  expect(relay ~= nil, 'found M.setGridMode in the client bridge')
+  for mode in pairs(modes) do
+    expect(relay ~= nil and relay:find("'" .. mode .. "'", 1, true) ~= nil,
+      'the panel offers the "' .. mode .. '" grid order but M.setGridMode never '
+        .. 'names it, so the client rewrites it before the server ever sees it')
+  end
 end
 wired('setQualiLimits',     'applyQualiLimits',   'Qualifying limits')
 wired('moveStartPosition',  'moveStartPosition',  'Move start position')

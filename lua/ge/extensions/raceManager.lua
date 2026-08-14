@@ -5899,7 +5899,11 @@ end
 -- admin sets by hand.
 function M.setGridMode(mode)
   mode = tostring(mode or 'quali')
-  if mode ~= 'random' and mode ~= 'custom' then mode = 'quali' end
+  -- Every mode the server accepts has to be named here too. This list was left
+  -- behind when reverse grids were added, so pressing Reverse normalised to
+  -- 'quali' on the way out and the panel lit Quali back up -- a dead button that
+  -- looked like it had picked the wrong one.
+  if mode ~= 'random' and mode ~= 'custom' and mode ~= 'reverse' then mode = 'quali' end
   if inMultiplayer() then
     TriggerServerEvent('RM_SetGridMode', jsonEncode({ mode = mode }))
   end
