@@ -79,10 +79,19 @@ local race = {
   maxResets    = UNLIMITED_RESETS,  -- vehicle resets allowed per driver per session
   resetMode    = 'inplace',  -- what a legal reset does: 'inplace' | 'checkpoint'
   jokerEnabled = false,      -- rallycross joker lap required exactly once per race
-  -- Race entry. 'join' (default): drivers opt in with the UI's Join Race button
-  -- and only they are gridded. 'all': every connected session is a participant,
-  -- which is how the plugin behaved before entry lists existed.
-  entryMode    = 'join',
+  -- Race entry. 'all' (default): every connected session is a participant, so a
+  -- server that never touches this setting grids everybody who is there. 'join':
+  -- drivers opt in with the UI's Join Race button and only they are gridded.
+  --
+  -- The default is 'all' because it is the answer that fails safe. Getting it
+  -- wrong under 'join' means an admin presses Generate Grid and forms a grid of
+  -- nobody -- every driver on the server is left standing while the one person
+  -- who could fix it works out that a button they have never needed was the
+  -- problem. Getting it wrong under 'all' means somebody who wanted to watch is
+  -- put on the grid, which they undo with one press of Leave. The demo derby
+  -- has defaulted to 'all' since it was written; this is the racing side
+  -- agreeing with it.
+  entryMode    = 'all',
   -- Starting grid. gridMode decides how the slots are filled:
   --   quali   -- fastest qualifying lap first (the classic behaviour)
   --   reverse -- slowest qualifying lap first, so the fastest starts last
@@ -1816,10 +1825,16 @@ formGrid = function (kind, byName)
       '[RaceManager] Grid not formed: no entrants (entry mode "%s", %d connected, %d record(s): %s)',
       race.entryMode, connected, #skipped,
       #skipped > 0 and table.concat(skipped, ', ') or 'none'))
-    MP.SendChatMessage(-1, string.format(
-      '[RaceManager] Nobody is entered for this session (%d connected, entry mode "%s") — '
-        .. 'press Join Race in the Race Manager app, or switch entry to Everyone.',
-      connected, race.entryMode))
+    -- The advice has to match the mode. Telling an admin to switch entry to
+    -- Everyone when it is already on Everyone sends them to the one setting
+    -- that is not the problem -- and under that mode an empty field means
+    -- something quite different: there is nobody here.
+    MP.SendChatMessage(-1, race.entryMode == 'all'
+      and string.format('[RaceManager] Nobody is on the server to grid '
+        .. '(%d connected, entry is open to everyone).', connected)
+      or string.format('[RaceManager] Nobody is entered for this session '
+        .. '(%d connected, entry is opt-in) — press Join Race in the Race Manager '
+        .. 'app, or switch entry to Everyone races.', connected))
     return false
   end
 

@@ -81,6 +81,38 @@ expect(bound('cpEdit.width') and bound('cpEdit.height'),
   'gate size is edited on the gate itself')
 expect(bound('settingsUi.qualiLaps'), 'Quali lap limit input binds settingsUi.qualiLaps')
 expect(bound('settingsUi.qualiMins'), 'Quali time limit input binds settingsUi.qualiMins')
+
+-- ...and they are never both on screen. A qualifying session runs to a lap
+-- allowance OR to a clock; the server holds both numbers and treats 0 as
+-- unlimited, so both at once is a state it can hold, and two boxes side by side
+-- is how it gets armed by accident.
+do
+  expect(html:find("setQualiLimitMode('laps')", 1, true) ~= nil
+    and html:find("setQualiLimitMode('timed')", 1, true) ~= nil,
+    'the panel offers a Laps / Timed choice for the qualifying session length')
+  local gated = {
+    laps  = { model = 'settingsUi.qualiLaps', what = 'lap allowance' },
+    timed = { model = 'settingsUi.qualiMins', what = 'time limit' },
+  }
+  for mode, g in pairs(gated) do
+    local block = html:match('ng%-if="isQualiLimitMode%(\'' .. mode .. '\'%)"(.-)</span>')
+    expect(block ~= nil and block:find(g.model, 1, true) ~= nil,
+      'the ' .. g.what .. ' input is not inside the ' .. mode .. ' mode block')
+    -- One input, and it is that one: a second copy anywhere else in the
+    -- template would render alongside it and both would be on screen again.
+    local _, n = html:gsub('ng%-model="' .. g.model:gsub('%.', '%%.') .. '"', '')
+    expect(n == 1,
+      'expected exactly one ' .. g.model .. ' input (found ' .. n .. ')')
+  end
+  -- The mode that is not in use has to be sent as 0, or switching the toggle
+  -- leaves the old limit armed under a panel that no longer shows it.
+  local push = js:match('function pushQualiLimits%(%)(.-)\n%s*}')
+  expect(push ~= nil, 'found pushQualiLimits in the controller')
+  expect(push ~= nil and push:find("=== 'laps'", 1, true) ~= nil
+    and push:find("=== 'timed'", 1, true) ~= nil,
+    'pushQualiLimits sends both numbers unconditionally, so the limit the '
+      .. 'panel is not showing stays armed on the server')
+end
 expect(bound('derbyUi.name'),      'Derby arena name input binds derbyUi.name')
 expect(bound('lbUi.opacity'),      'Leaderboard opacity slider binds lbUi.opacity')
 

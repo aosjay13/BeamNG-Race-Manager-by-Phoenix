@@ -411,7 +411,7 @@ local isAdmin   = false
 
 -- Race entry (opt-in). Mirrored from the server so the UI can show a Join /
 -- Leave button and whether entry is open to everyone or by request.
-local entryMode = 'join'         -- 'join' (opt-in) | 'all' (everyone races)
+local entryMode = 'all'          -- 'all' (everyone races, the default) | 'join' (opt-in)
 local joined    = false          -- this client is on the entry list
 
 -- Qualifying: ghost mode + session limits, all mirrored from the server.

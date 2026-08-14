@@ -193,16 +193,24 @@ panel) live on the server and persist across server restarts:
 
 ### Step 4 — Who is actually in the race
 
-Being connected is **not** the same as being entered. Every player gets a
-**Race Entry** bar with a **Join Race** button; only drivers who joined are
-put on the grid, and the bar shows how many have entered. Withdrawing
-(**Leave Race**) gives up your slot. Entry closes once the countdown starts.
+**Everyone races** is the default: every connected player is in the field, and
+a server nobody has configured grids the people who turned up. The **Race
+Entry** bar shows how many that is.
 
-An admin can flip the mode to **Everyone races** if a session is simpler that
-way — then every connected player is in the field, which is how the plugin
-behaved before entry lists existed. Entry survives a **Start Quali**, so
-drivers only ever have to join once per event (**Reset** stands the whole
-field down and everyone joins again).
+That default is the one that fails safe. Under opt-in, an admin who has not
+realised the setting exists presses Generate Grid and forms a grid of *nobody* —
+every driver on the server left standing while the one person who could fix it
+works out that a button they have never needed was the problem. Under
+**Everyone races**, the mistake is that somebody who wanted to watch is put on
+the grid, and they undo it with one press.
+
+An admin can flip the mode to **Opt-in entry** when the field needs to be a
+subset of who is connected — a league night on a public server, say. Then being
+connected is **not** being entered: every player gets a **Join Race** button and
+only drivers who pressed it are gridded, withdrawing (**Leave Race**) gives up
+the slot, and entry closes once the countdown starts. Entry survives a **Start
+Quali**, so drivers only ever have to join once per event (**Reset** stands the
+whole field down and everyone joins again).
 
 The two modes are two answers to "who is in the field" and nothing more —
 from there they run identical code. A field of drivers who all pressed **Join
@@ -258,13 +266,26 @@ top. Only your best counts. A driver who uses their lap allowance is taken
 off the track until the session ends, then gets their car back with everyone
 else. **End Session** closes qualifying early but keeps the times.
 
-Three qualifying options sit in the admin settings:
+Two qualifying options sit in the admin settings:
 
 | Setting | What it does |
 |---------|--------------|
 | **Ghost quali** | Rival cars stop being obstacles for the session, so a flying lap can't be ruined by traffic. Ghosted cars are faded so you can see who they are. |
-| **Quali laps** | **Timed** laps each driver gets — the out lap is not one of them, so `3` gives an out lap and then 3 flying laps. Their session ends when they use them up; the whole session closes once nobody has laps left. `0` = unlimited. |
-| **Quali mins** | Wall-clock limit. The header shows the countdown; when it expires the session runs a **final lap** (below) rather than stopping dead. `0` = no limit. |
+| **Quali length** | Whether the session is run to a **lap allowance** or to a **clock** — pick one, and only that box is shown. |
+
+**A qualifying session runs to laps or to a clock, not both.** The **Quali
+length** row is a choice between the two:
+
+- **Laps** — the number of **timed** laps each driver gets. The out lap is not
+  one of them, so `3` gives an out lap and then 3 flying laps. A driver's
+  session ends when they use them up; the session closes once nobody has laps
+  left.
+- **Timed** — minutes of wall clock. The header shows the countdown; when it
+  expires the session runs a **final lap** (below) rather than stopping dead.
+
+Whichever you pick, `0` means unlimited, and switching between them switches the
+other off — so the two can never be armed together by accident. Both are locked
+while qualifying is actually running, so nobody has the rug pulled mid-lap.
 
 **The final lap.** When a timed session's clock expires it does not end the
 session — everyone still out is mid-lap, and in qualifying that is the lap
@@ -290,9 +311,6 @@ with no time at all, eliminated by the one lap the session had already
 promised not to score.) And a driver who never comes round (parked, in the
 pits, never left the grid) is bounded by a **3 minute grace**, after which
 the stragglers are taken where they stand and the session closes normally.
-
-Both limits are locked while qualifying is actually running, so nobody has
-the rug pulled mid-lap.
 
 ### Step 6 — Grid and race
 

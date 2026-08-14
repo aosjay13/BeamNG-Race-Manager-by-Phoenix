@@ -98,9 +98,11 @@ the gates, the joker route and the starting grid together. Layouts are filtered
 to the map you're hosting, and **Load Layout** rebuilds them on every connected
 client at once.
 
-**4. Decide who's racing.** Being connected isn't being entered — each player
-gets a **Join Race** button. Or flip the mode to **Everyone races** and skip
-it. Entry survives Start Quali, so drivers only join once per event.
+**4. Decide who's racing.** By default **everyone on the server is in the
+field**, so there's nothing to do here. Flip the mode to **Opt-in entry** when
+the field should be a subset of who's connected — then each player gets a
+**Join Race** button and only they are gridded. Entry survives Start Quali, so
+drivers only join once per event.
 
 **5. Qualifying.** Press **Start Quali**, then **Start Countdown**. The field
 starts from the grid, so the first lap is an **out lap**: it's not timed, not

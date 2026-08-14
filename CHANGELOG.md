@@ -8,6 +8,19 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 ## 0.8.0 — The qualifying out lap, reverse grids, cup points in results
 
+### Changed (defaults)
+
+- **Everyone on the server races by default.** Race entry used to default to
+  opt-in, so a server nobody had configured started with a field of nobody. That
+  is the setting that fails unsafe: an admin who has not realised it exists
+  presses Generate Grid and forms an empty grid, leaving every driver standing
+  while the one person who could fix it works out that a button they have never
+  needed was the problem. The other way round, the mistake is that somebody who
+  wanted to watch is put on the grid, and they undo it with one press of Leave.
+  **Opt-in entry** is unchanged and one click away; the demo derby has defaulted
+  to "everyone" since it was written, so this is the racing side agreeing with
+  it.
+
 ### Added
 
 - **Reverse grids.** A fourth **Grid order**: slowest qualifier on pole, fastest
@@ -34,6 +47,15 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   the cup is on", so an event that scored nothing prints nothing instead of the
   previous one's points; a race night with no cup running produces exactly the
   file it always did.
+- **Qualifying is run to laps OR to a clock, and the panel now asks which.** The
+  lap allowance and the time limit used to sit side by side as two boxes, and
+  the server takes both numbers — so "3 laps and 10 minutes" was a state it
+  could hold, and two boxes side by side is how it got armed by accident. A
+  **Quali length** toggle picks Laps or Timed, only that box is shown, and the
+  one not in use is sent as `0`. Switching applies immediately, so the limit the
+  panel has stopped showing is never left armed underneath it. Whichever is
+  picked, `0` still means unlimited. The panel lands on the mode the session is
+  actually running when it is opened onto one somebody else set up.
 - **Clear Results Cache asks first.** It now takes two presses, the same step
   End Cup is behind, and for the same reason: it deletes every saved results
   file on the server, there is no undo, and once a session is over that file is

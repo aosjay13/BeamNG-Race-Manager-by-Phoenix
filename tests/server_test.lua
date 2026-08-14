@@ -202,12 +202,17 @@ RM_onLogout(7)
 check(lastState.adminPresent == true, 'adminPresent stays true while pids 1 & 2 are admin')
 lastState = nil
 
--- Players connect. Connecting is NOT entering: in the default opt-in mode the
--- field is empty until drivers press Join Race.
+-- Players connect. By default everyone on the server is in the field, so a
+-- server nobody has configured grids the people who turned up.
 RM_onPlayerJoin(1); RM_onPlayerJoin(2); RM_onPlayerJoin(3)
 check(#lastState.drivers == 3, 'three drivers after join')
 check(lastState.phase == 'waiting', 'initial phase waiting')
-check(lastState.entryMode == 'join', 'race entry defaults to opt-in')
+check(lastState.entryMode == 'all', 'race entry defaults to everyone racing')
+check(lastState.entrants == 3, 'all three connected players are entered')
+
+-- Switched to opt-in, connecting is NOT entering: the field is empty until
+-- drivers press Join Race.
+RM_onSetEntryMode(1, '{"mode":"join"}')
 check(lastState.entrants == 0, 'nobody is entered before anyone joins')
 
 -- Generate Grid with an empty entry list must not form a grid.

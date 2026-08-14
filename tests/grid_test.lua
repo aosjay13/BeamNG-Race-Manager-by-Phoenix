@@ -69,10 +69,18 @@ RM_onLogin(1, '{"password":"phoenix"}')
 for id in pairs(connected) do RM_onPlayerJoin(id) end
 
 -- ===========================================================================
--- Race entry: connecting is not entering
+-- Race entry: everyone races by default, and opt-in is a mode you choose
 -- ===========================================================================
-check(lastState.entryMode == 'join', 'entry defaults to opt-in')
-check(lastState.entrants == 0, 'four connected players, nobody entered')
+-- The default grids whoever is on the server. It is the setting that fails
+-- safe: getting it wrong the other way forms a grid of nobody, and the driver
+-- worst placed to notice is the admin who never touched the setting.
+check(lastState.entryMode == 'all', 'entry defaults to everyone racing')
+check(lastState.entrants == 4, 'so all four connected players are in the field')
+
+-- The rest of this section is about the OPT-IN mode, so it asks for it.
+RM_onSetEntryMode(1, '{"mode":"join"}')
+check(lastState.entryMode == 'join', 'an admin can switch to opt-in')
+check(lastState.entrants == 0, 'and then nobody is entered until they say so')
 
 RM_onJoinRace(2, '{"join":true}')
 RM_onJoinRace(3, '{"join":true}')

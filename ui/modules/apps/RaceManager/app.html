@@ -121,7 +121,7 @@
             ng-class="{'rm-btn-toggle-on': entryMode === 'all'}"
             ng-click="toggleEntryMode()"
             ng-disabled="phase === 'countdown' || phase === 'racing'"
-            title="Opt-in: only drivers who press Join Race are gridded. Everyone: every connected player is in the field.">
+            title="Everyone races (the default): every connected player is in the field. Opt-in: only drivers who press Join Race are gridded.">
       {{ entryMode === 'all' ? 'Everyone races' : 'Opt-in entry' }}
     </button>
   </div>
@@ -332,13 +332,31 @@
         {{ ghostQuali ? '✓ Enabled' : 'Disabled' }}
       </button>
     </span>
-    <span class="rm-setting" title="TIMED laps each driver gets in qualifying. 0 = unlimited. Their session ends when they use them up. The first lap of the session is an out lap — it starts from the grid, so it is not timed, not scored and not one of these: set 3 and drivers get an out lap and then 3 flying laps. (A point-to-point stage has no out lap: it is driven once.)">
-      <label>Quali laps</label>
-      <input type="number" class="rm-width-num" min="0" max="99" step="1" ng-model="settingsUi.qualiLaps"
-             ng-disabled="phase === 'qualifying'">
-      <label>Quali mins</label>
-      <input type="number" class="rm-width-num" min="0" max="120" step="1" ng-model="settingsUi.qualiMins"
-             ng-disabled="phase === 'qualifying'">
+    <!-- A qualifying session is run to a LAP ALLOWANCE or to a CLOCK, not both.
+         The server takes both numbers and treats 0 as unlimited, so both at
+         once is a state it can hold — and two boxes side by side is how it gets
+         armed by accident. Pick one; the other is sent as 0. -->
+    <span class="rm-setting" title="Is this qualifying session run to a lap allowance or to a clock? Pick one — the other is switched off. Whichever you pick, 0 means unlimited.">
+      <label>Quali length</label>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': isQualiLimitMode('laps')}"
+              ng-click="setQualiLimitMode('laps')" ng-disabled="phase === 'qualifying'"
+              title="Each driver gets a fixed number of TIMED laps. Their session ends when they use them up; the session closes once nobody has laps left.">Laps</button>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': isQualiLimitMode('timed')}"
+              ng-click="setQualiLimitMode('timed')" ng-disabled="phase === 'qualifying'"
+              title="The session runs to a clock. When it expires everyone still out runs a final lap rather than stopping dead.">Timed</button>
+
+      <span class="rm-setting-sub" ng-if="isQualiLimitMode('laps')"
+            title="TIMED laps each driver gets. 0 = unlimited. The first lap of the session is an out lap — it starts from the grid, so it is not timed, not scored and not one of these: set 3 and drivers get an out lap and then 3 flying laps. (A point-to-point stage has no out lap: it is driven once.)">
+        <label>Laps</label>
+        <input type="number" class="rm-width-num" min="0" max="99" step="1" ng-model="settingsUi.qualiLaps"
+               ng-disabled="phase === 'qualifying'">
+      </span>
+      <span class="rm-setting-sub" ng-if="isQualiLimitMode('timed')"
+            title="Minutes the session runs for. 0 = no limit. When the clock expires the session does not stop dead — everyone still out finishes the lap they are on as their final lap.">
+        <label>Minutes</label>
+        <input type="number" class="rm-width-num" min="0" max="120" step="1" ng-model="settingsUi.qualiMins"
+               ng-disabled="phase === 'qualifying'">
+      </span>
       <button class="rm-btn rm-btn-mini" ng-click="applyQualiLimits()"
               ng-disabled="phase === 'qualifying'">Set</button>
       <span class="rm-setting-val">{{ qualiLimitLabel() }}</span>
@@ -1972,6 +1990,10 @@
   }
   .rm-setting input[type="range"] { width: 90px; accent-color: #ff6600; }
   .rm-setting-val { color: #9aa0a6; font-size: 10px; font-variant-numeric: tabular-nums; }
+  /* A label + input pair that appears inside a setting row rather than being
+     the row: the half of a laps/timed choice that is currently in use. Same
+     flex rules as the row itself so it lays out as if it were part of it. */
+  .rm-setting-sub { display: flex; align-items: center; gap: 5px; }
 
   /* Checkpoint editor */
   .rm-editor {

@@ -98,11 +98,17 @@ end
 onInit()
 RM_onLogin(0, '{"password":"phoenix"}')
 for pid in pairs(connected) do RM_onPlayerJoin(pid) end
-check(lastState.entrants == 0, 'five connected players, nobody entered yet')
+check(lastState.entryMode == 'all', 'entry defaults to everyone racing')
+check(lastState.entrants == 5, 'so all five connected players are in the field')
 
 -- ===========================================================================
 -- Criterion 2: all-opted-in behaves identically to "everyone races"
 -- ===========================================================================
+-- Which needs the OPT-IN mode to say anything: the failure was drivers who had
+-- each pressed Join Race being left off a grid that "everyone races" filled
+-- from the same five names.
+RM_onSetEntryMode(0, '{"mode":"join"}')
+check(lastState.entrants == 0, 'switched to opt-in, nobody is entered yet')
 -- The two entry modes are two ways of answering "who is in the field", and from
 -- there they must be the same code. They were not: with everyone opted in the
 -- field came out empty and no car was ever teleported, while flipping entry to

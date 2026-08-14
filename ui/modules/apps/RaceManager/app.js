@@ -80,9 +80,11 @@ angular.module('beamng.apps')
       // Garage list (approved vehicles/setups).
       $scope.garage = [];             // [{ model, label }]
       $scope.garageEnforce = false;
-      // Race entry (opt-in): players add themselves to the field instead of
-      // every session on the server being assumed to be racing.
-      $scope.entryMode = 'join';      // 'join' (opt-in) | 'all' (everyone races)
+      // Race entry: everyone connected is in the field by default, and an admin
+      // can switch to opt-in when it should be a subset of who is on the server.
+      // Only ever a mirror of the server's answer — this is the value the panel
+      // shows for the fraction of a second before the first broadcast lands.
+      $scope.entryMode = 'all';       // 'all' (everyone races, the default) | 'join' (opt-in)
       $scope.joined = false;          // is THIS client in the field?
       $scope.entrants = 0;
       // Starting grid.
@@ -1264,15 +1266,24 @@ angular.module('beamng.apps')
           // so an edit in progress is never yanked out from under the admin.
           $scope.ghostQuali = !!data.ghostQuali;
           $scope.qualiOutLap = !!data.qualiOutLap;
+          // A limit becoming non-zero is also what picks the Laps/Timed toggle,
+          // so an admin opening the app onto a session somebody else set up
+          // lands on the mode it is actually running. Keyed on the value having
+          // MOVED, like the boxes above and for a sharper reason: this fires
+          // three times a second, and re-deciding the mode from the standing
+          // values on every broadcast would snap the toggle back to the old
+          // mode in the gap between a press and the server's echo of it.
           if (typeof data.qualiLapLimit === 'number') {
             if ($scope.qualiLapLimit !== data.qualiLapLimit) {
               $scope.settingsUi.qualiLaps = data.qualiLapLimit;
+              if (data.qualiLapLimit > 0) { $scope.qualiUi.mode = 'laps'; }
             }
             $scope.qualiLapLimit = data.qualiLapLimit;
           }
           if (typeof data.qualiTimeLimit === 'number') {
             if ($scope.qualiTimeLimit !== data.qualiTimeLimit) {
               $scope.settingsUi.qualiMins = Math.round(data.qualiTimeLimit / 60);
+              if (data.qualiTimeLimit > 0) { $scope.qualiUi.mode = 'timed'; }
             }
             $scope.qualiTimeLimit = data.qualiTimeLimit;
           }
@@ -2078,15 +2089,49 @@ angular.module('beamng.apps')
       $scope.toggleGhostQuali = function () {
         bngApi.engineLua('raceManager.setGhostQuali(' + (!$scope.ghostQuali) + ')');
       };
-      // Qualifying session length. Laps are per driver; the time limit is
-      // entered in minutes and sent as seconds. 0 means unlimited for both.
-      $scope.applyQualiLimits = function () {
-        var laps = parseInt($scope.settingsUi.qualiLaps, 10);
-        var mins = parseFloat($scope.settingsUi.qualiMins);
-        if (isNaN(laps) || laps < 0) { laps = 0; }
-        if (isNaN(mins) || mins < 0) { mins = 0; }
-        bngApi.engineLua('raceManager.setQualiLimits('
-          + laps + ', ' + Math.round(mins * 60) + ')');
+      // Qualifying session length: LAPS or TIMED, one or the other.
+      //
+      // The server takes both numbers and treats 0 as unlimited, so "3 laps and
+      // 10 minutes" is a state it can hold — and a panel offering both boxes at
+      // once invites it by accident. A qualifying session is one thing or the
+      // other, so the panel asks which, shows that box alone, and sends 0 for
+      // the one not in use. Nothing about the server contract changes; what
+      // changes is that the two cannot be armed together by mistake.
+      //
+      // Which mode the panel is in is a display choice, so it lives here rather
+      // than on the wire — but it is seeded from the server below, so an admin
+      // opening the app on a session somebody else configured lands on the mode
+      // that session is actually running.
+      $scope.qualiUi = { mode: loadPref('qualiLimitMode', 'laps') === 'timed' ? 'timed' : 'laps' };
+      $scope.isQualiLimitMode = function (mode) { return $scope.qualiUi.mode === mode; };
+
+      // The numbers as the boxes currently read them, cleaned. Laps are per
+      // driver; the time limit is entered in minutes and sent as seconds.
+      function qualiLapsInput() {
+        var n = parseInt($scope.settingsUi.qualiLaps, 10);
+        return (isNaN(n) || n < 0) ? 0 : n;
+      }
+      function qualiSecondsInput() {
+        var n = parseFloat($scope.settingsUi.qualiMins);
+        return (isNaN(n) || n < 0) ? 0 : Math.round(n * 60);
+      }
+      // Send whichever limit the current mode governs, and 0 for the other.
+      function pushQualiLimits() {
+        var laps = $scope.qualiUi.mode === 'laps' ? qualiLapsInput() : 0;
+        var secs = $scope.qualiUi.mode === 'timed' ? qualiSecondsInput() : 0;
+        bngApi.engineLua('raceManager.setQualiLimits(' + laps + ', ' + secs + ')');
+      }
+      $scope.applyQualiLimits = pushQualiLimits;
+      // Switching mode applies immediately, like every other toggle in this
+      // panel. Waiting for Set would leave the old limit live underneath a
+      // panel showing the new mode's empty box — which is the state this whole
+      // control exists to make impossible.
+      $scope.setQualiLimitMode = function (mode) {
+        mode = (mode === 'timed') ? 'timed' : 'laps';
+        if ($scope.qualiUi.mode === mode) { return; }
+        $scope.qualiUi.mode = mode;
+        savePref('qualiLimitMode', mode);
+        pushQualiLimits();
       };
       // Remaining qualifying time for the header readout.
       $scope.qualiClock = function () {
