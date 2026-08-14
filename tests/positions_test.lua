@@ -206,6 +206,52 @@ check(driver('Alice').position == 3 and driver('Dan').position == 4,
 
 -- Clean up the directory tree this test created in the repo root. "rm -rf" is
 -- not a command on Windows, so the tree has to be removed the native way there.
+-- ---------------------------------------------------------------------------
+-- Drivers going opposite ways round the same track are ranked against each other
+-- ---------------------------------------------------------------------------
+-- The claim the whole branching design rests on, and it is a claim about THIS
+-- file: a branch substitutes a gate into a slot that already exists rather than
+-- adding one, so `cp` counts SLOTS and means the same thing whichever way round a
+-- driver is going. The comparator needed no lane arithmetic, no normalisation and
+-- no new wire field -- and this test fails if someone later adds any.
+--
+-- Alice and Bob are clockwise, Cara and Dan counter-clockwise, all on lap 2 of
+-- the same four-slot oval.
+do
+  -- A fresh race: the suite above ran its field to the flag, and finishers are
+  -- ordered by the clock rather than by live progress.
+  RM_onEndRace(1)
+  RM_onSetTotalLaps(1, '{"laps":20}')
+  RM_onGenerateGrid(1)
+  RM_onStartCountdown(1)
+  RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+  local lap = driver('Alice').currentLap
+
+  -- Dan retired earlier in this suite, so the field here is the three still out.
+  progress(1, lap, 3, 20.0)    -- Alice  CW,  three slots cleared, 20 m to go
+  progress(3, lap, 3, 60.0)    -- Cara   CCW, three slots cleared, 60 m to go
+  progress(2, lap, 2, 5.0)     -- Bob    CW,  two slots, right on the gate
+  push()
+  check(order() == 'Alice,Cara,Bob',
+    'slots cleared ranks the field across both directions, then distance')
+
+  -- The lanes are opposite and the gates are on opposite sides of the circuit,
+  -- but three slots is three slots: Cara passing Alice is a real change of place
+  -- and the comparator sees it without knowing lanes exist.
+  progress(3, lap, 4, 10.0)
+  push()
+  check(order() == 'Cara,Alice,Bob',
+    'a counter-clockwise car takes the lead from a clockwise one on slots cleared')
+
+  -- Reported slot counts are still clamped. No layout came through this server,
+  -- so the ceiling is the flat one; a track loaded through RM_LoadLayout is
+  -- clamped to its own length instead (see server_test).
+  progress(2, lap, 99999, 1.0)
+  push()
+  check(driver('Bob').cpCleared == 500,
+    'an absurd slot count is clamped rather than believed')
+end
+
 if package.config:sub(1, 1) == '\\' then
   os.execute('rmdir /s /q "Resources" 2>nul')
 else

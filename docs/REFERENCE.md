@@ -786,6 +786,75 @@ The label is drawn separately from the pole because BeamNG's gate markers render
 **no text at all** — a pole can say where the joker is and never what state it is
 in, which for the joker is the half that matters.
 
+### Branching routes (two ways round one track)
+
+A **lane** is another way round the same track. Its gates **replace** the main
+route's at the slots you give them — a lane never adds a checkpoint — so every
+lane has the same number of checkpoints, and **the whole field is scored
+together**: one clock, one running order, one results table. Which way a driver
+went is a record, never a place gained or lost.
+
+Build lanes in the editor's **Lanes** tab. Each lane gate is placed against a
+**slot**: "this is what CP 3 is, for this lane". Drivers are put on a lane by
+their **grid slot**, tagged in the **Start Grid** tab — that is the only place a
+direction is decided, and the server reads it as it hands the slot out, so a
+driver can never pick their own.
+
+**Gates score in both directions**, which is what makes shared corners work. A
+checkpoint both lanes pass — a back stretch, a start/finish line — is crossed one
+way by one lane and the other way by the other, and counts for both. This also
+fixes something older: a driver who **missed a checkpoint** and turned round used
+to have to drive through it, carry on past, turn round again and come back
+through. Now the way back through counts. Where direction really is the only
+thing separating two legs of a track — a hairpin, or a figure-8 crossover — mark
+that gate **one-way**.
+
+#### A head-on "suicide" oval
+
+The field starts in two blocks facing opposite ways and races the same oval in
+opposite directions.
+
+1. **Main route, clockwise.** `CP 1` at turn 1, `CP 2` on the back stretch,
+   `CP 3` at turn 2, and the **start/finish** line.
+2. **Lanes → + Add Lane**, called *Counter-clockwise*.
+3. With that lane selected, set **Next gate replaces** to `CP 1`, drive to
+   **turn 2 facing anti-clockwise**, and place it. Then set it to `CP 3`, drive to
+   **turn 1 facing anti-clockwise**, and place that.
+4. Leave `CP 2` and the start/finish alone. Both lanes cross them, from opposite
+   sides, and both are credited.
+5. **Start Grid** — place the grid, then tag half the slots to the lane
+   (**Slots 7 to 12 → Counter-clockwise → Set Lane**).
+
+Both directions clear slot 1, then 2, then 3, then the line: same lap, same
+count, directly comparable on the leaderboard the whole way round.
+
+#### The out lap
+
+A grid that is **not on the start/finish line** — which a head-on layout cannot
+be, since two directions will not share one row of slots — gives its **first lap
+away**, exactly as qualifying does. The run from the grid to the first crossing
+is a fraction of a lap, and timed it would take fastest lap off every driver who
+ever set an honest one. It is detected from the track and travels with the
+layout, so there is nothing to remember on the night. During that lap the only
+thing armed is the **line itself** — with the field spread round the circuit, CP 1
+can be behind you at the lights.
+
+A 10-lap race on such a track is **10 racing laps**; the out lap is added on top,
+so the eleventh crossing is the one that ends it.
+
+#### Building the grid
+
+Placing two blocks of slots one car at a time is the tedious part, so the
+**Start Grid** tab can do it in bulk: **Generate Here** lays out a two-by-two
+grid running back from where your car is standing, **Turn Around** flips a range
+of slots 180°, and **Set Lane** tags a range. A head-on grid is two Generates,
+one Turn Around and one Set Lane.
+
+Every placed gate and grid slot also has **✕** (delete just this one),
+**+ Before** (insert at your car) and **▲ ▼** (reorder). Editing the main route
+renumbers the lanes with it; deleting a checkpoint drops the lane gates standing
+in for it, and says so.
+
 ### Vehicle & setup locking (the Garage List)
 
 The **Garage** panel (admin only) locks the session down to exact cars *and*

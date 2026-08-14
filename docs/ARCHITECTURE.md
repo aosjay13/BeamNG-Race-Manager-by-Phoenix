@@ -27,7 +27,7 @@ one so the headless tests exercise the real file format).
 
 | File | Holds | Cleared by |
 |------|-------|-----------|
-| `layouts.json` | Saved track layouts per map: gates, joker route, starting grid | Overwriting a name |
+| `layouts.json` | Saved track layouts per map: gates, joker route, branching lanes, starting grid | Overwriting a name |
 | `derbyArenas.json` | Saved derby arenas per map | Deleting an arena |
 | `garage.json` | Approved vehicles/setups and the enforcement switch | Clear Garage |
 | `roster.json` | Saved drivers: the display names an admin has assigned | Deleting a driver |

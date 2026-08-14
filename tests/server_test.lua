@@ -800,6 +800,147 @@ lastState = nil
 RM_onRequestState(1)
 check(lastState.adminPresent == false, 'adminPresent is false after all admins log out')
 
+-- ---------------------------------------------------------------------------
+-- Branching routes: persistence, validation, and the lane a grid slot decides
+-- ---------------------------------------------------------------------------
+-- A branch is a sparse set of per-slot gate overrides on the main route. The
+-- server never tests a crossing -- it has no physics -- so its whole job here is
+-- to validate the shape, keep it on disk, hand it back out, and decide which
+-- lane each grid slot puts a driver in.
+adminLogin(1)
+MP.Settings.Map = 0
+hostedMap = '/levels/gridmap_v2/info.json'
+RM_onRequestLayouts(1)
+
+local branchJson = '[{"id":"ccw","name":"Counter-clockwise","gates":['
+  .. '{"slot":1,"x":-100,"y":0,"z":0,"hx":0,"hy":1},'
+  .. '{"slot":3,"x":100,"y":0,"z":0,"hx":0,"hy":-1}]}]'
+
+lastLayouts = nil
+RM_onSaveLayout(1, '{"name":"Suicide Oval","width":20,"checkpoints":' .. cpJson
+  .. ',"branches":' .. branchJson .. ',"gridOffLine":true}')
+local saved
+for _, l in ipairs(lastLayouts and lastLayouts.layouts or {}) do
+  if l.name == 'Suicide Oval' then saved = l end
+end
+check(saved ~= nil, 'a layout with lanes saves')
+check(saved and type(saved.branches) == 'table' and #saved.branches == 1,
+  'the lane survives the round trip')
+check(saved and saved.branches[1].id == 'ccw'
+  and saved.branches[1].name == 'Counter-clockwise', 'lane id and name are kept')
+check(saved and #saved.branches[1].gates == 2, 'both override gates are kept')
+check(saved and saved.branches[1].gates[1].slot == 1
+  and saved.branches[1].gates[2].slot == 3,
+  'each gate keeps the SLOT it stands in for -- which is what makes it an override')
+check(saved and saved.gridOffLine == true, 'the grid-off-line flag travels with the track')
+
+-- An ordinary layout emits no branches key at all, so nothing about a plain
+-- circuit changes on disk.
+for _, l in ipairs(lastLayouts.layouts) do
+  if l.name == 'GP Circuit' then
+    check(l.branches == nil, 'a layout with no lanes stores no branches key')
+    check(l.gridOffLine == false, 'and is not marked grid-off-line')
+  end
+end
+
+-- Validation. Every one of these is a lane that would put half a field on a
+-- line that is not there, so the whole save is refused rather than quietly
+-- stored without it.
+local function rejects(what, branches)
+  local before = #lastLayouts.layouts
+  RM_onSaveLayout(1, '{"name":"Bad ' .. what .. '","width":20,"checkpoints":' .. cpJson
+    .. ',"branches":' .. branches .. '}')
+  check(#lastLayouts.layouts == before, 'rejected: ' .. what)
+end
+rejects('slot past the end of the route',
+  '[{"id":"x","gates":[{"slot":9,"x":1,"y":2,"z":3,"hx":0,"hy":1}]}]')
+rejects('slot below one',
+  '[{"id":"x","gates":[{"slot":0,"x":1,"y":2,"z":3,"hx":0,"hy":1}]}]')
+rejects('two gates on the same slot',
+  '[{"id":"x","gates":[{"slot":1,"x":1,"y":2,"z":3,"hx":0,"hy":1},'
+    .. '{"slot":1,"x":4,"y":5,"z":6,"hx":0,"hy":1}]}]')
+rejects('a lane with no gates', '[{"id":"x","gates":[]}]')
+rejects('a lane with no id', '[{"gates":[{"slot":1,"x":1,"y":2,"z":3,"hx":0,"hy":1}]}]')
+rejects('two lanes sharing an id',
+  '[{"id":"x","gates":[{"slot":1,"x":1,"y":2,"z":3,"hx":0,"hy":1}]},'
+    .. '{"id":"x","gates":[{"slot":2,"x":1,"y":2,"z":3,"hx":0,"hy":1}]}]')
+rejects('a gate with no coordinates', '[{"id":"x","gates":[{"slot":1}]}]')
+
+-- Loading it arms the session with the lanes and the out lap.
+RM_onLoadLayout(1, '{"name":"Suicide Oval"}')
+lastState = nil
+RM_onRequestState(1)
+check(lastState.hasBranches == true, 'loading the track tells every client it has lanes')
+check(lastState.gridOffLine == true, 'and that its grid is away from the line')
+check(lastState.qualiOutLap == true,
+  'so a RACE on it owes an out lap -- the part lap from the grid is not timed')
+
+-- THE LANE A GRID SLOT DECIDES. This is the only place a driver's direction is
+-- settled: the server hands out the slot and reads the tag off it, so nothing is
+-- asked of the client and nothing has to be trusted.
+local startJson = '[{"x":0,"y":-100,"z":0,"hx":1,"hy":0},'
+  .. '{"x":0,"y":-108,"z":0,"hx":1,"hy":0},'
+  .. '{"x":0,"y":-100,"z":0,"hx":-1,"hy":0,"branch":"ccw"},'
+  .. '{"x":0,"y":-92,"z":0,"hx":-1,"hy":0,"branch":"ccw"}]'
+RM_onStartPositionCount(1, '{"count":4,"positions":' .. startJson
+  .. ',"gridOffLine":true,"laneNames":[{"id":"ccw","name":"Counter-clockwise"}]}')
+
+RM_onSetEntryMode(1, '{"mode":"all"}')
+RM_onSetTotalLaps(1, '{"laps":3}')
+RM_onGenerateGrid(1)
+lastState = nil
+RM_onRequestState(1)
+local bySlot = {}
+for _, d in ipairs(lastState.drivers) do
+  if d.gridPos then bySlot[d.gridPos] = d end
+end
+check(bySlot[1] and bySlot[1].lane == nil, 'slot 1 races the main route')
+check(bySlot[2] and bySlot[2].lane == nil, 'slot 2 races the main route')
+check(bySlot[3] and bySlot[3].lane == 'ccw', 'slot 3 races the other way round')
+check(bySlot[4] and bySlot[4].lane == 'ccw', 'slot 4 races the other way round')
+check(bySlot[1] and bySlot[1].outLap == true,
+  'and everyone on the grid owes the out lap first')
+
+-- THE OUT LAP ON A RACE, which is what stops a head-on grid posting a fastest
+-- lap nobody drove. The cars start scattered round the circuit, so the run to
+-- the first crossing is a fraction of a lap.
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+lastState = nil
+RM_onRequestState(1)
+check(lastState.phase == 'racing', 'the head-on race starts')
+
+-- The part lap. A wildly quick "lap time" that would win fastest lap outright.
+RM_onLap(1, '{"lapTime":9.5}')
+lastState = nil
+RM_onRequestState(1)
+check(driver('Alice').raceBest == nil,
+  'the part lap from the grid sets no Best Lap')
+check(lastState.bestLapPid == nil,
+  'and cannot take fastest lap of the race, which is the whole point of it')
+check(driver('Alice').outLap == false, 'the out lap is spent after one crossing')
+check(driver('Alice').currentLap == 2, 'but it still counted as a crossing')
+
+-- From here every crossing is a real lap and is scored normally.
+RM_onLap(1, '{"lapTime":42.0}')
+check(driver('Alice').raceBest == 42.0, 'the first timed lap goes on the board')
+lastState = nil
+RM_onRequestState(1)
+check(lastState.bestLapPid == 1, 'and takes fastest lap')
+
+-- A three lap race owes four crossings: the out lap plus three racing laps.
+RM_onLap(1, '{"lapTime":41.0}')
+check(driver('Alice').status ~= 'finished', 'still running after two timed laps')
+RM_onLap(1, '{"lapTime":40.5}')
+check(driver('Alice').status == 'finished',
+  'the flag falls on the third TIMED lap, not the third crossing')
+check(driver('Alice').raceBest == 40.5, 'the last lap is scored like any other')
+
+-- The lane a driver ran is recorded on their row for the results file.
+check(driver('Cara').lane == 'ccw' or driver('Dan').lane == 'ccw',
+  'a driver gridded on a tagged slot carries that lane through the race')
+RM_onEndRace(1)
+
 -- Clean up the directory tree the test created in the repo root
 removeTree('Resources')
 
