@@ -885,6 +885,12 @@
               title="Place pit stalls: drive into each stall and press Place Pit Stall Here. Driving into one during a race stops the car, repairs it and releases it. Stalls are NOT checkpoints — they never affect laps or splits.">
         Pit Stalls ({{ pitRoute.length }})
       </button>
+      <button class="rm-btn rm-btn-mini rm-route-tab-branch"
+              ng-class="{'rm-route-tab-branch-active': editorTarget === 'branch'}"
+              ng-click="setEditorTarget('branch')"
+              title="Other ways round this track. A lane replaces the gate at a slot rather than adding one, so every lane has the same number of checkpoints and the whole field is scored together. Used for head-on 'suicide' layouts and for left/right splits.">
+        Lanes ({{ branches.length }})
+      </button>
       <button class="rm-btn rm-btn-mini rm-route-tab-start"
               ng-class="{'rm-route-tab-start-active': editorTarget === 'start'}"
               ng-click="setEditorTarget('start')"
@@ -910,10 +916,16 @@
       </span>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'start'">
         Slot 1 is pole. Drivers are placed here and held until the countdown ends.
+        <b ng-if="gridOffLine">This grid is away from the start/finish line, so the first lap is an out lap and is not timed.</b>
+      </span>
+      <span class="rm-route-tab-note" ng-if="editorTarget === 'branch'">
+        Lane gates are drawn cyan and <b>replace</b> the main gate at the slot they are given —
+        they never add a checkpoint. Assign lanes to grid slots in <b>Start Grid</b>.
       </span>
     </div>
     <div class="rm-editor-controls">
-      <button class="rm-btn rm-btn-grid"  ng-click="editorAdd()">+ {{ editorTarget === 'joker' ? 'Joker Gate' : (editorTarget === 'start' ? 'Place Start Position' : (editorTarget === 'pit' ? 'Place Pit Stall' : 'Checkpoint')) }} Here</button>
+      <button class="rm-btn rm-btn-grid"  ng-click="editorAdd()"
+              ng-disabled="editorTarget === 'branch' && !editingBranch()">+ {{ editorTarget === 'joker' ? 'Joker Gate' : (editorTarget === 'start' ? 'Place Start Position' : (editorTarget === 'pit' ? 'Place Pit Stall' : (editorTarget === 'branch' ? ('Lane Gate for CP ' + branchSlot) : 'Checkpoint'))) }} Here</button>
       <button class="rm-btn"              ng-click="editorUndo()"  ng-disabled="!editorWaypoints().length">Undo</button>
       <button class="rm-btn rm-btn-end"   ng-click="editorClear()" ng-disabled="!editorWaypoints().length">Clear</button>
       <button class="rm-btn rm-btn-start" ng-click="editorSave()"  ng-disabled="!routeWaypoints.length">Save</button>
@@ -921,6 +933,96 @@
       <button class="rm-btn" ng-click="editorToggleVisualize()">{{ visualize ? 'Hide' : 'Show' }} Gates</button>
     </div>
     <div class="rm-editor-msg" ng-if="editorMsg">{{ editorMsg }}</div>
+
+    <!-- ===== Lanes: the other ways round this track ===== -->
+    <div class="rm-lanes" ng-if="editorTarget === 'branch'">
+      <div class="rm-lanes-row">
+        <input type="text" class="rm-layout-name" placeholder="Lane name (e.g. Counter-clockwise)…"
+               maxlength="40" ng-model="laneUi.newName">
+        <button class="rm-btn rm-btn-start" ng-click="addBranch()">+ Add Lane</button>
+      </div>
+      <div class="rm-lanes-list" ng-if="branches.length">
+        <button class="rm-btn rm-btn-mini" ng-repeat="b in branches track by b.id"
+                ng-class="{'rm-lane-active': branchEdit === b.id}"
+                ng-click="selectBranch(b.id)">{{ b.name }} ({{ b.gates.length }})</button>
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-if="editingBranch()"
+                ng-click="removeBranch(branchEdit)"
+                title="Delete this lane and all of its gates. The main route is untouched.">✕ Delete Lane</button>
+      </div>
+      <div class="rm-lanes-row" ng-if="editingBranch()">
+        <label class="rm-lane-label">Next gate replaces</label>
+        <!-- The custom menu, not a native <select>: CEF never draws an OS popup
+             over the game, so a native one renders and then does nothing. -->
+        <div class="rm-layout-dropdown rm-lane-picker"
+             ng-class="{'rm-layout-dropdown-open': laneMenuOpen('next')}">
+          <button type="button" class="rm-layout-trigger" ng-click="laneToggleMenu('next')"
+                  title="Which checkpoint of the main route this lane's next gate stands in for.">
+            <span class="rm-layout-trigger-label">CP {{ branchSlot }}</span>
+            <span class="rm-layout-caret">▾</span>
+          </button>
+          <div class="rm-layout-menu" ng-if="laneMenuOpen('next')">
+            <div class="rm-layout-option" ng-repeat="s in routeSlots() track by s"
+                 ng-class="{'rm-layout-option-active': s === branchSlot}"
+                 ng-click="pickBranchSlot(s)">CP {{ s }}</div>
+          </div>
+        </div>
+        <span class="rm-route-tab-note">
+          Drive to where <b>{{ editingBranch().name }}</b> crosses CP {{ branchSlot }} — facing the way
+          <b>that</b> lane travels — and press the button above.
+        </span>
+      </div>
+      <div class="rm-editor-hint" ng-if="!branches.length">
+        A <b>lane</b> is another way round the same track. Its gates <b>replace</b> the main
+        route's at the slots you give them, so every lane has the same number of checkpoints
+        and the whole field is scored together on one clock.
+        <br><br>
+        For a head-on <b>“suicide”</b> oval: place the main route clockwise
+        (CP 1 turn 1, CP 2 back stretch, CP 3 turn 2, start/finish). Add a lane called
+        <b>Counter-clockwise</b>, then stand at <b>turn 2 facing anti-clockwise</b> and place its
+        <b>CP 1</b>, and at <b>turn 1 facing anti-clockwise</b> place its <b>CP 3</b>. Leave CP 2 and
+        the start/finish alone — with gates scoring both ways, those two count for everyone.
+        Finally, in <b>Start Grid</b>, tag half the slots to that lane.
+      </div>
+    </div>
+
+    <!-- ===== Building a grid without driving every slot ===== -->
+    <div class="rm-lanes" ng-if="editingGrid()">
+      <div class="rm-lanes-row">
+        <label class="rm-lane-label">Generate</label>
+        <input type="number" class="rm-lane-num" min="1" max="60" ng-model="gridGen.count">
+        <label class="rm-lane-label">slots,</label>
+        <input type="number" class="rm-lane-num" min="2" max="40" ng-model="gridGen.spacing">
+        <label class="rm-lane-label">m apart,</label>
+        <input type="number" class="rm-lane-num" min="0" max="20" ng-model="gridGen.stagger">
+        <label class="rm-lane-label">m stagger</label>
+        <button class="rm-btn rm-btn-grid" ng-click="generateGrid()"
+                title="Lay out a two-by-two grid running back from where your car is standing, down its own heading.">Generate Here</button>
+      </div>
+      <div class="rm-lanes-row" ng-if="startPositions.length">
+        <label class="rm-lane-label">Slots</label>
+        <input type="number" class="rm-lane-num" min="1" ng-model="laneRange.from">
+        <label class="rm-lane-label">to</label>
+        <input type="number" class="rm-lane-num" min="1" ng-model="laneRange.to">
+        <button class="rm-btn rm-btn-mini" ng-click="flipStartPositions()"
+                title="Turn these slots around 180°. Build one block, flip half of it: the head-on grid without driving the second half.">↻ Turn Around</button>
+        <div class="rm-layout-dropdown rm-lane-picker"
+             ng-class="{'rm-layout-dropdown-open': laneMenuOpen('bulk')}">
+          <button type="button" class="rm-layout-trigger" ng-click="laneToggleMenu('bulk')">
+            <span class="rm-layout-trigger-label">{{ laneRangeLabel() }}</span>
+            <span class="rm-layout-caret">▾</span>
+          </button>
+          <div class="rm-layout-menu" ng-if="laneMenuOpen('bulk')">
+            <div class="rm-layout-option" ng-class="{'rm-layout-option-active': !laneRange.id}"
+                 ng-click="pickBulkLane('')">Main route</div>
+            <div class="rm-layout-option" ng-repeat="b in branches track by b.id"
+                 ng-class="{'rm-layout-option-active': b.id === laneRange.id}"
+                 ng-click="pickBulkLane(b.id)">{{ b.name }}</div>
+          </div>
+        </div>
+        <button class="rm-btn rm-btn-mini rm-btn-grid" ng-click="applyStartLane()"
+                title="Put these grid slots on that lane. This is the only place a driver's direction is decided.">Set Lane</button>
+      </div>
+    </div>
 
     <!-- No global gate size. There used to be one, and every gate without its
          own override read it live -- so nudging a slider resized the whole
@@ -938,8 +1040,33 @@
         <div class="rm-editor-wp" ng-class="{'rm-editor-wp-sel': selectedCp === $index + 1}"
              ng-click="selectCheckpoint($index + 1)"
              title="Click to change this gate's Width / Height">
-          <span class="rm-editor-idx" ng-class="{'rm-editor-finish': $last && editorTarget === 'main', 'rm-editor-joker': editorTarget === 'joker'}">{{ ($last && editorTarget === 'main') ? '🏁' : ($index + 1) }}</span>
+          <!-- A lane gate is numbered by the SLOT it stands in for, not by its
+               place in the lane's own list: it is not a checkpoint of its own,
+               it is the other way of taking one that already exists. -->
+          <span class="rm-editor-idx" ng-class="{'rm-editor-finish': $last && editorTarget === 'main', 'rm-editor-joker': editorTarget === 'joker', 'rm-editor-branch': editorTarget === 'branch'}">{{ (editorTarget === 'branch') ? ('CP ' + wp.slot) : (($last && editorTarget === 'main') ? '🏁' : ($index + 1)) }}</span>
           <span class="rm-editor-coords">{{ wp.x.toFixed(1) }}, {{ wp.y.toFixed(1) }}, {{ wp.z.toFixed(1) }}</span>
+          <!-- Which lanes take this corner another way. -->
+          <span class="rm-editor-lanes" ng-if="editorTarget === 'main' && slotLanes($index + 1).length"
+                title="Lanes that replace this checkpoint with one of their own">
+            ⤳ {{ slotLanes($index + 1).join(', ') }}
+          </span>
+          <!-- Re-point a placed lane gate at a different slot. Not ng-model: the
+               branch gate list is rebuilt each digest, so a two-way binding into
+               it would write to an array nobody reads. -->
+          <div class="rm-layout-dropdown rm-lane-picker" ng-if="editorTarget === 'branch'"
+               ng-class="{'rm-layout-dropdown-open': laneMenuOpen('gate' + $index)}"
+               ng-click="$event.stopPropagation()">
+            <button type="button" class="rm-layout-trigger" ng-click="laneToggleMenu('gate' + $index)"
+                    title="Which checkpoint of the main route this gate stands in for">
+              <span class="rm-layout-trigger-label">CP {{ wp.slot }}</span>
+              <span class="rm-layout-caret">▾</span>
+            </button>
+            <div class="rm-layout-menu" ng-if="laneMenuOpen('gate' + $index)">
+              <div class="rm-layout-option" ng-repeat="s in routeSlots() track by s"
+                   ng-class="{'rm-layout-option-active': s === wp.slot}"
+                   ng-click="pickGateSlot($index + 1, s)">CP {{ s }}</div>
+            </div>
+          </div>
           <span class="rm-editor-dims">
             <span ng-class="{'rm-dim-set': wp.width != null}">W{{ cpDim(wp, 'width') }}</span>
             <span ng-class="{'rm-dim-set': wp.height != null}">H{{ cpDim(wp, 'height') }}</span>
@@ -953,6 +1080,23 @@
                   ng-click="$event.stopPropagation(); previewCheckpoint($index + 1)">Go</button>
           <button class="rm-btn rm-btn-mini rm-btn-grid" title="Move this gate to where your car is standing now"
                   ng-click="$event.stopPropagation(); moveCheckpoint($index + 1)">Move Here</button>
+          <!-- Taking things back. Undo only ever removed the LAST gate, so a gate
+               placed out of order, or one missing from the middle, meant undoing
+               back to it and re-driving everything after. -->
+          <button class="rm-btn rm-btn-mini" ng-if="editorTarget !== 'branch'"
+                  title="Move this gate one place earlier in the order"
+                  ng-disabled="$first"
+                  ng-click="$event.stopPropagation(); reorderCheckpoint($index + 1, $index)">▲</button>
+          <button class="rm-btn rm-btn-mini" ng-if="editorTarget !== 'branch'"
+                  title="Move this gate one place later in the order"
+                  ng-disabled="$last"
+                  ng-click="$event.stopPropagation(); reorderCheckpoint($index + 1, $index + 2)">▼</button>
+          <button class="rm-btn rm-btn-mini" ng-if="editorTarget !== 'branch'"
+                  title="Place a new gate at your car, BEFORE this one"
+                  ng-click="$event.stopPropagation(); insertCheckpoint($index + 1)">+ Before</button>
+          <button class="rm-btn rm-btn-mini rm-btn-end"
+                  title="Delete just this gate; the rest close up"
+                  ng-click="$event.stopPropagation(); removeCheckpoint($index + 1)">✕</button>
         </div>
         <!-- Per-checkpoint override editor (expands under the selected gate) -->
         <div class="rm-cp-edit" ng-if="selectedCp === $index + 1">
@@ -981,10 +1125,17 @@
       <div class="rm-editor-wp rm-start-row" ng-repeat="sp in startPositions track by $index">
         <span class="rm-editor-idx rm-start-idx">P{{ $index + 1 }}</span>
         <span class="rm-editor-coords">{{ sp.x.toFixed(1) }}, {{ sp.y.toFixed(1) }}, {{ sp.z.toFixed(1) }}</span>
+        <!-- The lane this slot races. The ONLY place a driver's direction is
+             decided: the server reads it as it hands the slot out. -->
+        <span class="rm-editor-lanes" ng-if="sp.branch">⤳ {{ sp.branch }}</span>
         <button class="rm-btn rm-btn-mini" ng-click="previewStartPosition($index + 1)"
                 title="Put your car on this slot to check the spacing">Go</button>
         <button class="rm-btn rm-btn-mini rm-btn-grid" ng-click="moveStartPosition($index + 1)"
                 title="Move this slot to where your car is standing now">Move Here</button>
+        <button class="rm-btn rm-btn-mini" title="Move this slot one place earlier — slot 1 is pole"
+                ng-disabled="$first" ng-click="reorderCheckpoint($index + 1, $index)">▲</button>
+        <button class="rm-btn rm-btn-mini" title="Move this slot one place later"
+                ng-disabled="$last" ng-click="reorderCheckpoint($index + 1, $index + 2)">▼</button>
         <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="removeStartPosition($index + 1)"
                 title="Delete this slot; the rest of the grid closes up">✕</button>
       </div>
@@ -1501,6 +1652,12 @@
         LAP {{ formatLapLive(lapElapsed()) }}
       </span>
     </span>
+    <!-- Which way round this driver is going. On a head-on layout it is the one
+         thing they most need to be sure of, and it is decided by the grid slot
+         they were given rather than by anything they can choose. -->
+    <span class="rm-driverbar-label rm-driverbar-lane" ng-if="lane">
+      LINE <b>{{ laneName || lane }}</b>
+    </span>
     <span class="rm-driverbar-label" ng-if="jokerEnabled">
       JOKER <b ng-class="{'rm-joker-done': jokerTaken}">{{ jokerTaken ? 'DONE (lap ' + jokerLap + ')' : 'PENDING' }}</b>
     </span>
@@ -1622,6 +1779,7 @@
           <th class="rm-col-lap">Lap</th>
           <th class="rm-col-time">Best Lap</th>
           <th class="rm-col-led">Led</th>
+          <th class="rm-col-lane" ng-if="hasBranches" title="Which way round each driver is going. Both lanes are scored together on one clock.">Line</th>
           <th class="rm-col-joker" ng-if="jokerEnabled" title="Joker route: the lap it was taken on">Joker</th>
           <th class="rm-col-reset" ng-if="resetsLimited()" title="Vehicle resets used / allowed, plus any attempts blocked after the allowance ran out">Rst</th>
           <th class="rm-col-status">Status</th>
@@ -1660,6 +1818,13 @@
           <td class="rm-col-time" ng-class="{'rm-best-lap': row.id === bestLapPid && row.raceBest}"
               title="{{ row.id === bestLapPid && row.raceBest ? 'Fastest lap of the session' : '' }}">{{ formatLap(row.raceBest) }}</td>
           <td class="rm-col-led">{{ row.lapsLed || 0 }}</td>
+          <!-- Which lane each driver is on. Shown only on a track that has them,
+               where it explains why two cars are ranked next to each other while
+               sitting at opposite ends of the circuit. -->
+          <td class="rm-col-lane" ng-if="hasBranches"
+              title="The way round this driver was entered — decided by their grid slot">
+            {{ row.lane || 'Main' }}
+          </td>
           <td class="rm-col-joker" ng-if="jokerEnabled"
               ng-class="{'rm-joker-missing': !row.jokerTaken, 'rm-joker-done': row.jokerTaken === 1}">
             {{ jokerLabel(row) }}
@@ -2261,6 +2426,45 @@
     border-color: #4285f4;
     color: #c3d9ff;
   }
+  /* Lanes: cyan, matching the colour their gates are drawn in the world. Far
+     enough from the joker's violet and the route's orange to be told apart at a
+     glance — a lane gate REPLACES a main one and must never read as an extra
+     checkpoint on the same lap. */
+  .rm-route-tab-branch { border-color: #33d9f2; color: #7fe6f7; }
+  .rm-route-tab-branch-active {
+    background: rgba(51, 217, 242, 0.24);
+    border-color: #33d9f2;
+    color: #bff2fb;
+  }
+  .rm-lanes {
+    padding: 4px 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .rm-lanes-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+  }
+  .rm-lanes-list { display: flex; gap: 4px; flex-wrap: wrap; }
+  .rm-lane-active {
+    background: rgba(51, 217, 242, 0.28);
+    border-color: #33d9f2;
+    color: #bff2fb;
+  }
+  .rm-lane-label { font-size: 10px; color: #9aa0a6; white-space: nowrap; }
+  .rm-lane-num { width: 46px; }
+  .rm-lane-picker { min-width: 96px; }
+  .rm-editor-lanes {
+    font-size: 10px;
+    color: #7fe6f7;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
   /* Derby arena editing: the two placed lists, side by side while the panel is
      wide enough and stacked when it is not. The rows themselves reuse the track
@@ -2418,6 +2622,8 @@
   }
   .rm-route-tab-note { font-size: 10px; color: #9aa0a6; }
   .rm-editor-joker { color: #d1a8ff; }
+  .rm-editor-branch { color: #7fe6f7; }
+  .rm-driverbar-lane b { color: #7fe6f7; }
 
   /* Cup / series points. Gold, because a championship is the one thing in this
      app that outlives the session — it should not read as another race setting. */
@@ -2720,6 +2926,14 @@
 
   /* Regulation columns in the race table */
   .rm-col-joker { width: 54px; text-align: center; }
+  .rm-col-lane {
+    width: 66px;
+    text-align: center;
+    color: #7fe6f7;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .rm-col-reset { width: 46px; text-align: center; }
   .rm-joker-done    { color: #7ee2a8; }
   .rm-joker-missing { color: #fdd663; }
