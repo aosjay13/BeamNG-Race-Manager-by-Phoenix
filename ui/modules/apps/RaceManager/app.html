@@ -182,8 +182,11 @@
   <div class="rm-controls" ng-if="isAdmin && isMode('race')">
     <button class="rm-btn rm-btn-quali" ng-click="startQualifying()" ng-disabled="sessionUnderWay()"
             title="Form the QUALIFYING grid: every entrant is stood on a start position and held. Press Start Countdown to run the session.">Start Quali</button>
-    <button class="rm-btn rm-btn-grid"  ng-click="generateGrid()"    ng-disabled="sessionUnderWay()"
-            title="Form the RACE grid from the qualifying times (or the grid order you chose). Press Start Countdown to start the race.">Generate Grid</button>
+    <!-- Enabled DURING qualifying on purpose: it is the control that takes you
+         from qualifying to the race, and gating it on sessionUnderWay() greyed
+         it out for exactly as long as a host needed it. -->
+    <button class="rm-btn rm-btn-grid"  ng-click="generateGrid()"    ng-disabled="raceUnderWay()"
+            title="Form the RACE grid from the qualifying times (or the grid order you chose). Pressing this during qualifying ends it first, keeping the times. Press Start Countdown to start the race.">Generate Grid</button>
     <button class="rm-btn rm-btn-start" ng-click="startCountdown()"  ng-disabled="phase !== 'grid'"
             title="Count the field down and release the hold. Starts whichever session is on the grid.">Start Countdown</button>
     <button class="rm-btn rm-btn-end"   ng-click="endRace()"         ng-disabled="phase !== 'racing' && phase !== 'countdown' && phase !== 'qualifying'">End Session</button>

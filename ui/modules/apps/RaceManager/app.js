@@ -1159,6 +1159,23 @@ angular.module('beamng.apps')
         return $scope.phase === 'countdown' || $scope.phase === 'racing'
           || $scope.phase === 'qualifying';
       };
+      // Generate Grid is NOT gated on that, and the difference is the whole of a
+      // reported blocker.
+      //
+      // The button was disabled for every session under way, which includes
+      // qualifying -- so the one control that takes a host from qualifying to the
+      // race was greyed out for exactly as long as they needed it. The server
+      // supersedes a running qualifying session now (RM_onGenerateGrid), but a
+      // disabled button never reaches it, and the only control still lit was
+      // Start Quali. That is what "Generate Grid starts qualifying" looked like
+      // from the outside: it was not doing anything at all.
+      //
+      // A live RACE is still refused, by the server and here, because
+      // superseding one throws away a result the field is mid-way through
+      // earning.
+      $scope.raceUnderWay = function () {
+        return $scope.phase === 'countdown' || $scope.phase === 'racing';
+      };
       // Minimal mode: not logged in as an admin AND a session is live. The
       // whole chrome (header, session controls, editor, derby panel, login bar)
       // is removed from the DOM and only the leaderboard is left on screen.

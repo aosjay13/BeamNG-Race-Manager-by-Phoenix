@@ -42,6 +42,10 @@ local TUNE = {
   MIN_HEIGHT = 1,
   MAX_HEIGHT = 100,
   EDGE_RADIUS = 0.15,  -- meters; thickness of the drawn rectangle edge
+  -- Thickness of a race POLE. Fatter than an editor edge on purpose: this is the
+  -- one a driver reads at a hundred miles an hour, and the complaint that
+  -- produced it was that the stock markers could not be seen at all.
+  POLE_RADIUS = 0.35,
   GHOST_ALPHA = 0.35,  -- mesh alpha applied to a ghosted car
   -- Reset ghosting. The DURATIONS are not here: they are a league rule, so the
   -- server owns them and broadcasts them (see ghost.rules). What is left is
@@ -70,6 +74,10 @@ local TUNE = {
   -- Most cars a generated grid may put in one row. Two is a road-race grid and
   -- an oval's; three and four are short-track and dirt formats.
   GRID_MAX_WIDTH = 8,
+  -- Metres a legal reset may move a car before it is treated as a RECOVERY
+  -- teleport and undone. A repair in place moves it centimetres; BeamNG's
+  -- recover/load-home drops it at a spawn point that is never this close.
+  RECOVER_SNAP_RANGE = 25,
   PROGRESS_EVERY = 0.3,   -- seconds between live-position reports
   -- Live lap clock for the driver's own HUD. Pushed on a slow cadence and
   -- INTERPOLATED in the UI between pushes, which keeps the readout smooth
@@ -1553,11 +1561,12 @@ end
 -- Called when the session that imposed the penalty ends, so a driver who
 -- finished (or was knocked out of a derby) is back in their car for the next
 -- one instead of stranded in freecam with nothing to drive.
--- Forward-declared: respawnRemovedVehicle below needs it to stand a respawned
--- car on its grid slot, and it is defined further down beside the placement code
--- it was written for. Declared rather than moved, so the placement section keeps
--- reading in the order it was built.
+-- Forward-declared: respawnRemovedVehicle below needs both to stand a respawned
+-- car on its grid slot, and both are defined further down beside the placement
+-- code they were written for. Declared rather than moved, so the placement
+-- section keeps reading in the order it was built.
 local headingRot
+local placeOnStartPosition
 
 local function respawnRemovedVehicle()
   local snap = removedVehicle
@@ -1586,11 +1595,20 @@ local function respawnRemovedVehicle()
   -- without any of it touching. Falls back to the snapshot when the track has no
   -- grid placed, which is the only case where the old behaviour is still the best
   -- available -- and the ghosting around this call is what covers that.
+  -- SPAWN ON THE GRID SLOT'S POSITION, but do not try to spawn it facing the
+  -- right way -- put it there and then turn it with placeOnStartPosition, which
+  -- is the call the grid itself uses and the only one known to get this right.
+  --
+  -- headingRot bakes in a half-turn for BeamNG's -Y vehicle forward, which is
+  -- what setPositionRotation wants and what spawnNewVehicle does NOT: handing it
+  -- the same quaternion put every respawned car on its slot facing backwards.
+  -- Two conventions that differ by exactly 180 degrees is not a thing to
+  -- remember in two places, so only one place knows about it.
   local slot = snap.slot or gridSlot
   local sp = slot and startPositions[slot]
   if type(sp) == 'table' and sp.x and sp.y and sp.z then
     opts.pos = vec3(sp.x, sp.y, sp.z)
-    opts.rot = headingRot(sp.hx, sp.hy)
+    opts.rot = nil          -- set below, by the call that knows the convention
     log('I', 'raceManager', 'Respawning on grid slot ' .. tostring(slot)
       .. ' rather than where the car was removed')
   end
@@ -1602,6 +1620,11 @@ local function respawnRemovedVehicle()
     spawned = pcall(core_vehicles.replaceVehicle, snap.model, opts)
   end
   if spawned then
+    -- Turn it to face down the slot. placeOnStartPosition is what the grid uses
+    -- and it is the only call that knows about BeamNG's -Y vehicle forward; the
+    -- spawn above deliberately did not try, because getting that half-turn wrong
+    -- is what put every respawned car on its slot pointing backwards.
+    if sp then placeOnStartPosition(sp) end
     log('I', 'raceManager', 'Respawned ' .. tostring(snap.model) .. ' after the session ended')
   else
     -- Keep the snapshot: a failed spawn is worth another attempt when the
@@ -1944,8 +1967,16 @@ end
 -- Rolling "last good position" sample. Taken a few times a second while the
 -- driver is out on track and NOT frozen on the grid, so a blocked reset always
 -- has somewhere sane to put the car back.
+-- Sampled for the whole of a live session, not only when resets are LIMITED.
+--
+-- It used to run only while an allowance was being enforced, which is the one
+-- case it was written for -- putting a car back after a reset it was not
+-- entitled to. Undoing a recovery teleport needs the same sample and has nothing
+-- to do with allowances: a server running unlimited resets had no snapshot at
+-- all, so there was nowhere to put a driver back to.
 local function snapshotUpdate(dt)
-  if not (resetsEnforced() or derbyResetsEnforced()) or spectatorLock or gridFrozen then return end
+  local wanted = resetsEnforced() or derbyResetsEnforced() or sessionRunning()
+  if not wanted or spectatorLock or gridFrozen then return end
   snapshotLeft = snapshotLeft - dt
   if snapshotLeft > 0 then return end
   snapshotLeft = SNAPSHOT_EVERY
@@ -2362,6 +2393,39 @@ function M.onVehicleResetted(vehId)
   -- limited; before the first gate of a session it falls back to in-place.
   if resetMode == 'checkpoint' and phase == 'racing' and lastGate and not gridFrozen then
     relocateToGate(lastGate)
+  elseif sessionRunning() and not gridFrozen and prevPos then
+    -- BOTH RESET KEYS HAVE TO MEAN THE SAME THING DURING A SESSION.
+    --
+    -- BeamNG ships two of them and they are not the same action: one repairs the
+    -- car where it stands, the other is a RECOVERY that teleports it to a spawn
+    -- point -- the garage, or wherever "home" is on that map. In a race the
+    -- second is not a reset at all, it is a free ride to somewhere else on the
+    -- map, and drivers were finding it by pressing the key they normally press.
+    --
+    -- Blocking it outright would leave one of the two keys dead, which is its own
+    -- confusion. The TELEPORT is undone instead: a reset that moved the car
+    -- further than a repair ever does puts it back, so from the driver's seat
+    -- both keys do the in-place repair.
+    --
+    -- MEASURED AGAINST prevPos, which is the crossing code's own per-FRAME
+    -- sample, and that precision is the whole of whether this works. The first
+    -- version measured against the rolling "last good position", which is up to
+    -- a quarter of a second old -- and a car at racing speed covers more ground
+    -- in a quarter of a second than the threshold allows, so an ordinary reset
+    -- looked exactly like a teleport and was undone. Two tests caught it.
+    local veh, pos = sampledVehicle()
+    if pos then
+      local dx, dy, dz = pos.x - prevPos.x, pos.y - prevPos.y, pos.z - prevPos.z
+      if (dx * dx + dy * dy + dz * dz) > (TUNE.RECOVER_SNAP_RANGE * TUNE.RECOVER_SNAP_RANGE) then
+        noteSelfTeleport(prevPos.x, prevPos.y, prevPos.z)
+        pcall(function ()
+          local rot = veh:getRotation()
+          veh:setPositionRotation(prevPos.x, prevPos.y, prevPos.z, rot.x, rot.y, rot.z, rot.w)
+        end)
+        pushNotice('reset', 'Recovered in place — a race reset does not move you off the track')
+        log('I', 'raceManager', 'Undid a recovery teleport during a session')
+      end
+    end
   end
 
   if resetsEnforced() then
@@ -2527,7 +2591,7 @@ end
 -- Put the local car on a placed start position, facing down the track.
 -- Rotation comes from headingRot (Module 1), which bakes in the half-turn for
 -- BeamNG's -Y vehicle forward — placements used to come out 180° backwards.
-local function placeOnStartPosition(sp)
+placeOnStartPosition = function (sp)
   local veh = playerVehicle()
   if not veh or not sp then return false end
   local rot = headingRot(sp.hx, sp.hy)
@@ -4468,6 +4532,34 @@ end
 -- derby is a different game mode on the same map, and whatever race track happens
 -- to be loaded is not what anyone in the arena is driving. A checkpoint hanging
 -- over a demolition derby is authoring debris.
+-- TWO POLES, IN THE EDITOR'S OWN STYLE.
+--
+-- The stock BeamNG race markers read as the right SHAPE -- a column either side
+-- of the racing line is what a driver already understands -- but they could not
+-- be made solid and bright enough to see, and they cannot be widened either,
+-- because their spacing is the gate's width and poles wider than the trigger
+-- would show a target that does not score.
+--
+-- So the shape is kept and drawn here instead, out of the same cylinders the
+-- editor rectangle is built from: full opacity, this mod's own colours, and a
+-- height that is the gate's own. Two verticals at the gate edges, a bar across
+-- the top so it still reads as a gate rather than two unrelated posts, and the
+-- label above it.
+--
+-- No fill and no bottom edge: a filled surface across the racing line is the
+-- editor's view, and a bar at road height is a thing to drive into.
+local function drawPoleGate(wp, color, label)
+  local g = gateGeometry(wp)
+  local r = TUNE.POLE_RADIUS
+  debugDrawer:drawCylinder(g.bl, g.tl, r, color)
+  debugDrawer:drawCylinder(g.br, g.tr, r, color)
+  debugDrawer:drawCylinder(g.tl, g.tr, r * 0.6, color)
+  if label then
+    local p = palette()
+    debugDrawer:drawTextAdvanced(g.mid, String(label), p.text, true, false, p.textBg)
+  end
+end
+
 local function drawDriverGate(derbyLive)
   if not debugDrawer or not visualize then return end
   if derbyLive or spectatorLock then return end
@@ -4483,21 +4575,49 @@ local function drawDriverGate(derbyLive)
   -- they are on cannot score it is how they end up driving at the wrong corner.
   if onOutLap() then
     local wp = route[n]
-    if wp then drawGate(wp, p.finish, routeLabel(n, n), false) end
+    if wp then drawPoleGate(wp, p.finish, routeLabel(n, n)) end
     return
   end
 
   local a = armedWp
   if a < 1 or a > n then a = 1 end
   local armed = branch.gateFor(a, lane)
-  if armed then drawGate(armed, p.armed, routeLabel(a, n), false) end
+  if armed then drawPoleGate(armed, p.armed, routeLabel(a, n)) end
 
   -- The one after it, dimmed, so a corner reads before it arrives. Skipped on a
   -- one-gate route, where "the next one" is the one already drawn.
   if n > 1 then
     local b = a % n + 1
     local nxt = branch.gateFor(b, lane)
-    if nxt then drawGate(nxt, p.routeNext or p.route, routeLabel(b, n), false) end
+    if nxt then drawPoleGate(nxt, p.routeNext or p.route, routeLabel(b, n)) end
+  end
+
+  -- The joker and the nearest pit stall, in the same style and the same colours
+  -- they have always had. They used to be the stock markers' job (slots 3 and 4)
+  -- and are drawn here now so a track has ONE checkpoint visual rather than two
+  -- that do not match.
+  if jokerEnabled and #jokerRoute > 0 then
+    local j = jokerArmed
+    if j < 1 or j > #jokerRoute then j = 1 end
+    local wp = jokerRoute[j]
+    if wp then
+      local state = jokerTaken and 'used'
+        or ((sessionRunning() and localLap <= 1) and 'closed' or 'open')
+      drawPoleGate(wp, jokerTaken and p.jokerUsed or p.joker,
+        jokerLabel(j, #jokerRoute, state))
+    end
+  end
+  if #pitRoute > 0 then
+    local _, ppos = sampledVehicle()
+    local best, bestD = 1, math.huge
+    if ppos then
+      for i, wp in ipairs(pitRoute) do
+        local dx, dy = wp.x - ppos.x, wp.y - ppos.y
+        local d = dx * dx + dy * dy
+        if d < bestD then best, bestD = i, d end
+      end
+    end
+    if pitRoute[best] then drawPoleGate(pitRoute[best], p.pit, 'PIT ' .. best) end
   end
 end
 
@@ -5485,9 +5605,13 @@ function M.onUpdate(dt)
   drawGates(derbyState.phase == 'running')
   -- The one label a driver gets: the gate poles carry no text at all.
   drawJokerLabel(derbyState.phase == 'running')
-  -- Race-mode checkpoint poles. Editor visuals belong to admins with the editor
-  -- open; everyone else, including an admin who has closed it, gets the poles.
-  poles.sync(editorOpen and isAdmin)
+  -- The stock BeamNG race markers are OFF. drawDriverGate above draws the poles
+  -- now, in this mod's own colours at full opacity, because the stock ones could
+  -- not be made bright or solid enough to see and could not be widened either
+  -- (their spacing is the gate's width, so wider poles would mark a target that
+  -- does not score). Synced to false rather than deleted so anything already
+  -- standing in the world is torn down properly on the next tick.
+  poles.sync(true)
   poles.update(dt)
   drawStartPositions()      -- starting grid slots
   fieldUpdate(dt)           -- ghosted, staggered grid placement / mass respawn

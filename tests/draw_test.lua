@@ -106,8 +106,12 @@ handlers['RM_ApplyLayout']({
 -- ===========================================================================
 -- Editor and race are two views of the same checkpoint
 -- ===========================================================================
--- A driver in a race gets the gate POLES (see tests/poles_test.lua) AND the one
--- gate they are aiming at, drawn as a rectangle. Reported from a live night as
+-- A driver in a race gets TWO POLES at the gate they are aiming at, and two more
+-- at the one after it, drawn out of the same cylinders the editor rectangle is
+-- built from. BeamNG's own race markers are the shape this imitates but could not
+-- be made bright or solid enough to see, and could not be widened either --
+-- their spacing IS the gate's width, so wider poles would mark a target that
+-- does not score. Reported from a live night as
 -- "racers cannot see the default BeamNG checkpoints" -- and the poles cannot
 -- simply be widened to fix it, because their spacing IS the gate's width and
 -- poles wider than the trigger would show a target that does not score.
@@ -124,8 +128,9 @@ check(#quads == 0,
   'a driver gets no FILLED gate surfaces -- that is the authoring view')
 check(#texts == 2,
   'and exactly two gate labels: the one they are aiming at and the one after it')
-check(#cylinders == 8,
-  'drawn as two four-edged rectangles, not a circuit of them')
+check(#cylinders == 6,
+  'drawn as two POLE GATES -- two uprights and a top bar each, not a circuit of '
+    .. 'rectangles and not the stock markers')
 
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {},
   youAreAdmin = true })
