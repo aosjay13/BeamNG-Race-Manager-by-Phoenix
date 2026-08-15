@@ -944,6 +944,9 @@ end
 local function clearTrackState(reason)
   route        = {}
   jokerRoute   = {}
+  -- The pit lane goes too. It used to survive a purge, which meant stalls from
+  -- one track stayed standing on the next and rode along into the next save.
+  pitRoute     = {}
   startPositions = {}
   gridSlot     = nil
   armedWp      = 1
@@ -6660,72 +6663,14 @@ function M.setCheckpointOverride(index, w, h)
   pushRouteState()
 end
 
-function M.editorSave()
-  if #route == 0 then
-    log('W', 'raceManager', 'Editor: nothing to save')
-    return
-  end
-  jsonWriteFile(TUNE.ROUTE_FILE, {
-    version = 5,
-    width   = checkpointWidth,
-    height  = checkpointHeight,
-    waypoints = route,
-    joker     = jokerRoute,
-    startPositions = startPositions,
-  }, true)
-  log('I', 'raceManager', 'Editor: saved ' .. #route .. ' checkpoints ('
-    .. #jokerRoute .. ' joker, ' .. #startPositions .. ' start positions) to ' .. TUNE.ROUTE_FILE)
-  guihooks.trigger('RaceManagerEditorMsg', {
-    msg = 'Saved ' .. #route .. ' checkpoints'
-      .. (#jokerRoute > 0 and (' + ' .. #jokerRoute .. ' joker gates') or '')
-      .. (#startPositions > 0 and (' + ' .. #startPositions .. ' start positions') or ''),
-  })
-end
-
--- v1 route files stored spherical waypoints { x, y, z, radius }. Convert:
--- heading = direction toward the next waypoint (wrapping to the first).
-local function migrateV1(waypoints)
-  local out = {}
-  local n = #waypoints
-  for i, wp in ipairs(waypoints) do
-    local nxt = waypoints[i % n + 1]
-    local dx, dy = nxt.x - wp.x, nxt.y - wp.y
-    local len = math.sqrt(dx * dx + dy * dy)
-    local hx, hy = 0, 1
-    if len > 1e-4 then hx, hy = dx / len, dy / len end
-    out[i] = { x = wp.x, y = wp.y, z = wp.z, hx = hx, hy = hy }
-  end
-  return out
-end
-
-function M.editorLoad()
-  local data = jsonReadFile(TUNE.ROUTE_FILE)
-  if type(data) ~= 'table' or type(data.waypoints) ~= 'table' or #data.waypoints == 0 then
-    log('W', 'raceManager', 'Editor: no saved route at ' .. TUNE.ROUTE_FILE)
-    guihooks.trigger('RaceManagerEditorMsg', { msg = 'No saved route found' })
-    return
-  end
-  if data.version and data.version >= 2 then
-    route = data.waypoints
-    checkpointWidth  = clampWidth(data.width or TUNE.DEFAULT_WIDTH)
-    checkpointHeight = clampHeight(data.height or TUNE.DEFAULT_HEIGHT)
-    jokerRoute = (type(data.joker) == 'table') and data.joker or {}
-    startPositions = (type(data.startPositions) == 'table') and data.startPositions or {}
-  else
-    route = migrateV1(data.waypoints)
-    jokerRoute = {}
-    startPositions = {}
-  end
-  armedWp    = math.max(#route, 1)
-  jokerArmed = 1
-  pushRouteState()
-  guihooks.trigger('RaceManagerEditorMsg', {
-    msg = 'Loaded ' .. #route .. ' checkpoints'
-      .. (#jokerRoute > 0 and (' + ' .. #jokerRoute .. ' joker gates') or '')
-      .. (#startPositions > 0 and (' + ' .. #startPositions .. ' start positions') or ''),
-  })
-end
-
+-- The local scratch route file (editorSave/editorLoad) is gone.
+--
+-- It was a second, private copy of a track with its own Save and Load buttons
+-- sitting beside the layout ones, and loading it rebuilt the route while
+-- emptying the joker route and the grid -- so a Load here followed by a Save
+-- there overwrote a finished server layout with a partial one. Two buttons
+-- reading "Save" and "Load" that meant different things was the trap; the
+-- server layout is the only copy now, and it is the one everybody races on.
 function M.editorToggleVisualize()
   visualize = not visualize
   pushRouteState()
@@ -6742,7 +6687,10 @@ local function editorMsg(msg)
   guihooks.trigger('RaceManagerEditorMsg', { msg = msg })
 end
 
-function M.saveLayout(name)
+-- `confirmDrop` is the admin having been shown, and having accepted, that this
+-- save empties a section the stored layout has. Without it the server holds the
+-- save back and answers with RM_SaveHeld -- see the silent-drop guard there.
+function M.saveLayout(name, confirmDrop)
   name = tostring(name or ''):gsub('^%s+', ''):gsub('%s+$', '')
   print('[raceManager] saveLayout("' .. name .. '") with ' .. #route .. ' checkpoint(s)')
   if name == '' then
@@ -6855,6 +6803,7 @@ function M.saveLayout(name)
     -- TRACK, so it is stored with it. An admin who built a point-to-point stage
     -- should not have to remember to set it again every race night.
     pointToPoint   = pointToPoint,
+    confirmDrop    = confirmDrop == true,
   })
   print('[raceManager] saveLayout: sending RM_SaveLayout (' .. #payload .. ' bytes) to server')
   TriggerServerEvent('RM_SaveLayout', payload)
@@ -6872,6 +6821,16 @@ function M.loadLayout(name)
     return
   end
   TriggerServerEvent('RM_LoadLayout', jsonEncode({ name = name }))
+end
+
+function M.deleteLayout(name)
+  name = tostring(name or '')
+  if name == '' then return end
+  if not inMultiplayer() then
+    editorMsg('Layouts need a BeamMP server')
+    return
+  end
+  TriggerServerEvent('RM_DeleteLayout', jsonEncode({ name = name }))
 end
 
 -- Console helper: creates a one-gate circuit (a bare start/finish line).
@@ -7277,6 +7236,31 @@ local function onApplyLayout(rawData)
   log('I', 'raceManager', 'Applied server layout "' .. tostring(data.name)
     .. '" with ' .. #route .. ' checkpoints, ' .. #jokerRoute .. ' joker gates and '
     .. #startPositions .. ' start positions')
+end
+
+-- The server refused to overwrite a layout because this save would have emptied
+-- part of it. Hand the detail straight to the UI, which asks the admin whether
+-- that is what they meant and re-sends with the confirmation if it is.
+local function onSaveHeld(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local lost = type(data.lost) == 'table' and data.lost or {}
+  local label = {
+    joker = 'joker gates', pits = 'pit stalls',
+    startPositions = 'start positions', branches = 'lanes',
+  }
+  local parts = {}
+  for key, n in pairs(lost) do
+    parts[#parts + 1] = tostring(n) .. ' ' .. (label[key] or key)
+  end
+  table.sort(parts)
+  guihooks.trigger('RaceManagerSaveHeld', {
+    name = tostring(data.name or ''),
+    lost = lost,
+    summary = table.concat(parts, ', '),
+  })
+  log('W', 'raceManager', 'Save held back: overwriting "' .. tostring(data.name)
+    .. '" would drop ' .. table.concat(parts, ', '))
 end
 
 -- Server ordered a full purge (server startup, pre-layout-load, or an
@@ -7761,6 +7745,7 @@ local DISPATCH = {
   RM_Countdown       = onServerCountdown,
   RM_Layouts         = onLayoutList,
   RM_ApplyLayout     = onApplyLayout,
+  RM_SaveHeld        = onSaveHeld,
   RM_ClearTrack      = onClearTrack,
   RM_LoginResult     = onLoginResult,
   RM_PasswordChanged = onPasswordChanged,

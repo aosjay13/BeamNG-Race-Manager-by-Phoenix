@@ -329,5 +329,48 @@ frames(2.5)
 check(frozen == false, 'the car is released when the stop is over')
 check(ghosted == false, 'and collision comes back with it')
 
+-- ===========================================================================
+-- A track purge takes the pit lane with it
+-- ===========================================================================
+-- It used to clear the route, the joker route, the grid and the lanes and leave
+-- the pit stalls standing. Stalls from one track then stayed loaded over the
+-- next, drew themselves on it, and rode along into whatever was saved next.
+handlers['RM_ApplyLayout']({
+  name = 'with pits', width = 20, height = 10,
+  checkpoints = { {x=0,y=100,z=0,hx=0,hy=1}, {x=0,y=200,z=0,hx=0,hy=1} },
+  pits = { {x=-50,y=100,z=0,hx=1,hy=0} },
+})
+check(#(lastRoute().pitRoute or {}) == 1, 'the layout loads with its pit stall')
+handlers['RM_ClearTrack']({ reason = 'test' })
+local after = lastRoute()
+check(#(after.waypoints or {}) == 0, 'a purge clears the route')
+check(#(after.pitRoute or {}) == 0, 'and the pit lane goes with it')
+
+-- ===========================================================================
+-- Saving a layout carries the pit lane, and the overwrite confirmation
+-- ===========================================================================
+handlers['RM_ApplyLayout']({
+  name = 'full', width = 20, height = 10,
+  checkpoints = { {x=0,y=100,z=0,hx=0,hy=1}, {x=0,y=200,z=0,hx=0,hy=1} },
+  joker = { {x=50,y=150,z=0,hx=1,hy=0} },
+  pits  = { {x=-50,y=100,z=0,hx=1,hy=0} },
+  startPositions = { {x=0,y=0,z=0,hx=0,hy=1} },
+})
+clearLog()
+RM.saveLayout('full')
+local payload = sent[1] and sent[1].payload
+check(type(payload) == 'table', 'saving a loaded layout sends it back')
+check(payload and payload.joker and #payload.joker == 1
+  and payload.pits and #payload.pits == 1
+  and payload.startPositions and #payload.startPositions == 1,
+  'and it still carries the joker route, the pit lane and the grid -- a load, '
+    .. 'an edit and a save must not come back as a bare route')
+check(payload and payload.confirmDrop == false,
+  'an ordinary save is not pre-confirmed: the server decides whether to hold it')
+clearLog()
+RM.saveLayout('full', true)
+check(sent[1] and sent[1].payload.confirmDrop == true,
+  'and the admin answering the warning is what sets the confirmation')
+
 print(string.format('pit_test: %d checks, %d failures', checks, fails))
 if fails > 0 then os.exit(1) end

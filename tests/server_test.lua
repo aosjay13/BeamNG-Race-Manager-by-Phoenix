@@ -8,6 +8,7 @@ local connected = { [1] = 'Alice', [2] = 'Bob', [3] = 'Cara' }
 local lastState = nil     -- last decoded RM_Update payload
 local lastChat = nil      -- last broadcast chat message
 local lastLayouts = nil   -- last RM_Layouts payload
+local lastHeld    = nil   -- last RM_SaveHeld payload (a refused overwrite)
 local appliedLayouts = {} -- [target] = last RM_ApplyLayout payload
 local lastApplied = nil   -- last RM_ApplyLayout payload
 local lastCleared = nil   -- last RM_ClearTrack payload
@@ -29,6 +30,7 @@ MP = {
     if event == 'RM_Layouts'     then lastLayouts = payload end
     if event == 'RM_ApplyLayout' then lastApplied = payload; appliedLayouts[target] = payload end
     if event == 'RM_ClearTrack'  then lastCleared = payload end
+    if event == 'RM_SaveHeld'    then lastHeld    = payload end
   end,
   RegisterEvent = function () end,
   CreateEventTimer = function (name) timers[name] = true end,
@@ -504,6 +506,96 @@ check(lastApplied ~= nil and lastApplied.height == 20
   'ApplyLayout broadcast carries the height and gate overrides')
 check(lastApplied and lastApplied.startPositions
   and #lastApplied.startPositions == 2, 'ApplyLayout broadcast carries the starting grid')
+
+-- ---------------------------------------------------------------------------
+-- The silent-drop guard: an overwrite may not quietly empty a saved layout
+-- ---------------------------------------------------------------------------
+-- The bug this exists for: an admin loaded a track with a joker route, a pit
+-- stall and a grid, nudged some pole heights, saved under the same name, and
+-- got back a layout with none of them. A save writes whatever the sending
+-- client is holding, and any client-side path that empties one collection while
+-- leaving the route alone turned the next same-name save into permanent,
+-- unannounced data loss. So the server now compares against what it already
+-- holds and refuses rather than shreds.
+local fullJson = '{"name":"Full Track","width":20,"height":10,"checkpoints":'
+  .. '[{"x":0,"y":100,"z":0,"hx":0,"hy":1},{"x":0,"y":200,"z":0,"hx":0,"hy":1}]'
+  .. ',"joker":[{"x":50,"y":150,"z":0,"hx":1,"hy":0}]'
+  .. ',"pits":[{"x":-50,"y":100,"z":0,"hx":1,"hy":0}]'
+  .. ',"startPositions":[{"x":0,"y":0,"z":0,"hx":0,"hy":1},{"x":4,"y":0,"z":0,"hx":0,"hy":1}]}'
+RM_onSaveLayout(1, fullJson)
+local function storedLayout(name)
+  for _, l in ipairs(lastLayouts.layouts) do if l.name == name then return l end end
+end
+local full = storedLayout('Full Track')
+check(full and full.joker and #full.joker == 1 and full.pits and #full.pits == 1
+  and full.startPositions and #full.startPositions == 2,
+  'the full track saves with its joker route, pit lane and grid')
+
+-- The exact shape of the loss: same name, same gates, everything else gone.
+local strippedJson = '{"name":"Full Track","width":20,"height":14,"checkpoints":'
+  .. '[{"x":0,"y":100,"z":0,"hx":0,"hy":1},{"x":0,"y":200,"z":0,"hx":0,"hy":1}]}'
+lastHeld, lastChat = nil, nil
+RM_onSaveLayout(1, strippedJson)
+check(lastHeld ~= nil, 'a save that would empty a section of the stored layout is held back')
+check(lastHeld and lastHeld.name == 'Full Track', 'the held save names the layout at risk')
+check(lastHeld and lastHeld.lost and lastHeld.lost.joker == 1
+  and lastHeld.lost.pits == 1 and lastHeld.lost.startPositions == 2,
+  'and says exactly what would have gone, so the admin can be asked')
+RM_onRequestLayouts(1)
+full = storedLayout('Full Track')
+check(full and full.joker and #full.joker == 1 and full.pits and #full.pits == 1
+  and full.startPositions and #full.startPositions == 2,
+  'and NOTHING is written -- the saved layout still has all three')
+check(full and full.height == 10, 'not even the part of the save that was fine')
+
+-- Shrinking a section is ordinary editing and passes straight through. Only
+-- emptying one outright is the accident being guarded against.
+local fewerStarts = '{"name":"Full Track","width":20,"height":10,"checkpoints":'
+  .. '[{"x":0,"y":100,"z":0,"hx":0,"hy":1},{"x":0,"y":200,"z":0,"hx":0,"hy":1}]'
+  .. ',"joker":[{"x":50,"y":150,"z":0,"hx":1,"hy":0}]'
+  .. ',"pits":[{"x":-50,"y":100,"z":0,"hx":1,"hy":0}]'
+  .. ',"startPositions":[{"x":0,"y":0,"z":0,"hx":0,"hy":1}]}'
+lastHeld = nil
+RM_onSaveLayout(1, fewerStarts)
+check(lastHeld == nil, 'deleting one start position of two is not held back')
+full = storedLayout('Full Track')
+check(full and #full.startPositions == 1, 'and the edit is saved')
+
+-- The admin was asked, and said yes. That has to work, or the guard becomes a
+-- wall around every track that ever had a joker route.
+lastHeld = nil
+RM_onSaveLayout(1, strippedJson:gsub('}$', ',"confirmDrop":true}'))
+check(lastHeld == nil, 'a confirmed save is not held back')
+full = storedLayout('Full Track')
+check(full and full.joker == nil and full.pits == nil and full.startPositions == nil,
+  'and the admin gets the stripped layout they explicitly asked for')
+check(full and full.height == 14, 'along with the rest of that save')
+
+-- A NEW layout has nothing to lose and is never held.
+lastHeld = nil
+RM_onSaveLayout(1, '{"name":"Brand New","width":20,"checkpoints":'
+  .. '[{"x":0,"y":100,"z":0,"hx":0,"hy":1}]}')
+check(lastHeld == nil, 'a first save under a fresh name is never held back')
+
+-- ---------------------------------------------------------------------------
+-- Deleting a layout
+-- ---------------------------------------------------------------------------
+RM_onDeleteLayout(1, '{"name":"brand new"}')   -- names match case-insensitively
+RM_onRequestLayouts(1)
+check(storedLayout('Brand New') == nil, 'a layout can be deleted, name case ignored')
+check(storedLayout('Full Track') ~= nil, 'and only that one goes')
+
+-- Non-admins cannot delete.
+RM_onDeleteLayout(99, '{"name":"Full Track"}')
+RM_onRequestLayouts(1)
+check(storedLayout('Full Track') ~= nil, 'a non-admin cannot delete a layout')
+
+-- The delete has to reach disk, or it comes back on the next restart.
+dofile('server/RaceManager/main.lua')
+onInit()
+adminLogin(1); adminLogin(2)
+RM_onRequestLayouts(1)
+check(storedLayout('Brand New') == nil, 'the delete survives a server restart')
 
 -- ---------------------------------------------------------------------------
 -- Ghost drivers: a driver who disconnected mid-race is kept as DNF for the

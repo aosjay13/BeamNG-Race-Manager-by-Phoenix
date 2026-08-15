@@ -897,6 +897,61 @@ local saveAt = html:find('ng%-click="saveLayout%(%)"')
 expect(saveAt and editorStart and saveAt > editorStart,
   'Save Current Layout stays inside the editor, where authoring belongs')
 
+-- ---------------------------------------------------------------------------
+-- Layout management: save / overwrite / delete, and no second private copy
+-- ---------------------------------------------------------------------------
+-- The editor used to carry its own Save and Load beside the layout ones, for a
+-- local scratch file nobody else could see. Loading it rebuilt the route while
+-- emptying the joker route and the grid -- so a Load there followed by a Save
+-- here overwrote a finished server layout with a partial one, and the two pairs
+-- of identically-named buttons were the trap that made it easy.
+for _, fn in ipairs({ 'editorSave', 'editorLoad' }) do
+  expect(html:find('ng%-click="' .. fn .. '%(%)"') == nil,
+    fn .. ' is still a button: the local scratch route file is gone, and a '
+      .. 'second Save/Load pair meaning something else is what caused the loss')
+  expect(js:find('$scope.' .. fn .. ' =', 1, true) == nil,
+    fn .. ' still has a handler in app.js')
+end
+
+-- Overwrite and Delete act on the SELECTED layout, so neither may require a
+-- typed name -- the whole point is putting a loaded track back without retyping.
+for _, c in ipairs({ { fn = 'overwriteLayout' }, { fn = 'deleteLayout' } }) do
+  expect(html:find('ng%-click="' .. c.fn .. '%(%)"') ~= nil,
+    'the template has a ' .. c.fn .. ' control')
+  expect(js:find('$scope.' .. c.fn .. ' = function', 1, true) ~= nil,
+    c.fn .. ' has a handler in app.js')
+  local disabled = html:match('ng%-click="' .. c.fn .. '%(%)"[^>]-ng%-disabled="([^"]*)"')
+  expect(disabled ~= nil, c.fn .. ' has a ng-disabled guard')
+  expect(disabled and disabled:find('layoutUi%.selected') ~= nil,
+    c.fn .. ' is disabled until a layout is selected')
+  expect(disabled and disabled:find('layoutUi%.name') == nil,
+    c.fn .. ' must NOT require a typed name -- it works on the selection')
+end
+
+-- Both destructive actions go through the in-app confirmation. A browser
+-- confirm() cannot be drawn over the game, so it is a panel, and the panel has
+-- to exist with both a go-ahead and a way out.
+expect(html:find('ng%-if="layoutUi%.confirm"') ~= nil,
+  'the template has a confirmation panel for destructive layout actions')
+expect(html:find('ng%-click="confirmLayoutAction%(%)"') ~= nil
+  and html:find('ng%-click="cancelLayoutAction%(%)"') ~= nil,
+  'the confirmation offers both a go-ahead and a cancel')
+expect(js:find('window.confirm', 1, true) == nil and js:find('%f[%w]confirm%(') == nil,
+  'no native confirm() -- CEF cannot draw one over the game')
+for _, fn in ipairs({ 'overwriteLayout', 'deleteLayout' }) do
+  local body = js:match('%$scope%.' .. fn .. ' = function %(%)(.-)\n      };')
+  expect(body ~= nil, fn .. ' body found in app.js')
+  expect(body and body:find('askLayout', 1, true) ~= nil,
+    fn .. ' asks before acting rather than firing straight at the server')
+end
+
+-- The server can refuse a save that would empty part of a stored layout. That
+-- reply has to reach the admin, or the save just silently does nothing.
+expect(js:find("RaceManagerSaveHeld", 1, true) ~= nil,
+  'the UI listens for the held-save reply')
+expect(js:find('sendSave(data.name, true)', 1, true) ~= nil,
+  'and can re-send the save with the confirmation the server is waiting for')
+
 -- Exactly one layout picker, or two dropdowns would share one open-state flag
 -- and both spring open together.
 local _, pickers = html:gsub('ng%-click="toggleLayoutDropdown%(%)"', '')

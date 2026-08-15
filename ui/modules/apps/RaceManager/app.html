@@ -991,8 +991,6 @@
               ng-disabled="editorTarget === 'branch' && !editingBranch()">+ {{ editorTarget === 'joker' ? 'Joker Gate' : (editorTarget === 'start' ? 'Place Start Position' : (editorTarget === 'pit' ? 'Place Pit Stall' : (editorTarget === 'branch' ? ('Lane Gate for CP ' + branchSlot) : 'Checkpoint'))) }} Here</button>
       <button class="rm-btn"              ng-click="editorUndo()"  ng-disabled="!editorWaypoints().length">Undo</button>
       <button class="rm-btn rm-btn-end"   ng-click="editorClear()" ng-disabled="!editorWaypoints().length">Clear</button>
-      <button class="rm-btn rm-btn-start" ng-click="editorSave()"  ng-disabled="!routeWaypoints.length">Save</button>
-      <button class="rm-btn"              ng-click="editorLoad()">Load</button>
       <button class="rm-btn" ng-click="editorToggleVisualize()">{{ visualize ? 'Hide' : 'Show' }} Gates</button>
     </div>
     <div class="rm-editor-msg" ng-if="editorMsg">{{ editorMsg }}</div>
@@ -1273,19 +1271,46 @@
       <div class="rm-layouts-left">
         <div class="rm-layouts-title">Track Layouts <span class="rm-layouts-map" ng-if="layoutMap">— {{ layoutMap }}</span></div>
         <div class="rm-layouts-row">
-          <input type="text" class="rm-layout-name" placeholder="Layout name…" maxlength="40"
+          <input type="text" class="rm-layout-name" placeholder="New layout name…" maxlength="40"
                  ng-model="layoutUi.name">
           <button class="rm-btn rm-btn-start" ng-click="saveLayout()"
                   ng-disabled="!routeWaypoints.length || !layoutUi.name"
-                  title="Save the currently placed checkpoints on the server under this name">
-            Save Current Layout
+                  title="Save what is placed right now as a NEW layout under this name">
+            Save As New
           </button>
+        </div>
+        <!-- Overwrite and Delete work on the layout SELECTED in the Track picker
+             above, so neither needs a name typed to hit the one already open. -->
+        <div class="rm-layouts-row">
+          <span class="rm-layouts-target" ng-class="{'rm-layouts-target-empty': !layoutUi.selected}">
+            {{ layoutUi.selected || 'no layout selected' }}
+          </span>
+          <button class="rm-btn rm-btn-grid" ng-click="overwriteLayout()"
+                  ng-disabled="!routeWaypoints.length || !layoutUi.selected || phase === 'countdown' || phase === 'racing'"
+                  title="Replace the selected layout with what is placed right now">
+            Overwrite
+          </button>
+          <button class="rm-btn rm-btn-end" ng-click="deleteLayout()"
+                  ng-disabled="!layoutUi.selected || phase === 'countdown' || phase === 'racing'"
+                  title="Delete the selected layout from the server">
+            Delete
+          </button>
+        </div>
+        <!-- Confirmations live here rather than in a browser dialog: the game's
+             CEF layer cannot draw one over the world (the same reason the layout
+             picker is not a native <select>). -->
+        <div class="rm-layouts-confirm" ng-if="layoutUi.confirm">
+          <div class="rm-layouts-confirm-text">{{ layoutUi.confirm.text }}</div>
+          <div class="rm-layouts-row">
+            <button class="rm-btn rm-btn-end" ng-click="confirmLayoutAction()">{{ layoutUi.confirm.ok }}</button>
+            <button class="rm-btn" ng-click="cancelLayoutAction()">Cancel</button>
+          </div>
         </div>
         <div class="rm-layouts-hint">
           Layouts are stored on the server and only listed for the map currently hosted.
-          A layout carries its checkpoints, the joker route and the starting grid.
-          <strong>Loading</strong> one to race is up in the session controls, so
-          running a saved race never means opening this editor.
+          A layout carries its checkpoints, the joker route, the pit lane, the lanes
+          and the starting grid. <strong>Loading</strong> one to race is up in the
+          session controls, so running a saved race never means opening this editor.
         </div>
       </div>
       <canvas class="rm-preview-canvas" width="200" height="130"></canvas>
@@ -2477,6 +2502,32 @@
   .rm-layout-option:hover { background: rgba(255, 102, 0, 0.18); }
   .rm-layout-option-active { color: #ffb380; background: rgba(255, 102, 0, 0.12); }
   .rm-layouts-hint { font-size: 10px; color: #9aa0a6; }
+  /* Which layout Overwrite and Delete are pointed at. Named on screen because
+     both are destructive and neither takes a typed name. */
+  .rm-layouts-target {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    font-weight: 700;
+    color: #ffb380;
+    padding: 3px 5px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+  }
+  .rm-layouts-target-empty { color: #6b7075; font-weight: 400; font-style: italic; }
+  .rm-layouts-confirm {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 6px;
+    border: 1px solid rgba(255, 102, 0, 0.55);
+    border-radius: 3px;
+    background: rgba(255, 102, 0, 0.12);
+  }
+  .rm-layouts-confirm-text { font-size: 11px; color: #ffd9bf; line-height: 1.35; }
   .rm-preview-canvas {
     width: 200px;
     height: 130px;

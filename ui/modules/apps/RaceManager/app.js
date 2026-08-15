@@ -365,7 +365,9 @@ angular.module('beamng.apps')
       $scope.layoutMap = '';            // map the server filtered the list by
       // Bound as an object ("dot rule") because these inputs live inside the
       // ng-if editor panel, whose child scope would shadow primitive bindings.
-      $scope.layoutUi = { name: '', selected: '' };
+      // `confirm` holds the pending destructive action: { text, ok, action }.
+      // Null whenever nothing is being asked.
+      $scope.layoutUi = { name: '', selected: '', confirm: null };
       // The layout picker is a custom DOM dropdown, not a native <select>:
       // BeamNG's UI runs in Chromium Embedded Framework (CEF), where a native
       // <select> popup is a separate OS window that never renders over the game
@@ -2139,6 +2141,24 @@ angular.module('beamng.apps')
       };
 
       var editorMsgTimer = null;
+      // The server refused to overwrite a layout because the save would have
+      // emptied part of it. This is the guard that exists because a load, a
+      // pole tweak and a save once came back as a track with no joker route, no
+      // pit lane and no grid -- so it names exactly what would go, and makes the
+      // admin say yes before anything is written.
+      $scope.$on('RaceManagerSaveHeld', function (event, data) {
+        if (!data || !data.name) { return; }
+        $scope.$evalAsync(function () {
+          $scope.layoutUi.confirm = {
+            text: 'Saving over "' + data.name + '" would remove ' + (data.summary || 'part of it')
+              + ' from the saved layout, because this client is not holding them. '
+              + 'Load the layout again if that is not what you meant.',
+            ok: 'Save anyway',
+            action: function () { sendSave(data.name, true); }
+          };
+        });
+      });
+
       $scope.$on('RaceManagerEditorMsg', function (event, data) {
         $scope.$evalAsync(function () {
           $scope.editorMsg = data && data.msg;
@@ -2452,12 +2472,6 @@ angular.module('beamng.apps')
       $scope.editorClear = function () {
         bngApi.engineLua('raceManager.editorClear()');
       };
-      $scope.editorSave = function () {
-        bngApi.engineLua('raceManager.editorSave()');
-      };
-      $scope.editorLoad = function () {
-        bngApi.engineLua('raceManager.editorLoad()');
-      };
       $scope.editorToggleVisualize = function () {
         bngApi.engineLua('raceManager.editorToggleVisualize()');
       };
@@ -2515,9 +2529,46 @@ angular.module('beamng.apps')
       // UI -> LUA commands (track layouts)
       // ------------------------------------------------------------------
       // (luaStr defined above in the admin-authentication section.)
+      // The one place a save actually leaves for the client. `confirmed` is the
+      // admin having accepted a warning -- either "this replaces an existing
+      // layout" here, or "this empties part of it" from the server's held-save
+      // reply. Without it the server holds a destructive overwrite back.
+      function sendSave(name, confirmed) {
+        console.log('[RaceManager] Save Layout "' + name + '": handing '
+          + $scope.routeWaypoints.length + ' checkpoint(s) to client Lua'
+          + (confirmed ? ' (confirmed)' : ''));
+        bngApi.engineLua('raceManager.saveLayout(' + luaStr(name)
+          + ', ' + (confirmed ? 'true' : 'false') + ')');
+      }
+
+      // Does a layout by this name already exist on the server? Names are
+      // matched case-insensitively there, so they are matched that way here too
+      // -- otherwise "Oval" would look new and silently replace "oval".
+      function existingLayout(name) {
+        var lower = (name || '').trim().toLowerCase();
+        for (var i = 0; i < $scope.layouts.length; i++) {
+          if (($scope.layouts[i].name || '').toLowerCase() === lower) { return $scope.layouts[i]; }
+        }
+        return null;
+      }
+
+      // Put a confirmation in front of the admin. `action` runs if they accept.
+      function askLayout(text, ok, action) {
+        $scope.layoutUi.confirm = { text: text, ok: ok, action: action };
+      }
+      $scope.confirmLayoutAction = function () {
+        var c = $scope.layoutUi.confirm;
+        $scope.layoutUi.confirm = null;
+        if (c && c.action) { c.action(); }
+      };
+      $scope.cancelLayoutAction = function () {
+        $scope.layoutUi.confirm = null;
+      };
+
+      // Save As New. A name that is already taken is an overwrite wearing the
+      // wrong button, so it asks rather than replacing quietly.
       $scope.saveLayout = function () {
         var name = ($scope.layoutUi.name || '').trim();
-        console.log('Current layout name in scope:', $scope.layoutUi.name);
         if (!name) {
           console.warn('[RaceManager] Save Layout: no name entered, nothing sent');
           return;
@@ -2526,9 +2577,34 @@ angular.module('beamng.apps')
           console.warn('[RaceManager] Save Layout: no checkpoints placed, nothing sent');
           return;
         }
-        console.log('[RaceManager] Save Layout "' + name + '": handing '
-          + $scope.routeWaypoints.length + ' checkpoint(s) to client Lua');
-        bngApi.engineLua('raceManager.saveLayout(' + luaStr(name) + ')');
+        var clash = existingLayout(name);
+        if (clash) {
+          askLayout('"' + clash.name + '" already exists on this map. Saving replaces it '
+            + 'with what is placed right now (' + $scope.routeWaypoints.length + ' gates).',
+            'Replace it', function () { sendSave(name, false); });
+          return;
+        }
+        sendSave(name, false);
+      };
+
+      // Overwrite the SELECTED layout — no typed name needed, which is the point
+      // of it: the common edit is load, tweak, put it back.
+      $scope.overwriteLayout = function () {
+        var name = $scope.layoutUi.selected;
+        if (!name || !$scope.routeWaypoints.length) { return; }
+        askLayout('Replace "' + name + '" with what is placed right now ('
+          + $scope.routeWaypoints.length + ' gates)? The saved version is gone for good.',
+          'Overwrite', function () { sendSave(name, false); });
+      };
+
+      $scope.deleteLayout = function () {
+        var name = $scope.layoutUi.selected;
+        if (!name) { return; }
+        askLayout('Delete "' + name + '" from the server? This cannot be undone.',
+          'Delete', function () {
+            bngApi.engineLua('raceManager.deleteLayout(' + luaStr(name) + ')');
+            if ($scope.layoutUi.selected === name) { $scope.layoutUi.selected = ''; }
+          });
       };
 
       $scope.loadLayout = function () {

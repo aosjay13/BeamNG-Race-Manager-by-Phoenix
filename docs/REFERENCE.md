@@ -13,10 +13,19 @@ checkpoint configurations **on the BeamMP server** in
 `Resources/Server/RaceManager/layouts.json`, so they survive server restarts
 and can be prepped days before an event:
 
-- **Save Current Layout** bundles the currently placed gates (positions,
-  headings, gate dimensions) — including the **joker route** and the
-  **starting grid**, if either is placed — under a name, tagged with the level
-  the server is hosting. Saving the same name on the same map overwrites it.
+- **Save As New** bundles the currently placed gates (positions, headings,
+  gate dimensions) — including the **joker route**, the **pit lane**, the
+  **lanes** and the **starting grid**, if any are placed — under a typed name,
+  tagged with the level the server is hosting. A name that is already taken
+  asks first.
+- **Overwrite** and **Delete** act on the layout selected in the **Track**
+  picker, so putting an edited track back needs no retyping. Both ask before
+  they act.
+- A save can never quietly empty part of a stored layout. If the client sending
+  it is not holding a section the saved copy has — its joker route, pit lane,
+  grid or lanes — the server **refuses the save** and reports exactly what
+  would have gone. The admin can still go ahead, but has to say so. This is
+  what stops a load, an edit and a save coming back as a bare route.
 - The dropdown is **strictly filtered by map** — the server only lists
   layouts saved for the level it is currently hosting.
 - Selecting a layout draws a top-down **2D track preview** (checkpoints,
@@ -100,8 +109,8 @@ course you want to race:
    moves. Both work on the joker route and pit stalls too.
 5. **Undo** removes the last gate, **Clear** wipes the route,
    **Hide/Show Gates** toggles the in-world drawing.
-6. **Save** / **Load** keep a personal scratch copy on your own machine
-   (`settings/raceManager/route.json`) — handy while iterating on a design.
+6. There is no local scratch copy. Tracks live on the server, where everyone
+   races on the same one — save as you go with **Overwrite**.
 
 #### Circuit or point to point
 
