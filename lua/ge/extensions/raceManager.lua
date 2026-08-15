@@ -636,6 +636,46 @@ end
 
 -- Position + normalized heading of the local car, the one measurement every
 -- editor placement (checkpoints, start positions, derby markers) is built from.
+-- ---------------------------------------------------------------------------
+-- Nudge mode: move and turn placed gates with the mouse, from free cam
+-- ---------------------------------------------------------------------------
+-- The second way into the editor, beside driving to a gate and pressing the
+-- button. Driving is still how a track gets built: it puts the gate exactly
+-- where a car fits and facing exactly the way one travels, which no amount of
+-- clicking from above can work out for you. This is for the pass afterwards,
+-- where a gate is ten metres late or a couple of degrees off and re-driving the
+-- whole corner to fix it is the expensive part.
+--
+-- ONE top-level local, like `branch` and `spectate`. This file sits at Lua's
+-- 200-active-locals ceiling and going over it does not warn: the file simply
+-- stops compiling and the whole mod is gone.
+--
+-- THE MOUSE IS BORROWED, NOT TAKEN. In free cam the mouse IS the camera, so
+-- there is no way to drag anything without first releasing it (core_canvas
+-- wraps lockMouse for exactly this). That is why this is a mode you turn on and
+-- off rather than something always live: a stray click while flying around
+-- looking at a track must never move a gate.
+local nudge = {
+  on       = false,   -- mode active: cursor released, picking live
+  sel      = nil,     -- index into the ACTIVE editor list, not always `route`
+  -- The list `sel` indexes. Remembered rather than looked up, because the
+  -- drawing asks about it and the drawing runs above activeEditorRoute.
+  list     = nil,
+  dragging = false,
+  -- Engine bits, resolved once and remembered as false when a build has none.
+  -- Everything here is optional: a build without them leaves the mode simply
+  -- unavailable rather than erroring in the frame loop.
+  im       = nil,
+  ready    = nil,
+}
+
+-- How close the cursor ray has to pass to a gate to pick it, in metres. Gates
+-- are up to 120m wide but are PICKED BY THEIR CENTRE, because two gates whose
+-- rectangles overlap are exactly the case where a generous radius picks the
+-- wrong one.
+nudge.PICK_RADIUS  = 8
+nudge.TURN_PER_STEP = math.rad(5)   -- one scroll notch
+
 local function vehiclePlacement()
   local veh = playerVehicle()
   if not veh then return nil end
@@ -752,6 +792,8 @@ local function pushRouteState()
     jokerLap     = jokerLapUsed,
     jokerEnabled = jokerEnabled,
     editorTarget = editorTarget,
+    nudgeOn      = nudge.on,
+    nudgeSel     = nudge.sel,
     -- Branching routes (the other ways round this track)
     branches     = branch.list,
     branchEdit   = branch.editId,
@@ -3910,6 +3952,9 @@ local function palette()
     -- the corner after this one reads without competing with the one they are
     -- actually driving at.
     routeNext = ColorF(1, 0.45, 0.05, 0.45),
+    -- The gate nudge mode has hold of. Magenta because it is not a state the
+    -- track itself can be in, so it collides with nothing already learned.
+    nudged    = ColorF(1, 0.2, 0.9, 1),
     joker     = ColorF(0.72, 0.35, 1, 1),      -- joker route: violet
     -- Still visibly duller than the rest, because "already taken" is what it
     -- has to say at a glance -- but lifted with everything else, so it reads as
@@ -4295,6 +4340,13 @@ local function drawDriverGate(derbyLive)
   end
 end
 
+-- Is this the gate the mouse has hold of? Only ever true for the list the
+-- editor is actually on, so a slot 2 selection on the grid does not light up
+-- checkpoint 2 as well.
+local function nudgeSelected(list, i)
+  return nudge.on and nudge.sel == i and nudge.list == list
+end
+
 local function drawGates(derbyLive)
   if not debugDrawer then return end
   -- The full circuit of numbered rectangles is the EDITOR's view and only the
@@ -4330,6 +4382,7 @@ local function drawGates(derbyLive)
       if branch.bySlot[b.id] and branch.bySlot[b.id][i] then alts = alts + 1 end
     end
     if alts > 0 then label = label .. ' (+' .. alts .. ')' end
+    if nudgeSelected(route, i) then color = p.nudged end
     drawGate(wp, color, label, authoring)
   end
 
@@ -4339,7 +4392,7 @@ local function drawGates(derbyLive)
   -- taking one that already exists, and the number has to say so.
   for _, b in ipairs(branch.list) do
     local editing = (b.id == branch.editId)
-    for _, g in ipairs(b.gates) do
+    for gi, g in ipairs(b.gates) do
       local slot = tonumber(g.slot) or 0
       local color = p.branch or p.joker
       if active and branch.lane == b.id and slot == armedWp then
@@ -4347,6 +4400,7 @@ local function drawGates(derbyLive)
       elseif not editing then
         color = p.branchOther or p.jokerUsed
       end
+      if nudgeSelected(b.gates, gi) then color = p.nudged end
       drawGate(g, color, 'CP ' .. slot .. ': ' .. (b.name or b.id), authoring)
     end
   end
@@ -4355,7 +4409,7 @@ local function drawGates(derbyLive)
   -- are not part of the checkpoint sequence and must not look as though they
   -- are. Editor only -- a driver gets a pole on the nearest one instead.
   for i, wp in ipairs(pitRoute) do
-    drawGate(wp, p.pit, 'PIT ' .. i, authoring)
+    drawGate(wp, nudgeSelected(pitRoute, i) and p.nudged or p.pit, 'PIT ' .. i, authoring)
   end
 
   -- Joker route: violet, so it never reads as part of the main lap. The next
@@ -4373,6 +4427,7 @@ local function drawGates(derbyLive)
     else
       color = p.joker
     end
+    if nudgeSelected(jokerRoute, i) then color = p.nudged end
     drawGate(wp, color, jokerLabel(i, jn, state), authoring)
   end
 end
@@ -5335,6 +5390,7 @@ function M.onUpdate(dt)
   -- The one label a driver gets: the gate poles carry no text at all.
   drawJokerLabel(derbyState.phase == 'running')
   drawStartPositions()      -- starting grid slots
+  nudge.update()            -- mouse editing, only while the mode is on
   fieldUpdate(dt)           -- ghosted, staggered grid placement / mass respawn
   holdUpdate(dt)            -- grid hold: verify it is holding, report position
   pit.update(dt)            -- pit stalls: hold, repair in place, release
@@ -5404,6 +5460,9 @@ end
 
 function M.setEditorOpen(open)
   editorOpen = open == true
+  -- A closed editor cannot have a mouse mode, and a cursor left released with
+  -- nothing to use it is a camera that has stopped answering for no reason.
+  if not editorOpen then nudge.release() end
 end
 
 -- Editor toggle: is this track a sprint or a circuit?
@@ -5448,6 +5507,182 @@ local function activeEditorRoute()
     return b and b.gates or {}
   end
   return route
+end
+
+-- Nudge mode's behaviour. The table itself is declared at the top of the file,
+-- beside `branch`, because the frame loop and the drawing code both reach it and
+-- both run above this point: a local declared here would be a nil GLOBAL to
+-- them, which compiles cleanly and fails only when somebody drags a gate.
+--
+-- Are the engine pieces this needs present? Resolved once. `ui_imgui` is how
+-- every stock tool reads the mouse, and cameraMouseRayCast is the same call the
+-- world editor's own object placement uses.
+function nudge.available()
+  if nudge.ready ~= nil then return nudge.ready end
+  local okIm, im = pcall(function () return ui_imgui end)
+  nudge.im = (okIm and type(im) == 'table' and im.IsMouseDown) and im or nil
+  nudge.ready = (nudge.im ~= nil)
+    and (type(cameraMouseRayCast) == 'function')
+    and (core_canvas ~= nil)
+  if not nudge.ready then
+    log('W', 'raceManager', 'Nudge mode unavailable: this build has no '
+      .. (nudge.im and 'cameraMouseRayCast/core_canvas' or 'ui_imgui'))
+  end
+  return nudge.ready
+end
+
+-- Give the mouse back. Called from every exit, including the ones that are not
+-- the admin pressing the button: closing the editor, changing tab, unloading.
+-- A cursor left released with no mode to use it is a camera that has stopped
+-- answering the mouse for no visible reason.
+function nudge.release()
+  if not nudge.on then return end
+  nudge.on, nudge.sel, nudge.dragging, nudge.list = false, nil, false, nil
+  pcall(function () core_canvas.hideCursor() end)
+  log('I', 'raceManager', 'Nudge mode off, mouse returned to the camera')
+end
+
+function nudge.set(on)
+  on = on and true or false
+  if on == nudge.on then return end
+  if not on then nudge.release(); pushRouteState(); return end
+  if not nudge.available() then
+    guihooks.trigger('RaceManagerEditorMsg', {
+      msg = 'Nudge mode needs a newer BeamNG build' })
+    return
+  end
+  nudge.on, nudge.sel, nudge.dragging = true, nil, false
+  pcall(function () core_canvas.showCursor() end)
+  log('I', 'raceManager', 'Nudge mode on, mouse released from the camera')
+  pushRouteState()
+end
+
+-- Nearest gate to the cursor ray, by perpendicular distance from the ray to the
+-- gate's centre. Behind the camera does not count: a gate at your back is
+-- geometrically close to the ray running through it and is never what you meant.
+function nudge.pick(list, ray)
+  if not (ray and ray.pos and ray.dir) then return nil end
+  local ox, oy, oz = ray.pos.x, ray.pos.y, ray.pos.z
+  local dx, dy, dz = ray.dir.x, ray.dir.y, ray.dir.z
+  local dlen = math.sqrt(dx * dx + dy * dy + dz * dz)
+  if dlen < 1e-6 then return nil end
+  dx, dy, dz = dx / dlen, dy / dlen, dz / dlen
+  local best, bestD = nil, nudge.PICK_RADIUS
+  for i, wp in ipairs(list) do
+    local vx, vy, vz = wp.x - ox, wp.y - oy, wp.z - oz
+    local along = vx * dx + vy * dy + vz * dz
+    if along > 0 then
+      local px, py, pz = vx - dx * along, vy - dy * along, vz - dz * along
+      local d = math.sqrt(px * px + py * py + pz * pz)
+      if d < bestD then best, bestD = i, d end
+    end
+  end
+  return best
+end
+
+-- Turn a gate in place. Heading is a unit vector on the ground plane, and the
+-- gate's rectangle is built perpendicular to it, so rotating this rotates the
+-- gate. Renormalised every time because repeated rotation of a stored pair
+-- drifts off the unit circle, and a heading that is not unit length silently
+-- changes how wide the gate tests.
+function nudge.turn(wp, radians)
+  if not wp then return end
+  local hx, hy = tonumber(wp.hx) or 0, tonumber(wp.hy) or 1
+  local c, s = math.cos(radians), math.sin(radians)
+  local nx, ny = hx * c - hy * s, hx * s + hy * c
+  local len = math.sqrt(nx * nx + ny * ny)
+  if len < 1e-6 then return end
+  wp.hx, wp.hy = nx / len, ny / len
+end
+
+-- Move a gate to a point on the ground, keeping the height it was authored at.
+-- The raycast lands ON the terrain, and a gate dropped to ground level is a gate
+-- whose lower half is buried: what matters is the height of its CENTRE above the
+-- road, which is what the original placement captured from the car.
+function nudge.moveTo(wp, hit, ground)
+  if not (wp and hit) then return end
+  local lift = wp.z - (ground or wp.z)
+  wp.x, wp.y = hit.x, hit.y
+  wp.z = hit.z + lift
+end
+
+-- One frame of the mode. Everything here is guarded: a mode that throws inside
+-- the frame loop takes the whole mod down with it.
+function nudge.update()
+  if not nudge.on then return end
+  -- The editor closing, the admin logging out, or a session starting all end it.
+  -- Authoring a track while it is being raced on is not a thing to allow, and
+  -- the cursor has to go back either way.
+  if not (editorOpen and isAdmin) or sessionRunning() then
+    nudge.release()
+    return
+  end
+  local im = nudge.im
+  if not im then return end
+  -- Never steal a click meant for a UI panel. The HUD app is a real window over
+  -- the world and the admin is clicking its buttons with this same cursor.
+  local wantsUi = false
+  pcall(function () wantsUi = im.GetIO().WantCaptureMouse end)
+
+  local list = activeEditorRoute()
+  nudge.list = list
+  local ray, hit
+  pcall(function () ray = getCameraMouseRay() end)
+  pcall(function () hit = cameraMouseRayCast(false) end)
+
+  local down, held, up = false, false, false
+  pcall(function ()
+    down = im.IsMouseClicked(0)
+    held = im.IsMouseDown(0)
+    up   = im.IsMouseReleased(0)
+  end)
+
+  if down and not wantsUi then
+    local picked = nudge.pick(list, ray)
+    -- Tell the panel whenever the selection CHANGES, including to nothing.
+    -- Pushing only on a drag left the UI showing a gate the mouse had already
+    -- let go of.
+    if picked ~= nudge.sel then
+      nudge.sel = picked
+      pushRouteState()
+    end
+    nudge.dragging = picked ~= nil
+  end
+  if up then nudge.dragging = false end
+
+  local wp = nudge.sel and list[nudge.sel]
+  if not wp then
+    if nudge.sel ~= nil then
+      nudge.sel, nudge.dragging = nil, false
+      pushRouteState()
+    end
+    nudge.dragging = false
+    return
+  end
+
+  if nudge.dragging and held and hit and hit.pos then
+    -- The ground under the gate NOW, so the lift it was authored with survives
+    -- being dragged across a crest or into a dip.
+    local under = wp.z
+    if type(castRayStatic) == 'function' then
+      local okR, d = pcall(castRayStatic, vec3(wp.x, wp.y, wp.z + 50), vec3(0, 0, -1), 100)
+      if okR and type(d) == 'number' and d < 100 then under = wp.z + 50 - d end
+    end
+    nudge.moveTo(wp, hit.pos, under)
+    if editorTarget == 'branch' then branch.rebuild() end
+    if editorTarget == 'start' then branch.gridTool.generated = false end
+    pushRouteState()
+  end
+
+  -- Scroll turns the selected gate. The tedious half of a fine adjustment is the
+  -- heading, because re-driving a corner is the only other way to change it.
+  local wheel = 0
+  pcall(function () wheel = im.GetIO().MouseWheel or 0 end)
+  if wheel ~= 0 and not wantsUi then
+    nudge.turn(wp, wheel * nudge.TURN_PER_STEP)
+    if editorTarget == 'branch' then branch.rebuild() end
+    pushRouteState()
+  end
 end
 
 -- Rebuild the per-slot lookup from the authored gate lists. Called after every
@@ -6165,6 +6400,10 @@ end
 -- rebuilt the route while emptying the joker route and the grid, so a Load there
 -- followed by a Save here overwrote a server layout with a partial one. Server
 -- layouts are the only copy now.
+function M.setNudgeMode(on)
+  nudge.set(on == true or on == 'true')
+end
+
 function M.editorToggleVisualize()
   visualize = not visualize
   pushRouteState()

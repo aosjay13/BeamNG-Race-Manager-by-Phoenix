@@ -952,6 +952,24 @@ expect(js:find("RaceManagerSaveHeld", 1, true) ~= nil,
 expect(js:find('sendSave(data.name, true)', 1, true) ~= nil,
   'and can re-send the save with the confirmation the server is waiting for')
 
+-- ---------------------------------------------------------------------------
+-- Nudge mode: the button, and who owns whether it is on
+-- ---------------------------------------------------------------------------
+expect(html:find('ng%-click="toggleNudge%(%)"') ~= nil,
+  'the editor has a Nudge toggle')
+expect(js:find('$scope.toggleNudge = function', 1, true) ~= nil,
+  'toggleNudge has a handler in app.js')
+expect(js:find('raceManager.setNudgeMode(', 1, true) ~= nil,
+  'and it reaches the client entry point')
+
+-- The CLIENT decides whether the mode is on: it ends it by itself when a session
+-- starts or the editor closes. A button tracking only what it last asked for
+-- would sit there lit with the mouse already handed back.
+expect(js:find('$scope.nudgeOn = data.nudgeOn === true', 1, true) ~= nil,
+  'the button follows the state the client broadcasts, not the last request')
+expect(html:find("ng%-class=\"{'rm%-btn%-nudge%-on': nudgeOn}\"") ~= nil,
+  'and the button shows it, because this mode takes the mouse off the camera')
+
 -- Exactly one layout picker, or two dropdowns would share one open-state flag
 -- and both spring open together.
 local _, pickers = html:gsub('ng%-click="toggleLayoutDropdown%(%)"', '')

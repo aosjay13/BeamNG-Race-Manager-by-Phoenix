@@ -992,6 +992,15 @@
       <button class="rm-btn"              ng-click="editorUndo()"  ng-disabled="!editorWaypoints().length">Undo</button>
       <button class="rm-btn rm-btn-end"   ng-click="editorClear()" ng-disabled="!editorWaypoints().length">Clear</button>
       <button class="rm-btn" ng-click="editorToggleVisualize()">{{ visualize ? 'Hide' : 'Show' }} Gates</button>
+      <button class="rm-btn" ng-class="{'rm-btn-nudge-on': nudgeOn}" ng-click="toggleNudge()"
+              title="Move and turn placed gates with the mouse. Releases the cursor from the camera.">
+        {{ nudgeOn ? '✋ Nudge: ON' : '✋ Nudge' }}
+      </button>
+    </div>
+    <div class="rm-nudge-hint" ng-if="nudgeOn">
+      Click a gate to pick it, drag to move it, scroll to turn it. The mouse is
+      released from the camera while this is on. Works on whichever tab you are
+      editing.
     </div>
     <div class="rm-editor-msg" ng-if="editorMsg">{{ editorMsg }}</div>
 
@@ -2502,6 +2511,20 @@
   .rm-layout-option:hover { background: rgba(255, 102, 0, 0.18); }
   .rm-layout-option-active { color: #ffb380; background: rgba(255, 102, 0, 0.12); }
   .rm-layouts-hint { font-size: 10px; color: #9aa0a6; }
+  .rm-btn-nudge-on {
+    background: rgba(255, 51, 230, 0.3);
+    border-color: rgba(255, 51, 230, 0.85);
+    color: #ffd9f7;
+  }
+  .rm-nudge-hint {
+    font-size: 10px;
+    color: #ffd9f7;
+    line-height: 1.35;
+    padding: 4px 6px;
+    border: 1px solid rgba(255, 51, 230, 0.5);
+    border-radius: 3px;
+    background: rgba(255, 51, 230, 0.12);
+  }
   /* Which layout Overwrite and Delete are pointed at. Named on screen because
      both are destructive and neither takes a typed name. */
   .rm-layouts-target {
