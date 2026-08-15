@@ -513,7 +513,6 @@ local qualiOutLap    = false
 -- other's spectators.
 local spectatorLock   = nil
 local spectatorReason = nil
-local spectatorRecheck = 0       -- seconds until the camera is re-asserted
 
 local function inMultiplayer()
   return MPGameNetwork ~= nil and TriggerServerEvent ~= nil
@@ -1492,30 +1491,31 @@ local function captureVehicleSnapshot()
   return snap
 end
 
--- Delete the local player's OWN vehicle. BeamNG exposes several ways to do this
--- depending on version, so try them in order and never let a failure escape.
+-- THE MOD NO LONGER DELETES ANYBODY'S CAR, and the function that did is gone
+-- rather than left sitting there for somebody to call again.
 --
--- core_vehicles.removeCurrent deletes whatever the client is attached to, which
--- is only safe once we know that is ours -- otherwise a driver taking the flag
--- deletes a rival's car out from under them.
-local function removeLocalVehicle()
-  local veh = ownVehicle()
-  if not veh then return end
-  removedVehicle = captureVehicleSnapshot() or removedVehicle
-  local attached = playerVehicle()
-  if core_vehicles and core_vehicles.removeCurrent
-      and attached and vehicleId(attached) == vehicleId(veh) then
-    if pcall(core_vehicles.removeCurrent) then return end
-  end
-  pcall(function () veh:delete() end)
-end
+-- In BeamMP a vehicle deleted on one client is deleted on all of them, so using
+-- deletion to mean "you are out of this session" made an eliminated driver
+-- vanish from every screen in the server -- their own, the other drivers', and
+-- the spectators'. Being out is now an INPUT state (see the `spectate` table
+-- below): the car stays exactly where it is, and what is taken away is the
+-- ability to drive it.
+--
+-- captureVehicleSnapshot and respawnRemovedVehicle are kept: they still serve
+-- the placement scheduler, and with nothing ever removed they are no-ops.
 
--- Put the camera on our own car and give control back to it.
+-- Put this client back on its OWN car.
 --
--- Doing this explicitly is the point: after a mass respawn the game picks a
--- vehicle for the camera on its own, and with five cars appearing at once its
--- pick is arbitrary -- which is how every client in the session ended up
--- watching the same driver.
+-- Doing it explicitly is the point: after a placement the game picks a vehicle
+-- for the camera on its own, and with five cars moving at once its pick is
+-- arbitrary -- which is how every client in the session ended up watching the
+-- same driver.
+--
+-- It switches the VEHICLE and not the camera MODE. It used to force the game
+-- camera (orbit) as well, which threw away whatever view the driver had chosen
+-- -- a cockpit driver was put in orbit every time the mod handed their car back.
+-- Which car you are attached to is the mod's business; how you are looking at it
+-- is the driver's.
 local function bindCameraToOwnVehicle()
   local veh = ownVehicle()
   if not veh then return false end
@@ -1523,12 +1523,7 @@ local function bindCameraToOwnVehicle()
   if be and be.enterVehicle then
     bound = pcall(function () be:enterVehicle(0, veh) end)
   end
-  if commands and commands.setGameCamera then
-    pcall(commands.setGameCamera)
-  elseif core_camera and core_camera.setByName then
-    pcall(core_camera.setByName, 0, 'orbit')
-  end
-  log('I', 'raceManager', 'Camera bound to own vehicle ' .. tostring(vehicleId(veh))
+  log('I', 'raceManager', 'Attached to own vehicle ' .. tostring(vehicleId(veh))
     .. (bound and '' or ' (enterVehicle unavailable)'))
   return true
 end
@@ -1571,49 +1566,121 @@ local function respawnRemovedVehicle()
   return spawned
 end
 
--- Put the camera into freecam/spectator. Same story: prefer the documented
--- command, fall back to the camera module.
-local function forceFreeCamera()
-  if commands and commands.setFreeCamera then
-    if pcall(commands.setFreeCamera) then return true end
+-- Free camera is the DRIVER'S control now, not the mod's. It is still there --
+-- BeamNG's own key still works, and a spectator is welcome in it -- but nothing
+-- here puts them in it or keeps them there. Forcing it was Bug 3.
+
+
+-- ---------------------------------------------------------------------------
+-- Being out of a session: freeze the INPUT, never the existence
+-- ---------------------------------------------------------------------------
+-- This used to delete the car and force freecam, and those two lines were three
+-- separate live bugs:
+--
+--   * removeLocalVehicle() deletes the vehicle, and in BeamMP a deleted vehicle
+--     is deleted FOR EVERY CLIENT. An eliminated derby driver did not go quiet,
+--     they went missing -- from their own screen, from the other drivers', and
+--     from the spectators'.
+--   * forceFreeCamera() was re-asserted once a second for as long as the lock
+--     held (see spectatorUpdate), so a driver who tabbed to watch somebody was
+--     yanked back to freecam within the second, over and over.
+--   * and because the car had been deleted, letting somebody back in meant
+--     RESPAWNING a field of them at once, which is how cars came back
+--     interpenetrated and welded together.
+--
+-- All three go away by not doing either thing. The car stays exactly where it
+-- is, as a visible, physical object; what is taken away is the ability to DRIVE
+-- it. Nothing is respawned at the end of a session because nothing was removed,
+-- which removes the weld problem at its cause rather than managing it.
+--
+-- The camera mode is not touched at all. Whatever view a driver had is the view
+-- they keep, and tabbing between cars is BeamNG's own control doing its own job.
+local spectate = {
+  -- Every input that drives a car. Deliberately NOT the vehicle-switch actions:
+  -- tabbing between cars is the whole point of spectating and must keep working.
+  DRIVE = {
+    'accelerate', 'brake', 'throttle', 'steering', 'steer_left', 'steer_right',
+    'parkingbrake', 'parkingbrake_toggle', 'clutch',
+    'shiftUp', 'shiftDown', 'shiftToggle', 'toggleGearboxMode',
+    'nitrousOxideActive', 'toggleWalkingMode',
+  },
+  blocked = false,
+}
+
+-- Same shape as setResetInputsBlocked, and for the same reason: with the filter
+-- armed the keys are dead at the source, so an eliminated driver cannot drive
+-- their wreck no matter what the physics would otherwise allow.
+function spectate.setInputsBlocked(blocked)
+  blocked = blocked and true or false
+  if blocked == spectate.blocked then return end
+  if not (core_input_actionFilter and core_input_actionFilter.setGroup
+      and core_input_actionFilter.addAction) then
+    return
   end
-  if core_camera and core_camera.setByName then
-    if pcall(core_camera.setByName, 0, 'free') then return true end
+  local ok = pcall(function ()
+    core_input_actionFilter.setGroup('raceManagerSpectate', spectate.DRIVE)
+    core_input_actionFilter.addAction(0, 'raceManagerSpectate', blocked)
+  end)
+  if ok then
+    spectate.blocked = blocked
+    log('I', 'raceManager', 'Driving inputs ' .. (blocked and 'BLOCKED' or 'released'))
   end
-  return false
 end
 
-local function isFreeCamera()
-  if commands and commands.isFreeCamera then
-    local ok, free = pcall(commands.isFreeCamera)
-    if ok then return free == true end
+-- Put the camera on somebody still racing.
+--
+-- A driver who has just taken the flag is parked, and leaving them looking at
+-- their own stationary car is the least interesting view on the track. Pick a
+-- car that is MOVING and is not ours, and hand the camera to it the same way
+-- bindCameraToOwnVehicle does -- by switching vehicle, not by changing camera
+-- MODE, so the driver keeps whatever view they had and tab keeps working from
+-- there.
+--
+-- Once. There is no loop re-asserting this: after the first attach the target is
+-- the driver's to change.
+function spectate.attachToRunner()
+  if type(getAllVehicles) ~= 'function' or not (be and be.enterVehicle) then return false end
+  local ok, list = pcall(getAllVehicles)
+  if not ok or type(list) ~= 'table' then return false end
+  local best, bestSpeed = nil, 0.5      -- m/s; below this a car is parked
+  for _, v in ipairs(list) do
+    if v and not isOwnVehicle(vehicleId(v)) then
+      local moving = 0
+      pcall(function ()
+        local vel = v:getVelocity()
+        if vel then moving = math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z) end
+      end)
+      if moving > bestSpeed then best, bestSpeed = v, moving end
+    end
   end
-  return false
-end
-
--- Back to a normal driving camera once the spectator lock is lifted.
-local function restoreGameCamera()
-  if commands and commands.setGameCamera then
-    if pcall(commands.setGameCamera) then return true end
-  end
-  if core_camera and core_camera.setByName then
-    if pcall(core_camera.setByName, 0, 'orbit') then return true end
-  end
-  return false
+  -- Nothing moving (everybody finished, or a one-car session): stay where we
+  -- are rather than flicking through parked cars looking for one that is not
+  -- there. A sane still view beats a search that never settles.
+  if not best then return false end
+  local switched = pcall(function () be:enterVehicle(0, best) end)
+  log('I', 'raceManager', switched
+    and ('Spectating a moving car (%.0f m/s)'):format(bestSpeed)
+    or 'Could not switch to a moving car')
+  return switched
 end
 
 local function enterSpectator(reason, source)
   spectatorLock   = source or 'race'
   spectatorReason = reason or 'You are out of this session'
-  spectatorRecheck = 0
-  removeLocalVehicle()
-  forceFreeCamera()
+  -- The car stays. Only the driving goes.
+  spectate.setInputsBlocked(true)
+  -- A RACE finisher is put on somebody still running, because the race is the
+  -- thing they want to watch and their own car is parked. A DERBY elimination is
+  -- left on its own wreck: the arena is the show, they are sitting in it, and
+  -- being moved somewhere else the instant you are knocked out reads as the bug
+  -- this replaced. Either way tab takes them anywhere they like from there.
+  if spectatorLock ~= 'derby' then spectate.attachToRunner() end
   guihooks.trigger('RaceManagerSpectator', {
     spectating = true, reason = spectatorReason, source = spectatorLock,
   })
   pushNotice('spectate', spectatorReason)
   pushRouteState()
-  log('I', 'raceManager', 'Forced spectator mode (' .. tostring(spectatorLock)
+  log('I', 'raceManager', 'Spectator mode (' .. tostring(spectatorLock)
     .. '): ' .. tostring(spectatorReason))
 end
 
@@ -1638,11 +1705,19 @@ local function releaseSpectator(source, order, count)
   if source and source ~= spectatorLock then return end
   spectatorLock   = nil
   spectatorReason = nil
+  -- Driving comes back first, so a driver is never released into a car they
+  -- cannot move.
+  spectate.setInputsBlocked(false)
+  -- And they go back to their OWN car, wherever they left it. Nothing is
+  -- respawned: the car was never removed, so there is nothing to put back and
+  -- nothing to interpenetrate. respawnRemovedVehicle stays in the placement path
+  -- as a safety net for a snapshot taken by an older build -- with nothing
+  -- removed it is a no-op.
   if queueFieldPlacement then
     queueFieldPlacement({ respawn = true, order = order, count = count })
   else
     respawnRemovedVehicle()
-    restoreGameCamera()
+    bindCameraToOwnVehicle()
   end
   guihooks.trigger('RaceManagerSpectator', { spectating = false })
   pushRouteState()
@@ -1650,14 +1725,21 @@ local function releaseSpectator(source, order, count)
     .. ', order ' .. tostring(order or 1) .. '/' .. tostring(count or 1) .. ')')
 end
 
--- While the lock is held the camera is re-asserted periodically: leaving
--- freecam is the one way a DNF'd driver could get back into a car.
+-- NOTHING RE-ASSERTS THE CAMERA ANY MORE, and that is the fix.
+--
+-- This used to force freecam back on once a second for as long as the lock was
+-- held, on the reasoning that leaving freecam was how a DNF'd driver could get
+-- back into a car. That is no longer a way back in -- the inputs are filtered,
+-- so being in a car does not mean being able to drive one -- and the cost of the
+-- loop was that spectating did not work at all: pick something to watch and the
+-- next tick took it away from you.
+--
+-- The target is the driver's from the first attach onward. The only things that
+-- move it are their own tab presses.
 local function spectatorUpdate(dt)
   if not spectatorLock then return end
-  spectatorRecheck = spectatorRecheck - dt
-  if spectatorRecheck > 0 then return end
-  spectatorRecheck = 1.0
-  if not isFreeCamera() then forceFreeCamera() end
+  -- Held, and left alone. The input filter is what enforces the lock; the camera
+  -- is the driver's business.
 end
 
 -- The reset allowance applies for the whole of a live session — qualifying as
@@ -2065,8 +2147,15 @@ function M.onVehicleResetted(vehId)
   end
   if spectatorLock then
     -- Out of the session: a reset must never put a spectator back on track.
-    removeLocalVehicle()
-    forceFreeCamera()
+    -- It cannot. The driving inputs are filtered off for as long as the lock is
+    -- held, so a reset car is a car that still will not move -- and re-asserting
+    -- the filter here covers the one thing a reset does that could undo it,
+    -- which is reload the vehicle's Lua VM out from under the block.
+    --
+    -- This used to DELETE the car instead, which in BeamMP deleted it for every
+    -- client in the session.
+    spectate.setInputsBlocked(false)   -- force the next call to re-apply
+    spectate.setInputsBlocked(true)
     return
   end
 
@@ -2196,10 +2285,17 @@ function M.onVehicleSpawned(vehId)
   end
   if not spectatorLock then return end
   if not isOwnVehicle(vehId) then return end
-  removeLocalVehicle()
-  forceFreeCamera()
+  -- A spectator spawned themselves a fresh car to get back on track. The block
+  -- is an INPUT filter rather than a property of the old vehicle, so the new one
+  -- is just as undriveable -- but the spawn may have re-registered the action
+  -- set, so it is re-applied here.
+  --
+  -- Deleting the car was the old answer, and it is what made an eliminated
+  -- driver vanish from everybody's screen.
+  spectate.setInputsBlocked(false)
+  spectate.setInputsBlocked(true)
   pushNotice('spectate', 'You are spectating until the session ends')
-  log('W', 'raceManager', 'Blocked vehicle spawn while in forced spectator mode')
+  log('W', 'raceManager', 'Vehicle spawned in spectator mode — driving stays blocked')
 end
 
 -- BeamNG hook: a vehicle is being removed. Ghost bookkeeping is keyed by vehicle

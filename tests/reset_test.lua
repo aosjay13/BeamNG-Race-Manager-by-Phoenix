@@ -74,9 +74,19 @@ getAllVehicles = function () return { veh, remote } end
 -- BeamNG's input action filter: how the mod switches the reset keys off once
 -- the allowance is spent. The stub records the current blocked state.
 local inputsBlocked = false
+-- GROUP-AWARE, because the mod now arms two of them and they mean different
+-- things: 'raceManagerResets' kills the reset/recover keys when a driver's
+-- allowance is spent, and 'raceManagerSpectate' kills the DRIVING keys for
+-- somebody who is out of the session. `inputsBlocked` below tracks the reset
+-- group, which is what every assertion in this file is about; a stub that
+-- ignored the name let the spectate block masquerade as a reset block.
+local blockedGroups = {}
 core_input_actionFilter = {
-  setGroup  = function () end,
-  addAction = function (_, _, blocked) inputsBlocked = blocked end,
+  setGroup  = function (name, actions) blockedGroups[name] = blockedGroups[name] or false end,
+  addAction = function (_, name, blocked)
+    blockedGroups[name] = blocked
+    if name == 'raceManagerResets' then inputsBlocked = blocked end
+  end,
 }
 -- The saved setup the player is driving. From BeamNG v0.39 the name the player
 -- typed lives on the config itself and the .pc filename is only a sanitised
