@@ -2,7 +2,7 @@
 -- lua/ge/extensions/raceManager.lua (Module 1).
 --
 -- Why this exists: BeamNG reports a teleport as a vehicle reset, and the mod
--- teleports the car itself — a blocked reset puts it back where it was, and a
+-- teleports the car itself - a blocked reset puts it back where it was, and a
 -- grid assignment stands it on its slot. Those teleports come straight back
 -- through onVehicleResetted. Treated as a driver pressing reset, the blocked
 -- case looped forever (restore -> hook -> restore ...), which pinned the car in
@@ -74,9 +74,19 @@ getAllVehicles = function () return { veh, remote } end
 -- BeamNG's input action filter: how the mod switches the reset keys off once
 -- the allowance is spent. The stub records the current blocked state.
 local inputsBlocked = false
+-- GROUP-AWARE, because the mod now arms two of them and they mean different
+-- things: 'raceManagerResets' kills the reset/recover keys when a driver's
+-- allowance is spent, and 'raceManagerSpectate' kills the DRIVING keys for
+-- somebody who is out of the session. `inputsBlocked` below tracks the reset
+-- group, which is what every assertion in this file is about; a stub that
+-- ignored the name let the spectate block masquerade as a reset block.
+local blockedGroups = {}
 core_input_actionFilter = {
-  setGroup  = function () end,
-  addAction = function (_, _, blocked) inputsBlocked = blocked end,
+  setGroup  = function (name, actions) blockedGroups[name] = blockedGroups[name] or false end,
+  addAction = function (_, name, blocked)
+    blockedGroups[name] = blocked
+    if name == 'raceManagerResets' then inputsBlocked = blocked end
+  end,
 }
 -- The saved setup the player is driving. From BeamNG v0.39 the name the player
 -- typed lives on the config itself and the .pc filename is only a sanitised
@@ -153,6 +163,53 @@ end
 local function clearLog() sent, hooks, teleports = {}, {}, {} end
 
 -- ===========================================================================
+-- TWO RESETS IN A ROW, on an unlimited-reset server
+-- ===========================================================================
+-- The reported failure: press one reset key, drive on, press the other, and land
+-- where you reset the first time. The two keys were not disagreeing -- they were
+-- both measuring against the same stale sample. The refresh that prevents it
+-- existed but sat inside the ALLOWANCE check, so a server running unlimited
+-- resets (the default) never ran it.
+--
+-- And the first fix for that cleared the reference instead of re-seeding it,
+-- which left a hole: the next reset had nothing to undo itself with, so BeamNG's
+-- teleport simply stood -- a recovery key putting a driver on their start
+-- position in the middle of a lap.
+do
+  -- A route has to exist, because the reference the undo measures against is the
+  -- crossing test's own per-frame sample -- and the crossing test does not run on
+  -- a track with no gates. That is a real dependency, not a test detail: with no
+  -- layout loaded there is nothing to undo a recovery teleport with.
+  RM.setFinishLine(0, 500, 0, 0, 1)
+  serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+  serverState({ phase = 'racing',  maxResets = -1, totalLaps = 3, drivers = {} })
+
+  veh.x, veh.y, veh.z = 100, 0, 0
+  frames(0.6)
+  teleports = {}
+
+  -- A recovery-style teleport: the car ends up a long way from where it was.
+  veh.x, veh.y, veh.z = 900, 900, 0
+  resetHook()
+  check(#teleports == 1, 'the teleport is undone on an unlimited-reset server too')
+  local back = teleports[#teleports]
+  check(back and math.abs(back.x - 100) < 1 and math.abs(back.y - 0) < 1,
+    'and puts the car back where it was, not where the game sent it')
+
+  -- Drive on, then do it again. THIS is the one that used to land on the first
+  -- reset's position: the reference has to have moved with the car.
+  veh.x, veh.y, veh.z = 300, 0, 0
+  frames(0.6)
+  teleports = {}
+  veh.x, veh.y, veh.z = 900, 900, 0
+  resetHook()
+  check(#teleports == 1, 'a second reset is undone as well')
+  local back2 = teleports[#teleports]
+  check(back2 and math.abs(back2.x - 300) < 1,
+    'and lands where the car was THIS time, not where it reset before')
+end
+
+-- ===========================================================================
 -- A reset inside the allowance is counted and left alone
 -- ===========================================================================
 serverState({ phase = 'waiting', maxResets = 1, totalLaps = 3, drivers = {} })
@@ -162,7 +219,10 @@ veh.x, veh.y, veh.z = 100, 0, 0
 frames(0.6)                                  -- rolling snapshot: (100, 0, 0)
 clearLog()
 
-driverPressedReset(5, 5, 0)
+-- An in-place recovery leaves the car where it stood, so this lands next to the
+-- snapshot. Dropping it across the map here would BE a teleport, and the undo is
+-- right to reverse one -- that is the whole point of the rule.
+driverPressedReset(101, 1, 0)
 resetHook()
 check(countSent('RM_VehicleReset') == 1, 'a reset inside the allowance is reported to the server')
 check(#teleports == 0, 'a legal reset is not undone')
@@ -226,7 +286,7 @@ veh.x, veh.y, veh.z = 0, 0, 0               -- somewhere else when the grid form
 gridAssign(1)
 check(#teleports == 1 and teleports[1].x == 300, 'the car is stood on its grid slot')
 -- BeamNG vehicles face -Y at identity, so a +X heading is a yaw of
--- π/2 + π = 3π/2 (half-angle 3π/4) — without the half-turn the car stood
+-- π/2 + π = 3π/2 (half-angle 3π/4) - without the half-turn the car stood
 -- exactly 180° backwards on its slot.
 check(math.abs(teleports[1].qz - math.sin(3 * math.pi / 4)) < 1e-6
   and math.abs(teleports[1].qw - math.cos(3 * math.pi / 4)) < 1e-6,
@@ -253,7 +313,7 @@ check(math.abs(teleports[1].qz - math.sin(3 * math.pi / 4)) < 1e-6
   'the restored car keeps the slot heading instead of snapping to identity')
 
 -- ===========================================================================
--- Over the allowance, the reset INPUTS themselves go dead — and come back
+-- Over the allowance, the reset INPUTS themselves go dead - and come back
 -- the moment the session stops enforcing the rule
 -- ===========================================================================
 -- Still in the countdown with maxResets = 0 from the section above: the very
@@ -297,9 +357,10 @@ serverState({ phase = 'racing', maxResets = -1, resetMode = 'checkpoint',
   totalLaps = 3, drivers = {} })
 
 -- Before any gate is crossed the mode has nothing to respawn at: in place.
+veh.x, veh.y, veh.z = 0, 0, 0
 frames(1.2)
 clearLog()
-driverPressedReset(30, 30, 0)
+driverPressedReset(1, 1, 0)
 resetHook()
 check(#teleports == 0, 'checkpoint mode before the first gate stays in place')
 
@@ -365,7 +426,7 @@ check(engineAccessorCalls == 0,
 
 -- v0.39 reworked the teleport detector ("reduce false positives/negatives in
 -- extreme cases (such as ... really fast vehicles)"), so the echo of a teleport
--- the mod performed can land a frame or two after the teleport itself — by which
+-- the mod performed can land a frame or two after the teleport itself - by which
 -- time a fast car is no longer sitting on the spot we put it. Judged against a
 -- fixed radius that echo reads as a driver reset, and the driver gets dragged
 -- back (or charged) for a reset they never pressed. The tolerance therefore
@@ -418,7 +479,7 @@ for _, e in ipairs(sent) do
   if e.event == 'RM_VehicleConfig' then report = e.payload end
 end
 check(report ~= nil, 'the vehicle configuration is reported to the server')
-check(report.label == 'etk800 — Cup Spec',
+check(report.label == 'etk800 - Cup Spec',
   'the setup is labelled with its real name, not the .pc filename stem')
 check(report.game == '0.39.0.0', 'and the report carries the BeamNG build')
 
@@ -438,7 +499,7 @@ check(remote.alpha == 1, 'and solid again once qualifying ends')
 -- ===========================================================================
 -- Every regulation the server owns is APPLIED on this client and lifted by a
 -- broadcast. Leaving the server means that broadcast is never coming, so the
--- mod has to lift them itself — otherwise a driver who disconnects mid-race is
+-- mod has to lift them itself - otherwise a driver who disconnects mid-race is
 -- dropped into singleplayer with a dead reset key, a frozen car and a camera
 -- that reasserts freecam every second.
 for _, hook in ipairs({ 'onBeamMPServerLeave', 'onServerLeave' }) do
@@ -451,10 +512,10 @@ for _, hook in ipairs({ 'onBeamMPServerLeave', 'onServerLeave' }) do
   serverState({ phase = 'countdown', maxResets = 0, totalLaps = 3, drivers = {} })
   handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race' })
   frames(0.2)
-  check(inputsBlocked == false, hook .. ': setup — a spectator does not need blocked inputs')
+  check(inputsBlocked == false, hook .. ': setup - a spectator does not need blocked inputs')
   handlers['RM_ReleaseSpectate']({ source = 'race' })
   frames(0.2)
-  check(inputsBlocked == true, hook .. ': setup — the reset keys are dead with no allowance')
+  check(inputsBlocked == true, hook .. ': setup - the reset keys are dead with no allowance')
 
   clearLog()
   RM[hook]()

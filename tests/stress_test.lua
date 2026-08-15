@@ -318,7 +318,7 @@ local drift = baseSecond / math.max(baseFirst, 1e-9)
 print(string.format('  drift    : first half %.3fs, second half %.3fs (x%.2f)',
   baseFirst, baseSecond, drift))
 check(drift < 1.35, string.format(
-  'a lap late in the race costs about what a lap early in it costs (x%.2f) — '
+  'a lap late in the race costs about what a lap early in it costs (x%.2f) - '
     .. 'a rising figure means per-lap state is accumulating in the hot path', drift))
 
 -- ---------------------------------------------------------------------------
@@ -381,7 +381,7 @@ print(string.format('  overhead : x%.3f versus no cup', overhead))
 -- of zero proves it.
 check(cupPushesDuringRacing == 0, string.format(
   'a race with a cup running pushes no cup state until the flag (%d extra '
-    .. 'pushes seen) — the cup is a consumer of results, not a participant',
+    .. 'pushes seen) - the cup is a consumer of results, not a participant',
   cupPushesDuringRacing))
 -- And a loose bound on the wall clock. A cup with a season in it is live heap,
 -- and live heap costs the collector something on every cycle, so this is not
@@ -421,7 +421,7 @@ print(string.format('  memory   : %.0f KB -> %.0f KB after %d races (+%.0f KB)',
 -- memory; that is what persistence means. What must not happen is unbounded
 -- growth, so the bound is generous but finite.
 check(growthKb < 2048, string.format(
-  'retained memory is bounded (+%.0f KB) — a cup and a roster are meant to be '
+  'retained memory is bounded (+%.0f KB) - a cup and a roster are meant to be '
     .. 'kept, per-lap garbage is not', growthKb))
 
 -- ---------------------------------------------------------------------------
@@ -491,6 +491,10 @@ RM_onEndRace(ADMIN)
 -- by the joker ruling for never taking the route, and the rest are retired
 -- where they stand. Armed BEFORE the grid forms -- the regulations are locked
 -- once a session is under way, which is the whole point of that guard.
+-- The track needs a joker route before the rule can be armed: without one the
+-- ruling would disqualify the whole field for missing a route that is not there,
+-- so the server refuses it.
+RM_onStartPositionCount(ADMIN, '{"count":0,"positions":[],"jokerGates":3}')
 RM_onSetJokerEnabled(ADMIN, '{"enabled":true}')
 RM_onSetTotalLaps(ADMIN, '{"laps":2}')
 RM_onGenerateGrid(ADMIN)

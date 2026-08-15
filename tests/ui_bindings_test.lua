@@ -8,7 +8,7 @@
 -- controller's own `lapsInput`: the "Set" button then posts the stale default
 -- to the server, and the server's echo back updates a property the visible
 -- input no longer reads. That is exactly how the Laps and Max-resets fields
--- broke — the server console logged a change, the panel kept showing the
+-- broke - the server console logged a change, the panel kept showing the
 -- default. Binding through an object (`settingsUi.laps`) resolves the object on
 -- the controller scope and mutates it in place, so both directions work.
 --
@@ -196,7 +196,106 @@ wired('setEntryMode',       'toggleEntryMode',    'Entry mode')
 wired('setGridMode',        'setGridMode',        'Grid order')
 wired('setDriverGridSlot',  'pinGridSlot',        'Custom grid slot')
 wired('setGhostQuali',      'toggleGhostQuali',   'Ghost qualifying')
--- Every grid order the panel offers must be one the server accepts. A button
+-- NO HANDLER MAY BE DEFINED TWICE ON $scope.
+--
+-- Assigning the same key twice is last-one-wins and silent: no error, no console
+-- line, nothing in any log. The button keeps working, it just runs somebody
+-- else's function.
+--
+-- This has already happened once and it was expensive. The Start Grid tab's
+-- "Generate" button was written as $scope.generateGrid -- a name this file
+-- already used, further down, for the admin control that FORMS THE RACE GRID.
+-- The later definition won, so pressing Generate in the editor teleported the
+-- admin onto a grid slot and froze them there for a countdown, and placed no
+-- start positions at all. The symptom pointed at the editor; the cause was a
+-- name three hundred lines away.
+--
+-- State fields are exempt: `$scope.drivers = []` at init and `$scope.drivers =
+-- data.drivers` in the broadcast handler is the normal shape of every mirror in
+-- this file. Only FUNCTIONS are checked, because only a function is a behaviour
+-- that can be silently replaced by a different one.
+do
+  local seen, dupes = {}, {}
+  for name in js:gmatch('%$scope%.([%a_][%w_]*)%s*=%s*function') do
+    if seen[name] then dupes[#dupes + 1] = name else seen[name] = true end
+  end
+  expect(#dupes == 0,
+    'these $scope handlers are defined more than once, so the later one silently '
+      .. 'replaces the earlier: ' .. table.concat(dupes, ', '))
+end
+
+-- THE COLLAPSED HUD MUST ALWAYS BE ABLE TO UNCOLLAPSE ITSELF.
+--
+-- Collapsing hides every direct child of .rm-root except a short keep-list. If
+-- the bar carrying the toggle is not on that list, pressing it once hides the
+-- app AND the only control that brings it back -- and the way out is the game's
+-- app editor, which nobody reading a leaderboard is going to guess at.
+--
+-- Exactly one of the two bars renders at a time: the header is ng-if
+-- !minimalMode() and the driver bar is ng-if minimalMode(), which are exact
+-- complements. So BOTH have to carry the toggle and BOTH have to survive the
+-- collapse, or the half of the time the other one is showing is unrecoverable.
+do
+  local rule = html:match('%.rm%-collapsed%s*>%s*%*([^{]*){')
+  expect(rule ~= nil, 'found the .rm-collapsed hide rule')
+  for _, keep in ipairs({ 'rm-header', 'rm-driverbar' }) do
+    expect(rule ~= nil and rule:find(':not(.' .. keep .. ')', 1, true) ~= nil,
+      'collapsing must not hide .' .. keep .. ' - it carries the button that '
+        .. 'brings the app back')
+  end
+  -- The alerts are the app telling a driver something is happening to them, not
+  -- panels they went looking for. A countdown nobody can see is a race start
+  -- nobody can see.
+  for _, keep in ipairs({ 'rm-countdown', 'rm-vehicle-error', 'rm-notice',
+                          'rm-derby-warning', 'rm-spectator-bar' }) do
+    expect(rule ~= nil and rule:find(':not(.' .. keep .. ')', 1, true) ~= nil,
+      '.' .. keep .. ' must survive a collapse: it is an alert, not a panel')
+  end
+  -- And the toggle itself has to exist in both bars.
+  local header = html:match('<div class="rm%-header".-\n  </div>')
+  local bar    = html:match('<div class="rm%-driverbar".-\n  </div>')
+  expect(header ~= nil and header:find('toggleCollapsed()', 1, true) ~= nil,
+    'the header carries the collapse toggle')
+  expect(bar ~= nil and bar:find('toggleCollapsed()', 1, true) ~= nil,
+    'the driver bar carries the collapse toggle, for a driver mid-session')
+  expect(js:find('$scope.toggleCollapsed', 1, true) ~= nil,
+    'toggleCollapsed is defined in the app')
+end
+
+-- THERE IS ALWAYS A WAY BACK IN.
+--
+-- minimalMode() is "not an admin AND a session is live", and it strips the app
+-- down to the leaderboard for the length of that session. The lock button that
+-- opens the admin login lives in the driver bar, which only EXISTS in minimal
+-- mode -- so if the login panel is also gated on `!minimalMode()`, pressing it
+-- sets a flag nothing renders. That shipped: an admin who lost their session
+-- could not log back in to stop the race they were running, for as long as it
+-- ran, with no other way in.
+--
+-- Logging in clears minimal mode on its own (isAdmin goes true), so the panel
+-- only has to be REACHABLE.
+do
+  local login = html:match('<div class="rm%-login"[^>]*>')
+  expect(login ~= nil, 'found the admin login panel')
+  expect(login ~= nil and login:find('showLogin', 1, true) ~= nil,
+    'the login panel is opened by showLogin')
+  expect(login ~= nil and login:find('minimalMode', 1, true) == nil,
+    'the login panel is NOT hidden by minimal mode: the button that opens it is '
+      .. 'in the driver bar, which only exists in that mode')
+  -- CLOSED until asked for. It used to open itself, which was survivable only
+  -- because it was ALSO suppressed for the whole of a live session -- two wrongs
+  -- cancelling. With that suppression gone (it was the dead end above) an
+  -- auto-opening prompt lands over the top of a race instead.
+  expect(js:find('$scope.showLogin = false', 1, true) ~= nil,
+    'the login prompt starts closed: it is something you go and get')
+
+  -- ...and the button really is in the bar, so the two halves stay together.
+  local bar = html:match('<div class="rm%-driverbar".-</div>')
+  expect(bar ~= nil and bar:find('openLogin()', 1, true) ~= nil,
+    'the driver bar carries the login button')
+end
+
+-- Every grid order the panel offers must be one the server accepts. A button-- Every grid order the panel offers must be one the server accepts. A button
 -- for a mode its validator drops is a dead button: the panel un-highlights the
 -- old mode, the server keeps it, and the next broadcast puts it back.
 do
@@ -297,7 +396,7 @@ expect(js:find('data.qualiOutLap', 1, true) ~= nil,
   'the out-lap rule is mirrored from the server broadcast')
 for _, fn in ipairs({ 'onOutLap', 'outLapDone' }) do
   expect(html:find(fn .. '()', 1, true) ~= nil and js:find('$scope.' .. fn, 1, true) ~= nil,
-    'the template calls ' .. fn .. '() and the controller defines it — an '
+    'the template calls ' .. fn .. '() and the controller defines it - an '
       .. 'undefined one is not an error in Angular, it is a readout that '
       .. 'silently never appears')
 end
@@ -305,8 +404,8 @@ expect(html:find('showOutLap(row)', 1, true) ~= nil
   and js:find('$scope.showOutLap', 1, true) ~= nil,
   'the qualifying table shows which drivers are still on their out lap')
 -- ...and only for drivers who are actually in the session. The server's flag
--- stays set on a driver who withdrew or was taken by the grace timeout — they
--- never completed one — so a row announcing an out lap beside a status of DNF
+-- stays set on a driver who withdrew or was taken by the grace timeout - they
+-- never completed one - so a row announcing an out lap beside a status of DNF
 -- is what this guards against.
 do
   local body = js:match('%$scope%.showOutLap = function %(row%)(.-)\n%s*};')
@@ -525,7 +624,7 @@ end
 
 -- The zero-based id trap, in both files.
 expect(js:find('e.boundPid == null', 1, true) ~= nil,
-  'the free-entry filter tests boundPid against null, not truthiness — player '
+  'the free-entry filter tests boundPid against null, not truthiness - player '
     .. 'id 0 is a real driver')
 expect(html:find('e.boundPid', 1, true) == nil
   or (html:find('e.boundPid != null', 1, true) ~= nil
@@ -627,7 +726,7 @@ for field in html:gmatch('row%.([%w_]+)') do rowFields[field] = true end
 expect(next(rowFields) ~= nil, 'found driver row field reads in the template')
 for field in pairs(rowFields) do
   expect(onWire[field],
-    'the leaderboard reads row.' .. field .. ' but the server does not send it — '
+    'the leaderboard reads row.' .. field .. ' but the server does not send it - '
       .. 'add it to DRIVER_WIRE_FIELDS or that column renders blank with no error')
 end
 
@@ -712,8 +811,8 @@ expect(boards == 1,
 -- 5. Editor tabs: Main Route / Joker Route / Start Grid
 --
 -- The editor panel shows whichever list editorTarget names, so a tab that is
--- not carried through — to the client Lua on the way out, or back from its
--- route broadcast — leaves the button looking pressed while the panel stays on
+-- not carried through - to the client Lua on the way out, or back from its
+-- route broadcast - leaves the button looking pressed while the panel stays on
 -- the main route. That is exactly how the Start Grid tab broke: both ends
 -- collapsed anything that was not 'joker' back to 'main'.
 -- ---------------------------------------------------------------------------
@@ -797,6 +896,61 @@ expect(loadAt and editorStart and loadAt < editorStart,
 local saveAt = html:find('ng%-click="saveLayout%(%)"')
 expect(saveAt and editorStart and saveAt > editorStart,
   'Save Current Layout stays inside the editor, where authoring belongs')
+
+-- ---------------------------------------------------------------------------
+-- Layout management: save / overwrite / delete, and no second private copy
+-- ---------------------------------------------------------------------------
+-- The editor used to carry its own Save and Load beside the layout ones, for a
+-- local scratch file nobody else could see. Loading it rebuilt the route while
+-- emptying the joker route and the grid -- so a Load there followed by a Save
+-- here overwrote a finished server layout with a partial one, and the two pairs
+-- of identically-named buttons were the trap that made it easy.
+for _, fn in ipairs({ 'editorSave', 'editorLoad' }) do
+  expect(html:find('ng%-click="' .. fn .. '%(%)"') == nil,
+    fn .. ' is still a button: the local scratch route file is gone, and a '
+      .. 'second Save/Load pair meaning something else is what caused the loss')
+  expect(js:find('$scope.' .. fn .. ' =', 1, true) == nil,
+    fn .. ' still has a handler in app.js')
+end
+
+-- Overwrite and Delete act on the SELECTED layout, so neither may require a
+-- typed name -- the whole point is putting a loaded track back without retyping.
+for _, c in ipairs({ { fn = 'overwriteLayout' }, { fn = 'deleteLayout' } }) do
+  expect(html:find('ng%-click="' .. c.fn .. '%(%)"') ~= nil,
+    'the template has a ' .. c.fn .. ' control')
+  expect(js:find('$scope.' .. c.fn .. ' = function', 1, true) ~= nil,
+    c.fn .. ' has a handler in app.js')
+  local disabled = html:match('ng%-click="' .. c.fn .. '%(%)"[^>]-ng%-disabled="([^"]*)"')
+  expect(disabled ~= nil, c.fn .. ' has a ng-disabled guard')
+  expect(disabled and disabled:find('layoutUi%.selected') ~= nil,
+    c.fn .. ' is disabled until a layout is selected')
+  expect(disabled and disabled:find('layoutUi%.name') == nil,
+    c.fn .. ' must NOT require a typed name -- it works on the selection')
+end
+
+-- Both destructive actions go through the in-app confirmation. A browser
+-- confirm() cannot be drawn over the game, so it is a panel, and the panel has
+-- to exist with both a go-ahead and a way out.
+expect(html:find('ng%-if="layoutUi%.confirm"') ~= nil,
+  'the template has a confirmation panel for destructive layout actions')
+expect(html:find('ng%-click="confirmLayoutAction%(%)"') ~= nil
+  and html:find('ng%-click="cancelLayoutAction%(%)"') ~= nil,
+  'the confirmation offers both a go-ahead and a cancel')
+expect(js:find('window.confirm', 1, true) == nil and js:find('%f[%w]confirm%(') == nil,
+  'no native confirm() -- CEF cannot draw one over the game')
+for _, fn in ipairs({ 'overwriteLayout', 'deleteLayout' }) do
+  local body = js:match('%$scope%.' .. fn .. ' = function %(%)(.-)\n      };')
+  expect(body ~= nil, fn .. ' body found in app.js')
+  expect(body and body:find('askLayout', 1, true) ~= nil,
+    fn .. ' asks before acting rather than firing straight at the server')
+end
+
+-- The server can refuse a save that would empty part of a stored layout. That
+-- reply has to reach the admin, or the save just silently does nothing.
+expect(js:find("RaceManagerSaveHeld", 1, true) ~= nil,
+  'the UI listens for the held-save reply')
+expect(js:find('sendSave(data.name, true)', 1, true) ~= nil,
+  'and can re-send the save with the confirmation the server is waiting for')
 
 -- Exactly one layout picker, or two dropdowns would share one open-state flag
 -- and both spring open together.

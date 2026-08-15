@@ -106,14 +106,35 @@ handlers['RM_ApplyLayout']({
 -- ===========================================================================
 -- Editor and race are two views of the same checkpoint
 -- ===========================================================================
--- A driver in a race gets the gate POLES (see tests/poles_test.lua); drawing
--- the rectangles as well is clutter straight across the racing line. An admin
--- with the editor open gets the authoring view instead: the filled surface, the
--- number, and which way through the gate counts.
+-- A driver in a race gets TWO POLES at the gate they are aiming at, and two more
+-- at the one after it, drawn out of the same cylinders the editor rectangle is
+-- built from. BeamNG's own race markers are the shape this imitates but could not
+-- be made bright or solid enough to see, and could not be widened either --
+-- their spacing IS the gate's width, so wider poles would mark a target that
+-- does not score. Reported from a live night as
+-- "racers cannot see the default BeamNG checkpoints" -- and the poles cannot
+-- simply be widened to fix it, because their spacing IS the gate's width and
+-- poles wider than the trigger would show a target that does not score.
+--
+-- What a driver must NOT get is the whole circuit: a lap's worth of numbered
+-- rectangles across the racing line is the clutter this was pulled out for. Two
+-- gates, no more -- the armed one and the next.
+--
+-- An admin with the editor open still gets the authoring view of every gate:
+-- the filled surface, the number, and which way through counts.
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
 frame()
-check(#cylinders == 0 and #texts == 0 and #quads == 0,
-  'a driver racing sees no gate rectangles -- the poles do that job')
+check(#quads == 0,
+  'a driver gets no FILLED gate surfaces -- that is the authoring view')
+check(#texts == 0,
+  'and NO text on them: the poles say where the gate is and the colour says which '
+    .. 'one is next, so "CP 3" at racing speed is one more thing painted across '
+    .. 'the racing line for nothing. Only the joker is labelled, because only its '
+    .. 'text changes what a driver should do')
+check(#cylinders == 4,
+  'drawn as TWO POLES each and nothing else -- no top bar, because the thing '
+    .. 'being marked is the line BETWEEN them at any height, and a bar reads as '
+    .. 'a hoop to aim at')
 
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {},
   youAreAdmin = true })
@@ -361,7 +382,7 @@ RM.onUpdate(0.016)
 check(#quads == 9, 'a rectangle adds one floor quad to its four walls')
 local sized = false
 for _, t in ipairs(texts) do
-  if t.text == 'DERBY ARENA — 100 x 60 m' then sized = true end
+  if t.text == 'DERBY ARENA: 100 x 60 m' then sized = true end
 end
 check(sized, 'the editor reads the rectangle back in metres')
 

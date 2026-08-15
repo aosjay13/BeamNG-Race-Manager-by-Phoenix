@@ -8,6 +8,8 @@ local connected = { [1] = 'Alice', [2] = 'Bob', [3] = 'Cara' }
 local lastState = nil     -- last decoded RM_Update payload
 local lastChat = nil      -- last broadcast chat message
 local lastLayouts = nil   -- last RM_Layouts payload
+local lastHeld    = nil   -- last RM_SaveHeld payload (a refused overwrite)
+local appliedLayouts = {} -- [target] = last RM_ApplyLayout payload
 local lastApplied = nil   -- last RM_ApplyLayout payload
 local lastCleared = nil   -- last RM_ClearTrack payload
 local eventSeq = {}       -- ordered names of broadcast client events
@@ -26,8 +28,9 @@ MP = {
     eventSeq[#eventSeq + 1] = event
     if event == 'RM_Update'      then lastState   = payload end
     if event == 'RM_Layouts'     then lastLayouts = payload end
-    if event == 'RM_ApplyLayout' then lastApplied = payload end
+    if event == 'RM_ApplyLayout' then lastApplied = payload; appliedLayouts[target] = payload end
     if event == 'RM_ClearTrack'  then lastCleared = payload end
+    if event == 'RM_SaveHeld'    then lastHeld    = payload end
   end,
   RegisterEvent = function () end,
   CreateEventTimer = function (name) timers[name] = true end,
@@ -240,7 +243,7 @@ check(lastState.totalLaps == 1, 'laps clamped to minimum 1')
 RM_onSetTotalLaps(1, '{"laps":2}')
 
 -- Qualifying: Cara fastest, Bob middle, Alice slowest; Bob improves.
--- Qualifying runs the same lifecycle a race does — grid, hold, countdown, GO —
+-- Qualifying runs the same lifecycle a race does - grid, hold, countdown, GO
 -- and reports its laps on the same event, so there is one lap path rather than
 -- two that can drift apart.
 RM_onStartQualifying(1)
@@ -262,7 +265,7 @@ RM_onLap(3, '{"lapTime":90.0}')
 check(driver('Bob').qualiBest == 92.1, 'best lap keeps the fastest (92.1)')
 check(driver('Bob').qualiLaps == 3, 'and every timed lap is counted')
 -- Alice has crossed twice: the out lap, then one timed lap. The lap counter
--- counts CROSSINGS and is advanced by both — an out lap that left the counter
+-- counts CROSSINGS and is advanced by both - an out lap that left the counter
 -- where it was would rank her against the field a lap down.
 check(driver('Alice').currentLap == 3, 'a qualifying driver advances a lap like a racer')
 check(driver('Alice').qualiLaps == 1, 'while the allowance only counts the timed one')
@@ -505,8 +508,98 @@ check(lastApplied and lastApplied.startPositions
   and #lastApplied.startPositions == 2, 'ApplyLayout broadcast carries the starting grid')
 
 -- ---------------------------------------------------------------------------
+-- The silent-drop guard: an overwrite may not quietly empty a saved layout
+-- ---------------------------------------------------------------------------
+-- The bug this exists for: an admin loaded a track with a joker route, a pit
+-- stall and a grid, nudged some pole heights, saved under the same name, and
+-- got back a layout with none of them. A save writes whatever the sending
+-- client is holding, and any client-side path that empties one collection while
+-- leaving the route alone turned the next same-name save into permanent,
+-- unannounced data loss. So the server now compares against what it already
+-- holds and refuses rather than shreds.
+local fullJson = '{"name":"Full Track","width":20,"height":10,"checkpoints":'
+  .. '[{"x":0,"y":100,"z":0,"hx":0,"hy":1},{"x":0,"y":200,"z":0,"hx":0,"hy":1}]'
+  .. ',"joker":[{"x":50,"y":150,"z":0,"hx":1,"hy":0}]'
+  .. ',"pits":[{"x":-50,"y":100,"z":0,"hx":1,"hy":0}]'
+  .. ',"startPositions":[{"x":0,"y":0,"z":0,"hx":0,"hy":1},{"x":4,"y":0,"z":0,"hx":0,"hy":1}]}'
+RM_onSaveLayout(1, fullJson)
+local function storedLayout(name)
+  for _, l in ipairs(lastLayouts.layouts) do if l.name == name then return l end end
+end
+local full = storedLayout('Full Track')
+check(full and full.joker and #full.joker == 1 and full.pits and #full.pits == 1
+  and full.startPositions and #full.startPositions == 2,
+  'the full track saves with its joker route, pit lane and grid')
+
+-- The exact shape of the loss: same name, same gates, everything else gone.
+local strippedJson = '{"name":"Full Track","width":20,"height":14,"checkpoints":'
+  .. '[{"x":0,"y":100,"z":0,"hx":0,"hy":1},{"x":0,"y":200,"z":0,"hx":0,"hy":1}]}'
+lastHeld, lastChat = nil, nil
+RM_onSaveLayout(1, strippedJson)
+check(lastHeld ~= nil, 'a save that would empty a section of the stored layout is held back')
+check(lastHeld and lastHeld.name == 'Full Track', 'the held save names the layout at risk')
+check(lastHeld and lastHeld.lost and lastHeld.lost.joker == 1
+  and lastHeld.lost.pits == 1 and lastHeld.lost.startPositions == 2,
+  'and says exactly what would have gone, so the admin can be asked')
+RM_onRequestLayouts(1)
+full = storedLayout('Full Track')
+check(full and full.joker and #full.joker == 1 and full.pits and #full.pits == 1
+  and full.startPositions and #full.startPositions == 2,
+  'and NOTHING is written -- the saved layout still has all three')
+check(full and full.height == 10, 'not even the part of the save that was fine')
+
+-- Shrinking a section is ordinary editing and passes straight through. Only
+-- emptying one outright is the accident being guarded against.
+local fewerStarts = '{"name":"Full Track","width":20,"height":10,"checkpoints":'
+  .. '[{"x":0,"y":100,"z":0,"hx":0,"hy":1},{"x":0,"y":200,"z":0,"hx":0,"hy":1}]'
+  .. ',"joker":[{"x":50,"y":150,"z":0,"hx":1,"hy":0}]'
+  .. ',"pits":[{"x":-50,"y":100,"z":0,"hx":1,"hy":0}]'
+  .. ',"startPositions":[{"x":0,"y":0,"z":0,"hx":0,"hy":1}]}'
+lastHeld = nil
+RM_onSaveLayout(1, fewerStarts)
+check(lastHeld == nil, 'deleting one start position of two is not held back')
+full = storedLayout('Full Track')
+check(full and #full.startPositions == 1, 'and the edit is saved')
+
+-- The admin was asked, and said yes. That has to work, or the guard becomes a
+-- wall around every track that ever had a joker route.
+lastHeld = nil
+RM_onSaveLayout(1, strippedJson:gsub('}$', ',"confirmDrop":true}'))
+check(lastHeld == nil, 'a confirmed save is not held back')
+full = storedLayout('Full Track')
+check(full and full.joker == nil and full.pits == nil and full.startPositions == nil,
+  'and the admin gets the stripped layout they explicitly asked for')
+check(full and full.height == 14, 'along with the rest of that save')
+
+-- A NEW layout has nothing to lose and is never held.
+lastHeld = nil
+RM_onSaveLayout(1, '{"name":"Brand New","width":20,"checkpoints":'
+  .. '[{"x":0,"y":100,"z":0,"hx":0,"hy":1}]}')
+check(lastHeld == nil, 'a first save under a fresh name is never held back')
+
+-- ---------------------------------------------------------------------------
+-- Deleting a layout
+-- ---------------------------------------------------------------------------
+RM_onDeleteLayout(1, '{"name":"brand new"}')   -- names match case-insensitively
+RM_onRequestLayouts(1)
+check(storedLayout('Brand New') == nil, 'a layout can be deleted, name case ignored')
+check(storedLayout('Full Track') ~= nil, 'and only that one goes')
+
+-- Non-admins cannot delete.
+RM_onDeleteLayout(99, '{"name":"Full Track"}')
+RM_onRequestLayouts(1)
+check(storedLayout('Full Track') ~= nil, 'a non-admin cannot delete a layout')
+
+-- The delete has to reach disk, or it comes back on the next restart.
+dofile('server/RaceManager/main.lua')
+onInit()
+adminLogin(1); adminLogin(2)
+RM_onRequestLayouts(1)
+check(storedLayout('Brand New') == nil, 'the delete survives a server restart')
+
+-- ---------------------------------------------------------------------------
 -- Ghost drivers: a driver who disconnected mid-race is kept as DNF for the
--- results file, but must be purged by the next Generate Grid — otherwise the
+-- results file, but must be purged by the next Generate Grid - otherwise the
 -- ghost turns 'racing' at GO, never laps, and blocks the auto-finish forever.
 -- (State is fresh here: the file was just re-dofile'd + onInit'd above.)
 -- ---------------------------------------------------------------------------
@@ -799,6 +892,271 @@ RM_onLogout(1); RM_onLogout(2)
 lastState = nil
 RM_onRequestState(1)
 check(lastState.adminPresent == false, 'adminPresent is false after all admins log out')
+
+-- ---------------------------------------------------------------------------
+-- Branching routes: persistence, validation, and the lane a grid slot decides
+-- ---------------------------------------------------------------------------
+-- A branch is a sparse set of per-slot gate overrides on the main route. The
+-- server never tests a crossing -- it has no physics -- so its whole job here is
+-- to validate the shape, keep it on disk, hand it back out, and decide which
+-- lane each grid slot puts a driver in.
+adminLogin(1)
+MP.Settings.Map = 0
+hostedMap = '/levels/gridmap_v2/info.json'
+RM_onRequestLayouts(1)
+
+local branchJson = '[{"id":"ccw","name":"Counter-clockwise","gates":['
+  .. '{"slot":1,"x":-100,"y":0,"z":0,"hx":0,"hy":1},'
+  .. '{"slot":3,"x":100,"y":0,"z":0,"hx":0,"hy":-1}]}]'
+
+lastLayouts = nil
+RM_onSaveLayout(1, '{"name":"Suicide Oval","width":20,"checkpoints":' .. cpJson
+  .. ',"branches":' .. branchJson .. ',"gridOffLine":true}')
+local saved
+for _, l in ipairs(lastLayouts and lastLayouts.layouts or {}) do
+  if l.name == 'Suicide Oval' then saved = l end
+end
+check(saved ~= nil, 'a layout with lanes saves')
+check(saved and type(saved.branches) == 'table' and #saved.branches == 1,
+  'the lane survives the round trip')
+check(saved and saved.branches[1].id == 'ccw'
+  and saved.branches[1].name == 'Counter-clockwise', 'lane id and name are kept')
+check(saved and #saved.branches[1].gates == 2, 'both override gates are kept')
+check(saved and saved.branches[1].gates[1].slot == 1
+  and saved.branches[1].gates[2].slot == 3,
+  'each gate keeps the SLOT it stands in for -- which is what makes it an override')
+check(saved and saved.gridOffLine == true, 'the grid-off-line flag travels with the track')
+
+-- An ordinary layout emits no branches key at all, so nothing about a plain
+-- circuit changes on disk.
+for _, l in ipairs(lastLayouts.layouts) do
+  if l.name == 'GP Circuit' then
+    check(l.branches == nil, 'a layout with no lanes stores no branches key')
+    check(l.gridOffLine == false, 'and is not marked grid-off-line')
+  end
+end
+
+-- Validation. Every one of these is a lane that would put half a field on a
+-- line that is not there, so the whole save is refused rather than quietly
+-- stored without it.
+local function rejects(what, branches)
+  local before = #lastLayouts.layouts
+  RM_onSaveLayout(1, '{"name":"Bad ' .. what .. '","width":20,"checkpoints":' .. cpJson
+    .. ',"branches":' .. branches .. '}')
+  check(#lastLayouts.layouts == before, 'rejected: ' .. what)
+end
+rejects('slot past the end of the route',
+  '[{"id":"x","gates":[{"slot":9,"x":1,"y":2,"z":3,"hx":0,"hy":1}]}]')
+rejects('slot below one',
+  '[{"id":"x","gates":[{"slot":0,"x":1,"y":2,"z":3,"hx":0,"hy":1}]}]')
+rejects('two gates on the same slot',
+  '[{"id":"x","gates":[{"slot":1,"x":1,"y":2,"z":3,"hx":0,"hy":1},'
+    .. '{"slot":1,"x":4,"y":5,"z":6,"hx":0,"hy":1}]}]')
+rejects('a lane with no gates', '[{"id":"x","gates":[]}]')
+rejects('a lane with no id', '[{"gates":[{"slot":1,"x":1,"y":2,"z":3,"hx":0,"hy":1}]}]')
+rejects('two lanes sharing an id',
+  '[{"id":"x","gates":[{"slot":1,"x":1,"y":2,"z":3,"hx":0,"hy":1}]},'
+    .. '{"id":"x","gates":[{"slot":2,"x":1,"y":2,"z":3,"hx":0,"hy":1}]}]')
+rejects('a gate with no coordinates', '[{"id":"x","gates":[{"slot":1}]}]')
+
+-- Loading it arms the session with the lanes and the out lap.
+RM_onLoadLayout(1, '{"name":"Suicide Oval"}')
+lastState = nil
+RM_onRequestState(1)
+check(lastState.hasBranches == true, 'loading the track tells every client it has lanes')
+check(lastState.gridOffLine == true, 'and that its grid is away from the line')
+check(lastState.qualiOutLap == true,
+  'so a RACE on it owes an out lap -- the part lap from the grid is not timed')
+
+-- THE LANE A GRID SLOT DECIDES. This is the only place a driver's direction is
+-- settled: the server hands out the slot and reads the tag off it, so nothing is
+-- asked of the client and nothing has to be trusted.
+local startJson = '[{"x":0,"y":-100,"z":0,"hx":1,"hy":0},'
+  .. '{"x":0,"y":-108,"z":0,"hx":1,"hy":0},'
+  .. '{"x":0,"y":-100,"z":0,"hx":-1,"hy":0,"branch":"ccw"},'
+  .. '{"x":0,"y":-92,"z":0,"hx":-1,"hy":0,"branch":"ccw"}]'
+RM_onStartPositionCount(1, '{"count":4,"positions":' .. startJson
+  .. ',"gridOffLine":true,"laneNames":[{"id":"ccw","name":"Counter-clockwise"}]}')
+
+RM_onSetEntryMode(1, '{"mode":"all"}')
+RM_onSetTotalLaps(1, '{"laps":3}')
+RM_onGenerateGrid(1)
+lastState = nil
+RM_onRequestState(1)
+local bySlot = {}
+for _, d in ipairs(lastState.drivers) do
+  if d.gridPos then bySlot[d.gridPos] = d end
+end
+check(bySlot[1] and bySlot[1].lane == nil, 'slot 1 races the main route')
+check(bySlot[2] and bySlot[2].lane == nil, 'slot 2 races the main route')
+check(bySlot[3] and bySlot[3].lane == 'ccw', 'slot 3 races the other way round')
+check(bySlot[4] and bySlot[4].lane == 'ccw', 'slot 4 races the other way round')
+check(bySlot[1] and bySlot[1].outLap == true,
+  'and everyone on the grid owes the out lap first')
+
+-- THE OUT LAP ON A RACE, which is what stops a head-on grid posting a fastest
+-- lap nobody drove. The cars start scattered round the circuit, so the run to
+-- the first crossing is a fraction of a lap.
+RM_onStartCountdown(1)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+lastState = nil
+RM_onRequestState(1)
+check(lastState.phase == 'racing', 'the head-on race starts')
+
+-- The part lap. A wildly quick "lap time" that would win fastest lap outright.
+RM_onLap(1, '{"lapTime":9.5}')
+lastState = nil
+RM_onRequestState(1)
+check(driver('Alice').raceBest == nil,
+  'the launch sets no Best Lap -- a standing start is not a lap time')
+check(lastState.bestLapPid == nil,
+  'and cannot take fastest lap of the race, which is the whole point of it')
+check(driver('Alice').outLap == false, 'the untimed lap is spent after one crossing')
+check(driver('Alice').currentLap == 2, 'and it COUNTED: the driver is on lap 2')
+
+-- From here every crossing is a real lap and is scored normally.
+RM_onLap(1, '{"lapTime":42.0}')
+check(driver('Alice').raceBest == 42.0, 'the first timed lap goes on the board')
+lastState = nil
+RM_onRequestState(1)
+check(lastState.bestLapPid == 1, 'and takes fastest lap')
+
+-- A THREE LAP RACE IS THREE CROSSINGS. The first of them counts toward the
+-- distance -- it is a racing lap, it just sets no time -- so the flag falls on
+-- the third, not the fourth.
+--
+-- That is the difference between this and qualifying's out lap, which is a lap
+-- given AWAY: not timed AND not one of the laps you were promised, so it is
+-- added on top of the allowance.
+RM_onLap(1, '{"lapTime":41.0}')
+check(driver('Alice').status == 'finished',
+  'the flag falls on the third CROSSING, because the first one counted')
+check(driver('Alice').raceBest == 41.0, 'and the last lap is scored like any other')
+check(driver('Alice').currentLap == 3, 'three crossings, three laps')
+
+-- The lane a driver ran is recorded on their row for the results file.
+check(driver('Cara').lane == 'ccw' or driver('Dan').lane == 'ccw',
+  'a driver gridded on a tagged slot carries that lane through the race')
+RM_onEndRace(1)
+
+-- ---------------------------------------------------------------------------
+-- A LATE JOINER GETS THE TRACK
+-- ---------------------------------------------------------------------------
+-- The layout used to be broadcast once, at the moment an admin pressed Load, and
+-- never again -- so it reached exactly the people already connected. Anyone who
+-- joined afterwards had no gates at all, and the workaround was for the admin to
+-- wait until the whole field had spawned before loading. A track is state, not an
+-- announcement.
+do
+  RM_onLoadLayout(1, '{"name":"Suicide Oval"}')
+  appliedLayouts = {}
+
+  -- Somebody arrives after the load and asks for state, which is what a client
+  -- does on joining a server.
+  connected[9] = 'LateJoiner'
+  RM_onPlayerJoin(9)
+  RM_onRequestState(9)
+  check(appliedLayouts[9] ~= nil,
+    'a client that joins after the load is sent the track when it asks for state')
+  check(appliedLayouts[9] and #appliedLayouts[9].checkpoints == 3,
+    'and it is the whole layout, gates and all')
+
+  -- And forming a grid puts it in front of everyone, whoever was missing it.
+  appliedLayouts = {}
+  RM_onGenerateGrid(1)
+  check(appliedLayouts[-1] ~= nil,
+    'forming a grid re-sends the track to the whole field')
+
+  -- A purge forgets it, so a joiner is never handed a track the rest of the
+  -- server has just been told to drop.
+  RM_onClearTrackState(1)
+  appliedLayouts = {}
+  RM_onRequestState(9)
+  check(appliedLayouts[9] == nil, 'after a purge there is no track to hand out')
+  connected[9] = nil
+  RM_onPlayerDisconnect(9)
+end
+
+-- ---------------------------------------------------------------------------
+-- JOINING IN THE MIDDLE OF A SESSION
+-- ---------------------------------------------------------------------------
+-- Somebody who connects mid-race has no grid slot, no laps and no out lap behind
+-- them. In "everyone races" mode they were put on the timing screen as a
+-- participant anyway, which makes a nonsense of the classification -- and they
+-- arrive with a car, a spawn point and no idea a race is running, which is how a
+-- leader ends up in a wall.
+do
+  RM_onSetEntryMode(1, '{"mode":"all"}')
+  RM_onSetTotalLaps(1, '{"laps":5}')
+  RM_onGenerateGrid(1)
+  RM_onStartCountdown(1)
+  RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+  check(lastState.phase == 'racing', 'a race is running')
+
+  connected[8] = 'Latecomer'
+  RM_onPlayerJoin(8)
+  local late
+  for _, d in ipairs(lastState.drivers) do if d.name == 'Latecomer' then late = d end end
+  check(late ~= nil, 'the new arrival appears on the driver list')
+  check(late and late.bystander == true,
+    'flagged a bystander: clients ghost that car so it cannot interfere')
+  check(late and late.status == 'waiting',
+    'and is NOT put into the running session, whatever the entry mode says')
+  check(late and late.gridPos == nil, 'with no grid slot invented for them')
+
+  -- The next grid is where entry is decided again, so that is where they stop
+  -- being a bystander.
+  RM_onEndRace(1)
+  RM_onGenerateGrid(1)
+  for _, d in ipairs(lastState.drivers) do if d.name == 'Latecomer' then late = d end end
+  check(late and not late.bystander,
+    'forming the next grid clears the flag -- they are in that race properly')
+  check(late and late.gridPos ~= nil, 'and they get a slot on it')
+  RM_onEndRace(1)
+  connected[8] = nil
+  RM_onPlayerDisconnect(8)
+end
+
+-- ---------------------------------------------------------------------------
+-- ONE PLAYER'S EDITOR CANNOT GIVE THE WHOLE SERVER AN OUT LAP
+-- ---------------------------------------------------------------------------
+-- RM_StartPositionCount is sent by pushRouteState, which fires constantly and
+-- from EVERY client, not just an admin. It carries whether that client thinks
+-- its grid is off the start/finish line -- so one player with start positions
+-- sitting in their local editor could flip the rule for the whole server, and a
+-- race would quietly give its first lap away and announce it to everybody.
+--
+-- A loaded layout is authored, saved and shared. It is the authority on its own
+-- grid, and a live client report does not get to overrule it.
+do
+  -- Out of any grid or session first: the report is refused outright while one is
+  -- under way, and a test that passed on THAT guard would prove nothing about
+  -- the one being tested here.
+  RM_onEndRace(1)
+  check(lastState.phase ~= 'grid', 'not on a grid, so the report is not refused outright')
+  RM_onLoadLayout(1, '{"name":"Suicide Oval"}')   -- saved with gridOffLine = true
+  -- Loading does not broadcast state on its own, so ask for one: otherwise this
+  -- reads a snapshot from before the load and proves nothing.
+  RM_onRequestState(1)
+  check(lastState.gridOffLine == true, 'the loaded layout says its grid is off the line')
+
+  -- A non-admin client reports the opposite from its own editor.
+  RM_onStartPositionCount(3, '{"count":0,"positions":[],"gridOffLine":false}')
+  RM_onRequestState(1)
+  check(lastState.gridOffLine == true,
+    'a client report does not overrule the loaded layout')
+
+  -- And the other way round: no layout loaded, so the report IS the only source
+  -- of truth and is taken.
+  RM_onClearTrackState(1)
+  RM_onStartPositionCount(1, '{"count":0,"positions":[],"gridOffLine":true}')
+  RM_onRequestState(1)
+  check(lastState.gridOffLine == true,
+    'with no layout loaded the client report is used, which is the unsaved path')
+  RM_onStartPositionCount(1, '{"count":0,"positions":[],"gridOffLine":false}')
+  RM_onRequestState(1)
+  check(lastState.gridOffLine == false, 'and it can be turned back off the same way')
+end
 
 -- Clean up the directory tree the test created in the repo root
 removeTree('Resources')

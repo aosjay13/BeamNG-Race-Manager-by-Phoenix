@@ -10,13 +10,18 @@
 --   lateral r = (hy, -hx)  span = width
 --   up      z              span = height  (covers banking)
 -- The gate scores when the frame-to-frame segment crosses the rectangle's
--- plane forwards and the intersection lands inside the width/height extents.
+-- plane -- in EITHER direction unless the gate is marked one-way -- and the
+-- intersection lands inside the width/height extents. Returns (crossed,
+-- backwards); the second value is what lets a respawn face the way the car was
+-- travelling rather than the way a shared gate happens to point.
 local function rectCrossesGate(wp, prev, cur, w, h)
   local fx, fy = wp.hx, wp.hy
 
   local dPrev = (prev.x - wp.x) * fx + (prev.y - wp.y) * fy
   local dCur  = (cur.x  - wp.x) * fx + (cur.y  - wp.y) * fy
-  if not (dPrev < 0 and dCur >= 0) then return false end
+  local forward  = (dPrev < 0 and dCur >= 0)
+  local backward = (not wp.oneWay) and (dPrev > 0 and dCur <= 0)
+  if not (forward or backward) then return false end
 
   local t  = dPrev / (dPrev - dCur)
   local ix = prev.x + (cur.x - prev.x) * t
@@ -25,7 +30,7 @@ local function rectCrossesGate(wp, prev, cur, w, h)
   local lateral = (ix - wp.x) * fy - (iy - wp.y) * fx
   if math.abs(lateral) > w * 0.5 then return false end
   if math.abs(iz - wp.z) > h * 0.5 then return false end
-  return true
+  return true, backward
 end
 
 -- Default rectangle (mirror of the client tunables): 20 wide, 10 tall ->
@@ -42,7 +47,10 @@ local cases = {
   { 'through near the left edge (x=-9)', P(-9, -3), P(-9, 3), true  },
   { 'outside the edges (x=15)',        P(15, -3), P(15, 3), false },
   { 'exactly at the edge (x=10)',      P(10, -3), P(10, 3), true  },
-  { 'wrong direction (backwards)',     P(0, 3), P(0, -3),   false },
+  -- Backwards through the middle now COUNTS: a driver who missed this gate and
+  -- turned round has driven through it, and arming is what stops it scoring
+  -- twice. The one-way variants of this case are asserted below.
+  { 'backwards through the middle',    P(0, 3), P(0, -3),   true  },
   { 'no crossing (both before)',       P(0, -6), P(0, -3),  false },
   { 'no crossing (both after)',        P(0, 3), P(0, 6),    false },
   { 'diagonal fast pass',              P(-8, -6), P(6, 4),  true  },
@@ -92,10 +100,40 @@ expect(rectCrossesGate(gate, P(12, -3), P(12, 3), 6, 10) == false,
 local gate2 = { x = 50, y = 50, z = 0, hx = 1, hy = 0 }
 expect(cross(gate2, {x=47,y=55,z=0}, {x=53,y=55,z=0}) == true,  'rotated: through')
 expect(cross(gate2, {x=47,y=62,z=0}, {x=53,y=62,z=0}) == false, 'rotated: wide')
-expect(cross(gate2, {x=53,y=50,z=0}, {x=47,y=50,z=0}) == false, 'rotated: backwards')
+expect(cross(gate2, {x=53,y=50,z=0}, {x=47,y=50,z=0}) == true,  'rotated: backwards counts')
+
+-- --- One-way gates -----------------------------------------------------------
+-- The escape hatch for hairpins and figure-8 crossovers, where the only thing
+-- separating two legs of a track is which way you are pointing. Same rectangle,
+-- same extents; the backward crossing is the only difference.
+local ow  = { x = 0, y = 0, z = 100, hx = 0, hy = 1, oneWay = true }
+local ow2 = { x = 50, y = 50, z = 0, hx = 1, hy = 0, oneWay = true }
+expect(cross(ow, P(0, -3), P(0, 3)) == true,  'one-way: forwards still scores')
+expect(cross(ow, P(0, 3), P(0, -3)) == false, 'one-way: backwards rejected')
+expect(cross(ow2, {x=53,y=50,z=0}, {x=47,y=50,z=0}) == false, 'one-way rotated: backwards rejected')
+
+-- The extents apply identically in both directions: a backward crossing outside
+-- the width or the height is no more a crossing than a forward one is.
+expect(cross(gate, P(15, 3), P(15, -3)) == false, 'backwards outside the width')
+expect(cross(gate, P(0, 3, 108), P(0, -3, 108)) == false, 'backwards above the rectangle')
+expect(rectCrossesGate(gate, P(12, 3), P(12, -3), 30, 10) == true,
+  'backwards inside a wide override')
+
+-- THE CASE THIS EXISTS FOR: a driver misses the gate down the outside, turns
+-- round, and comes back through the middle. One three-point turn, not two.
+expect(cross(gate, P(14, -3), P(14, 3)) == false, 'missed it down the outside')
+expect(cross(gate, P(0, 3), P(0, -3)) == true,    '...and scores coming back through')
+
+-- The second return value is the half a shared gate cannot tell you afterwards:
+-- one heading, driven both ways, so the respawn has to be told which way the car
+-- was actually going rather than reading it off the gate.
+local _, backA = cross(gate, P(0, -3), P(0, 3))
+local _, backB = cross(gate, P(0, 3), P(0, -3))
+expect(backA == false, 'forwards reports backwards=false')
+expect(backB == true,  'backwards reports backwards=true')
 
 if fails == 0 then
-  print('ALL PASS (' .. (#cases + 7) .. ' cases)')
+  print('ALL PASS (' .. (#cases + 18) .. ' cases)')
 else
   print(fails .. ' FAILURES')
   os.exit(1)

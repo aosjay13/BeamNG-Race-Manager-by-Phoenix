@@ -10,7 +10,7 @@ The BeamMP server has no physics access, so the mod is split in three:
 | Part | Path | Runtime | Role |
 |------|------|---------|------|
 | Server plugin | `server/RaceManager/main.lua` | BeamMP server (Lua 5.3, `MP.*` API) | Authoritative race state machine: grid, countdown, one shared clock, finish timestamps, broadcasts the driver table |
-| Mod entry point | `scripts/raceManager/modScript.lua` | In-game (runs at mod mount) | Loads the client bridge — BeamNG **never** auto-loads GE extensions shipped in a mod zip |
+| Mod entry point | `scripts/raceManager/modScript.lua` | In-game (runs at mod mount) | Loads the client bridge - BeamNG **never** auto-loads GE extensions shipped in a mod zip |
 | Client bridge | `lua/ge/extensions/raceManager.lua` | In-game GE Lua (LuaJIT / 5.1) | Waypoint editor, local finish-line detection (the server has no physics), relays server broadcasts to the UI |
 | UI app | `ui/modules/apps/RaceManager/` | In-game UI (Angular) | Race controls, live driver table, waypoint editor panel |
 
@@ -27,7 +27,7 @@ one so the headless tests exercise the real file format).
 
 | File | Holds | Cleared by |
 |------|-------|-----------|
-| `layouts.json` | Saved track layouts per map: gates, joker route, starting grid | Overwriting a name |
+| `layouts.json` | Saved track layouts per map: gates, joker route, branching lanes, starting grid | Overwriting a name |
 | `derbyArenas.json` | Saved derby arenas per map | Deleting an arena |
 | `garage.json` | Approved vehicles/setups and the enforcement switch | Clear Garage |
 | `roster.json` | Saved drivers: the display names an admin has assigned | Deleting a driver |
@@ -46,14 +46,14 @@ namespace and its own broadcast channel, and none of them is reachable from the
 racing state machine except through a handful of named functions declared at the
 top of the file.
 
-That is enforced rather than promised — the roster and cup live inside one
+That is enforced rather than promised - the roster and cup live inside one
 installer function, so the only names crossing the boundary are the ones
 forward-declared outside it. (There is a second reason: Lua allows 200 locals
 per function, and this chunk is close enough to that ceiling that a module
 written at file level would not compile.)
 
-The cup is a **consumer of results**. It is entered from exactly two places —
-the end of `finishSession` and the end of `finishDerby` — and reads the same
+The cup is a **consumer of results**. It is entered from exactly two places
+the end of `finishSession` and the end of `finishDerby` - and reads the same
 classification the results file is built from. Nothing cup-shaped runs while
 cars are on track, which `tests/stress_test.lua` asserts by counting messages
 rather than by timing.

@@ -305,7 +305,7 @@ check(totalFor('Phoenix') == beforeReset, 'Reset Session does not disturb cup po
 bootPlugin()
 check(readCup().round == 2, 'the round count survives a server restart')
 check(driver(0) ~= nil and driver(0).alias == nil,
-  'a restart does not re-identify anybody on its own — guest names are reissued '
+  'a restart does not re-identify anybody on its own - guest names are reissued '
     .. 'at random, so only an admin can say who has come back')
 identifyAll()
 check(totalFor('Phoenix') == beforeReset, 'and so do the points')
@@ -486,7 +486,7 @@ for _ = 1, 4 do RM_CountdownTick() end
 local pushesBefore = cupPushes
 for _ = 1, 40 do RM_Tick() end     -- four seconds of race loop
 check(cupPushes == pushesBefore,
-  'the race tick loop pushes no cup state at all — the cup costs nothing while racing')
+  'the race tick loop pushes no cup state at all - the cup costs nothing while racing')
 
 -- Finishing the race does push, because the standings actually changed.
 for lap = 1, 3 do
@@ -525,6 +525,10 @@ local function runDerby(order, opts)
     RM_onDerbyDemolished(pid)
   end
   if opts.endEarly then RM_onDerbyEnd(ADMIN) end
+  -- The last elimination DECIDES the derby; a short cool-down keeps the arena up
+  -- afterwards so the result can be seen among the wrecks. Tick past it, or the
+  -- round is never banked and nothing is scored.
+  for _ = 1, 6 do RM_DerbyTick() end
 end
 
 RM_onCupStart(ADMIN, '{"name":"Mixed Series"}')
@@ -546,7 +550,7 @@ check(totalFor('Ryder') == 30, 'the last man standing takes P1 points')
 check(totalFor('Phoenix') == 27, 'the driver eliminated last is P2')
 check(totalFor('Nomad') == 25, 'then P3')
 check(totalFor('Falcon') == 23,
-  'and the first driver out still scores — elimination is the result of a derby')
+  'and the first driver out still scores - elimination is the result of a derby')
 local dRound = cupEntry('Ryder').rounds[1]
 check(dRound.kind == 'derby', 'the round records which discipline it was')
 check(dRound.status == 'winner', 'and that this driver actually survived')
@@ -700,7 +704,7 @@ ryderRound = cupEntry('Ryder').rounds[#cupEntry('Ryder').rounds]
 check(ryderRound.dnfPos == 4, 'the DNF is classified behind all three finishers')
 check(ryderRound.racePts == 23, 'and scores for that place, not for the one it held')
 check(ryderRound.racePos == nil,
-  'but it is still not a finishing position — a DNF cannot count as a win')
+  'but it is still not a finishing position - a DNF cannot count as a win')
 
 -- (c) Held place: a DNF scores for the position it was running in. Two drivers
 -- can score the same position this way, which is the point of the option.
@@ -711,7 +715,7 @@ local nomadRound = cupEntry('Nomad').rounds[#cupEntry('Nomad').rounds]
 check(ryderRound.dnfPos == 2, 'the DNF keeps the place it was running in')
 check(ryderRound.racePts == 27, 'and is paid for it')
 check(nomadRound.racePos == 2 and nomadRound.racePts == 27,
-  'the driver who finished second is paid for second as well — both score it')
+  'the driver who finished second is paid for second as well - both score it')
 
 -- A DNF never counts as a win, however it is scored.
 RM_onCupSetScoring(ADMIN, '{"dnfScoring":"held"}')
@@ -752,7 +756,7 @@ check(pe.adjustments[1].reason == 'Track limits', 'with the reason it was given'
 check(pe.adjustments[1].by ~= nil and pe.adjustments[1].at ~= nil,
   'and who made it, and when')
 check(pe.rounds[1].racePts == 30,
-  'the points the driver EARNED are untouched — the adjustment is kept apart')
+  'the points the driver EARNED are untouched - the adjustment is kept apart')
 
 RM_onCupAdjust(ADMIN, '{"entryId":' .. phoenixId .. ',"delta":2,"reason":"Marshal error"}')
 check(totalFor('Phoenix') == earned - 3, 'adjustments accumulate')
@@ -880,7 +884,8 @@ check(driver(1) ~= nil and driver(1).status == 'waiting',
 RM_onPlayerDisconnect(1)
 RM_Derby_onPlayerDisconnect(1)
 connected[1] = nil
-RM_DerbyTick(); RM_onDerbyDemolished(2)     -- leaves one alive: the derby ends
+RM_DerbyTick(); RM_onDerbyDemolished(2)     -- leaves one alive: the derby is decided
+for _ = 1, 6 do RM_DerbyTick() end          -- ...and ends after the cool-down
 
 check(cupEntry('Ryder') ~= nil,
   'the driver who dropped mid-derby is scored against their own saved driver')

@@ -140,7 +140,7 @@ check(lastState.maxResets == 2, 'reset limit locked once the race is under way')
 
 -- The client BLOCKED a third reset (it put the car back where it was) and
 -- reported the attempt. That is not a penalty: Bob keeps racing, keeps his car
--- and stays out of spectator mode — the attempt is only counted.
+-- and stays out of spectator mode - the attempt is only counted.
 lastChat = nil
 RM_onResetDenied(2)
 check(driver('Bob').status == 'racing', 'a blocked reset does not end the race')
@@ -174,8 +174,31 @@ check(#released > 0, 'ending the race releases forced spectators')
 -- ===========================================================================
 RM_onResetLeaderboard(1)
 RM_onSetMaxResets(1, '{"maxResets":-1}')
+
+-- THE TRACK HAS TO HAVE A JOKER ROUTE FIRST.
+--
+-- The rule reclassifies anyone who did not complete the joker exactly once, so
+-- arming it on a track with no joker gates disqualifies every driver who
+-- finishes -- for missing a route that does not exist, with nothing saying why
+-- until the results file is written. The server refuses it outright.
+RM_onSetJokerEnabled(1, '{"enabled":true}')
+check(lastState.jokerEnabled == false,
+  'the joker lap cannot be armed on a track with no joker gates')
+
+-- Tell the server the track has them, as a client with a joker route placed does.
+RM_onStartPositionCount(1, '{"count":0,"positions":[],"jokerGates":3}')
 RM_onSetJokerEnabled(1, '{"enabled":true}')
 check(lastState.jokerEnabled == true, 'joker lap armed by the admin')
+check(lastState.jokerGates == 3, 'the panel is told how many gates the track has')
+
+-- Clearing the route while the rule is armed disarms it rather than leaving a
+-- race pointed at a disqualification nobody can avoid.
+RM_onStartPositionCount(1, '{"count":0,"positions":[],"jokerGates":0}')
+check(lastState.jokerEnabled == false,
+  'clearing the joker route switches the rule back off')
+RM_onStartPositionCount(1, '{"count":0,"positions":[],"jokerGates":3}')
+RM_onSetJokerEnabled(1, '{"enabled":true}')
+check(lastState.jokerEnabled == true, 'and it can be armed again once gates are back')
 
 startRace(3)
 RM_onSetJokerEnabled(1, '{"enabled":false}')
@@ -416,7 +439,10 @@ for _ = 1, 3 do RM_DerbyCountdownTick() end
 RM_onDerbyDemolished(2)
 check(spectated[2] ~= nil and spectated[2].source == 'derby',
   'a derby elimination forces spectator mode scoped to the derby')
-RM_onDerbyDisqualified(3)  -- last man standing ends the derby
+RM_onDerbyDisqualified(3)  -- last man standing decides the derby
+-- ...which does not end it on the instant: the arena stays up for a short
+-- cool-down so the result can be seen among the wrecks.
+for _ = 1, 6 do RM_DerbyTick() end
 check(lastDerby.derbyPhase == 'finished', 'derby ended with a winner')
 local sawDerbyRelease = false
 for _, r in ipairs(released) do

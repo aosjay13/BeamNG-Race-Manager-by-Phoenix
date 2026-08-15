@@ -4,7 +4,7 @@
 -- Why this exists: in multiplayer "the player's vehicle" and "our vehicle" are
 -- different questions, and the mod used to ask the first one when it meant the
 -- second. The moment a finisher's car is deleted BeamNG hands the camera to
--- whatever vehicle is nearest — another player's car — and from there:
+-- whatever vehicle is nearest - another player's car - and from there:
 --
 --   * the respawn guard ("do I already have a car?") answered yes, so the
 --     driver never got theirs back;
@@ -42,17 +42,21 @@ local attached = nil    -- what getPlayerVehicle(0) hands back
 -- ghosting did nothing on track.)
 local ghosts   = {}
 local deleted  = {}     -- [id] = true for every vehicle the mod deleted
+local spawnedAt = nil   -- where the last respawn was SPAWNED
+local placedAt  = nil   -- where it was afterwards PLACED (grid slot + heading)
 local spawns   = 0
 
-local function makeVehicle(id)
-  local v = { id = id, x = 0, y = 0, z = 0 }
+local function makeVehicle(id, speed)
+  local v = { id = id, x = 0, y = 0, z = 0, speed = speed or 0 }
   function v:getID() return self.id end
   function v:getPosition() return { x = self.x, y = self.y, z = self.z } end
   function v:getRotation() return { x = 0, y = 0, z = 0, w = 1 } end
   function v:getDirectionVector() return { x = 0, y = 1, z = 0 } end
-  function v:getVelocity() return { x = 0, y = 0, z = 0 } end
+  function v:getVelocity() return { x = 0, y = self.speed, z = 0 } end
   function v:getJBeamFilename() return 'etk800' end
-  function v:setPositionRotation() end
+  function v:setPositionRotation(x, y, z, rx, ry, rz, rw)
+    placedAt = { id = self.id, x = x, y = y, z = z, rx = rx, ry = ry, rz = rz, rw = rw }
+  end
   function v:queueLuaCommand(cmd)
     if cmd == 'obj:setGhostEnabled(true)'  then ghosts[self.id] = true end
     if cmd == 'obj:setGhostEnabled(false)' then ghosts[self.id] = nil  end
@@ -66,7 +70,7 @@ local function makeVehicle(id)
 end
 
 world[OWN_ID]   = makeVehicle(OWN_ID)
-world[RIVAL_ID] = makeVehicle(RIVAL_ID)
+world[RIVAL_ID] = makeVehicle(RIVAL_ID, 30)   -- still racing, 30 m/s
 attached = world[OWN_ID]
 
 getPlayerVehicle = function (_) return attached end
@@ -103,8 +107,9 @@ core_vehicles = {
     attached = world[RIVAL_ID]
     return id
   end,
-  spawnNewVehicle = function ()
+  spawnNewVehicle = function (_, opts)
     spawns = spawns + 1
+    spawnedAt = opts and opts.pos or nil
     world[RESPAWNED_ID] = makeVehicle(RESPAWNED_ID)
     -- Deliberately does NOT attach the camera: the mod has to do that itself.
     return world[RESPAWNED_ID]
@@ -118,7 +123,12 @@ commands = {
   setGameCamera = function () freeCam = false end,
 }
 core_camera = { setByName = function () end }
-core_input_actionFilter = { setGroup = function () end, addAction = function () end }
+local blockedGroups = {}
+core_input_actionFilter = {
+  setGroup  = function () end,
+  addAction = function (_, name, blocked) blockedGroups[name] = blocked end,
+}
+local function drivingBlocked() return blockedGroups['raceManagerSpectate'] == true end
 core_vehicle_partmgmt = { getConfig = function () return { parts = {}, vars = {} } end }
 
 vec3 = function (x, y, z) return { x = x, y = y, z = z } end
@@ -144,18 +154,40 @@ end
 local function serverState(t) t.rmProtocol = 2; handlers['RM_Update'](t) end
 
 -- ===========================================================================
--- A driver takes the flag: their car is removed, and it is THEIR car
+-- A RACE FINISHER: the car comes off the track, the camera is left alone
 -- ===========================================================================
+-- Taking a finisher off the track is deliberate -- they have nothing left to
+-- gain and a parked car on the racing line is an obstacle for everyone still
+-- running. What was wrong was everything AROUND that: the camera was forced into
+-- freecam and re-forced every second, and the whole field was respawned back
+-- onto the few metres of road they had all just been removed from.
+--
+-- The grid this driver was given, so the respawn has a slot to go to.
+handlers['RM_ApplyLayout']({
+  name = 'test', checkpoints = { { x = 0, y = 300, z = 0, hx = 0, hy = 1 } },
+  startPositions = {
+    { x = 10, y = 0, z = 0, hx = 0, hy = 1 },
+    { x = 20, y = 0, z = 0, hx = 0, hy = 1 },
+  },
+})
+handlers['RM_GridAssign']({ slot = 2, order = 1, count = 1 })
+frames(2.0)
+deleted, spawns, spawnedAt = {}, 0, nil
+attached = world[OWN_ID]
+blockedGroups = {}
+
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
 handlers['RM_ForceSpectate']({
-  reason = 'You finished the race — spectating until the flag', source = 'race',
+  reason = 'You finished the race - spectating until the flag', source = 'race',
 })
 
-check(deleted[OWN_ID] == true, 'the finisher\'s own car is removed')
-check(deleted[RIVAL_ID] ~= true, 'and no other player\'s car is touched')
-check(freeCam == true, 'the finisher is put into freecam')
+check(deleted[OWN_ID] == true, 'a race finisher IS taken off the track')
+check(deleted[RIVAL_ID] ~= true, "and no other car is touched")
+check(freeCam == false,
+  'but the camera MODE is left alone -- the driver keeps whatever view they had')
+check(drivingBlocked() == true, 'and driving is filtered off')
 check(attached ~= nil and attached:getID() == RIVAL_ID,
-  'the game has now attached this client to a rival\'s car (the trap)')
+  'they are put on a car that is still MOVING, so there is a race to watch')
 
 -- The mod must not "helpfully" delete that rival's car when it hears about a
 -- spawn or a reset while spectating.
@@ -165,52 +197,119 @@ RM.onVehicleResetted(RIVAL_ID)
 check(deleted[RIVAL_ID] ~= true, 'a rival resetting does not get their car deleted')
 
 -- ===========================================================================
--- The flag: every participant is released, ours comes back, camera and all
+-- The flag: the field comes back ON ITS GRID SLOTS, not on the finish line
 -- ===========================================================================
 serverState({ phase = 'finished', totalLaps = 3, maxResets = -1, drivers = {} })
 handlers['RM_ReleaseSpectate']({ source = 'race', order = 1, count = 5 })
-
--- Collisions are off for the whole operation: a field respawning together is
--- how cars land inside each other and are thrown apart.
 check(ghosts[RIVAL_ID] == true, 'cars are ghosted while the field respawns')
-check(spawns == 0, 'and nothing has spawned yet — the placement is queued')
+check(spawns == 0, 'and nothing has spawned yet -- the placement is queued')
 
 frames(0.3)
-check(spawns == 1,
-  'our car comes back even though the client was attached to a rival\'s car')
+check(spawns == 1, 'our car comes back')
+check(drivingBlocked() == false, 'and it can be driven again')
 check(attached ~= nil and attached:getID() == RESPAWNED_ID,
-  'and the camera is bound to OUR car, not left on whatever the game picked')
-check(freeCam == false, 'the driving camera is restored')
-check(ghosts[RIVAL_ID] == true, 'collisions stay off until the whole field has settled')
+  'with this client attached to OUR car, not whatever the game picked')
+check(freeCam == false, 'still without the mod ever touching the camera mode')
 
--- ...and come back once it has, AND once the cars are off each other. Landing
--- is what the placement timer waits for; being clear of the car next to you is
--- the gate every ghost passes through on its way back to solid. The mock spawns
--- every car at the origin, so they are put on their own ground here -- which is
--- what a grid of start slots is.
+-- THE WELD FIX. A race removes cars as they take the flag, so every snapshot is
+-- within a few metres of the start/finish line -- and respawning each car at its
+-- own snapshot put the whole field back into that same few metres, inside each
+-- other. The grid is spaced by construction, and this driver owns slot 2 of it.
+check(spawnedAt ~= nil, 'the respawn was given an explicit position')
+-- ...and then actually STOOD on the slot. Spawning near it is not the same as
+-- being placed on it: the spawn cannot set the heading (BeamNG spawns
+-- asynchronously, so nothing exists to turn yet), which is why the placement
+-- scheduler has a step that runs after the spawn grace. If that step does not
+-- run, a car comes back roughly where it was removed -- the start/finish line,
+-- because that is where a race removes finishers -- and pointing whichever way
+-- the spawn left it.
+check(placedAt ~= nil, 'and the car is then PLACED, not just spawned near the slot')
+check(placedAt ~= nil and math.abs(placedAt.x - 20) < 0.01
+  and math.abs(placedAt.y - 0) < 0.01,
+  'on the grid slot it owns')
+check(placedAt ~= nil and placedAt.rw ~= nil,
+  'with a heading, so it is not left pointing whichever way it spawned')
+check(spawnedAt ~= nil and math.abs(spawnedAt.x - 20) < 0.01
+  and math.abs(spawnedAt.y - 0) < 0.01,
+  "and it is this drivers GRID SLOT, not the finish line they were removed at")
+
 world[RIVAL_ID].x = 40
 if world[RESPAWNED_ID] then world[RESPAWNED_ID].x = 80 end
 frames(3.0)
 check(ghosts[RIVAL_ID] == nil, 'collisions come back once the field is placed and settled')
 
 -- ===========================================================================
--- The stagger: a driver further down the field waits its turn
+-- NO SLOT OF THEIR OWN: any start position beats the finish line
 -- ===========================================================================
--- Same operation, from the back of a five-car field. Nothing may happen on the
--- tick the release arrives, or the whole point of the order is lost.
-attached = world[RESPAWNED_ID]
-spawns = 0
-serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
-handlers['RM_ForceSpectate']({ reason = 'out', source = 'race' })
-serverState({ phase = 'finished', totalLaps = 3, maxResets = -1, drivers = {} })
-handlers['RM_ReleaseSpectate']({ source = 'race', order = 5, count = 5 })
+-- The slot a driver owned is the right answer and is not always available. The
+-- phase change to 'finished' clears gridSlot, a driver who joined mid-session
+-- never had one, and a slot can outnumber a grid that was edited since.
+--
+-- Falling straight back to the snapshot puts the car exactly where it was
+-- REMOVED -- and a race removes finishers at the start/finish line, facing
+-- however they crossed it. That is "respawned near the start/finish, sideways".
+do
+  -- A clean world. The car respawned by the block above is still one of OURS, so
+  -- leaving it here makes the "do I already have a car?" guard answer yes and the
+  -- respawn never runs -- the test polluting itself rather than the mod failing.
+  world[RESPAWNED_ID] = nil
+  world[OWN_ID] = makeVehicle(OWN_ID)
+  attached = world[OWN_ID]
+  deleted, spawns, spawnedAt, placedAt = {}, 0, nil, nil
+  blockedGroups = {}
+  -- A grid is placed, but this driver has no slot on it.
+  handlers['RM_ApplyLayout']({
+    name = 'test', checkpoints = { { x = 0, y = 300, z = 0, hx = 0, hy = 1 } },
+    startPositions = { { x = 10, y = 0, z = 0, hx = 0, hy = 1 } },
+  })
+  handlers['RM_GridAssign']({ slot = nil })
+  frames(1.0)
 
-frames(0.1, 0.01)
-check(spawns == 0, 'the last car in the field does not spawn on the first tick')
-frames(1.0, 0.05)
-check(spawns == 1, 'it spawns once its turn in the order comes round')
-check(attached ~= nil and attached:getID() == RESPAWNED_ID,
-  'and its camera is bound to its own car too')
+  serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
+  handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race' })
+  serverState({ phase = 'finished', totalLaps = 3, maxResets = -1, drivers = {} })
+  handlers['RM_ReleaseSpectate']({ source = 'race', order = 1, count = 1 })
+  frames(3.0)
+
+  check(spawns == 1, 'the car comes back')
+  check(spawnedAt ~= nil and math.abs(spawnedAt.x - 10) < 0.01,
+    'on a placed start position, not where it was removed')
+  check(placedAt ~= nil and math.abs(placedAt.x - 10) < 0.01,
+    'and is stood on it properly, facing down the slot')
+end
+
+-- ===========================================================================
+-- DERBY ELIMINATION: the wreck stays in the arena, and stays visible
+-- ===========================================================================
+-- The opposite call, and the one the live report was about. Deleting a vehicle
+-- in BeamMP deletes it for EVERY client, so using deletion to mean "you are out"
+-- removed the car from the arena the other drivers were still fighting in.
+world[OWN_ID] = makeVehicle(OWN_ID)
+attached = world[OWN_ID]
+deleted, spawns, blockedGroups = {}, 0, {}
+serverState({ phase = 'waiting', totalLaps = 3, maxResets = -1, drivers = {} })
+handlers['RM_ForceSpectate']({ reason = 'Eliminated', source = 'derby' })
+
+check(deleted[OWN_ID] ~= true, 'an eliminated driver KEEPS their car as a wreck')
+check(world[OWN_ID] ~= nil, 'so it is still in the arena for everyone else to see')
+check(deleted[RIVAL_ID] ~= true,
+  'and eliminating one driver touches no other car -- B through N are unaffected')
+check(drivingBlocked() == true, 'the wreck cannot be driven')
+check(freeCam == false, 'and no camera mode is forced on them')
+check(attached ~= nil and attached:getID() == OWN_ID,
+  'they are left on their OWN wreck rather than moved somewhere automatically')
+
+-- Tabbing away is theirs to do, and the mod does not drag them back. This is the
+-- loop that used to re-assert freecam every second.
+attached = world[RIVAL_ID]
+frames(5.0)
+check(attached ~= nil and attached:getID() == RIVAL_ID,
+  'after five seconds of watching a rival, the mod has not snatched the view back')
+check(deleted[RIVAL_ID] ~= true, 'and watching a rival never deletes their car')
+
+handlers['RM_ReleaseSpectate']({ source = 'derby' })
+check(drivingBlocked() == false, 'the derby ending gives driving back')
+check(spawns == 0, 'and nothing respawns, because nothing was ever removed')
 
 if fails == 0 then
   print('respawn_test: ' .. checks .. ' checks, 0 failures')

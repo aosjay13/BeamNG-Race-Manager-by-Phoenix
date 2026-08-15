@@ -8,7 +8,7 @@
 -- The dangerous half is switching collisions back ON. BeamNG welds the node
 -- structures of two overlapping vehicles together the instant both are solid:
 -- it ends both drivers' races and there is no recovery from it. So the ghost
--- does NOT simply expire — when its timer runs out the space around the car is
+-- does NOT simply expire - when its timer runs out the space around the car is
 -- tested against every other car, and collisions come back only on a frame that
 -- is provably clear. That test has no time limit and is never overridden, which
 -- is what most of this file is about.
@@ -334,7 +334,7 @@ rival.x, rival.y = 0, 0
 handlers['RM_Ghost']({ pid = RIVAL_PID, active = true,
   startedAt = raceTime, duration = 5.0 })
 check(rival.ghosted == true, 'a broadcast ghost is applied to the right rival car')
-check(third.ghosted ~= true, 'and only to that one — ghosts are per vehicle, not global')
+check(third.ghosted ~= true, 'and only to that one - ghosts are per vehicle, not global')
 
 driverReset(0, 0)             -- straight into the pile
 frames(6.0)
@@ -344,7 +344,7 @@ check(own.ghosted == true,
 third.x = 500                 -- the solid one leaves; the ghosted rival stays
 frames(0.5)
 check(own.ghosted == true,
-  'a ghosted car still inside us keeps us ghosted — its ghost is not ours to '
+  'a ghosted car still inside us keeps us ghosted - its ghost is not ours to '
     .. 'rely on, and it can end at any moment')
 
 rival.x, rival.y = 500, 0     -- it drives clear, which a ghost can always do
@@ -511,7 +511,7 @@ check(countSent('RM_GhostStart') == 3,
 rival.x, rival.y = 0, 0
 frames(30.0)
 check(own.ghosted == true,
-  'the maximum caps the timer only — it never overrides the occupancy check')
+  'the maximum caps the timer only - it never overrides the occupancy check')
 rival.x = 500
 frames(0.3)
 check(own.ghosted == false, 'and the car is released when the space clears')

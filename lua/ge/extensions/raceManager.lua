@@ -4,7 +4,7 @@
 -- owns the session state; this extension does what only a client can do:
 --   1. Checkpoint editor: place gate-style checkpoints at the local vehicle's
 --      position AND heading. Each checkpoint is a FLAT RECTANGLE standing
---      perpendicular to the travel direction — a width (lateral span) by a
+--      perpendicular to the travel direction - a width (lateral span) by a
 --      height (vertical extent, so high banking still gets covered). Both are
 --      adjustable globally and per checkpoint from the UI.
 --   2. Detect the LOCAL vehicle crossing each gate, in order, by intersecting
@@ -42,6 +42,10 @@ local TUNE = {
   MIN_HEIGHT = 1,
   MAX_HEIGHT = 100,
   EDGE_RADIUS = 0.15,  -- meters; thickness of the drawn rectangle edge
+  -- Thickness of a race POLE. Fatter than an editor edge -- this is the one a
+  -- driver reads at a hundred miles an hour -- but only just: the first attempt
+  -- at 0.35 read as a pair of pillars rather than a gate.
+  POLE_RADIUS = 0.18,
   GHOST_ALPHA = 0.35,  -- mesh alpha applied to a ghosted car
   -- Reset ghosting. The DURATIONS are not here: they are a league rule, so the
   -- server owns them and broadcasts them (see ghost.rules). What is left is
@@ -62,6 +66,18 @@ local TUNE = {
   -- circuits report: this only needs to swallow same-crossing re-fires, not
   -- bound real lap times.
   LAP_DEBOUNCE = 2.0,
+  -- Metres a start position may be from the start/finish line and still count as
+  -- a grid stretching back from it. Sixty cars at eight metres a row is under
+  -- 250, so past this the grid is somewhere else on the circuit and the first
+  -- crossing is a part lap (see branch.gridIsOff).
+  GRID_ON_LINE_RANGE = 250,
+  -- Most cars a generated grid may put in one row. Two is a road-race grid and
+  -- an oval's; three and four are short-track and dirt formats.
+  GRID_MAX_WIDTH = 8,
+  -- Metres a legal reset may move a car before it is treated as a RECOVERY
+  -- teleport and undone. A repair in place moves it centimetres; BeamNG's
+  -- recover/load-home drops it at a spawn point that is never this close.
+  RECOVER_SNAP_RANGE = 25,
   PROGRESS_EVERY = 0.3,   -- seconds between live-position reports
   -- Live lap clock for the driver's own HUD. Pushed on a slow cadence and
   -- INTERPOLATED in the UI between pushes, which keeps the readout smooth
@@ -106,16 +122,6 @@ local TUNE = {
   PIT_STOP_SPEED = 0.7,
   PIT_PROMPT_EVERY = 1.5, -- seconds between "stop in the box" reminders
   -- The joker gate's pole colour, and its colour once the joker has been taken.
-  -- Plain {r, g, b} arrays rather than ColorF: these are written into the engine
-  -- marker's own colour table, which is three numbers. They match palette()'s
-  -- `joker` and `jokerUsed` so the editor and the track agree.
-  JOKER_POLE_RGB      = { 0.72, 0.35, 1 },
-  JOKER_POLE_USED_RGB = { 0.62, 0.62, 0.7 },
-  -- How far each stock pole colour is lifted toward white once it has been
-  -- taken to full value (see poles.brighten). This is the difference between a
-  -- saturated colour and a luminous one; past about a third it starts costing
-  -- more in hue than it buys in visibility.
-  POLE_LIFT = 0.25,
   -- Pole colours set outright rather than lifted, because their stock value is
   -- black and there is no brighter version of black to compute.
   --
@@ -157,6 +163,46 @@ local route            = {}
 -- driver on a sprint stage wants to be told they are on a sprint stage. It
 -- belongs to the TRACK, so it travels with the layout.
 local pointToPoint     = false
+
+-- BRANCHING ROUTES (the other ways round this track).
+--
+-- A branch is a sparse set of per-slot gate overrides on `route`. Read the main
+-- route's indices as SLOTS: at slot i, a driver on a branch must cross that
+-- branch's gate for slot i, or the main gate when the branch has none. Slots a
+-- branch does not override are shared, and crossed by everybody.
+--
+-- A branch therefore cannot add or remove slots, only substitute gates into the
+-- ones that exist, and that is the whole design: every lane has the same number
+-- of slots, so `armedWp` stays an integer index bounded by #route, the lap still
+-- completes on armedWp >= #route whichever way round a driver went, and the
+-- checkpoint count reported to the server means the same thing for all of them.
+-- The running order needed no changes at all.
+--
+-- ONE TABLE, not eight locals. The top level of this file is a function and Lua
+-- allows it 200 of them; this chunk is close enough to that ceiling that the tail
+-- of the file is already scoped into a do...end block to get its registers back
+-- (see the note above the server -> client handlers). `pit` is grouped the same
+-- way for the same reason.
+local branch = {
+  -- As authored: { { id, name, gates = { { slot, x, y, z, hx, hy, ... }, ... } } }
+  list   = {},
+  -- Resolved once, when a layout is applied: id -> { [slot] = gate }. The
+  -- per-frame path is one table index into this and nothing else -- no search,
+  -- no allocation, and no work at all on a track with no branches.
+  bySlot = {},
+  -- Which lane THIS car is on: a branch id, or nil for the main route.
+  lane   = nil,
+  -- Was that lane assigned by the grid rather than chosen by driving? A head-on
+  -- race locks it for the session; a rally-style split leaves it free per lap.
+  lock   = false,
+  -- Does this track grid its cars away from the start/finish line? Mirrored from
+  -- the layout. Decides whether the first crossing is an out lap, and -- until it
+  -- happens -- that the ONLY armed gate is the line itself (see armedGate).
+  gridOffLine = false,
+  -- Editor: the branch being edited, and the slot the next placed gate overrides.
+  editId   = nil,
+  editSlot = 1,
+}
 local checkpointWidth  = TUNE.DEFAULT_WIDTH
 local checkpointHeight = TUNE.DEFAULT_HEIGHT
 local visualize        = true
@@ -381,9 +427,18 @@ local SNAPSHOT_EVERY = 0.25      -- seconds between "last good position" samples
 --   'checkpoint' -- the car is moved to the last checkpoint it crossed
 local resetMode      = 'inplace'
 local lastGate       = nil       -- last checkpoint the local car crossed (a wp table)
+-- Was that crossing made BACKWARDS through the gate?
+--
+-- A gate shared between two lanes is stored with one heading and driven both
+-- ways, so which way a car was actually going cannot be read off the gate
+-- afterwards -- and relocateToGate stands the car facing the gate's heading. On a
+-- head-on layout that would respawn half the field pointing into the oncoming
+-- one. Recorded per crossing rather than declared per gate, so it is right for
+-- shared gates, branch gates and ordinary gates alike.
+local lastGateBack   = false
 
 -- Once the allowance is spent the reset INPUTS themselves are switched off via
--- BeamNG's input action filter, so pressing R/Insert does nothing at all — the
+-- BeamNG's input action filter, so pressing R/Insert does nothing at all - the
 -- car never resets, not even in place. The onVehicleResetted restore below
 -- stays as a fallback for reset paths the filter cannot see.
 --
@@ -449,6 +504,11 @@ local qualiTimeLimit = 0         -- seconds, 0 = unlimited
 -- is driven once), and this client mirrors the answer so it can say so on the
 -- driver's own readout before they have crossed anything.
 local qualiOutLap    = false
+-- Connected while somebody else's session was already running. Mirrored from
+-- this client's own driver row: the server refuses to enter a mid-session
+-- arrival and flags them instead, and the flag is what ghosts their car so they
+-- cannot interfere with a race they are not in. Cleared when the next grid forms.
+local isBystander    = false
 
 -- Forced spectator mode (Module 1). Non-nil while this client is out of the
 -- session: it holds the source ('race' or 'derby') that imposed the penalty, so
@@ -456,7 +516,6 @@ local qualiOutLap    = false
 -- other's spectators.
 local spectatorLock   = nil
 local spectatorReason = nil
-local spectatorRecheck = 0       -- seconds until the camera is re-asserted
 
 local function inMultiplayer()
   return MPGameNetwork ~= nil and TriggerServerEvent ~= nil
@@ -617,8 +676,8 @@ end
 -- ---------------------------------------------------------------------------
 -- The server needs to know how big this track's grid is so it can warn when
 -- there are more drivers than start positions, but it has no way to see the
--- placements. Report the count whenever it actually changes — placing a slot,
--- deleting one, loading a layout — and never more often than that.
+-- placements. Report the count whenever it actually changes - placing a slot,
+-- deleting one, loading a layout - and never more often than that.
 local lastReportedStarts = nil
 -- Tell the server how many start positions this track has -- and, now, WHERE
 -- they are.
@@ -641,8 +700,26 @@ local function reportStartCount()
   for i, sp in ipairs(startPositions) do
     positions[i] = { x = sp.x, y = sp.y, z = sp.z, hx = sp.hx, hy = sp.hy }
   end
-  TriggerServerEvent('RM_StartPositionCount',
-    jsonEncode({ count = n, positions = positions }))
+  -- The lane NAMES ride along, but never the branch gates: the server has no
+  -- physics and never tests a crossing, so the only thing it wants a lane for is
+  -- the name in the results file. Sending gates it would have to validate against
+  -- a route length it does not hold would be validation theatre.
+  local laneNames = nil
+  if #branch.list > 0 then
+    laneNames = {}
+    for i, b in ipairs(branch.list) do
+      laneNames[i] = { id = b.id, name = b.name or b.id }
+    end
+  end
+  TriggerServerEvent('RM_StartPositionCount', jsonEncode({
+    count = n, positions = positions,
+    laneNames = laneNames,
+    gridOffLine = branch.gridIsOff(),
+    -- The joker lap cannot be armed on a track with no joker route: the rule
+    -- disqualifies anyone who did not complete it, and with no route that is
+    -- everyone. The server needs the count to refuse it.
+    jokerGates  = #jokerRoute,
+  }))
 end
 
 local function pushRouteState()
@@ -675,6 +752,20 @@ local function pushRouteState()
     jokerLap     = jokerLapUsed,
     jokerEnabled = jokerEnabled,
     editorTarget = editorTarget,
+    -- Branching routes (the other ways round this track)
+    branches     = branch.list,
+    branchEdit   = branch.editId,
+    branchSlot   = branch.editSlot,
+    lane         = branch.lane,
+    laneLocked   = branch.lock,
+    laneName     = branch.nameOf(branch.lane),
+    gridOffLine  = branch.gridIsOff(),
+    -- Is there a GENERATED grid the spacing sliders may move? They only ever
+    -- touch slots the generator laid out; a grid placed by hand is left alone.
+    gridGenerated = branch.gridTool.generated,
+    gridSpacing   = branch.gridTool.spacing,
+    gridStagger   = branch.gridTool.stagger,
+    gridWidth     = branch.gridTool.width,
     -- Reset ruleset (Module 1)
     maxResets    = maxResets,
     resetsUsed   = resetsUsed,
@@ -692,8 +783,8 @@ end
 
 -- Every state broadcast from the current server plugin carries this stamp. A
 -- broadcast without it comes from an OUTDATED copy of the server plugin still
--- installed alongside this one — two copies alternating broadcasts is exactly
--- what made every UI element flicker between two states on each tick — so
+-- installed alongside this one - two copies alternating broadcasts is exactly
+-- what made every UI element flicker between two states on each tick - so
 -- unstamped payloads are dropped (and the problem reported once).
 local RM_PROTOCOL = 2
 local staleServerWarned = false
@@ -701,7 +792,7 @@ local function fromCurrentServer(data)
   if type(data) == 'table' and data.rmProtocol == RM_PROTOCOL then return true end
   if not staleServerWarned then
     staleServerWarned = true
-    pushNotice('server', 'Ignoring broadcasts from an outdated Race Manager server plugin — '
+    pushNotice('server', 'Ignoring broadcasts from an outdated Race Manager server plugin: '
       .. 'remove old copies from the server\'s Resources/Server folder')
     log('W', 'raceManager', 'Dropped a state broadcast without the current protocol stamp: '
       .. 'an outdated copy of the server plugin appears to be installed alongside this one')
@@ -718,20 +809,33 @@ end
 --   lateral r = (hy, -hx)     span = width
 --   up      z                 span = height  (covers the banking)
 -- The car scores the gate when its frame-to-frame movement segment crosses the
--- rectangle's plane in the FORWARD direction (so a reversing car can never
--- score one) and the intersection point lands inside the width/height
+-- rectangle's plane and the intersection point lands inside the width/height
 -- half-extents. Sampling the segment rather than the position means the test
 -- never tunnels, no matter how fast the car is going or how thin the gate is.
 -- Dimensions are passed in so the same math can be unit-tested headlessly
 -- (see tests/gate_test.lua); the live caller feeds gateDims(wp).
+--
+-- EITHER DIRECTION COUNTS, unless the gate is marked one-way. A driver who
+-- missed a checkpoint is already driving back to it, and the forward-only rule
+-- made them pass through, turn, and come back. Nothing was protected by it: a
+-- gate is ARMED once, and that is what stops it scoring twice, with
+-- TUNE.LAP_DEBOUNCE guarding the one-gate route.
+--
+-- `oneWay` is the per-gate escape hatch for geometry where direction IS the
+-- separation: a hairpin or a figure-8 crossover.
+--
+-- Returns (crossed, backwards). The second matters because a gate shared between
+-- two lanes is stored with one heading and driven both ways, so relocateToGate
+-- cannot read the car's direction off the gate afterwards.
 local function rectCrossesGate(wp, prev, cur, w, h)
   local fx, fy = wp.hx, wp.hy
 
   -- Signed distance to the gate plane before and after this frame's movement.
   local dPrev = (prev.x - wp.x) * fx + (prev.y - wp.y) * fy
   local dCur  = (cur.x  - wp.x) * fx + (cur.y  - wp.y) * fy
-  -- Forward crossing only: behind the plane last frame, on/past it now.
-  if not (dPrev < 0 and dCur >= 0) then return false end
+  local forward  = (dPrev < 0 and dCur >= 0)
+  local backward = (not wp.oneWay) and (dPrev > 0 and dCur <= 0)
+  if not (forward or backward) then return false end
 
   local t  = dPrev / (dPrev - dCur)
   local ix = prev.x + (cur.x - prev.x) * t
@@ -740,11 +844,12 @@ local function rectCrossesGate(wp, prev, cur, w, h)
   local lateral = (ix - wp.x) * fy - (iy - wp.y) * fx
   if math.abs(lateral) > w * 0.5 then return false end
   if math.abs(iz - wp.z) > h * 0.5 then return false end
-  return true
+  return true, backward
 end
 
 -- Live wrapper: resolve the gate's effective rectangle dimensions, then run the
--- crossing test. Keeps callers unchanged (segmentCrossesGate(wp, a, b)).
+-- crossing test. Keeps callers unchanged (segmentCrossesGate(wp, a, b)), and
+-- passes the backwards flag straight back out.
 local function segmentCrossesGate(wp, prev, cur)
   local w, h = gateDims(wp)
   return rectCrossesGate(wp, prev, cur, w, h)
@@ -781,12 +886,16 @@ local function resetLapTracking()
   jokerLapUsed = nil
   resetsUsed   = 0
   lastGate     = nil
+  lastGateBack = false
+  -- A lane chosen by driving starts undecided; one that came from the grid slot
+  -- is set again below, once the slot for this session is known.
+  if not branch.lock then branch.lane = nil end
   blockNoticeLeft = 0   -- a fresh session may report its first blocked attempt at once
   -- Telemetry restarts with the session; report immediately on the next frame
   -- so the leaderboard has a distance for this driver from the first moments.
   progressLeft = 0
   -- Cars launch from the grid at the line, so the first target is checkpoint 1
-  -- and detection is live from GO — for a qualifying session exactly as much as
+  -- and detection is live from GO - for a qualifying session exactly as much as
   -- for a race. (In qualifying that first circuit is the out lap: it is detected
   -- and reported like any other, and the server is what declines to score it.
   -- Nothing here stops timing, because a lap the client did not measure is a lap
@@ -805,13 +914,16 @@ end
 -- Strict track-state purge: throw away every checkpoint table and reset lap
 -- tracking to a virgin state. The 3D gate poles are immediate-mode
 -- debugDrawer shapes redrawn from `route` every frame, so emptying the table
--- removes them from the world on the next update tick — nothing else holds a
+-- removes them from the world on the next update tick - nothing else holds a
 -- reference to them. Runs before any new layout is applied and whenever the
 -- server broadcasts RM_ClearTrack, so ghost checkpoints from an earlier
 -- session cannot survive.
 local function clearTrackState(reason)
   route        = {}
   jokerRoute   = {}
+  -- The pit lane goes too. Stalls used to survive a purge, stay standing on the
+  -- next track, and ride along into the next save.
+  pitRoute     = {}
   startPositions = {}
   gridSlot     = nil
   armedWp      = 1
@@ -824,6 +936,16 @@ local function clearTrackState(reason)
   prevPos      = nil
   progressLeft = 0
   lastGate     = nil
+  lastGateBack = false
+  -- The lanes go with the gates. A branch left standing after a purge would arm
+  -- gates from a track that is no longer loaded.
+  branch.list   = {}
+  branch.bySlot = {}
+  branch.lane   = nil
+  branch.lock   = false
+  branch.gridOffLine = false
+  branch.editId      = nil
+  branch.editSlot    = 1
   pushRouteState()
   log('I', 'raceManager', 'Track state cleared (' .. tostring(reason or 'local') .. ')')
 end
@@ -835,16 +957,24 @@ function M.clearTrackState()
   if inMultiplayer() then TriggerServerEvent('RM_ClearTrackState', '') end
 end
 
--- Is the lap this driver is on the out lap -- the one qualifying gives away?
+-- Is the lap this driver is on the out lap -- the one that is given away?
 --
 -- Worked out locally rather than read off this client's own driver row, and the
 -- distinction matters: the row is authoritative but arrives on a broadcast three
 -- times a second, so a readout driven by it would go on saying NOT TIMED for up
 -- to a third of a second after the driver had crossed the line and started a
--- lap that very much was. The two agree by construction — both count crossings
+-- lap that very much was. The two agree by construction - both count crossings
 -- from the grid, and the server's rule (qualiOutLap) is what gates this.
+--
+-- The server's flag is no longer qualifying's alone: a RACE on a track that grids
+-- its cars away from the start/finish line owes one for the same reason, so the
+-- phase test is gone and the session rule is the only thing deciding it. The wire
+-- field kept its old name; what it means widened underneath.
+-- The spectator test is here rather than at the two call sites because it is true
+-- of both of them: a driver who has taken the flag is neither on an out lap for
+-- the HUD's purposes nor owed an armed gate for the crossing code's.
 local function onOutLap()
-  return qualiOutLap and phase == 'qualifying' and localLap <= 1
+  return qualiOutLap and sessionRunning() and localLap <= 1 and not spectatorLock
 end
 
 local function onLapCompleted()
@@ -879,7 +1009,7 @@ local function onLapCompleted()
     -- the moment the driver most needs to know their timing has started, and it
     -- is the moment they are least able to go looking for it.
     guihooks.trigger('RaceManagerLapDone', { outLap = true, lap = localLap })
-    pushNotice('session', 'OUT LAP COMPLETE — you are on a TIMED lap now')
+    pushNotice('session', 'OUT LAP COMPLETE: you are on a TIMED lap now')
     log('I', 'raceManager', string.format('Out lap done: %.3fs (not timed)', lapTime))
   else
     announceLap(localLap)
@@ -897,9 +1027,9 @@ end
 -- main route so a driver diverting onto the alternate loop keeps their main
 -- checkpoint progress. Two rules are enforced here, on the only side that can
 -- see the car move:
---   * Lap 1 restriction — any joker attempt started on lap 1 is invalidated
+--   * Lap 1 restriction - any joker attempt started on lap 1 is invalidated
 --     outright (progress thrown away, nothing reported to the server).
---   * Once per race — a completed joker route is reported exactly once; every
+--   * Once per race - a completed joker route is reported exactly once; every
 --     later run is ignored and flagged to the driver.
 local function checkJokerGates(prev, cur)
   if not jokerEnabled or #jokerRoute == 0 then return end
@@ -911,7 +1041,7 @@ local function checkJokerGates(prev, cur)
     -- Lap 1: the attempt never counts. Re-arm from the first joker gate so a
     -- legal run on a later lap still works.
     jokerArmed = 1
-    pushNotice('joker', 'JOKER LAP NOT ALLOWED ON LAP 1 — attempt invalidated')
+    pushNotice('joker', 'JOKER LAP NOT ALLOWED ON LAP 1: attempt invalidated')
     log('W', 'raceManager', 'Joker route attempted on lap 1: attempt invalidated')
     pushRouteState()
     return
@@ -919,7 +1049,7 @@ local function checkJokerGates(prev, cur)
 
   if jokerTaken then
     jokerArmed = 1
-    pushNotice('joker', 'Joker Lap already taken — this run does not count')
+    pushNotice('joker', 'Joker Lap already taken: this run does not count')
     pushRouteState()
     return
   end
@@ -939,6 +1069,59 @@ local function checkJokerGates(prev, cur)
   pushRouteState()
 end
 
+-- ---------------------------------------------------------------------------
+-- Branching routes: which gate is slot i, for this car?
+-- ---------------------------------------------------------------------------
+-- The main gate, unless the lane this car is on overrides that slot. One table
+-- index on the hot path, and the `lane` test short-circuits the whole thing on a
+-- track with no branches -- which is every track that existed before this, and
+-- most of the ones that come after.
+--
+-- Hung off the branch table rather than given a local of its own, for the
+-- register budget noted where that table is declared.
+-- A lane's display name, falling back to its id so a lane is never blank.
+function branch.nameOf(id)
+  if not id then return nil end
+  for _, b in ipairs(branch.list) do
+    if b.id == id then return b.name or b.id end
+  end
+  return id
+end
+
+-- Does this track grid its cars somewhere other than the start/finish line?
+--
+-- Inferred rather than asked for. An admin who put the grid somewhere else has
+-- already said so by putting it there, and a switch they have to remember to set
+-- is a switch they will forget -- which here costs the whole field a fastest lap
+-- nobody drove.
+--
+-- Two signals, either of which settles it:
+--   * A start position facing AGAINST the start/finish line. That is a head-on
+--     layout, where one row of slots on the line is impossible by construction.
+--   * A start position further from the line than any grid is long. A sixty-car
+--     grid at eight metres a row is under 250m, so beyond that it is not a grid
+--     stretching back from the line, it is a grid somewhere else on the circuit.
+function branch.gridIsOff()
+  local sf = route[#route]
+  if not sf or #startPositions == 0 then return false end
+  local r2 = TUNE.GRID_ON_LINE_RANGE * TUNE.GRID_ON_LINE_RANGE
+  for _, sp in ipairs(startPositions) do
+    if (sp.hx or 0) * (sf.hx or 0) + (sp.hy or 1) * (sf.hy or 1) < 0 then return true end
+    local dx, dy = sp.x - sf.x, sp.y - sf.y
+    if dx * dx + dy * dy > r2 then return true end
+  end
+  return false
+end
+
+function branch.gateFor(i, lane)
+  if lane then
+    local bySlot = branch.bySlot[lane]
+    local g = bySlot and bySlot[i]
+    if g then return g end
+  end
+  return route[i]
+end
+
 local function checkGates()
   if spectatorLock then return end     -- out of the session: no more timing
   if #route == 0 and #jokerRoute == 0 then return end
@@ -946,12 +1129,75 @@ local function checkGates()
   local veh, pos = sampledVehicle()
   if not veh or not pos then return end
   if prevPos then
-    local wp = route[armedWp]
-    if wp and segmentCrossesGate(wp, prevPos, pos) then
-      lastGate = wp   -- the "Last Checkpoint" reset mode respawns here
-      if armedWp >= #route then
+    -- The gate this car must cross next. Still ONE gate, which is what keeps the
+    -- crossing test as cheap as it was: a lane is decided before the lap starts
+    -- (from the grid) or on the first branched slot, not re-evaluated per frame.
+    --
+    -- THE OUT LAP ARMS THE CHECKPOINTS LIKE ANY OTHER LAP. An earlier version
+    -- armed only the start/finish line on the reasoning that a lap nobody is
+    -- scoring has nothing to police -- which is true, and which also took the
+    -- checkpoints off the driver's screen for the whole of their first lap. The
+    -- out lap is the lap where a driver least knows the circuit; it is the worst
+    -- possible one to hide the gates on.
+    --
+    -- The line is accepted as well, further down, so a car gridded PAST slot 1
+    -- (which a head-on layout does, spreading its grid round the circuit) can
+    -- still end the out lap by reaching the line rather than being sent most of
+    -- the way round backwards to arm a gate behind it.
+    local onOut = onOutLap()
+    local wp = branch.gateFor(armedWp, branch.lane)
+    local crossed, backwards = false, false
+    if wp then crossed, backwards = segmentCrossesGate(wp, prevPos, pos) end
+
+    -- On the out lap the LINE ends the lap from wherever the driver has got to,
+    -- even with slots still uncleared. Nothing on this lap is scored, so there is
+    -- nothing to protect by making them go back for a gate.
+    local lineEndedOutLap = false
+    if onOut and not crossed and armedWp < #route then
+      local line = route[#route]
+      if line then
+        crossed, backwards = segmentCrossesGate(line, prevPos, pos)
+        if crossed then wp, lineEndedOutLap = line, true end
+      end
+    end
+
+    -- Undecided lane: the branch gates for this slot are armed alongside the main
+    -- one, and whichever the car actually drives through is the line it is on.
+    -- Only reached on a track that HAS branches, whose lane is not locked to the
+    -- grid, and only on a slot that is actually branched -- so a head-on race
+    -- (locked at the grid) never walks this, and nor does an ordinary circuit.
+    local took = nil
+    if not crossed and not onOut and not branch.lane and not branch.lock then
+      for _, b in ipairs(branch.list) do
+        local g = branch.bySlot[b.id] and branch.bySlot[b.id][armedWp]
+        if g then
+          crossed, backwards = segmentCrossesGate(g, prevPos, pos)
+          if crossed then wp, took = g, b end
+        end
+        if crossed then break end
+      end
+    end
+
+    if crossed then
+      lastGate     = wp   -- the "Last Checkpoint" reset mode respawns here
+      lastGateBack = backwards
+      if took then
+        branch.lane = took.id
+        pushNotice('branch', 'You are on the ' .. (took.name or took.id) .. ' line')
+      end
+      if lineEndedOutLap then
+        -- Reached the line with slots still owing. The out lap is over; slot 1
+        -- arms behind it with timing running. onLapCompleted reports the crossing
+        -- like any other -- the SERVER is what declines to score it, exactly as
+        -- it always has for qualifying.
         onLapCompleted()
         armedWp = 1
+      elseif armedWp >= #route then
+        onLapCompleted()
+        armedWp = 1
+        -- A lane chosen by driving is chosen again next lap; one assigned by the
+        -- grid is the direction this car is racing in and does not change.
+        if not branch.lock then branch.lane = nil end
       else
         armedWp = armedWp + 1
       end
@@ -1009,7 +1255,7 @@ end
 -- Live position telemetry
 -- ---------------------------------------------------------------------------
 -- The server decides the running order but has no physics access, so the third
--- tie-break metric — how far a car is from the next checkpoint — can only be
+-- tie-break metric - how far a car is from the next checkpoint - can only be
 -- measured here. A few times a second that distance goes up to the server
 -- together with the lap and the number of checkpoints already cleared on it. The
 -- send is throttled (TUNE.PROGRESS_EVERY) so a full grid costs the server a
@@ -1020,7 +1266,11 @@ end
 -- payload below, so ~55 out of every 60 were thrown away unused.
 local function reportProgress(dt)
   if not sessionRunning() or spectatorLock then return end
-  local wp = route[armedWp]
+  -- The gate THIS car is driving towards, which on a branching track is not
+  -- necessarily the main route's. Reporting the distance to a gate on the other
+  -- lane would rank a head-on field by how close each car was to a gate it is
+  -- driving away from.
+  local wp = onOutLap() and route[#route] or branch.gateFor(armedWp, branch.lane)
   if not wp then return end
 
   progressLeft = progressLeft - dt
@@ -1084,7 +1334,7 @@ end
 -- in the vehicle's info.json and the .pc filename is only a sanitised
 -- derivative of it), which left the Garage List showing a mangled filename
 -- instead of the setup's actual name. The real name is looked for on the config
--- table first — under whichever key the build carries it — and the filename stem
+-- table first - under whichever key the build carries it - and the filename stem
 -- is kept as the last resort so older builds behave exactly as before.
 local function configDisplayName(cfg)
   if type(cfg) ~= 'table' then return nil end
@@ -1101,7 +1351,7 @@ end
 -- The BeamNG build this client is running. A game update can rename vehicle
 -- parts (v0.39 did: "Renamed a bunch of parts on some vehicles to unify part
 -- names with other vehicles"), and a renamed part changes the configuration
--- signature below without the car itself changing at all — so every Garage List
+-- signature below without the car itself changing at all - so every Garage List
 -- entry captured on an older build silently stops matching. Reporting the
 -- version lets the server say THAT, instead of leaving drivers rejected with no
 -- explanation. nil when the build cannot be identified; the server treats that
@@ -1138,7 +1388,7 @@ local function localVehicleConfig()
   pcall(function () vid = veh:getID() end)
   return {
     model = model,
-    label = configName and (model .. ' — ' .. configName) or model,
+    label = configName and (model .. ' - ' .. configName) or model,
     sig   = sig,
     vid   = vid,
   }
@@ -1163,7 +1413,7 @@ end
 
 -- Polls the local vehicle configuration. Applying a tune does not raise a
 -- single reliable GE event across BeamNG versions, so the signature is
--- re-derived on a slow timer and reported the moment it differs — that covers
+-- re-derived on a slow timer and reported the moment it differs - that covers
 -- spawns, vehicle switches and setup changes with one code path.
 local function vehicleConfigUpdate(dt)
   if not inMultiplayer() then return end
@@ -1223,7 +1473,7 @@ end
 -- The forced-spectator machinery below is still used, but only where a driver
 -- genuinely leaves the session: a derby elimination, or crossing the finish
 -- line (a finished car is taken off track so it can't interfere with the
--- drivers still racing). Both are lifted — and the car respawned — when the
+-- drivers still racing). Both are lifted - and the car respawned - when the
 -- session ends.
 
 -- Snapshot of the vehicle removed by enterSpectator, so the same car can be put
@@ -1249,6 +1499,14 @@ local function captureVehicleSnapshot()
     local ok, cfg = pcall(core_vehicle_partmgmt.getConfig)
     if ok and type(cfg) == 'table' then snap.config = cfg end
   end
+  -- THE GRID SLOT THIS DRIVER OWNS, recorded here because here is the last
+  -- moment it exists. The phase change to 'finished' clears gridSlot, and that
+  -- lands BEFORE the release that puts the car back -- so a respawn asking for
+  -- the slot at release time always found nothing and fell back to respawning
+  -- on the finish line, which is where the whole field had just been removed
+  -- from, on top of each other. A snapshot records where to put a car back, and
+  -- the slot is part of that.
+  snap.slot = gridSlot
   if not snap.model then return nil end
   return snap
 end
@@ -1259,6 +1517,14 @@ end
 -- core_vehicles.removeCurrent deletes whatever the client is attached to, which
 -- is only safe once we know that is ours -- otherwise a driver taking the flag
 -- deletes a rival's car out from under them.
+--
+-- WHO THIS IS FOR IS THE WHOLE POINT, and getting that wrong was a live bug in
+-- both directions. A RACE finisher is taken off the track: they have nothing
+-- left to gain and a parked car on the racing line is an obstacle for everyone
+-- still running. A DERBY elimination is NOT -- the wreck is the arena's
+-- furniture and the other drivers are still fighting around it, and deleting it
+-- in BeamMP deletes it for every client in the server, which is how eliminated
+-- drivers vanished from everybody's screen.
 local function removeLocalVehicle()
   local veh = ownVehicle()
   if not veh then return end
@@ -1271,12 +1537,18 @@ local function removeLocalVehicle()
   pcall(function () veh:delete() end)
 end
 
--- Put the camera on our own car and give control back to it.
+-- Put this client back on its OWN car.
 --
--- Doing this explicitly is the point: after a mass respawn the game picks a
--- vehicle for the camera on its own, and with five cars appearing at once its
--- pick is arbitrary -- which is how every client in the session ended up
--- watching the same driver.
+-- Doing it explicitly is the point: after a placement the game picks a vehicle
+-- for the camera on its own, and with five cars moving at once its pick is
+-- arbitrary -- which is how every client in the session ended up watching the
+-- same driver.
+--
+-- It switches the VEHICLE and not the camera MODE. It used to force the game
+-- camera (orbit) as well, which threw away whatever view the driver had chosen
+-- -- a cockpit driver was put in orbit every time the mod handed their car back.
+-- Which car you are attached to is the mod's business; how you are looking at it
+-- is the driver's.
 local function bindCameraToOwnVehicle()
   local veh = ownVehicle()
   if not veh then return false end
@@ -1284,12 +1556,7 @@ local function bindCameraToOwnVehicle()
   if be and be.enterVehicle then
     bound = pcall(function () be:enterVehicle(0, veh) end)
   end
-  if commands and commands.setGameCamera then
-    pcall(commands.setGameCamera)
-  elseif core_camera and core_camera.setByName then
-    pcall(core_camera.setByName, 0, 'orbit')
-  end
-  log('I', 'raceManager', 'Camera bound to own vehicle ' .. tostring(vehicleId(veh))
+  log('I', 'raceManager', 'Attached to own vehicle ' .. tostring(vehicleId(veh))
     .. (bound and '' or ' (enterVehicle unavailable)'))
   return true
 end
@@ -1298,6 +1565,13 @@ end
 -- Called when the session that imposed the penalty ends, so a driver who
 -- finished (or was knocked out of a derby) is back in their car for the next
 -- one instead of stranded in freecam with nothing to drive.
+-- Forward-declared: respawnRemovedVehicle below needs both to stand a respawned
+-- car on its grid slot, and both are defined further down beside the placement
+-- code they were written for. Declared rather than moved, so the placement
+-- section keeps reading in the order it was built.
+local headingRot
+local placeOnStartPosition
+
 local function respawnRemovedVehicle()
   local snap = removedVehicle
   if not snap or not snap.model then return false end
@@ -1312,6 +1586,42 @@ local function respawnRemovedVehicle()
   local opts = { config = snap.config }
   if snap.pos then opts.pos = snap.pos end
   if snap.rot then opts.rot = snap.rot end
+  -- SPAWN ON THE GRID SLOT, not where the car was taken away.
+  --
+  -- This is what welded the field together. A race removes cars AS THEY TAKE THE
+  -- FLAG, all within a few metres of the line, so respawning each at its own
+  -- snapshot put the whole field down interpenetrated and BeamNG welds what it
+  -- finds inside itself. The grid is spaced by construction. Falls back to the
+  -- snapshot only when the track has no grid placed, covered by the ghosting
+  -- around this call.
+  -- Spawn on the slot's POSITION only, then turn it with placeOnStartPosition.
+  -- headingRot bakes in a half-turn for BeamNG's -Y vehicle forward, which is
+  -- what setPositionRotation wants and spawnNewVehicle does NOT: handing it the
+  -- same quaternion put every respawned car on its slot facing backwards. One
+  -- place knows about the two conventions, and this is not it.
+  -- ANY start position beats the finish line.
+  --
+  -- gridSlot is cleared by the phase change to 'finished', a mid-session joiner
+  -- never had one, and a slot can outlive the grid it indexed. Falling straight
+  -- back to the snapshot puts a finisher back on the start/finish line facing
+  -- however they crossed it: the reported "near the start/finish, sideways". So
+  -- their slot, then any placed slot, then the snapshot. Sharing someone else's
+  -- slot for a moment is harmless while the ghosting holds.
+  local slot = snap.slot or gridSlot
+  local sp = slot and startPositions[slot]
+  if not (type(sp) == 'table' and sp.x) then sp = startPositions[1] end
+  if type(sp) == 'table' and sp.x and sp.y and sp.z then
+    opts.pos = vec3(sp.x, sp.y, sp.z)
+    opts.rot = nil          -- set below, by the call that knows the convention
+    log('I', 'raceManager', 'Respawning on grid slot ' .. tostring(slot or 1)
+      .. ' rather than where the car was removed')
+  else
+    -- Say so. A car that comes back in the wrong place with nothing in the log
+    -- is the position this took two rounds to get out of.
+    log('W', 'raceManager', 'Respawning where the car was removed: no start '
+      .. 'position to use (slot=' .. tostring(slot) .. ', grid has '
+      .. tostring(#startPositions) .. ' placed)')
+  end
   local spawned = false
   if core_vehicles and core_vehicles.spawnNewVehicle then
     spawned = pcall(core_vehicles.spawnNewVehicle, snap.model, opts)
@@ -1320,6 +1630,13 @@ local function respawnRemovedVehicle()
     spawned = pcall(core_vehicles.replaceVehicle, snap.model, opts)
   end
   if spawned then
+    -- NOT placed or turned here. BeamNG spawns asynchronously and the vehicle
+    -- does not exist on this frame, so a placement call made now finds nothing
+    -- and silently does nothing -- which is why cars kept coming back facing
+    -- whichever way they finished. The placement scheduler already has a step
+    -- for this: it waits out a spawn grace and THEN calls placeOnAssignedSlot,
+    -- which is the same call the grid itself uses. releaseSpectator hands it the
+    -- slot so that step has something to place onto.
     log('I', 'raceManager', 'Respawned ' .. tostring(snap.model) .. ' after the session ended')
   else
     -- Keep the snapshot: a failed spawn is worth another attempt when the
@@ -1327,54 +1644,177 @@ local function respawnRemovedVehicle()
     -- record of what this driver was in.
     removedVehicle = snap
     log('W', 'raceManager', 'Could not respawn ' .. tostring(snap.model)
-      .. ' automatically — spawn a vehicle manually')
+      .. ' automatically: spawn a vehicle manually')
   end
   return spawned
 end
 
--- Put the camera into freecam/spectator. Same story: prefer the documented
--- command, fall back to the camera module.
-local function forceFreeCamera()
-  if commands and commands.setFreeCamera then
-    if pcall(commands.setFreeCamera) then return true end
+-- Free camera is the DRIVER'S control now, not the mod's. It is still there --
+-- BeamNG's own key still works, and a spectator is welcome in it -- but nothing
+-- here puts them in it or keeps them there. Forcing it was Bug 3.
+
+
+-- ---------------------------------------------------------------------------
+-- Being out of a session: freeze the INPUT, never the existence
+-- ---------------------------------------------------------------------------
+-- This used to delete the car and force freecam, which was three live bugs:
+--
+--   * in BeamMP a deleted vehicle is deleted FOR EVERY CLIENT, so an eliminated
+--     driver went missing from everyone's screen rather than quiet.
+--   * freecam was re-asserted once a second, so tabbing to watch somebody was
+--     undone within the second, over and over.
+--   * letting anyone back in then meant RESPAWNING a whole field at once, which
+--     is how cars came back interpenetrated and welded.
+--
+-- The car now stays where it is as a physical object and only the ability to
+-- DRIVE it is taken away, which removes the weld problem at its cause. The
+-- camera is not touched: tabbing between cars is BeamNG's own control.
+local spectate = {
+  -- Every input that drives a car. Deliberately NOT the vehicle-switch actions:
+  -- tabbing between cars is the whole point of spectating and must keep working.
+  DRIVE = {
+    'accelerate', 'brake', 'throttle', 'steering', 'steer_left', 'steer_right',
+    'parkingbrake', 'parkingbrake_toggle', 'clutch',
+    'shiftUp', 'shiftDown', 'shiftToggle', 'toggleGearboxMode',
+    'nitrousOxideActive', 'toggleWalkingMode',
+  },
+  blocked = false,
+  -- BeamNG's node grabber: click a car and drag its physics nodes around. In a
+  -- demolition derby that is not a debug tool, it is a winning move -- drag your
+  -- own wreck back onto its wheels, or drag somebody else's into the wall
+  -- without touching them. Off for the length of a derby.
+  --
+  -- THESE ARE THE GAME'S OWN NAMES, read out of its actionFilter's
+  -- `actionTemplates.nodegrabber` rather than guessed. The first version of this
+  -- list guessed, in snake_case, and every name was wrong -- so the filter armed
+  -- a group of actions that do not exist and the grabber went on working. A
+  -- filter group made of names nothing answers to fails completely silently:
+  -- there is no error and no log line, it simply blocks nothing.
+  --
+  -- funStuff goes with it for the same reason. Fire, explosions, the tyre
+  -- poppers and the flings are one keypress each and every one of them decides a
+  -- derby; they are exactly as much a cheat as dragging a node, and the game
+  -- groups them for exactly this purpose.
+  GRAB = {
+    -- actionTemplates.nodegrabber
+    'nodegrabberAction', 'nodegrabberGrab', 'nodegrabberRender',
+    'nodegrabberStrength', 'nodegrabberPadGrab', 'nodegrabberPadMode',
+    -- actionTemplates.funStuff
+    'forceField', 'funBoom', 'funBreak', 'funExtinguish', 'funFire',
+    'funHinges', 'funTires', 'funRandomTire', 'latchesOpen', 'latchesClose',
+    'funBoost', 'funBoostBackwards', 'funFling', 'funFlingDownward',
+  },
+  grabBlocked = false,
+}
+
+-- Same shape as the two blocks either side of it. Kept separate from the driving
+-- block because they answer to different things: driving is filtered while a
+-- driver is OUT of a session, the grabber while a derby is ON, and an eliminated
+-- driver in a running derby is both at once.
+function spectate.setGrabberBlocked(blocked)
+  blocked = blocked and true or false
+  if blocked == spectate.grabBlocked then return end
+  if not (core_input_actionFilter and core_input_actionFilter.setGroup
+      and core_input_actionFilter.addAction) then
+    return
   end
-  if core_camera and core_camera.setByName then
-    if pcall(core_camera.setByName, 0, 'free') then return true end
+  local ok = pcall(function ()
+    core_input_actionFilter.setGroup('raceManagerGrabber', spectate.GRAB)
+    core_input_actionFilter.addAction(0, 'raceManagerGrabber', blocked)
+  end)
+  if ok then
+    spectate.grabBlocked = blocked
+    log('I', 'raceManager', 'Node grabber ' .. (blocked and 'BLOCKED' or 'released'))
   end
-  return false
 end
 
-local function isFreeCamera()
-  if commands and commands.isFreeCamera then
-    local ok, free = pcall(commands.isFreeCamera)
-    if ok then return free == true end
+-- Same shape as setResetInputsBlocked, and for the same reason: with the filter
+-- armed the keys are dead at the source, so an eliminated driver cannot drive
+-- their wreck no matter what the physics would otherwise allow.
+function spectate.setInputsBlocked(blocked)
+  blocked = blocked and true or false
+  if blocked == spectate.blocked then return end
+  if not (core_input_actionFilter and core_input_actionFilter.setGroup
+      and core_input_actionFilter.addAction) then
+    return
   end
-  return false
+  local ok = pcall(function ()
+    core_input_actionFilter.setGroup('raceManagerSpectate', spectate.DRIVE)
+    core_input_actionFilter.addAction(0, 'raceManagerSpectate', blocked)
+  end)
+  if ok then
+    spectate.blocked = blocked
+    log('I', 'raceManager', 'Driving inputs ' .. (blocked and 'BLOCKED' or 'released'))
+  end
 end
 
--- Back to a normal driving camera once the spectator lock is lifted.
-local function restoreGameCamera()
-  if commands and commands.setGameCamera then
-    if pcall(commands.setGameCamera) then return true end
+-- Put the camera on somebody still racing.
+--
+-- A driver who has just taken the flag is parked, and leaving them looking at
+-- their own stationary car is the least interesting view on the track. Pick a
+-- car that is MOVING and is not ours, and hand the camera to it the same way
+-- bindCameraToOwnVehicle does -- by switching vehicle, not by changing camera
+-- MODE, so the driver keeps whatever view they had and tab keeps working from
+-- there.
+--
+-- Once. There is no loop re-asserting this: after the first attach the target is
+-- the driver's to change.
+function spectate.attachToRunner()
+  if type(getAllVehicles) ~= 'function' or not (be and be.enterVehicle) then return false end
+  local ok, list = pcall(getAllVehicles)
+  if not ok or type(list) ~= 'table' then return false end
+  local best, bestSpeed = nil, 0.5      -- m/s; below this a car is parked
+  for _, v in ipairs(list) do
+    if v and not isOwnVehicle(vehicleId(v)) then
+      local moving = 0
+      pcall(function ()
+        local vel = v:getVelocity()
+        if vel then moving = math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z) end
+      end)
+      if moving > bestSpeed then best, bestSpeed = v, moving end
+    end
   end
-  if core_camera and core_camera.setByName then
-    if pcall(core_camera.setByName, 0, 'orbit') then return true end
-  end
-  return false
+  -- Nothing moving (everybody finished, or a one-car session): stay where we
+  -- are rather than flicking through parked cars looking for one that is not
+  -- there. A sane still view beats a search that never settles.
+  if not best then return false end
+  local switched = pcall(function () be:enterVehicle(0, best) end)
+  log('I', 'raceManager', switched
+    and ('Spectating a moving car (%.0f m/s)'):format(bestSpeed)
+    or 'Could not switch to a moving car')
+  return switched
 end
 
 local function enterSpectator(reason, source)
   spectatorLock   = source or 'race'
   spectatorReason = reason or 'You are out of this session'
-  spectatorRecheck = 0
-  removeLocalVehicle()
-  forceFreeCamera()
+  -- Driving goes either way, and it is the ONLY thing that goes for a derby.
+  spectate.setInputsBlocked(true)
+  if spectatorLock == 'derby' then
+    -- ELIMINATED IN A DERBY: the car stays exactly where it is, as a visible,
+    -- physical wreck, and the driver stays in it. The arena is the show and they
+    -- are sitting in it; being moved somewhere else the instant you are knocked
+    -- out reads as the bug this replaced. Tab takes them anywhere they like.
+    log('I', 'raceManager', 'Derby elimination: the wreck stays in the arena')
+  else
+    -- FINISHED OR OUT OF A RACE: the car comes off the track. It has nothing
+    -- left to gain and a parked one on the racing line is an obstacle for
+    -- everyone still running.
+    --
+    -- Which is exactly why the camera has to be given somewhere to go in the
+    -- same breath: with the car gone BeamNG hands the view to whatever vehicle
+    -- is nearest, and with a field finishing together its pick is arbitrary --
+    -- which is how every client ended up watching the same driver. Put them on
+    -- something that is actually MOVING, once, and let tab do the rest.
+    removeLocalVehicle()
+    spectate.attachToRunner()
+  end
   guihooks.trigger('RaceManagerSpectator', {
     spectating = true, reason = spectatorReason, source = spectatorLock,
   })
   pushNotice('spectate', spectatorReason)
   pushRouteState()
-  log('I', 'raceManager', 'Forced spectator mode (' .. tostring(spectatorLock)
+  log('I', 'raceManager', 'Spectator mode (' .. tostring(spectatorLock)
     .. '): ' .. tostring(spectatorReason))
 end
 
@@ -1385,7 +1825,7 @@ end
 --
 -- The respawn is QUEUED rather than done here. Every driver in the field is
 -- released by the same broadcast, so doing it on the spot means the whole grid
--- spawning on one tick — refused spawns and interpenetrated cars. `order` and
+-- spawning on one tick - refused spawns and interpenetrated cars. `order` and
 -- `count` come from the server's snapshot of the participant list and put this
 -- client in the queue; a release without them (a lone spectator, a derby
 -- elimination) is simply order 1 of 1.
@@ -1399,11 +1839,30 @@ local function releaseSpectator(source, order, count)
   if source and source ~= spectatorLock then return end
   spectatorLock   = nil
   spectatorReason = nil
+  -- Driving comes back first, so a driver is never released into a car they
+  -- cannot move.
+  spectate.setInputsBlocked(false)
+  -- And they go back to their OWN car, wherever they left it. Nothing is
+  -- respawned: the car was never removed, so there is nothing to put back and
+  -- nothing to interpenetrate. respawnRemovedVehicle stays in the placement path
+  -- as a safety net for a snapshot taken by an older build -- with nothing
+  -- removed it is a no-op.
+  -- The slot this driver owned, taken from the snapshot rather than gridSlot:
+  -- the phase change to 'finished' clears gridSlot and lands BEFORE this. The
+  -- scheduler places the car on it after the spawn grace, which is the only
+  -- moment the vehicle actually exists to be placed.
+  -- ...and if neither is available, slot 1, so long as a grid exists at all.
+  -- The placement step is gated on field.slot, so leaving it nil means the car
+  -- is spawned and never stood up -- it keeps whatever heading the spawn gave it,
+  -- which is the "sideways" half of the report. Any placed slot is a spaced,
+  -- road-level, correctly-facing piece of track.
+  local slot = (removedVehicle and removedVehicle.slot) or gridSlot
+    or (startPositions[1] and 1 or nil)
   if queueFieldPlacement then
-    queueFieldPlacement({ respawn = true, order = order, count = count })
+    queueFieldPlacement({ respawn = true, slot = slot, order = order, count = count })
   else
     respawnRemovedVehicle()
-    restoreGameCamera()
+    bindCameraToOwnVehicle()
   end
   guihooks.trigger('RaceManagerSpectator', { spectating = false })
   pushRouteState()
@@ -1411,18 +1870,54 @@ local function releaseSpectator(source, order, count)
     .. ', order ' .. tostring(order or 1) .. '/' .. tostring(count or 1) .. ')')
 end
 
--- While the lock is held the camera is re-asserted periodically: leaving
--- freecam is the one way a DNF'd driver could get back into a car.
+-- NOTHING RE-ASSERTS THE CAMERA, and that is the fix. Forcing freecam back on
+-- once a second meant spectating did not work at all: pick something to watch
+-- and the next tick took it away. Being in a car is no longer a way back into a
+-- race anyway, because the inputs are filtered.
+--
+-- The one exception is an EVENT, not a timer: the car being watched can stop
+-- existing. Finishers are removed back to back, so a spectator attached to the
+-- car in front loses it seconds later and BeamNG hands the view wherever it
+-- likes. So the target is followed rather than enforced, recorded every tick
+-- including a car the driver tabbed to themselves, and only its ceasing to exist
+-- triggers a re-acquire. Gone, not stopped: a parked car is still a car.
 local function spectatorUpdate(dt)
-  if not spectatorLock then return end
-  spectatorRecheck = spectatorRecheck - dt
-  if spectatorRecheck > 0 then return end
-  spectatorRecheck = 1.0
-  if not isFreeCamera() then forceFreeCamera() end
+  if not spectatorLock then
+    spectate.target = nil
+    return
+  end
+  spectate.recheck = (spectate.recheck or 0) - dt
+  if spectate.recheck > 0 then return end
+  spectate.recheck = 0.25
+
+  local now = playerVehicle()
+  local id  = now and vehicleId(now) or nil
+  -- Still on something, and it is whatever the driver last chose. Record it and
+  -- do nothing -- this is the branch that runs almost every tick.
+  if id and getObjectByID and getObjectByID(id) then
+    spectate.target = id
+    return
+  end
+  -- The car being watched is gone. Advance ONCE to the next moving one; if the
+  -- field has all finished there is nothing to advance to, and the view is left
+  -- alone rather than flicked between cars that are not there.
+  --
+  -- No guard on having recorded a target first. An earlier version only
+  -- re-acquired when `spectate.target` was already set, which reads as caution
+  -- and is exactly backwards: in a bunched finish the car in front is removed
+  -- within a frame or two of being attached to, often before a single tick has
+  -- run to record it -- so the one case this exists for was the one case it
+  -- refused to act on. Reaching here already means the lock is held and the car
+  -- being watched is not there, and that is the whole of the question.
+  if spectate.attachToRunner() then
+    local v = playerVehicle()
+    spectate.target = v and vehicleId(v) or nil
+    log('I', 'raceManager', 'Spectate target gone: moved to the next moving car')
+  end
 end
 
--- The reset allowance applies for the whole of a live session — qualifying as
--- well as a race, now that qualifying is one — and the countdown that starts it.
+-- The reset allowance applies for the whole of a live session - qualifying as
+-- well as a race, now that qualifying is one - and the countdown that starts it.
 -- The setup phases stay free.
 local function resetsEnforced()
   return maxResets >= 0 and (sessionRunning() or phase == 'countdown')
@@ -1435,6 +1930,16 @@ end
 local derbyMaxResets    = -1
 local derbyResetsUsed   = 0
 local derbyResetsActive = function () return false end
+-- "Is a derby standing its cars down right now?" Assigned by the derby module,
+-- which is scoped further down this file, and read by the reset-input block up
+-- here -- without it resetInputBlockUpdate would recompute the block from the
+-- reset ALLOWANCE every tick and undo the derby's one a frame after it was
+-- applied.
+--
+-- Hung off the spectate table, which already carries this file's other
+-- input-filter state, rather than taking a register of its own (see
+-- docs/ARCHITECTURE.md on the 200-local ceiling).
+spectate.derbyStoodDown = function () return false end
 
 local function derbyResetsEnforced()
   return derbyMaxResets >= 0 and derbyResetsActive()
@@ -1475,14 +1980,25 @@ local function resetInputBlockUpdate()
   local wantBlocked = not spectatorLock
     and ((resetsEnforced() and resetsUsed >= maxResets)
       or (derbyResetsEnforced() and derbyResetsUsed >= derbyMaxResets))
-  setResetInputsBlocked(wantBlocked)
+  -- ...and while a derby is standing its cars down. A reset there would reload
+  -- the vehicle out from under the freeze and hand somebody a driveable car in
+  -- the middle of a settled result.
+  setResetInputsBlocked(wantBlocked or spectate.derbyStoodDown())
 end
 
 -- Rolling "last good position" sample. Taken a few times a second while the
 -- driver is out on track and NOT frozen on the grid, so a blocked reset always
 -- has somewhere sane to put the car back.
+-- Sampled for the whole of a live session, not only when resets are LIMITED.
+--
+-- It used to run only while an allowance was being enforced, which is the one
+-- case it was written for -- putting a car back after a reset it was not
+-- entitled to. Undoing a recovery teleport needs the same sample and has nothing
+-- to do with allowances: a server running unlimited resets had no snapshot at
+-- all, so there was nowhere to put a driver back to.
 local function snapshotUpdate(dt)
-  if not (resetsEnforced() or derbyResetsEnforced()) or spectatorLock or gridFrozen then return end
+  local wanted = resetsEnforced() or derbyResetsEnforced() or sessionRunning()
+  if not wanted or spectatorLock or gridFrozen then return end
   snapshotLeft = snapshotLeft - dt
   if snapshotLeft > 0 then return end
   snapshotLeft = SNAPSHOT_EVERY
@@ -1505,7 +2021,7 @@ local function noteSelfTeleport(x, y, z)
 end
 
 -- True when the reset just reported is the echo of our own teleport: it arrived
--- inside the window AND the car is sitting where we put it. Both halves matter —
+-- inside the window AND the car is sitting where we put it. Both halves matter -
 -- the window alone would swallow a driver reset pressed immediately after a
 -- block, and a driver reset always moves the car somewhere else.
 --
@@ -1513,7 +2029,7 @@ end
 -- teleport detector (objectTeleported(): "improved detection to reduce false
 -- positives/negatives in extreme cases (such as ... really fast vehicles)"), so
 -- an echo we used to hear on the same frame can now arrive a frame or two later
--- — and a car doing 250 km/h covers 2 metres in a frame and a half. Judged
+-- - and a car doing 250 km/h covers 2 metres in a frame and a half. Judged
 -- against a fixed 2 m the car would already be "somewhere else", the echo would
 -- be read as a driver reset, and a legitimately gridded or restored driver would
 -- be charged an allowance (or dragged back again). So the tolerance grows with
@@ -1590,7 +2106,7 @@ function pit.setGhost(on)
     end
     log('I', 'raceManager', string.format('Pit ghost on for vehicle %s (%.1fs)%s',
       tostring(vehId), TUNE.PIT_HOLD_SEC,
-      pit.ghostSent and '' or ' (local only — a reset ghost already owns the broadcast)'))
+      pit.ghostSent and '' or ' (local only: a reset ghost already owns the broadcast)'))
   else
     local vehId = pit.ghostVeh
     if not vehId then return end
@@ -1660,7 +2176,7 @@ function pit.update(dt)
           ghost.apply(pit.ghostVeh, veh, true, TUNE.GHOST_ALPHA)
         end
       end
-      pushNotice('pit', 'Repaired — hold for the release')
+      pushNotice('pit', 'Repaired, hold for the release')
     end
     if pit.left <= 0 then
       pit.release('complete')
@@ -1712,7 +2228,7 @@ function pit.update(dt)
     -- UI push every frame for as long as a car creeps across the stall.
     if pit.promptLeft <= 0 then
       pit.promptLeft = TUNE.PIT_PROMPT_EVERY
-      pushNotice('pit', 'PIT STALL — come to a stop inside the box')
+      pushNotice('pit', 'PIT STALL: come to a stop inside the box')
     end
     return
   end
@@ -1725,7 +2241,7 @@ function pit.update(dt)
   -- Ghost before the notice, so a car that is about to sit frozen in the lane
   -- stops being solid on the same frame it stops being able to move.
   pit.setGhost(true)
-  pushNotice('pit', string.format('PIT STOP — %.0fs', TUNE.PIT_HOLD_SEC))
+  pushNotice('pit', string.format('PIT STOP: %.0fs', TUNE.PIT_HOLD_SEC))
   pushRouteState()
   log('I', 'raceManager', string.format(
     'Pit stop %d started in stall %d', pit.stops, inStall))
@@ -1742,9 +2258,9 @@ end
 
 -- Heading (hx, hy) -> yaw about Z, expressed as a quaternion that stands a
 -- VEHICLE facing down that heading. BeamNG vehicle models point down -Y at
--- identity, so a half-turn is baked in on top of the heading yaw — without it
+-- identity, so a half-turn is baked in on top of the heading yaw - without it
 -- every placement came out exactly 180° backwards.
-local function headingRot(hx, hy)
+headingRot = function (hx, hy)
   local yaw  = math.atan2(hx, hy) + math.pi
   local half = yaw * 0.5
   return quat(0, 0, math.sin(half), math.cos(half))
@@ -1757,7 +2273,17 @@ end
 local function relocateToGate(wp)
   local veh = playerVehicle()
   if not veh or not wp then return false end
-  local rot = headingRot(wp.hx, wp.hy)
+  -- Facing the way the car was GOING, not the way the gate points.
+  --
+  -- A gate shared between two lanes carries one heading and is driven both ways.
+  -- Standing a counter-clockwise driver on it facing the stored heading turns them
+  -- to face the clockwise field -- on a layout built around head-on collisions,
+  -- that is a respawn pointing into oncoming traffic. lastGateBack is recorded at
+  -- the crossing itself, so it is right for shared gates, branch gates and
+  -- ordinary gates without any of them having to declare anything.
+  local hx, hy = wp.hx, wp.hy
+  if lastGateBack and wp == lastGate then hx, hy = -hx, -hy end
+  local rot = headingRot(hx, hy)
   noteSelfTeleport(wp.x, wp.y, wp.z)
   local ok = pcall(function ()
     veh:setPositionRotation(wp.x, wp.y, wp.z, rot.x, rot.y, rot.z, rot.w)
@@ -1790,11 +2316,11 @@ local function restoreLastGoodPosition()
 end
 
 -- BeamNG hook: the local player reset/recovered a vehicle. Registered as an
--- extension hook, so it fires for every vehicle — filter to our own first.
+-- extension hook, so it fires for every vehicle - filter to our own first.
 function M.onVehicleResetted(vehId)
   -- Ours, or there is nothing here to do. The attached vehicle can be another
-  -- player's car — that is precisely the situation a driver who has just been
-  -- taken off the track is in — and treating their reset as ours is how a rival
+  -- player's car - that is precisely the situation a driver who has just been
+  -- taken off the track is in - and treating their reset as ours is how a rival
   -- ends up having their vehicle removed.
   if not isOwnVehicle(vehId) then return end
   local veh = ownVehicle()
@@ -1816,8 +2342,15 @@ function M.onVehicleResetted(vehId)
   end
   if spectatorLock then
     -- Out of the session: a reset must never put a spectator back on track.
-    removeLocalVehicle()
-    forceFreeCamera()
+    -- It cannot. The driving inputs are filtered off for as long as the lock is
+    -- held, so a reset car is a car that still will not move -- and re-asserting
+    -- the filter here covers the one thing a reset does that could undo it,
+    -- which is reload the vehicle's Lua VM out from under the block.
+    --
+    -- This used to DELETE the car instead, which in BeamMP deleted it for every
+    -- client in the session.
+    spectate.setInputsBlocked(false)   -- force the next call to re-apply
+    spectate.setInputsBlocked(true)
     return
   end
 
@@ -1831,7 +2364,7 @@ function M.onVehicleResetted(vehId)
   -- the car goes back on its slot and is pinned again on this frame.
   if holdWanted then
     hold.restore('driver reset while held on the grid')
-    pushNotice('grid', 'Reset on the grid — you are back on your slot and held')
+    pushNotice('grid', 'Reset on the grid: you are back on your slot and held')
     return
   end
 
@@ -1864,8 +2397,8 @@ function M.onVehicleResetted(vehId)
       blockNoticeLeft = BLOCK_NOTICE_EVERY
       if inMultiplayer() then TriggerServerEvent('RM_ResetDenied', '') end
       pushNotice('reset', maxResets == 0
-        and 'RESET BLOCKED — no resets allowed in this session'
-        or  ('RESET BLOCKED — all ' .. maxResets .. ' resets used'))
+        and 'RESET BLOCKED: no resets allowed in this session'
+        or  ('RESET BLOCKED: all ' .. maxResets .. ' resets used'))
       log('W', 'raceManager', 'Reset blocked: allowance of ' .. maxResets
         .. ' exhausted (position ' .. (restored and 'restored' or 'NOT restored') .. ')')
     end
@@ -1882,16 +2415,70 @@ function M.onVehicleResetted(vehId)
   -- limited; before the first gate of a session it falls back to in-place.
   if resetMode == 'checkpoint' and phase == 'racing' and lastGate and not gridFrozen then
     relocateToGate(lastGate)
+  elseif sessionRunning() and not gridFrozen and prevPos then
+    -- BOTH RESET KEYS HAVE TO MEAN THE SAME THING DURING A SESSION.
+    --
+    -- BeamNG ships two and they are not the same action: one repairs in place,
+    -- the other is a RECOVERY that teleports the car to a spawn point. In a race
+    -- that second one is a free ride, and drivers find it by pressing the key
+    -- they normally press. Blocking it would leave a dead key, so the teleport is
+    -- undone instead and both keys do the in-place repair.
+    --
+    -- Two references, and BOTH have been got wrong once:
+    --   * prevPos ONLY, never the rolling lastGoodPos. That one is up to a
+    --     quarter of a second old, and a car at racing speed covers more ground
+    --     in that time than the threshold allows, so an ordinary reset looks like
+    --     a teleport and gets undone. Two tests catch it, and have twice.
+    --   * The car is read DIRECTLY, not through sampledVehicle(). That caches for
+    --     the frame and a reset arrives mid-frame, so it returns the position
+    --     from before the teleport, the distance comes out as nothing, and the
+    --     undo stands down. That is why a recovery key still stranded drivers on
+    --     their start position.
+    local was = prevPos
+    local veh = playerVehicle()
+    local pos = nil
+    if veh then pcall(function () pos = veh:getPosition() end) end
+    if pos and was then
+      local dx, dy, dz = pos.x - was.x, pos.y - was.y, pos.z - was.z
+      if (dx * dx + dy * dy + dz * dz) > (TUNE.RECOVER_SNAP_RANGE * TUNE.RECOVER_SNAP_RANGE) then
+        noteSelfTeleport(was.x, was.y, was.z)
+        pcall(function ()
+          local rot = veh:getRotation()
+          veh:setPositionRotation(was.x, was.y, was.z, rot.x, rot.y, rot.z, rot.w)
+        end)
+        pushNotice('reset', 'Recovered in place: a race reset does not move you off the track')
+        log('I', 'raceManager', 'Undid a recovery teleport during a session')
+      end
+    end
   end
 
+  -- EVERY legal reset makes the new position the good one, immediately.
+  --
+  -- This lived inside the allowance check below, so on a server running unlimited
+  -- resets -- the default -- it never ran. The position references then still
+  -- described where the car was before the FIRST reset, and the next press
+  -- dragged it back there: press one key, drive on, press the other, and land
+  -- where you reset a minute ago. It read as the two keys disagreeing, and they
+  -- were not: they were both measuring against the same stale sample.
+  --
+  -- prevPos is RE-SEEDED, not cleared. It is the per-frame sample the crossing
+  -- test carries forward, and after a teleport it describes a position on the far
+  -- side of one -- but clearing it leaves a hole, and the next reset to land in
+  -- that hole has no reference to undo itself with. BeamNG's teleport then simply
+  -- stands, which is a recovery key putting a driver back on their start position
+  -- in the middle of a lap.
+  --
+  -- Seeded from where the car actually is now, which is both fresh and true.
+  snapshotLeft = 0
+  do
+    local _, nowPos = sampledVehicle()
+    prevPos = nowPos and vec3(nowPos.x, nowPos.y, nowPos.z) or prevPos
+  end
   if resetsEnforced() then
     resetsUsed = resetsUsed + 1
-    -- A legal reset makes the new position the good one immediately, so a second
-    -- (blocked) press right after it doesn't drag the car back to before the first.
-    snapshotLeft = 0
     if inMultiplayer() then TriggerServerEvent('RM_VehicleReset', '') end
     local left = maxResets - resetsUsed
-    pushNotice('reset', string.format('Reset %d/%d used — %d left', resetsUsed, maxResets, left))
+    pushNotice('reset', string.format('Reset %d/%d used: %d left', resetsUsed, maxResets, left))
     pushRouteState()
     return
   end
@@ -1905,8 +2492,8 @@ function M.onVehicleResetted(vehId)
         blockNoticeLeft = BLOCK_NOTICE_EVERY
         if inMultiplayer() then TriggerServerEvent('RM_DerbyResetDenied', '') end
         pushNotice('reset', derbyMaxResets == 0
-          and 'RESET BLOCKED — no resets allowed in this derby'
-          or  ('RESET BLOCKED — all ' .. derbyMaxResets .. ' derby resets used'))
+          and 'RESET BLOCKED: no resets allowed in this derby'
+          or  ('RESET BLOCKED: all ' .. derbyMaxResets .. ' derby resets used'))
         log('W', 'raceManager', 'Derby reset blocked: allowance of ' .. derbyMaxResets
           .. ' exhausted (position ' .. (restored and 'restored' or 'NOT restored') .. ')')
       end
@@ -1915,7 +2502,7 @@ function M.onVehicleResetted(vehId)
     derbyResetsUsed = derbyResetsUsed + 1
     snapshotLeft = 0
     if inMultiplayer() then TriggerServerEvent('RM_DerbyVehicleReset', '') end
-    pushNotice('reset', string.format('Derby reset %d/%d used — %d left',
+    pushNotice('reset', string.format('Derby reset %d/%d used: %d left',
       derbyResetsUsed, derbyMaxResets, derbyMaxResets - derbyResetsUsed))
   end
 end
@@ -1938,19 +2525,26 @@ function M.onVehicleSpawned(vehId)
     end
   end
   -- A car reloaded or respawned while the grid is held arrives with no freeze on
-  -- it — it is a new vehicle, and the old one's freeze died with it. Put the
+  -- it - it is a new vehicle, and the old one's freeze died with it. Put the
   -- driver back on their slot, held, rather than leaving them the only car on
   -- the grid that can move.
   if holdWanted and isOwnVehicle(vehId) then
     hold.restore('vehicle respawned while held on the grid')
-    pushNotice('grid', 'Back on your grid slot — held for the countdown')
+    pushNotice('grid', 'Back on your grid slot, held for the countdown')
   end
   if not spectatorLock then return end
   if not isOwnVehicle(vehId) then return end
-  removeLocalVehicle()
-  forceFreeCamera()
+  -- A spectator spawned themselves a fresh car to get back on track. The block
+  -- is an INPUT filter rather than a property of the old vehicle, so the new one
+  -- is just as undriveable -- but the spawn may have re-registered the action
+  -- set, so it is re-applied here.
+  --
+  -- Deleting the car was the old answer, and it is what made an eliminated
+  -- driver vanish from everybody's screen.
+  spectate.setInputsBlocked(false)
+  spectate.setInputsBlocked(true)
   pushNotice('spectate', 'You are spectating until the session ends')
-  log('W', 'raceManager', 'Blocked vehicle spawn while in forced spectator mode')
+  log('W', 'raceManager', 'Vehicle spawned in spectator mode: driving stays blocked')
 end
 
 -- BeamNG hook: a vehicle is being removed. Ghost bookkeeping is keyed by vehicle
@@ -1990,7 +2584,7 @@ end
 -- Here"; slot 1 is pole. The list travels with the track layout. When a race is
 -- formed the server hands every driver a slot number (from qualifying, at
 -- random, or hand-picked by the admin) and this client puts its own car on that
--- slot and holds it there — the server has no physics access, so only the
+-- slot and holds it there - the server has no physics access, so only the
 -- client can do either half.
 
 -- Freeze/unfreeze the local car. BeamNG's vehicle-side controller exposes
@@ -2039,8 +2633,8 @@ end
 
 -- Put the local car on a placed start position, facing down the track.
 -- Rotation comes from headingRot (Module 1), which bakes in the half-turn for
--- BeamNG's -Y vehicle forward — placements used to come out 180° backwards.
-local function placeOnStartPosition(sp)
+-- BeamNG's -Y vehicle forward - placements used to come out 180° backwards.
+placeOnStartPosition = function (sp)
   local veh = playerVehicle()
   if not veh or not sp then return false end
   local rot = headingRot(sp.hx, sp.hy)
@@ -2124,7 +2718,7 @@ function hold.restore(reason)
   -- the log for. The count keeps the total honest.
   if hold.correctLeft <= 0 then
     log('W', 'raceManager', string.format(
-      'Grid hold restored (%s) — correction #%d', tostring(reason), hold.corrections))
+      'Grid hold restored (%s): correction #%d', tostring(reason), hold.corrections))
   end
   hold.correctLeft = TUNE.HOLD_CORRECT_COOLDOWN
   return true
@@ -2132,31 +2726,19 @@ end
 
 -- Watch a held car and report where it is.
 --
--- Two jobs, both only while a hold is wanted. Locally: if the car has moved off
--- its slot the freeze is not doing its job, so put it back. This is what makes
--- the hold survive a lost freeze whatever caused it -- it corrects the SYMPTOM
--- (a car that moved) rather than needing to enumerate every cause.
+-- Locally: a car that has moved off its slot is put back, correcting the
+-- SYMPTOM rather than enumerating every cause of a lost freeze. Upward: the
+-- server owns the hold and is told where the car is on a steady cadence, so a
+-- client modified to skip the local guard still has the server behind it.
 --
--- And upward: the server owns the hold, so it is told where this car is on a
--- steady cadence and can correct and log independently. A client that has been
--- modified to skip the local guard still has the server behind it.
+-- Nothing happens until the car has SETTLED, and the resting position becomes
+-- the anchor. A car dropped on a slot falls onto its suspension, which is both
+-- movement and displacement: enforcing against that teleported it back up to
+-- spawn height, the teleport was reported as a reset, and it hovered there being
+-- reset every frame instead of settling.
 --
--- A car that is behaving is touched by NONE of this, and "behaving" includes
--- the second or two after it is put down: a car dropped onto a start position
--- falls onto its suspension, which is both movement and displacement. Enforcing
--- against that is how the guard turned into a loop -- it teleported the car back
--- up to the height it was placed at, the teleport was reported as a vehicle
--- reset, and the car hovered there being reset every frame instead of settling.
---
--- So: nothing happens until the car has SETTLED, and the resting position it
--- settles into becomes the anchor. Putting a car back then means putting it back
--- on the ground where it was standing, not into the air where it was spawned.
---
--- The response is also graded, because the two failures are different sizes. A
--- car that is merely MOVING has lost its freeze but is still on its slot: it is
--- re-frozen where it stands, which costs nothing and provokes no reset. Only a
--- car that has actually LEFT its slot is teleported back, and that is the rare
--- case -- a real creep, or a freeze that cannot be applied at all.
+-- Graded response: a car merely MOVING is re-frozen where it stands, which
+-- provokes no reset. Only one that has LEFT its slot is teleported back.
 local function holdUpdate(dt)
   if hold.correctLeft > 0 then hold.correctLeft = hold.correctLeft - dt end
   if not holdWanted then
@@ -2205,7 +2787,7 @@ local function holdUpdate(dt)
     end
     if away > TUNE.HOLD_DRIFT then
       hold.restore(string.format('left the slot (%.2fm) before settling', away))
-      pushNotice('grid', 'Hold the car — the countdown has not finished')
+      pushNotice('grid', 'Hold the car, the countdown has not finished')
       return
     end
     local waited = TUNE.HOLD_SETTLE_GRACE - hold.settleLeft
@@ -2237,7 +2819,7 @@ local function holdUpdate(dt)
       local announce = hold.correctLeft <= 0
       hold.restore(string.format('%.2fm off the slot at %.1f m/s', drift, speed))
       if announce then
-        pushNotice('grid', 'Hold the car — the countdown has not finished')
+        pushNotice('grid', 'Hold the car, the countdown has not finished')
       end
       return
     end
@@ -2339,7 +2921,11 @@ local field = {
 -- placing a car is the part that has to be staggered and ghosted.
 local function placeOnAssignedSlot()
   local slot = field.slot
-  local sp = slot and (field.slots or startPositions)[slot]
+  local list = field.slots or startPositions
+  local sp = slot and list[slot]
+  -- Same fallback as the respawn above, and for the same reason: any placed slot
+  -- is a better place to stand than wherever the car happened to appear.
+  if not sp then sp = list[1] end
   if not sp then
     pushNotice('grid', 'Start position ' .. tostring(slot) .. ' is not placed on this track')
     log('W', 'raceManager', 'Grid slot ' .. tostring(slot) .. ' has no start position')
@@ -2367,11 +2953,11 @@ local function placeOnAssignedSlot()
   end
   if field.hold then requestHold(field.holdSource or 'race') end
   -- The grid slot is where the car legitimately stands, so it is also the
-  -- position a blocked reset should restore to — facing down the track, not
+  -- position a blocked reset should restore to - facing down the track, not
   -- at whatever identity rotation happens to mean on this circuit.
   lastGoodPos = vec3(sp.x, sp.y, sp.z)
   lastGoodRot = headingRot(sp.hx, sp.hy)
-  pushNotice('grid', 'You start from P' .. slot .. ' — hold for the countdown')
+  pushNotice('grid', 'You start from P' .. slot .. ': hold for the countdown')
   log('I', 'raceManager', 'Placed on start slot ' .. slot
     .. ' (' .. tostring(field.holdSource or 'race') .. ')')
 end
@@ -2442,7 +3028,7 @@ local function fieldUpdate(dt)
       if field.respawn then respawnRemovedVehicle() end
       if field.slot then placeOnAssignedSlot() end
       bindCameraToOwnVehicle()
-      log('W', 'raceManager', 'Field placement timed out — finishing it anyway')
+      log('W', 'raceManager', 'Field placement timed out: finishing it anyway')
     end
     endFieldOperation()
     pushRouteState()
@@ -2481,7 +3067,7 @@ local function fieldUpdate(dt)
     if field.slot then placeOnAssignedSlot() end
     -- Explicitly, every time. After a mass respawn the game picks a camera
     -- target on its own, and with a whole field appearing at once its pick is
-    -- arbitrary — which is how everyone ended up watching the same car.
+    -- arbitrary - which is how everyone ended up watching the same car.
     bindCameraToOwnVehicle()
     field.step = 'settle'
     pushRouteState()
@@ -2512,6 +3098,38 @@ end
 -- the grid is complete.
 local function applyGridSlot(slot, order, count)
   gridSlot = slot
+  -- WHICH WAY ROUND THIS CAR IS GOING, taken from the slot it was just given.
+  --
+  -- The tag rides on the start position, so both halves of the mod work it out
+  -- from the same data without a message passing between them: the server sets
+  -- rec.lane when it hands out the slot, this sets the local one when the slot
+  -- arrives. Nothing is reported upstream, so a driver cannot ask for a lane.
+  --
+  -- Locked for the session. A head-on race is not a line a driver picks per lap,
+  -- it is the direction they were entered in -- and a car spun round by a
+  -- collision must still be scored on the lap it is actually running.
+  local sp = slot and startPositions[slot]
+  local lane = (type(sp) == 'table' and type(sp.branch) == 'string' and sp.branch ~= '')
+    and sp.branch or nil
+  branch.lane = lane
+  -- LOCKED FOR EVERYONE ON A GRID-ASSIGNED TRACK, including the drivers on the
+  -- main route.
+  --
+  -- Locking only the tagged half would leave a clockwise driver "undecided", and
+  -- an undecided car is moved onto whichever lane's gate it crosses first. Spin
+  -- one round on a head-on oval and it would pick up the oncoming lane and start
+  -- scoring laps the other way. If the track assigns lanes at the grid at all,
+  -- then no lane on it is a choice -- untagged means the main route, and that is
+  -- just as much an assignment as the tag is.
+  local assigned = false
+  for _, s in ipairs(startPositions) do
+    if type(s.branch) == 'string' and s.branch ~= '' then assigned = true; break end
+  end
+  branch.lock = assigned
+  if lane then
+    pushNotice('branch', 'You are racing the ' .. branch.nameOf(lane) .. ' line')
+    log('I', 'raceManager', 'Grid slot ' .. tostring(slot) .. ' puts this car on lane ' .. lane)
+  end
   if not slot then
     -- Standing down (withdrawn, or not entered): nothing to place, and nothing
     -- should still be holding this car.
@@ -2892,31 +3510,20 @@ end
 -- file. These two reasons are field-wide: they ghost every car this client can
 -- see other than its own, which is what "rivals are ghosts" means locally.
 setGhostReason = function (reason, on)
-  -- Turning a reason ON skips our own car: "rivals are ghosts" is what these
-  -- reasons mean, and ghosting ourselves would make us intangible to the field
-  -- rather than the other way round.
+  -- Turning a reason ON skips our own car: these reasons mean "rivals are
+  -- ghosts", and ghosting ourselves is the opposite. ownVehicle() and not
+  -- playerVehicle(): once our car is deleted the game attaches us to somebody
+  -- else's, and "the car I am attached to" would then exclude a RIVAL. With no
+  -- car of our own the answer is nil and everything is ghosted, which is right
+  -- for a mass respawn.
   --
-  -- ownVehicle() and not playerVehicle(), for the reason set out at the top of
-  -- the file: the moment our car is deleted the game attaches this client to
-  -- somebody else's, and "the car I am attached to" would then exclude a RIVAL
-  -- from the ghost -- leaving the one car we are about to be respawned next to
-  -- as the only solid thing on track. With no car of our own the answer is nil,
-  -- and everything gets ghosted, which is exactly right for a mass respawn.
-  --
-  -- Turning a reason OFF skips NOTHING, and that asymmetry is the whole point.
-  -- The ON path above can reach our own car -- whenever ownVehicle() cannot
-  -- name it, which is exactly the window a respawn opens: the car exists, its
-  -- ownership has not resolved yet, and the two-second re-assert sweep fires in
-  -- the middle of it. If the OFF path then skips our car because ownership HAS
-  -- resolved by the time the reason is lifted, the reason stays on it forever.
-  --
-  -- Nothing can clear it after that. A reset ghost layered on top comes and
-  -- goes, and the car underneath is still held by a field reason nobody will
-  -- ever take off -- which is a car that flashes solid as its reset timer ends
-  -- and goes straight back to being a ghost for the rest of the race.
-  --
-  -- Clearing a reason from a car that never had it is free: ghost.reason
-  -- returns without touching anything when the set is already absent.
+  -- Turning a reason OFF skips NOTHING, and that asymmetry is the point. The ON
+  -- path can reach our own car whenever ownVehicle() cannot name it, which is
+  -- exactly the window a respawn opens. If the OFF path then skipped it because
+  -- ownership HAS resolved, the reason would stay on forever with nothing able
+  -- to clear it: a car that flashes solid as its reset ghost expires and goes
+  -- straight back to being a ghost for the rest of the race. Clearing a reason a
+  -- car never had is free.
   local skipId = nil
   if on then
     local mine = ownVehicle()
@@ -3128,6 +3735,23 @@ local function ghostUpdate(dt)
     setGhostReason('quali', wantQuali)
   end
 
+  -- --- connected in the middle of somebody else's session -----------------
+  -- The server refuses to enter a mid-session arrival (see RM_onPlayerJoin) and
+  -- flags them instead. A driver who turns up halfway through a race has a car,
+  -- a spawn point and no idea a race is running; without this they can put a
+  -- leader into a wall before they have finished reading the chat line telling
+  -- them not to.
+  --
+  -- An untimed reason rather than the timed ghost roster, which exists for reset
+  -- ghosting and caps out at fifteen seconds. This one lasts exactly as long as
+  -- the flag does, and the flag is cleared when the next grid forms.
+  if isBystander ~= (ghost.field.bystander == true) then
+    setGhostReason('bystander', isBystander)
+    if isBystander then
+      pushNotice('spectate', 'A session is already running: you are a ghost until it ends')
+    end
+  end
+
   -- --- this client's own reset ghost -------------------------------------
   local own = ghost.own
   -- Ends the moment the race does. Taking the flag, being stood down, the
@@ -3171,7 +3795,7 @@ local function ghostUpdate(dt)
             ghost.fade(own.vehId, veh, TUNE.GHOST_ALPHA)
             if not own.warned and own.blocked >= TUNE.GHOST_OVERLAP_WARN_SEC then
               own.warned = true
-              pushNotice('ghost', 'Still ghosted — MOVE CLEAR of the other car')
+              pushNotice('ghost', 'Still ghosted, MOVE CLEAR of the other car')
               if inMultiplayer() then
                 TriggerServerEvent('RM_GhostBlocked',
                   jsonEncode({ seconds = own.blocked }))
@@ -3252,8 +3876,8 @@ end
 -- ---------------------------------------------------------------------------
 -- A checkpoint IS its rectangle, so that is exactly what gets drawn: the four
 -- edges of the width x height surface the crossing test uses, standing upright
--- and perpendicular to the direction of travel. Nothing else — no poles, no
--- cage — so what an admin sees on track is the real trigger, and raising the
+-- and perpendicular to the direction of travel. Nothing else - no poles, no
+-- cage - so what an admin sees on track is the real trigger, and raising the
 -- height visibly grows the box up the banking.
 -- Colours, built once on the first draw rather than at file scope.
 --
@@ -3282,12 +3906,24 @@ local function palette()
     finish    = ColorF(1, 1, 1, 1),            -- start/finish: white
     armed     = ColorF(0.25, 1, 0.45, 1),      -- next target: green
     route     = ColorF(1, 0.45, 0.05, 0.95),   -- rest of route: orange
+    -- The gate AFTER the armed one, in a driver's view. Same orange, dimmed, so
+    -- the corner after this one reads without competing with the one they are
+    -- actually driving at.
+    routeNext = ColorF(1, 0.45, 0.05, 0.45),
     joker     = ColorF(0.72, 0.35, 1, 1),      -- joker route: violet
     -- Still visibly duller than the rest, because "already taken" is what it
     -- has to say at a glance -- but lifted with everything else, so it reads as
     -- a gate that is spent rather than one that failed to draw.
     jokerUsed = ColorF(0.62, 0.62, 0.7, 0.6),  -- joker already taken: dimmed
     pit       = ColorF(1, 0.78, 0.15, 1),      -- pit stalls: amber
+    -- Branch gates: cyan. Far enough from the joker's violet to be told apart at
+    -- a glance, and from the route's orange, which is the pair that actually
+    -- matters -- a branch gate substitutes for a main one and must never look
+    -- like an extra checkpoint on the same lap.
+    branch      = ColorF(0.2, 0.85, 0.95, 1),
+    -- A lane the editor is not currently pointed at, dimmed so the one being
+    -- worked on stands out of a track carrying several.
+    branchOther = ColorF(0.2, 0.6, 0.68, 0.55),
     text      = ColorF(1, 1, 1, 1),
     -- The editor gate's filled surface. Deliberately faint: it has to show the
     -- gate's extent without hiding the road it is judged against.
@@ -3443,7 +4079,7 @@ local function drawStartPosition(sp, index, mine)
   debugDrawer:drawCylinder(tail, head, 0.06, color)
 
   debugDrawer:drawTextAdvanced(vec3(sp.x, sp.y, sp.z + 1.4),
-    String('P' .. index .. (mine and ' — YOU' or '')),
+    String('P' .. index .. (mine and ' (YOU)' or '')),
     ColorF(1, 1, 1, 1), true, false, ColorI(0, 0, 0, 160))
 end
 
@@ -3515,348 +4151,15 @@ local function jokerLabel(i, n, state)
   return set[state]
 end
 
--- ===========================================================================
--- Race-mode checkpoint markers: BeamNG's own gate poles
--- ===========================================================================
--- During an actual race a checkpoint should look like a checkpoint, not like an
--- editor overlay -- two vertical poles standing either side of the racing line,
--- which is what BeamNG uses for its own races and what a driver already reads
--- without being taught. That is `scenario/race_marker`, and this is the wrapper
--- around it.
+-- The stock BeamNG race markers (scenario/race_marker) are gone.
 --
--- IT IS USED IN ITS DETACHED FORM, AND THAT IS THE WHOLE DESIGN. race_marker is
--- a SINGLETON shared by everything in the game that races -- BeamNG's own
--- hotlapping and flowgraph races, drag, drift, and BeamJoy if it is installed.
--- Its setupMarkers() call rebuilds one global marker list, so calling it would
--- silently delete every marker any of them had placed, and theirs would delete
--- ours. createRaceMarker(true, ...) instead returns a marker that is never put
--- in that shared list: we own it, nobody else can see it, and nothing we do can
--- disturb another mod's race. The cost is that we drive it ourselves -- position
--- it, colour it, tick it and destroy it -- which is what the rest of this
--- section does.
---
--- Only the gates a driver needs are ever built: the one they are heading for
--- and the one after it. A twenty-gate circuit still costs two markers.
-local poles = {
-  live = {},        -- [slot] = { marker = <engine marker>, key = <identity> }
-  enabled = false,  -- markers are currently wanted
-  -- The resolved engine module: nil = not looked yet, false = looked and this
-  -- build has none, table = the module.
-  mod = nil,
-  -- Why the poles are (or are not) up, and the last engine error if one was
-  -- thrown. Every call into the marker is pcall'd -- a checkpoint visual must
-  -- never take the race loop down -- but swallowing the reason as well is how a
-  -- visual that never appears becomes undiagnosable.
-  why = nil,
-  lastError = nil,
-}
-
--- Ask the engine for a marker, or nil on a build (or a headless test) that has
--- no race_marker. Every call into engine code here is pcall'd: a checkpoint
--- visual must never be able to take the race loop down with it.
---
--- The module lookup is resolved ONCE and its failure is remembered. require()
--- on a name that does not resolve walks the whole package path, and this is
--- reached from the frame loop -- left uncached, a build without race_marker
--- paid that search twice a frame forever, which measured seventy times the cost
--- of everything else the mod does per frame put together.
-function poles.module()
-  if poles.mod ~= nil then return poles.mod or nil end
-  local ok, mod = pcall(require, 'scenario/race_marker')
-  if not ok or type(mod) ~= 'table' or type(mod.createRaceMarker) ~= 'function' then
-    poles.mod = false            -- looked, found nothing; do not look again
-    log('W', 'raceManager', 'No scenario/race_marker on this build — '
-      .. 'race checkpoints will keep the editor gate visual')
-    return nil
-  end
-  poles.mod = mod
-  return mod
-end
-
-function poles.create()
-  local mod = poles.module()
-  if not mod then return nil end
-  local made, marker = pcall(mod.createRaceMarker, true, 'sideColumnMarker')
-  if not made or type(marker) ~= 'table' then return nil end
-  -- Brighten the whole mode table now, while it is a fresh per-instance copy
-  -- and before anything has been put on screen. Once per marker, which is what
-  -- keeps repeated re-pointing from washing the colours out (see brighten).
-  poles.brighten(marker)
-  return marker
-end
-
--- Call into the engine, remembering the first thing that goes wrong. Silence is
--- what made "I started a race and saw no poles" impossible to answer.
-function poles.call(what, fn, ...)
-  local ok, err = pcall(fn, ...)
-  if not ok and not poles.lastError then
-    poles.lastError = tostring(what) .. ': ' .. tostring(err)
-    log('E', 'raceManager', 'Race marker ' .. poles.lastError)
-  end
-  return ok
-end
-
--- Repaint ONE marker's mode colour, in place.
---
--- The marker's eight stock modes carry eight fixed colours and violet is not
--- among them: `branch`, the alternate-route mode the joker uses, is orange
--- (1, 0.6, 0) and sits right beside the main route's red-orange `default`
--- (1, 0.07, 0). On track that made the joker read as more of the same lap,
--- which is the one thing it must never read as -- the server disqualifies a
--- driver who does not take it exactly once.
---
--- This is safe to do because sideColumnMarker keeps its colours PER INSTANCE:
--- its init does `self.modeInfos = deepcopy(modeInfos)`, so what is written here
--- reaches our own detached marker and nothing else -- not the shared table the
--- engine copies from, and not another mod's markers.
---
--- It is still reaching into an engine object's internals, so it fails soft in
--- both directions: a build that renames, restructures or shares that table
--- leaves the pole on its stock mode colour, which is exactly where it was
--- before any of this existed.
--- Lift one colour to the brightest form of ITS OWN hue.
---
--- Two steps, and neither of them changes the hue. Scale so the strongest
--- channel is full -- a colour that was that hue mixed with black becomes the
--- pure article -- then mix the result toward white by `lift`, which raises the
--- weakest channels and is what turns a saturated colour into a luminous one.
--- Adding equal whiteness to every channel is a saturation change, so the hue
--- comes through both steps untouched: a red pole stays exactly as red, it just
--- stops being dark red.
---
--- Black is returned unchanged and that is not an oversight. Black has no hue to
--- preserve, so there is no "brighter version of it" to compute -- anything this
--- produced would be a colour invented here rather than one lifted. The modes
--- that ship black are handled by name below.
-local function brighterRGB(c, lift)
-  local r, g, b = tonumber(c[1]) or 0, tonumber(c[2]) or 0, tonumber(c[3]) or 0
-  local mx = math.max(r, g, b)
-  if mx <= 0 then return nil end
-  local s = 1 / mx
-  r, g, b = r * s, g * s, b * s
-  return { r + (1 - r) * lift, g + (1 - g) * lift, b + (1 - b) * lift }
-end
-
--- Brighten every mode this marker can be put into, ONCE, as it is created.
---
--- The race poles are BeamNG's own, and its palette is built for its own races:
--- `default` is a deep red-orange (1, 0.07, 0), which is a strong colour and a
--- dark one -- against a bright map, a low sun or a pale road surface it is a
--- silhouette rather than a marker. Every mode with a colour is lifted to the
--- luminous version of that same colour, so a driver's learned meanings survive
--- and the poles stop disappearing into the scenery.
---
--- Done at CREATION and never again, which is what keeps it correct: lifting a
--- colour that has already been lifted would wash it out a little further every
--- time a marker was re-pointed at a new gate, and a marker is re-pointed every
--- time the driver clears a checkpoint. One pass, on a fresh table, per marker.
---
--- Two modes are handled by name:
---   hidden -- ships black and is MEANT to be invisible. Left alone.
---   next   -- ships black too, which is the engine saying "not your gate yet".
---             This mod puts a marker there deliberately, so the line through
---             the corner reads before the driver arrives, and a black pole is
---             the one thing that cannot do that job. It gets a colour of its
---             own: the route ahead, plainly visible but subordinate to the gate
---             actually being aimed at.
-local POLE_KEEP_BLACK = { hidden = true }
-
-function poles.brighten(marker)
-  local ok, done = pcall(function ()
-    local infos = marker.modeInfos
-    if type(infos) ~= 'table' then return false end
-    local touched = false
-    for mode, info in pairs(infos) do
-      if type(info) == 'table' and type(info.color) == 'table'
-          and not POLE_KEEP_BLACK[mode] then
-        local rgb = TUNE.POLE_MODE_RGB[mode] or brighterRGB(info.color, TUNE.POLE_LIFT)
-        if rgb then
-          info.color[1], info.color[2], info.color[3] = rgb[1], rgb[2], rgb[3]
-          touched = true
-        end
-      end
-    end
-    return touched
-  end)
-  if (not ok or not done) and not poles.brightenFailed then
-    poles.brightenFailed = true
-    log('W', 'raceManager', 'Race marker colours could not be brightened on this '
-      .. 'build — the poles keep their stock colours')
-  end
-  return ok and done
-end
-
-function poles.tint(marker, mode, rgb)
-  local ok, done = pcall(function ()
-    local infos = marker.modeInfos
-    if type(infos) ~= 'table' then return false end
-    local info = infos[mode]
-    if type(info) ~= 'table' or type(info.color) ~= 'table' then return false end
-    info.color[1], info.color[2], info.color[3] = rgb[1], rgb[2], rgb[3]
-    return true
-  end)
-  if (not ok or not done) and not poles.tintFailed then
-    poles.tintFailed = true
-    log('W', 'raceManager', 'Race marker colours are not per-instance on this '
-      .. 'build — the joker gate keeps the stock branch colour')
-  end
-  return ok and done
-end
-
--- Point one marker slot at a gate. `key` identifies what the slot is currently
--- showing, so a marker is only re-pointed when the gate under it actually
--- changes rather than every frame. `tint` is an optional {r, g, b} override for
--- this slot's mode colour; because the repaint rides the same key check, a
--- caller that wants the colour to follow a state has to put that state in the
--- key (the joker does).
-function poles.set(slot, wp, mode, key, tint)
-  local entry = poles.live[slot]
-  if not entry then
-    local marker = poles.create()
-    if not marker then return false end
-    entry = { marker = marker }
-    poles.live[slot] = entry
-  end
-  if entry.key ~= key then
-    entry.key = key
-    local w = gateDims(wp)
-    -- The marker plants its poles at pos +/- side * radius, so radius is the
-    -- HALF width -- the same number the editor rectangle is built from.
-    poles.call('setToCheckpoint', entry.marker.setToCheckpoint, entry.marker, {
-      pos    = vec3(wp.x, wp.y, wp.z),
-      normal = vec3(wp.hx, wp.hy, 0),
-      radius = w * 0.5,
-    })
-    -- Before setMode, not after: setMode starts a colour lerp that reads this
-    -- table on the spot, so a repaint applied afterwards would not be picked up
-    -- until something else changed the mode.
-    if tint then poles.tint(entry.marker, mode, tint) end
-    poles.call('setMode', entry.marker.setMode, entry.marker, mode)
-  end
-  return true
-end
-
--- Destroy every marker we hold. Called on every teardown path there is: the
--- race ending, the editor opening, the session closing, the extension
--- unloading. These are real scene objects, so one left behind is a pair of
--- poles standing on an empty map with nothing able to remove them.
-function poles.clear()
-  for slot, entry in pairs(poles.live) do
-    pcall(entry.marker.clearMarkers, entry.marker)
-    poles.live[slot] = nil
-  end
-  poles.enabled = false
-end
-
--- Markers animate (they pulse and fade with distance), so they need a tick.
--- Detached markers are not in race_marker's own render list, which is exactly
--- why they are safe -- so we drive them.
-function poles.update(dt)
-  for _, entry in pairs(poles.live) do
-    poles.call('update', entry.marker.update, entry.marker, dt, dt)
-  end
-end
-
--- Which gates should be wearing poles right now.
---
--- Race markers are for DRIVING, so they exist only while a session is running
--- and only for this driver's own next two gates: the one they are aiming at and
--- the one after it, so the line through the corner reads before they arrive.
--- The editor's own view of the track is a separate thing entirely and turns
--- these off -- an admin laying out a circuit wants to see all of it at once,
--- labelled, which poles cannot do.
-function poles.sync(editorView)
-  -- Poles are the DRIVER's view of a checkpoint, in every phase -- not only
-  -- during a running session. A driver learning a circuit before the lights
-  -- wants to see where the gates are just as much as one racing through them,
-  -- and the alternative was drawing the whole checkpoint set as rectangles,
-  -- which is the editor's job and clutter for everyone else.
-  local want = not editorView and not spectatorLock and #route > 0
-  -- One line whenever the answer changes, so "no poles" always has a reason
-  -- attached to it in the console rather than being a silent nothing.
-  local why = want and 'on'
-    or (editorView and 'the editor is open and you are an admin')
-    or (spectatorLock and 'spectating')
-    or (#route == 0 and 'no track loaded')
-    or 'off'
-  if why ~= poles.why then
-    poles.why = why
-    log('I', 'raceManager', 'Race checkpoint poles: ' .. why)
-  end
-  if not want then
-    if next(poles.live) ~= nil then poles.clear() end
-    return
-  end
-  -- Nothing to do on a build with no marker module, and asking again every
-  -- frame is exactly the cost this short-circuit exists to avoid.
-  if poles.mod == false then return end
-  poles.enabled = true
-
-  -- The gate being aimed at, and the one after it, so the line through the
-  -- corner reads before the driver arrives. 'lap' colours the start/finish
-  -- line, 'default' the ordinary next gate -- the same meanings BeamNG gives
-  -- them in its own races.
-  local n = #route
-  local a = armedWp
-  if a < 1 or a > n then a = 1 end
-  poles.set(1, route[a], a == n and 'lap' or 'default', 'main:' .. a)
-  local b = a % n + 1
-  if n > 1 then
-    poles.set(2, route[b], b == n and 'lap' or 'next', 'main:' .. b)
-  elseif poles.live[2] then
-    pcall(poles.live[2].marker.clearMarkers, poles.live[2].marker)
-    poles.live[2] = nil
-  end
-
-  -- The nearest pit stall, so a driver who needs a repair can find the lane.
-  -- Only the nearest: a lane of stalls all wearing poles would read as a wall
-  -- of gates across the track. 'recovery' is BeamNG's own colour for it.
-  local pn = #pitRoute
-  if pn > 0 then
-    local _, ppos = sampledVehicle()
-    local best, bestD = 1, math.huge
-    if ppos then
-      for i, wp in ipairs(pitRoute) do
-        local dx, dy = wp.x - ppos.x, wp.y - ppos.y
-        local d = dx * dx + dy * dy
-        if d < bestD then best, bestD = i, d end
-      end
-    end
-    poles.set(4, pitRoute[best], 'recovery', 'pit:' .. best)
-  elseif poles.live[4] then
-    pcall(poles.live[4].marker.clearMarkers, poles.live[4].marker)
-    poles.live[4] = nil
-  end
-
-  -- The joker route.
-  --
-  -- This is not decoration. The server DISQUALIFIES a driver who does not take
-  -- the joker exactly once, so a required route that nobody can see is a
-  -- penalty waiting to happen -- and the joker gates are not part of `route`,
-  -- so the two markers above never reach them.
-  --
-  -- Painted VIOLET rather than left on the stock branch orange, matching the
-  -- editor's own colour for it, and dimmed once the joker has been taken.
-  -- Shown in every state, including used: "you have taken it" is exactly as
-  -- much a thing a driver needs to know as "you still owe it", and the pole
-  -- used to simply vanish at that point. The label beside it (drawJokerLabel)
-  -- carries the words, because the marker cannot draw text at all.
-  --
-  -- The state is part of the key, not just the gate index: the colour changes
-  -- when the joker is taken without the gate moving, and the repaint rides the
-  -- key check inside poles.set.
-  local jn = #jokerRoute
-  if jokerEnabled and jn > 0 then
-    local j = jokerArmed
-    if j < 1 or j > jn then j = 1 end
-    local rgb = jokerTaken and TUNE.JOKER_POLE_USED_RGB or TUNE.JOKER_POLE_RGB
-    poles.set(3, jokerRoute[j], 'branch',
-      'joker:' .. j .. ':' .. (jokerTaken and 'used' or 'owed'), rgb)
-  elseif poles.live[3] then
-    pcall(poles.live[3].marker.clearMarkers, poles.live[3].marker)
-    poles.live[3] = nil
-  end
-end
+-- They were the driver's view of a gate until drawPoleGate took that over, and
+-- they had been dead code since: the only sync call passed editorView = true,
+-- so the module resolved nothing, built nothing and ticked an empty table every
+-- frame. They could not be made bright or solid enough to see, and could not be
+-- widened either, because their spacing IS the gate's width and wider poles
+-- would mark a target that does not score. drawPoleGate draws the same two-pole
+-- shape out of the editor's own cylinders instead.
 
 -- The joker route's LABEL, for a driver.
 --
@@ -3897,17 +4200,108 @@ local function drawJokerLabel(derbyLive)
     String(jokerLabel(j, jn, state)), p.text, true, false, p.jokerLabelBg)
 end
 
-local function drawGates()
-  if not debugDrawer then return end
-  -- The checkpoint rectangles are the EDITOR's view and only the editor's.
+-- THE DRIVER'S VIEW OF THE GATE THEY ARE AIMING AT.
+--
+-- Reported live as "racers cannot see the default BeamNG checkpoints". The stock
+-- poles cannot just be widened: their spacing IS the gate's width, so poles
+-- further apart than the trigger would show a target that does not score.
+--
+-- Only the gate being aimed at plus the next one dimmed, never the whole
+-- circuit. `derbyLive` suppresses it entirely: a checkpoint hanging over a
+-- demolition derby is authoring debris.
+-- TWO POLES, IN THE EDITOR'S OWN STYLE.
+--
+-- The stock markers are the right shape but could not be made bright enough, so
+-- the shape is redrawn out of the editor's own cylinders: full opacity, this
+-- mod's colours, the gate's own height, label floating between them.
+--
+-- TWO VERTICALS AND NOTHING ELSE. No top bar, because a hoop reads as something
+-- to aim through at one height and what is marked is the LINE between the poles
+-- at any height. No fill or bottom edge either: a bar at road height is a thing
+-- to drive into.
+local function drawPoleGate(wp, color, label)
+  local g = gateGeometry(wp)
+  local r = TUNE.POLE_RADIUS
+  debugDrawer:drawCylinder(g.bl, g.tl, r, color)
+  debugDrawer:drawCylinder(g.br, g.tr, r, color)
+  if label then
+    local p = palette()
+    debugDrawer:drawTextAdvanced(g.mid, String(label), p.text, true, false, p.textBg)
+  end
+end
+
+local function drawDriverGate(derbyLive)
+  if not debugDrawer or not visualize then return end
+  if derbyLive or spectatorLock then return end
+  if #route == 0 then return end
+  if phase ~= 'racing' and phase ~= 'qualifying' and phase ~= 'countdown'
+     and phase ~= 'grid' then return end
+  local p = palette()
+  local n = #route
+  local lane = branch.lane
+
+  -- NO TEXT ON A RACE CHECKPOINT. The poles say where the gate is and the colour
+  -- says which one is next; a driver reading "CP 3" at speed learns nothing they
+  -- can act on, and it is one more thing painted across the racing line.
   --
-  -- Everyone else -- every driver, and an admin who has closed the editor --
-  -- gets the gate poles instead, in every phase. Drawing a whole circuit's
-  -- worth of numbered rectangles at somebody who is trying to drive through it
-  -- is clutter; the poles say where the next gate is, which is the only part a
-  -- driver needs. `visualize` still hides them for an admin who wants the
-  -- unobstructed view while placing gates.
-  if not (editorOpen and isAdmin) then return end
+  -- The JOKER keeps its label, and it is the only one that does, because it is
+  -- the only gate whose text changes what a driver should DO -- owed, taken, or
+  -- forbidden on lap 1 -- and getting it wrong is a disqualification. The editor
+  -- still numbers everything: that is where the numbers are worth reading.
+  local a = armedWp
+  if a < 1 or a > n then a = 1 end
+  local armed = branch.gateFor(a, lane)
+  if armed then drawPoleGate(armed, p.armed, nil) end
+
+  -- The one after it, dimmed, so a corner reads before it arrives. Skipped on a
+  -- one-gate route, where "the next one" is the one already drawn.
+  if n > 1 then
+    local b = a % n + 1
+    local nxt = branch.gateFor(b, lane)
+    if nxt then drawPoleGate(nxt, p.routeNext or p.route, nil) end
+  end
+
+  -- The joker and the nearest pit stall, in the same style and the same colours
+  -- they have always had. They used to be the stock markers' job (slots 3 and 4)
+  -- and are drawn here now so a track has ONE checkpoint visual rather than two
+  -- that do not match.
+  if jokerEnabled and #jokerRoute > 0 then
+    local j = jokerArmed
+    if j < 1 or j > #jokerRoute then j = 1 end
+    local wp = jokerRoute[j]
+    if wp then
+      local state = jokerTaken and 'used'
+        or ((sessionRunning() and localLap <= 1) and 'closed' or 'open')
+      drawPoleGate(wp, jokerTaken and p.jokerUsed or p.joker,
+        jokerLabel(j, #jokerRoute, state))
+    end
+  end
+  if #pitRoute > 0 then
+    local _, ppos = sampledVehicle()
+    local best, bestD = 1, math.huge
+    if ppos then
+      for i, wp in ipairs(pitRoute) do
+        local dx, dy = wp.x - ppos.x, wp.y - ppos.y
+        local d = dx * dx + dy * dy
+        if d < bestD then best, bestD = i, d end
+      end
+    end
+    -- Amber, and unlabelled like the rest: a pit stall is somewhere you either
+    -- meant to go or did not.
+    if pitRoute[best] then drawPoleGate(pitRoute[best], p.pit, nil) end
+  end
+end
+
+local function drawGates(derbyLive)
+  if not debugDrawer then return end
+  -- The full circuit of numbered rectangles is the EDITOR's view and only the
+  -- editor's. A driver gets drawDriverGate above: the gate they are aiming at
+  -- and the one after it, which is what they can act on. `visualize` still hides
+  -- both for an admin who wants the unobstructed view while placing gates.
+  if not (editorOpen and isAdmin) then
+    drawDriverGate(derbyLive)
+    return
+  end
   if not visualize then return end
   local authoring = true
   -- Still needed below: which gate is armed, and whether the joker is open,
@@ -3925,7 +4319,33 @@ local function drawGates()
     else
       color = p.route
     end
-    drawGate(wp, color, routeLabel(i, n), authoring)
+    -- A slot some lane overrides is labelled with the fact, so an admin can see
+    -- at a glance which corners are shared and which are taken two ways.
+    local label = routeLabel(i, n)
+    local alts = 0
+    for _, b in ipairs(branch.list) do
+      if branch.bySlot[b.id] and branch.bySlot[b.id][i] then alts = alts + 1 end
+    end
+    if alts > 0 then label = label .. ' (+' .. alts .. ')' end
+    drawGate(wp, color, label, authoring)
+  end
+
+  -- Branch gates: cyan, so they never read as part of the main lap, and labelled
+  -- with the SLOT they override rather than their position in the branch's own
+  -- list -- a branch gate is not a checkpoint of its own, it is the other way of
+  -- taking one that already exists, and the number has to say so.
+  for _, b in ipairs(branch.list) do
+    local editing = (b.id == branch.editId)
+    for _, g in ipairs(b.gates) do
+      local slot = tonumber(g.slot) or 0
+      local color = p.branch or p.joker
+      if active and branch.lane == b.id and slot == armedWp then
+        color = p.armed
+      elseif not editing then
+        color = p.branchOther or p.jokerUsed
+      end
+      drawGate(g, color, 'CP ' .. slot .. ': ' .. (b.name or b.id), authoring)
+    end
   end
 
   -- Pit stalls. Amber, and labelled as stalls rather than numbered gates: they
@@ -4002,6 +4422,9 @@ local DERBY_POLE_RADIUS   = 0.2
 -- the largest cohesive group left.
 derbyState = {
   phase     = 'idle',   -- idle | running | finished (mirrored from server)
+  -- The derby is decided and running out its cool-down. The cars are stood down
+  -- for it -- see derbyStandDown.
+  over      = false,
   boundary  = {},       -- ordered polygon vertices { x, y, z }
   -- Which editor authored the polygon above, mirrored from the server. Gameplay
   -- reads `boundary` in both cases and nothing else -- these only decide what
@@ -4031,6 +4454,53 @@ derbyState = {
 -- derby with this driver still in it spends (or blocks) derby resets.
 derbyResetsActive = function ()
   return derbyState.phase == 'running' and not derbyState.out
+end
+
+-- STAND THE CAR DOWN AT THE END OF A DERBY.
+--
+-- The result is settled and the arena stays up for a few seconds so it can be
+-- seen; a wreck still being driven into people for those seconds is not a
+-- cool-down, it is extra time nobody was given.
+--
+-- Freezing ALONE is not enough, and that is the whole of this function. The grid
+-- hold uses the same freeze and gets away with it because a car on the grid is
+-- stationary with nothing pressed. A derby ends with somebody's foot flat to the
+-- floor, and a freeze applied over that captures the throttle: the engine sits
+-- screaming against a locked car and lets go the instant the freeze lifts. So
+-- the inputs are neutralised FIRST -- throttle off, brakes on -- and the freeze
+-- goes over the top of a car that is already trying to stop.
+--
+-- Controls are deliberately left ENABLED. There is nothing left to win, the car
+-- cannot move, and taking someone's steering away as a prize for having been in
+-- a derby is worse than pointless. What IS taken away is the reset: a reset would
+-- reload the vehicle out from under the freeze and hand them a driveable car in
+-- the middle of a settled result.
+spectate.derbyStoodDown = function () return derbyState.stoodDown == true end
+
+local function derbyStandDown(down)
+  if down == derbyState.stoodDown then return end
+  derbyState.stoodDown = down
+  local veh = playerVehicle()
+  if down then
+    if veh then
+      -- Order matters: let go of the throttle before anything locks.
+      pcall(function ()
+        veh:queueLuaCommand('input.event("throttle", 0, 1)')
+        veh:queueLuaCommand('input.event("brake", 1, 1)')
+        veh:queueLuaCommand('input.event("parkingbrake", 1, 1)')
+      end)
+    end
+    setLocalVehicleFrozen(true, 'derby')
+    pushNotice('derby', 'Derby over, hold still')
+  else
+    setLocalVehicleFrozen(false, 'derby')
+    if veh then
+      pcall(function ()
+        veh:queueLuaCommand('input.event("brake", 0, 1)')
+        veh:queueLuaCommand('input.event("parkingbrake", 0, 1)')
+      end)
+    end
+  end
 end
 
 local function derbyPushWarning()
@@ -4259,7 +4729,7 @@ derbyDrawBoundary = function ()
       cache.labelAt = vec3(first.x, first.y, first.z + height + 0.8)
       local s = derbyState.shape
       if derbyState.boundaryMode == 'rect' and s then
-        cache.label = string.format('DERBY ARENA — %.0f x %.0f m', s.halfW * 2, s.halfL * 2)
+        cache.label = string.format('DERBY ARENA: %.0f x %.0f m', s.halfW * 2, s.halfL * 2)
         -- A rectangle is convex and has exactly four corners, so its floor is
         -- one quad with no triangulation to get wrong.
         if n == 4 then
@@ -4276,7 +4746,7 @@ derbyDrawBoundary = function ()
                    b = vec3(s.cx + math.cos(s.rot) * 3, s.cy + math.sin(s.rot) * 3, s.cz + 0.1) },
           armB = { a = vec3(s.cx + math.sin(s.rot) * 3, s.cy - math.cos(s.rot) * 3, s.cz + 0.1),
                    b = vec3(s.cx - math.sin(s.rot) * 3, s.cy + math.cos(s.rot) * 3, s.cz + 0.1) },
-          label = string.format('CENTRE — %.0f deg', math.deg(s.rot)),
+          label = string.format('CENTRE: %.0f deg', math.deg(s.rot)),
           labelAt = vec3(s.cx, s.cy, s.cz + 1.6),
         }
       else
@@ -4385,7 +4855,7 @@ function M.derbySetBoundaryMode(mode)
     payload.cx, payload.cy, payload.cz = pos.x, pos.y, pos.z
   elseif mode == 'rect' and #derbyState.boundary < 3 then
     guihooks.trigger('RaceManagerEditorMsg', {
-      msg = 'Get in a vehicle first — the rectangle needs a centre' })
+      msg = 'Get in a vehicle first: the rectangle needs a centre' })
     return
   end
   TriggerServerEvent('RM_DerbySetBoundaryMode', jsonEncode(payload))
@@ -4672,6 +5142,11 @@ onDerbyUpdate = function (rawData)
   if not fromCurrentServer(data) then return end
 
   local newPhase = data.derbyPhase or 'idle'
+  -- Decided and running out the cool-down. Stood down while that is true, and
+  -- released the moment the derby is no longer running -- so a car is never left
+  -- frozen by a derby that has ended, whatever order the broadcasts arrive in.
+  derbyState.over = data.derbyOver == true
+  derbyStandDown(derbyState.over and newPhase == 'running')
   if newPhase == 'running' and derbyState.phase ~= 'running' then
     -- Fresh derby: re-arm local detection from a clean slate. The derby reset
     -- allowance is per-derby, so it starts over too.
@@ -4756,7 +5231,7 @@ onDerbyUpdate = function (rawData)
 
   -- If the server already knows we're out (e.g. reconnect race), stop
   -- policing. Same if we're not in the participant list at all: we joined
-  -- after Start Derby and are a spectator — a parked spectator must not get
+  -- after Start Derby and are a spectator - a parked spectator must not get
   -- OUT OF BOUNDS / VEHICLE STOPPED overlays for a derby they aren't in.
   local myId = derbyLocalServerId()
   if myId and type(data.players) == 'table' then
@@ -4775,7 +5250,7 @@ onDerbyUpdate = function (rawData)
 end
 
 -- Start Derby handed this client a start slot: stand the car on it, facing
--- the placed heading. No freeze/hold — the derby's start grace period covers
+-- the placed heading. No freeze/hold - the derby's start grace period covers
 -- the line-up, and the teleport is flagged so it never counts as a reset.
 onDerbyGridAssign = function (rawData)
   local ok, data = pcall(jsonDecode, rawData)
@@ -4853,13 +5328,9 @@ function M.onUpdate(dt)
   checkGates()
   lapTimerUpdate(dt)        -- live lap clock for this driver's own HUD
   reportProgress(dt)        -- live position telemetry (distance to next gate)
-  drawGates()
+  drawGates(derbyState.phase == 'running')
   -- The one label a driver gets: the gate poles carry no text at all.
   drawJokerLabel(derbyState.phase == 'running')
-  -- Race-mode checkpoint poles. Editor visuals belong to admins with the editor
-  -- open; everyone else, including an admin who has closed it, gets the poles.
-  poles.sync(editorOpen and isAdmin)
-  poles.update(dt)
   drawStartPositions()      -- starting grid slots
   fieldUpdate(dt)           -- ghosted, staggered grid placement / mass respawn
   holdUpdate(dt)            -- grid hold: verify it is holding, report position
@@ -4867,7 +5338,12 @@ function M.onUpdate(dt)
   snapshotUpdate(dt)        -- Module 1: rolling "last good position"
   resetGuardUpdate(dt)      -- Module 1: teleport-echo window + notice throttle
   resetInputBlockUpdate()   -- Module 1: dead reset keys once the allowance is gone
-  spectatorUpdate(dt)       -- Module 1: keep a spectator in freecam
+  spectatorUpdate(dt)       -- Module 1: follow the spectate target when it goes
+  -- The node grabber is off for the whole of a derby -- form-up, countdown and
+  -- running -- not just while the cars are moving. Dragging a car into position
+  -- on the grid before GO is the same cheat with better timing.
+  spectate.setGrabberBlocked(derbyState.phase == 'forming'
+    or derbyState.phase == 'countdown' or derbyState.phase == 'running')
   ghostUpdate(dt)           -- ghost mode qualifying
   vehicleConfigUpdate(dt)   -- Module 4: declare setup changes to the server
   derbyUpdate(dt)
@@ -4923,29 +5399,6 @@ function M.ghostStatus()
   }
 end
 
--- Diagnostic for the in-game Lua console:
---   dump(raceManager.polesStatus())
--- Answers "why can I not see the checkpoint poles" in one line, without needing
--- the log: whether the engine module resolved, whether they are wanted right
--- now and why, how many are standing, and the first engine error if any.
-function M.polesStatus()
-  local live = 0
-  for _ in pairs(poles.live) do live = live + 1 end
-  return {
-    moduleFound    = poles.mod ~= nil and poles.mod ~= false,
-    moduleLookedUp = poles.mod ~= nil,
-    reason         = poles.why,
-    markersUp      = live,
-    lastError      = poles.lastError,
-    phase          = phase,
-    editorOpen     = editorOpen,
-    isAdmin        = isAdmin,
-    spectating     = spectatorLock ~= nil,
-    gates          = #route,
-    armed          = armedWp,
-  }
-end
-
 function M.setEditorOpen(open)
   editorOpen = open == true
 end
@@ -4967,17 +5420,137 @@ end
 
 function M.setEditorTarget(target)
   target = tostring(target or 'main')
-  if target ~= 'joker' and target ~= 'start' and target ~= 'pit' then target = 'main' end
+  if target ~= 'joker' and target ~= 'start' and target ~= 'pit'
+     and target ~= 'branch' then target = 'main' end
   editorTarget = target
   pushRouteState()
   log('I', 'raceManager', 'Editor target: ' .. editorTarget)
+end
+
+-- The branch the editor is pointed at, or nil when there is none yet.
+function branch.editing()
+  if not branch.editId then return nil end
+  for _, b in ipairs(branch.list) do
+    if b.id == branch.editId then return b end
+  end
+  return nil
 end
 
 local function activeEditorRoute()
   if editorTarget == 'joker' then return jokerRoute end
   if editorTarget == 'pit'   then return pitRoute end
   if editorTarget == 'start' then return startPositions end
+  if editorTarget == 'branch' then
+    local b = branch.editing()
+    return b and b.gates or {}
+  end
   return route
+end
+
+-- Rebuild the per-slot lookup from the authored gate lists. Called after every
+-- edit, so what the editor shows and what the crossing code arms are the same
+-- thing -- an admin standing on a branch gate sees it go green.
+function branch.rebuild()
+  local bySlot = {}
+  for _, b in ipairs(branch.list) do
+    local slots = {}
+    for _, g in ipairs(b.gates) do
+      local slot = tonumber(g.slot)
+      if slot then slots[math.floor(slot)] = g end
+    end
+    bySlot[b.id] = slots
+  end
+  branch.bySlot = bySlot
+end
+
+-- The lowest slot this branch has not overridden yet, so placing a full mirror
+-- lap is drive-and-click without touching the slot picker once.
+function branch.nextFreeSlot(b)
+  if not b then return 1 end
+  local used = {}
+  for _, g in ipairs(b.gates) do
+    local s = tonumber(g.slot)
+    if s then used[math.floor(s)] = true end
+  end
+  for i = 1, math.max(#route, 1) do
+    if not used[i] then return i end
+  end
+  return math.max(#route, 1)
+end
+
+-- Create a lane. The id is derived from the name so an admin types one thing,
+-- and collisions are settled with a suffix rather than a rejection -- naming two
+-- lanes "Left" is a mistake worth absorbing, not one worth stopping on.
+function M.addBranch(name)
+  name = tostring(name or ''):gsub('^%s+', ''):gsub('%s+$', '')
+  if name == '' then name = 'Lane ' .. (#branch.list + 1) end
+  local base = name:lower():gsub('[^%w]+', ''):sub(1, 20)
+  if base == '' then base = 'lane' end
+  local id, n = base, 1
+  local function taken(x)
+    for _, b in ipairs(branch.list) do if b.id == x then return true end end
+    return false
+  end
+  while taken(id) do n = n + 1; id = base .. n end
+  branch.list[#branch.list + 1] = { id = id, name = name, gates = {} }
+  branch.editId   = id
+  branch.editSlot = 1
+  branch.rebuild()
+  pushRouteState()
+  log('I', 'raceManager', 'Branch added: ' .. name .. ' (' .. id .. ')')
+end
+
+function M.selectBranch(id)
+  id = tostring(id or '')
+  branch.editId = (id ~= '') and id or nil
+  branch.editSlot = branch.nextFreeSlot(branch.editing())
+  pushRouteState()
+end
+
+function M.removeBranch(id)
+  id = tostring(id or '')
+  for i, b in ipairs(branch.list) do
+    if b.id == id then
+      table.remove(branch.list, i)
+      if branch.editId == id then branch.editId = branch.list[1] and branch.list[1].id or nil end
+      branch.rebuild()
+      pushRouteState()
+      log('I', 'raceManager', 'Branch removed: ' .. id)
+      return
+    end
+  end
+end
+
+-- Which slot the next placed branch gate overrides.
+function M.setBranchSlot(slot)
+  slot = math.floor(tonumber(slot) or 1)
+  if slot < 1 then slot = 1 end
+  if #route > 0 and slot > #route then slot = #route end
+  branch.editSlot = slot
+  pushRouteState()
+end
+
+-- Re-point an already-placed branch gate at a different slot.
+function M.setBranchGateSlot(index, slot)
+  local b = branch.editing()
+  if not b then return end
+  index = math.floor(tonumber(index) or 0)
+  local g = b.gates[index]
+  if not g then return end
+  slot = math.floor(tonumber(slot) or 1)
+  if slot < 1 then slot = 1 end
+  if #route > 0 and slot > #route then slot = #route end
+  -- Two gates on one slot would make the lane ambiguous, so the slot is taken
+  -- from whichever gate held it: the admin asked for this one to have it.
+  for i, other in ipairs(b.gates) do
+    if i ~= index and tonumber(other.slot) == slot then
+      other.slot = tonumber(g.slot)
+      break
+    end
+  end
+  g.slot = slot
+  branch.rebuild()
+  pushRouteState()
 end
 
 -- Place a marker where the car is standing.
@@ -5005,7 +5578,44 @@ function M.editorAdd()
     place.width  = clampWidth(prev and prev.width  or checkpointWidth)
     place.height = clampHeight(prev and prev.height or checkpointHeight)
   end
+  -- A branch gate is placed AGAINST A SLOT: it is not a new checkpoint, it is the
+  -- other way of taking one that already exists. Placing it is what makes the
+  -- track a head-on layout rather than a longer lap.
+  if editorTarget == 'branch' then
+    local b = branch.editing()
+    if not b then
+      guihooks.trigger('RaceManagerEditorMsg', { msg = 'Add a lane first' })
+      return
+    end
+    if #route == 0 then
+      guihooks.trigger('RaceManagerEditorMsg', { msg = 'Place the main route first' })
+      return
+    end
+    local slot = math.floor(branch.editSlot or 1)
+    if slot < 1 then slot = 1 end
+    if slot > #route then slot = #route end
+    -- One gate per slot per lane. Placing on a slot that already has one moves it
+    -- rather than quietly making the lane ambiguous.
+    for _, g in ipairs(b.gates) do
+      if tonumber(g.slot) == slot then
+        g.x, g.y, g.z, g.hx, g.hy = place.x, place.y, place.z, place.hx, place.hy
+        branch.rebuild()
+        pushRouteState()
+        log('I', 'raceManager', 'Branch ' .. b.id .. ' slot ' .. slot .. ' moved')
+        return
+      end
+    end
+    place.slot = slot
+    b.gates[#b.gates + 1] = place
+    branch.editSlot = branch.nextFreeSlot(b)
+    branch.rebuild()
+    pushRouteState()
+    return
+  end
   target[#target + 1] = place
+  -- A slot placed by hand after a generate leaves the generator's block no
+  -- longer the last `count` of them, so it stops claiming to own one.
+  if editorTarget == 'start' then branch.gridTool.generated = false end
   pushRouteState()
 end
 
@@ -5017,6 +5627,9 @@ function M.editorUndo()
       if jokerArmed > #jokerRoute then jokerArmed = math.max(#jokerRoute, 1) end
     elseif editorTarget == 'main' and armedWp > #route then
       armedWp = math.max(#route, 1)
+    elseif editorTarget == 'branch' then
+      branch.editSlot = branch.nextFreeSlot(branch.editing())
+      branch.rebuild()
     end
     pushRouteState()
   end
@@ -5042,8 +5655,22 @@ function M.editorClear()
   if editorTarget == 'start' then
     startPositions = {}
     gridSlot = nil
+    branch.gridTool.generated = false
     pushRouteState()
     log('I', 'raceManager', 'Start positions cleared')
+    return
+  end
+  -- Clears the LANE being edited, not every lane and certainly not the main
+  -- route: the other way round a track is a thing an admin iterates on.
+  if editorTarget == 'branch' then
+    local b = branch.editing()
+    if b then
+      b.gates = {}
+      branch.editSlot = 1
+      branch.rebuild()
+      pushRouteState()
+      log('I', 'raceManager', 'Branch ' .. b.id .. ' gates cleared')
+    end
     return
   end
   clearTrackState('editor clear')
@@ -5064,6 +5691,9 @@ function M.moveStartPosition(index)
     return
   end
   startPositions[index] = place
+  -- Hand-placed now, so the sliders let go of it: they own a block of slots by
+  -- count, and a slot moved by hand is no longer where that count says it is.
+  branch.gridTool.generated = false
   pushRouteState()
   log('I', 'raceManager', 'Start position ' .. index .. ' moved to the current vehicle')
 end
@@ -5073,11 +5703,12 @@ function M.removeStartPosition(index)
   if not startPositions[index] then return end
   table.remove(startPositions, index)
   if gridSlot and gridSlot > #startPositions then gridSlot = nil end
+  branch.gridTool.generated = false
   pushRouteState()
 end
 
 -- Preview: stand the car on a placed slot so the creator can check spacing
--- without starting a race. Never freezes — this is an editor convenience.
+-- without starting a race. Never freezes - this is an editor convenience.
 function M.previewStartPosition(index)
   index = math.floor(tonumber(index) or 0)
   local sp = startPositions[index]
@@ -5126,6 +5757,377 @@ function M.previewCheckpoint(index)
   end
 end
 
+-- --- Taking things back -----------------------------------------------------
+-- Undo removes the LAST gate, which for a while was the only way to remove one
+-- at all: a gate placed out of order, or one missing from the middle, meant
+-- undoing back to it and re-driving everything after. These are the three
+-- operations that were missing, and they work on whichever list the editor is
+-- pointed at, so one implementation serves the main route, the joker route and
+-- the pit stalls -- the same reasoning moveCheckpoint is written under.
+--
+-- Every one of them has to renumber the BRANCHES in step. A branch addresses
+-- slots by number, so inserting, deleting or moving a main gate changes what
+-- those numbers mean; a lane left un-renumbered silently comes to describe a
+-- different corner of the track.
+function branch.shiftSlots(from, delta)
+  for _, b in ipairs(branch.list) do
+    for _, g in ipairs(b.gates) do
+      local s = tonumber(g.slot)
+      if s and s >= from then g.slot = s + delta end
+    end
+  end
+end
+
+-- Drop the overrides for a slot that is going away, and say so rather than
+-- leaving a lane pointing at a gate that no longer exists.
+function branch.dropSlot(slot)
+  local dropped = 0
+  for _, b in ipairs(branch.list) do
+    for i = #b.gates, 1, -1 do
+      if tonumber(b.gates[i].slot) == slot then
+        table.remove(b.gates, i)
+        dropped = dropped + 1
+      end
+    end
+  end
+  return dropped
+end
+
+function M.removeCheckpoint(index)
+  index = math.floor(tonumber(index) or 0)
+  local list = activeEditorRoute()
+  if not list[index] then
+    log('W', 'raceManager', 'removeCheckpoint: nothing at index ' .. tostring(index))
+    return
+  end
+  table.remove(list, index)
+  if editorTarget == 'main' then
+    local dropped = branch.dropSlot(index)
+    branch.shiftSlots(index + 1, -1)
+    branch.rebuild()
+    if dropped > 0 then
+      guihooks.trigger('RaceManagerEditorMsg', {
+        msg = 'Checkpoint ' .. index .. ' removed: ' .. dropped
+          .. ' branch gate(s) on that slot dropped with it',
+      })
+    end
+    if armedWp > #route then armedWp = math.max(#route, 1) end
+  elseif editorTarget == 'joker' then
+    if jokerArmed > #jokerRoute then jokerArmed = math.max(#jokerRoute, 1) end
+  elseif editorTarget == 'branch' then
+    branch.editSlot = branch.nextFreeSlot(branch.editing())
+    branch.rebuild()
+  end
+  pushRouteState()
+  log('I', 'raceManager', string.format('%s %d removed', editorTarget, index))
+end
+
+-- Place a gate BEFORE an existing one, at the car. The missing half of "add":
+-- a route is driven in order, and noticing a gap after the fact used to cost
+-- every gate placed since.
+function M.insertCheckpoint(index)
+  index = math.floor(tonumber(index) or 0)
+  local list = activeEditorRoute()
+  if index < 1 then index = 1 end
+  if index > #list + 1 then index = #list + 1 end
+  local place = vehiclePlacement()
+  if not place then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
+    return
+  end
+  if editorTarget ~= 'start' then
+    local prev = list[index] or list[#list]
+    place.width  = clampWidth(prev and prev.width  or checkpointWidth)
+    place.height = clampHeight(prev and prev.height or checkpointHeight)
+  end
+  if editorTarget == 'branch' then
+    guihooks.trigger('RaceManagerEditorMsg', {
+      msg = 'Branch gates are placed against a slot, not in an order',
+    })
+    return
+  end
+  table.insert(list, index, place)
+  if editorTarget == 'main' then
+    branch.shiftSlots(index, 1)
+    branch.rebuild()
+  end
+  pushRouteState()
+  log('I', 'raceManager', string.format('%s inserted at %d', editorTarget, index))
+end
+
+-- Move one gate (or grid slot) to a different place in the order. Slot 1 of the
+-- grid is pole, so this is also how a grid built in the wrong order is fixed.
+function M.reorderCheckpoint(from, to)
+  from = math.floor(tonumber(from) or 0)
+  to   = math.floor(tonumber(to) or 0)
+  local list = activeEditorRoute()
+  if not list[from] or from == to then return end
+  if to < 1 then to = 1 end
+  if to > #list then to = #list end
+  local item = table.remove(list, from)
+  table.insert(list, to, item)
+  if editorTarget == 'main' then
+    -- The main route's slots moved, so every branch override addressing one of
+    -- them has to move with it. Worked out from the shift the item made rather
+    -- than re-derived: exactly one slot changed position, everything between
+    -- `from` and `to` shifted one step the other way.
+    local lo, hi, step = math.min(from, to), math.max(from, to), (from < to) and -1 or 1
+    for _, b in ipairs(branch.list) do
+      for _, g in ipairs(b.gates) do
+        local s = tonumber(g.slot)
+        if s == from then g.slot = to
+        elseif s and s >= lo and s <= hi then g.slot = s + step end
+      end
+    end
+    branch.rebuild()
+  end
+  pushRouteState()
+  log('I', 'raceManager', string.format('%s %d moved to %d', editorTarget, from, to))
+end
+
+-- --- Building a grid without driving it -------------------------------------
+-- A head-on layout needs two blocks of slots facing opposite ways, and placing
+-- them one car at a time is the tedious part of authoring one.
+
+-- The grid generator's own state. One table for the register budget, and
+-- because these three genuinely travel together: what was generated, from where,
+-- and how far apart -- which is exactly what the sliders need to re-lay it out
+-- without the creator driving anywhere again.
+branch.gridTool = {
+  generated = false,   -- was this grid laid out by the generator?
+  anchor    = nil,     -- { x, y, z, hx, hy } the row-1 slot it was built from
+  count     = 0,
+  spacing   = 8,       -- metres between rows
+  stagger   = 6,       -- metres between the cars ACROSS a row
+  width     = 2,       -- cars per row
+}
+
+-- Lay N slots out from an anchor, back down its heading, `width` cars abreast.
+-- Nothing here is novel geometry: it is a placement plus arithmetic on the
+-- heading it already carries.
+--
+-- The row is CENTRED on the anchor, whatever it is made of. Two abreast puts a
+-- car half a gap either side of where the creator stood; three puts one on that
+-- spot and one either side; one puts every car on it, single file. Centring is
+-- what makes the width a free choice -- a row that grew off one edge would walk
+-- the whole grid sideways every time it changed, and on an oval it would walk it
+-- into the wall.
+--
+-- `stagger` is the gap between ADJACENT cars across a row, not the distance from
+-- some centre line. That is the measurement a creator can actually check against
+-- the track: it is how much room each car has beside the one next to it.
+function branch.layOutGrid(anchor, count, spacing, stagger, width, replace)
+  local fx, fy = anchor.hx, anchor.hy
+  local rx, ry = fy, -fx        -- the right-hand perpendicular
+  width = math.floor(tonumber(width) or 2)
+  if width < 1 then width = 1 end
+  if width > TUNE.GRID_MAX_WIDTH then width = TUNE.GRID_MAX_WIDTH end
+  if replace then startPositions = {} end
+  local mid = (width - 1) * 0.5
+  for i = 0, count - 1 do
+    local row  = math.floor(i / width)
+    local col  = i % width
+    local back = row * spacing
+    local side = (col - mid) * stagger
+    startPositions[#startPositions + 1] = {
+      x  = anchor.x - fx * back + rx * side,
+      y  = anchor.y - fy * back + ry * side,
+      z  = anchor.z,
+      hx = fx, hy = fy,
+    }
+  end
+end
+
+-- Generate a grid.
+--
+-- `from` picks the anchor: a slot number uses that ALREADY PLACED start position
+-- and its heading, and anything else uses the car. Anchoring on a placed slot is
+-- what makes the sliders below work -- pole is a decision the creator makes once,
+-- by standing on it, and everything after it is arithmetic.
+-- NOT M.generateGrid. That name belongs to the admin control further down this
+-- file which asks the SERVER to form the race grid -- it teleports the whole
+-- field onto its slots and holds them for the countdown. Lua assignment is
+-- last-one-wins and that one is defined later, so a start-position generator
+-- called generateGrid was simply erased at load: pressing Generate Slots sent
+-- RM_GenerateGrid and started the race instead.
+--
+-- The same collision happened one layer up, in app.js, and was renamed there
+-- first -- which fixed nothing, because both layers had it.
+function M.generateStartPositions(count, spacing, stagger, from, width)
+  count   = math.floor(tonumber(count) or 0)
+  spacing = tonumber(spacing) or 8
+  stagger = tonumber(stagger) or 6
+  width   = math.floor(tonumber(width) or 2)
+  if width < 1 then width = 1 end
+  if width > TUNE.GRID_MAX_WIDTH then width = TUNE.GRID_MAX_WIDTH end
+  if count < 1 then return end
+  if count > 60 then count = 60 end
+
+  local anchor, replace
+  local slot = math.floor(tonumber(from) or 0)
+  if startPositions[slot] then
+    -- Rebuild the grid from an existing slot, keeping everything before it.
+    local sp = startPositions[slot]
+    anchor = { x = sp.x, y = sp.y, z = sp.z, hx = sp.hx, hy = sp.hy }
+    for i = #startPositions, slot, -1 do table.remove(startPositions, i) end
+    replace = false
+  else
+    anchor = vehiclePlacement()
+    if not anchor then
+      guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
+      return
+    end
+    replace = false
+  end
+
+  branch.layOutGrid(anchor, count, spacing, stagger, width, replace)
+  -- Remembered so the sliders can re-lay the same grid out without the creator
+  -- driving back to pole to do it.
+  branch.gridTool.generated = true
+  branch.gridTool.anchor    = anchor
+  branch.gridTool.count     = count
+  branch.gridTool.spacing   = spacing
+  branch.gridTool.stagger   = stagger
+  branch.gridTool.width     = width
+  pushRouteState()
+  guihooks.trigger('RaceManagerEditorMsg', {
+    msg = 'Generated ' .. count .. ' start positions, ' .. width .. ' abreast ('
+      .. spacing .. 'm between rows, ' .. stagger .. 'm across)',
+  })
+  log('I', 'raceManager', 'Generated ' .. count .. ' start positions, '
+    .. width .. ' abreast')
+end
+
+-- Re-lay the generated grid out at a new spacing. What the sliders drive.
+--
+-- Only ever touches a grid this generator built, and only the slots it built:
+-- respacing a grid somebody placed by hand would throw their work away, and the
+-- sliders are hidden until there is a generated one to move.
+function M.respaceGrid(spacing, stagger, width)
+  if not branch.gridTool.generated or not branch.gridTool.anchor then return end
+  spacing = tonumber(spacing) or branch.gridTool.spacing
+  stagger = tonumber(stagger) or branch.gridTool.stagger
+  width   = math.floor(tonumber(width) or branch.gridTool.width)
+  if spacing < 1 then spacing = 1 end
+  if spacing > 60 then spacing = 60 end
+  if stagger < 0 then stagger = 0 end
+  if stagger > 30 then stagger = 30 end
+  if width < 1 then width = 1 end
+  if width > TUNE.GRID_MAX_WIDTH then width = TUNE.GRID_MAX_WIDTH end
+  -- The slots this generator owns are the last `count` of them; anything placed
+  -- before the generate stays exactly where the creator put it.
+  local keep = #startPositions - branch.gridTool.count
+  if keep < 0 then keep = 0 end
+  -- LANE TAGS AND HEADINGS SURVIVE THE MOVE. Both belong to the slot, and
+  -- respacing moves slots rather than replacing them.
+  --
+  -- The heading matters as much as the tag, and for the same layout: a head-on
+  -- grid is generated as one block, half of it turned around, and half of it
+  -- tagged. Re-laying it from the anchor alone would face every car the anchor's
+  -- way again, so nudging a slider would silently un-turn half the field and the
+  -- two directions would set off together.
+  local held = {}
+  for i = keep + 1, #startPositions do
+    local sp = startPositions[i]
+    held[i - keep] = sp and { branch = sp.branch, hx = sp.hx, hy = sp.hy } or nil
+  end
+  for i = #startPositions, keep + 1, -1 do table.remove(startPositions, i) end
+  branch.layOutGrid(branch.gridTool.anchor, branch.gridTool.count,
+    spacing, stagger, width, false)
+  for i = 1, branch.gridTool.count do
+    local sp, was = startPositions[keep + i], held[i]
+    if sp and was then
+      sp.branch = was.branch
+      if was.hx and was.hy then sp.hx, sp.hy = was.hx, was.hy end
+    end
+  end
+  -- Changing the width re-flows the SAME slots into different rows -- slot 5 of a
+  -- three-wide grid is row 2 where it was row 3 two-wide -- and the tag and
+  -- heading above follow the slot, not the row. That is the right way round: a
+  -- head-on grid is tagged "slots 7 to 12 go the other way", and it stays that
+  -- way whatever shape the rows are.
+  branch.gridTool.spacing = spacing
+  branch.gridTool.stagger = stagger
+  branch.gridTool.width   = width
+  pushRouteState()
+end
+
+-- Turn a range of grid slots around. Build one block, then flip half of it: the
+-- head-on grid without driving the second half of it.
+function M.flipStartPositions(from, to)
+  from = math.floor(tonumber(from) or 1)
+  to   = math.floor(tonumber(to) or #startPositions)
+  if from < 1 then from = 1 end
+  if to > #startPositions then to = #startPositions end
+  local n = 0
+  for i = from, to do
+    local sp = startPositions[i]
+    if sp then
+      sp.hx, sp.hy = -(sp.hx or 0), -(sp.hy or 1)
+      n = n + 1
+    end
+  end
+  pushRouteState()
+  guihooks.trigger('RaceManagerEditorMsg', { msg = 'Turned ' .. n .. ' start position(s) around' })
+end
+
+-- Put a range of grid slots on a lane. This is how a field is split in half --
+-- tag slots 1-6 one way and 7-12 the other -- and it is the only place a
+-- driver's direction is ever decided. An empty id puts them back on the main
+-- route.
+-- Deal the lanes out across the grid, one slot at a time, instead of in blocks.
+--
+-- P1 main, P2 the next lane, P3 back to main, and so on. On a grid as many cars
+-- abreast as there are lanes that puts each lane in its own COLUMN -- two abreast
+-- with two lanes is one car of each direction in every row, side by side, facing
+-- opposite ways, which is the head-on grid as it is actually lined up.
+--
+-- It also splits the field evenly without the admin working out where the middle
+-- is, and stays even when the entry list changes size: tagging slots 1-6 and
+-- 7-12 by hand is right for twelve drivers and wrong for the eleven who turn up.
+--
+-- The cycle is main first, then each branch in the order they were created, so
+-- pole is always the main route.
+function M.stripeStartLanes()
+  local lanes = { false }        -- false = the main route, no tag
+  for _, b in ipairs(branch.list) do lanes[#lanes + 1] = b.id end
+  if #lanes < 2 then
+    guihooks.trigger('RaceManagerEditorMsg', {
+      msg = 'Add a lane first: there is nothing to alternate with',
+    })
+    return
+  end
+  for i, sp in ipairs(startPositions) do
+    local pick = lanes[((i - 1) % #lanes) + 1]
+    sp.branch = pick or nil
+  end
+  pushRouteState()
+  local names = {}
+  for _, l in ipairs(lanes) do names[#names + 1] = l and branch.nameOf(l) or 'Main' end
+  guihooks.trigger('RaceManagerEditorMsg', {
+    msg = 'Alternated ' .. #startPositions .. ' slots across: ' .. table.concat(names, ', '),
+  })
+  log('I', 'raceManager', 'Start positions striped across ' .. #lanes .. ' lanes')
+end
+
+function M.setStartLane(from, to, id)
+  from = math.floor(tonumber(from) or 1)
+  to   = math.floor(tonumber(to) or #startPositions)
+  id   = tostring(id or '')
+  if id == '' then id = nil end
+  if from < 1 then from = 1 end
+  if to > #startPositions then to = #startPositions end
+  local n = 0
+  for i = from, to do
+    local sp = startPositions[i]
+    if sp then sp.branch = id; n = n + 1 end
+  end
+  pushRouteState()
+  guihooks.trigger('RaceManagerEditorMsg', {
+    msg = n .. ' start position(s) set to ' .. (id and ('lane ' .. id) or 'the main route'),
+  })
+end
+
 function M.setCheckpointWidth(w)
   checkpointWidth = clampWidth(w)
   pushRouteState()
@@ -5156,72 +6158,10 @@ function M.setCheckpointOverride(index, w, h)
   pushRouteState()
 end
 
-function M.editorSave()
-  if #route == 0 then
-    log('W', 'raceManager', 'Editor: nothing to save')
-    return
-  end
-  jsonWriteFile(TUNE.ROUTE_FILE, {
-    version = 5,
-    width   = checkpointWidth,
-    height  = checkpointHeight,
-    waypoints = route,
-    joker     = jokerRoute,
-    startPositions = startPositions,
-  }, true)
-  log('I', 'raceManager', 'Editor: saved ' .. #route .. ' checkpoints ('
-    .. #jokerRoute .. ' joker, ' .. #startPositions .. ' start positions) to ' .. TUNE.ROUTE_FILE)
-  guihooks.trigger('RaceManagerEditorMsg', {
-    msg = 'Saved ' .. #route .. ' checkpoints'
-      .. (#jokerRoute > 0 and (' + ' .. #jokerRoute .. ' joker gates') or '')
-      .. (#startPositions > 0 and (' + ' .. #startPositions .. ' start positions') or ''),
-  })
-end
-
--- v1 route files stored spherical waypoints { x, y, z, radius }. Convert:
--- heading = direction toward the next waypoint (wrapping to the first).
-local function migrateV1(waypoints)
-  local out = {}
-  local n = #waypoints
-  for i, wp in ipairs(waypoints) do
-    local nxt = waypoints[i % n + 1]
-    local dx, dy = nxt.x - wp.x, nxt.y - wp.y
-    local len = math.sqrt(dx * dx + dy * dy)
-    local hx, hy = 0, 1
-    if len > 1e-4 then hx, hy = dx / len, dy / len end
-    out[i] = { x = wp.x, y = wp.y, z = wp.z, hx = hx, hy = hy }
-  end
-  return out
-end
-
-function M.editorLoad()
-  local data = jsonReadFile(TUNE.ROUTE_FILE)
-  if type(data) ~= 'table' or type(data.waypoints) ~= 'table' or #data.waypoints == 0 then
-    log('W', 'raceManager', 'Editor: no saved route at ' .. TUNE.ROUTE_FILE)
-    guihooks.trigger('RaceManagerEditorMsg', { msg = 'No saved route found' })
-    return
-  end
-  if data.version and data.version >= 2 then
-    route = data.waypoints
-    checkpointWidth  = clampWidth(data.width or TUNE.DEFAULT_WIDTH)
-    checkpointHeight = clampHeight(data.height or TUNE.DEFAULT_HEIGHT)
-    jokerRoute = (type(data.joker) == 'table') and data.joker or {}
-    startPositions = (type(data.startPositions) == 'table') and data.startPositions or {}
-  else
-    route = migrateV1(data.waypoints)
-    jokerRoute = {}
-    startPositions = {}
-  end
-  armedWp    = math.max(#route, 1)
-  jokerArmed = 1
-  pushRouteState()
-  guihooks.trigger('RaceManagerEditorMsg', {
-    msg = 'Loaded ' .. #route .. ' checkpoints'
-      .. (#jokerRoute > 0 and (' + ' .. #jokerRoute .. ' joker gates') or '')
-      .. (#startPositions > 0 and (' + ' .. #startPositions .. ' start positions') or ''),
-  })
-end
-
+-- The local scratch route file (editorSave/editorLoad) is gone. Loading it
+-- rebuilt the route while emptying the joker route and the grid, so a Load there
+-- followed by a Save here overwrote a server layout with a partial one. Server
+-- layouts are the only copy now.
 function M.editorToggleVisualize()
   visualize = not visualize
   pushRouteState()
@@ -5238,7 +6178,10 @@ local function editorMsg(msg)
   guihooks.trigger('RaceManagerEditorMsg', { msg = msg })
 end
 
-function M.saveLayout(name)
+-- `confirmDrop` is the admin having accepted that this save empties a section
+-- the stored layout has. Without it the server holds the save and answers with
+-- RM_SaveHeld. See the silent-drop guard there.
+function M.saveLayout(name, confirmDrop)
   name = tostring(name or ''):gsub('^%s+', ''):gsub('%s+$', '')
   print('[raceManager] saveLayout("' .. name .. '") with ' .. #route .. ' checkpoint(s)')
   if name == '' then
@@ -5273,6 +6216,11 @@ function M.saveLayout(name)
       -- Carry per-checkpoint overrides through only when set.
       if tonumber(wp.width)  then out[i].width  = clampWidth(wp.width)   end
       if tonumber(wp.height) then out[i].height = clampHeight(wp.height) end
+      if wp.oneWay == true   then out[i].oneWay = true end
+      -- Start positions only: the lane a car on this slot races. Dropping it here
+      -- would save a head-on grid as an ordinary one, and the field would all set
+      -- off the same way round.
+      if type(wp.branch) == 'string' and wp.branch ~= '' then out[i].branch = wp.branch end
     end
     return out
   end
@@ -5292,6 +6240,41 @@ function M.saveLayout(name)
     starts = bundle(startPositions, 'start position')
     if not starts then return end
   end
+  -- The lanes travel with the layout, like the joker route and the grid: a
+  -- head-on oval is one saved object, not a circuit an admin has to remember to
+  -- rebuild the other half of. Bundled by hand rather than through `bundle`
+  -- because a branch gate carries the slot it overrides, which is the whole
+  -- point of it.
+  local lanes = nil
+  if #branch.list > 0 then
+    lanes = {}
+    for _, b in ipairs(branch.list) do
+      local gates = {}
+      for _, g in ipairs(b.gates) do
+        local x, y, z, slot = tonumber(g.x), tonumber(g.y), tonumber(g.z), tonumber(g.slot)
+        if not (x and y and z and slot) then
+          log('E', 'raceManager', 'saveLayout: branch ' .. b.id .. ' has an invalid gate, aborting')
+          editorMsg('Save failed: lane "' .. (b.name or b.id) .. '" has an invalid gate')
+          return
+        end
+        local out = {
+          slot = math.floor(slot), x = x, y = y, z = z,
+          hx = tonumber(g.hx) or 0, hy = tonumber(g.hy) or 1,
+        }
+        if tonumber(g.width)  then out.width  = clampWidth(g.width)   end
+        if tonumber(g.height) then out.height = clampHeight(g.height) end
+        if g.oneWay == true   then out.oneWay = true end
+        gates[#gates + 1] = out
+      end
+      -- A lane with no gates is the main route wearing a different name, and the
+      -- server rejects the whole save for one. Dropped here instead, so an admin
+      -- who added a lane and has not placed its gates yet can still save.
+      if #gates > 0 then
+        lanes[#lanes + 1] = { id = b.id, name = b.name or b.id, gates = gates }
+      end
+    end
+    if #lanes == 0 then lanes = nil end
+  end
   local payload = jsonEncode({
     name        = name,
     width       = clampWidth(checkpointWidth),
@@ -5299,11 +6282,19 @@ function M.saveLayout(name)
     checkpoints = cps,
     joker       = jokerCps,
     startPositions = starts,
+    branches       = lanes,
+    -- Does this grid sit away from the start/finish line? Inferred rather than
+    -- asked for: an admin who placed the grid somewhere else has already said so
+    -- by placing it there, and a switch they have to remember is one they will
+    -- forget. A head-on layout always trips it, because two directions cannot
+    -- share one row of slots.
+    gridOffLine    = branch.gridIsOff(),
     pits           = bundle(pitRoute, 'pit stall') or {},
     -- Whether this track is a sprint stage or a circuit is a property of the
     -- TRACK, so it is stored with it. An admin who built a point-to-point stage
     -- should not have to remember to set it again every race night.
     pointToPoint   = pointToPoint,
+    confirmDrop    = confirmDrop == true,
   })
   print('[raceManager] saveLayout: sending RM_SaveLayout (' .. #payload .. ' bytes) to server')
   TriggerServerEvent('RM_SaveLayout', payload)
@@ -5321,6 +6312,16 @@ function M.loadLayout(name)
     return
   end
   TriggerServerEvent('RM_LoadLayout', jsonEncode({ name = name }))
+end
+
+function M.deleteLayout(name)
+  name = tostring(name or '')
+  if name == '' then return end
+  if not inMultiplayer() then
+    editorMsg('Layouts need a BeamMP server')
+    return
+  end
+  TriggerServerEvent('RM_DeleteLayout', jsonEncode({ name = name }))
 end
 
 -- Console helper: creates a one-gate circuit (a bare start/finish line).
@@ -5371,12 +6372,12 @@ local function onServerUpdate(rawData)
   end
   -- The qualifying clock has expired and this driver is on their last lap. Read
   -- off the state broadcast rather than a one-shot event, so a client that joins
-  -- or reconnects mid-final-lap is told too — but announced only on the EDGE, or
+  -- or reconnects mid-final-lap is told too - but announced only on the EDGE, or
   -- a 3 Hz broadcast would repeat the notice several times a second.
   local wasFinalLap = finalLap
   finalLap = data.finalLap == true
   if finalLap and not wasFinalLap then
-    pushNotice('session', 'TIME EXPIRED — FINAL LAP. Your session ends as you cross the line.')
+    pushNotice('session', 'TIME EXPIRED: FINAL LAP. Your session ends as you cross the line.')
   end
   -- Race entry + qualifying rules.
   if type(data.entryMode) == 'string' then entryMode = data.entryMode end
@@ -5402,7 +6403,14 @@ local function onServerUpdate(rawData)
   local myId = localServerId()
   if myId and type(data.drivers) == 'table' then
     for _, d in ipairs(data.drivers) do
-      if tonumber(d.id) == myId then joined = d.joined == true; break end
+      if tonumber(d.id) == myId then
+        joined = d.joined == true
+        -- ...and whether we turned up in the middle of somebody else's session.
+        -- ghostUpdate acts on this: a car that is not in the race is a ghost to
+        -- the cars that are.
+        isBystander = d.bystander == true
+        break
+      end
     end
   end
 
@@ -5422,7 +6430,7 @@ local function onServerUpdate(rawData)
     if bestPid and myId and bestPid == myId and bestTime then
       local mins = math.floor(bestTime / 60)
       pushNotice('fastest',
-        string.format('FASTEST LAP — %d:%06.3f', mins, bestTime - mins * 60))
+        string.format('FASTEST LAP: %d:%06.3f', mins, bestTime - mins * 60))
     end
     lastBestLapPid  = bestPid
     lastBestLapTime = bestTime
@@ -5440,7 +6448,7 @@ local function onServerUpdate(rawData)
     -- that arrives while the driver is still stationary and reading.
     if newPhase == 'qualifying' and qualiOutLap then
       pushNotice('session',
-        'OUT LAP — this lap is NOT timed. Timing starts as you cross the line.')
+        'OUT LAP: this lap is NOT timed. Timing starts as you cross the line.')
     end
     -- Leaving the start procedure must never leave a car frozen.
     if newPhase ~= 'grid' and newPhase ~= 'countdown' then releaseGridHold('race') end
@@ -5493,7 +6501,7 @@ end
 
 -- The server has seen this car off its grid slot and is pulling it back. The
 -- server owns the hold; this is it exercising that, and it arrives whether or
--- not the local guard did its job — which is the point of having it.
+-- not the local guard did its job - which is the point of having it.
 local function onHoldCorrect(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then data = {} end
@@ -5511,7 +6519,7 @@ local function onHoldCorrect(rawData)
   end
   hold.correctLeft = 0        -- a server correction is never rate-limited away
   hold.restore('server correction: ' .. tostring(data.reason or 'moved off the grid'))
-  pushNotice('grid', 'Held on the grid — wait for the lights')
+  pushNotice('grid', 'Held on the grid, wait for the lights')
 end
 
 -- --- Module 1: forced spectator mode (server -> client) --------------------
@@ -5580,7 +6588,7 @@ local function onServerCountdown(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
   -- GO (0) or an aborted countdown (-1): the grid hold ends here. This is the
-  -- authoritative release — everyone's car is let go by the same broadcast, so
+  -- authoritative release - everyone's car is let go by the same broadcast, so
   -- nobody can creep away early or be held a moment longer than their rivals.
   local count = tonumber(data.count)
   if count and count <= 0 then releaseGridHold('race') end
@@ -5669,11 +6677,45 @@ local function onApplyLayout(rawData)
   if type(data.pits) == 'table' and #data.pits > 0 then
     pits = unbundle(data.pits, 'pit stall') or {}
   end
+  -- Branching routes, resolved into the per-slot lookup the crossing code reads.
+  -- Done ONCE, here, rather than searched per frame: the gate for a slot has to
+  -- be found sixty times a second and this is what makes that one table index.
+  local lanes, bySlot = {}, {}
+  if type(data.branches) == 'table' then
+    for _, b in ipairs(data.branches) do
+      local id = type(b.id) == 'string' and b.id or nil
+      if id and type(b.gates) == 'table' then
+        local slots = {}
+        for _, g in ipairs(b.gates) do
+          local slot = tonumber(g.slot)
+          local x, y, z = tonumber(g.x), tonumber(g.y), tonumber(g.z)
+          if slot and x and y and z and slot >= 1 and slot <= #cps then
+            local gate = {
+              x = x, y = y, z = z,
+              hx = tonumber(g.hx) or 0, hy = tonumber(g.hy) or 1,
+              width  = clampWidth(tonumber(g.width)  or data.width  or checkpointWidth),
+              height = clampHeight(tonumber(g.height) or data.height or checkpointHeight),
+            }
+            if g.oneWay == true then gate.oneWay = true end
+            slots[math.floor(slot)] = gate
+          end
+        end
+        if next(slots) then
+          lanes[#lanes + 1] = { id = id, name = tostring(b.name or id), gates = b.gates }
+          bySlot[id] = slots
+        end
+      end
+    end
+  end
+
   clearTrackState('applying layout "' .. tostring(data.name) .. '"')
   route      = cps
   jokerRoute = jokerCps
   pitRoute   = pits
   startPositions = starts
+  branch.list   = lanes
+  branch.bySlot = bySlot
+  branch.gridOffLine = data.gridOffLine == true
   checkpointWidth  = clampWidth(data.width or checkpointWidth)
   checkpointHeight = clampHeight(data.height or checkpointHeight)
   pointToPoint     = data.pointToPoint == true
@@ -5685,6 +6727,30 @@ local function onApplyLayout(rawData)
   log('I', 'raceManager', 'Applied server layout "' .. tostring(data.name)
     .. '" with ' .. #route .. ' checkpoints, ' .. #jokerRoute .. ' joker gates and '
     .. #startPositions .. ' start positions')
+end
+
+-- The server refused an overwrite that would have emptied part of a layout. The
+-- UI asks the admin and re-sends confirmed if that is what they meant.
+local function onSaveHeld(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local lost = type(data.lost) == 'table' and data.lost or {}
+  local label = {
+    joker = 'joker gates', pits = 'pit stalls',
+    startPositions = 'start positions', branches = 'lanes',
+  }
+  local parts = {}
+  for key, n in pairs(lost) do
+    parts[#parts + 1] = tostring(n) .. ' ' .. (label[key] or key)
+  end
+  table.sort(parts)
+  guihooks.trigger('RaceManagerSaveHeld', {
+    name = tostring(data.name or ''),
+    lost = lost,
+    summary = table.concat(parts, ', '),
+  })
+  log('W', 'raceManager', 'Save held back: overwriting "' .. tostring(data.name)
+    .. '" would drop ' .. table.concat(parts, ', '))
 end
 
 -- Server ordered a full purge (server startup, pre-layout-load, or an
@@ -5825,7 +6891,7 @@ function M.setMaxResets(n)
   end
 end
 
--- Module 1: what a legal reset does while racing — repair in place (default)
+-- Module 1: what a legal reset does while racing - repair in place (default)
 -- or respawn at the last checkpoint the driver crossed.
 function M.setResetMode(mode)
   mode = (tostring(mode or 'inplace') == 'checkpoint') and 'checkpoint' or 'inplace'
@@ -6151,7 +7217,7 @@ end
 -- dispatch table that every (re)load of this extension overwrites: older
 -- BeamMP builds have an AddEventHandler with no matching remove, so registering
 -- the local closures directly left every previous instance's handlers alive
--- across a reload — a stale instance pushing its own (empty) state to the UI
+-- across a reload - a stale instance pushing its own (empty) state to the UI
 -- between the live instance's pushes is one way the UI ends up flickering
 -- between two states. With the indirection the bridge binds to BeamMP exactly
 -- once per game session and always dispatches into the newest instance's
@@ -6169,6 +7235,7 @@ local DISPATCH = {
   RM_Countdown       = onServerCountdown,
   RM_Layouts         = onLayoutList,
   RM_ApplyLayout     = onApplyLayout,
+  RM_SaveHeld        = onSaveHeld,
   RM_ClearTrack      = onClearTrack,
   RM_LoginResult     = onLoginResult,
   RM_PasswordChanged = onPasswordChanged,
@@ -6217,7 +7284,7 @@ end
 
 -- Everything this client enforces locally, switched off. Called both when the
 -- extension is unloaded and when the BeamMP session ends (see below), because
--- every one of these is a rule the SERVER owns and only this client can apply —
+-- every one of these is a rule the SERVER owns and only this client can apply -
 -- with no server left to lift them they would otherwise stay applied.
 local function resetToIdle(reason)
   phase = 'waiting'
@@ -6232,9 +7299,14 @@ local function resetToIdle(reason)
   -- this driver -- their car, their camera, their collisions -- is settled now.
   flushFieldPlacement()
   releaseGridHold()
-  poles.clear()                  -- scene objects: never leave them standing
   clearGhostReasons()
   setResetInputsBlocked(false)   -- never leave the reset keys dead after unload
+  -- Same rule for the two filters this mod added. Unloading with the driving or
+  -- the node grabber still filtered off would leave the player in a car they
+  -- cannot drive with nothing on screen explaining why -- and nothing left
+  -- loaded that could give it back.
+  spectate.setInputsBlocked(false)
+  spectate.setGrabberBlocked(false)
   holdWanted = nil               -- nothing is meant to be held any more
   maxResets       = -1
   resetsUsed      = 0
@@ -6293,9 +7365,9 @@ end
 -- BeamMP session lifecycle
 -- ---------------------------------------------------------------------------
 -- Leaving a BeamMP server used to leave this client mid-race forever. Every
--- regulation the server owns is APPLIED here — the reset keys are switched off
+-- regulation the server owns is APPLIED here - the reset keys are switched off
 -- at the input filter, the car is frozen on its grid slot, a finished or
--- eliminated driver is held in freecam — and all of them are lifted by a
+-- eliminated driver is held in freecam - and all of them are lifted by a
 -- server broadcast that is never coming once the session is gone. A driver who
 -- disconnected mid-race was dropped back into singleplayer with a dead reset
 -- key and, if they had finished or been knocked out, no car and a camera that

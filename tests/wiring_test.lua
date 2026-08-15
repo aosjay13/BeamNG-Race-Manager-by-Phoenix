@@ -30,6 +30,7 @@ end
 
 local server = readFile('server/RaceManager/main.lua')
 local client = readFile('lua/ge/extensions/raceManager.lua')
+local ui     = readFile('ui/modules/apps/RaceManager/app.js')
 
 -- Everything the server plugin registers a handler for.
 local registered = {}
@@ -160,6 +161,36 @@ end
 expect(reference ~= nil and reference:match('^%d+%.%d+%.%d+$') ~= nil,
   'the build stamp is a plain semver ("' .. tostring(reference)
     .. '"), matching the release tag it ships under')
+
+-- ---------------------------------------------------------------------------
+-- NO ENTRY POINT MAY BE DEFINED TWICE, IN ANY LAYER
+-- ---------------------------------------------------------------------------
+-- Defining the same name twice is last-one-wins in both Lua and JavaScript, and
+-- it is completely silent: no error, no console line, nothing in any log. The
+-- button still works. It just runs somebody else's function.
+--
+-- This cost two rounds of testing on one bug. The Start Grid tab's start-position
+-- generator was called `generateGrid` -- a name already used, further down each
+-- file, by the admin control that FORMS THE RACE GRID and holds the field for a
+-- countdown. So pressing Generate in the editor started the race. It was renamed
+-- in app.js first, which fixed nothing, BECAUSE THE COLLISION EXISTED IN BOTH
+-- LAYERS and only one had been looked at.
+--
+-- That is the lesson this check encodes: an entry point is a name in three
+-- files, and finding a collision in one of them says nothing about the others.
+-- All three are swept here, together, for exactly that reason.
+local function noDupes(label, source, pattern)
+  local seen, dupes = {}, {}
+  for name in source:gmatch(pattern) do
+    if seen[name] then dupes[#dupes + 1] = name else seen[name] = true end
+  end
+  expect(#dupes == 0, label .. ' defines these more than once, so the later '
+    .. 'definition silently replaces the earlier: ' .. table.concat(dupes, ', '))
+end
+
+noDupes('the client bridge (M.*)',      client, '\nfunction M%.([%a_][%w_]*)')
+noDupes('the server plugin (RM_* globals)', server, '\nfunction (RM_[%a_][%w_]*)')
+noDupes('the UI app ($scope handlers)', ui,     '%$scope%.([%a_][%w_]*)%s*=%s*function')
 
 if fails == 0 then
   print('wiring_test: ' .. checks .. ' checks, 0 failures')
