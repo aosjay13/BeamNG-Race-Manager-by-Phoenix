@@ -325,6 +325,64 @@ check(shown(3) == 'Guest_SOMEONE_ELSE',
   'a recycled session id does not inherit the previous player\'s name')
 check(shown(0) == 'Phoenix', 'and everybody else keeps theirs')
 
+-- ---------------------------------------------------------------------------
+-- Generate Grid always means "form the RACE grid"
+-- ---------------------------------------------------------------------------
+-- It used to return silently whenever a session was under way, which is every
+-- qualifying session. From a host's seat that is a dead button: still in
+-- qualifying, pressing the control that leads to the race, nothing happening,
+-- and nothing anywhere saying "End Session first". Reported from a live night as
+-- "Generate Grid forces qualifying -- hosts cannot get to the race".
+do
+  RM_onEndRace(0)
+  RM_onResetLeaderboard(0)
+  RM_onSetEntryMode(0, '{"mode":"all"}')
+  RM_onStartQualifying(0)
+  runCountdown()
+  check(lastState.phase == 'qualifying', 'a qualifying session is running')
+  -- Two flying laps each, after the out lap every driver owes.
+  RM_onLap(1, '{"lapTime":50}'); RM_onLap(1, '{"lapTime":30}')
+  RM_onLap(2, '{"lapTime":50}'); RM_onLap(2, '{"lapTime":20}')
+
+  RM_onGenerateGrid(0)
+  check(lastState.phase == 'grid', 'Generate Grid supersedes a running qualifying session')
+  check(lastState.sessionKind == 'race', 'and what it forms is a RACE, never qualifying')
+  check(driver(2).qualiBest == 20 and driver(1).qualiBest == 30,
+    'the qualifying times survive being superseded -- they are what orders the grid')
+  check(driver(2).gridPos == 1 and driver(1).gridPos == 2,
+    'and the grid is built from them, fastest on pole')
+
+  runCountdown()
+  check(lastState.phase == 'racing' and lastState.sessionKind == 'race',
+    'Start Countdown then runs the race, not another qualifying session')
+
+  -- A live RACE is still refused: superseding one would throw away a result the
+  -- field is in the middle of earning, on one misclick, with no undo. Refused
+  -- OUT LOUD, because the silence was the actual bug.
+  lastChat = nil
+  RM_onGenerateGrid(0)
+  check(lastState.phase == 'racing', 'Generate Grid does not restart a live race')
+  check(type(lastChat) == 'string' and lastChat:find('End Session', 1, true) ~= nil,
+    'and says why, instead of refusing in silence')
+  RM_onEndRace(0)
+
+  -- No qualifying behind it at all: the grid still forms and the race still runs.
+  RM_onResetLeaderboard(0)
+  RM_onGenerateGrid(0)
+  local gridded = 0
+  for _, d in ipairs(lastState.drivers) do if d.gridPos then gridded = gridded + 1 end end
+  check(lastState.phase == 'grid' and lastState.sessionKind == 'race' and gridded == 5,
+    'Generate Grid works with no qualifying results at all')
+
+  -- Twice in a row rebuilds cleanly rather than double-starting or corrupting.
+  RM_onGenerateGrid(0)
+  local again = 0
+  for _, d in ipairs(lastState.drivers) do if d.gridPos then again = again + 1 end end
+  check(lastState.phase == 'grid' and again == gridded,
+    'pressing it twice rebuilds the same grid instead of corrupting it')
+  RM_onEndRace(0)
+end
+
 if fails == 0 then
   print('session_test: ' .. checks .. ' checks, 0 failures')
 else

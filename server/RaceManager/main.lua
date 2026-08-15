@@ -2022,10 +2022,43 @@ end
 -- Generate Grid: form the race grid. Drivers who join afterwards go to the back
 -- on the next Generate Grid. Also usable from waiting/finished: with no quali
 -- times everyone ties and the grid falls back to join order.
+-- GENERATE GRID ALWAYS MEANS "FORM THE RACE GRID". It never starts qualifying,
+-- and it is never a no-op.
+--
+-- It used to return here the moment sessionUnderWay() was true, which is every
+-- qualifying session -- silently, with no chat line and no log. From the host's
+-- seat that is indistinguishable from the button being broken: they are still in
+-- qualifying, pressing the control that is supposed to take them to the race,
+-- and nothing happens. "Generate Grid forces qualifying" is what that looks like
+-- from outside, and the way out (End Session first) is not written anywhere.
+--
+-- So a running QUALIFYING session is ended and superseded. The times survive --
+-- finishSession is the same path End Session uses, and the grid formed
+-- immediately after reads them -- so the common race-night order (run quali,
+-- press Generate Grid) now just works.
+--
+-- A running RACE is still refused, and that is a deliberate exception to
+-- "no exceptions": superseding a live race would throw away a result twenty
+-- drivers are in the middle of earning, on one misclick, with no undo. It is
+-- refused OUT LOUD instead -- the silence is the actual bug here, not the
+-- refusal.
 function RM_onGenerateGrid(pid)
   if not requireAuth(pid) then return end
-  if sessionUnderWay() then return end
-  formGrid('race', MP.GetPlayerName(pid) or pid)
+  local who = MP.GetPlayerName(pid) or pid
+  if race.phase == 'racing' or race.phase == 'countdown' then
+    MP.SendChatMessage(pid, '[RaceManager] A race is under way — press End Session '
+      .. 'first, then Generate Grid.')
+    print('[RaceManager] Generate Grid refused: a race is already running')
+    return
+  end
+  if race.phase == 'qualifying' then
+    -- End it the way End Session does, so the times are scored and kept.
+    MP.CancelEventTimer('RM_CountdownTick')
+    broadcastCountdown(-1)
+    finishSession('qualifying closed by ' .. who .. ' to form the race grid')
+    print('[RaceManager] Qualifying superseded by Generate Grid (' .. who .. ')')
+  end
+  formGrid('race', who)
 end
 
 -- How the grid gets filled. Locked once the countdown/race starts.
