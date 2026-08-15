@@ -6,7 +6,54 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
-## 0.8.0 - The qualifying out lap, reverse grids, cup points in results
+## 0.8.0 - Branching routes, mouse track editing, the qualifying out lap
+
+### Added (track building)
+
+- **Branching routes: two ways round one track, scored together.** A lane is a
+  set of per-slot gate *overrides*. It replaces the gate at a checkpoint rather
+  than adding one, so every lane has the same number of slots and the whole
+  field runs one lap count on one leaderboard. That covers a left/right split,
+  and it covers the head-on "suicide" oval where two halves of the field race in
+  opposite directions and still finish the same race. Gates score in **either
+  direction** now unless marked one-way, so a driver who missed a checkpoint can
+  turn round and take it rather than driving the whole loop again.
+- **A race whose grid sits away from the start/finish line gives its first lap
+  away**, for the same reason qualifying does: a lap is only a lap if it starts
+  where it ends. A head-on layout always trips it, because two directions cannot
+  share one row of slots. It travels with the track, not with the session.
+- **Nudge mode: build and fix a track with the mouse.** Turn it on in the editor
+  and the cursor is released from the camera. **Click** a gate to pick it,
+  **drag** to move it along the ground, **scroll** to turn it, **ctrl+click**
+  open ground to place a new one. Works on whichever editor tab you are on, so
+  checkpoints, joker gates, pit stalls, lane gates and start positions are all
+  movable. A placed gate faces the way the route is already travelling, so
+  clicking along a road in order gives gates that face the way the road goes.
+  With a gate picked, a placement goes in *after* it, which is how a gap noticed
+  halfway round gets filled. Driving to a gate and pressing the button is
+  unchanged and still the way a track gets built: it puts a gate where a car
+  actually fits, facing the way one actually travels.
+- **Grid tools.** Generate a block of start positions from an anchor, respace
+  them, set how many abreast, flip half of them 180 degrees for a head-on grid,
+  and deal lanes across the slots one at a time. Checkpoints and start positions
+  can be reordered and deleted individually.
+- **Pit stalls.** Drive into one during a race and the car is stopped, repaired
+  and released. Not checkpoints: they never affect laps or splits.
+
+### Fixed (this one lost work)
+
+- **A save could quietly empty the layout it was overwriting.** Loading a track
+  with a joker route, a pit stall and a grid, adjusting a pole height and saving
+  under the same name could return a layout with none of them, silently. A save
+  writes whatever the sending client holds, so any path that emptied one
+  collection while leaving the route alone made the next same-name save a
+  permanent loss. The server now **refuses a save that would empty a section the
+  stored layout has** and says exactly what would go; the panel asks and
+  re-sends if that is really the intent. The editor's separate local Save/Load
+  pair, which rebuilt the route while emptying the joker route and the grid, is
+  gone. **Save As New**, **Overwrite** and **Delete** replace the duplicate
+  buttons, and Overwrite and Delete act on the layout selected in the Track
+  picker, so putting an edited track back needs no retyping.
 
 ### Changed (settings and visibility)
 
