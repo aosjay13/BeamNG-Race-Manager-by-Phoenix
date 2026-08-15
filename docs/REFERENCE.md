@@ -816,9 +816,17 @@ Switch **Joker lap** on in Race settings and the rule is enforced:
 
 #### Seeing the checkpoints
 
-A driver gets the **gate poles** (BeamNG's own checkpoint markers) *and* the
-**gate they are aiming at**, drawn as a bright rectangle, with the one after it
-dimmed behind it. Just those two — a whole lap's worth of numbered rectangles
+A driver gets **two poles** at the gate they are aiming at and two more, dimmed,
+at the one after it — drawn by the mod in its own colours rather than BeamNG's
+markers, which could not be made bright enough to see.
+
+**No text on them.** The poles say where the gate is and the colour says which
+one is next; "CP 3" read at racing speed tells a driver nothing they can act on,
+and it is one more thing painted across the racing line. Pit stalls are the same:
+amber, unlabelled. **The joker is the only gate that carries text**, because it is
+the only one whose wording changes what you should *do* — owed, taken, or
+forbidden on lap 1 — and getting that wrong is a disqualification. The editor
+still numbers everything; that is where the numbers are worth reading. Just those two — a whole lap's worth of numbered rectangles
 across the racing line is clutter, but a checkpoint nobody can see is worse.
 
 The poles cannot simply be made wider to fix visibility: **their spacing is the

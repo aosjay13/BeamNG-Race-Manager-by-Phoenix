@@ -4646,17 +4646,25 @@ local function drawDriverGate(derbyLive)
   local n = #route
   local lane = branch.lane
 
+  -- NO TEXT ON A RACE CHECKPOINT. The poles say where the gate is and the colour
+  -- says which one is next; a driver reading "CP 3" at speed learns nothing they
+  -- can act on, and it is one more thing painted across the racing line.
+  --
+  -- The JOKER keeps its label, and it is the only one that does, because it is
+  -- the only gate whose text changes what a driver should DO -- owed, taken, or
+  -- forbidden on lap 1 -- and getting it wrong is a disqualification. The editor
+  -- still numbers everything: that is where the numbers are worth reading.
   local a = armedWp
   if a < 1 or a > n then a = 1 end
   local armed = branch.gateFor(a, lane)
-  if armed then drawPoleGate(armed, p.armed, routeLabel(a, n)) end
+  if armed then drawPoleGate(armed, p.armed, nil) end
 
   -- The one after it, dimmed, so a corner reads before it arrives. Skipped on a
   -- one-gate route, where "the next one" is the one already drawn.
   if n > 1 then
     local b = a % n + 1
     local nxt = branch.gateFor(b, lane)
-    if nxt then drawPoleGate(nxt, p.routeNext or p.route, routeLabel(b, n)) end
+    if nxt then drawPoleGate(nxt, p.routeNext or p.route, nil) end
   end
 
   -- The joker and the nearest pit stall, in the same style and the same colours
@@ -4684,7 +4692,9 @@ local function drawDriverGate(derbyLive)
         if d < bestD then best, bestD = i, d end
       end
     end
-    if pitRoute[best] then drawPoleGate(pitRoute[best], p.pit, 'PIT ' .. best) end
+    -- Amber, and unlabelled like the rest: a pit stall is somewhere you either
+    -- meant to go or did not.
+    if pitRoute[best] then drawPoleGate(pitRoute[best], p.pit, nil) end
   end
 end
 

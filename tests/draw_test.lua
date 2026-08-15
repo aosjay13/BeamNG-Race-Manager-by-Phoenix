@@ -126,8 +126,11 @@ serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
 frame()
 check(#quads == 0,
   'a driver gets no FILLED gate surfaces -- that is the authoring view')
-check(#texts == 2,
-  'and exactly two gate labels: the one they are aiming at and the one after it')
+check(#texts == 0,
+  'and NO text on them: the poles say where the gate is and the colour says which '
+    .. 'one is next, so "CP 3" at racing speed is one more thing painted across '
+    .. 'the racing line for nothing. Only the joker is labelled, because only its '
+    .. 'text changes what a driver should do')
 check(#cylinders == 4,
   'drawn as TWO POLES each and nothing else -- no top bar, because the thing '
     .. 'being marked is the line BETWEEN them at any height, and a bar reads as '
