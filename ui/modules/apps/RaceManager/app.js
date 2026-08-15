@@ -2837,29 +2837,26 @@ angular.module('beamng.apps')
         $element[0].style.setProperty('--rm-panel-bg', 'rgba(15, 17, 22, ' + Number(op) + ')');
       });
 
-      // THE BOARD'S WIDTH, MEASURED, so the rest of the driver's column can be
-      // told to match it.
+      // THE BOARD'S MEASURED WIDTH, for the driver bar to match and wrap inside.
       //
-      // CSS cannot say "as wide as that one child". fit-content on the root says
-      // "as wide as the WIDEST child", and that is the driver bar -- lap clock,
-      // joker, resets, checkpoint counter, distance, race clock, a slider and
-      // three buttons -- which is reliably wider than the board it sits above.
-      // So the bar sized the column and the board still did not match it.
+      // ONE DIRECTION ONLY: board -> bar. The board's width does not depend on
+      // the bar, so this settles on the first pass. The version that set the
+      // ROOT from this collapsed the app -- the board's max-width is 100% of the
+      // root, so root-from-board is a loop that converges on zero, and it took
+      // the resize grip down with it.
       //
-      // The board is the thing with a size the driver chose, so it is the thing
-      // everything else follows. Measured rather than read from panelSize because
-      // that is null until the grip has been dragged, and the mismatch is at its
-      // most obvious before anyone has touched it.
-      //
-      // A custom property has to be set on the element directly: jqLite's .css()
+      // A custom property must be set on the element directly: jqLite's .css()
       // camel-cases the name, so a --custom-prop through ng-style is dropped.
       $scope.$watch(function () {
         if (!$scope.minimalMode()) { return 0; }
         var board = $element[0].querySelector('.rm-table-wrap');
         return board ? board.offsetWidth : 0;
       }, function (w) {
-        $element[0].style.setProperty('--rm-lb-width', w > 0 ? (w + 'px') : '100%');
+        // 'auto' rather than 0 while there is nothing to measure: a bar with no
+        // width is a bar nobody can find the login button on.
+        $element[0].style.setProperty('--rm-lb-width', w > 0 ? (w + 'px') : 'auto');
       });
+
 
 
       // BeamNG paints this app inside its HUD app host: an absolutely

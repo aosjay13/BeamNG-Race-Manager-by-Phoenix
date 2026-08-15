@@ -3139,28 +3139,30 @@
   .rm-minimal {
     background: transparent !important;
     overflow: visible;
-    /* THE BOARD SIZES THE COLUMN, and the controller measures it (see the
-       --rm-lb-width watcher in app.js) because CSS cannot express "as wide as
-       that one child".
+    /* THE ROOT IS NEVER SIZED FROM THE BOARD, and that is the whole lesson of
+       this block. Doing it collapsed the app: the root took its width from the
+       board, the board's max-width is 100% OF THE ROOT, and every pass shrank
+       both until the leaderboard was a stripe and the grip that would have fixed
+       it had gone with it.
 
-       fit-content was tried first and sizes the root to the WIDEST child, which
-       is the driver bar -- it carries the lap clock, the joker, the resets, the
-       checkpoint counter, the distance, the race clock, a slider and three
-       buttons, so it is reliably wider than the board it belongs under. The bar
-       then stretched to itself and nothing lined up, which is the same symptom
-       one layer along.
-
-       The board is the thing with a size a driver chose (the grip stores it), so
-       it is the thing the rest follows. */
-    width: var(--rm-lb-width, 100%);
-    max-width: 100%;
+       The BAR is sized from the board instead (below). That direction has no
+       feedback in it -- the board's width does not depend on the bar -- so the
+       measurement settles on the first pass. */
   }
-  /* Content-sized, so it is never stretched by the width it is itself setting. */
-  .rm-minimal .rm-table-wrap { align-self: flex-start; }
-  /* ...and the bar wraps rather than forcing the column wider than the board. */
-  .rm-minimal .rm-driverbar { flex-wrap: wrap; }
+  /* The bar matches the board and DOUBLES UP when it will not fit on one line.
+     It is the only thing here wide enough to need it: lap clock, joker, resets,
+     checkpoint counter, distance, race clock, a slider and three buttons.
+     `auto` until the board has been laid out and measured, so it never collapses
+     to nothing waiting for a number. */
+  .rm-minimal .rm-driverbar {
+    width: var(--rm-lb-width, auto);
+    max-width: 100%;
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
   .rm-minimal .rm-table-wrap {
     flex: none;
+    align-self: flex-start;
     position: relative;
     max-width: 100%;
     overflow: auto;
