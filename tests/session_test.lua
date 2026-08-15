@@ -8,7 +8,7 @@
 --      `players` is rebuilt from scratch by Start Qualifying and the alias went
 --      with it.
 --   2. Five drivers opting in individually produced no grid and no teleport,
---      while "everyone races" put the same five on the grid — the online purge
+--      while "everyone races" put the same five on the grid - the online purge
 --      threw away every `joined` flag when the id keys did not compare equal.
 --   3. Only the last finisher got their car back, because the release was fired
 --      while the participant list was still being walked.
@@ -146,7 +146,7 @@ check(sameField, 'both entry modes produce the same grid, slot for slot')
 --
 -- MP.GetPlayers() keys its map on the server's own terms. When those keys do not
 -- compare equal to the ones the records are stored under, EVERY record is purged
--- one line before the entry list is read — taking every `joined` flag with it.
+-- one line before the entry list is read - taking every `joined` flag with it.
 -- In "all" mode that is invisible, because nothing looks at the flag.
 -- ---------------------------------------------------------------------------
 RM_onEndRace(0)
@@ -186,7 +186,7 @@ check(shown(0) == 'Phoenix' and shown(4) == 'Comet', 'display names are set')
 --
 -- There is an out lap again, and it is not that one: it starts on the grid with
 -- everybody else's, ends at the line, and is counted separately from the
--- allowance. Three laps is three TIMED laps — the fourth crossing is what ends
+-- allowance. Three laps is three TIMED laps - the fourth crossing is what ends
 -- a driver's session, and nothing but the standing start is given away.
 RM_onSetQualiLimits(0, '{"laps":3,"seconds":0}')
 clearSignals()

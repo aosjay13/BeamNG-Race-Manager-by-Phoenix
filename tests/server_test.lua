@@ -243,7 +243,7 @@ check(lastState.totalLaps == 1, 'laps clamped to minimum 1')
 RM_onSetTotalLaps(1, '{"laps":2}')
 
 -- Qualifying: Cara fastest, Bob middle, Alice slowest; Bob improves.
--- Qualifying runs the same lifecycle a race does — grid, hold, countdown, GO —
+-- Qualifying runs the same lifecycle a race does - grid, hold, countdown, GO
 -- and reports its laps on the same event, so there is one lap path rather than
 -- two that can drift apart.
 RM_onStartQualifying(1)
@@ -265,7 +265,7 @@ RM_onLap(3, '{"lapTime":90.0}')
 check(driver('Bob').qualiBest == 92.1, 'best lap keeps the fastest (92.1)')
 check(driver('Bob').qualiLaps == 3, 'and every timed lap is counted')
 -- Alice has crossed twice: the out lap, then one timed lap. The lap counter
--- counts CROSSINGS and is advanced by both — an out lap that left the counter
+-- counts CROSSINGS and is advanced by both - an out lap that left the counter
 -- where it was would rank her against the field a lap down.
 check(driver('Alice').currentLap == 3, 'a qualifying driver advances a lap like a racer')
 check(driver('Alice').qualiLaps == 1, 'while the allowance only counts the timed one')
@@ -599,7 +599,7 @@ check(storedLayout('Brand New') == nil, 'the delete survives a server restart')
 
 -- ---------------------------------------------------------------------------
 -- Ghost drivers: a driver who disconnected mid-race is kept as DNF for the
--- results file, but must be purged by the next Generate Grid — otherwise the
+-- results file, but must be purged by the next Generate Grid - otherwise the
 -- ghost turns 'racing' at GO, never laps, and blocks the auto-finish forever.
 -- (State is fresh here: the file was just re-dofile'd + onInit'd above.)
 -- ---------------------------------------------------------------------------

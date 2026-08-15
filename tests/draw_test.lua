@@ -382,7 +382,7 @@ RM.onUpdate(0.016)
 check(#quads == 9, 'a rectangle adds one floor quad to its four walls')
 local sized = false
 for _, t in ipairs(texts) do
-  if t.text == 'DERBY ARENA — 100 x 60 m' then sized = true end
+  if t.text == 'DERBY ARENA: 100 x 60 m' then sized = true end
 end
 check(sized, 'the editor reads the rectangle back in metres')
 

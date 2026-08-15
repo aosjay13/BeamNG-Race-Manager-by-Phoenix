@@ -1,25 +1,17 @@
--- Headless test for the race-mode checkpoint markers (BeamNG's gate poles) in
--- lua/ge/extensions/raceManager.lua.
---
--- Why this exists, and why most of it is about what the mod must NOT do:
---
--- `scenario/race_marker` is a SINGLETON shared by everything in the game that
--- races -- BeamNG's own hotlapping and flowgraph races, drag, drift, and
--- BeamJoy if it is installed. Its setupMarkers() rebuilds ONE global marker
--- list, so calling it deletes every marker all of them had placed, and the next
--- one to call it deletes ours. BeamJoy uses that shared path and documents
--- crashes on disconnect for every marker type but one.
---
--- So the markers are taken in their DETACHED form: createRaceMarker(true, ...)
--- hands back a marker that is never entered into the shared list. We own it, we
--- drive it, and nothing we do can disturb another mod's race. The engine stubs
--- below fail the test if the shared API is called at all.
---
--- The other half is teardown. These are real scene objects (TSStatic), not
--- immediate-mode drawing: one left behind is a pair of poles standing on an
--- empty map with nothing left able to delete them.
+-- Headless guard: the mod must never touch `scenario/race_marker`.
 --
 -- Run from the repo root: lua5.3 tests/poles_test.lua
+--
+-- That module is a SINGLETON shared by everything in the game that races:
+-- BeamNG's own hotlapping and flowgraph races, drag, drift, and BeamJoy if it is
+-- installed. Its setupMarkers() rebuilds ONE global marker list, so calling it
+-- deletes every marker all of them had placed, and the next caller deletes ours.
+-- BeamJoy uses that shared path and documents crashes on disconnect.
+--
+-- The mod used to drive detached markers from it and now draws its own two poles
+-- out of debugDrawer cylinders instead (drawPoleGate, covered by draw_test).
+-- This file is what keeps it that way: the stub below records ANY use of the
+-- module, and every assertion is that there was none.
 
 local checks, fails = 0, 0
 local function check(cond, msg)
@@ -36,33 +28,6 @@ local VEH_ID = 7
 -- Every marker the engine has handed out, alive or dead, in order.
 local madeMarkers = {}
 local sharedApiCalls = {}   -- any use of the SHARED (non-detached) API
-
--- The real sideColumnMarker builds this in its init with
--- `self.modeInfos = deepcopy(modeInfos)` -- a PER-INSTANCE copy of the eight
--- stock mode colours. That copy is what makes recolouring one marker safe, so
--- the stub reproduces it (a fresh table per marker, never a shared one) and the
--- joker case below checks the recolour lands on it.
-local function stockModeInfos()
-  return {
-    default  = { color = { 1, 0.07, 0 },  baseColor = { 1, 1, 1 } },
-    next     = { color = { 0, 0, 0 },     baseColor = { 0, 0, 0 } },
-    lap      = { color = { 0.4, 1, 0.2 }, baseColor = { 1, 1, 1 } },
-    recovery = { color = { 1, 0.85, 0 },  baseColor = { 1, 1, 1 } },
-    branch   = { color = { 1, 0.6, 0 },   baseColor = { 1, 1, 1 } },
-    hidden   = { color = { 0, 0, 0 },     baseColor = { 0, 0, 0 } },
-  }
-end
-
-local function makeMarker(id)
-  local m = { id = id, alive = false, checkpoint = nil, mode = nil, updates = 0,
-              modeInfos = stockModeInfos() }
-  function m:createMarkers() self.alive = true end
-  function m:clearMarkers() self.alive = false end
-  function m:setToCheckpoint(wp) self.checkpoint = wp end
-  function m:setMode(mode) self.mode = mode end
-  function m:update(dt) self.updates = self.updates + 1 end
-  return m
-end
 
 -- The real module, as far as its shape matters here.
 local raceMarkerModule = {
@@ -177,20 +142,6 @@ end
 -- ===========================================================================
 -- THE STOCK MARKERS ARE RETIRED, AND THE SHARED SINGLETON IS LEFT ALONE
 -- ===========================================================================
--- race_marker was the right SHAPE -- a column either side of the racing line is
--- what a driver already reads without being taught -- but the markers could not
--- be made bright or solid enough to see on track, and they could not be widened
--- either: their spacing IS the gate width, so poles further apart than the
--- trigger would mark a target that does not score.
---
--- So the mod draws its own two poles now, out of the same cylinders the editor
--- rectangle is built from (drawPoleGate, covered by tests/draw_test.lua).
---
--- What this file protects is what it always protected, and it matters MORE now
--- that nothing here is used: race_marker is a singleton shared with BeamNG's own
--- hotlapping and flowgraph races, drag, drift, and BeamJoy if it is installed.
--- Its setupMarkers() rebuilds one global marker list, so calling it would delete
--- every marker any of them had placed. The mod must touch none of it.
 
 serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
 frames(5)
@@ -213,9 +164,10 @@ end
 check(touchedShared == false,
   'setupMarkers is NEVER called: it rebuilds the list BeamNG, drag, drift and '
     .. 'BeamJoy all share, and calling it would delete their markers')
+check(requireCalls == 0, 'the module is not even required any more')
 
--- Teardown still tears down. If an older build left markers standing, unloading
--- has to take them with it -- they are real scene objects and nothing else can.
+-- Teardown still tears down: markers are real scene objects, and one left
+-- standing has nothing left able to delete it.
 RM.onExtensionUnloaded()
 check(aliveMarkers() == 0, 'unloading leaves no marker standing')
 

@@ -3436,6 +3436,13 @@ function RM_onSaveLayout(pid, rawData)
 
   local map = getCurrentMap()
   local starts = sanitizeCheckpoints(data.startPositions)
+  -- What is already stored under this name, if anything. Held before the new
+  -- entry is built, because the whole point of the check below is to compare the
+  -- two -- see the silent-drop guard after it.
+  local existing = nil
+  for _, l in ipairs(getLayouts()) do
+    if l.map == map and l.name:lower() == name:lower() then existing = l; break end
+  end
   local entry = {
     name        = name,
     map         = map,
@@ -3470,6 +3477,45 @@ function RM_onSaveLayout(pid, rawData)
       .. '(bad slot number, duplicate slot, duplicate id or empty lane)')
     return
   end
+  -- ---------------------------------------------------------------------
+  -- The silent-drop guard.
+  --
+  -- A save writes whatever the sending client happens to be holding. That is
+  -- fine when it is holding the whole track, and catastrophic when it is not:
+  -- any client-side path that empties one collection and leaves the route alone
+  -- turns the next same-name save into permanent, unannounced data loss. An
+  -- admin who loaded a track, nudged a pole height and pressed Save got back a
+  -- layout with no joker route, no pit stall and no grid, and nothing anywhere
+  -- said so.
+  --
+  -- So the server compares against what it already has, and a save that would
+  -- empty a section the stored layout HAS is refused and reported back. The
+  -- admin can still do it -- the UI asks, and sends confirmDrop -- but it can no
+  -- longer happen by accident, whatever emptied the client's copy.
+  --
+  -- Only whole sections count, not shrinkage: deleting one of six start
+  -- positions is ordinary editing. Going from six to none is not.
+  if existing and data.confirmDrop ~= true then
+    local function had(t) return type(t) == 'table' and #t or 0 end
+    local lost = {}
+    local function checkSection(key, before, after)
+      if before > 0 and after == 0 then lost[key] = before end
+    end
+    checkSection('joker',          had(existing.joker),          entry.joker and #entry.joker or 0)
+    checkSection('pits',           had(existing.pits),           entry.pits and #entry.pits or 0)
+    checkSection('startPositions', had(existing.startPositions), starts and #starts or 0)
+    checkSection('branches',       had(existing.branches),       entry.branches and #entry.branches or 0)
+    if next(lost) then
+      local parts = {}
+      for k, n in pairs(lost) do parts[#parts + 1] = n .. ' ' .. k end
+      table.sort(parts)
+      print('[RaceManager] Save held back: overwriting "' .. name .. '" would drop '
+        .. table.concat(parts, ', ') .. ' -- waiting for the admin to confirm')
+      MP.TriggerClientEvent(pid, 'RM_SaveHeld', Util.JsonEncode({ name = name, lost = lost }))
+      return
+    end
+  end
+
   -- Saving is also the moment the server learns this track's grid size, so the
   -- "more drivers than start positions" warning is accurate straight away.
   race.startSlots = starts and #starts or 0
@@ -3498,6 +3544,49 @@ function RM_onSaveLayout(pid, rawData)
   MP.SendChatMessage(-1, msg)
   print(msg)
   sendLayoutList(-1)
+end
+
+-- Delete a saved layout by name, under the current map only.
+--
+-- Refused while a session is under way for the same reason loading is: the file
+-- being raced on is not one to remove out from under the field. The layout
+-- currently loaded is forgotten as well as deleted -- leaving race.layout
+-- pointing at an entry that no longer exists would keep serving it to joining
+-- players from a track nobody could load again.
+function RM_onDeleteLayout(pid, rawData)
+  if not requireAuth(pid) then return end
+  if sessionUnderWay() then
+    MP.SendChatMessage(pid, '[RaceManager] Cannot delete a layout while a session is under way.')
+    return
+  end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' or type(data.name) ~= 'string' then return end
+
+  local map = getCurrentMap()
+  local all = getLayouts()
+  for i, l in ipairs(all) do
+    if l.map == map and l.name:lower() == data.name:lower() then
+      local gone = l.name
+      table.remove(all, i)
+      local wrote, werr = saveLayoutsToDisk()
+      if not wrote then
+        print('[RaceManager] Failed to write ' .. LAYOUTS_FILE .. ': ' .. tostring(werr))
+        return
+      end
+      if race.layout == l then
+        race.layout = nil
+        clearTrackState('deleted the loaded layout "' .. gone .. '"')
+      end
+      local msg = string.format('[RaceManager] Layout "%s" deleted on %s by %s',
+        gone, map, MP.GetPlayerName(pid) or pid)
+      MP.SendChatMessage(-1, msg)
+      print(msg)
+      sendLayoutList(-1)
+      return
+    end
+  end
+  print(string.format('[RaceManager] Delete failed: no layout "%s" for map %s', data.name, map))
 end
 
 -- Load a saved layout: look it up under the current map only and broadcast the
@@ -6891,6 +6980,7 @@ function onInit()
   MP.RegisterEvent('RM_RequestLayouts',   'RM_onRequestLayouts')
   MP.RegisterEvent('RM_SaveLayout',       'RM_onSaveLayout')
   MP.RegisterEvent('RM_LoadLayout',       'RM_onLoadLayout')
+  MP.RegisterEvent('RM_DeleteLayout',     'RM_onDeleteLayout')
   MP.RegisterEvent('RM_ClearTrackState',  'RM_onClearTrackState')
   -- Demo Derby module (isolated event namespace; see the DEMO DERBY section).
   MP.RegisterEvent('RM_DerbySetConfig',     'RM_onDerbySetConfig')

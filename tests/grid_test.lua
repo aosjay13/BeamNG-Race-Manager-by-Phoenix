@@ -250,7 +250,7 @@ check(#released > 0 and released[#released].source == 'race',
 -- ===========================================================================
 -- Qualifying time limit: the clock arms the final lap
 -- ===========================================================================
--- Expiry does NOT end a timed session — the drivers out there are mid-lap, and
+-- Expiry does NOT end a timed session - the drivers out there are mid-lap, and
 -- that lap is the one that matters. See tests/timed_quali_test.lua for the whole
 -- final-lap path and its edge cases; this only pins the transition.
 RM_onResetLeaderboard(1)
@@ -271,7 +271,7 @@ check(lastState.phase == 'qualifying',
 check(lastState.finalLap == true, 'it arms the final lap instead')
 check(type(lastChat) == 'string' and lastChat:find('FINAL LAP', 1, true) ~= nil,
   'chat tells every driver the lap they are on is their last')
--- The crossing is what ends it, and it takes the car off the track — but not
+-- The crossing is what ends it, and it takes the car off the track - but not
 -- the OUT lap crossing. This driver was still on their out lap when the clock
 -- expired, and a session that had already promised not to score that lap must
 -- not turn round and end them on it: they get the flying lap the final-lap rule

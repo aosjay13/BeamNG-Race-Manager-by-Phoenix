@@ -1,7 +1,7 @@
 -- Headless test for TIMED qualifying in server/RaceManager/main.lua.
 --
 -- Why this exists: a lap-limited session has a per-driver terminal event built
--- in — the crossing that completes your allowance is the moment you are done —
+-- in - the crossing that completes your allowance is the moment you are done
 -- and the session ends when the last driver reaches it. A timed session has no
 -- such thing: the clock expires for everybody at once while they are spread
 -- around the circuit. Expiry used to end the session outright, which locked the
@@ -134,7 +134,7 @@ check(lastState.phase == 'qualifying', 'the session continues for the drivers st
 check(spectated[0] == nil and spectated[2] == nil, 'nobody else is touched')
 check(next(released) == nil, 'and nothing is respawned while drivers are still running')
 
--- A crossing that arrives after expiry is terminal, every time — there is no
+-- A crossing that arrives after expiry is terminal, every time - there is no
 -- "one more lap" for the driver who was closest to the line.
 check(driver(1).qualiLaps == 1, 'the final lap is counted once, not doubled')
 
@@ -150,7 +150,7 @@ check(lastState.finalLap ~= true, 'and the final-lap state is cleared')
 
 local back = 0
 for pid = 0, 2 do if released[pid] then back = back + 1 end end
-check(back == 3, 'every driver gets their car back — the same respawn-all lap qualifying uses')
+check(back == 3, 'every driver gets their car back - the same respawn-all lap qualifying uses')
 check(released[0] and released[0].order ~= nil, 'and it is staggered, like every mass respawn')
 
 -- The fastest lap of the session was set ON the final lap, and it decides the

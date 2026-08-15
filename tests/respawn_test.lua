@@ -4,7 +4,7 @@
 -- Why this exists: in multiplayer "the player's vehicle" and "our vehicle" are
 -- different questions, and the mod used to ask the first one when it meant the
 -- second. The moment a finisher's car is deleted BeamNG hands the camera to
--- whatever vehicle is nearest — another player's car — and from there:
+-- whatever vehicle is nearest - another player's car - and from there:
 --
 --   * the respawn guard ("do I already have a car?") answered yes, so the
 --     driver never got theirs back;
@@ -178,7 +178,7 @@ blockedGroups = {}
 
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
 handlers['RM_ForceSpectate']({
-  reason = 'You finished the race — spectating until the flag', source = 'race',
+  reason = 'You finished the race - spectating until the flag', source = 'race',
 })
 
 check(deleted[OWN_ID] == true, 'a race finisher IS taken off the track')

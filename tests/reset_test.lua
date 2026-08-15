@@ -2,7 +2,7 @@
 -- lua/ge/extensions/raceManager.lua (Module 1).
 --
 -- Why this exists: BeamNG reports a teleport as a vehicle reset, and the mod
--- teleports the car itself — a blocked reset puts it back where it was, and a
+-- teleports the car itself - a blocked reset puts it back where it was, and a
 -- grid assignment stands it on its slot. Those teleports come straight back
 -- through onVehicleResetted. Treated as a driver pressing reset, the blocked
 -- case looped forever (restore -> hook -> restore ...), which pinned the car in
@@ -286,7 +286,7 @@ veh.x, veh.y, veh.z = 0, 0, 0               -- somewhere else when the grid form
 gridAssign(1)
 check(#teleports == 1 and teleports[1].x == 300, 'the car is stood on its grid slot')
 -- BeamNG vehicles face -Y at identity, so a +X heading is a yaw of
--- π/2 + π = 3π/2 (half-angle 3π/4) — without the half-turn the car stood
+-- π/2 + π = 3π/2 (half-angle 3π/4) - without the half-turn the car stood
 -- exactly 180° backwards on its slot.
 check(math.abs(teleports[1].qz - math.sin(3 * math.pi / 4)) < 1e-6
   and math.abs(teleports[1].qw - math.cos(3 * math.pi / 4)) < 1e-6,
@@ -313,7 +313,7 @@ check(math.abs(teleports[1].qz - math.sin(3 * math.pi / 4)) < 1e-6
   'the restored car keeps the slot heading instead of snapping to identity')
 
 -- ===========================================================================
--- Over the allowance, the reset INPUTS themselves go dead — and come back
+-- Over the allowance, the reset INPUTS themselves go dead - and come back
 -- the moment the session stops enforcing the rule
 -- ===========================================================================
 -- Still in the countdown with maxResets = 0 from the section above: the very
@@ -426,7 +426,7 @@ check(engineAccessorCalls == 0,
 
 -- v0.39 reworked the teleport detector ("reduce false positives/negatives in
 -- extreme cases (such as ... really fast vehicles)"), so the echo of a teleport
--- the mod performed can land a frame or two after the teleport itself — by which
+-- the mod performed can land a frame or two after the teleport itself - by which
 -- time a fast car is no longer sitting on the spot we put it. Judged against a
 -- fixed radius that echo reads as a driver reset, and the driver gets dragged
 -- back (or charged) for a reset they never pressed. The tolerance therefore
@@ -479,7 +479,7 @@ for _, e in ipairs(sent) do
   if e.event == 'RM_VehicleConfig' then report = e.payload end
 end
 check(report ~= nil, 'the vehicle configuration is reported to the server')
-check(report.label == 'etk800 — Cup Spec',
+check(report.label == 'etk800 - Cup Spec',
   'the setup is labelled with its real name, not the .pc filename stem')
 check(report.game == '0.39.0.0', 'and the report carries the BeamNG build')
 
@@ -499,7 +499,7 @@ check(remote.alpha == 1, 'and solid again once qualifying ends')
 -- ===========================================================================
 -- Every regulation the server owns is APPLIED on this client and lifted by a
 -- broadcast. Leaving the server means that broadcast is never coming, so the
--- mod has to lift them itself — otherwise a driver who disconnects mid-race is
+-- mod has to lift them itself - otherwise a driver who disconnects mid-race is
 -- dropped into singleplayer with a dead reset key, a frozen car and a camera
 -- that reasserts freecam every second.
 for _, hook in ipairs({ 'onBeamMPServerLeave', 'onServerLeave' }) do
@@ -512,10 +512,10 @@ for _, hook in ipairs({ 'onBeamMPServerLeave', 'onServerLeave' }) do
   serverState({ phase = 'countdown', maxResets = 0, totalLaps = 3, drivers = {} })
   handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race' })
   frames(0.2)
-  check(inputsBlocked == false, hook .. ': setup — a spectator does not need blocked inputs')
+  check(inputsBlocked == false, hook .. ': setup - a spectator does not need blocked inputs')
   handlers['RM_ReleaseSpectate']({ source = 'race' })
   frames(0.2)
-  check(inputsBlocked == true, hook .. ': setup — the reset keys are dead with no allowance')
+  check(inputsBlocked == true, hook .. ': setup - the reset keys are dead with no allowance')
 
   clearLog()
   RM[hook]()

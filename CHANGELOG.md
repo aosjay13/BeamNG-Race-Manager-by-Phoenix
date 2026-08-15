@@ -1,27 +1,27 @@
 # Changelog
 
 Notable changes per release. The version here is the same number as the git
-tag, the packaged zip, and the build stamp the app shows — see the note in
+tag, the packaged zip, and the build stamp the app shows - see the note in
 `server/RaceManager/main.lua` for why those four have to agree.
 
 [← Back to the README](README.md)
 
-## 0.8.0 — The qualifying out lap, reverse grids, cup points in results
+## 0.8.0 - The qualifying out lap, reverse grids, cup points in results
 
 ### Changed (settings and visibility)
 
-- **Session settings apply themselves — the Set buttons are gone.** **Laps**,
+- **Session settings apply themselves - the Set buttons are gone.** **Laps**,
   **Max resets** and the qualifying **Laps / Minutes** boxes now apply half a
   second after you stop typing, or immediately when you click away from the
   box. Forgetting to press Set is a silent failure that turns up as the wrong
   race distance, and a commit button only earns its place when an edit is
-  several fields that must land together — which is why the cup points tables
+  several fields that must land together - which is why the cup points tables
   keep theirs. An **empty box is never sent**: it means "still typing", so
   clearing `5` to type `12` cannot spend the moment in between running an open
   session. Unlimited resets is `-1` (a blank box used to mean it too, which
   cannot survive auto-apply).
 - **Every checkpoint is brighter, in both of the ways one is drawn.** The hues
-  are unchanged throughout — what a colour means here is learned, and a driver
+  are unchanged throughout - what a colour means here is learned, and a driver
   who has learned that green is the gate they are heading for should not have to
   learn it twice.
   - **The editor rectangles** (white line, orange route, green next target,
@@ -33,17 +33,17 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   - **The race poles** are BeamNG's own markers, and its palette is built for
     its own races: `default` is a deep red-orange that reads as a silhouette
     against a bright map. Every mode is now lifted to the luminous version of
-    the same colour as the marker is created — once, on its own private copy of
+    the same colour as the marker is created - once, on its own private copy of
     the table, so re-pointing a marker at the next gate can never wash it out
     further.
   - **The gate after the one you are on is no longer invisible.** The engine
     ships that mode black, because in its own races that gate is not your
     concern yet. This mod puts a marker there deliberately, so the line through
-    the corner reads before the driver arrives — a job a black pole cannot do.
+    the corner reads before the driver arrives - a job a black pole cannot do.
     It is painted the orange of the route ahead, a shade under the gate actually
     being aimed at.
   - The joker's on-track pole colour moved with its editor colour, and a test
-    now pins the two together — a comment had claimed for a long time that they
+    now pins the two together - a comment had claimed for a long time that they
     were the same colour with nothing checking it.
 
 ### Changed (defaults)
@@ -63,13 +63,13 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 - **Reverse grids.** A fourth **Grid order**: slowest qualifier on pole, fastest
   at the back, so the quick drivers have to come through the field. It inverts
-  the *times* and nothing else — a driver who set no time still starts at the
+  the *times* and nothing else - a driver who set no time still starts at the
   back, behind everyone who did. A literal reversal would put them on pole, and
   then the quickest way to start first is to sit in the pits and set nothing; a
   reverse grid is meant to reward the slow, not the absent.
 - **The qualifying table stops calling its first column "Grid" when the grid is
   not going to match it.** Under a reverse, random or custom order that column
-  is the qualifying position and now says so — it promised a slot the grid was
+  is the qualifying position and now says so - it promised a slot the grid was
   about to contradict, which reverse grids made obvious but random and custom
   had been doing all along.
 - **Every results file ends with the cup round it banked**, when a cup is
@@ -77,7 +77,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   into race, qualifying and bonus points, the bonuses listed by name and
   recipient, and any manual adjustments. A championship that only exists inside
   the game leaves whoever compiles the standings retyping numbers off a
-  screenshot. Derby results files carry the same section in the same layout —
+  screenshot. Derby results files carry the same section in the same layout
   a derby banks a round exactly as a race does, and a league reading two files
   from one evening should not have to learn two formats. The numbers come from
   the cup's own tables, so a file and the Cup panel cannot disagree about a
@@ -87,7 +87,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   file it always did.
 - **Qualifying is run to laps OR to a clock, and the panel now asks which.** The
   lap allowance and the time limit used to sit side by side as two boxes, and
-  the server takes both numbers — so "3 laps and 10 minutes" was a state it
+  the server takes both numbers - so "3 laps and 10 minutes" was a state it
   could hold, and two boxes side by side is how it got armed by accident. A
   **Quali length** toggle picks Laps or Timed, only that box is shown, and the
   one not in use is sent as `0`. Switching applies immediately, so the limit the
@@ -105,7 +105,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 - **The first lap of a qualifying session is now an out lap: not timed, not
   scored, and not counted against the lap allowance.** Qualifying starts from a
   standing grid, so that lap measured a launch rather than a car and a driver
-  over a circuit — and on any track with a slow first corner it set a time
+  over a circuit - and on any track with a slow first corner it set a time
   nobody could beat later in the session for reasons that had nothing to do with
   pace. The clock starts as a driver crosses the line for the first time.
 
@@ -114,7 +114,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   session target counts crossings, so a 3 lap session ends on the fourth.
 
   This is not a return to the out-lap this mod removed. That one existed because
-  qualifying had no defined start at all — drivers began from wherever they were
+  qualifying had no defined start at all - drivers began from wherever they were
   parked, so the first crossing arrived at a different point of the circuit for
   everybody and a "3 lap" session took five or six laps to get through. This one
   starts on the grid with everyone else's and is counted separately from the
@@ -126,7 +126,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 - **The out lap is never the crossing that ends a driver's session.** When a
   timed session's clock expires the next crossing is terminal for everyone still
-  out — but a driver still on their out lap would have been stood down with no
+  out - but a driver still on their out lap would have been stood down with no
   time at all, eliminated by the one lap the session had already promised not to
   score. They complete it, start their flying lap, and take the flag on that:
   the same one timed lap every other driver on track gets.
@@ -134,8 +134,8 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 ### Added
 
 - **Drivers are told, rather than left to infer it from a time that never
-  appears.** The lap readout shows `OUT LAP — NOT TIMED` in place of the running
-  clock, then `OUT LAP DONE — TIMING` as they cross the line — a ticking clock
+  appears.** The lap readout shows `OUT LAP - NOT TIMED` in place of the running
+  clock, then `OUT LAP DONE - TIMING` as they cross the line - a ticking clock
   on a lap that is not being timed is worse than no readout at all, because it
   is a number a driver will drive to. Chat announces the rule at GO and confirms
   each driver's out lap as they complete it, so it reaches a driver with no app
@@ -146,7 +146,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   `out lap not timed`, so a lap count read months later by somebody who was not
   there still adds up against the number of times a driver crossed the line.
 
-## 0.7.0 — Cup points, persistent names, derby arenas
+## 0.7.0 - Cup points, persistent names, derby arenas
 
 ### Added
 
@@ -171,7 +171,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   audit counters and comparator scratch that no client renders, and all of it
   was being serialised for the whole field three times a second. The broadcast
   now sends only what the app reads: ~4.7 KB instead of ~5.9 KB for a 20-car
-  field. The saving is **bandwidth** — roughly 3.5 Mbit/s instead of 4.4 for a
+  field. The saving is **bandwidth** - roughly 3.5 Mbit/s instead of 4.4 for a
   full grid, which is what a home-hosted server's uplink notices. Client-side
   the difference is immaterial (measured at hundredths of a millisecond per
   second), and CPU was never the constraint here.
@@ -181,7 +181,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   the measured saving is 0.004 ms per second, which is nothing. The invariant it
   was guarding against is now checked directly, on every broadcast the stress
   test makes, in every phase.
-- **A DNF keeps the place it was running in**, whatever ended the race — a
+- **A DNF keeps the place it was running in**, whatever ended the race - a
   disconnection, the admin closing the session, anything else. The results file
   records it beside the reason (`DNF - Disconnected (was P2)`).
 - **A DNF is not always a nil score.** Three settings decide what one is worth:
@@ -193,12 +193,12 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 - **Manual point adjustments.** Press ± on any standings row to add or remove
   points by hand, with a reason. Adjustments are kept as a ledger beside the
   points a driver earned and never folded into them, each with its reason and
-  author, so a total can always be taken apart and checked — and removing one
+  author, so a total can always be taken apart and checked - and removing one
   deletes it rather than posting an opposite entry. A whole round can be dropped
   from a driver's record when a race was scored wrongly.
 - **Derbies score into the cup too.** A cup can be all races, all derbies or a
   mixture. Derbies score on a points table of their own (same presets, starting
-  out matching the race table) on survival order — and unlike a race, *every*
+  out matching the race table) on survival order - and unlike a race, *every*
   driver scores, because being eliminated is the result of a derby rather than a
   failure to produce one. Bonuses now belong to a discipline, so a derby can
   never collect a fastest-lap bonus; **Last Man Standing** is the derby one, and
@@ -214,7 +214,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   Session, a phase change and a server restart, because cup state lives in its
   own module and its own file (`cup.json`, kept out of the results directory so
   Clear Results Cache cannot reach it). Five scoring presets ship: 30P
-  Aggressive, 25P Aggressive, 25P Moderate, 24P Linear and 35P Folk Race —
+  Aggressive, 25P Aggressive, 25P Moderate, 24P Linear and 35P Folk Race
   loading one fills the table, which you can then edit. With no cup running a
   race behaves exactly as it did. See [Cup points](docs/REFERENCE.md#cup-points).
 - **A Cup tab**, under Race, with the scoring editor collapsed behind a toggle
@@ -228,7 +228,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   instead of driven corner by corner: stand where the middle should be, then set
   Width, Length and Rotation on sliders (with **Square** linking the first two).
   The four corners are derived from the shape and all sit at the centre's
-  height — the out-of-bounds test has always ignored height, so a flat plane is
+  height - the out-of-bounds test has always ignored height, so a flat plane is
   what the rule actually is.
 - **The drive-and-place editor is unchanged and still there**, as the other half
   of a mode toggle. It remains the only way to build a non-rectangular arena.
@@ -238,7 +238,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 ### Changed
 
-- **No car is handed its collisions back while another car is inside it — for
+- **No car is handed its collisions back while another car is inside it - for
   any ghosted condition.** Previously only the driver's own reset ghost waited
   for a clear space; the field-wide ghosts (mass respawn, ghost qualifying) and
   the pit ghost were released on a timer, so cars could go solid still
@@ -247,10 +247,10 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   after a race the whole field is respawned at once, so every car was a ghost
   and every car looked clear to every other one. Every ghost now returns through
   one gate that asks one question, and a car that cannot go solid yet is retried
-  until it can. Two overlapping ghosts cannot deadlock — being intangible is
+  until it can. Two overlapping ghosts cannot deadlock - being intangible is
   what lets them drive apart.
 - **Loading a scoring preset fills the boxes.** The editors were re-seeded from
-  the server "unless the buffer differs from it" — but pressing Load is exactly
+  the server "unless the buffer differs from it" - but pressing Load is exactly
   a case where the server's value changes, which that rule reads as an edit in
   progress. The boxes kept the old preset, and pressing Apply then posted those
   stale numbers back and turned the table into a hand-edited "Custom" one. The
@@ -258,7 +258,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   typing is still safe from a broadcast arriving mid-edit. Both tables affected;
   both fixed.
 - **The cup's dropdowns open.** The scoring presets and the driver picker were
-  native `<select>` elements. In BeamNG's UI — Chromium Embedded Framework — a
+  native `<select>` elements. In BeamNG's UI - Chromium Embedded Framework - a
   select popup is a separate OS window that never renders over the game, so the
   box showed its value and clicking it did nothing at all, with no error
   anywhere. They are now the same custom menu the track-layout picker has always
@@ -266,7 +266,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 - **The release package now spells the two folders `Client/` and `Server/`.**
   They map straight onto a BeamMP server's `Resources/Client` and
-  `Resources/Server`, and Linux — where a good share of servers are hosted —
+  `Resources/Server`, and Linux - where a good share of servers are hosted
   cares about the difference: the old lowercase folders dropped into
   `Resources/` looked installed and were simply never read, with no error to go
   on. It matched on Windows, which is why it survived this long. Upgrading on a
@@ -274,12 +274,12 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   `Resources/server`. The packaging workflow now prints the layout on every run
   and refuses to publish a package missing either folder.
 
-- **The derby arena is drawn as walls, not poles and rope** — a translucent
+- **The derby arena is drawn as walls, not poles and rope** - a translucent
   panel per edge, drawn from both sides so it is there from inside the arena as
   well as outside it.
-- **An active derby no longer looks like an editor.** Authoring visuals — the
+- **An active derby no longer looks like an editor.** Authoring visuals - the
   filled floor, corner numbers, the arena label, the centre crosshair, the full
-  set of numbered start slots — belong to an admin with the Derby Editor open.
+  set of numbered start slots - belong to an admin with the Derby Editor open.
   Everyone else, including that admin once a field has formed up, gets faint
   walls and a ground rail. The boundary itself is still always drawn during a
   derby; leaving it is what eliminates you. Start slots used to be drawn for
@@ -289,10 +289,10 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   ⚙ Admin) sits above the tab strip, and each mode carries its own controls and
   its own Editor sub-tab. The race session controls and the **Track layout
   picker used to render over the Derby tab**, offering a Load Layout button for a
-  race nobody was setting up. Nothing was removed — every control is still there
+  race nobody was setting up. Nothing was removed - every control is still there
   under the mode it belongs to, and the last sub-tab per mode is remembered.
 - **The leaderboard follows the mode as well.** An admin in Derby mode was
-  looking at a race table below the derby panel — and since a derby never
+  looking at a race table below the derby panel - and since a derby never
   touches race state, that table was the *last race's* field (or the last
   qualifying times), presented as though it were live. Derby mode now shows the
   derby standings there, on both derby sub-tabs, so the field is visible while
@@ -303,23 +303,23 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 - **A car could be left ghosted for the rest of a race, and no reset would fix
   it.** The field-wide ghost reasons ("rivals are ghosts" during a mass respawn
-  or qualifying) skip your own car when applying — but your car is identified by
+  or qualifying) skip your own car when applying - but your car is identified by
   asking BeamMP who owns it, and a respawn opens a window where that question
   has no answer yet. The re-assert sweep fires inside that window and the reason
   lands on your own car; lifting it later skipped your car, because by then
   ownership *had* resolved. Nothing could take it off after that. A reset ghost
-  layered on top came and went, and the car underneath stayed held — so it
+  layered on top came and went, and the car underneath stayed held - so it
   flashed solid as the timer ended and went straight back to being a ghost.
   Lifting a reason now skips nothing.
 - **Reset Session clears the ghost roster.** A ghost ends when the client that
   owns it reports its car is clear, and a client that has been through a session
-  reset has no such report to give — so a stuck ghost survived the reset and
+  reset has no such report to give - so a stuck ghost survived the reset and
   every other client kept seeing that car as intangible.
 - **A car left parked in a pit stall no longer serves stop after stop.** The
   cooldown was meant to stop the box you are standing in re-triggering, but a
   timer only delays that: a car still in the stall when it expires is caught
   again, and again. Each stop freezes and ghosts it, so the car appears stuck as
-  a ghost for the rest of the race — the reset ghost would count down, flash
+  a ghost for the rest of the race - the reset ghost would count down, flash
   solid, and go straight back. Resetting in the pits is how a driver ends up
   parked there, since a reset in place leaves the car exactly where it stood.
   A stall now re-arms when the car **leaves** it, which is what "live on the
@@ -327,12 +327,12 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 - **A derby is now "live" for the UI from Form Up, not from GO.** Both the
   driver's minimal mode and their derby board keyed on `phase === 'running'`,
-  which predates the two-step start — so a driver held on the derby grid through
+  which predates the two-step start - so a driver held on the derby grid through
   the countdown kept the full spectator chrome and the previous race's
   leaderboard until the field was released.
 - **The joker route is violet again on track, and keeps its wording.** The
   checkpoint refactor moved drivers onto BeamNG's gate poles, whose stock
-  alternate-route mode is *orange* — close enough to the main route's red-orange
+  alternate-route mode is *orange* - close enough to the main route's red-orange
   that the joker stopped reading as a separate route, on the one route where
   that mistake is a disqualification. The pole is now painted the same violet the
   editor uses, and the editor's own label sits above it: `JOKER 2/3`,
@@ -346,8 +346,8 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   it, with no cooldown spent, so the stall is live on the next lap.
 - **A car serving a pit stop is ghosted for the stop.** It is frozen, so it
   cannot move out of the way, and it is parked where everyone else arrives slowly
-  and off-line. The ghost is re-asserted after the repair — that reloads the
-  vehicle VM, which silently dropped it, the same way it drops the freeze — and
+  and off-line. The ghost is re-asserted after the repair - that reloads the
+  vehicle VM, which silently dropped it, the same way it drops the freeze - and
   it rides the server's reset-ghosting switch so every client agrees about which
   cars are ghosts.
 
@@ -359,20 +359,20 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   rectangle is stored as *both* its shape and the polygon it produced, so it
   loads back editable by slider and stays readable by anything that only
   understands the polygon.
-- Gameplay reads `boundary` and nothing else, in both modes — the out-of-bounds
+- Gameplay reads `boundary` and nothing else, in both modes - the out-of-bounds
   test, the broadcast and the results export are untouched.
 - Mixed client/server versions degrade cleanly: an older client ignores the new
   fields and reads the four corners as an ordinary polygon; an older server
   ignores the two new events.
 
-## 0.6.0 — Checkpoint refactor
+## 0.6.0 - Checkpoint refactor
 
 ### Added
 
 - **Race checkpoints now look like race checkpoints.** During a session a driver
   sees BeamNG's own gate poles on the next two gates rather than the whole
   circuit drawn as numbered rectangles. The rectangles are the editor's view and
-  only an admin with the editor open sees them — filled, translucent, numbered,
+  only an admin with the editor open sees them - filled, translucent, numbered,
   with an arrow showing which way through each gate counts.
 - **Point-to-point stages.** A toggle on the Main Route row switches a track
   between a circuit and a sprint driven once from first gate to last. Saved with
@@ -385,12 +385,12 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   default and each one after inherits from the gate placed before it, so a
   creator sets it once and drives the route. The global width/height that every
   gate without an override read *live* is gone: nudging it resized the whole
-  circuit retroactively with no way back. Existing layouts are unaffected —
+  circuit retroactively with no way back. Existing layouts are unaffected
   each gate is given the size it was drawn with as the layout loads.
 - Layout selection moved out of the editor into the session controls, so running
   a saved race never means opening the editor.
 
-## 0.5.1 — Ghost release fix
+## 0.5.1 - Ghost release fix
 
 ### Fixed
 
@@ -400,8 +400,8 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   the check fell through to a flat radius wide enough to contain the largest
   pair of vehicles. In a full field somebody is nearly always inside a radius
   that size, so the ghost stayed up. Between the boxes and that radius there is
-  now a real measurement — the car's own dimensions, oriented by where it is
-  facing — which every vehicle can answer for even when neither bounding box
+  now a real measurement - the car's own dimensions, oriented by where it is
+  facing - which every vehicle can answer for even when neither bounding box
   will say where it is. The radius is a genuine last resort again rather than
   the common path.
 
@@ -411,14 +411,14 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   where the bounding boxes resolve from one where they never do, which is
   exactly the difference that produced this bug.
 
-## 0.5.0 — Reset ghosting
+## 0.5.0 - Reset ghosting
 
 ### Added
 
 - **Reset ghosting.** A driver who resets, recovers or teleports mid-session no
   longer reappears as a solid, stationary obstacle in the middle of the track.
-  Their car loses vehicle-to-vehicle collisions for five seconds — in both
-  directions, so it can neither be hit nor hit anyone — while world and terrain
+  Their car loses vehicle-to-vehicle collisions for five seconds - in both
+  directions, so it can neither be hit nor hit anyone - while world and terrain
   collision are untouched. Other drivers see the car go translucent and fade
   back to solid over the final second as a warning that contact is resuming;
   the ghosted driver gets their own countdown in the app. On by default, in
@@ -428,9 +428,9 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 - **An occupancy check before collisions come back.** Restoring collisions on
   two overlapping cars welds their node structures together, ends both races and
   cannot be undone. So the ghost does not simply expire: when the timer runs out
-  the space around the car is measured against every other car — a real
+  the space around the car is measured against every other car - a real
   oriented-bounding-box test, so a car lying crossways through another is caught
-  where a distance between origins would call it clear — and collisions return
+  where a distance between origins would call it clear - and collisions return
   only on a frame that is provably clear. The check has no time limit and no
   override. A car parked inside another stays a ghost indefinitely and goes
   solid the moment the space clears. Every way of failing to *know* the space is
@@ -440,22 +440,22 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   their running order, their lap and their distance to the next checkpoint, so
   reset-to-phase-through-a-pack is answerable from the log. A driver blocked
   inside another car for more than ten seconds is told to move clear and the
-  block is logged. Both are warnings — nothing here penalises anyone.
+  block is logged. Both are warnings - nothing here penalises anyone.
 
 - **The session's fastest lap is shown in gold** on every leaderboard, and the
   driver who set it is told so on the existing notice channel. The server owns
-  which lap is fastest — it is tracked as laps are scored, not derived by
+  which lap is fastest - it is tracked as laps are scored, not derived by
   scanning the field, and it rides on a broadcast that was already going out, so
   there is no extra per-frame or per-tick work. It belongs to the session: a new
   race starts with nobody holding it. Qualifying highlights the quali best,
   the race highlights the race best.
 
 - **The results file records where each driver started.** A `Start` column
-  between Pos and Driver, so a finishing position means something — "P2" reads
+  between Pos and Driver, so a finishing position means something - "P2" reads
   very differently when the driver qualified eighth.
 
 - **Half-way leader in the results.** Whoever completed the half-distance lap
-  first, rounded **up** on an odd number of laps — a 5-lap race is decided at
+  first, rounded **up** on an odd number of laps - a 5-lap race is decided at
   lap 3, the same as a 6-lap one. It is a lookup of the lap-leader table the
   Laps Led count already maintains, so it costs nothing. A one-lap race has no
   half way and reports none.
@@ -470,7 +470,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 - **Cars could creep forward during the grid hold.** The hold was a single
   fire-and-forget freeze issued at placement, with nothing verifying it and
-  nothing re-asserting it — and BeamNG reports the placement teleport back as a
+  nothing re-asserting it - and BeamNG reports the placement teleport back as a
   vehicle reset, which reloads the vehicle's Lua VM and takes the freeze with
   it. The re-apply only ran when that report was recognised as the mod's own
   echo, inside a 0.6 s window, so three ordinary things left a car free for the
@@ -491,7 +491,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 - **A car placed on the grid hovered and reset every frame** (regression, found
   in live testing). The hold guard treated a car settling onto its suspension as
   a car creeping off its slot, teleported it back up to the height it was
-  dropped from, and the teleport was reported as a vehicle reset — every frame,
+  dropped from, and the teleport was reported as a vehicle reset - every frame,
   spamming the console. Placement is now left alone until the car comes to rest,
   the resting position is what drift is measured from, distances are measured
   across the ground rather than in three dimensions, and a car that is merely
@@ -501,7 +501,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 - **A reset ghost could last the whole race, and outlive it** (regression, found
   in live testing). The occupancy check answered "occupied" on *any* uncertainty,
-  including a car it simply could not measure — and that was a verdict nothing
+  including a car it simply could not measure - and that was a verdict nothing
   could revisit, so one unmeasurable vehicle anywhere on the map kept a driver
   ghosted indefinitely. `getSpawnWorldOOBB` returns nil more often than assumed;
   BeamNG's own code nil-guards it.
@@ -509,7 +509,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   Uncertainty is still resolved conservatively, but it now always resolves.
   Bounds fall back to the axis-aligned world box (the same one BeamNG's spawn
   occupancy test uses), and a car that still cannot be measured is judged on
-  distance instead of being assumed to be inside us — conservative, but finite.
+  distance instead of being assumed to be inside us - conservative, but finite.
   Waiting for a car to report a bounding box before starting its timer is capped
   too, since that was a second way to wait forever. The block reason is logged,
   so a ghost that does persist says why. Separately, the end of a session now
@@ -525,14 +525,14 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
   two seconds for the re-assert sweep.
 
 - **Beating your own fastest lap said nothing.** The notice was keyed on who
-  held the lap, so a driver improving their own best — the case they most want
-  to hear about — saw nothing because the holder had not changed. It is keyed on
+  held the lap, so a driver improving their own best - the case they most want
+  to hear about - saw nothing because the holder had not changed. It is keyed on
   the time as well now.
 
 - **Ghost qualifying never actually removed collisions.** It probed
   `MPVehicleGE` for `setGhostMode` / `setGhosts` / `enableGhostMode`, none of
   which exist on any BeamMP build, and fell back to fading rival cars while
-  leaving them solid — so the rule looked as though it worked and did not. The
+  leaving them solid - so the rule looked as though it worked and did not. The
   collision toggle is BeamNG's own vehicle-side `obj:setGhostEnabled`, reached
   through `queueLuaCommand`. Ghost qualifying now does what it has always said
   it does. `docs/COMPATIBILITY.md` recorded the wrong conclusion and has been
@@ -540,7 +540,7 @@ tag, the packaged zip, and the build stamp the app shows — see the note in
 
 - **Field placement no longer skips a rival's car when your own has been
   deleted.** The placement ghost excluded "the car this client is attached to",
-  and the moment your car is removed the game attaches you to somebody else's —
+  and the moment your car is removed the game attaches you to somebody else's
   so the one car you were about to be respawned next to was the only solid thing
   on track. It now asks which car is genuinely *ours*.
 

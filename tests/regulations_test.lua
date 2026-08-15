@@ -140,7 +140,7 @@ check(lastState.maxResets == 2, 'reset limit locked once the race is under way')
 
 -- The client BLOCKED a third reset (it put the car back where it was) and
 -- reported the attempt. That is not a penalty: Bob keeps racing, keeps his car
--- and stays out of spectator mode — the attempt is only counted.
+-- and stays out of spectator mode - the attempt is only counted.
 lastChat = nil
 RM_onResetDenied(2)
 check(driver('Bob').status == 'racing', 'a blocked reset does not end the race')

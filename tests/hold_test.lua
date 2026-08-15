@@ -1,14 +1,14 @@
 -- Headless test for grid HOLD enforcement, across both halves of the mod:
---   * client (lua/ge/extensions/raceManager.lua) — the freeze, the drift watch
+--   * client (lua/ge/extensions/raceManager.lua) - the freeze, the drift watch
 --     and the paths that used to lose the hold silently
---   * server (server/RaceManager/main.lua)       — position validation, the
+--   * server (server/RaceManager/main.lua)       - position validation, the
 --     correction and the audit line
 --
 -- Why this exists: the hold used to be a single fire-and-forget freeze issued at
 -- grid placement, with nothing verifying it and nothing re-asserting it. The
 -- placement teleport is reported back by BeamNG as a vehicle reset, and a reset
 -- reloads the vehicle's Lua VM and takes the freeze with it. The re-apply only
--- ran when that report was recognised as our own echo — inside a 0.6 s window —
+-- ran when that report was recognised as our own echo - inside a 0.6 s window
 -- so three ordinary things left the car free for the whole countdown:
 --
 --   * the report arriving later than the window (a loaded client on a full grid)
@@ -27,7 +27,7 @@ local function check(cond, msg)
 end
 
 -- ===========================================================================
--- Part 1 — the client
+-- Part 1 - the client
 -- ===========================================================================
 local sent, hooks, handlers = {}, {}, {}
 local frozen = nil            -- last setFreeze value that reached the vehicle
@@ -44,7 +44,7 @@ function veh:getVelocity() return { x = self.vx, y = self.vy, z = self.vz } end
 function veh:getJBeamFilename() return 'etk800' end
 -- Teleports are counted, not just applied. A teleport is what BeamNG reports
 -- back as a vehicle reset, and that report is what the placement loop was built
--- from — so "did this move the car" and "did this provoke a reset" are the same
+-- from - so "did this move the car" and "did this provoke a reset" are the same
 -- question, and several cases below turn on the answer being no.
 teleports = 0
 function veh:setPositionRotation(x, y, z)
@@ -221,7 +221,7 @@ check(onSlot(), 'and lands back on the slot')
 -- ===========================================================================
 -- This matters as much as the corrections do. Re-applying the freeze re-pins the
 -- car and resets the drivetrain, so revs bleed away and a pre-selected gear will
--- not stick — and revving against the hold is the whole point of a standing
+-- not stick - and revving against the hold is the whole point of a standing
 -- start. So the guard has to be driven by observed movement, never by a timer.
 local freezeCallsBefore = 0
 core_vehicleBridge.executeAction = function (_, action, value)
@@ -254,7 +254,7 @@ RM.onVehicleSpawned(VEH_ID)
 check(frozen == true, 'a vehicle respawned on the grid comes back HELD')
 check(onSlot(), 'and back on its assigned slot')
 
--- (3) The freeze is lost some other way — the placement report arriving after
+-- (3) The freeze is lost some other way - the placement report arriving after
 -- the 0.6 s echo window is the real-world case, and on a loaded client with a
 -- full grid that is not exotic. The guard does not need to know WHY: it watches
 -- for the symptom, which is a car that has moved off its slot.
@@ -267,7 +267,7 @@ check(onSlot(), 'and pulled back onto the slot')
 
 -- A car that has lost its freeze but has not gone anywhere yet is caught by its
 -- VELOCITY, before it has covered the drift tolerance. A frozen car has none, so
--- any movement at all means the freeze is already gone — and at launch speeds a
+-- any movement at all means the freeze is already gone - and at launch speeds a
 -- third of a metre of grace is half a car length of stolen start.
 gridUp()
 frozen = false
@@ -293,7 +293,7 @@ sent = {}
 frames(1.0)
 check(countSent('RM_HoldPos') >= 3, 'a held car reports its position to the server')
 check(countSent('RM_HoldPos') <= 6,
-  'and does so on a cadence, not once a frame — a full grid must not flood')
+  'and does so on a cadence, not once a frame - a full grid must not flood')
 
 -- The server's correction is obeyed even when the local guard has not fired,
 -- and it carries the slot coordinates so a client with a stale layout still
@@ -330,7 +330,7 @@ check(veh.x == SLOT_X + 300, 'a reset while racing does not teleport to the grid
 print(string.format('hold_test (client): %d checks, %d failures', checks, fails))
 
 -- ===========================================================================
--- Part 2 — the server
+-- Part 2 - the server
 -- ===========================================================================
 -- Fresh globals: the server plugin is Lua 5.3 with the MP.* API and knows
 -- nothing about the client stubs above.

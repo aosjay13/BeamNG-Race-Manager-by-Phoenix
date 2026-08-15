@@ -8,7 +8,7 @@
 -- counted against the lap allowance.
 --
 -- The rule it must not turn back into: this mod once had an out lap because
--- qualifying had no defined start at all — drivers began from wherever they were
+-- qualifying had no defined start at all - drivers began from wherever they were
 -- parked, so the first crossing arrived at a different point of the circuit for
 -- everybody and a "3 lap" session took five or six laps to finish. The out lap
 -- here starts on the grid with everyone else's and is counted SEPARATELY from
@@ -147,7 +147,7 @@ check(driver(0).qualiBest == 93.0, 'a slower lap does not overwrite the best')
 check(driver(0).status == 'finished', 'the allowance is spent on the fourth crossing')
 check(spectated[0] ~= nil, 'and the car comes off the track, as before')
 check(chatSaid('used all 3 qualifying lap'),
-  'the driver is told they used 3 laps — the number the admin set, not 4')
+  'the driver is told they used 3 laps - the number the admin set, not 4')
 
 -- ===========================================================================
 -- 4. A second session re-arms it for everybody
@@ -173,7 +173,7 @@ end
 -- 5. A race has no out lap
 -- ===========================================================================
 -- Lap 1 of a race is a lap of the race, off the same standing start. Nothing is
--- given away because a race is not timing one lap at a time — the flag decides
+-- given away because a race is not timing one lap at a time - the flag decides
 -- it, and a lap thrown away would be a lap of the race distance thrown away.
 RM_onSetTotalLaps(0, '{"laps":2}')
 RM_onGenerateGrid(0)
@@ -196,7 +196,7 @@ check(lastState.phase == 'finished', 'and 2 laps means 2 laps, exactly as before
 -- 6. A sprint stage has no out lap either, and must not
 -- ===========================================================================
 -- A point-to-point stage is driven ONCE, first gate to last. A lap given away
--- there is the whole session given away — and there is no line to come back
+-- there is the whole session given away - and there is no line to come back
 -- past to start a timed one.
 RM_onResetLeaderboard(0)
 RM_onSetPointToPoint(0, '{"enabled":true}')

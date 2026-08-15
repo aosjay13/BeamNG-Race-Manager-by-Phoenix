@@ -7,10 +7,10 @@ on the server.
 You place checkpoint gates by driving the track, run a qualifying session, let
 it build the starting grid, and the server writes a results file at the flag.
 
-- **[Install](#install)** — two files, then restart the server
-- **[Run a race night](#run-a-race-night)** — the whole flow, start to finish
-- **[What else it does](#what-else-it-does)** — reset limits, joker laps, car locking, Demo Derby
-- **[Troubleshooting](#troubleshooting)** — mostly "the app doesn't show up"
+- **[Install](#install)** - two files, then restart the server
+- **[Run a race night](#run-a-race-night)** - the whole flow, start to finish
+- **[What else it does](#what-else-it-does)** - reset limits, joker laps, car locking, Demo Derby
+- **[Troubleshooting](#troubleshooting)** - mostly "the app doesn't show up"
 
 > **This page is the short version.** Every feature in full detail is in
 > **[docs/REFERENCE.md](docs/REFERENCE.md)**. See also
@@ -20,12 +20,12 @@ it build the starting grid, and the server writes a results file at the flag.
 
 ## Install
 
-You need a **BeamMP server you control**. Racing is multiplayer-only — offline
+You need a **BeamMP server you control**. Racing is multiplayer-only - offline
 you get the checkpoint editor and nothing else.
 
 Download `RaceManager-vX.Y.Z.zip` from the
 [Releases](../../releases) page and extract it. Inside are two folders that map
-straight onto your server's `Resources/` directory — copy them both in:
+straight onto your server's `Resources/` directory - copy them both in:
 
 ```
 Client/RaceManager.zip        →  Resources/Client/RaceManager.zip
@@ -35,13 +35,13 @@ Server/RaceManager/main.lua   →  Resources/Server/RaceManager/main.lua
 Restart the server and you're done. BeamMP pushes `RaceManager.zip` to everyone
 who joins, so **players install nothing by hand**.
 
-The client zip is always called `RaceManager.zip` — no version in the name — so
+The client zip is always called `RaceManager.zip` - no version in the name - so
 an update overwrites the old one instead of leaving two copies side by side.
 
 > **Updating? Delete the old copies first.** Two versions of the server plugin
 > installed side by side each run their own state machine and take turns
 > broadcasting, which makes every UI element flicker between two states. Always
-> deploy the server plugin and the client zip **together** — the app header
+> deploy the server plugin and the client zip **together** - the app header
 > shows a version number for each piece, and if those numbers aren't identical,
 > something didn't get copied. A stale file fails *silently*: a button just
 > stops doing anything, with no error anywhere.
@@ -54,7 +54,7 @@ an update overwrites the old one instead of leaving two copies side by side.
 > there is nothing to do.
 
 > **Change the password before your first public session.** It ships as
-> `phoenix`. Log in, then set a new one from the **Change password** bar — it
+> `phoenix`. Log in, then set a new one from the **Change password** bar - it
 > applies immediately.
 
 ## Run a race night
@@ -66,7 +66,7 @@ Build/Load a track  →  Start Quali  →  Start Countdown  →  Qualifying
                     →  Generate Grid  →  Start Countdown  →  Race  →  Results
 ```
 
-Qualifying and the race run the **same** lifecycle — form the grid, hold the
+Qualifying and the race run the **same** lifecycle - form the grid, hold the
 field, count down, run, take finished cars off the track, give everybody their
 car back. Only the lap target and the scoring differ.
 
@@ -78,7 +78,7 @@ password into the **Admin Login** bar. Anyone who just wants to watch presses
 
 **2. Build a track.** Press **Editor**, then drive the course. At each timing
 gate, drive through it *in the direction of travel* and press **+ Checkpoint
-Here**. Gates are flat rectangles standing across your heading — what you see
+Here**. Gates are flat rectangles standing across your heading - what you see
 drawn in the world **is** the trigger.
 
 - **The last gate you place is the start/finish line.**
@@ -89,7 +89,7 @@ drawn in the world **is** the trigger.
 
 Then switch to the **Start Grid** tab and drive to each grid slot *facing down
 the track*, pressing **+ Place Start Position Here**. Slot 1 is pole. Every
-slot stays editable afterwards — **Go** to it, **Move Here**, or **✕** to
+slot stays editable afterwards - **Go** to it, **Move Here**, or **✕** to
 delete.
 
 **3. Save it as a layout.** Type a name in **Track Layouts** and press **Save
@@ -100,33 +100,33 @@ client at once.
 
 **4. Decide who's racing.** By default **everyone on the server is in the
 field**, so there's nothing to do here. Flip the mode to **Opt-in entry** when
-the field should be a subset of who's connected — then each player gets a
+the field should be a subset of who's connected - then each player gets a
 **Join Race** button and only they are gridded. Entry survives Start Quali, so
 drivers only join once per event.
 
 **5. Qualifying.** Press **Start Quali**, then **Start Countdown**. The field
 starts from the grid, so the first lap is an **out lap**: it's not timed, not
-scored, and not counted against the lap allowance — *three qualifying laps
+scored, and not counted against the lap allowance - *three qualifying laps
 still means three timed laps*, run after it. Drivers are told, in chat and on
-their own lap readout, which shows `OUT LAP — NOT TIMED` instead of a running
+their own lap readout, which shows `OUT LAP - NOT TIMED` instead of a running
 clock until they cross the line. (A point-to-point stage is driven once, so it
 has no out lap.) The table shows everyone's best lap, fastest on top. Optional
 settings: **Ghost quali** (rivals stop being obstacles), **Quali laps**, and
 **Quali mins** (which triggers a proper final lap rather than stopping dead).
 
 **6. Grid and race.** Set **Laps**, pick a **Grid order** (Quali / Reverse /
-Random / Custom — *Reverse* puts the slowest qualifier on pole and the fastest
-at the back), then **Generate Grid** — every driver is placed on their slot and
+Random / Custom - *Reverse* puts the slowest qualifier on pole and the fastest
+at the back), then **Generate Grid** - every driver is placed on their slot and
 **held** there, so nobody can jump the start. **Start Countdown** gives
 everyone a synchronised 3‑2‑1‑**GO!** and releases the whole field on the same
 broadcast. The table re-sorts leader-first in real time as places change.
 
 **7. Results.** At the flag the server writes a results file to
 `Resources/Server/RaceManager/results/` and announces the path in chat, ready
-for league standings — with the cup round it just banked appended if a cup is
+for league standings - with the cup round it just banked appended if a cup is
 running. **Reset** clears the session for the next one.
 
-> Each step above has a lot more to it — grid pinning, the final-lap rules,
+> Each step above has a lot more to it - grid pinning, the final-lap rules,
 > what happens to a driver who disconnects. It's all in
 > **[docs/REFERENCE.md](docs/REFERENCE.md#tutorial-running-a-race-night)**.
 
@@ -138,15 +138,15 @@ would expect without touching any of it.
 | Feature | What it gives you |
 |---|---|
 | **[Vehicle reset limits](docs/REFERENCE.md#vehicle-reset-limits)** | Cap resets per driver per session. Once the allowance is gone the reset key genuinely stops working. Optionally respawn at the last checkpoint instead of in place. |
-| **[Reset ghosting](docs/REFERENCE.md#reset-ghosting)** | A driver who resets is intangible for a few seconds instead of reappearing solid in the racing line. Collisions come back only once the space around them is provably clear — never while another car is inside them. |
-| **[Branching routes](docs/REFERENCE.md#branching-routes-two-ways-round-one-track)** | Two ways round one track, scored together. A lane replaces the gate at a checkpoint rather than adding one, so both halves of the field run the same lap count and the same leaderboard — including head-on "suicide" ovals where they race in opposite directions. |
+| **[Reset ghosting](docs/REFERENCE.md#reset-ghosting)** | A driver who resets is intangible for a few seconds instead of reappearing solid in the racing line. Collisions come back only once the space around them is provably clear - never while another car is inside them. |
+| **[Branching routes](docs/REFERENCE.md#branching-routes-two-ways-round-one-track)** | Two ways round one track, scored together. A lane replaces the gate at a checkpoint rather than adding one, so both halves of the field run the same lap count and the same leaderboard - including head-on "suicide" ovals where they race in opposite directions. |
 | **[Rallycross joker laps](docs/REFERENCE.md#rallycross-joker-laps)** | A second gate route that must be taken exactly once per race. Lap 1 is closed, and the server disqualifies anyone who missed it or took it twice. |
 | **[Garage List](docs/REFERENCE.md#vehicle--setup-locking-the-garage-list)** | Lock the session to exact cars *and* exact tunes. Anything not on the list gets deleted and the driver is told why. |
-| **[Cup points](docs/REFERENCE.md#cup-points)** | Championship points across several events — all races, all derbies, or a mixture. Scoring presets, qualifying points and bonuses; race and derby standings kept separate with a combined total. Every race results file ends with the round it banked, so the standings leave the game with the result. Points survive resets and a server restart; only ending the cup clears them. |
+| **[Cup points](docs/REFERENCE.md#cup-points)** | Championship points across several events - all races, all derbies, or a mixture. Scoring presets, qualifying points and bonuses; race and derby standings kept separate with a combined total. Every race results file ends with the round it banked, so the standings leave the game with the result. Points survive resets and a server restart; only ending the cup clears them. |
 | **[Display names](docs/REFERENCE.md#display-names)** | Give `Guest_4471` a readable name for the leaderboard and the results file. Saved on the server, so it survives a restart. |
-| **[Live position tracking](docs/REFERENCE.md#live-position-tracking)** | True running order from laps, checkpoints cleared and distance to the next gate — not just the grid order. |
+| **[Live position tracking](docs/REFERENCE.md#live-position-tracking)** | True running order from laps, checkpoints cleared and distance to the next gate - not just the grid order. |
 | **[Demo Derby](docs/REFERENCE.md#demo-derby-parallel-game-mode)** | A separate last-man-standing mode with its own arena, timers and results, fully isolated from the racing. |
-| **[Driver UI](docs/REFERENCE.md#driver-ui-non-admins)** | Non-admins see just the leaderboard during a session. Resizable, fades so it doesn't block the view, and collapses to a single status line when you don't want it — alerts still get through. |
+| **[Driver UI](docs/REFERENCE.md#driver-ui-non-admins)** | Non-admins see just the leaderboard during a session. Resizable, fades so it doesn't block the view, and collapses to a single status line when you don't want it - alerts still get through. |
 
 ## Troubleshooting
 
@@ -155,7 +155,7 @@ would expect without touching any of it.
 - Since BeamNG **v0.39** the app list is called **HUD Apps**, not *UI Apps*,
   and is reached from the Pause menu (*System → HUD Apps*). Race Manager is
   under the **Racing** and **Info** categories.
-- The game only scans mods at startup — **restart BeamNG** after
+- The game only scans mods at startup - **restart BeamNG** after
   installing/updating. If the list is still stale, clear the cache
   (Launcher → *Manage User Folder* → *Clear Cache*).
 - Check the zip has `ui/`, `lua/` and `scripts/` at its **root** (no extra
@@ -165,7 +165,7 @@ would expect without touching any of it.
   missing, the modScript never ran, meaning the zip wasn't mounted.
 
 **Buttons do nothing, or the UI flickers between two states:** you have
-mismatched or duplicated versions installed — see the note under
+mismatched or duplicated versions installed - see the note under
 [Install](#install).
 
 **Drivers rejected in a car that's plainly on the Garage List:** a BeamNG
@@ -179,11 +179,11 @@ Race Manager is free and always will be. If it's improved your race nights and
 you'd like to put something toward the hosting and the hours, these go straight
 into further development and upkeep:
 
-- **PayPal** — [krossx13](https://www.paypal.me/krossx13)
-- **Cash App** — [$disciplejtmay](https://cash.app/$disciplejtmay)
+- **PayPal** - [krossx13](https://www.paypal.me/krossx13)
+- **Cash App** - [$disciplejtmay](https://cash.app/$disciplejtmay)
 
 ## License
 
-Race Manager is released under the [MIT License](LICENSE) — use it, fork it,
+Race Manager is released under the [MIT License](LICENSE) - use it, fork it,
 run it on your own server, ship it in your own mod, so long as the copyright
 notice travels with it. Contributions are accepted under the same license.

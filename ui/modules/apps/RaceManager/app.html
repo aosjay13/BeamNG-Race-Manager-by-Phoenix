@@ -1,11 +1,11 @@
 <div class="rm-root" ng-class="{'rm-minimal': minimalMode(), 'rm-admin': isAdmin, 'rm-collapsed': hudCollapsed}"
      ng-style="!minimalMode() && hudStyle()">
-  <!-- NOTHING may sit outside this root div — not even a comment. The directive
+  <!-- NOTHING may sit outside this root div - not even a comment. The directive
        is `replace: true`, and the Angular 1.5.8 the game ships counts a sibling
        comment node as a second root, so the whole template dies with
        $compile:tplrt ("must have exactly one root element") and the app never
        renders. Angular 1.6+ strips comments there first, so a newer Angular
-       will NOT reproduce it — keep every note inside the div, like this one.
+       will NOT reproduce it - keep every note inside the div, like this one.
 
        Outside minimal mode this root is the panel that gets sized and faded; in
        minimal mode the leaderboard is the HUD and carries those styles itself
@@ -24,18 +24,18 @@
       <!-- The out lap, ending: no time to hold, because none was taken. The slot
            says what the lap was and that the next one counts. -->
       <span class="rm-laptime-out" ng-if="lapHolding() && outLapDone()"
-            title="Your out lap is over — the lap you are on now is being timed">
-        {{ sessionKind === 'quali' ? 'OUT LAP DONE — TIMING' : 'TIMING FROM HERE' }}
+            title="Your out lap is over: the lap you are on now is being timed">
+        {{ sessionKind === 'quali' ? 'OUT LAP DONE, TIMING' : 'TIMING FROM HERE' }}
       </span>
       <span class="rm-laptime-hold" ng-if="lapHolding() && !outLapDone()"
-            title="Lap just completed — held briefly so it can be read">
+            title="Lap just completed: held briefly so it can be read">
         LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}
       </span>
       <!-- A running clock reads as a time being taken, so the out lap does not
            get one. The driver is told what the lap is for instead. -->
       <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
-            title="This session gives its first lap away: it starts from a standing grid, so it measures the launch rather than the lap. Timing starts as you cross the line.">
-        {{ sessionKind === 'quali' ? 'OUT LAP — NOT TIMED' : 'LAP 1 — NOT TIMED' }}
+            title="Standing start, so the first lap is not timed. Timing starts as you cross the line.">
+        {{ sessionKind === 'quali' ? 'OUT LAP: NOT TIMED' : 'LAP 1: NOT TIMED' }}
       </span>
       <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()"
             title="Time on the current lap">
@@ -48,7 +48,7 @@
     <!-- Time is up, but the session is not: everyone still out finishes the lap
          they are on, and their session ends as they cross the line. -->
     <span class="rm-clock rm-final-lap" ng-if="phase === 'qualifying' && finalLap"
-          title="The qualifying clock has expired — the lap you are on is your last">FINAL LAP</span>
+          title="The qualifying clock has expired: the lap you are on is your last">FINAL LAP</span>
     <span class="rm-ghost-badge" ng-if="phase === 'qualifying' && ghostQuali" title="Rival cars are ghosted this session">GHOST</span>
     <!-- Session rule, not this driver's state: it stands for the whole session
          so a spectator or an admin can see which rules are in force. Whether the
@@ -59,10 +59,10 @@
          qualifying's alone. onOutLap() comes off the bridge's 250 ms lap feed, so
          it goes out on the crossing rather than a broadcast later. -->
     <span class="rm-out-badge" ng-if="sessionUnderWay() && qualiOutLap && onOutLap()"
-          title="{{ sessionKind === 'quali' ? 'Your out lap: not timed, not scored, and not counted against the lap allowance.' : 'Your first lap COUNTS toward the race distance but sets no lap time — a standing start is not a lap time.' }}">{{ sessionKind === 'quali' ? 'OUT LAP' : 'LAP 1 — NOT TIMED' }}</span>
+          title="{{ sessionKind === 'quali' ? 'Out lap: not timed, not scored, not counted.' : 'Counts toward the distance, but sets no lap time.' }}">{{ sessionKind === 'quali' ? 'OUT LAP' : 'LAP 1: NOT TIMED' }}</span>
     <!-- Your own grid slot, and the hold before the lights go out -->
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
-      START P{{ gridSlot }}<b ng-if="gridFrozen"> — HOLD</b>
+      START P{{ gridSlot }}<b ng-if="gridFrozen"> HOLD</b>
     </span>
     <span class="rm-p2p-badge" ng-if="pointToPoint"
           title="This track is a point-to-point stage: driven once, first gate to last. Laps do not apply.">POINT TO POINT</span>
@@ -92,7 +92,7 @@
             title="{{ hudCollapsed ? 'Expand Race Manager' : 'Collapse Race Manager to this bar' }}">{{ hudCollapsed ? '▼' : '▲' }}</button>
   </div>
 
-  <!-- ================= Admin login (dismissable — spectators bypass it) ==== -->
+  <!-- ================= Admin login (dismissable - spectators bypass it) ==== -->
   <!-- NO `&& !minimalMode()`. That was a dead end with a race running.
        Minimal mode is "not an admin AND a session is live", and it strips the
        chrome down to the leaderboard -- so the login panel was suppressed for
@@ -110,7 +110,7 @@
     <button class="rm-btn rm-btn-start" ng-click="login()">Login</button>
     <button class="rm-btn" ng-click="spectate()" title="Dismiss and just watch the live timing">Spectate »</button>
     <span class="rm-login-error" ng-if="authError">Incorrect password</span>
-    <span class="rm-login-hint" ng-if="!authError &amp;&amp; adminPresent">An admin is running this session — log in to manage, or spectate.</span>
+    <span class="rm-login-hint" ng-if="!authError &amp;&amp; adminPresent">An admin is running this session: log in to manage, or spectate.</span>
     <span class="rm-login-hint" ng-if="!authError &amp;&amp; !adminPresent">Log in to unlock race, derby &amp; track editor controls, or spectate.</span>
   </div>
 
@@ -131,17 +131,17 @@
       Leave Race
     </button>
     <span class="rm-entry-state" ng-if="entryMode === 'all'">
-      Entry is open to everyone on the server — you are in the field.
+      Entry is open to everyone on the server: you are in the field.
     </span>
     <span class="rm-entry-state rm-entry-in" ng-if="entryMode !== 'all' && joined">✓ You are entered</span>
-    <span class="rm-entry-state" ng-if="entryMode !== 'all' && !joined && canJoin()">You are spectating — press Join Race to take part</span>
-    <span class="rm-entry-state" ng-if="entryMode !== 'all' && !joined && !canJoin()">The race is under way — entry is closed</span>
+    <span class="rm-entry-state" ng-if="entryMode !== 'all' && !joined && canJoin()">You are spectating: press Join Race to take part</span>
+    <span class="rm-entry-state" ng-if="entryMode !== 'all' && !joined && !canJoin()">The race is under way: entry is closed</span>
     <span class="rm-entry-count">{{ entrants }} entered</span>
     <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-if="isAdmin"
             ng-class="{'rm-btn-toggle-on': entryMode === 'all'}"
             ng-click="toggleEntryMode()"
             ng-disabled="phase === 'countdown' || phase === 'racing'"
-            title="Everyone races (the default): every connected player is in the field. Opt-in: only drivers who press Join Race are gridded.">
+            title="Everyone: all connected players race. Opt-in: only those who press Join Race.">
       {{ entryMode === 'all' ? 'Everyone races' : 'Opt-in entry' }}
     </button>
   </div>
@@ -150,11 +150,11 @@
        Read-only, and only between sessions: minimalMode() is the driver HUD
        during a live session, where the leaderboard is the whole point and a
        championship table would be in the way. Admins have the full panel under
-       the Cup tab, so this is for everybody else — a driver should be able to
+       the Cup tab, so this is for everybody else - a driver should be able to
        see where they stand without asking. -->
   <div class="rm-cup-driver" ng-if="!isAdmin && cup.enabled && !minimalMode()">
     <div class="rm-cup-head">
-      <span class="rm-cup-title">{{ cup.name || 'Cup' }} — standings</span>
+      <span class="rm-cup-title">{{ cup.name || 'Cup' }}: standings</span>
       <span class="rm-cup-state">after {{ cup.round }} round{{ cup.round === 1 ? '' : 's' }}</span>
     </div>
     <div class="rm-cup-standings" ng-if="cup.standings.length">
@@ -165,14 +165,14 @@
       </div>
     </div>
     <div class="rm-cup-hint" ng-if="!cup.standings.length">
-      No points yet — the standings appear here after the first race.
+      No points yet: the standings appear here after the first race.
     </div>
   </div>
 
   <!-- ================= Mode tabs (admin only) ============================
        Race and Derby are two independent game modes. They used to share one
        flat tab strip, with the race session controls and the track layout
-       picker pinned above all of it — so an admin setting up a derby was
+       picker pinned above all of it - so an admin setting up a derby was
        looking at a Load Layout button for a race, and the Derby tab read as one
        more race panel. Everything below this bar belongs to the mode picked
        here: its controls, and its own editor. -->
@@ -195,12 +195,12 @@
        and are gone while the derby is being run. -->
   <div class="rm-controls" ng-if="isAdmin && isMode('race')">
     <button class="rm-btn rm-btn-quali" ng-click="startQualifying()" ng-disabled="sessionUnderWay()"
-            title="Form the QUALIFYING grid: every entrant is stood on a start position and held. Press Start Countdown to run the session.">Start Quali</button>
+            title="Stand every entrant on a start position and hold. Then Start Countdown.">Start Quali</button>
     <!-- Enabled DURING qualifying on purpose: it is the control that takes you
          from qualifying to the race, and gating it on sessionUnderWay() greyed
          it out for exactly as long as a host needed it. -->
     <button class="rm-btn rm-btn-grid"  ng-click="generateGrid()"    ng-disabled="raceUnderWay()"
-            title="Form the RACE grid from the qualifying times (or the grid order you chose). Pressing this during qualifying ends it first, keeping the times. Press Start Countdown to start the race.">Generate Grid</button>
+            title="Grid the field by qualifying time or your chosen order. Ends qualifying first, keeping the times.">Generate Grid</button>
     <button class="rm-btn rm-btn-start" ng-click="startCountdown()"  ng-disabled="phase !== 'grid'"
             title="Count the field down and release the hold. Starts whichever session is on the grid.">Start Countdown</button>
     <button class="rm-btn rm-btn-end"   ng-click="endRace()"         ng-disabled="phase !== 'racing' && phase !== 'countdown' && phase !== 'qualifying'">End Session</button>
@@ -210,15 +210,15 @@
   <!-- ================= Track layout (admin only) =========================
        Deliberately HERE and not in the editor. Running a saved race is not an
        authoring job: an admin should pick a layout and start the race without
-       ever opening the editor, which used to be the only place this lived —
+       ever opening the editor, which used to be the only place this lived -
        and opening the editor is what replaces the race checkpoint visuals with
        the authoring ones. Building layouts stays in the editor; choosing one
        to race belongs next to Generate Grid and Start Countdown. It is a RACE
-       layout, though, so it lives in race mode with the rest of them — this
+       layout, though, so it lives in race mode with the rest of them - this
        row being visible on the Derby tab is exactly the mixing the mode bar
        above exists to end. -->
   <div class="rm-controls rm-controls-layout" ng-if="isAdmin && isMode('race')">
-    <span class="rm-controls-label">Track<span ng-if="layoutMap"> — {{ layoutMap }}</span></span>
+    <span class="rm-controls-label">Track<span ng-if="layoutMap">: {{ layoutMap }}</span></span>
     <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': layoutDropdownOpen}">
       <button type="button" class="rm-layout-trigger"
               ng-class="{'rm-layout-trigger-empty': !layoutUi.selected}"
@@ -253,7 +253,7 @@
     </span>
     <button class="rm-btn rm-btn-grid" ng-click="derbyFormUp()"
             ng-disabled="derbyActive()"
-            title="Stand every participant on a start slot and hold them there, ready for the countdown. The derby's Generate Grid.">
+            title="Stand every participant on a slot and hold. The derby's Generate Grid.">
       Form Up
     </button>
     <button class="rm-btn rm-btn-start" ng-click="derbyStart()"
@@ -261,7 +261,7 @@
             title="Release the field with a 3-2-1 countdown. Form Up first.">Start Derby</button>
     <button class="rm-btn rm-btn-end" ng-click="derbyEnd()"
             ng-disabled="derby.phase === 'idle'"
-            title="Formed up or counting down: abort and release the field. Running: end the derby now. Finished: reset back to setup.">
+            title="Abort, end the derby, or reset to setup, depending on the phase.">
       {{ derby.phase === 'finished' ? 'Reset Derby' : (derby.phase === 'forming' || derby.phase === 'countdown' ? 'Abort Start' : 'End Derby') }}
     </button>
     <span class="rm-derby-markers">{{ derby.entrants }} in</span>
@@ -275,7 +275,7 @@
        with the authoring ones. Building arenas stays in the editor; choosing one
        to run belongs beside Form Up and Start Derby. -->
   <div class="rm-controls rm-controls-layout" ng-if="isAdmin && isMode('derby')">
-    <span class="rm-controls-label">Arena<span ng-if="derbyLayoutMap"> — {{ derbyLayoutMap }}</span></span>
+    <span class="rm-controls-label">Arena<span ng-if="derbyLayoutMap">: {{ derbyLayoutMap }}</span></span>
     <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': derbyDropdownOpen}">
       <button type="button" class="rm-layout-trigger"
               ng-class="{'rm-layout-trigger-empty': !derbyUi.selected}"
@@ -301,7 +301,7 @@
 
   <!-- ================= Sub-tab bar =======================================
        Every admin panel used to stack vertically, which overflowed the app
-       window — .rm-root is overflow:hidden, so whatever ran past the bottom
+       window - .rm-root is overflow:hidden, so whatever ran past the bottom
        edge was simply unreachable. One panel shows at a time now, and the
        body below scrolls as a safety net for the tall ones.
        The set shown depends on the mode picked above. -->
@@ -341,21 +341,21 @@
          kept, not clamped, so switching a circuit layout back in restores it.
 
          No Set button here or on any other single-value setting: they apply
-         themselves. See the note in app.js — the value settles half a second
+         themselves. See the note in app.js - the value settles half a second
          after typing stops (or instantly on leaving the field), and the
          authoritative value the server holds is displayed beside the box, so
          what is in force is always readable. -->
-    <span class="rm-setting" title="Race distance. Applies as you type — the value beside the box is what the server has.">
+    <span class="rm-setting" title="Race distance. Applies as you type.">
       <label>Laps</label>
       <input type="number" min="1" max="500" ng-model="settingsUi.laps"
              ng-model-options="{ debounce: { default: 500, blur: 0 } }"
              ng-change="applyTotalLaps()"
              ng-disabled="pointToPoint || phase === 'countdown' || phase === 'racing'">
       <span class="rm-setting-val" ng-if="!pointToPoint">race: {{ totalLaps }}</span>
-      <span class="rm-setting-val rm-p2p-note" ng-if="pointToPoint">point to point — driven once</span>
+      <span class="rm-setting-val rm-p2p-note" ng-if="pointToPoint">point to point: driven once</span>
     </span>
     <!-- Module 1: vehicle reset ruleset -->
-    <span class="rm-setting" title="How many vehicle resets/repairs each driver gets this session. 0 = no resets at all; -1 = unlimited. Once the allowance is gone the reset button is blocked — the car is put straight back where it was. Nobody is disqualified for it. Applies as you type.">
+    <span class="rm-setting" title="Resets per driver. 0 = none, -1 = unlimited. Past the allowance the car is put back where it was, no penalty.">
       <label>Max resets</label>
       <input type="number" class="rm-width-num" min="-1" max="99" step="1" ng-model="settingsUi.resets"
              ng-model-options="{ debounce: { default: 500, blur: 0 } }"
@@ -363,7 +363,7 @@
              ng-disabled="phase === 'countdown' || phase === 'racing'">
       <span class="rm-setting-val">{{ resetRuleLabel() }}</span>
     </span>
-    <span class="rm-setting" title="What a legal reset does while racing: repair the car where it stands, or respawn it at the last checkpoint it crossed (falls back to in-place before the first checkpoint).">
+    <span class="rm-setting" title="Repair in place, or respawn at the last checkpoint crossed.">
       <label>Reset mode</label>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': resetMode === 'inplace'}"
               ng-click="setResetMode('inplace')"
@@ -373,11 +373,11 @@
               ng-disabled="phase === 'countdown' || phase === 'racing'">Last checkpoint</button>
     </span>
     <!-- Module 2: rallycross joker lap -->
-    <span class="rm-setting" title="Rallycross joker lap: every finisher must take the Joker Route exactly once (never on lap 1) or the server disqualifies them at the flag.">
+    <span class="rm-setting" title="Every finisher must take the Joker Route once, never on lap 1, or they are disqualified.">
       <label>Joker lap</label>
       <!-- Never armable on a track with no joker gates. The rule disqualifies
            anyone who did not complete the route, so with no route that is every
-           driver who finishes — and nothing says why until the results are
+           driver who finishes - and nothing says why until the results are
            written. The server refuses it too; this is so the switch does not
            look available in the first place. -->
       <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': jokerEnabled}"
@@ -387,14 +387,14 @@
       </button>
       <span class="rm-setting-val" ng-if="jokerEnabled">{{ jokerGates }} gates</span>
       <span class="rm-setting-warn" ng-if="!jokerGates">
-        No Joker Route on this track — place joker gates in the editor first.
+        No Joker Route on this track: place joker gates in the editor first.
       </span>
     </span>
   </div>
 
   <!-- ================= Qualifying &amp; grid settings ===================== -->
   <div class="rm-settings" ng-if="isMode('race') && isAdminTab('quali')">
-    <span class="rm-setting" title="Ghost mode: rival cars stop being obstacles during qualifying, so a flying lap can't be ruined by traffic.">
+    <span class="rm-setting" title="Rivals stop being obstacles in qualifying, so traffic can't ruin a lap.">
       <label>Ghost quali</label>
       <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': ghostQuali}"
               ng-click="toggleGhostQuali()">
@@ -403,19 +403,19 @@
     </span>
     <!-- A qualifying session is run to a LAP ALLOWANCE or to a CLOCK, not both.
          The server takes both numbers and treats 0 as unlimited, so both at
-         once is a state it can hold — and two boxes side by side is how it gets
+         once is a state it can hold - and two boxes side by side is how it gets
          armed by accident. Pick one; the other is sent as 0. -->
-    <span class="rm-setting" title="Is this qualifying session run to a lap allowance or to a clock? Pick one — the other is switched off. Whichever you pick, 0 means unlimited.">
+    <span class="rm-setting" title="Run qualifying to a lap count or to a clock. 0 means unlimited.">
       <label>Quali length</label>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': isQualiLimitMode('laps')}"
               ng-click="setQualiLimitMode('laps')" ng-disabled="phase === 'qualifying'"
-              title="Each driver gets a fixed number of TIMED laps. Their session ends when they use them up; the session closes once nobody has laps left.">Laps</button>
+              title="A fixed number of timed laps each. The session closes when nobody has laps left.">Laps</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': isQualiLimitMode('timed')}"
               ng-click="setQualiLimitMode('timed')" ng-disabled="phase === 'qualifying'"
-              title="The session runs to a clock. When it expires everyone still out runs a final lap rather than stopping dead.">Timed</button>
+              title="Runs to a clock. At the flag everyone still out runs a final lap.">Timed</button>
 
       <span class="rm-setting-sub" ng-if="isQualiLimitMode('laps')"
-            title="TIMED laps each driver gets. 0 = unlimited. The first lap of the session is an out lap — it starts from the grid, so it is not timed, not scored and not one of these: set 3 and drivers get an out lap and then 3 flying laps. (A point-to-point stage has no out lap: it is driven once.) Applies as you type.">
+            title="Timed laps each driver gets, 0 = unlimited. The out lap is extra: set 3 and they get an out lap plus 3 flying laps.">
         <label>Laps</label>
         <input type="number" class="rm-width-num" min="0" max="99" step="1" ng-model="settingsUi.qualiLaps"
                ng-model-options="{ debounce: { default: 500, blur: 0 } }"
@@ -423,7 +423,7 @@
                ng-disabled="phase === 'qualifying'">
       </span>
       <span class="rm-setting-sub" ng-if="isQualiLimitMode('timed')"
-            title="Minutes the session runs for. 0 = no limit. When the clock expires the session does not stop dead — everyone still out finishes the lap they are on as their final lap. Applies as you type.">
+            title="Minutes the session runs, 0 = no limit. At the flag everyone still out finishes the lap they are on.">
         <label>Minutes</label>
         <input type="number" class="rm-width-num" min="0" max="120" step="1" ng-model="settingsUi.qualiMins"
                ng-model-options="{ debounce: { default: 500, blur: 0 } }"
@@ -441,7 +441,7 @@
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'reverse'}"
               ng-click="setGridMode('reverse')"
               ng-disabled="phase === 'countdown' || phase === 'racing'"
-              title="Reverse grid: SLOWEST qualifier on pole, fastest at the back, so the quick drivers have to come through the field. Drivers with no time still start at the back — a reverse grid rewards the slow, not the absent.">Reverse</button>
+              title="Slowest qualifier on pole, fastest at the back. Drivers with no time still start last.">Reverse</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'random'}"
               ng-click="setGridMode('random')"
               ng-disabled="phase === 'countdown' || phase === 'racing'"
@@ -449,14 +449,14 @@
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'custom'}"
               ng-click="setGridMode('custom')"
               ng-disabled="phase === 'countdown' || phase === 'racing'"
-              title="The order you set by hand: type a slot number next to any driver in the Start column. Unpinned drivers fall in behind by quali time.">Custom</button>
+              title="Type a slot number in the Start column. Everyone else falls in behind by quali time.">Custom</button>
       <span class="rm-setting-val">{{ startSlots }} start position{{ startSlots === 1 ? '' : 's' }}</span>
     </span>
     <span class="rm-setting-warn" ng-if="startSlots > 0 && entrants > startSlots">
       ⚠ {{ entrants }} entered but only {{ startSlots }} start positions placed
     </span>
     <span class="rm-setting-warn" ng-if="!startSlots">
-      ⚠ No start positions placed — open the Race Editor's Start Grid tab
+      ⚠ No start positions placed: open the Race Editor's Start Grid tab
     </span>
   </div>
 
@@ -469,7 +469,7 @@
        works out a total of its own. -->
   <div class="rm-cup" ng-if="isMode('race') && isAdminTab('cup')">
     <div class="rm-cup-head">
-      <span class="rm-cup-title">Cup — points across races</span>
+      <span class="rm-cup-title">Cup points across races</span>
       <span class="rm-cup-state" ng-if="cup.enabled">
         <b>{{ cup.name || 'Unnamed cup' }}</b> · {{ cup.round }} round{{ cup.round === 1 ? '' : 's' }} scored
       </span>
@@ -482,7 +482,7 @@
       <input type="text" class="rm-cup-name" maxlength="40" placeholder="Cup name (optional)"
              ng-model="cupUi.name">
       <button class="rm-btn rm-btn-grid" ng-click="cupStart()"
-              title="Begin a new cup. Points accumulate from the next race onward and survive resets, phase changes and a server restart.">
+              title="Begin a new cup. Points accumulate from the next race and survive a server restart.">
         Start New Cup
       </button>
     </div>
@@ -519,7 +519,7 @@
       </button>
       <span class="rm-setting-val">{{ cup.roster.length }} saved · {{ cup.connected.length }} connected</span>
       <span class="rm-cup-pending" ng-if="cupUnclaimed()">
-        ⚠ {{ cupUnclaimed() }} unassigned — their points will be kept separately until you assign them
+        ⚠ {{ cupUnclaimed() }} unassigned: their points will be kept separately until you assign them
       </span>
     </div>
 
@@ -615,7 +615,7 @@
         </div>
         <button class="rm-btn rm-btn-mini" ng-click="cupApplyPreset()"
                 ng-disabled="!cupUi.preset">Load</button>
-        <span class="rm-cup-hint">Loading a preset fills the table below — edit it afterwards if you like.</span>
+        <span class="rm-cup-hint">Loading a preset fills the table below: edit it afterwards if you like.</span>
       </div>
 
       <div class="rm-cup-row rm-cup-table-row">
@@ -640,7 +640,7 @@
                ng-model="cupUi.bonus[b.key]">
         <button class="rm-btn rm-btn-mini" ng-click="cupApplyBonus(b)"
                 ng-disabled="!cupBonusRowDirty(b)">Apply</button>
-        <span class="rm-cup-hint" ng-if="!b.value">Off — pays nothing</span>
+        <span class="rm-cup-hint" ng-if="!b.value">Off, pays nothing</span>
       </div>
       <div class="rm-cup-row">
         <label>Fastest lap rule</label>
@@ -663,11 +663,11 @@
                 title="Scores for their place in the final classification, which is below everyone who finished.">Classified place</button>
         <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': cupDnfIs('held')}"
                 ng-click="cupSetDnfScoring('held')"
-                title="Scores for the place they were running in at the moment they stopped. Two drivers can score the same position this way.">Place when they stopped</button>
+                title="Scores the place they held when they stopped. Two drivers can share a position.">Place when they stopped</button>
       </div>
       <div class="rm-cup-row" ng-if="cupDnfIs('held')">
         <span class="rm-cup-hint">
-          A retirement from second and a finish in second both score second — which is
+          A retirement from second and a finish in second both score second, which is
           what this option is for.
         </span>
       </div>
@@ -692,7 +692,7 @@
         </div>
         <button class="rm-btn rm-btn-mini" ng-click="cupApplyDerbyPreset()"
                 ng-disabled="!cupUi.derbyPreset">Load</button>
-        <span class="rm-cup-hint">Derby position is survival order — the winner, then whoever lasted longest.</span>
+        <span class="rm-cup-hint">Derby position is survival order: the winner, then whoever lasted longest.</span>
       </div>
       <div class="rm-cup-row rm-cup-table-row">
         <label>Derby points</label>
@@ -717,7 +717,7 @@
                ng-model="cupUi.bonus[b.key]">
         <button class="rm-btn rm-btn-mini" ng-click="cupApplyBonus(b)"
                 ng-disabled="!cupBonusRowDirty(b)">Apply</button>
-        <span class="rm-cup-hint" ng-if="!b.value">Off — pays nothing</span>
+        <span class="rm-cup-hint" ng-if="!b.value">Off, pays nothing</span>
         <span class="rm-cup-hint" ng-if="b.value">Only when somebody actually survived.</span>
       </div>
 
@@ -748,7 +748,7 @@
          race championship and a derby championship as well as an overall one,
          and three narrow tables read far better at HUD width than one very
          wide one. The per-discipline tabs only appear once the cup has
-         actually held events of both kinds — an all-race cup has no reason to
+         actually held events of both kinds - an all-race cup has no reason to
          offer a derby table. Every figure here comes off the broadcast; the
          only thing decided locally is which column to show. -->
     <div ng-if="cup.enabled && cup.standings.length">
@@ -778,7 +778,7 @@
         </div>
         <!-- No orderBy: the server ranks the combined table last and hands the
              array over already in that order. An orderBy here would re-sort it
-             on every digest — and a digest runs three times a second while a
+             on every digest - and a digest runs three times a second while a
              race is on, for a table that changes once a round. -->
         <div ng-repeat="s in cup.standings track by s.entryId">
           <div class="rm-cup-strow">
@@ -791,7 +791,7 @@
             <span class="rm-cup-stnum" ng-class="{'rm-cup-adj': s.adjustPts}">{{ s.adjustPts }}</span>
             <span class="rm-cup-sttotal">{{ s.total }}</span>
             <button class="rm-btn rm-btn-mini rm-cup-adjbtn" ng-click="cupOpenAdjust(s)"
-                    title="Adjust this driver's points by hand — a penalty, a correction, or an allowance for something outside their control.">±</button>
+                    title="Adjust this driver's points by hand.">±</button>
           </div>
 
           <!-- Adjustment editor for this driver. One open at a time; an inline
@@ -826,7 +826,7 @@
                 <span class="rm-cup-ledby">{{ a.by }}</span>
                 <button class="rm-btn rm-btn-mini rm-btn-end"
                         ng-click="cupRemoveAdjust(s, $index)"
-                        title="Remove this adjustment. A mistake in the ledger is not an event that happened, so it is deleted rather than cancelled out.">✕</button>
+                        title="Delete this adjustment rather than cancelling it out.">✕</button>
               </div>
             </div>
             <div class="rm-cup-hint" ng-if="!s.adjustments.length">
@@ -884,7 +884,7 @@
     </div>
     <div class="rm-cup-hint rm-cup-empty" ng-if="cup.enabled && !cup.standings.length">
       No points yet. Finish a race and the standings appear here.
-      Points survive Start Quali, Reset, a phase change and a server restart — only
+      Points survive Start Quali, Reset, a phase change and a server restart: only
       <b>End Cup</b> clears them.
     </div>
     <div class="rm-cup-hint rm-cup-empty" ng-if="!cup.enabled">
@@ -892,7 +892,7 @@
       races behave exactly as they do today.
       Points attach to a <b>saved driver</b>, not to a connection. Give everyone a
       display name before the first round, and assign them again after a
-      reconnect — BeamMP reissues guest names at random, so nobody is recognised
+      reconnect: BeamMP reissues guest names at random, so nobody is recognised
       automatically. The <b>Drivers</b> panel above does both.
     </div>
   </div>
@@ -900,10 +900,10 @@
   <!-- ================= Garage list (Module 4: vehicle & setup locking) ==== -->
   <div class="rm-garage" ng-if="isMode('race') && isAdminTab('garage')">
     <div class="rm-garage-head">
-      <span class="rm-garage-title">Garage — allowed vehicles &amp; setups</span>
+      <span class="rm-garage-title">Garage: allowed vehicles &amp; setups</span>
       <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': garageEnforce}"
               ng-click="toggleGarageEnforce()"
-              title="When enforced, any player spawning a car or applying a tune that is not on this list has the vehicle deleted and gets an error. Admins are exempt so they can build the list.">
+              title="Cars and tunes not on this list are deleted on spawn. Admins are exempt.">
         {{ garageEnforce ? '✓ Enforcing' : 'Not enforced' }}
       </button>
       <span class="rm-garage-count">{{ garage.length }} approved</span>
@@ -939,36 +939,36 @@
       <button class="rm-btn rm-btn-mini rm-route-tab-joker"
               ng-class="{'rm-route-tab-joker-active': editorTarget === 'joker'}"
               ng-click="setEditorTarget('joker')"
-              title="Place the alternate rallycross route here. It is saved with the layout and must be driven exactly once per race (never on lap 1).">
+              title="The alternate rallycross route. Saved with the layout, driven once per race.">
         Joker Route ({{ jokerRoute.length }})
       </button>
       <button class="rm-btn rm-btn-mini rm-route-tab-pit"
               ng-class="{'rm-route-tab-pit-active': editorTarget === 'pit'}"
               ng-click="setEditorTarget('pit')"
-              title="Place pit stalls: drive into each stall and press Place Pit Stall Here. Driving into one during a race stops the car, repairs it and releases it. Stalls are NOT checkpoints — they never affect laps or splits.">
+              title="Drive into a stall and press the button. A stall stops, repairs and releases the car. Not a checkpoint.">
         Pit Stalls ({{ pitRoute.length }})
       </button>
       <button class="rm-btn rm-btn-mini rm-route-tab-branch"
               ng-class="{'rm-route-tab-branch-active': editorTarget === 'branch'}"
               ng-click="setEditorTarget('branch')"
-              title="Other ways round this track. A lane replaces the gate at a slot rather than adding one, so every lane has the same number of checkpoints and the whole field is scored together. Used for head-on 'suicide' layouts and for left/right splits.">
+              title="Other ways round this track. A lane replaces the gate at a slot instead of adding one, so the whole field scores together.">
         Lanes ({{ branches.length }})
       </button>
       <button class="rm-btn rm-btn-mini rm-route-tab-start"
               ng-class="{'rm-route-tab-start-active': editorTarget === 'start'}"
               ng-click="setEditorTarget('start')"
-              title="Place the starting grid: drive to each slot and press Place Start Position Here. Slot 1 is pole.">
+              title="Drive to each slot and press the button. Slot 1 is pole.">
         Start Grid ({{ startPositions.length }})
       </button>
       <!-- Circuit or sprint. Setting a circuit to one lap times the same thing,
-           which is why that was the workaround — but it reads as a one-lap
+           which is why that was the workaround - but it reads as a one-lap
            circuit everywhere it is shown, and a driver on a sprint stage should
            be told they are on one. Saved with the layout. -->
       <button class="rm-btn rm-btn-mini rm-p2p-toggle" ng-if="editorTarget === 'main'"
               ng-class="{'rm-p2p-on': pointToPoint}"
               ng-click="togglePointToPoint()"
               ng-disabled="phase === 'countdown' || phase === 'racing'"
-              title="Circuit: the last gate is a start/finish line and the race runs for the lap count. Point to point: the stage is driven once, first gate to last, and the last gate is the finish.">
+              title="Circuit: laps a start/finish line. Point to point: driven once, first gate to last.">
         {{ pointToPoint ? '⇥ Point to Point' : '⟳ Circuit' }}
       </button>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'joker'">
@@ -982,7 +982,7 @@
         <b ng-if="gridOffLine">This grid is away from the start/finish line, so the first lap is an out lap and is not timed.</b>
       </span>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'branch'">
-        Lane gates are drawn cyan and <b>replace</b> the main gate at the slot they are given —
+        Lane gates are drawn cyan and <b>replace</b> the main gate at the slot they are given
         they never add a checkpoint. Assign lanes to grid slots in <b>Start Grid</b>.
       </span>
     </div>
@@ -1028,8 +1028,8 @@
           </div>
         </div>
         <span class="rm-route-tab-note">
-          Drive to where <b>{{ editingBranch().name }}</b> crosses CP {{ branchSlot }} — facing the way
-          <b>that</b> lane travels — and press the button above.
+          Drive to where <b>{{ editingBranch().name }}</b> crosses CP {{ branchSlot }}, facing the way
+          <b>that</b> lane travels, then press the button above.
         </span>
       </div>
       <div class="rm-editor-hint" ng-if="!branches.length">
@@ -1041,7 +1041,7 @@
         (CP 1 turn 1, CP 2 back stretch, CP 3 turn 2, start/finish). Add a lane called
         <b>Counter-clockwise</b>, then stand at <b>turn 2 facing anti-clockwise</b> and place its
         <b>CP 1</b>, and at <b>turn 1 facing anti-clockwise</b> place its <b>CP 3</b>. Leave CP 2 and
-        the start/finish alone — with gates scoring both ways, those two count for everyone.
+        the start/finish alone: with gates scoring both ways, those two count for everyone.
         Finally, in <b>Start Grid</b>, tag half the slots to that lane.
       </div>
     </div>
@@ -1053,7 +1053,7 @@
         <input type="number" class="rm-lane-num" min="1" max="60" ng-model="gridGen.count">
         <label class="rm-lane-label">slots,</label>
         <input type="number" class="rm-lane-num" min="1" max="8" ng-model="gridGen.width"
-               title="Cars per row. Two is a road-race grid and an oval's; three and four are short-track and dirt formats; one is single file.">
+               title="Cars per row. Two is a road-race grid, three and four suit short track, one is single file.">
         <label class="rm-lane-label">abreast, from</label>
         <!-- Pole is a decision you make once, by standing on it. Anchoring on a
              placed slot is what lets the sliders below re-lay the grid out
@@ -1074,7 +1074,7 @@
           </div>
         </div>
         <button class="rm-btn rm-btn-grid" ng-click="generateStartPositions()"
-                title="Lay out a grid running back from the anchor, down its own heading. Generating from a placed slot rebuilds the grid from there and keeps everything before it. This places START POSITIONS in the editor — it does not form the race grid.">Generate Slots</button>
+                title="Lay slots back from the anchor. From a placed slot, rebuilds from there and keeps what came before. Editor only, not the race grid.">Generate Slots</button>
       </div>
       <!-- The spacing sliders. Only offered once there is a generated grid to
            move: they own the block the generator laid out, and respacing a grid
@@ -1108,7 +1108,7 @@
         <label class="rm-lane-label">to</label>
         <input type="number" class="rm-lane-num" min="1" ng-model="laneRange.to">
         <button class="rm-btn rm-btn-mini" ng-click="flipStartPositions()"
-                title="Turn these slots around 180°. Build one block, flip half of it: the head-on grid without driving the second half.">↻ Turn Around</button>
+                title="Turn these slots 180°. Build one block, flip half of it for a head-on grid.">↻ Turn Around</button>
         <div class="rm-layout-dropdown rm-lane-picker"
              ng-class="{'rm-layout-dropdown-open': laneMenuOpen('bulk')}">
           <button type="button" class="rm-layout-trigger" ng-click="laneToggleMenu('bulk')">
@@ -1125,7 +1125,7 @@
         </div>
         <button class="rm-btn rm-btn-mini rm-btn-grid" ng-if="branches.length"
                 ng-click="stripeStartLanes()"
-                title="Deal the lanes out one slot at a time: P1 main, P2 the next lane, P3 back to main. On a grid as many abreast as there are lanes that puts each lane in its own column — which is how a head-on grid actually lines up.">⇅ Alternate Lanes</button>
+                title="Deal lanes out one slot at a time: P1 main, P2 next lane, P3 back to main. Each lane gets its own column.">⇅ Alternate Lanes</button>
         <button class="rm-btn rm-btn-mini rm-btn-grid" ng-click="applyStartLane()"
                 title="Put these grid slots on that lane. This is the only place a driver's direction is decided.">Set Lane</button>
       </div>
@@ -1138,7 +1138,7 @@
          and keeps it. Size is edited on the gate itself, below. -->
     <div class="rm-editor-hint" ng-if="!editingGrid() && editorWaypoints().length">
       Each gate keeps its own size and passes it on to the next one you place.
-      Click a gate to change it — nothing else moves.
+      Click a gate to change it: nothing else moves.
     </div>
 
     <!-- Gate list (main lap / joker route) -->
@@ -1239,7 +1239,7 @@
                 title="Put your car on this slot to check the spacing">Go</button>
         <button class="rm-btn rm-btn-mini rm-btn-grid" ng-click="moveStartPosition($index + 1)"
                 title="Move this slot to where your car is standing now">Move Here</button>
-        <button class="rm-btn rm-btn-mini" title="Move this slot one place earlier — slot 1 is pole"
+        <button class="rm-btn rm-btn-mini" title="Move this slot one place earlier: slot 1 is pole"
                 ng-disabled="$first" ng-click="reorderCheckpoint($index + 1, $index)">▲</button>
         <button class="rm-btn rm-btn-mini" title="Move this slot one place later"
                 ng-disabled="$last" ng-click="reorderCheckpoint($index + 1, $index + 2)">▼</button>
@@ -1269,7 +1269,7 @@
     <!-- ===== Track layouts: persistent, per-map, server-side ===== -->
     <div class="rm-layouts">
       <div class="rm-layouts-left">
-        <div class="rm-layouts-title">Track Layouts <span class="rm-layouts-map" ng-if="layoutMap">— {{ layoutMap }}</span></div>
+        <div class="rm-layouts-title">Track Layouts <span class="rm-layouts-map" ng-if="layoutMap">{{ layoutMap }}</span></div>
         <div class="rm-layouts-row">
           <input type="text" class="rm-layout-name" placeholder="New layout name…" maxlength="40"
                  ng-model="layoutUi.name">
@@ -1339,14 +1339,14 @@
                ng-disabled="derbyActive()">
         <span class="rm-setting-val">s</span>
       </span>
-      <span class="rm-setting" title="Vehicle resets each driver gets this derby. 0 = no resets at all; -1 (or blank) = unlimited. Once the allowance is gone the reset keys are blocked.">
+      <span class="rm-setting" title="Resets per driver this derby. 0 = none, -1 or blank = unlimited. Past the allowance the reset keys are blocked.">
         <label>Max resets</label>
         <input type="number" class="rm-width-num" min="-1" max="99" step="1" ng-model="derbyUi.resets"
                ng-disabled="derbyActive()">
       </span>
       <button class="rm-btn rm-btn-mini" ng-click="derbyApplyConfig()"
               ng-disabled="derbyActive()">Set Rules</button>
-      <span class="rm-setting" title="Everyone: every connected player is a participant (the classic behaviour). Opt-in: only drivers who pressed Join Race take part, so a spectator is not dragged in and left without a car.">
+      <span class="rm-setting" title="Everyone: all connected players take part. Opt-in: only those who pressed Join Race, so spectators are left alone.">
         <label>Entry</label>
         <button class="rm-btn rm-btn-mini rm-btn-toggle"
                 ng-class="{'rm-btn-toggle-on': derby.entryMode === 'all'}"
@@ -1358,7 +1358,7 @@
       </span>
     </div>
     <div class="rm-derby-hint" ng-if="derby.entryMode === 'join' && !derby.entrants && derby.phase !== 'running'">
-      ⚠ Opt-in entry is on and nobody has pressed <b>Join Race</b> — Start Derby
+      ⚠ Opt-in entry is on and nobody has pressed <b>Join Race</b>: Start Derby
       will have no field.
     </div>
 
@@ -1366,20 +1366,20 @@
 
     <!-- The standings themselves are NOT repeated here. In derby mode the
          leaderboard at the bottom of the app IS the derby board, so an admin
-         reads the field from one place — and reads it from the Derby Editor
+         reads the field from one place - and reads it from the Derby Editor
          sub-tab too, rather than only from this one. There used to be a second
          copy of the table right here, which meant the field was on screen twice
          on this tab and nowhere at all while building an arena. -->
     <div class="rm-derby-hint" ng-if="derby.phase === 'idle' && derby.boundaryCount < 3">
-      No arena yet — build one in the <b>Derby Editor</b> tab, then Form Up.
+      No arena yet: build one in the <b>Derby Editor</b> tab, then Form Up.
     </div>
   </div>
 
   <!-- ================= DERBY EDITOR ==================================
        The derby's answer to the Race Editor, and deliberately its twin: an
        arena is authored here, and running one is done from the controls above.
-       Everything in this panel is refused from form-up onward — the arena
-       cannot move under a field that is already standing on its grid — so the
+       Everything in this panel is refused from form-up onward - the arena
+       cannot move under a field that is already standing on its grid - so the
        rows go read-only rather than disappearing, and the admin can still read
        the arena off during a live derby. -->
   <div class="rm-derby rm-derby-editor" ng-if="isMode('derby') && isAdminTab('editor')">
@@ -1396,7 +1396,7 @@
     <!-- ===== Which boundary editor. Two genuinely different tools, kept
          because they are good at different things: a rectangle is three
          sliders and covers most arenas, and driving the perimeter is the only
-         way to fit an odd-shaped one. Switching either way keeps the work —
+         way to fit an odd-shaped one. Switching either way keeps the work -
          a rectangle becomes four ordinary markers, and a driven arena becomes
          the rectangle that bounds it. -->
     <div class="rm-route-tabs">
@@ -1413,7 +1413,7 @@
         ✎ Drive &amp; Place ({{ derby.boundaryCount }})
       </button>
       <span class="rm-route-tab-note" ng-if="derby.boundaryMode === 'rect'">
-        Four corners are derived from the centre — move the sliders, not the markers.
+        Four corners are derived from the centre: move the sliders, not the markers.
       </span>
       <span class="rm-route-tab-note" ng-if="derby.boundaryMode === 'polygon'">
         Markers connect in order into a closed perimeter. 3 or more make an arena.
@@ -1425,7 +1425,7 @@
       <div class="rm-editor-controls">
         <button class="rm-btn rm-btn-grid" ng-click="derbySetShapeCenter()"
                 ng-disabled="derbyActive()"
-                title="Move the middle of the arena to where your car is standing now. The size and rotation are kept.">
+                title="Move the arena centre to your car. Size and rotation are kept.">
           ◎ Set Centre Here
         </button>
         <span class="rm-setting" title="Link width and length so the arena stays square.">
@@ -1470,16 +1470,16 @@
     <div class="rm-editor-controls" ng-if="derby.boundaryMode === 'polygon'">
       <button class="rm-btn rm-btn-grid" ng-click="derbyAddMarker()"
               ng-disabled="derbyActive()"
-              title="Drop a boundary marker at your vehicle's position; markers connect in order into the arena perimeter">
+              title="Drop a boundary marker at your vehicle. Markers connect in order into the perimeter.">
         + Boundary Marker
       </button>
     </div>
 
     <!-- Wall height belongs to both modes: it is how the arena is DRAWN, not
          what it encloses. The out-of-bounds test is flat, so a taller wall
-         never changes who is in or out — it only decides how easily a driver
+         never changes who is in or out - it only decides how easily a driver
          can see the edge from inside a car. -->
-    <span class="rm-setting rm-cp-dim" title="How tall the arena walls are drawn. Visual only — it does not change the boundary.">
+    <span class="rm-setting rm-cp-dim" title="How tall the arena walls are drawn. Visual only: it does not change the boundary.">
       <label>Wall height</label>
       <input type="range" min="2" max="30" step="1" ng-model="rectUi.wall"
              ng-change="derbyApplyWallHeight()" ng-disabled="derbyActive()">
@@ -1495,7 +1495,7 @@
       </button>
       <button class="rm-btn rm-btn-grid" ng-click="derbyAddStart()"
               ng-disabled="derbyActive()"
-              title="Place a derby start position at your vehicle (position + facing). Slot 1 first; drivers are stood on their slot at Form Up.">
+              title="Place a start position at your vehicle. Slot 1 first.">
         + Start Position
       </button>
       <button class="rm-btn rm-btn-end" ng-click="derbyClearStarts()"
@@ -1506,14 +1506,14 @@
          Same list/edit shape as the track editor's gate and start-grid lists,
          down to the classes, because they are the same thing: a numbered
          placement you click to open its controls. Everything here is refused
-         from form-up onward — the arena cannot move under a formed-up field —
+         from form-up onward - the arena cannot move under a formed-up field -
          so the rows go read-only rather than disappearing, and the admin can
          still read off the arena during a live derby. -->
     <div class="rm-derby-lists" ng-if="derby.boundary.length || derby.startPositions.length">
       <!-- The marker list is the drive-and-place editor's, and only its. A
            rectangle's four corners are derived from its centre and extents, so
            there is no answer to "move corner 2 over there" that leaves it a
-           rectangle — the sliders are how it is edited, and the server refuses
+           rectangle - the sliders are how it is edited, and the server refuses
            these commands in that mode anyway. -->
       <div class="rm-derby-list" ng-if="derby.boundary.length && derby.boundaryMode !== 'rect'">
         <div class="rm-layouts-title">Boundary Markers</div>
@@ -1568,7 +1568,7 @@
     <!-- ===== Derby arenas: persistent, per-map, server-side ===== -->
     <div class="rm-derby-layouts">
       <div class="rm-layouts-title">
-        Saved Arenas <span class="rm-layouts-map" ng-if="derbyLayoutMap">— {{ derbyLayoutMap }}</span>
+        Saved Arenas <span class="rm-layouts-map" ng-if="derbyLayoutMap">{{ derbyLayoutMap }}</span>
       </div>
       <div class="rm-layouts-row">
         <input type="text" class="rm-layout-name" placeholder="Arena name…" maxlength="40"
@@ -1608,7 +1608,7 @@
       </div>
       <div class="rm-layouts-hint">
         An arena is its boundary polygon, both timers, the reset limit and the
-        starting grid, stored per map — the same way track layouts are.
+        starting grid, stored per map: the same way track layouts are.
       </div>
     </div>
 
@@ -1616,15 +1616,15 @@
       The four corners follow the centre and the sliders. Leaving the arena during
       the derby starts the out-of-bounds countdown; stopping starts the demolished
       countdown. Place a starting grid with <b>+ Start Position</b> (slot 1 first,
-      facing the way the car should point) — Form Up stands every driver on a slot.
+      facing the way the car should point): Form Up stands every driver on a slot.
     </div>
     <div class="rm-derby-hint" ng-if="derby.boundaryMode !== 'rect' && derby.boundaryCount < 3">
       Drive around the arena edge and press <b>+ Boundary Marker</b> at each corner
-      (3+ markers make a perimeter) — or switch to <b>▭ Rectangle</b> and pull one
+      (3+ markers make a perimeter): or switch to <b>▭ Rectangle</b> and pull one
       out from where you are standing. Leaving the arena during the derby starts
       the out-of-bounds countdown; stopping starts the demolished countdown.
       Optionally place a starting grid with <b>+ Start Position</b> (slot 1 first,
-      facing the way the car should point) — Form Up stands every driver on a slot.
+      facing the way the car should point): Form Up stands every driver on a slot.
     </div>
   </div>
 
@@ -1667,16 +1667,16 @@
     <!-- ===== Build stamps =====
          The three pieces deploy separately and BeamNG caches UI files, so one
          can be older than the others. A stale app.js makes buttons do nothing
-         at all, silently — this row is how you see that in one glance. -->
+         at all, silently - this row is how you see that in one glance. -->
     <div class="rm-adminbar">
       <span class="rm-adminbar-label">Build</span>
       <span class="rm-build" ng-class="{'rm-build-bad': !buildsMatch()}">
         app {{ appBuild }}
-        · client {{ clientBuild || '—' }}
-        · server {{ serverBuild || '—' }}
+        · client {{ clientBuild || '-' }}
+        · server {{ serverBuild || '-' }}
       </span>
       <span class="rm-setting-warn" ng-if="!buildsMatch()">
-        ⚠ Mismatch — a stale piece will make controls do nothing. Update all
+        ⚠ Mismatch: a stale piece will make controls do nothing. Update all
         three and clear the BeamNG cache.
       </span>
     </div>
@@ -1703,7 +1703,7 @@
       </div>
       <div class="rm-layouts-hint" ng-if="drivers.length">
         3–20 characters, letters/digits/spaces and <b>- _ .</b> only. A name already
-        in use is refused. Names last for the session only — BeamMP guest identities
+        in use is refused. Names last for the session only: BeamMP guest identities
         change on every reconnect, so they are not remembered across a rejoin.
       </div>
     </div>
@@ -1748,7 +1748,7 @@
   </div>
 
   <!-- Reset ghost: this driver's own countdown to contact resuming. Shown only
-       to the ghosted driver — everyone else sees the car itself go translucent.
+       to the ghosted driver - everyone else sees the car itself go translucent.
        When the timer has run out but a car is still in the way there is no
        countdown left to show, so it says what the driver has to DO instead. -->
   <div class="rm-ghost" ng-class="{ 'rm-ghost-blocked': ghost.blocked }" ng-if="ghost">
@@ -1756,7 +1756,7 @@
     <span class="rm-ghost-clock" ng-if="!ghost.blocked">{{ ghostLeft | number:1 }}s</span>
     <span class="rm-ghost-clock" ng-if="ghost.blocked">MOVE CLEAR</span>
     <span class="rm-ghost-hint" ng-if="ghost.blocked">
-      Another car is in your space — collisions stay off until it is clear
+      Another car is in your space: collisions stay off until it is clear
     </span>
   </div>
 
@@ -1769,18 +1769,18 @@
          clock; the live clock underneath never stops. -->
     <span class="rm-laptime" ng-if="showLapTime()">
       <span class="rm-laptime-out" ng-if="lapHolding() && outLapDone()"
-            title="Your out lap is over — the lap you are on now is being timed">
-        {{ sessionKind === 'quali' ? 'OUT LAP DONE — TIMING' : 'TIMING FROM HERE' }}
+            title="Your out lap is over: the lap you are on now is being timed">
+        {{ sessionKind === 'quali' ? 'OUT LAP DONE, TIMING' : 'TIMING FROM HERE' }}
       </span>
       <span class="rm-laptime-hold" ng-if="lapHolding() && !outLapDone()">
         LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}
       </span>
       <!-- No clock on the out lap. This bar is the whole HUD for a driver in
            minimal mode, so a running number here is the only thing they have to
-           go on — and on a lap that is not being timed it would be a lie. -->
+           go on - and on a lap that is not being timed it would be a lie. -->
       <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
-            title="This session gives its first lap away: it starts from a standing grid, so it measures the launch rather than the lap. Timing starts as you cross the line.">
-        {{ sessionKind === 'quali' ? 'OUT LAP — NOT TIMED' : 'LAP 1 — NOT TIMED' }}
+            title="Standing start, so the first lap is not timed. Timing starts as you cross the line.">
+        {{ sessionKind === 'quali' ? 'OUT LAP: NOT TIMED' : 'LAP 1: NOT TIMED' }}
       </span>
       <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()">
         LAP {{ formatLapLive(lapElapsed()) }}
@@ -1830,7 +1830,7 @@
 
   <!-- ================= Derby standings ===================================
        Shown to a driver from form-up onward, and to an admin for as long as
-       they are in Derby mode — so it is the board behind the Derby Editor as
+       they are in Derby mode - so it is the board behind the Derby Editor as
        well, and there is exactly one copy of it in the app. -->
   <div class="rm-table-wrap" ng-if="derbyBoardOnly()" ng-style="minimalMode() && lbStyle()">
     <table class="rm-table" ng-if="derby.players.length">
@@ -1853,7 +1853,7 @@
             <span class="rm-status-text">{{ derbyStatusLabel(p) }}</span>
           </td>
           <td class="rm-col-reset" ng-if="derbyResetsLimited()">{{ derbyResetLabel(p) }}</td>
-          <td class="rm-col-time">{{ p.status === 'eliminated' ? formatDerbyTime(p.elimTime) : '—' }}</td>
+          <td class="rm-col-time">{{ p.status === 'eliminated' ? formatDerbyTime(p.elimTime) : '-' }}</td>
         </tr>
       </tbody>
     </table>
@@ -1861,7 +1861,7 @@
          a bare table header reads as something that failed to load. -->
     <div class="rm-derby-hint" ng-if="!derby.players.length && derby.phase === 'idle'">
       No derby yet. Set the rules, build an arena in the <b>Derby Editor</b>,
-      then <b>Form Up</b> — the field appears here.
+      then <b>Form Up</b>: the field appears here.
     </div>
     <div class="rm-derby-hint" ng-if="!derby.players.length && derby.phase !== 'idle'">
       No participants recorded.
@@ -1877,10 +1877,10 @@
         <tr>
           <!-- This column is the provisional GRID only when the grid is filled
                from the qualifying order. Under a reverse, random or custom grid
-               it is the qualifying position and nothing more — labelling it Grid
+               it is the qualifying position and nothing more - labelling it Grid
                there would promise a slot the grid is about to contradict. -->
           <th class="rm-col-grid"
-              title="{{ qualiOrderIsGrid() ? 'Provisional grid: this order is what Generate Grid will use' : 'Qualifying position. The grid is filled by ' + gridModeLabel() + ', so it will not match this order.' }}">{{ qualiOrderIsGrid() ? 'Grid' : 'Pos' }}</th>
+              title="{{ qualiOrderIsGrid() ? 'Provisional grid: what Generate Grid will use' : 'Qualifying position. The grid is filled by ' + gridModeLabel() + ', so it will differ.' }}">{{ qualiOrderIsGrid() ? 'Grid' : 'Pos' }}</th>
           <th class="rm-col-name">Driver</th>
           <th class="rm-col-time">Best Lap</th>
           <th class="rm-col-led" title="Timed qualifying laps completed. The out lap is not one of them.">Laps</th>
@@ -1912,7 +1912,7 @@
         </tr>
         <tr ng-if="!drivers.length">
           <td colspan="5" class="rm-empty">
-            No drivers on track yet — lap times appear on the <b>second</b> crossing of the
+            No drivers on track yet: lap times appear on the <b>second</b> crossing of the
             start/finish gate. The first is the out lap: it starts from a standing grid, so
             it is not timed and does not count.
           </td>
@@ -1959,15 +1959,15 @@
           </td>
           <td class="rm-col-grid">
             <!-- Custom grid: the admin types the slot this driver starts from -->
-            <span ng-if="!canEditGrid()">{{ row.gridPos || '—' }}</span>
+            <span ng-if="!canEditGrid()">{{ row.gridPos || '-' }}</span>
             <input ng-if="canEditGrid()" type="number" class="rm-grid-pin" min="1" max="99"
-                   ng-model="gridUi.slot[row.id]" placeholder="{{ row.customGrid || row.gridPos || '—' }}"
+                   ng-model="gridUi.slot[row.id]" placeholder="{{ row.customGrid || row.gridPos || '-' }}"
                    ng-keydown="$event.keyCode === 13 && pinGridSlot(row)"
                    ng-blur="pinGridSlot(row)"
                    title="Type a starting slot and press Enter to pin this driver to it">
           </td>
           <td class="rm-col-name" title="{{ driverName(row) }}{{ realName(row) ? ' (' + realName(row) + ')' : '' }}">{{ driverName(row) }}</td>
-          <td class="rm-col-lap" title="{{ row.outLap ? 'On the out lap — not timed and not counted' : (row.cpCleared ? row.cpCleared + ' checkpoint(s) cleared this lap' : '') }}">{{ lapLabel(row) }}</td>
+          <td class="rm-col-lap" title="{{ row.outLap ? 'Out lap: not timed, not counted' : (row.cpCleared ? row.cpCleared + ' checkpoint(s) cleared this lap' : '') }}">{{ lapLabel(row) }}</td>
           <!-- Fastest lap of the session, in gold. A plain equality test per
                row, evaluated by the same digest that already renders the cell. -->
           <td class="rm-col-time" ng-class="{'rm-best-lap': row.id === bestLapPid && row.raceBest}"
@@ -1977,7 +1977,7 @@
                where it explains why two cars are ranked next to each other while
                sitting at opposite ends of the circuit. -->
           <td class="rm-col-lane" ng-if="hasBranches"
-              title="The way round this driver was entered — decided by their grid slot">
+              title="The way round this driver was entered: decided by their grid slot">
             {{ row.lane || 'Main' }}
           </td>
           <td class="rm-col-joker" ng-if="jokerEnabled"
@@ -1994,7 +1994,7 @@
         </tr>
         <tr ng-if="!drivers.length">
           <td colspan="9" class="rm-empty">
-            No drivers yet — join a BeamMP server running the RaceManager plugin, then press
+            No drivers yet: join a BeamMP server running the RaceManager plugin, then press
             <b>Start Quali</b> (or <b>Generate Grid</b> to go straight to a race),
             followed by <b>Start Countdown</b>.
           </td>
@@ -2018,7 +2018,7 @@
     height: 100%;
     /* The resize grip measures the border box (getBoundingClientRect) and
        writes the result back as width/height, so those two have to mean the
-       same thing — otherwise every drag adds the border width and the panel
+       same thing: otherwise every drag adds the border width and the panel
        creeps past the edge of the HUD app window that clips it. */
     box-sizing: border-box;
     display: flex;
@@ -2263,7 +2263,7 @@
     max-height: 58%;
     overflow-y: auto;
   }
-  /* Admin only — the driver (minimal) view is deliberately left alone. */
+  /* Admin only: the driver (minimal) view is deliberately left alone. */
   .rm-admin .rm-table-wrap { min-height: 84px; }
   /* Gate sizing sits inside the editor panel, so it drops the settings row's
      own divider and outer padding. */
@@ -2409,7 +2409,7 @@
      embedded (CEF) browser, so the picker is DOM we control: the trigger looks
      like the old select, and the menu is absolutely positioned with a high
      z-index so it stacks above the 2D preview canvas and stays clickable
-     (pointer-events explicitly enabled — nothing here is a click-through). */
+     (pointer-events explicitly enabled: nothing here is a click-through). */
   /* The layout picker sits in the session controls, so it shares their look. */
   .rm-controls-layout { align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); }
   .rm-controls-label {
@@ -2561,7 +2561,7 @@
 
   /* Header badges for the new session state */
   .rm-quali-clock { color: #ce93d8; }
-  /* Time is up but the session is still running — read as urgent, not as over. */
+  /* Time is up but the session is still running: read as urgent, not as over. */
   .rm-final-lap { color: #ffd54f; font-weight: 700; letter-spacing: 0.06em; }
   .rm-ghost-badge {
     font-size: 9px;
@@ -2572,7 +2572,7 @@
     background: rgba(138, 180, 248, 0.2);
     color: #8ab4f8;
   }
-  /* Same shape as the ghost badge — both are "a rule is in force this session" —
+  /* Same shape as the ghost badge: both are "a rule is in force this session"
      in qualifying's purple. */
   .rm-out-badge {
     font-size: 9px;
@@ -2621,7 +2621,7 @@
   }
   /* Lanes: cyan, matching the colour their gates are drawn in the world. Far
      enough from the joker's violet and the route's orange to be told apart at a
-     glance — a lane gate REPLACES a main one and must never read as an extra
+     glance: a lane gate REPLACES a main one and must never read as an extra
      checkpoint on the same lap. */
   .rm-route-tab-branch { border-color: #33d9f2; color: #7fe6f7; }
   .rm-route-tab-branch-active {
@@ -2662,7 +2662,7 @@
 
   /* Derby arena editing: the two placed lists, side by side while the panel is
      wide enough and stacked when it is not. The rows themselves reuse the track
-     editor's .rm-editor-* styles — same control, same look. */
+     editor's .rm-editor-* styles: same control, same look. */
   .rm-derby-lists {
     display: flex;
     gap: 10px;
@@ -2853,7 +2853,7 @@
   .rm-driverbar-lane b { color: #7fe6f7; }
 
   /* Cup / series points. Gold, because a championship is the one thing in this
-     app that outlives the session — it should not read as another race setting. */
+     app that outlives the session: it should not read as another race setting. */
   .rm-cup {
     padding: 6px 10px;
     border-bottom: 1px solid rgba(251, 188, 5, 0.3);
@@ -3134,7 +3134,7 @@
   .rm-ghost-hint      { font-size: 10px; color: #d0a09c; }
 
   /* Reset ghost countdown. Blue while it is simply counting down, red once it
-     is waiting on another car to move — that is the only state the driver can
+     is waiting on another car to move: that is the only state the driver can
      actually do something about. */
   .rm-ghost {
     display: flex;

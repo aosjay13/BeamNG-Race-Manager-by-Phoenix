@@ -8,7 +8,7 @@
 -- controller's own `lapsInput`: the "Set" button then posts the stale default
 -- to the server, and the server's echo back updates a property the visible
 -- input no longer reads. That is exactly how the Laps and Max-resets fields
--- broke — the server console logged a change, the panel kept showing the
+-- broke - the server console logged a change, the panel kept showing the
 -- default. Binding through an object (`settingsUi.laps`) resolves the object on
 -- the controller scope and mutates it in place, so both directions work.
 --
@@ -240,7 +240,7 @@ do
   expect(rule ~= nil, 'found the .rm-collapsed hide rule')
   for _, keep in ipairs({ 'rm-header', 'rm-driverbar' }) do
     expect(rule ~= nil and rule:find(':not(.' .. keep .. ')', 1, true) ~= nil,
-      'collapsing must not hide .' .. keep .. ' — it carries the button that '
+      'collapsing must not hide .' .. keep .. ' - it carries the button that '
         .. 'brings the app back')
   end
   -- The alerts are the app telling a driver something is happening to them, not
@@ -396,7 +396,7 @@ expect(js:find('data.qualiOutLap', 1, true) ~= nil,
   'the out-lap rule is mirrored from the server broadcast')
 for _, fn in ipairs({ 'onOutLap', 'outLapDone' }) do
   expect(html:find(fn .. '()', 1, true) ~= nil and js:find('$scope.' .. fn, 1, true) ~= nil,
-    'the template calls ' .. fn .. '() and the controller defines it — an '
+    'the template calls ' .. fn .. '() and the controller defines it - an '
       .. 'undefined one is not an error in Angular, it is a readout that '
       .. 'silently never appears')
 end
@@ -404,8 +404,8 @@ expect(html:find('showOutLap(row)', 1, true) ~= nil
   and js:find('$scope.showOutLap', 1, true) ~= nil,
   'the qualifying table shows which drivers are still on their out lap')
 -- ...and only for drivers who are actually in the session. The server's flag
--- stays set on a driver who withdrew or was taken by the grace timeout — they
--- never completed one — so a row announcing an out lap beside a status of DNF
+-- stays set on a driver who withdrew or was taken by the grace timeout - they
+-- never completed one - so a row announcing an out lap beside a status of DNF
 -- is what this guards against.
 do
   local body = js:match('%$scope%.showOutLap = function %(row%)(.-)\n%s*};')
@@ -624,7 +624,7 @@ end
 
 -- The zero-based id trap, in both files.
 expect(js:find('e.boundPid == null', 1, true) ~= nil,
-  'the free-entry filter tests boundPid against null, not truthiness — player '
+  'the free-entry filter tests boundPid against null, not truthiness - player '
     .. 'id 0 is a real driver')
 expect(html:find('e.boundPid', 1, true) == nil
   or (html:find('e.boundPid != null', 1, true) ~= nil
@@ -726,7 +726,7 @@ for field in html:gmatch('row%.([%w_]+)') do rowFields[field] = true end
 expect(next(rowFields) ~= nil, 'found driver row field reads in the template')
 for field in pairs(rowFields) do
   expect(onWire[field],
-    'the leaderboard reads row.' .. field .. ' but the server does not send it — '
+    'the leaderboard reads row.' .. field .. ' but the server does not send it - '
       .. 'add it to DRIVER_WIRE_FIELDS or that column renders blank with no error')
 end
 
@@ -811,8 +811,8 @@ expect(boards == 1,
 -- 5. Editor tabs: Main Route / Joker Route / Start Grid
 --
 -- The editor panel shows whichever list editorTarget names, so a tab that is
--- not carried through — to the client Lua on the way out, or back from its
--- route broadcast — leaves the button looking pressed while the panel stays on
+-- not carried through - to the client Lua on the way out, or back from its
+-- route broadcast - leaves the button looking pressed while the panel stays on
 -- the main route. That is exactly how the Start Grid tab broke: both ends
 -- collapsed anything that was not 'joker' back to 'main'.
 -- ---------------------------------------------------------------------------

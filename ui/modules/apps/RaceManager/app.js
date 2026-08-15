@@ -25,7 +25,7 @@ angular.module('beamng.apps')
       // State
       // ------------------------------------------------------------------
       $scope.phase = 'waiting';   // waiting | grid | countdown | qualifying | racing | finished
-      // 'race' | 'quali' — which session the phases above belong to. Qualifying
+      // 'race' | 'quali' - which session the phases above belong to. Qualifying
       // runs the same lifecycle a race does, so this is what tells them apart.
       $scope.sessionKind = 'race';
       $scope.sessionLaps = 0;     // lap target of the current session (0 = none)
@@ -40,7 +40,7 @@ angular.module('beamng.apps')
       // cosmetic: every settings control sits inside `ng-if="isAdmin"`, and an
       // ng-if creates a child scope. Binding `ng-model="lapsInput"` there would
       // write the typed value onto the ng-if child scope, shadowing the
-      // controller's own `lapsInput` — so "Set" would post the stale default to
+      // controller's own `lapsInput` - so "Set" would post the stale default to
       // the server and the server's echo back would never reach the input the
       // admin is looking at. Going through `settingsUi.*` resolves the object on
       // the controller scope and mutates it in place, so both directions work.
@@ -72,7 +72,7 @@ angular.module('beamng.apps')
       // Which list the checkpoint editor appends to and shows. Three targets:
       // the main lap, the joker route and the starting grid. Anything else is
       // not a target the client Lua knows about, so it falls back to the main
-      // lap — the same normalisation raceManager.setEditorTarget applies.
+      // lap - the same normalisation raceManager.setEditorTarget applies.
       var EDITOR_TARGETS = { main: true, joker: true, pit: true, start: true, branch: true };
       function editorTargetOf(value) {
         return EDITOR_TARGETS[value] ? value : 'main';
@@ -80,7 +80,7 @@ angular.module('beamng.apps')
       $scope.editorTarget = 'main';
       // Branching routes: the other ways round this track. A branch is a sparse
       // set of per-slot gate overrides on the main route, so it never adds slots
-      // — which is why the leaderboard needs no lane arithmetic at all.
+      // - which is why the leaderboard needs no lane arithmetic at all.
       $scope.branches = [];        // [{ id, name, gates: [{ slot, x, y, z, ... }] }]
       $scope.branchEdit = null;    // id of the lane the editor is pointed at
       $scope.branchSlot = 1;       // slot the next placed branch gate overrides
@@ -101,7 +101,7 @@ angular.module('beamng.apps')
       $scope.garageEnforce = false;
       // Race entry: everyone connected is in the field by default, and an admin
       // can switch to opt-in when it should be a subset of who is on the server.
-      // Only ever a mirror of the server's answer — this is the value the panel
+      // Only ever a mirror of the server's answer - this is the value the panel
       // shows for the fraction of a second before the first broadcast lands.
       $scope.entryMode = 'all';       // 'all' (everyone races, the default) | 'join' (opt-in)
       $scope.joined = false;          // is THIS client in the field?
@@ -121,7 +121,7 @@ angular.module('beamng.apps')
       $scope.qualiTimeLimit = 0;
       $scope.qualiLeft = null;        // seconds remaining, null = no limit
       $scope.finalLap  = false;       // quali clock expired: this lap is the last
-      // Does the session on track open with an out lap — one trip past the line
+      // Does the session on track open with an out lap - one trip past the line
       // that is not timed and does not count? Mirrored from the server (it is
       // off on a point-to-point stage, which is driven once) and shown as a
       // header badge, so a spectator or an admin can see which rules the session
@@ -156,8 +156,8 @@ angular.module('beamng.apps')
       // show a time for a lap the driver finished two laps ago and fall further
       // behind with every short lap -- on a short circuit the display would
       // never catch up to reality.
-      $scope.lapLive = null;   // { elapsed, at, lap } — last push + when it landed
-      $scope.lapHold = null;   // { lapTime, lap, until } — completed time on hold
+      $scope.lapLive = null;   // { elapsed, at, lap }: last push + when it landed
+      $scope.lapHold = null;   // { lapTime, lap, until }: completed time on hold
       var lapTicker = null;
 
       function startLapTicker() {
@@ -219,11 +219,11 @@ angular.module('beamng.apps')
       });
 
       // A lap just completed: hold its time on screen. The live clock above is
-      // already counting the new lap — this only parks a copy of the old one.
+      // already counting the new lap - this only parks a copy of the old one.
       //
       // An out lap arrives here with NO time, deliberately: it was not timed, so
       // there is nothing to hold, and the slot says what the lap was instead. A
-      // time shown for it — even a greyed-out one — is a number a driver will
+      // time shown for it - even a greyed-out one - is a number a driver will
       // try to beat.
       $scope.$on('RaceManagerLapDone', function (event, data) {
         if (!data) { return; }
@@ -268,7 +268,7 @@ angular.module('beamng.apps')
       // Admin panel tabs
       // ----------------------------------------------------------------
       // Every admin panel used to render stacked, one under the other. That
-      // overflowed the app window — .rm-root is overflow:hidden and only the
+      // overflowed the app window - .rm-root is overflow:hidden and only the
       // leaderboard scrolls, so anything past the bottom edge was unreachable,
       // and with the editor and derby panels both open it was most of them.
       // One panel shows at a time now; the tab body scrolls as a safety net so
@@ -276,7 +276,7 @@ angular.module('beamng.apps')
       //
       // Those panels are now grouped by MODE first. Race and Derby are two
       // independent game modes that share nothing but the entry list, and a flat
-      // tab strip put four race panels and one derby panel side by side — so the
+      // tab strip put four race panels and one derby panel side by side - so the
       // race session controls and the track layout picker sat above the Derby
       // tab, offering an admin a Load Layout button for a race they were not
       // setting up. Mode picks the world; the sub-tabs below pick the panel
@@ -297,7 +297,7 @@ angular.module('beamng.apps')
       function adminTabOf(mode, value) {
         return MODE_TABS[mode][value] ? value : DEFAULT_TAB[mode];
       }
-      // Persisted so an admin returns to the panel they were working in — and
+      // Persisted so an admin returns to the panel they were working in - and
       // per mode, so switching to Derby and back lands on the race panel they
       // left rather than resetting to the first one.
       // (loadPref/savePref are declared further down; both are hoisted function
@@ -308,8 +308,8 @@ angular.module('beamng.apps')
       $scope.isMode = function (mode) { return $scope.mode === mode; };
       $scope.isAdminTab = function (tab) { return $scope.adminTab === tab; };
       // Both editors are render gates in Lua, which has no idea whether its panel
-      // is on screen. Tell it, so authoring furniture — start-slot outlines, gate
-      // rectangles, arena corner labels — stays in the editor instead of being
+      // is on screen. Tell it, so authoring furniture - start-slot outlines, gate
+      // rectangles, arena corner labels - stays in the editor instead of being
       // drawn for every driver on the server.
       //
       // The two are pushed together and are mutually exclusive by construction:
@@ -371,12 +371,12 @@ angular.module('beamng.apps')
       // The layout picker is a custom DOM dropdown, not a native <select>:
       // BeamNG's UI runs in Chromium Embedded Framework (CEF), where a native
       // <select> popup is a separate OS window that never renders over the game
-      // surface — the box shows a value but clicking it does nothing. We open
+      // surface - the box shows a value but clicking it does nothing. We open
       // and close this menu ourselves so it lives inside the app's own DOM.
       $scope.layoutDropdownOpen = false;
 
       // ----------------------------------------------------------------
-      // CUP / SERIES POINTS — mirrored from RM_CupUpdate, its own channel.
+      // CUP / SERIES POINTS - mirrored from RM_CupUpdate, its own channel.
       //
       // Everything here is read-only state from the server. The panel never
       // computes a total or decides a position: it renders the standings it is
@@ -455,7 +455,7 @@ angular.module('beamng.apps')
       }
 
       // True while a table the admin has typed differs from the server's, which
-      // is what the Apply button keys off — and what stops a rebroadcast from
+      // is what the Apply button keys off - and what stops a rebroadcast from
       // overwriting an edit in progress.
       function cupTableDiffers(buffer, authoritative) {
         for (var i = 0; i < CUP_EDIT_POSITIONS; i++) {
@@ -467,7 +467,7 @@ angular.module('beamng.apps')
       }
       // "Differs from the server", which is what the Apply buttons key off. An
       // unseeded buffer is not an edit, so these all read clean until the first
-      // broadcast has filled the fields — otherwise Apply would be live over
+      // broadcast has filled the fields - otherwise Apply would be live over
       // blank inputs.
       $scope.cupPointsDirty = function () {
         return cupTableDiffers($scope.cupUi.points, $scope.cup.racePoints);
@@ -871,7 +871,7 @@ angular.module('beamng.apps')
       };
 
       // ----------------------------------------------------------------
-      // DEMO DERBY (isolated module) — separate state, events and commands;
+      // DEMO DERBY (isolated module) - separate state, events and commands;
       // nothing here touches the circuit racing scope above.
       // ----------------------------------------------------------------
       $scope.derby = {
@@ -903,7 +903,7 @@ angular.module('beamng.apps')
       // Dot rule again: these inputs live inside the ng-if derby panel.
       $scope.derbyUi = { oob: 5, demo: 10, resets: -1, name: '', selected: '' };
       // The rectangle sliders. Width and length are the FULL span in metres,
-      // which is what an admin measures an arena in — the server stores half
+      // which is what an admin measures an arena in - the server stores half
       // extents and the conversion happens in the Lua command. `square` links
       // the two so one slider drives both.
       $scope.rectUi = { width: 120, length: 120, rot: 0, wall: 6, square: false };
@@ -930,7 +930,7 @@ angular.module('beamng.apps')
       }
       // Pull the sliders back into line with the arena the server just sent. A
       // value the admin is in the middle of dragging is not overwritten, but
-      // anything that still matches what the server last said follows it —
+      // anything that still matches what the server last said follows it -
       // otherwise loading a saved arena would redraw the walls while the
       // sliders went on showing the old numbers.
       function syncRectUi() {
@@ -948,7 +948,7 @@ angular.module('beamng.apps')
       // selections rather than one shared "selected entry": the marker list and
       // the start grid are shown at the same time, so a single one would make
       // picking a slot silently close the marker you were working on. Plain
-      // scope properties, like the checkpoint editor's selectedCp — only
+      // scope properties, like the checkpoint editor's selectedCp - only
       // controller functions write them, so no ng-if child scope can shadow one.
       $scope.derbySelMarker = null;
       $scope.derbySelStart = null;
@@ -1043,7 +1043,7 @@ angular.module('beamng.apps')
       // While the out lap is still owed there is no racing lap yet, so the cell
       // says so rather than claiming lap 1.
       $scope.lapLabel = function (row) {
-        if (!row || !row.currentLap) { return '—'; }
+        if (!row || !row.currentLap) { return '-'; }
         // QUALIFYING gives its out lap away -- it is not one of the laps you were
         // promised, so it is not counted here either. A RACE's first lap counts
         // like any other; it simply sets no time.
@@ -1069,7 +1069,7 @@ angular.module('beamng.apps')
       // The server's flag answers "does this driver's next crossing complete an
       // out lap", which is only a statement about somebody still in the session.
       // A driver who withdrew, went out, or was taken by the grace timeout keeps
-      // it set — they never completed one — and their row would otherwise
+      // it set - they never completed one - and their row would otherwise
       // announce an out lap they are no longer driving, next to a status of DNF
       // or Not entered.
       $scope.showOutLap = function (row) {
@@ -1089,15 +1089,15 @@ angular.module('beamng.apps')
       // Live positions
       // ------------------------------------------------------------------
       // The server sends the driver array already sorted leader-first with a
-      // `position` integer on every row — and that integer is the row's index,
+      // `position` integer on every row - and that integer is the row's index,
       // because assignPositions stamps it while walking the sorted array. The
       // table therefore renders the array as it arrives.
       //
       // It used to re-sort by that integer as well, defensively, "in case a
       // payload ever arrives out of order". It cannot: the order and the number
       // come from the same loop on the server. What the guard did cost was a
-      // sort of the whole field on every digest — three times a second for the
-      // length of a race, on every machine connected — to reproduce an order it
+      // sort of the whole field on every digest - three times a second for the
+      // length of a race, on every machine connected - to reproduce an order it
       // had already been handed. tests/stress_test.lua checks the invariant on
       // every broadcast it makes, in every phase, so this is pinned down rather
       // than assumed.
@@ -1134,8 +1134,8 @@ angular.module('beamng.apps')
       // Position cell text. Finishers keep their classified place; drivers who
       // are out show a dash rather than a misleading number.
       $scope.positionLabel = function (row) {
-        if (row.status === 'dnf' || row.status === 'dsq') { return '—'; }
-        return row.position ? ('P' + row.position) : '—';
+        if (row.status === 'dnf' || row.status === 'dsq') { return '-'; }
+        return row.position ? ('P' + row.position) : '-';
       };
 
       // Metres to this client's next checkpoint, for the header readout.
@@ -1146,8 +1146,8 @@ angular.module('beamng.apps')
 
       // Joker cell for the race table.
       $scope.jokerLabel = function (row) {
-        if (!$scope.jokerEnabled) { return '—'; }
-        if (!row.jokerTaken) { return '—'; }
+        if (!$scope.jokerEnabled) { return '-'; }
+        if (!row.jokerTaken) { return '-'; }
         if (row.jokerTaken > 1) { return '×' + row.jokerTaken + '!'; }
         return 'L' + (row.jokerLap || '?');
       };
@@ -1155,7 +1155,7 @@ angular.module('beamng.apps')
       // Reset cell: used/allowed, or a dash when resets are unlimited.
       // (These helpers also keep raw comparison operators out of the template.)
       $scope.resetsLimited = function () { return $scope.maxResets >= 0; };
-      // "2/3" — clamped so the counter can never exceed the limit or grow a
+      // "2/3" - clamped so the counter can never exceed the limit or grow a
       // "+N" tail. Blocked attempts still reach the server and the exported
       // results file; the live counter only ever shows used/allowed.
       $scope.resetLabel = function (row) {
@@ -1238,9 +1238,9 @@ angular.module('beamng.apps')
         return $scope.isAdmin ? $scope.isMode('derby') : $scope.derbyActive();
       };
 
-      // Qualifying view for the whole of a qualifying session — including its
+      // Qualifying view for the whole of a qualifying session - including its
       // grid and countdown, which a qualifying session now has just like a race
-      // does — and in waiting, where a closed quali's provisional order is still
+      // does - and in waiting, where a closed quali's provisional order is still
       // the useful thing to show if any times exist. Race view otherwise.
       $scope.isQualiView = function () {
         if ($scope.phase === 'waiting' || $scope.phase === 'finished') {
@@ -1263,7 +1263,7 @@ angular.module('beamng.apps')
       };
 
       $scope.formatLap = function (t) {
-        if (t === null || t === undefined) { return '—'; }
+        if (t === null || t === undefined) { return '-'; }
         var m = Math.floor(t / 60);
         var s = t - m * 60;
         return m + ':' + (s < 10 ? '0' : '') + s.toFixed(3);
@@ -1273,7 +1273,7 @@ angular.module('beamng.apps')
       // thousandths digit would be frozen noise, and the coarser precision also
       // sets the live readout apart from a held (official) time at a glance.
       $scope.formatLapLive = function (t) {
-        if (t === null || t === undefined) { return '—'; }
+        if (t === null || t === undefined) { return '-'; }
         var m = Math.floor(t / 60);
         var s = t - m * 60;
         return m + ':' + (s < 10 ? '0' : '') + s.toFixed(1);
@@ -1282,7 +1282,7 @@ angular.module('beamng.apps')
       $scope.formatFinish = function (row) {
         if (row.status === 'dnf') { return 'DNF'; }
         if (row.finishTime === null || row.finishTime === undefined) {
-          return row.currentLap ? ('Lap ' + row.currentLap + '/' + $scope.totalLaps) : '—';
+          return row.currentLap ? ('Lap ' + row.currentLap + '/' + $scope.totalLaps) : '-';
         }
         return $scope.formatLap(row.finishTime);
       };
@@ -1297,12 +1297,12 @@ angular.module('beamng.apps')
           // Which session the shared lifecycle is running. Qualifying and racing
           // go through the same phases now (grid -> countdown -> running ->
           // done), so the phase alone no longer says which one you are looking
-          // at — this does, and it is what the qualifying/race view switches on.
+          // at - this does, and it is what the qualifying/race view switches on.
           $scope.sessionKind = data.sessionKind === 'quali' ? 'quali' : 'race';
           if (typeof data.sessionLaps === 'number') { $scope.sessionLaps = data.sessionLaps; }
           $scope.raceTime = data.raceTime || 0;
           // Who holds the session's fastest lap. One id, compared per row when
-          // the table renders — no scan, and no second sorted copy of the field.
+          // the table renders - no scan, and no second sorted copy of the field.
           $scope.bestLapPid = (data.bestLapPid === undefined) ? null : data.bestLapPid;
           if (typeof data.pointToPoint === 'boolean') { $scope.pointToPoint = data.pointToPoint; }
           $scope.drivers = data.drivers || [];
@@ -1328,7 +1328,7 @@ angular.module('beamng.apps')
           }
           $scope.jokerEnabled = !!data.jokerEnabled;
           // Does the loaded track have other lanes at all? Decides whether the
-          // leaderboard shows a Line column — on an ordinary circuit it is a
+          // leaderboard shows a Line column - on an ordinary circuit it is a
           // column that would say the same thing on every row.
           $scope.hasBranches = !!data.hasBranches;
           // Joker gates the LOADED TRACK has, which is not the same as the ones
@@ -1438,8 +1438,8 @@ angular.module('beamng.apps')
           if (typeof data.pointToPoint === 'boolean') { $scope.pointToPoint = data.pointToPoint; }
           if (typeof data.clientBuild === 'string') { $scope.clientBuild = data.clientBuild; }
           // Admin session restored from the client bridge. This directive is
-          // destroyed and rebuilt every time BeamNG tears down the HUD layer —
-          // opening the pause menu does exactly that — so isAdmin cannot live
+          // destroyed and rebuilt every time BeamNG tears down the HUD layer -
+          // opening the pause menu does exactly that - so isAdmin cannot live
           // only in this scope, or every pause reads as a logout. The bridge
           // outlives the app and hands it back on the first route push.
           if (typeof data.isAdmin === 'boolean' && data.isAdmin !== $scope.isAdmin) {
@@ -1576,7 +1576,7 @@ angular.module('beamng.apps')
         for (var i = 1; i <= $scope.routeWaypoints.length; i++) { out.push(i); }
         return out;
       };
-      // Which lanes override a given slot — drawn beside the main gate in the
+      // Which lanes override a given slot - drawn beside the main gate in the
       // route list, so an admin can see which corners are taken two ways.
       $scope.slotLanes = function (slot) {
         var names = [];
@@ -1681,7 +1681,7 @@ angular.module('beamng.apps')
       // Reset ghosting: this driver's own countdown to contact resuming.
       //
       // The bridge pushes at ~10 Hz and the readout is interpolated between
-      // pushes, the same arrangement the lap clock uses — a guihook per frame
+      // pushes, the same arrangement the lap clock uses - a guihook per frame
       // would be a message per frame for a number nobody can read that fast.
       //
       // `blocked` means the timer has run out but another car is still in the
@@ -1727,7 +1727,7 @@ angular.module('beamng.apps')
         });
       });
 
-      // "Vehicle/Setup not allowed in this session." — stays until dismissed or
+      // "Vehicle/Setup not allowed in this session." - stays until dismissed or
       // superseded, because it explains why the player has no car.
       var vehErrTimer = null;
       $scope.$on('RaceManagerVehicleError', function (event, data) {
@@ -1745,7 +1745,7 @@ angular.module('beamng.apps')
 
       $scope.dismissVehicleError = function () { $scope.vehicleError = null; };
 
-      // Password change confirmed by the server — flash a short note in the
+      // Password change confirmed by the server - flash a short note in the
       // admin bar so the change is acknowledged even outside the editor panel.
       var pwMsgTimer = null;
       $scope.$on('RaceManagerPasswordChanged', function (event, data) {
@@ -1839,7 +1839,7 @@ angular.module('beamng.apps')
           $scope.cup.fastestLapRequiresFinish = data.fastestLapRequiresFinish !== false;
           $scope.cup.dnfScoring = data.dnfScoring || 'none';
           // Re-seed the edit fields, skipping anything mid-edit. A broadcast
-          // arriving between two keystrokes must not wipe a table being typed —
+          // arriving between two keystrokes must not wipe a table being typed -
           // the same rule the derby config inputs follow.
           cupSeedEditors();
         });
@@ -1921,7 +1921,7 @@ angular.module('beamng.apps')
       };
 
       $scope.formatDerbyTime = function (t) {
-        if (t === null || t === undefined) { return '—'; }
+        if (t === null || t === undefined) { return '-'; }
         var m = Math.floor(t / 60);
         var s = Math.floor(t % 60);
         return m + ':' + pad2(s);
@@ -1954,7 +1954,7 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.derbySetShapeCenter()');
       };
       // Every slider lands here. Lua takes nil for "leave this alone", so only
-      // the fields that have a usable number are sent — and with Square linked,
+      // the fields that have a usable number are sent - and with Square linked,
       // width drives length as well.
       $scope.derbyApplyShape = function () {
         if ($scope.derbyActive()) { return; }
@@ -1989,7 +1989,7 @@ angular.module('beamng.apps')
       // --- Editing one placed marker / start slot ----------------------------
       // Same shape as the track editor's lists: click a row to open its
       // controls, click it again to close them, then Go / Move Here / ✕. The
-      // arena belongs to the server, so every button here is a request — the
+      // arena belongs to the server, so every button here is a request - the
       // list redraws when the broadcast comes back, not when the button is
       // pressed. Selection is refused (and dropped) once a derby is under way,
       // which is the same rule the server enforces on the commands themselves.
@@ -2054,8 +2054,8 @@ angular.module('beamng.apps')
       };
       $scope.derbyPhaseLabel = function () {
         switch ($scope.derby.phase) {
-          case 'running':   return 'LIVE — ' + $scope.formatDerbyTime($scope.derby.time);
-          case 'forming':   return 'Formed up — held';
+          case 'running':   return 'LIVE: ' + $scope.formatDerbyTime($scope.derby.time);
+          case 'forming':   return 'Formed up: held';
           case 'countdown': return 'Countdown';
           case 'finished':  return 'Finished';
           default:          return 'Setup';
@@ -2077,7 +2077,7 @@ angular.module('beamng.apps')
       };
 
       $scope.derbyStart = function () {
-        // No config push here — the rules were sent at Form Up and are locked
+        // No config push here - the rules were sent at Form Up and are locked
         // from that point, so this is purely "release the field".
         bngApi.engineLua('raceManager.derbyStart()');
       };
@@ -2141,11 +2141,8 @@ angular.module('beamng.apps')
       };
 
       var editorMsgTimer = null;
-      // The server refused to overwrite a layout because the save would have
-      // emptied part of it. This is the guard that exists because a load, a
-      // pole tweak and a save once came back as a track with no joker route, no
-      // pit lane and no grid -- so it names exactly what would go, and makes the
-      // admin say yes before anything is written.
+      // The server refused an overwrite that would have emptied part of a
+      // layout. Names exactly what would go, and makes the admin say yes first.
       $scope.$on('RaceManagerSaveHeld', function (event, data) {
         if (!data || !data.name) { return; }
         $scope.$evalAsync(function () {
@@ -2291,7 +2288,7 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.setMaxResets(' + n + ')');
       };
 
-      // Module 1: what a legal reset does — repair in place or respawn at the
+      // Module 1: what a legal reset does - repair in place or respawn at the
       // last checkpoint crossed.
       $scope.setResetMode = function (mode) {
         bngApi.engineLua('raceManager.setResetMode("'
@@ -2350,8 +2347,8 @@ angular.module('beamng.apps')
       };
       // Does the provisional order shown in the qualifying table double as the
       // starting grid? Only under 'quali'. Every other mode decides the grid
-      // somewhere else — a draw that has not happened, pins the table does not
-      // show, or a reversal — so the column stops calling itself Grid rather
+      // somewhere else - a draw that has not happened, pins the table does not
+      // show, or a reversal - so the column stops calling itself Grid rather
       // than showing a number the grid will contradict.
       $scope.qualiOrderIsGrid = function () { return $scope.gridMode === 'quali'; };
       // Custom grid: pin one driver to one slot.
@@ -2371,14 +2368,14 @@ angular.module('beamng.apps')
       // Qualifying session length: LAPS or TIMED, one or the other.
       //
       // The server takes both numbers and treats 0 as unlimited, so "3 laps and
-      // 10 minutes" is a state it can hold — and a panel offering both boxes at
+      // 10 minutes" is a state it can hold - and a panel offering both boxes at
       // once invites it by accident. A qualifying session is one thing or the
       // other, so the panel asks which, shows that box alone, and sends 0 for
       // the one not in use. Nothing about the server contract changes; what
       // changes is that the two cannot be armed together by mistake.
       //
       // Which mode the panel is in is a display choice, so it lives here rather
-      // than on the wire — but it is seeded from the server below, so an admin
+      // than on the wire - but it is seeded from the server below, so an admin
       // opening the app on a session somebody else configured lands on the mode
       // that session is actually running.
       $scope.qualiUi = { mode: loadPref('qualiLimitMode', 'laps') === 'timed' ? 'timed' : 'laps' };
@@ -2401,7 +2398,7 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.setQualiLimits(' + laps + ', ' + secs + ')');
       }
       // Typing in the box that is on screen. An empty box is skipped, for the
-      // same reason it is on the laps and resets fields — here it would read as
+      // same reason it is on the laps and resets fields - here it would read as
       // 0, which in a qualifying session means UNLIMITED, so clearing "3" to
       // type "12" would spend the half second in between running an open
       // session. (Switching MODE goes straight to pushQualiLimits below and is
@@ -2415,7 +2412,7 @@ angular.module('beamng.apps')
       };
       // Switching mode applies immediately, like every other toggle in this
       // panel. Waiting for Set would leave the old limit live underneath a
-      // panel showing the new mode's empty box — which is the state this whole
+      // panel showing the new mode's empty box - which is the state this whole
       // control exists to make impossible.
       $scope.setQualiLimitMode = function (mode) {
         mode = (mode === 'timed') ? 'timed' : 'laps';
@@ -2440,7 +2437,7 @@ angular.module('beamng.apps')
         // Keyed on the TRACK, not on the running session: this label is read
         // while setting a session up, when the session running is a race or
         // nothing at all. `qualiOutLap` on the broadcast answers the other
-        // question — whether the session on track right now has one — and is
+        // question - whether the session on track right now has one - and is
         // what the driver-facing chrome uses.
         return $scope.pointToPoint ? base : (base + ' + out lap');
       };
@@ -2449,7 +2446,7 @@ angular.module('beamng.apps')
       // UI -> LUA commands (starting grid editor)
       // ------------------------------------------------------------------
       // "Place Start Position Here" is the same editorAdd the checkpoint tabs
-      // use — the editor target decides which list it lands in.
+      // use - the editor target decides which list it lands in.
       $scope.moveStartPosition = function (index) {
         bngApi.engineLua('raceManager.moveStartPosition(' + index + ')');
       };
@@ -2529,10 +2526,9 @@ angular.module('beamng.apps')
       // UI -> LUA commands (track layouts)
       // ------------------------------------------------------------------
       // (luaStr defined above in the admin-authentication section.)
-      // The one place a save actually leaves for the client. `confirmed` is the
-      // admin having accepted a warning -- either "this replaces an existing
-      // layout" here, or "this empties part of it" from the server's held-save
-      // reply. Without it the server holds a destructive overwrite back.
+      // The one place a save leaves for the client. `confirmed` is the admin
+      // having accepted a warning, either the name clash below or the server's
+      // held-save reply.
       function sendSave(name, confirmed) {
         console.log('[RaceManager] Save Layout "' + name + '": handing '
           + $scope.routeWaypoints.length + ' checkpoint(s) to client Lua'
@@ -2541,9 +2537,8 @@ angular.module('beamng.apps')
           + ', ' + (confirmed ? 'true' : 'false') + ')');
       }
 
-      // Does a layout by this name already exist on the server? Names are
-      // matched case-insensitively there, so they are matched that way here too
-      // -- otherwise "Oval" would look new and silently replace "oval".
+      // Case-insensitive, like the server: otherwise "Oval" looks new and
+      // silently replaces "oval".
       function existingLayout(name) {
         var lower = (name || '').trim().toLowerCase();
         for (var i = 0; i < $scope.layouts.length; i++) {
@@ -2565,8 +2560,8 @@ angular.module('beamng.apps')
         $scope.layoutUi.confirm = null;
       };
 
-      // Save As New. A name that is already taken is an overwrite wearing the
-      // wrong button, so it asks rather than replacing quietly.
+      // A name that is already taken is an overwrite wearing the wrong button,
+      // so it asks rather than replacing quietly.
       $scope.saveLayout = function () {
         var name = ($scope.layoutUi.name || '').trim();
         if (!name) {
@@ -2587,7 +2582,7 @@ angular.module('beamng.apps')
         sendSave(name, false);
       };
 
-      // Overwrite the SELECTED layout — no typed name needed, which is the point
+      // Overwrite the SELECTED layout - no typed name needed, which is the point
       // of it: the common edit is load, tweak, put it back.
       $scope.overwriteLayout = function () {
         var name = $scope.layoutUi.selected;
@@ -2614,7 +2609,7 @@ angular.module('beamng.apps')
       };
 
       // The layout and arena pickers are absolutely positioned menus, and the
-      // admin tab body is a scroll container — a menu opened near its bottom
+      // admin tab body is a scroll container - a menu opened near its bottom
       // edge would hang below the visible area. Scroll it into the scroller
       // once Angular has put it in the DOM (the same deferred pattern the
       // preview canvas uses).
@@ -2730,7 +2725,7 @@ angular.module('beamng.apps')
         function py(p) { return H - (oy + (p.y - minY) * scale); }
 
         // Track outline: connect the gates in driving order and close the lap
-        // (the route is a circuit — after the last gate you cross gate 1 again).
+        // (the route is a circuit - after the last gate you cross gate 1 again).
         if (cps.length > 1) {
           ctx.beginPath();
           ctx.moveTo(px(cps[0]), py(cps[0]));
@@ -2766,7 +2761,7 @@ angular.module('beamng.apps')
         ctx.stroke();
 
         // Branching routes: one dashed line per lane, walking that lane's own
-        // gates slot by slot — its override where it has one, the main gate
+        // gates slot by slot - its override where it has one, the main gate
         // where it does not. On a head-on oval both lanes trace the same ring,
         // which is exactly what the admin needs to see: same track, two ways
         // round, and the arrowheads below saying which way each one goes.
@@ -2865,7 +2860,7 @@ angular.module('beamng.apps')
 
       // Two panels can be resized, but never both at once: in minimal mode the
       // leaderboard IS the HUD, and everywhere else the HUD is the whole app
-      // root with its chrome. Same drag, same storage, separate keys — the
+      // root with its chrome. Same drag, same storage, separate keys - the
       // same number of pixels means a different size on each, so one shared
       // pair would yank whichever panel was not dragged to a nonsense size the
       // moment the mode flipped.
@@ -2900,7 +2895,7 @@ angular.module('beamng.apps')
       }
       // Applied to the leaderboard container in minimal (driver) mode.
       $scope.lbStyle = function () { return panelStyle('leaderboard'); };
-      // Applied to the app root everywhere else — admins on any tab, and
+      // Applied to the app root everywhere else - admins on any tab, and
       // drivers outside a live session.
       $scope.hudStyle = function () { return panelStyle('hud'); };
 
@@ -2942,7 +2937,7 @@ angular.module('beamng.apps')
       // BeamNG paints this app inside its HUD app host: an absolutely
       // positioned box, sized in px from the layout and clipped with
       // overflow:hidden. Nothing we do to our own elements can make that box
-      // bigger — the window belongs to the HUD app layout editor (Pause >
+      // bigger - the window belongs to the HUD app layout editor (Pause >
       // System > HUD Apps), and the only Lua hook for it writes the layout
       // file without re-rendering. So anything dragged past that edge is
       // simply clipped and unreachable, which reads as "the drag does
