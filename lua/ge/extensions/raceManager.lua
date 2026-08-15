@@ -1628,13 +1628,34 @@ local function respawnRemovedVehicle()
   -- the same quaternion put every respawned car on its slot facing backwards.
   -- Two conventions that differ by exactly 180 degrees is not a thing to
   -- remember in two places, so only one place knows about it.
+  -- ANY start position beats the finish line.
+  --
+  -- The slot a driver owned is the right answer, but it is not always available:
+  -- the phase change to 'finished' clears gridSlot, a driver who joined
+  -- mid-session never had one, and a slot can outnumber a grid that was edited
+  -- since. Falling straight back to the snapshot puts the car exactly where it
+  -- was removed -- which for a race is the start/finish line, because that is
+  -- where finishers are removed, facing however they crossed it. That is the
+  -- reported "near the start/finish, sideways".
+  --
+  -- So: their own slot, or failing that ANY placed slot, and only then the
+  -- snapshot. A grid slot somebody else owns is still a spaced, road-level,
+  -- correctly-facing piece of track, and the ghosting around this call is what
+  -- makes sharing one for a moment harmless.
   local slot = snap.slot or gridSlot
   local sp = slot and startPositions[slot]
+  if not (type(sp) == 'table' and sp.x) then sp = startPositions[1] end
   if type(sp) == 'table' and sp.x and sp.y and sp.z then
     opts.pos = vec3(sp.x, sp.y, sp.z)
     opts.rot = nil          -- set below, by the call that knows the convention
-    log('I', 'raceManager', 'Respawning on grid slot ' .. tostring(slot)
+    log('I', 'raceManager', 'Respawning on grid slot ' .. tostring(slot or 1)
       .. ' rather than where the car was removed')
+  else
+    -- Say so. A car that comes back in the wrong place with nothing in the log
+    -- is the position this took two rounds to get out of.
+    log('W', 'raceManager', 'Respawning where the car was removed: no start '
+      .. 'position to use (slot=' .. tostring(slot) .. ', grid has '
+      .. tostring(#startPositions) .. ' placed)')
   end
   local spawned = false
   if core_vehicles and core_vehicles.spawnNewVehicle then
@@ -1874,7 +1895,13 @@ local function releaseSpectator(source, order, count)
   -- the phase change to 'finished' clears gridSlot and lands BEFORE this. The
   -- scheduler places the car on it after the spawn grace, which is the only
   -- moment the vehicle actually exists to be placed.
+  -- ...and if neither is available, slot 1, so long as a grid exists at all.
+  -- The placement step is gated on field.slot, so leaving it nil means the car
+  -- is spawned and never stood up -- it keeps whatever heading the spawn gave it,
+  -- which is the "sideways" half of the report. Any placed slot is a spaced,
+  -- road-level, correctly-facing piece of track.
   local slot = (removedVehicle and removedVehicle.slot) or gridSlot
+    or (startPositions[1] and 1 or nil)
   if queueFieldPlacement then
     queueFieldPlacement({ respawn = true, slot = slot, order = order, count = count })
   else
@@ -2945,7 +2972,11 @@ local field = {
 -- placing a car is the part that has to be staggered and ghosted.
 local function placeOnAssignedSlot()
   local slot = field.slot
-  local sp = slot and (field.slots or startPositions)[slot]
+  local list = field.slots or startPositions
+  local sp = slot and list[slot]
+  -- Same fallback as the respawn above, and for the same reason: any placed slot
+  -- is a better place to stand than wherever the car happened to appear.
+  if not sp then sp = list[1] end
   if not sp then
     pushNotice('grid', 'Start position ' .. tostring(slot) .. ' is not placed on this track')
     log('W', 'raceManager', 'Grid slot ' .. tostring(slot) .. ' has no start position')

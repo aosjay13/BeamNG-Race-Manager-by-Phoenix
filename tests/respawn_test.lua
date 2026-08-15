@@ -42,7 +42,8 @@ local attached = nil    -- what getPlayerVehicle(0) hands back
 -- ghosting did nothing on track.)
 local ghosts   = {}
 local deleted  = {}     -- [id] = true for every vehicle the mod deleted
-local spawnedAt = nil   -- where the last respawn was placed (the weld fix)
+local spawnedAt = nil   -- where the last respawn was SPAWNED
+local placedAt  = nil   -- where it was afterwards PLACED (grid slot + heading)
 local spawns   = 0
 
 local function makeVehicle(id, speed)
@@ -53,7 +54,9 @@ local function makeVehicle(id, speed)
   function v:getDirectionVector() return { x = 0, y = 1, z = 0 } end
   function v:getVelocity() return { x = 0, y = self.speed, z = 0 } end
   function v:getJBeamFilename() return 'etk800' end
-  function v:setPositionRotation() end
+  function v:setPositionRotation(x, y, z, rx, ry, rz, rw)
+    placedAt = { id = self.id, x = x, y = y, z = z, rx = rx, ry = ry, rz = rz, rw = rw }
+  end
   function v:queueLuaCommand(cmd)
     if cmd == 'obj:setGhostEnabled(true)'  then ghosts[self.id] = true end
     if cmd == 'obj:setGhostEnabled(false)' then ghosts[self.id] = nil  end
@@ -213,6 +216,19 @@ check(freeCam == false, 'still without the mod ever touching the camera mode')
 -- own snapshot put the whole field back into that same few metres, inside each
 -- other. The grid is spaced by construction, and this driver owns slot 2 of it.
 check(spawnedAt ~= nil, 'the respawn was given an explicit position')
+-- ...and then actually STOOD on the slot. Spawning near it is not the same as
+-- being placed on it: the spawn cannot set the heading (BeamNG spawns
+-- asynchronously, so nothing exists to turn yet), which is why the placement
+-- scheduler has a step that runs after the spawn grace. If that step does not
+-- run, a car comes back roughly where it was removed -- the start/finish line,
+-- because that is where a race removes finishers -- and pointing whichever way
+-- the spawn left it.
+check(placedAt ~= nil, 'and the car is then PLACED, not just spawned near the slot')
+check(placedAt ~= nil and math.abs(placedAt.x - 20) < 0.01
+  and math.abs(placedAt.y - 0) < 0.01,
+  'on the grid slot it owns')
+check(placedAt ~= nil and placedAt.rw ~= nil,
+  'with a heading, so it is not left pointing whichever way it spawned')
 check(spawnedAt ~= nil and math.abs(spawnedAt.x - 20) < 0.01
   and math.abs(spawnedAt.y - 0) < 0.01,
   "and it is this drivers GRID SLOT, not the finish line they were removed at")
@@ -221,6 +237,46 @@ world[RIVAL_ID].x = 40
 if world[RESPAWNED_ID] then world[RESPAWNED_ID].x = 80 end
 frames(3.0)
 check(ghosts[RIVAL_ID] == nil, 'collisions come back once the field is placed and settled')
+
+-- ===========================================================================
+-- NO SLOT OF THEIR OWN: any start position beats the finish line
+-- ===========================================================================
+-- The slot a driver owned is the right answer and is not always available. The
+-- phase change to 'finished' clears gridSlot, a driver who joined mid-session
+-- never had one, and a slot can outnumber a grid that was edited since.
+--
+-- Falling straight back to the snapshot puts the car exactly where it was
+-- REMOVED -- and a race removes finishers at the start/finish line, facing
+-- however they crossed it. That is "respawned near the start/finish, sideways".
+do
+  -- A clean world. The car respawned by the block above is still one of OURS, so
+  -- leaving it here makes the "do I already have a car?" guard answer yes and the
+  -- respawn never runs -- the test polluting itself rather than the mod failing.
+  world[RESPAWNED_ID] = nil
+  world[OWN_ID] = makeVehicle(OWN_ID)
+  attached = world[OWN_ID]
+  deleted, spawns, spawnedAt, placedAt = {}, 0, nil, nil
+  blockedGroups = {}
+  -- A grid is placed, but this driver has no slot on it.
+  handlers['RM_ApplyLayout']({
+    name = 'test', checkpoints = { { x = 0, y = 300, z = 0, hx = 0, hy = 1 } },
+    startPositions = { { x = 10, y = 0, z = 0, hx = 0, hy = 1 } },
+  })
+  handlers['RM_GridAssign']({ slot = nil })
+  frames(1.0)
+
+  serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
+  handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race' })
+  serverState({ phase = 'finished', totalLaps = 3, maxResets = -1, drivers = {} })
+  handlers['RM_ReleaseSpectate']({ source = 'race', order = 1, count = 1 })
+  frames(3.0)
+
+  check(spawns == 1, 'the car comes back')
+  check(spawnedAt ~= nil and math.abs(spawnedAt.x - 10) < 0.01,
+    'on a placed start position, not where it was removed')
+  check(placedAt ~= nil and math.abs(placedAt.x - 10) < 0.01,
+    'and is stood on it properly, facing down the slot')
+end
 
 -- ===========================================================================
 -- DERBY ELIMINATION: the wreck stays in the arena, and stays visible
