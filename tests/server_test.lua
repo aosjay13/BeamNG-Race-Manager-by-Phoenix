@@ -916,11 +916,11 @@ RM_onLap(1, '{"lapTime":9.5}')
 lastState = nil
 RM_onRequestState(1)
 check(driver('Alice').raceBest == nil,
-  'the part lap from the grid sets no Best Lap')
+  'the launch sets no Best Lap -- a standing start is not a lap time')
 check(lastState.bestLapPid == nil,
   'and cannot take fastest lap of the race, which is the whole point of it')
-check(driver('Alice').outLap == false, 'the out lap is spent after one crossing')
-check(driver('Alice').currentLap == 2, 'but it still counted as a crossing')
+check(driver('Alice').outLap == false, 'the untimed lap is spent after one crossing')
+check(driver('Alice').currentLap == 2, 'and it COUNTED: the driver is on lap 2')
 
 -- From here every crossing is a real lap and is scored normally.
 RM_onLap(1, '{"lapTime":42.0}')
@@ -929,13 +929,18 @@ lastState = nil
 RM_onRequestState(1)
 check(lastState.bestLapPid == 1, 'and takes fastest lap')
 
--- A three lap race owes four crossings: the out lap plus three racing laps.
+-- A THREE LAP RACE IS THREE CROSSINGS. The first of them counts toward the
+-- distance -- it is a racing lap, it just sets no time -- so the flag falls on
+-- the third, not the fourth.
+--
+-- That is the difference between this and qualifying's out lap, which is a lap
+-- given AWAY: not timed AND not one of the laps you were promised, so it is
+-- added on top of the allowance.
 RM_onLap(1, '{"lapTime":41.0}')
-check(driver('Alice').status ~= 'finished', 'still running after two timed laps')
-RM_onLap(1, '{"lapTime":40.5}')
 check(driver('Alice').status == 'finished',
-  'the flag falls on the third TIMED lap, not the third crossing')
-check(driver('Alice').raceBest == 40.5, 'the last lap is scored like any other')
+  'the flag falls on the third CROSSING, because the first one counted')
+check(driver('Alice').raceBest == 41.0, 'and the last lap is scored like any other')
+check(driver('Alice').currentLap == 3, 'three crossings, three laps')
 
 -- The lane a driver ran is recorded on their row for the results file.
 check(driver('Cara').lane == 'ccw' or driver('Dan').lane == 'ccw',

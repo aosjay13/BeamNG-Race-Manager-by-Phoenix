@@ -1033,10 +1033,16 @@ angular.module('beamng.apps')
       // says so rather than claiming lap 1.
       $scope.lapLabel = function (row) {
         if (!row || !row.currentLap) { return '—'; }
-        if (row.outLap) { return 'OUT'; }
-        var lap = row.currentLap - ($scope.qualiOutLap ? 1 : 0);
-        if (lap < 1) { lap = 1; }
-        return lap + '/' + $scope.totalLaps;
+        // QUALIFYING gives its out lap away -- it is not one of the laps you were
+        // promised, so it is not counted here either. A RACE's first lap counts
+        // like any other; it simply sets no time.
+        if ($scope.sessionKind === 'quali') {
+          if (row.outLap) { return 'OUT'; }
+          var q = row.currentLap - ($scope.qualiOutLap ? 1 : 0);
+          if (q < 1) { q = 1; }
+          return q + '/' + $scope.totalLaps;
+        }
+        return row.currentLap + '/' + $scope.totalLaps;
       };
 
       $scope.phaseLabel = function () {

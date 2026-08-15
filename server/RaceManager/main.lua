@@ -1466,11 +1466,15 @@ local function sessionLapTarget()
     -- that ends it.
     return race.qualiLapLimit + (outLapOwed() and 1 or 0)
   end
-  -- Same arithmetic on the race side, for the same reason: the lap field is what
-  -- an admin typed and it means laps that COUNT. A track that grids its cars away
-  -- from the line owes a part lap to get to it, and adding that on top is what
-  -- keeps a 10 lap race ten racing laps rather than nine and a bit.
-  return race.totalLaps + (outLapOwed() and 1 or 0)
+  -- A RACE's first lap counts, and that is the difference between the two.
+  --
+  -- Qualifying's out lap is a lap given AWAY: it is not timed and it is not one
+  -- of the three you were promised, so it is added on top. A race's first lap is
+  -- a racing lap -- it is just not eligible for a lap TIME, because a field
+  -- launching from a standing grid, or from slots spread round the circuit, would
+  -- otherwise hand fastest lap to whoever started nearest the line. Ten laps
+  -- means ten crossings; the first of them sets no time.
+  return race.totalLaps
 end
 
 -- The status a driver carries while they are circulating. Presentation only --
@@ -2745,9 +2749,12 @@ function RM_CountdownTick()
   -- is announced at GO rather than left for drivers to work out from a clock
   -- that never started. Chat, because it reaches a driver who has not opened the
   -- app; the app itself says it again on the driver's own timing readout.
-  if outLapOwed() then
+  if outLapOwed() and isQualiSession() then
     MP.SendChatMessage(-1, '[RaceManager] GO! Your first lap is an OUT LAP — it is '
       .. 'not timed and does not count. Timing starts as you cross the line.')
+  elseif outLapOwed() then
+    MP.SendChatMessage(-1, '[RaceManager] GO! Your first lap COUNTS but is not '
+      .. 'timed — a standing start is not a lap time.')
     -- WHY, in the console, because "my race keeps giving a lap away and I do not
     -- know what is asking for it" is otherwise unanswerable from the outside.
     print('[RaceManager] Out lap owed: mode=' .. tostring(race.outLapMode)
@@ -2928,7 +2935,17 @@ function RM_onLap(pid, rawData)
   --
   -- The crossing still counts as a crossing: the lap counter advances and the
   -- checkpoint telemetry is cleared, exactly as it would for a scored lap.
-  if rec.outLap then
+  -- A RACE keeps the lap and drops only its TIME, so it falls through to the
+  -- scoring below with lapTime suppressed. Only QUALIFYING gives the whole lap
+  -- away, and only qualifying returns here.
+  local untimedFirstLap = false
+  if rec.outLap and not quali then
+    rec.outLap = false
+    untimedFirstLap = true
+    MP.SendChatMessage(rec.id,
+      '[RaceManager] First lap done — it counts, but it set no lap time.')
+  end
+  if rec.outLap and quali then
     rec.outLap = false
     clearProgress(rec)
     rec.currentLap = rec.currentLap + 1
@@ -2943,6 +2960,10 @@ function RM_onLap(pid, rawData)
   end
 
   local lapTime = decodeNumber(rawData, 'lapTime')
+  -- The launch is not a lap time. Dropped here rather than at the client so the
+  -- crossing is still reported, still counted and still ends the lap -- the only
+  -- thing that changes is that nothing goes on the board for it.
+  if untimedFirstLap then lapTime = nil end
   if lapTime and lapTime > 0 then
     if not rec.raceBest or lapTime < rec.raceBest then rec.raceBest = lapTime end
     -- Fastest lap of the SESSION, across everyone. One comparison per scored

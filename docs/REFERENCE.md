@@ -899,7 +899,14 @@ is a fraction of a lap, and timed it would take fastest lap off every driver who
 ever set an honest one. It is detected from the track and travels with the
 layout, so there is nothing to remember on the night.
 
-**The checkpoints are armed and drawn on the out lap like any other lap** — it is
+**A race's first lap counts — it just is not timed.** A field launching from a
+standing grid, or from slots spread round a circuit, would otherwise hand fastest
+lap to whoever started nearest the line. So a 10-lap race is **10 crossings**, and
+the first of them sets no lap time. That is the difference from **qualifying's out
+lap**, which is a lap given *away*: not timed *and* not one of the laps you were
+promised, so it is added on top of the allowance.
+
+**The checkpoints are armed and drawn on the first lap like any other lap** — it is
 the lap a driver least knows the circuit, and the worst one to hide the gates on.
 Reaching the **start/finish line** also ends it, from wherever you have got to and
 with slots still owing, so a car gridded past CP 1 is never sent most of the way

@@ -25,7 +25,7 @@
            says what the lap was and that the next one counts. -->
       <span class="rm-laptime-out" ng-if="lapHolding() && outLapDone()"
             title="Your out lap is over — the lap you are on now is being timed">
-        OUT LAP DONE — TIMING
+        {{ sessionKind === 'quali' ? 'OUT LAP DONE — TIMING' : 'TIMING FROM HERE' }}
       </span>
       <span class="rm-laptime-hold" ng-if="lapHolding() && !outLapDone()"
             title="Lap just completed — held briefly so it can be read">
@@ -35,7 +35,7 @@
            get one. The driver is told what the lap is for instead. -->
       <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
             title="This session gives its first lap away: it starts from a standing grid, so it measures the launch rather than the lap. Timing starts as you cross the line.">
-        OUT LAP — NOT TIMED
+        {{ sessionKind === 'quali' ? 'OUT LAP — NOT TIMED' : 'LAP 1 — NOT TIMED' }}
       </span>
       <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()"
             title="Time on the current lap">
@@ -59,7 +59,7 @@
          qualifying's alone. onOutLap() comes off the bridge's 250 ms lap feed, so
          it goes out on the crossing rather than a broadcast later. -->
     <span class="rm-out-badge" ng-if="sessionUnderWay() && qualiOutLap && onOutLap()"
-          title="You are on your out lap: not timed, not scored, and not counted against the lap target. A race owes one when its grid is not on the start/finish line.">OUT LAP</span>
+          title="{{ sessionKind === 'quali' ? 'Your out lap: not timed, not scored, and not counted against the lap allowance.' : 'Your first lap COUNTS toward the race distance but sets no lap time — a standing start is not a lap time.' }}">{{ sessionKind === 'quali' ? 'OUT LAP' : 'LAP 1 — NOT TIMED' }}</span>
     <!-- Your own grid slot, and the hold before the lights go out -->
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
       START P{{ gridSlot }}<b ng-if="gridFrozen"> — HOLD</b>
@@ -1751,7 +1751,7 @@
     <span class="rm-laptime" ng-if="showLapTime()">
       <span class="rm-laptime-out" ng-if="lapHolding() && outLapDone()"
             title="Your out lap is over — the lap you are on now is being timed">
-        OUT LAP DONE — TIMING
+        {{ sessionKind === 'quali' ? 'OUT LAP DONE — TIMING' : 'TIMING FROM HERE' }}
       </span>
       <span class="rm-laptime-hold" ng-if="lapHolding() && !outLapDone()">
         LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}
@@ -1761,7 +1761,7 @@
            go on — and on a lap that is not being timed it would be a lie. -->
       <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
             title="This session gives its first lap away: it starts from a standing grid, so it measures the launch rather than the lap. Timing starts as you cross the line.">
-        OUT LAP — NOT TIMED
+        {{ sessionKind === 'quali' ? 'OUT LAP — NOT TIMED' : 'LAP 1 — NOT TIMED' }}
       </span>
       <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()">
         LAP {{ formatLapLive(lapElapsed()) }}
