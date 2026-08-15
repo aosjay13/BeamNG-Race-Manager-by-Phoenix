@@ -251,7 +251,16 @@ angular.module('beamng.apps')
       //     watch, unless the user has explicitly pinned the login open.
       // A "Login" button in the header brings the prompt back at any time.
       $scope.adminPresent = false;   // does the server currently have any admin?
-      $scope.showLogin = true;       // is the login prompt visible?
+      // CLOSED until somebody asks for it.
+      //
+      // It used to open itself, which was fine while it was also suppressed for
+      // the whole of a live session -- the two wrongs cancelled. Removing that
+      // suppression (it was a dead end: the button that opens the panel lives in
+      // the driver bar, which only exists in that mode) left it opening itself
+      // over the top of a race instead. A login prompt is something you go and
+      // get: the lock button in the driver bar and the one in the header both
+      // fetch it, and nothing else needs to.
+      $scope.showLogin = false;      // is the login prompt visible?
       $scope.loginPinned = false;    // user explicitly asked to see login
       $scope.pwMsg = null;           // transient confirmation after a password change
 

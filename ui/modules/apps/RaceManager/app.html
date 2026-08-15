@@ -3160,6 +3160,30 @@
     flex-wrap: wrap;
     row-gap: 2px;
   }
+  /* The notices and the login belong to the board as much as the bar does: a
+     FASTEST LAP banner running the width of the windscreen while the board it
+     is about is a third of that reads as two different apps. Same measured
+     width, same one-way dependency. */
+  .rm-minimal .rm-notice,
+  .rm-minimal .rm-login,
+  .rm-minimal .rm-spectator-bar,
+  .rm-minimal .rm-vehicle-error,
+  .rm-minimal .rm-pit,
+  .rm-minimal .rm-ghost {
+    width: var(--rm-lb-width, auto);
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+  /* The countdown is position: absolute; inset: 0 against the root, so it filled
+     the whole HUD app window rather than the panel it belongs over. Pinned to
+     the top-left corner at the board's width instead -- the root is still the
+     full window and always will be, so `inset: 0` can never mean "the panel". */
+  .rm-minimal .rm-countdown {
+    right: auto;
+    bottom: auto;
+    width: var(--rm-lb-width, 100%);
+    height: 100%;
+  }
   .rm-minimal .rm-table-wrap {
     flex: none;
     align-self: flex-start;

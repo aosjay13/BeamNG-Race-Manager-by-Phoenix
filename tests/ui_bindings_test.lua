@@ -282,6 +282,13 @@ do
   expect(login ~= nil and login:find('minimalMode', 1, true) == nil,
     'the login panel is NOT hidden by minimal mode: the button that opens it is '
       .. 'in the driver bar, which only exists in that mode')
+  -- CLOSED until asked for. It used to open itself, which was survivable only
+  -- because it was ALSO suppressed for the whole of a live session -- two wrongs
+  -- cancelling. With that suppression gone (it was the dead end above) an
+  -- auto-opening prompt lands over the top of a race instead.
+  expect(js:find('$scope.showLogin = false', 1, true) ~= nil,
+    'the login prompt starts closed: it is something you go and get')
+
   -- ...and the button really is in the bar, so the two halves stay together.
   local bar = html:match('<div class="rm%-driverbar".-</div>')
   expect(bar ~= nil and bar:find('openLogin()', 1, true) ~= nil,
