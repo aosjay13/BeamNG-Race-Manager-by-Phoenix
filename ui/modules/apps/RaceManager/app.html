@@ -93,7 +93,16 @@
   </div>
 
   <!-- ================= Admin login (dismissable — spectators bypass it) ==== -->
-  <div class="rm-login" ng-if="!isAdmin && showLogin && !minimalMode()">
+  <!-- NO `&& !minimalMode()`. That was a dead end with a race running.
+       Minimal mode is "not an admin AND a session is live", and it strips the
+       chrome down to the leaderboard -- so the login panel was suppressed for
+       exactly as long as a session lasted. The lock button sits in the driver
+       bar, which only EXISTS in minimal mode, and it sets showLogin: it opened a
+       panel that mode refused to render. Pressing it did nothing, all session,
+       and there was no other way in -- so an admin who lost their session could
+       not log back in to stop the race they were running.
+       Logging in clears minimalMode on its own, because isAdmin goes true. -->
+  <div class="rm-login" ng-if="!isAdmin && showLogin">
     <span class="rm-login-title">🔒 Admin Login</span>
     <input type="password" class="rm-login-input" ng-model="authUi.password"
            placeholder="Password…"
@@ -3130,21 +3139,21 @@
   .rm-minimal {
     background: transparent !important;
     overflow: visible;
-  }
-  /* EVERYTHING A DRIVER SEES LINES UP WITH THE BOARD.
-     In minimal mode the root is left full-size and only the leaderboard carries
-     the dragged width, so the fastest-lap toast, the notices and the countdown
-     spanned the whole HUD app window while the board beside them was half of it.
-     They are all direct children of the root -- which is what lets the collapse
-     rule work -- so one variable off the controller lines the column up.
-     100% when nothing has been dragged, which is the old behaviour exactly. */
-  .rm-minimal > * {
-    max-width: var(--rm-lb-width, 100%);
-    align-self: flex-start;
+    /* SHRINK-WRAP THE WHOLE COLUMN TO THE BOARD.
+       The root is the full HUD app window, and in minimal mode nothing was
+       sizing it -- so the driver bar stretched to the window while the table
+       shrank to its own content, and the countdown (position: absolute; inset: 0
+       against this element) covered the lot. Everything read as a different
+       width from the leaderboard it belongs to.
+       fit-content makes the root as wide as its widest child, and the children
+       then stretch to match it: bar, board and overlays all one width. When the
+       grip has set an explicit width on the board, that IS the widest child, so
+       the column follows the drag. */
+    width: fit-content;
+    max-width: 100%;
   }
   .rm-minimal .rm-table-wrap {
     flex: none;
-    align-self: flex-start;
     position: relative;
     max-width: 100%;
     overflow: auto;

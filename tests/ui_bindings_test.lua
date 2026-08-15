@@ -262,7 +262,33 @@ do
     'toggleCollapsed is defined in the app')
 end
 
--- Every grid order the panel offers must be one the server accepts. A button
+-- THERE IS ALWAYS A WAY BACK IN.
+--
+-- minimalMode() is "not an admin AND a session is live", and it strips the app
+-- down to the leaderboard for the length of that session. The lock button that
+-- opens the admin login lives in the driver bar, which only EXISTS in minimal
+-- mode -- so if the login panel is also gated on `!minimalMode()`, pressing it
+-- sets a flag nothing renders. That shipped: an admin who lost their session
+-- could not log back in to stop the race they were running, for as long as it
+-- ran, with no other way in.
+--
+-- Logging in clears minimal mode on its own (isAdmin goes true), so the panel
+-- only has to be REACHABLE.
+do
+  local login = html:match('<div class="rm%-login"[^>]*>')
+  expect(login ~= nil, 'found the admin login panel')
+  expect(login ~= nil and login:find('showLogin', 1, true) ~= nil,
+    'the login panel is opened by showLogin')
+  expect(login ~= nil and login:find('minimalMode', 1, true) == nil,
+    'the login panel is NOT hidden by minimal mode: the button that opens it is '
+      .. 'in the driver bar, which only exists in that mode')
+  -- ...and the button really is in the bar, so the two halves stay together.
+  local bar = html:match('<div class="rm%-driverbar".-</div>')
+  expect(bar ~= nil and bar:find('openLogin()', 1, true) ~= nil,
+    'the driver bar carries the login button')
+end
+
+-- Every grid order the panel offers must be one the server accepts. A button-- Every grid order the panel offers must be one the server accepts. A button
 -- for a mode its validator drops is a dead button: the panel un-highlights the
 -- old mode, the server keeps it, and the next broadcast puts it back.
 do
