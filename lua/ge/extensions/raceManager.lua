@@ -1148,15 +1148,33 @@ local function checkGates()
     -- crossing test as cheap as it was: a lane is decided before the lap starts
     -- (from the grid) or on the first branched slot, not re-evaluated per frame.
     --
-    -- The out lap is the exception, and it has to be. A head-on layout grids its
-    -- cars around the circuit rather than on the line, so slot 1 can be BEHIND a
-    -- driver at GO -- they would have to drive most of a lap the wrong way to arm
-    -- it. On a lap nobody is scoring there is nothing to police, so the only armed
-    -- gate is the line: get to it, and timing starts with slot 1 armed.
+    -- THE OUT LAP ARMS THE CHECKPOINTS LIKE ANY OTHER LAP. An earlier version
+    -- armed only the start/finish line on the reasoning that a lap nobody is
+    -- scoring has nothing to police -- which is true, and which also took the
+    -- checkpoints off the driver's screen for the whole of their first lap. The
+    -- out lap is the lap where a driver least knows the circuit; it is the worst
+    -- possible one to hide the gates on.
+    --
+    -- The line is accepted as well, further down, so a car gridded PAST slot 1
+    -- (which a head-on layout does, spreading its grid round the circuit) can
+    -- still end the out lap by reaching the line rather than being sent most of
+    -- the way round backwards to arm a gate behind it.
     local onOut = onOutLap()
-    local wp = onOut and route[#route] or branch.gateFor(armedWp, branch.lane)
+    local wp = branch.gateFor(armedWp, branch.lane)
     local crossed, backwards = false, false
     if wp then crossed, backwards = segmentCrossesGate(wp, prevPos, pos) end
+
+    -- On the out lap the LINE ends the lap from wherever the driver has got to,
+    -- even with slots still uncleared. Nothing on this lap is scored, so there is
+    -- nothing to protect by making them go back for a gate.
+    local lineEndedOutLap = false
+    if onOut and not crossed and armedWp < #route then
+      local line = route[#route]
+      if line then
+        crossed, backwards = segmentCrossesGate(line, prevPos, pos)
+        if crossed then wp, lineEndedOutLap = line, true end
+      end
+    end
 
     -- Undecided lane: the branch gates for this slot are armed alongside the main
     -- one, and whichever the car actually drives through is the line it is on.
@@ -1182,10 +1200,11 @@ local function checkGates()
         branch.lane = took.id
         pushNotice('branch', 'You are on the ' .. (took.name or took.id) .. ' line')
       end
-      if onOut then
-        -- The crossing that ends the out lap. onLapCompleted reports it like any
-        -- other -- the SERVER is what declines to score it, exactly as it always
-        -- has for qualifying -- and slot 1 arms behind it with timing running.
+      if lineEndedOutLap then
+        -- Reached the line with slots still owing. The out lap is over; slot 1
+        -- arms behind it with timing running. onLapCompleted reports the crossing
+        -- like any other -- the SERVER is what declines to score it, exactly as
+        -- it always has for qualifying.
         onLapCompleted()
         armedWp = 1
       elseif armedWp >= #route then
@@ -4580,15 +4599,6 @@ local function drawDriverGate(derbyLive)
   local p = palette()
   local n = #route
   local lane = branch.lane
-
-  -- On an out lap the only gate that means anything is the line (see checkGates),
-  -- so that is the only one drawn -- pointing a driver at slot 1 while the lap
-  -- they are on cannot score it is how they end up driving at the wrong corner.
-  if onOutLap() then
-    local wp = route[n]
-    if wp then drawPoleGate(wp, p.finish, routeLabel(n, n)) end
-    return
-  end
 
   local a = armedWp
   if a < 1 or a > n then a = 1 end

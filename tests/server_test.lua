@@ -8,6 +8,7 @@ local connected = { [1] = 'Alice', [2] = 'Bob', [3] = 'Cara' }
 local lastState = nil     -- last decoded RM_Update payload
 local lastChat = nil      -- last broadcast chat message
 local lastLayouts = nil   -- last RM_Layouts payload
+local appliedLayouts = {} -- [target] = last RM_ApplyLayout payload
 local lastApplied = nil   -- last RM_ApplyLayout payload
 local lastCleared = nil   -- last RM_ClearTrack payload
 local eventSeq = {}       -- ordered names of broadcast client events
@@ -26,7 +27,7 @@ MP = {
     eventSeq[#eventSeq + 1] = event
     if event == 'RM_Update'      then lastState   = payload end
     if event == 'RM_Layouts'     then lastLayouts = payload end
-    if event == 'RM_ApplyLayout' then lastApplied = payload end
+    if event == 'RM_ApplyLayout' then lastApplied = payload; appliedLayouts[target] = payload end
     if event == 'RM_ClearTrack'  then lastCleared = payload end
   end,
   RegisterEvent = function () end,
@@ -940,6 +941,44 @@ check(driver('Alice').raceBest == 40.5, 'the last lap is scored like any other')
 check(driver('Cara').lane == 'ccw' or driver('Dan').lane == 'ccw',
   'a driver gridded on a tagged slot carries that lane through the race')
 RM_onEndRace(1)
+
+-- ---------------------------------------------------------------------------
+-- A LATE JOINER GETS THE TRACK
+-- ---------------------------------------------------------------------------
+-- The layout used to be broadcast once, at the moment an admin pressed Load, and
+-- never again -- so it reached exactly the people already connected. Anyone who
+-- joined afterwards had no gates at all, and the workaround was for the admin to
+-- wait until the whole field had spawned before loading. A track is state, not an
+-- announcement.
+do
+  RM_onLoadLayout(1, '{"name":"Suicide Oval"}')
+  appliedLayouts = {}
+
+  -- Somebody arrives after the load and asks for state, which is what a client
+  -- does on joining a server.
+  connected[9] = 'LateJoiner'
+  RM_onPlayerJoin(9)
+  RM_onRequestState(9)
+  check(appliedLayouts[9] ~= nil,
+    'a client that joins after the load is sent the track when it asks for state')
+  check(appliedLayouts[9] and #appliedLayouts[9].checkpoints == 3,
+    'and it is the whole layout, gates and all')
+
+  -- And forming a grid puts it in front of everyone, whoever was missing it.
+  appliedLayouts = {}
+  RM_onGenerateGrid(1)
+  check(appliedLayouts[-1] ~= nil,
+    'forming a grid re-sends the track to the whole field')
+
+  -- A purge forgets it, so a joiner is never handed a track the rest of the
+  -- server has just been told to drop.
+  RM_onClearTrackState(1)
+  appliedLayouts = {}
+  RM_onRequestState(9)
+  check(appliedLayouts[9] == nil, 'after a purge there is no track to hand out')
+  connected[9] = nil
+  RM_onPlayerDisconnect(9)
+end
 
 -- Clean up the directory tree the test created in the repo root
 removeTree('Resources')

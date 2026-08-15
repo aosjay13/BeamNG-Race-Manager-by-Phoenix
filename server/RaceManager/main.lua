@@ -127,6 +127,14 @@ local race = {
   --   { { id = 'ccw', name = 'Counter-clockwise',
   --       gates = { { slot = 1, x, y, z, hx, hy, width?, height?, oneWay? }, ... } } }
   branches     = {},
+  -- THE LOADED LAYOUT ITSELF, kept so it can be sent again.
+  --
+  -- It used to be broadcast once, at the moment an admin pressed Load, and never
+  -- again -- so it reached exactly the people who were already connected. Anyone
+  -- who joined afterwards had no gates at all, and the workaround was for the
+  -- admin to wait until the whole field had spawned before loading. A track is
+  -- state, not an announcement.
+  layout       = nil,
   -- Slots in a lap on the loaded track, or 0 when no layout came through this
   -- server. Used only to clamp reported progress (see RM_onProgress).
   slotCount    = 0,
@@ -2003,6 +2011,11 @@ formGrid = function (kind, byName)
   end
 
   race.phase = 'grid'
+  -- Every driver about to be gridded gets the track, whether or not they were
+  -- here when it was loaded. A grid is the last moment this can be put right
+  -- before it matters, and re-sending to a client that already has it is a
+  -- no-op: applying a layout is idempotent.
+  race.sendLayoutTo(-1)
   -- A new grid is a new session. Any ghost still standing from the last one is
   -- cleared here rather than carried onto the grid, where the cars are about to
   -- be teleported into position under the placement ghost anyway.
@@ -2976,6 +2989,12 @@ end
 -- Client asks for current state (UI app just opened).
 function RM_onRequestState(pid)
   broadcastState(pid)
+  -- ...and the TRACK with it. This is the request a client fires on joining a
+  -- server, so it is the moment a late arrival gets the gates everyone else
+  -- already has. Without it the layout only ever reached whoever happened to be
+  -- connected when the admin pressed Load, and the workaround was waiting for the
+  -- whole field to spawn before loading anything.
+  race.sendLayoutTo(pid)
 end
 
 -- ---------------------------------------------------------------------------
@@ -3292,6 +3311,18 @@ function RM_onRequestLayouts(pid)
   sendLayoutList(pid)
 end
 
+-- Send the loaded track to one client, or to everyone with -1.
+--
+-- Called wherever somebody might not have it: when a player joins, when they ask
+-- for state, and when a grid forms. Sending it again to a client that already has
+-- it is harmless -- applying a layout is idempotent, and it is the same payload
+-- they applied the first time.
+function race.sendLayoutTo(target)
+  if type(race.layout) ~= 'table' then return false end
+  MP.TriggerClientEvent(target or -1, 'RM_ApplyLayout', Util.JsonEncode(race.layout))
+  return true
+end
+
 -- Strict track-state purge. Drops the in-memory layout cache (the next access
 -- re-reads layouts.json from disk, so nothing stale survives in a global) and
 -- orders every client to delete its checkpoint arrays and 3D gate visuals.
@@ -3299,6 +3330,7 @@ end
 -- ghost checkpoints from an earlier session can never leak into a new one.
 local function clearTrackState(reason)
   layouts = nil
+  race.layout = nil
   MP.TriggerClientEvent(-1, 'RM_ClearTrack', Util.JsonEncode({ reason = reason or 'clear' }))
   print('[RaceManager] Track state cleared: ' .. (reason or 'clear'))
 end
@@ -3444,6 +3476,7 @@ function RM_onLoadLayout(pid, rawData)
           .. '" has no Joker Route.')
         print('[RaceManager] Joker lap auto-disabled: the loaded track has no joker gates')
       end
+      race.layout = l
       print(string.format('[RaceManager] Broadcasting RM_ApplyLayout: "%s", %d checkpoint(s), %d start position(s), width %s',
         l.name, #l.checkpoints, race.startSlots, tostring(l.width)))
       MP.TriggerClientEvent(-1, 'RM_ApplyLayout', Util.JsonEncode(l))

@@ -830,6 +830,13 @@ lane has the same number of checkpoints, and **the whole field is scored
 together**: one clock, one running order, one results table. Which way a driver
 went is a record, never a place gained or lost.
 
+**The track follows the session, not the moment you loaded it.** A layout is
+re-sent to any client that joins afterwards and to the whole field again when a
+grid forms, so an admin no longer has to wait for everyone to spawn before
+pressing Load. If two admins load different layouts, the last one the server
+processes wins and is announced in chat — it is one server-side state, so
+everybody ends up on the same track either way.
+
 Build lanes in the editor's **Lanes** tab. Each lane gate is placed against a
 **slot**: "this is what CP 3 is, for this lane". Drivers are put on a lane by
 their **grid slot**, tagged in the **Start Grid** tab — that is the only place a
