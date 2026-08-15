@@ -1727,6 +1727,20 @@
     <span class="rm-driverbar-label" ng-if="resetsLimited()">
       RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
     </span>
+    <!-- THE SAME NUMBERS THE HEADER GIVES AN ADMIN.
+         Minimal mode removes the header, and with it the checkpoint counter, the
+         distance to your own next gate and the race clock -- so a driver, who is
+         the one person actually using them, was the only one who could not see
+         them. They are their own readouts, not admin tooling. -->
+    <span class="rm-driverbar-label" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">
+      CP <b>{{ nextWp }}/{{ routeWaypoints.length }}</b>
+    </span>
+    <span class="rm-driverbar-label" ng-if="phase === 'racing' && progress && progress.dist != null">
+      NEXT <b>{{ formatDistance(progress.dist) }}</b>
+    </span>
+    <span class="rm-driverbar-label" ng-if="phase === 'racing' || phase === 'finished'">
+      RACE <b>{{ formatRaceTime(raceTime) }}</b>
+    </span>
     <span class="rm-driverbar-spacer"></span>
     <label class="rm-driverbar-op" title="Leaderboard background opacity" ng-if="!hudCollapsed">
       <span>◑</span>
@@ -2161,7 +2175,19 @@
      is what lets a flex item actually shrink below its content height; the
      max-height keeps a share of a small window for the table below. */
   .rm-admin-body {
-    flex: 1 1 auto;
+    /* GROW: 0. The panel takes the height its content needs and no more, and
+       everything left over goes to the leaderboard below it (.rm-table-wrap is
+       flex: 1, so it takes the slack).
+
+       It used to be `flex: 1 1 auto`, which grows -- so a SHORT panel like the
+       Race tab still stretched to the 58% cap, held a band of blank space inside
+       itself, and pinned the leaderboard into whatever was left at the very
+       bottom. The editor tab has enough content to fill it, which is why the
+       problem only showed on the tabs that do not.
+
+       Shrink and the cap both stay: a long panel (the editor, the cup) still
+       gives way rather than pushing the board off the bottom. */
+    flex: 0 1 auto;
     min-height: 0;
     max-height: 58%;
     overflow-y: auto;
@@ -3052,6 +3078,17 @@
   .rm-minimal {
     background: transparent !important;
     overflow: visible;
+  }
+  /* EVERYTHING A DRIVER SEES LINES UP WITH THE BOARD.
+     In minimal mode the root is left full-size and only the leaderboard carries
+     the dragged width, so the fastest-lap toast, the notices and the countdown
+     spanned the whole HUD app window while the board beside them was half of it.
+     They are all direct children of the root -- which is what lets the collapse
+     rule work -- so one variable off the controller lines the column up.
+     100% when nothing has been dragged, which is the old behaviour exactly. */
+  .rm-minimal > * {
+    max-width: var(--rm-lb-width, 100%);
+    align-self: flex-start;
   }
   .rm-minimal .rm-table-wrap {
     flex: none;

@@ -2808,6 +2808,24 @@ angular.module('beamng.apps')
         $element[0].style.setProperty('--rm-panel-bg', 'rgba(15, 17, 22, ' + Number(op) + ')');
       });
 
+      // THE LEADERBOARD'S WIDTH, published to CSS the same way.
+      //
+      // In minimal mode the root is left full-size and only the leaderboard
+      // carries the dragged width -- so every other thing the driver sees, the
+      // fastest-lap toast, the notices, the countdown, spanned the whole HUD app
+      // window while the board beside them was half of it. They are all direct
+      // children of the root (which is what lets the collapse rule work), so one
+      // variable and one CSS rule line the whole column up.
+      //
+      // A custom property has to be written onto the element: jqLite's .css()
+      // camel-cases the name it is given, so a --custom-prop set through ng-style
+      // is silently dropped. Same reason --rm-panel-bg is set here.
+      $scope.$watch(function () {
+        return $scope.minimalMode() ? (panelSize.leaderboard.w || 0) : 0;
+      }, function (w) {
+        $element[0].style.setProperty('--rm-lb-width', w > 0 ? (w + 'px') : '100%');
+      });
+
       // BeamNG paints this app inside its HUD app host: an absolutely
       // positioned box, sized in px from the layout and clipped with
       // overflow:hidden. Nothing we do to our own elements can make that box
