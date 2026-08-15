@@ -111,8 +111,18 @@ course you want to race:
    **Hide/Show Gates** toggles the in-world drawing.
 6. **Nudge** is the mouse pass. Turn it on and the cursor is released from the
    camera: click a gate to pick it, drag to move it along the ground, scroll to
-   turn it. It works on whichever editor tab you are on, so checkpoints, joker
-   gates, pit stalls, lane gates and start positions are all movable.
+   turn it, **ctrl+click** open ground to place a new one. It works on whichever
+   editor tab you are on, so checkpoints, joker gates, pit stalls, lane gates and
+   start positions are all movable.
+
+   A placed gate faces the way the route is already travelling, from the previous
+   gate toward the point you clicked, so clicking along a road in order gives you
+   gates that face the way the road goes. The first gate on an empty route has no
+   previous one and faces where the camera looks, which the scroll wheel fixes.
+
+   With a gate picked, a placement goes in **after** it rather than at the end,
+   which is how a gap noticed halfway round gets filled. **Delete picked** removes
+   the selected gate.
 
    Turning it off leaves the cursor free unless the mode is certain it took the
    mouse from the camera in the first place. BeamNG offers no way to ask what the

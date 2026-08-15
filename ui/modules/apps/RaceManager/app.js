@@ -2483,6 +2483,14 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.setNudgeMode(' + (!$scope.nudgeOn) + ')');
       };
 
+      // Delete lives on a button rather than a key: guessing a keybind for a
+      // destructive action on an engine that cannot be tested from here is how
+      // the node grabber block shipped listening for names nothing answered to.
+      $scope.nudgeDelete = function () {
+        if (!$scope.nudgeSel) { return; }
+        bngApi.engineLua('raceManager.nudgeDelete()');
+      };
+
       $scope.editorToggleVisualize = function () {
         bngApi.engineLua('raceManager.editorToggleVisualize()');
       };

@@ -952,6 +952,17 @@ expect(js:find("RaceManagerSaveHeld", 1, true) ~= nil,
 expect(js:find('sendSave(data.name, true)', 1, true) ~= nil,
   'and can re-send the save with the confirmation the server is waiting for')
 
+-- Delete is a BUTTON, not a keybind. Guessing a key for a destructive action on
+-- an engine that cannot be driven from a test is how the node grabber block
+-- shipped listening for action names nothing answered to, silently.
+expect(html:find('ng%-click="nudgeDelete%(%)"') ~= nil,
+  'the nudge panel has a Delete button')
+expect(js:find('$scope.nudgeDelete = function', 1, true) ~= nil,
+  'nudgeDelete has a handler in app.js')
+local delGuard = html:match('ng%-click="nudgeDelete%(%)"[^>]-ng%-disabled="([^"]*)"')
+expect(delGuard and delGuard:find('nudgeSel') ~= nil,
+  'and it is disabled until something is picked')
+
 -- ---------------------------------------------------------------------------
 -- Nudge mode: the button, and who owns whether it is on
 -- ---------------------------------------------------------------------------
