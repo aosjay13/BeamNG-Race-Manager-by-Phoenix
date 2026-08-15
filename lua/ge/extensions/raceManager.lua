@@ -667,6 +667,8 @@ local nudge = {
   im       = nil,
   cv       = nil,
   ready    = nil,
+  -- Was the cursor free before this mode took it? true / false / nil = unknown.
+  wasFree  = nil,
 }
 
 -- How close the cursor ray has to pass to a gate to pick it, in metres. Gates
@@ -5535,6 +5537,21 @@ function nudge.canvas()
   return nudge.cv or nil
 end
 
+-- Was the cursor already free when we arrived? Best effort: BeamNG has no
+-- Lua-side getter for this anywhere, so this probes the Canvas for a Torque
+-- isCursorOn and returns nil when it cannot tell.
+--
+-- nil is a normal answer, not a failure, and what is done with it is the whole
+-- point of nudge.release below.
+function nudge.cursorFree()
+  local ok, on = pcall(function ()
+    local c = scenetree and scenetree.findObject('Canvas')
+    return c and c:isCursorOn()
+  end)
+  if ok and type(on) == 'boolean' then return on end
+  return nil
+end
+
 -- Show or hide the cursor, preferring the module and falling back to the raw
 -- engine call it wraps. canvas.lua is lockMouse plus a setCursorVisible on the
 -- scenetree Canvas, so lockMouse alone still frees the mouse from the camera,
@@ -5583,11 +5600,29 @@ end
 -- the admin pressing the button: closing the editor, changing tab, unloading.
 -- A cursor left released with no mode to use it is a camera that has stopped
 -- answering the mouse for no visible reason.
+-- TAKING THE CURSOR BACK IS THE DANGEROUS DIRECTION, so it only happens when we
+-- know we took it in the first place.
+--
+-- The first build locked the mouse to the camera on every exit. An admin who
+-- already had a free cursor (which they must have had, since clicking the Nudge
+-- button needs one) turned the mode off and could no longer click anything at
+-- all: the panel, the button to turn it back on, none of it. A dead end with no
+-- way out, from a mode meant to be a convenience.
+--
+-- So: re-lock ONLY when the probe positively said the cursor was locked when we
+-- arrived. `nil` means the probe could not tell, and the answer to not knowing
+-- is to leave the cursor free. A free cursor costs a keypress on the player's
+-- own camera toggle; a captured one costs them the whole UI.
 function nudge.release()
   if not nudge.on then return end
   nudge.on, nudge.sel, nudge.dragging, nudge.list = false, nil, false, nil
-  nudge.cursor(false)
-  log('I', 'raceManager', 'Nudge mode off, mouse returned to the camera')
+  if nudge.wasFree == false then
+    nudge.cursor(false)
+    log('I', 'raceManager', 'Nudge mode off, mouse handed back to the camera')
+  else
+    log('I', 'raceManager', 'Nudge mode off, cursor left free (it was not ours to take)')
+  end
+  nudge.wasFree = nil
 end
 
 function nudge.set(on)
@@ -5600,6 +5635,8 @@ function nudge.set(on)
     return
   end
   nudge.on, nudge.sel, nudge.dragging = true, nil, false
+  -- Recorded BEFORE the cursor is touched: this is the state to put back.
+  nudge.wasFree = nudge.cursorFree()
   nudge.cursor(true)
   log('I', 'raceManager', 'Nudge mode on, mouse released from the camera')
   pushRouteState()
@@ -6464,6 +6501,10 @@ function M.nudgeStatus()
     mouseRay    = type(getCameraMouseRay) == 'function',
     canvas      = nudge.canvas() ~= nil,
     lockMouse   = type(lockMouse) == 'function',
+    -- nil here means the build has no isCursorOn to ask, so turning the mode off
+    -- leaves the cursor free rather than guessing.
+    cursorProbe = nudge.cursorFree(),
+    cursorWasFree = nudge.wasFree,
     editorOpen  = editorOpen,
     isAdmin     = isAdmin,
   }

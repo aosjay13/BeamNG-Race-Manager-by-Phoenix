@@ -82,6 +82,19 @@ end
 local locked = nil
 lockMouse = function (v) locked = v end
 
+-- The Canvas, for the "was the cursor already free" probe. BeamNG has no
+-- Lua-side getter for this, so the mod asks the Torque object and copes with
+-- not being answered. cursorOn = nil makes the probe fail, which is the real
+-- world on a build without isCursorOn and the case that matters most.
+local cursorOn = nil
+scenetree = {
+  findObject = function (name)
+    if name ~= 'Canvas' then return nil end
+    if cursorOn == nil then return nil end
+    return { isCursorOn = function () return cursorOn end }
+  end,
+}
+
 local veh = { id = VEH_ID, x = 0, y = 0, z = 0 }
 function veh:getID() return self.id end
 function veh:getPosition() return { x = self.x, y = self.y, z = self.z } end
@@ -199,8 +212,42 @@ check(requiredCanvas > 0,
   "the cursor comes from require('client/canvas'), the path the game itself "
     .. 'uses: there is no core_canvas global and never has been')
 
+-- TAKING THE CURSOR BACK IS THE DANGEROUS DIRECTION.
+--
+-- The first build locked the mouse to the camera on every exit. An admin who
+-- already had a free cursor -- which they must have had, because clicking the
+-- Nudge button needs one -- turned the mode off and could no longer click
+-- anything at all, including the button to turn it back on. Reported live.
+--
+-- Three cases, and only one of them re-locks.
+
+-- 1. The probe cannot answer (no isCursorOn on this build). Not knowing means
+--    leaving the cursor alone: a free cursor costs a keypress on the player's
+--    own camera toggle, a captured one costs them the whole UI.
+cursorShown = nil
 RM.setNudgeMode(false)
-check(cursorShown == false, 'turning it off hands the mouse straight back')
+check(cursorShown ~= false,
+  'with no way to tell what the cursor was, turning the mode off LEAVES IT '
+    .. 'FREE rather than guessing and stranding the admin')
+
+-- 2. The probe says the cursor was already free. It was not ours, so it stays.
+cursorOn = true
+RM.setNudgeMode(true)
+check(cursorShown == true, 'the mode still releases the cursor on the way in')
+cursorShown = nil
+RM.setNudgeMode(false)
+check(cursorShown ~= false,
+  'a cursor that was already free before the mode is left free after it')
+
+-- 3. The probe says the cursor was locked to the camera. That one we took, so
+--    that one we give back.
+cursorOn = false
+RM.setNudgeMode(true)
+cursorShown = nil
+RM.setNudgeMode(false)
+check(cursorShown == false,
+  'a cursor taken FROM the camera is handed back to it')
+cursorOn = nil
 
 -- The refusal has to name what is actually missing. "Needs a newer build" sent
 -- somebody looking for a game update to fix a typo in this file.
@@ -211,10 +258,14 @@ check(status.imgui and status.rayCast and status.canvas,
 
 -- Closing the editor has to hand it back too, or the camera stops answering
 -- with nothing on screen to explain why.
+cursorOn = false
 RM.setNudgeMode(true)
+cursorShown = nil
 RM.setEditorOpen(false)
-check(cursorShown == false, 'closing the editor releases the mode and the cursor')
+check(cursorShown == false,
+  'closing the editor ends the mode and returns the mouse it borrowed')
 RM.setEditorOpen(true)
+cursorOn = nil
 
 -- ===========================================================================
 -- Pick, drag, drop
@@ -283,11 +334,17 @@ mouse.wantUi = false
 -- ===========================================================================
 -- Nudge mode never touches a live session
 -- ===========================================================================
+-- Off first: setNudgeMode is a no-op when the state already matches, so the
+-- probe would not be re-read and this would be testing the previous entry.
+RM.setNudgeMode(false)
+cursorOn = false
 RM.setNudgeMode(true)
+cursorShown = nil
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {},
   youAreAdmin = true })
 frame()
 check(cursorShown == false, 'a session starting ends the mode and returns the mouse')
+cursorOn = nil
 local held = gates()[2] and gates()[2].y
 clickAt(0, 100)
 dragTo(500, 500)
