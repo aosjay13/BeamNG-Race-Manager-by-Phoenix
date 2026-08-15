@@ -514,6 +514,11 @@ local qualiTimeLimit = 0         -- seconds, 0 = unlimited
 -- is driven once), and this client mirrors the answer so it can say so on the
 -- driver's own readout before they have crossed anything.
 local qualiOutLap    = false
+-- Connected while somebody else's session was already running. Mirrored from
+-- this client's own driver row: the server refuses to enter a mid-session
+-- arrival and flags them instead, and the flag is what ghosts their car so they
+-- cannot interfere with a race they are not in. Cleared when the next grid forms.
+local isBystander    = false
 
 -- Forced spectator mode (Module 1). Non-nil while this client is out of the
 -- session: it holds the source ('race' or 'derby') that imposed the penalty, so
@@ -3741,6 +3746,23 @@ local function ghostUpdate(dt)
     setGhostReason('quali', wantQuali)
   end
 
+  -- --- connected in the middle of somebody else's session -----------------
+  -- The server refuses to enter a mid-session arrival (see RM_onPlayerJoin) and
+  -- flags them instead. A driver who turns up halfway through a race has a car,
+  -- a spawn point and no idea a race is running; without this they can put a
+  -- leader into a wall before they have finished reading the chat line telling
+  -- them not to.
+  --
+  -- An untimed reason rather than the timed ghost roster, which exists for reset
+  -- ghosting and caps out at fifteen seconds. This one lasts exactly as long as
+  -- the flag does, and the flag is cleared when the next grid forms.
+  if isBystander ~= (ghost.field.bystander == true) then
+    setGhostReason('bystander', isBystander)
+    if isBystander then
+      pushNotice('spectate', 'A session is already running — you are a ghost until it ends')
+    end
+  end
+
   -- --- this client's own reset ghost -------------------------------------
   local own = ghost.own
   -- Ends the moment the race does. Taking the flag, being stood down, the
@@ -6777,7 +6799,14 @@ local function onServerUpdate(rawData)
   local myId = localServerId()
   if myId and type(data.drivers) == 'table' then
     for _, d in ipairs(data.drivers) do
-      if tonumber(d.id) == myId then joined = d.joined == true; break end
+      if tonumber(d.id) == myId then
+        joined = d.joined == true
+        -- ...and whether we turned up in the middle of somebody else's session.
+        -- ghostUpdate acts on this: a car that is not in the race is a ghost to
+        -- the cars that are.
+        isBystander = d.bystander == true
+        break
+      end
     end
   end
 

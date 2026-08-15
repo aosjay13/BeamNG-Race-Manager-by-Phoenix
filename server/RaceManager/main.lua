@@ -351,6 +351,9 @@ local function newRecord(pid)
     -- cannot pick their own line by asking for it. Display and results only --
     -- the whole field is scored together, on one clock, into one classification.
     lane       = nil,
+    -- Connected while a session was already running: not a participant, and
+    -- ghosted for everyone until the next grid forms. See RM_onPlayerJoin.
+    bystander  = nil,
     outReason  = nil,        -- why this driver is dnf/dsq (results + UI text)
     -- The place this driver was running in at the moment they retired.
     --
@@ -568,6 +571,16 @@ end
 -- and presses Start Derby expecting a different set of drivers. Same pattern
 -- the garage store uses to be reachable from the state broadcast above it.
 local derbyEntryListChanged
+-- "Is a derby running right now?", asked by the RACING side.
+--
+-- One boolean, assigned inside the derby block, so the racing code can refuse to
+-- enter somebody into a session that is already under way without reaching into
+-- derby state to find out. The isolation the two modules keep from each other is
+-- the reason this is a named function rather than a peek at derby.phase.
+--
+-- Hung off `race` rather than given a local of its own, for the register budget
+-- documented in ARCHITECTURE.md.
+race.derbyUnderWay = function () return false end
 
 -- Forward declarations for the two modules at the bottom of this file. Both
 -- need the JSON codec and the layout directory, which are defined far below the
@@ -725,7 +738,7 @@ local DRIVER_WIRE_FIELDS = {
   'gridPos', 'customGrid', 'position',
   'qualiBest', 'qualiLaps', 'outLap', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
   'finishTime', 'resets', 'resetsBlocked',
-  'jokerTaken', 'jokerLap', 'outReason', 'dnfPos', 'lane',
+  'jokerTaken', 'jokerLap', 'outReason', 'dnfPos', 'lane', 'bystander',
 }
 
 -- Projection buffers are kept ON the record and reused, so a broadcast costs no
@@ -1999,6 +2012,9 @@ formGrid = function (kind, byName)
     -- while the field is still being held, rather than only once the lights have
     -- gone out.
     rec.outLap = outLapOwed()
+    -- Gridded: no longer a bystander. A grid is where entry is decided, so this
+    -- is exactly where a mid-session arrival stops being one.
+    rec.bystander = nil
     -- Which way this driver is going round, taken from the slot they were just
     -- put on. The server hands out the slots, so it is the server that knows the
     -- lane -- nothing is asked of the client and nothing has to be trusted.
@@ -4108,6 +4124,11 @@ end
 -- assigned down HERE, after broadcastDerbyState exists, or the closure would
 -- capture a nil. Only matters outside a running derby: once one is under way
 -- the field is fixed and the count is whatever it started with.
+race.derbyUnderWay = function ()
+  return derby.phase == 'forming' or derby.phase == 'countdown'
+    or derby.phase == 'running'
+end
+
 derbyEntryListChanged = function ()
   if not derbyActive() then broadcastDerbyState() end
 end
@@ -6703,7 +6724,27 @@ function RM_onPlayerJoin(pid)
   -- Connecting is not entering: in the default opt-in mode a new arrival is a
   -- spectator until they press Join Race. In 'all' mode they are in the field
   -- straight away, which is what that mode means.
-  if race.phase == 'qualifying' and isEntrant(rec) then rec.status = 'qualifying' end
+  --
+  -- BUT NOT INTO A SESSION THAT IS ALREADY RUNNING. Somebody who connects
+  -- mid-race has no grid slot, no laps and no out lap behind them; putting them
+  -- on the timing screen as a participant makes a nonsense of the classification
+  -- and, in 'all' mode, did exactly that. They are a bystander until the next
+  -- grid forms, which is where every entry decision is read.
+  --
+  -- rec.bystander is what the CLIENTS act on: it ghosts that car for everyone,
+  -- so a driver arriving in the middle of a race cannot put anyone into a wall
+  -- before they have worked out what is going on.
+  if sessionUnderWay() or race.derbyUnderWay() then
+    rec.status    = 'waiting'
+    rec.bystander = true
+    MP.SendChatMessage(pid, '[RaceManager] A session is already running — you are '
+      .. 'a spectator until it ends, and your car is a ghost so you cannot '
+      .. 'interfere with it.')
+    print(string.format('[RaceManager] %s joined mid-session: bystander + ghosted',
+      rec.name))
+  elseif race.phase == 'qualifying' and isEntrant(rec) then
+    rec.status = 'qualifying'
+  end
   broadcastState()
 end
 

@@ -980,6 +980,46 @@ do
   RM_onPlayerDisconnect(9)
 end
 
+-- ---------------------------------------------------------------------------
+-- JOINING IN THE MIDDLE OF A SESSION
+-- ---------------------------------------------------------------------------
+-- Somebody who connects mid-race has no grid slot, no laps and no out lap behind
+-- them. In "everyone races" mode they were put on the timing screen as a
+-- participant anyway, which makes a nonsense of the classification -- and they
+-- arrive with a car, a spawn point and no idea a race is running, which is how a
+-- leader ends up in a wall.
+do
+  RM_onSetEntryMode(1, '{"mode":"all"}')
+  RM_onSetTotalLaps(1, '{"laps":5}')
+  RM_onGenerateGrid(1)
+  RM_onStartCountdown(1)
+  RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+  check(lastState.phase == 'racing', 'a race is running')
+
+  connected[8] = 'Latecomer'
+  RM_onPlayerJoin(8)
+  local late
+  for _, d in ipairs(lastState.drivers) do if d.name == 'Latecomer' then late = d end end
+  check(late ~= nil, 'the new arrival appears on the driver list')
+  check(late and late.bystander == true,
+    'flagged a bystander: clients ghost that car so it cannot interfere')
+  check(late and late.status == 'waiting',
+    'and is NOT put into the running session, whatever the entry mode says')
+  check(late and late.gridPos == nil, 'with no grid slot invented for them')
+
+  -- The next grid is where entry is decided again, so that is where they stop
+  -- being a bystander.
+  RM_onEndRace(1)
+  RM_onGenerateGrid(1)
+  for _, d in ipairs(lastState.drivers) do if d.name == 'Latecomer' then late = d end end
+  check(late and not late.bystander,
+    'forming the next grid clears the flag -- they are in that race properly')
+  check(late and late.gridPos ~= nil, 'and they get a slot on it')
+  RM_onEndRace(1)
+  connected[8] = nil
+  RM_onPlayerDisconnect(8)
+end
+
 -- Clean up the directory tree the test created in the repo root
 removeTree('Resources')
 

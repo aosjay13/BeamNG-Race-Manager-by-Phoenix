@@ -740,6 +740,18 @@ penalised — the log is there so an admin can see it and rule on it themselves.
 Ghosting is collision and rendering only. Checkpoint, lap and split validation
 are completely unaffected.
 
+### Joining while a session is running
+
+Connecting mid-race does not put you in it. A driver who arrives has no grid
+slot, no laps and no out lap behind them, so they are held as a **spectator until
+the next grid forms** — which is where entry is decided for everybody.
+
+**Their car is a ghost to everyone still racing.** They arrive with a vehicle, a
+spawn point and no idea a session is running, and without this they can put a
+leader into a wall before they have finished reading the message telling them not
+to. The ghost lasts exactly as long as they are outside the session; forming the
+next grid clears it and puts them in the race properly.
+
 ### Cars on and off the track
 
 Two things happen automatically so the track only ever holds cars that are
@@ -878,9 +890,13 @@ be, since two directions will not share one row of slots — gives its **first l
 away**, exactly as qualifying does. The run from the grid to the first crossing
 is a fraction of a lap, and timed it would take fastest lap off every driver who
 ever set an honest one. It is detected from the track and travels with the
-layout, so there is nothing to remember on the night. During that lap the only
-thing armed is the **line itself** — with the field spread round the circuit, CP 1
-can be behind you at the lights.
+layout, so there is nothing to remember on the night.
+
+**The checkpoints are armed and drawn on the out lap like any other lap** — it is
+the lap a driver least knows the circuit, and the worst one to hide the gates on.
+Reaching the **start/finish line** also ends it, from wherever you have got to and
+with slots still owing, so a car gridded past CP 1 is never sent most of the way
+round backwards to arm a gate behind it.
 
 A 10-lap race on such a track is **10 racing laps**; the out lap is added on top,
 so the eleventh crossing is the one that ends it.
