@@ -585,6 +585,53 @@ do
   check(#starts == 5, 'and the grid does not grow on a respace')
 end
 
+-- --- 14. Dealing lanes across the grid, one slot at a time -----------------
+-- P1 main, P2 the next lane, P3 back to main. On a grid as many abreast as
+-- there are lanes that puts each lane in its own COLUMN -- two abreast with two
+-- lanes is one car of each direction in every row, side by side, facing
+-- opposite ways, which is the head-on grid as it is actually lined up.
+local function stripe(slots, lanes)
+  for i = 1, #slots do
+    local pick = lanes[((i - 1) % #lanes) + 1]
+    slots[i].branch = pick or nil
+  end
+end
+
+do
+  local slots = {}
+  for i = 1, 8 do slots[i] = {} end
+  stripe(slots, { false, 'ccw' })
+  check(slots[1].branch == nil and slots[3].branch == nil and slots[5].branch == nil,
+    'odd slots stay on the main route')
+  check(slots[2].branch == 'ccw' and slots[4].branch == 'ccw' and slots[8].branch == 'ccw',
+    'even slots take the other lane')
+  local main, other = 0, 0
+  for _, sp in ipairs(slots) do
+    if sp.branch then other = other + 1 else main = main + 1 end
+  end
+  check(main == 4 and other == 4, 'and the field splits evenly without being told where the middle is')
+
+  -- An ODD field still splits as evenly as it can, and pole is always main.
+  local odd = {}
+  for i = 1, 7 do odd[i] = {} end
+  stripe(odd, { false, 'ccw' })
+  check(odd[1].branch == nil, 'pole is always the main route')
+  local m2, o2 = 0, 0
+  for _, sp in ipairs(odd) do
+    if sp.branch then o2 = o2 + 1 else m2 = m2 + 1 end
+  end
+  check(m2 == 4 and o2 == 3, 'seven drivers split 4/3 rather than leaving a block empty')
+
+  -- Three lanes deal three ways, so a three-abreast grid is one lane per column.
+  local three = {}
+  for i = 1, 9 do three[i] = {} end
+  stripe(three, { false, 'left', 'right' })
+  check(three[1].branch == nil and three[2].branch == 'left' and three[3].branch == 'right',
+    'three lanes deal across the first row')
+  check(three[4].branch == nil and three[5].branch == 'left' and three[6].branch == 'right',
+    'and the second row lines up under it -- one lane per column')
+end
+
 if fails == 0 then
   print('branch_test: ' .. checks .. ' checks, 0 failures')
 else

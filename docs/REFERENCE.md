@@ -779,6 +779,19 @@ Switch **Joker lap** on in Race settings and the rule is enforced:
   goes straight into the results `.txt` alongside a `Joker` column showing the
   lap each driver used.
 
+#### Seeing the checkpoints
+
+A driver gets the **gate poles** (BeamNG's own checkpoint markers) *and* the
+**gate they are aiming at**, drawn as a bright rectangle, with the one after it
+dimmed behind it. Just those two — a whole lap's worth of numbered rectangles
+across the racing line is clutter, but a checkpoint nobody can see is worse.
+
+The poles cannot simply be made wider to fix visibility: **their spacing is the
+gate's width**, so poles further apart than the trigger would show a target that
+does not score, and the first thing a driver would do is aim between them and be
+told they missed. If a gate is genuinely too narrow to see, widen the **gate**
+— click it in the editor and raise its Width — and the poles follow.
+
 **On track, the joker stays violet and keeps its wording.** Drivers get a gate
 pole on the joker like any other checkpoint, painted the same violet the editor
 uses rather than BeamNG's stock alternate-route orange — which sits close enough
@@ -871,6 +884,14 @@ them and the grid moves under you — no driving back to pole to try a different
 shape. They only ever touch slots the generator laid out; anything placed by hand
 is left where you put it, and moving or deleting a slot by hand hands the block
 back so the sliders stop claiming it.
+
+**Alternate Lanes** deals the lanes out one slot at a time instead of in blocks:
+P1 main, P2 the next lane, P3 back to main. On a grid as many cars abreast as
+there are lanes, that puts **each lane in its own column** — two abreast with two
+lanes is one car of each direction in every row, side by side, facing opposite
+ways, which is how a head-on grid actually lines up. It also splits the field
+evenly without you working out where the middle is, and stays even when the
+entry list changes size.
 
 **Lane tags and headings survive a respace**, which is what makes the head-on
 flow work: **Generate** the block, **Turn Around** the back half, **Set Lane** on

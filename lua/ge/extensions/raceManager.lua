@@ -3659,6 +3659,10 @@ local function palette()
     finish    = ColorF(1, 1, 1, 1),            -- start/finish: white
     armed     = ColorF(0.25, 1, 0.45, 1),      -- next target: green
     route     = ColorF(1, 0.45, 0.05, 0.95),   -- rest of route: orange
+    -- The gate AFTER the armed one, in a driver's view. Same orange, dimmed, so
+    -- the corner after this one reads without competing with the one they are
+    -- actually driving at.
+    routeNext = ColorF(1, 0.45, 0.05, 0.45),
     joker     = ColorF(0.72, 0.35, 1, 1),      -- joker route: violet
     -- Still visibly duller than the rest, because "already taken" is what it
     -- has to say at a glance -- but lifted with everything else, so it reads as
@@ -4301,17 +4305,70 @@ local function drawJokerLabel(derbyLive)
     String(jokerLabel(j, jn, state)), p.text, true, false, p.jokerLabelBg)
 end
 
-local function drawGates()
+-- THE DRIVER'S VIEW OF THE GATE THEY ARE AIMING AT.
+--
+-- The poles are BeamNG's own checkpoint markers and they are honest about where
+-- the gate is -- they stand at its edges, because their spacing IS the gate's
+-- width. That is exactly why they cannot simply be made wider to be easier to
+-- see: poles further apart than the trigger would show a driver a target that
+-- does not score, and the first thing they would do with it is drive between
+-- them and be told they missed.
+--
+-- So the gate itself is drawn instead, for drivers as well as admins. Not the
+-- circuit -- a lap's worth of numbered rectangles thrown at somebody trying to
+-- drive through them is the clutter this was pulled out for. Just the ONE they
+-- are aiming at, and the one after it dimmed, which is the same pair of gates
+-- the poles already mark and the same pair a driver is actually thinking about.
+--
+-- Reported from a live night as "racers cannot see the default BeamNG
+-- checkpoints".
+-- `derbyLive` is passed in for the same reason drawJokerLabel takes it: a running
+-- derby is a different game mode on the same map, and whatever race track happens
+-- to be loaded is not what anyone in the arena is driving. A checkpoint hanging
+-- over a demolition derby is authoring debris.
+local function drawDriverGate(derbyLive)
+  if not debugDrawer or not visualize then return end
+  if derbyLive or spectatorLock then return end
+  if #route == 0 then return end
+  if phase ~= 'racing' and phase ~= 'qualifying' and phase ~= 'countdown'
+     and phase ~= 'grid' then return end
+  local p = palette()
+  local n = #route
+  local lane = branch.lane
+
+  -- On an out lap the only gate that means anything is the line (see checkGates),
+  -- so that is the only one drawn -- pointing a driver at slot 1 while the lap
+  -- they are on cannot score it is how they end up driving at the wrong corner.
+  if onOutLap() then
+    local wp = route[n]
+    if wp then drawGate(wp, p.finish, routeLabel(n, n), false) end
+    return
+  end
+
+  local a = armedWp
+  if a < 1 or a > n then a = 1 end
+  local armed = branch.gateFor(a, lane)
+  if armed then drawGate(armed, p.armed, routeLabel(a, n), false) end
+
+  -- The one after it, dimmed, so a corner reads before it arrives. Skipped on a
+  -- one-gate route, where "the next one" is the one already drawn.
+  if n > 1 then
+    local b = a % n + 1
+    local nxt = branch.gateFor(b, lane)
+    if nxt then drawGate(nxt, p.routeNext or p.route, routeLabel(b, n), false) end
+  end
+end
+
+local function drawGates(derbyLive)
   if not debugDrawer then return end
-  -- The checkpoint rectangles are the EDITOR's view and only the editor's.
-  --
-  -- Everyone else -- every driver, and an admin who has closed the editor --
-  -- gets the gate poles instead, in every phase. Drawing a whole circuit's
-  -- worth of numbered rectangles at somebody who is trying to drive through it
-  -- is clutter; the poles say where the next gate is, which is the only part a
-  -- driver needs. `visualize` still hides them for an admin who wants the
-  -- unobstructed view while placing gates.
-  if not (editorOpen and isAdmin) then return end
+  -- The full circuit of numbered rectangles is the EDITOR's view and only the
+  -- editor's. A driver gets drawDriverGate above: the gate they are aiming at
+  -- and the one after it, which is what they can act on. `visualize` still hides
+  -- both for an admin who wants the unobstructed view while placing gates.
+  if not (editorOpen and isAdmin) then
+    drawDriverGate(derbyLive)
+    return
+  end
   if not visualize then return end
   local authoring = true
   -- Still needed below: which gate is armed, and whether the joker is open,
@@ -5283,7 +5340,7 @@ function M.onUpdate(dt)
   checkGates()
   lapTimerUpdate(dt)        -- live lap clock for this driver's own HUD
   reportProgress(dt)        -- live position telemetry (distance to next gate)
-  drawGates()
+  drawGates(derbyState.phase == 'running')
   -- The one label a driver gets: the gate poles carry no text at all.
   drawJokerLabel(derbyState.phase == 'running')
   -- Race-mode checkpoint poles. Editor visuals belong to admins with the editor
@@ -6052,6 +6109,41 @@ end
 -- tag slots 1-6 one way and 7-12 the other -- and it is the only place a
 -- driver's direction is ever decided. An empty id puts them back on the main
 -- route.
+-- Deal the lanes out across the grid, one slot at a time, instead of in blocks.
+--
+-- P1 main, P2 the next lane, P3 back to main, and so on. On a grid as many cars
+-- abreast as there are lanes that puts each lane in its own COLUMN -- two abreast
+-- with two lanes is one car of each direction in every row, side by side, facing
+-- opposite ways, which is the head-on grid as it is actually lined up.
+--
+-- It also splits the field evenly without the admin working out where the middle
+-- is, and stays even when the entry list changes size: tagging slots 1-6 and
+-- 7-12 by hand is right for twelve drivers and wrong for the eleven who turn up.
+--
+-- The cycle is main first, then each branch in the order they were created, so
+-- pole is always the main route.
+function M.stripeStartLanes()
+  local lanes = { false }        -- false = the main route, no tag
+  for _, b in ipairs(branch.list) do lanes[#lanes + 1] = b.id end
+  if #lanes < 2 then
+    guihooks.trigger('RaceManagerEditorMsg', {
+      msg = 'Add a lane first — there is nothing to alternate with',
+    })
+    return
+  end
+  for i, sp in ipairs(startPositions) do
+    local pick = lanes[((i - 1) % #lanes) + 1]
+    sp.branch = pick or nil
+  end
+  pushRouteState()
+  local names = {}
+  for _, l in ipairs(lanes) do names[#names + 1] = l and branch.nameOf(l) or 'Main' end
+  guihooks.trigger('RaceManagerEditorMsg', {
+    msg = 'Alternated ' .. #startPositions .. ' slots across: ' .. table.concat(names, ', '),
+  })
+  log('I', 'raceManager', 'Start positions striped across ' .. #lanes .. ' lanes')
+end
+
 function M.setStartLane(from, to, id)
   from = math.floor(tonumber(from) or 1)
   to   = math.floor(tonumber(to) or #startPositions)

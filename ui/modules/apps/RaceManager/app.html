@@ -1076,6 +1076,9 @@
                  ng-click="pickBulkLane(b.id)">{{ b.name }}</div>
           </div>
         </div>
+        <button class="rm-btn rm-btn-mini rm-btn-grid" ng-if="branches.length"
+                ng-click="stripeStartLanes()"
+                title="Deal the lanes out one slot at a time: P1 main, P2 the next lane, P3 back to main. On a grid as many abreast as there are lanes that puts each lane in its own column — which is how a head-on grid actually lines up.">⇅ Alternate Lanes</button>
         <button class="rm-btn rm-btn-mini rm-btn-grid" ng-click="applyStartLane()"
                 title="Put these grid slots on that lane. This is the only place a driver's direction is decided.">Set Lane</button>
       </div>

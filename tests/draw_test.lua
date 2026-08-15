@@ -106,14 +106,26 @@ handlers['RM_ApplyLayout']({
 -- ===========================================================================
 -- Editor and race are two views of the same checkpoint
 -- ===========================================================================
--- A driver in a race gets the gate POLES (see tests/poles_test.lua); drawing
--- the rectangles as well is clutter straight across the racing line. An admin
--- with the editor open gets the authoring view instead: the filled surface, the
--- number, and which way through the gate counts.
+-- A driver in a race gets the gate POLES (see tests/poles_test.lua) AND the one
+-- gate they are aiming at, drawn as a rectangle. Reported from a live night as
+-- "racers cannot see the default BeamNG checkpoints" -- and the poles cannot
+-- simply be widened to fix it, because their spacing IS the gate's width and
+-- poles wider than the trigger would show a target that does not score.
+--
+-- What a driver must NOT get is the whole circuit: a lap's worth of numbered
+-- rectangles across the racing line is the clutter this was pulled out for. Two
+-- gates, no more -- the armed one and the next.
+--
+-- An admin with the editor open still gets the authoring view of every gate:
+-- the filled surface, the number, and which way through counts.
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
 frame()
-check(#cylinders == 0 and #texts == 0 and #quads == 0,
-  'a driver racing sees no gate rectangles -- the poles do that job')
+check(#quads == 0,
+  'a driver gets no FILLED gate surfaces -- that is the authoring view')
+check(#texts == 2,
+  'and exactly two gate labels: the one they are aiming at and the one after it')
+check(#cylinders == 8,
+  'drawn as two four-edged rectangles, not a circuit of them')
 
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {},
   youAreAdmin = true })

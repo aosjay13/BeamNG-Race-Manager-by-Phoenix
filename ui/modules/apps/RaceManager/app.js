@@ -1589,6 +1589,9 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.flipStartPositions(' + (parseInt(r.from, 10) || 1) + ', '
           + (parseInt(r.to, 10) || $scope.startPositions.length) + ')');
       };
+      $scope.stripeStartLanes = function () {
+        bngApi.engineLua('raceManager.stripeStartLanes()');
+      };
       $scope.applyStartLane = function () {
         var r = $scope.laneRange;
         bngApi.engineLua('raceManager.setStartLane(' + (parseInt(r.from, 10) || 1) + ', '
