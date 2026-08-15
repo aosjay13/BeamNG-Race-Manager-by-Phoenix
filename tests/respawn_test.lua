@@ -42,6 +42,7 @@ local attached = nil    -- what getPlayerVehicle(0) hands back
 -- ghosting did nothing on track.)
 local ghosts   = {}
 local deleted  = {}     -- [id] = true for every vehicle the mod deleted
+local spawnedAt = nil   -- where the last respawn was placed (the weld fix)
 local spawns   = 0
 
 local function makeVehicle(id, speed)
@@ -103,8 +104,9 @@ core_vehicles = {
     attached = world[RIVAL_ID]
     return id
   end,
-  spawnNewVehicle = function ()
+  spawnNewVehicle = function (_, opts)
     spawns = spawns + 1
+    spawnedAt = opts and opts.pos or nil
     world[RESPAWNED_ID] = makeVehicle(RESPAWNED_ID)
     -- Deliberately does NOT attach the camera: the mod has to do that itself.
     return world[RESPAWNED_ID]
@@ -149,22 +151,40 @@ end
 local function serverState(t) t.rmProtocol = 2; handlers['RM_Update'](t) end
 
 -- ===========================================================================
--- A driver takes the flag: NOTHING IS DELETED, NO CAMERA MODE IS TOUCHED
+-- A RACE FINISHER: the car comes off the track, the camera is left alone
 -- ===========================================================================
+-- Taking a finisher off the track is deliberate -- they have nothing left to
+-- gain and a parked car on the racing line is an obstacle for everyone still
+-- running. What was wrong was everything AROUND that: the camera was forced into
+-- freecam and re-forced every second, and the whole field was respawned back
+-- onto the few metres of road they had all just been removed from.
+--
+-- The grid this driver was given, so the respawn has a slot to go to.
+handlers['RM_ApplyLayout']({
+  name = 'test', checkpoints = { { x = 0, y = 300, z = 0, hx = 0, hy = 1 } },
+  startPositions = {
+    { x = 10, y = 0, z = 0, hx = 0, hy = 1 },
+    { x = 20, y = 0, z = 0, hx = 0, hy = 1 },
+  },
+})
+handlers['RM_GridAssign']({ slot = 2, order = 1, count = 1 })
+frames(2.0)
+deleted, spawns, spawnedAt = {}, 0, nil
+attached = world[OWN_ID]
+blockedGroups = {}
+
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
 handlers['RM_ForceSpectate']({
   reason = 'You finished the race — spectating until the flag', source = 'race',
 })
 
-check(deleted[OWN_ID] ~= true, "the finisher KEEPS their car -- nothing is deleted")
-check(world[OWN_ID] ~= nil, "and it is still in the world for everyone else to see")
-check(deleted[RIVAL_ID] ~= true, 'and no other player\'s car is touched')
+check(deleted[OWN_ID] == true, 'a race finisher IS taken off the track')
+check(deleted[RIVAL_ID] ~= true, "and no other car is touched")
 check(freeCam == false,
-  "the camera MODE is left alone -- the driver keeps whatever view they had")
-check(drivingBlocked() == true,
-  "what is taken away is the DRIVING: the input filter is armed")
+  'but the camera MODE is left alone -- the driver keeps whatever view they had')
+check(drivingBlocked() == true, 'and driving is filtered off')
 check(attached ~= nil and attached:getID() == RIVAL_ID,
-  "and they are placed on a car that is still MOVING, so there is a race to watch")
+  'they are put on a car that is still MOVING, so there is a race to watch')
 
 -- The mod must not "helpfully" delete that rival's car when it hears about a
 -- spawn or a reset while spectating.
@@ -174,96 +194,66 @@ RM.onVehicleResetted(RIVAL_ID)
 check(deleted[RIVAL_ID] ~= true, 'a rival resetting does not get their car deleted')
 
 -- ===========================================================================
--- The flag: every participant is released, ours comes back, camera and all
+-- The flag: the field comes back ON ITS GRID SLOTS, not on the finish line
 -- ===========================================================================
 serverState({ phase = 'finished', totalLaps = 3, maxResets = -1, drivers = {} })
 handlers['RM_ReleaseSpectate']({ source = 'race', order = 1, count = 5 })
-
--- Collisions are off for the whole operation: a field respawning together is
--- how cars land inside each other and are thrown apart.
 check(ghosts[RIVAL_ID] == true, 'cars are ghosted while the field respawns')
-check(spawns == 0, 'and nothing has spawned yet — the placement is queued')
+check(spawns == 0, 'and nothing has spawned yet -- the placement is queued')
 
 frames(0.3)
-check(spawns == 0,
-  "NOTHING respawns at the flag: the car was never removed, so there is nothing "
-    .. "to put back -- which is what stops a field landing inside itself")
-check(drivingBlocked() == false, "driving comes back when the lock lifts")
-check(attached ~= nil and attached:getID() == OWN_ID,
-  "and the driver is put back on their own car")
-check(freeCam == false, "still without the mod ever touching the camera mode")
-check(ghosts[RIVAL_ID] == true, 'collisions stay off until the whole field has settled')
+check(spawns == 1, 'our car comes back')
+check(drivingBlocked() == false, 'and it can be driven again')
+check(attached ~= nil and attached:getID() == RESPAWNED_ID,
+  'with this client attached to OUR car, not whatever the game picked')
+check(freeCam == false, 'still without the mod ever touching the camera mode')
 
--- ...and come back once it has, AND once the cars are off each other. Landing
--- is what the placement timer waits for; being clear of the car next to you is
--- the gate every ghost passes through on its way back to solid. The mock spawns
--- every car at the origin, so they are put on their own ground here -- which is
--- what a grid of start slots is.
+-- THE WELD FIX. A race removes cars as they take the flag, so every snapshot is
+-- within a few metres of the start/finish line -- and respawning each car at its
+-- own snapshot put the whole field back into that same few metres, inside each
+-- other. The grid is spaced by construction, and this driver owns slot 2 of it.
+check(spawnedAt ~= nil, 'the respawn was given an explicit position')
+check(spawnedAt ~= nil and math.abs(spawnedAt.x - 20) < 0.01
+  and math.abs(spawnedAt.y - 0) < 0.01,
+  "and it is this drivers GRID SLOT, not the finish line they were removed at")
+
 world[RIVAL_ID].x = 40
 if world[RESPAWNED_ID] then world[RESPAWNED_ID].x = 80 end
 frames(3.0)
 check(ghosts[RIVAL_ID] == nil, 'collisions come back once the field is placed and settled')
 
 -- ===========================================================================
--- The whole field, from the back of it
--- ===========================================================================
--- Every driver is released by the same broadcast. Under the old design that
--- meant a field of deleted cars all respawning at once, which is how they came
--- back inside each other and welded. Nothing is deleted now, so nothing
--- respawns, and the ordering that existed to stagger those spawns has nothing
--- left to stagger.
-attached = world[OWN_ID]
-spawns = 0
-serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
-handlers['RM_ForceSpectate']({ reason = 'out', source = 'race' })
-check(drivingBlocked() == true, "the back of the field is locked the same way")
-check(deleted[OWN_ID] ~= true, "and keeps its car the same way")
-
-serverState({ phase = 'finished', totalLaps = 3, maxResets = -1, drivers = {} })
-handlers['RM_ReleaseSpectate']({ source = 'race', order = 5, count = 5 })
-frames(1.5, 0.05)
-check(spawns == 0, "no car in the field respawns, whatever its place in the order")
-check(drivingBlocked() == false, "and every one of them can drive again")
-check(attached ~= nil and attached:getID() == OWN_ID, "on its own car")
-
--- ===========================================================================
 -- DERBY ELIMINATION: the wreck stays in the arena, and stays visible
 -- ===========================================================================
--- The reported symptom was players vanishing -- eliminated drivers gone from
--- every screen, and the mode unplayable. Deleting a vehicle in BeamMP deletes it
--- for EVERY client, so "you are out" was removing the car from the arena the
--- other drivers were still fighting in.
---
--- A derby elimination is also the one case that is NOT moved to another car: the
--- arena is the show and the eliminated driver is sitting in it. They stay on
--- their own wreck and can tab away if they want to.
-deleted, spawns = {}, 0
+-- The opposite call, and the one the live report was about. Deleting a vehicle
+-- in BeamMP deletes it for EVERY client, so using deletion to mean "you are out"
+-- removed the car from the arena the other drivers were still fighting in.
+world[OWN_ID] = makeVehicle(OWN_ID)
 attached = world[OWN_ID]
-blockedGroups = {}
+deleted, spawns, blockedGroups = {}, 0, {}
 serverState({ phase = 'waiting', totalLaps = 3, maxResets = -1, drivers = {} })
 handlers['RM_ForceSpectate']({ reason = 'Eliminated', source = 'derby' })
 
-check(deleted[OWN_ID] ~= true, "an eliminated driver KEEPS their car as a wreck")
-check(world[OWN_ID] ~= nil, "so it is still in the arena for everyone else to see")
+check(deleted[OWN_ID] ~= true, 'an eliminated driver KEEPS their car as a wreck')
+check(world[OWN_ID] ~= nil, 'so it is still in the arena for everyone else to see')
 check(deleted[RIVAL_ID] ~= true,
-  "and eliminating one driver touches no other car -- B through N are unaffected")
-check(drivingBlocked() == true, "the wreck cannot be driven")
-check(freeCam == false, "and no camera mode is forced on them")
+  'and eliminating one driver touches no other car -- B through N are unaffected')
+check(drivingBlocked() == true, 'the wreck cannot be driven')
+check(freeCam == false, 'and no camera mode is forced on them')
 check(attached ~= nil and attached:getID() == OWN_ID,
-  "they are left on their OWN wreck rather than moved somewhere automatically")
+  'they are left on their OWN wreck rather than moved somewhere automatically')
 
 -- Tabbing away is theirs to do, and the mod does not drag them back. This is the
 -- loop that used to re-assert freecam every second.
 attached = world[RIVAL_ID]
 frames(5.0)
 check(attached ~= nil and attached:getID() == RIVAL_ID,
-  "after five seconds of watching a rival, the mod has not snatched the view back")
-check(deleted[RIVAL_ID] ~= true, "and watching a rival never deletes their car")
+  'after five seconds of watching a rival, the mod has not snatched the view back')
+check(deleted[RIVAL_ID] ~= true, 'and watching a rival never deletes their car')
 
--- The derby ends: driving comes back, nothing respawns.
 handlers['RM_ReleaseSpectate']({ source = 'derby' })
-check(drivingBlocked() == false, "the derby ending gives driving back")
-check(spawns == 0, "and nothing respawns, because nothing was ever removed")
+check(drivingBlocked() == false, 'the derby ending gives driving back')
+check(spawns == 0, 'and nothing respawns, because nothing was ever removed')
 
 if fails == 0 then
   print('respawn_test: ' .. checks .. ' checks, 0 failures')

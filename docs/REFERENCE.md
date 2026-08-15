@@ -745,9 +745,17 @@ are completely unaffected.
 Two things happen automatically so the track only ever holds cars that are
 still racing:
 
-- **A driver who takes the flag is removed from the track** and put into
-  freecam. A finished car has nothing left to gain and is an obstacle for
-  everyone still running.
+- **A driver who takes the flag is removed from the track.** A finished car has
+  nothing left to gain and is an obstacle for everyone still running. The camera
+  is put on a car that is **still moving** — not on their own parked one, and not
+  into freecam — and from there **tab cycles targets** exactly as it normally
+  does. The mod never changes your camera *mode*: whatever view you were driving
+  in is the view you spectate in.
+- **When the field comes back, it comes back on the starting grid.** Cars are
+  removed as they take the flag, so every one of them is removed within a few
+  metres of the start/finish line — putting them all back where they were removed
+  is what used to respawn the whole field inside itself. The grid is spaced by
+  construction, so that is where they return.
 - **When the session ends, every removed car is put back.** The same applies
   to a driver **eliminated in a Demo Derby** — their car returns when the derby
   finishes. The spectator lock is scoped per mode, so a race and a derby can

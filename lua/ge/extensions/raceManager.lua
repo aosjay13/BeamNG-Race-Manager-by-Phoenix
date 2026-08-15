@@ -1487,22 +1487,43 @@ local function captureVehicleSnapshot()
     local ok, cfg = pcall(core_vehicle_partmgmt.getConfig)
     if ok and type(cfg) == 'table' then snap.config = cfg end
   end
+  -- THE GRID SLOT THIS DRIVER OWNS, recorded here because here is the last
+  -- moment it exists. The phase change to 'finished' clears gridSlot, and that
+  -- lands BEFORE the release that puts the car back -- so a respawn asking for
+  -- the slot at release time always found nothing and fell back to respawning
+  -- on the finish line, which is where the whole field had just been removed
+  -- from, on top of each other. A snapshot records where to put a car back, and
+  -- the slot is part of that.
+  snap.slot = gridSlot
   if not snap.model then return nil end
   return snap
 end
 
--- THE MOD NO LONGER DELETES ANYBODY'S CAR, and the function that did is gone
--- rather than left sitting there for somebody to call again.
+-- Delete the local player's OWN vehicle. BeamNG exposes several ways to do this
+-- depending on version, so try them in order and never let a failure escape.
 --
--- In BeamMP a vehicle deleted on one client is deleted on all of them, so using
--- deletion to mean "you are out of this session" made an eliminated driver
--- vanish from every screen in the server -- their own, the other drivers', and
--- the spectators'. Being out is now an INPUT state (see the `spectate` table
--- below): the car stays exactly where it is, and what is taken away is the
--- ability to drive it.
+-- core_vehicles.removeCurrent deletes whatever the client is attached to, which
+-- is only safe once we know that is ours -- otherwise a driver taking the flag
+-- deletes a rival's car out from under them.
 --
--- captureVehicleSnapshot and respawnRemovedVehicle are kept: they still serve
--- the placement scheduler, and with nothing ever removed they are no-ops.
+-- WHO THIS IS FOR IS THE WHOLE POINT, and getting that wrong was a live bug in
+-- both directions. A RACE finisher is taken off the track: they have nothing
+-- left to gain and a parked car on the racing line is an obstacle for everyone
+-- still running. A DERBY elimination is NOT -- the wreck is the arena's
+-- furniture and the other drivers are still fighting around it, and deleting it
+-- in BeamMP deletes it for every client in the server, which is how eliminated
+-- drivers vanished from everybody's screen.
+local function removeLocalVehicle()
+  local veh = ownVehicle()
+  if not veh then return end
+  removedVehicle = captureVehicleSnapshot() or removedVehicle
+  local attached = playerVehicle()
+  if core_vehicles and core_vehicles.removeCurrent
+      and attached and vehicleId(attached) == vehicleId(veh) then
+    if pcall(core_vehicles.removeCurrent) then return end
+  end
+  pcall(function () veh:delete() end)
+end
 
 -- Put this client back on its OWN car.
 --
@@ -1532,6 +1553,12 @@ end
 -- Called when the session that imposed the penalty ends, so a driver who
 -- finished (or was knocked out of a derby) is back in their car for the next
 -- one instead of stranded in freecam with nothing to drive.
+-- Forward-declared: respawnRemovedVehicle below needs it to stand a respawned
+-- car on its grid slot, and it is defined further down beside the placement code
+-- it was written for. Declared rather than moved, so the placement section keeps
+-- reading in the order it was built.
+local headingRot
+
 local function respawnRemovedVehicle()
   local snap = removedVehicle
   if not snap or not snap.model then return false end
@@ -1546,6 +1573,27 @@ local function respawnRemovedVehicle()
   local opts = { config = snap.config }
   if snap.pos then opts.pos = snap.pos end
   if snap.rot then opts.rot = snap.rot end
+  -- SPAWN ON THE GRID SLOT, not where the car was taken away.
+  --
+  -- This is what welded the field together. A snapshot is taken at the moment a
+  -- car is removed, and a race removes cars AS THEY TAKE THE FLAG -- all of them
+  -- within a few metres of the start/finish line. Respawning every one of them at
+  -- its own snapshot meant respawning the whole field into the same few metres of
+  -- road, interpenetrated, and BeamNG welds what it finds inside itself.
+  --
+  -- The starting grid is spaced by construction and this driver already owns a
+  -- slot on it, so it is the one place a whole field can be put down at once
+  -- without any of it touching. Falls back to the snapshot when the track has no
+  -- grid placed, which is the only case where the old behaviour is still the best
+  -- available -- and the ghosting around this call is what covers that.
+  local slot = snap.slot or gridSlot
+  local sp = slot and startPositions[slot]
+  if type(sp) == 'table' and sp.x and sp.y and sp.z then
+    opts.pos = vec3(sp.x, sp.y, sp.z)
+    opts.rot = headingRot(sp.hx, sp.hy)
+    log('I', 'raceManager', 'Respawning on grid slot ' .. tostring(slot)
+      .. ' rather than where the car was removed')
+  end
   local spawned = false
   if core_vehicles and core_vehicles.spawnNewVehicle then
     spawned = pcall(core_vehicles.spawnNewVehicle, snap.model, opts)
@@ -1667,14 +1715,27 @@ end
 local function enterSpectator(reason, source)
   spectatorLock   = source or 'race'
   spectatorReason = reason or 'You are out of this session'
-  -- The car stays. Only the driving goes.
+  -- Driving goes either way, and it is the ONLY thing that goes for a derby.
   spectate.setInputsBlocked(true)
-  -- A RACE finisher is put on somebody still running, because the race is the
-  -- thing they want to watch and their own car is parked. A DERBY elimination is
-  -- left on its own wreck: the arena is the show, they are sitting in it, and
-  -- being moved somewhere else the instant you are knocked out reads as the bug
-  -- this replaced. Either way tab takes them anywhere they like from there.
-  if spectatorLock ~= 'derby' then spectate.attachToRunner() end
+  if spectatorLock == 'derby' then
+    -- ELIMINATED IN A DERBY: the car stays exactly where it is, as a visible,
+    -- physical wreck, and the driver stays in it. The arena is the show and they
+    -- are sitting in it; being moved somewhere else the instant you are knocked
+    -- out reads as the bug this replaced. Tab takes them anywhere they like.
+    log('I', 'raceManager', 'Derby elimination: the wreck stays in the arena')
+  else
+    -- FINISHED OR OUT OF A RACE: the car comes off the track. It has nothing
+    -- left to gain and a parked one on the racing line is an obstacle for
+    -- everyone still running.
+    --
+    -- Which is exactly why the camera has to be given somewhere to go in the
+    -- same breath: with the car gone BeamNG hands the view to whatever vehicle
+    -- is nearest, and with a field finishing together its pick is arbitrary --
+    -- which is how every client ended up watching the same driver. Put them on
+    -- something that is actually MOVING, once, and let tab do the rest.
+    removeLocalVehicle()
+    spectate.attachToRunner()
+  end
   guihooks.trigger('RaceManagerSpectator', {
     spectating = true, reason = spectatorReason, source = spectatorLock,
   })
@@ -2065,7 +2126,7 @@ end
 -- VEHICLE facing down that heading. BeamNG vehicle models point down -Y at
 -- identity, so a half-turn is baked in on top of the heading yaw — without it
 -- every placement came out exactly 180° backwards.
-local function headingRot(hx, hy)
+headingRot = function (hx, hy)
   local yaw  = math.atan2(hx, hy) + math.pi
   local half = yaw * 0.5
   return quat(0, 0, math.sin(half), math.cos(half))
