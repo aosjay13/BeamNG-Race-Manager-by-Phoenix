@@ -740,6 +740,13 @@ penalised — the log is there so an admin can see it and rule on it themselves.
 Ghosting is collision and rendering only. Checkpoint, lap and split validation
 are completely unaffected.
 
+### Picking a track or an arena
+
+Both live **beside the session controls**, not in the editor. Pick a **Track** and
+press **Load Layout** for a race; pick an **Arena** and press **Load Arena** for a
+derby. Building either stays in the editor — opening it swaps the race visuals
+for the authoring ones, which is not what you want with a field waiting.
+
 ### Joining while a session is running
 
 Connecting mid-race does not put you in it. A driver who arrives has no grid

@@ -53,8 +53,13 @@
     <!-- Session rule, not this driver's state: it stands for the whole session
          so a spectator or an admin can see which rules are in force. Whether the
          driver is on their own out lap right now is the readout above. -->
-    <span class="rm-out-badge" ng-if="sessionUnderWay() && qualiOutLap"
-          title="The first lap of this session is an out lap: not timed, not scored, and not counted against the lap target. A race owes one when its grid is not on the start/finish line.">OUT LAP RULE</span>
+    <!-- Only while THIS driver still owes theirs. It used to stand for the whole
+         session, announcing a rule about a lap that was long gone -- which on a
+         race reads as qualifying leaking into it, because the out lap used to be
+         qualifying's alone. onOutLap() comes off the bridge's 250 ms lap feed, so
+         it goes out on the crossing rather than a broadcast later. -->
+    <span class="rm-out-badge" ng-if="sessionUnderWay() && qualiOutLap && onOutLap()"
+          title="You are on your out lap: not timed, not scored, and not counted against the lap target. A race owes one when its grid is not on the start/finish line.">OUT LAP</span>
     <!-- Your own grid slot, and the hold before the lights go out -->
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
       START P{{ gridSlot }}<b ng-if="gridFrozen"> — HOLD</b>
@@ -251,6 +256,38 @@
       {{ derby.phase === 'finished' ? 'Reset Derby' : (derby.phase === 'forming' || derby.phase === 'countdown' ? 'Abort Start' : 'End Derby') }}
     </button>
     <span class="rm-derby-markers">{{ derby.entrants }} in</span>
+  </div>
+
+  <!-- ================= Derby arena (admin only) ==========================
+       The derby's equivalent of the Track row above, and here for the same
+       reason it is: picking an arena to run is not an authoring job, and it was
+       reachable only from inside the Derby Editor -- so running a saved arena
+       meant opening the editor, which is also what replaces the arena visuals
+       with the authoring ones. Building arenas stays in the editor; choosing one
+       to run belongs beside Form Up and Start Derby. -->
+  <div class="rm-controls rm-controls-layout" ng-if="isAdmin && isMode('derby')">
+    <span class="rm-controls-label">Arena<span ng-if="derbyLayoutMap"> — {{ derbyLayoutMap }}</span></span>
+    <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': derbyDropdownOpen}">
+      <button type="button" class="rm-layout-trigger"
+              ng-class="{'rm-layout-trigger-empty': !derbyUi.selected}"
+              ng-click="toggleDerbyDropdown()">
+        <span class="rm-layout-trigger-label">{{ selectedDerbyLabel() }}</span>
+        <span class="rm-layout-caret">▾</span>
+      </button>
+      <div class="rm-layout-menu" ng-if="derbyDropdownOpen">
+        <div class="rm-layout-option"
+             ng-repeat="l in derbyLayouts track by l.name"
+             ng-class="{'rm-layout-option-active': l.name === derbyUi.selected}"
+             ng-click="selectDerbyLayout(l)">
+          {{ l.name }} ({{ l.boundary.length }} markers)
+        </div>
+      </div>
+    </div>
+    <button class="rm-btn rm-btn-grid" ng-click="derbyLoadLayout()"
+            ng-disabled="!derbyUi.selected || derbyActive()"
+            title="Load this arena for everyone. No need to open the editor.">
+      Load Arena
+    </button>
   </div>
 
   <!-- ================= Sub-tab bar =======================================
