@@ -33,13 +33,15 @@ local routeState = nil
 local VEH_ID = 7
 
 -- The mouse, as ui_imgui reports it.
-local mouse = { clicked = false, down = false, released = false, wheel = 0, wantUi = false }
+local mouse = { clicked = false, down = false, released = false, wheel = 0,
+                wantUi = false, ctrl = false }
 ui_imgui = {
   IsMouseClicked  = function () return mouse.clicked end,
   IsMouseDown     = function () return mouse.down end,
   IsMouseReleased = function () return mouse.released end,
   GetIO = function ()
-    return { WantCaptureMouse = mouse.wantUi, MouseWheel = mouse.wheel }
+    return { WantCaptureMouse = mouse.wantUi, MouseWheel = mouse.wheel,
+             KeyCtrl = mouse.ctrl }
   end,
 }
 
@@ -169,6 +171,13 @@ local function clickAt(x, y)
   mouse.clicked, mouse.down, mouse.released = true, true, false
   frame()
   mouse.clicked = false
+end
+local function ctrlClickAt(x, y)
+  aimAt(x, y)
+  mouse.ctrl = true
+  mouse.clicked, mouse.down, mouse.released = true, true, false
+  frame()
+  mouse.clicked, mouse.down, mouse.ctrl = false, false, false
 end
 local function dragTo(x, y)
   aimAt(x, y)
@@ -318,6 +327,71 @@ mouse.wheel = 0
 local round = gates()[2]
 check(math.abs(round.hx) < 1e-6 and math.abs(round.hy - 1) < 1e-6,
   '72 notches of five degrees comes back to exactly where it started')
+
+-- ===========================================================================
+-- Ctrl+click places a gate, which is what makes a long track fast
+-- ===========================================================================
+RM.setNudgeMode(false)
+RM.setNudgeMode(true)
+clickAt(900, 900)                       -- drop any selection first
+local before = #gates()
+ctrlClickAt(0, 500)
+check(#gates() == before + 1, 'ctrl+click on open ground places a gate')
+local placed = gates()[#gates()]
+check(placed and math.abs(placed.x - 0) < 0.01 and math.abs(placed.y - 500) < 0.01,
+  'exactly where the cursor hit the ground')
+
+-- A click has no direction of its own, so the gate takes the one the route is
+-- already travelling. Clicking along a road in order is then a route that faces
+-- the way the road goes, which is the entire reason this beats driving.
+check(placed and math.abs(placed.hy - 1) < 1e-6 and math.abs(placed.hx) < 1e-6,
+  'facing the way the route travels: from the previous gate toward this point')
+
+local sideways = #gates()
+ctrlClickAt(200, 500)                   -- due east of the last one
+local east = gates()[#gates()]
+check(#gates() == sideways + 1, 'and again')
+check(east and math.abs(east.hx - 1) < 1e-6 and math.abs(east.hy) < 1e-6,
+  'a gate placed east of the last one faces east, not north')
+
+-- Placing must not also pick and drag. Placing a gate and then instantly
+-- dragging it off the point it was placed at is not what anybody meant.
+local wherePlaced = { x = east.x, y = east.y }
+dragTo(700, 700)
+local still = gates()[#gates()]
+check(math.abs(still.x - wherePlaced.x) < 0.01 and math.abs(still.y - wherePlaced.y) < 0.01,
+  'the click that placed it did not also start a drag')
+letGo()
+
+-- ===========================================================================
+-- With a gate picked, a placement goes in AFTER it
+-- ===========================================================================
+-- A gap noticed halfway round used to cost every gate placed since. It goes
+-- through the ordinary insert path, so the branch slot shifting that comes with
+-- it happens exactly once, in the code that already knew how.
+clickAt(0, 100)                         -- pick gate 1
+check(routeState.nudgeSel == 1, 'gate 1 picked')
+local total = #gates()
+ctrlClickAt(0, 150)
+check(#gates() == total + 1, 'the gate is placed')
+check(math.abs(gates()[2].y - 150) < 0.01,
+  'INSERTED after the picked gate, not appended to the end')
+-- Gate 2 was dragged to (40, 240) earlier in this file, so that is what the new
+-- gate lands in front of.
+check(math.abs(gates()[1].y - 100) < 0.01 and math.abs(gates()[3].y - 240) < 0.01,
+  'and the gates either side keep their order')
+check(routeState.nudgeSel == 2, 'the new gate is the picked one, ready to turn')
+
+-- ===========================================================================
+-- Delete removes the picked gate and picks nothing
+-- ===========================================================================
+local n = #gates()
+RM.nudgeDelete()
+check(#gates() == n - 1, 'delete removes the picked gate')
+check(math.abs(gates()[2].y - 240) < 0.01, 'and the one after it closes up')
+check(routeState.nudgeSel == nil, 'nothing is picked afterwards')
+RM.nudgeDelete()
+check(#gates() == n - 1, 'delete with nothing picked does nothing')
 
 -- ===========================================================================
 -- A UI panel under the cursor keeps its clicks

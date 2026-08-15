@@ -5691,6 +5691,73 @@ function nudge.moveTo(wp, hit, ground)
   wp.z = hit.z + lift
 end
 
+-- Which way should a gate placed by clicking face?
+--
+-- Driving answers this for free: the car IS the heading. A click has no
+-- direction of its own, so it takes the one the route is already travelling,
+-- from the previous gate toward the new point. Clicking along a road in order
+-- then produces gates that face the way the road goes, which is the whole reason
+-- this is faster than driving a long track.
+--
+-- The first gate on an empty route has no previous, so it falls back to the way
+-- the camera is looking, flattened. That is a guess, and the scroll wheel is
+-- right there to fix it.
+function nudge.headingFor(list, x, y, ray)
+  local prev = list[#list]
+  if prev then
+    local dx, dy = x - prev.x, y - prev.y
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len > 1e-3 then return dx / len, dy / len end
+  end
+  if ray and ray.dir then
+    local dx, dy = ray.dir.x, ray.dir.y
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len > 1e-3 then return dx / len, dy / len end
+  end
+  return 0, 1
+end
+
+-- Ctrl+click on open ground: a new gate there.
+--
+-- Appends, or inserts AFTER the selected gate when one is picked, which is how a
+-- gap noticed halfway round gets filled without re-driving everything after it.
+-- Both paths go through the ordinary editor entry points, so the branch rules,
+-- the slot shifting and the grid-tool bookkeeping all happen exactly once, in
+-- the place that already knew how.
+function nudge.place(list, hit, ray)
+  if not (hit and hit.pos) then return end
+  local x, y, z = hit.pos.x, hit.pos.y, hit.pos.z
+  local hx, hy = nudge.headingFor(list, x, y, ray)
+  local place = { x = x, y = y, z = z, hx = hx, hy = hy }
+  -- A branch gate belongs to a slot rather than a position in an order, so it is
+  -- always an add: insertCheckpoint refuses them for the same reason.
+  if nudge.sel and editorTarget ~= 'branch' then
+    local at = nudge.sel + 1
+    M.insertCheckpoint(at, place)
+    nudge.sel = at
+  else
+    M.editorAdd(place)
+    nudge.sel = #list
+  end
+  nudge.dragging = false
+  pushRouteState()
+end
+
+-- Delete the picked gate, from the panel rather than a key. Guessing a keybind
+-- for a destructive action on a build that cannot be tested here is how the node
+-- grabber block shipped listening for names nothing answered to.
+function M.nudgeDelete()
+  if not (nudge.on and nudge.sel) then return end
+  local i = nudge.sel
+  nudge.sel, nudge.dragging = nil, false
+  if editorTarget == 'start' then
+    M.removeStartPosition(i)
+  else
+    M.removeCheckpoint(i)
+  end
+  pushRouteState()
+end
+
 -- One frame of the mode. Everything here is guarded: a mode that throws inside
 -- the frame loop takes the whole mod down with it.
 function nudge.update()
@@ -5721,6 +5788,17 @@ function nudge.update()
     held = im.IsMouseDown(0)
     up   = im.IsMouseReleased(0)
   end)
+
+  local ctrl = false
+  pcall(function () ctrl = im.GetIO().KeyCtrl == true end)
+
+  -- Ctrl+click PLACES rather than picks. Checked first so the two never both
+  -- happen on one click: placing and then immediately dragging the new gate off
+  -- the point it was placed at is not what anybody meant.
+  if down and ctrl and not wantsUi then
+    nudge.place(list, hit, ray)
+    return
+  end
 
   if down and not wantsUi then
     local picked = nudge.pick(list, ray)
@@ -5889,8 +5967,8 @@ end
 -- when a gate is placed can only ever be wrong for that gate.
 --
 -- Start positions are placements, not gates, so they get no dimensions.
-function M.editorAdd()
-  local place = vehiclePlacement()
+function M.editorAdd(place)
+  place = place or vehiclePlacement()
   if not place then
     log('W', 'raceManager', 'Editor: no player vehicle, cannot place')
     return
@@ -6148,12 +6226,12 @@ end
 -- Place a gate BEFORE an existing one, at the car. The missing half of "add":
 -- a route is driven in order, and noticing a gap after the fact used to cost
 -- every gate placed since.
-function M.insertCheckpoint(index)
+function M.insertCheckpoint(index, place)
   index = math.floor(tonumber(index) or 0)
   local list = activeEditorRoute()
   if index < 1 then index = 1 end
   if index > #list + 1 then index = #list + 1 end
-  local place = vehiclePlacement()
+  place = place or vehiclePlacement()
   if not place then
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
     return

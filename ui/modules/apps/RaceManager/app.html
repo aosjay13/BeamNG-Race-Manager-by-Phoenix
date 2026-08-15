@@ -998,9 +998,18 @@
       </button>
     </div>
     <div class="rm-nudge-hint" ng-if="nudgeOn">
-      Click a gate to pick it, drag to move it, scroll to turn it. Works on
-      whichever tab you are editing. Turning this off leaves the cursor free, so
-      use your own camera key to give the mouse back to the view.
+      <div><b>Click</b> a gate to pick it, <b>drag</b> to move it, <b>scroll</b> to
+      turn it. <b>Ctrl+click</b> open ground to place a new one, which lands after
+      the picked gate if there is one. Works on whichever tab you are editing.</div>
+      <div class="rm-nudge-row">
+        <button class="rm-btn rm-btn-end rm-btn-mini" ng-click="nudgeDelete()"
+                ng-disabled="!nudgeSel" title="Delete the picked gate">
+          ✕ Delete picked
+        </button>
+        <span class="rm-nudge-sel">{{ nudgeSel ? 'picked #' + nudgeSel : 'nothing picked' }}</span>
+      </div>
+      <div>Turning this off leaves the cursor free, so use your own camera key to
+      give the mouse back to the view.</div>
     </div>
     <div class="rm-editor-msg" ng-if="editorMsg">{{ editorMsg }}</div>
 
@@ -2516,7 +2525,12 @@
     border-color: rgba(255, 51, 230, 0.85);
     color: #ffd9f7;
   }
+  .rm-nudge-row { display: flex; gap: 6px; align-items: center; }
+  .rm-nudge-sel { font-size: 10px; color: #ffd9f7; opacity: 0.85; }
   .rm-nudge-hint {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
     font-size: 10px;
     color: #ffd9f7;
     line-height: 1.35;
