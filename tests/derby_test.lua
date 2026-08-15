@@ -189,7 +189,14 @@ RM_onDerbyDisqualified(3)            -- Cara leaves the arena at 20 s
 check(derbyPlayer('Cara').status == 'eliminated'
   and derbyPlayer('Cara').reason == 'Disqualified', 'Cara disqualified')
 
--- Last man standing: derby self-ends, Alice wins.
+-- Last man standing. The derby is DECIDED here but does not end on the instant:
+-- a cool-down keeps the arena up for a few seconds so the result can be seen
+-- among the wrecks -- and so a SOLO derby, where the win condition is true from
+-- the moment it starts, has a running phase long enough to test anything in.
+check(lastDerby.derbyPhase == 'running', 'the arena stays up for the cool-down')
+check(type(lastChat) == 'string' and lastChat:find('ends in', 1, true),
+  'and everyone is told the derby is decided and how long is left')
+for _ = 1, 6 do RM_DerbyTick() end   -- past the 5 s cool-down
 check(lastDerby.derbyPhase == 'finished', 'derby finished when one remains')
 check(derbyPlayer('Alice').status == 'winner', 'Alice is the winner')
 check(lastDerby.winner == 'Alice', 'winner broadcast')
@@ -273,6 +280,7 @@ check(derbyPlayer('Cara').status == 'eliminated'
   and derbyPlayer('Cara').reason == 'Disqualified', 'disconnect counts as disqualified')
 check(lastDerby.derbyPhase == 'running', 'derby continues with two alive')
 RM_onDerbyDemolished(1)
+for _ = 1, 6 do RM_DerbyTick() end   -- past the cool-down
 check(lastDerby.derbyPhase == 'finished' and lastDerby.winner == 'Bob',
   'Bob wins the third derby')
 local p3 = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
@@ -653,6 +661,7 @@ RM_onSetAlias(1, '{"target":2,"alias":"Bob Smash"}')
 RM_onDerbyRequestState(1)
 RM_onDerbyDisqualified(1)
 RM_onDerbyDisqualified(3)
+for _ = 1, 6 do RM_DerbyTick() end   -- past the cool-down
 check(lastDerby.winner == 'Bob Smash', 'the winner is announced under the display name')
 local dpath = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
 check(dpath ~= nil, 'the derby results path was announced')

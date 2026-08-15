@@ -3824,6 +3824,21 @@ local derby = {
   demoLimit = DERBY_DEFAULT_DEMO_LIMIT,
   maxResets = DERBY_UNLIMITED_RESETS,  -- vehicle resets per driver per derby
   time      = 0,        -- seconds since Start Derby (advanced by RM_DerbyTick)
+  -- A COOL-DOWN between the win condition and the derby actually ending.
+  --
+  -- The arena is worth a few seconds after the last hit: the wrecks are all
+  -- still standing where they were left, and ending on the instant snaps
+  -- everyone back out of it before anyone has seen the result.
+  --
+  -- It also makes a derby TESTABLE ALONE. Solo, the win condition is true the
+  -- moment it starts -- one car alive is one car standing -- so the running
+  -- phase never lasts long enough to check anything that only applies during
+  -- one, like the node grabber being switched off.
+  endsAt    = nil,      -- derby.time the cool-down finishes at, nil = not won yet
+  endReason = nil,
+  -- Seconds the arena stays up after the derby is decided. On the table rather
+  -- than a file-level constant for the register budget (see ARCHITECTURE.md).
+  endDelay  = 5,
   boundary  = {},       -- ordered polygon vertices { x, y, z }
   -- HOW that polygon was authored. The polygon above stays the single source of
   -- truth for gameplay either way -- every client runs point-in-polygon against
@@ -4145,6 +4160,21 @@ end
 
 -- Single exit point for every way a derby ends (last man standing, admin
 -- ended, everyone eliminated): stop the clock, export results, announce.
+-- Arm the cool-down rather than ending on the spot. Idempotent: a second
+-- elimination landing inside the window (two cars going out together) must not
+-- push the end further away, or a derby could be extended indefinitely by
+-- wreckage still settling.
+function derby.armEnd(reason)
+  if derby.endsAt then return end
+  derby.endsAt    = derby.time + derby.endDelay
+  derby.endReason = reason
+  MP.SendChatMessage(-1, string.format('[RaceManager] %s — derby ends in %d seconds.',
+    reason, derby.endDelay))
+  print('[RaceManager] Derby decided (' .. reason .. '), ending in '
+    .. derby.endDelay .. 's')
+  broadcastDerbyState()
+end
+
 local function finishDerby(reason)
   derby.phase = 'finished'
   MP.CancelEventTimer('RM_DerbyTick')
@@ -4204,9 +4234,9 @@ local function derbyEliminate(pid, reason)
   if alive == 1 then
     lastAlive.status = 'winner'
     derby.winner = displayName(lastAlive)
-    finishDerby('last man standing: ' .. displayName(lastAlive))
+    derby.armEnd('last man standing: ' .. displayName(lastAlive))
   elseif alive == 0 then
-    finishDerby('no survivors')
+    derby.armEnd('no survivors')
   else
     broadcastDerbyState()
   end
@@ -4922,6 +4952,15 @@ function RM_DerbyTick()
     return
   end
   derby.time = derby.time + DERBY_TICK_MS / 1000.0
+  -- The cool-down. The derby is already decided; this is the few seconds the
+  -- arena stays up so the result can be seen, and the only stretch of a SOLO
+  -- derby that is actually running.
+  if derby.endsAt and derby.time >= derby.endsAt then
+    local why = derby.endReason or 'derby over'
+    derby.endsAt, derby.endReason = nil, nil
+    finishDerby(why)
+    return
+  end
   broadcastDerbyState()
 end
 

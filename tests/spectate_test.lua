@@ -171,6 +171,38 @@ derbyPhase('idle')
 frames(0.2)
 check(grabberBlocked() == false, 'and comes back once the derby is over')
 
+-- ---------------------------------------------------------------------------
+-- The blocked action NAMES have to be the game's, not ours
+-- ---------------------------------------------------------------------------
+-- A filter group made of names nothing answers to fails completely silently: no
+-- error, no log line, it just blocks nothing. The first version of this list was
+-- guessed in snake_case -- `nodegrabber_action` and friends -- and every name was
+-- wrong, so the grabber went on working through a block that reported success.
+--
+-- BeamNG keeps the canonical set in core/input/actionFilter.lua as
+-- actionTemplates.nodegrabber. This pins ours to it by NAME SHAPE: every entry
+-- must be camelCase, because that is the convention every real action in that
+-- file uses, and snake_case is what the wrong guess looked like.
+do
+  local src = io.open('lua/ge/extensions/raceManager.lua'):read('*a')
+  local list = src:match('GRAB%s*=%s*{(.-)}')
+  check(list ~= nil, 'found the GRAB action list')
+  local n, bad = 0, {}
+  for name in (list or ''):gmatch("'([%w_]+)'") do
+    n = n + 1
+    if name:find('_') then bad[#bad + 1] = name end
+  end
+  check(n >= 6, "the list has the node grabber actions in it")
+  check(#bad == 0,
+    "no snake_case names: BeamNG actions are camelCase, and a name nothing "
+      .. "answers to blocks nothing and says nothing -- " .. table.concat(bad, ", "))
+  for _, need in ipairs({ 'nodegrabberAction', 'nodegrabberGrab',
+                          'nodegrabberStrength', 'nodegrabberPadGrab' }) do
+    check((list or ''):find("'" .. need .. "'", 1, true) ~= nil,
+      "blocks " .. need .. ", one of the games own nodegrabber actions")
+  end
+end
+
 if fails == 0 then
   print('spectate_test: ' .. checks .. ' checks, 0 failures')
 else

@@ -1679,16 +1679,27 @@ local spectate = {
   -- BeamNG's node grabber: click a car and drag its physics nodes around. In a
   -- demolition derby that is not a debug tool, it is a winning move -- drag your
   -- own wreck back onto its wheels, or drag somebody else's into the wall
-  -- without touching them. It is switched off for the length of a derby.
+  -- without touching them. Off for the length of a derby.
   --
-  -- The names are BeamNG's own input actions. Extra names in a filter group are
-  -- ignored rather than fatal, so the list is written wide on purpose: a build
-  -- that calls one of these something else loses that one binding, not the block.
+  -- THESE ARE THE GAME'S OWN NAMES, read out of its actionFilter's
+  -- `actionTemplates.nodegrabber` rather than guessed. The first version of this
+  -- list guessed, in snake_case, and every name was wrong -- so the filter armed
+  -- a group of actions that do not exist and the grabber went on working. A
+  -- filter group made of names nothing answers to fails completely silently:
+  -- there is no error and no log line, it simply blocks nothing.
+  --
+  -- funStuff goes with it for the same reason. Fire, explosions, the tyre
+  -- poppers and the flings are one keypress each and every one of them decides a
+  -- derby; they are exactly as much a cheat as dragging a node, and the game
+  -- groups them for exactly this purpose.
   GRAB = {
-    'nodegrabber_action', 'nodegrabber_grab', 'nodegrabber_strength',
-    'nodegrabber_range', 'nodegrabber_mode', 'nodegrabber_fixedMode',
-    'toggleNodegrabberMode', 'nodeGrabberAction', 'nodeGrabberStrength',
-    'nodeGrabberRange',
+    -- actionTemplates.nodegrabber
+    'nodegrabberAction', 'nodegrabberGrab', 'nodegrabberRender',
+    'nodegrabberStrength', 'nodegrabberPadGrab', 'nodegrabberPadMode',
+    -- actionTemplates.funStuff
+    'forceField', 'funBoom', 'funBreak', 'funExtinguish', 'funFire',
+    'funHinges', 'funTires', 'funRandomTire', 'latchesOpen', 'latchesClose',
+    'funBoost', 'funBoostBackwards', 'funFling', 'funFlingDownward',
   },
   grabBlocked = false,
 }

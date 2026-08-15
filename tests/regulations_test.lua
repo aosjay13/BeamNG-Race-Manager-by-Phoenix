@@ -439,7 +439,10 @@ for _ = 1, 3 do RM_DerbyCountdownTick() end
 RM_onDerbyDemolished(2)
 check(spectated[2] ~= nil and spectated[2].source == 'derby',
   'a derby elimination forces spectator mode scoped to the derby')
-RM_onDerbyDisqualified(3)  -- last man standing ends the derby
+RM_onDerbyDisqualified(3)  -- last man standing decides the derby
+-- ...which does not end it on the instant: the arena stays up for a short
+-- cool-down so the result can be seen among the wrecks.
+for _ = 1, 6 do RM_DerbyTick() end
 check(lastDerby.derbyPhase == 'finished', 'derby ended with a winner')
 local sawDerbyRelease = false
 for _, r in ipairs(released) do

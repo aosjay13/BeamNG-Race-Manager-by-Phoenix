@@ -525,6 +525,10 @@ local function runDerby(order, opts)
     RM_onDerbyDemolished(pid)
   end
   if opts.endEarly then RM_onDerbyEnd(ADMIN) end
+  -- The last elimination DECIDES the derby; a short cool-down keeps the arena up
+  -- afterwards so the result can be seen among the wrecks. Tick past it, or the
+  -- round is never banked and nothing is scored.
+  for _ = 1, 6 do RM_DerbyTick() end
 end
 
 RM_onCupStart(ADMIN, '{"name":"Mixed Series"}')
@@ -880,7 +884,8 @@ check(driver(1) ~= nil and driver(1).status == 'waiting',
 RM_onPlayerDisconnect(1)
 RM_Derby_onPlayerDisconnect(1)
 connected[1] = nil
-RM_DerbyTick(); RM_onDerbyDemolished(2)     -- leaves one alive: the derby ends
+RM_DerbyTick(); RM_onDerbyDemolished(2)     -- leaves one alive: the derby is decided
+for _ = 1, 6 do RM_DerbyTick() end          -- ...and ends after the cool-down
 
 check(cupEntry('Ryder') ~= nil,
   'the driver who dropped mid-derby is scored against their own saved driver')
