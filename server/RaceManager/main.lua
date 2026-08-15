@@ -4134,6 +4134,11 @@ local function broadcastDerbyState(targetPid)
     demoLimit  = derby.demoLimit,
     maxResets  = derby.maxResets,
     derbyTime  = derby.time,
+    -- The derby is DECIDED and running out its cool-down. Clients stand their
+    -- cars down on this: the result is settled, and a wreck still being driven
+    -- into people for five seconds afterwards is not a cool-down, it is extra
+    -- time nobody was given.
+    derbyOver  = derby.endsAt ~= nil,
     boundary   = derby.boundary,
     -- The polygon above is what every client polices against, in both modes.
     -- These three only tell it which editor to show and how tall to draw the

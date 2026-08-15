@@ -27,6 +27,8 @@ end
 
 local OWN_ID = 7
 local world, attached = {}, nil
+local vehCommands = {}   -- every queueLuaCommand the mod sent to a vehicle
+local frozen = nil       -- last setFreeze the mod asked for
 local handlers = {}
 local blockedGroups = {}
 
@@ -38,7 +40,7 @@ local function makeVehicle(id, speed)
   function v:getVelocity() return { x = 0, y = self.speed, z = 0 } end
   function v:getJBeamFilename() return 'etk800' end
   function v:setPositionRotation() end
-  function v:queueLuaCommand() end
+  function v:queueLuaCommand(cmd) vehCommands[#vehCommands + 1] = tostring(cmd) end
   function v:setMeshAlpha() end
   function v:delete() world[self.id] = nil end
   return v
@@ -75,6 +77,11 @@ core_input_actionFilter = {
   addAction = function (_, name, blocked) blockedGroups[name] = blocked end,
 }
 core_vehicle_partmgmt = { getConfig = function () return { parts = {}, vars = {} } end }
+core_vehicleBridge = {
+  executeAction = function (_, action, value)
+    if action == 'setFreeze' then frozen = value end
+  end,
+}
 vec3 = function (x, y, z) return { x = x, y = y, z = z } end
 quat = function (x, y, z, w) return { x = x, y = y, z = z, w = w } end
 log  = function () end
@@ -201,6 +208,53 @@ do
     check((list or ''):find("'" .. need .. "'", 1, true) ~= nil,
       "blocks " .. need .. ", one of the games own nodegrabber actions")
   end
+end
+
+-- ---------------------------------------------------------------------------
+-- The end of a derby stands the cars down
+-- ---------------------------------------------------------------------------
+-- The arena stays up for a few seconds after the result so it can be seen. A
+-- wreck still being driven into people for those seconds is not a cool-down, it
+-- is extra time nobody was given.
+--
+-- Freezing alone is not enough, and that is the point of the order below. The
+-- grid hold uses the same freeze and gets away with it because a car on the grid
+-- is stationary with nothing pressed; a derby ends with somebody flat to the
+-- floor, and a freeze over that captures the throttle -- the engine sits
+-- screaming against a locked car and lets go the instant the freeze lifts.
+do
+  vehCommands = {}
+  frozen = nil
+  handlers['RM_DerbyUpdate']({ rmProtocol = 2, derbyPhase = 'running',
+    derbyOver = false, derbyPlayers = {} })
+  frames(0.2)
+  check(frozen ~= true, 'a running derby does not freeze anybody')
+
+  handlers['RM_DerbyUpdate']({ rmProtocol = 2, derbyPhase = 'running',
+    derbyOver = true, derbyPlayers = {} })
+  frames(0.2)
+  check(frozen == true, 'once the derby is decided the car is frozen')
+  local throttleIdx, freezeIdx
+  for i, c in ipairs(vehCommands) do
+    if c:find('throttle', 1, true) and throttleIdx == nil then throttleIdx = i end
+  end
+  check(throttleIdx ~= nil, 'the throttle is let go of')
+  local braked = false
+  for _, c in ipairs(vehCommands) do
+    if c:find('brake', 1, true) then braked = true end
+  end
+  check(braked, 'and the brakes go on, so the freeze goes over a car already stopping')
+  check(blockedGroups['raceManagerResets'] == true,
+    'resets are dead: one would reload the vehicle out from under the freeze')
+  check(blockedGroups['raceManagerSpectate'] ~= true,
+    'but the CONTROLS stay live -- there is nothing to win and the car cannot move')
+
+  -- Released when the derby actually ends, whatever order the broadcasts land in.
+  handlers['RM_DerbyUpdate']({ rmProtocol = 2, derbyPhase = 'finished',
+    derbyOver = true, derbyPlayers = {} })
+  frames(0.4)
+  check(frozen == false, 'the freeze lifts when the derby ends')
+  check(blockedGroups['raceManagerResets'] ~= true, 'and the reset keys come back')
 end
 
 if fails == 0 then

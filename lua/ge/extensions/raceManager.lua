@@ -1963,6 +1963,16 @@ end
 local derbyMaxResets    = -1
 local derbyResetsUsed   = 0
 local derbyResetsActive = function () return false end
+-- "Is a derby standing its cars down right now?" Assigned by the derby module,
+-- which is scoped further down this file, and read by the reset-input block up
+-- here -- without it resetInputBlockUpdate would recompute the block from the
+-- reset ALLOWANCE every tick and undo the derby's one a frame after it was
+-- applied.
+--
+-- Hung off the spectate table, which already carries this file's other
+-- input-filter state, rather than taking a register of its own (see
+-- docs/ARCHITECTURE.md on the 200-local ceiling).
+spectate.derbyStoodDown = function () return false end
 
 local function derbyResetsEnforced()
   return derbyMaxResets >= 0 and derbyResetsActive()
@@ -2003,7 +2013,10 @@ local function resetInputBlockUpdate()
   local wantBlocked = not spectatorLock
     and ((resetsEnforced() and resetsUsed >= maxResets)
       or (derbyResetsEnforced() and derbyResetsUsed >= derbyMaxResets))
-  setResetInputsBlocked(wantBlocked)
+  -- ...and while a derby is standing its cars down. A reset there would reload
+  -- the vehicle out from under the freeze and hand somebody a driveable car in
+  -- the middle of a settled result.
+  setResetInputsBlocked(wantBlocked or spectate.derbyStoodDown())
 end
 
 -- Rolling "last good position" sample. Taken a few times a second while the
@@ -4805,6 +4818,9 @@ local DERBY_POLE_RADIUS   = 0.2
 -- the largest cohesive group left.
 derbyState = {
   phase     = 'idle',   -- idle | running | finished (mirrored from server)
+  -- The derby is decided and running out its cool-down. The cars are stood down
+  -- for it -- see derbyStandDown.
+  over      = false,
   boundary  = {},       -- ordered polygon vertices { x, y, z }
   -- Which editor authored the polygon above, mirrored from the server. Gameplay
   -- reads `boundary` in both cases and nothing else -- these only decide what
@@ -4834,6 +4850,53 @@ derbyState = {
 -- derby with this driver still in it spends (or blocks) derby resets.
 derbyResetsActive = function ()
   return derbyState.phase == 'running' and not derbyState.out
+end
+
+-- STAND THE CAR DOWN AT THE END OF A DERBY.
+--
+-- The result is settled and the arena stays up for a few seconds so it can be
+-- seen; a wreck still being driven into people for those seconds is not a
+-- cool-down, it is extra time nobody was given.
+--
+-- Freezing ALONE is not enough, and that is the whole of this function. The grid
+-- hold uses the same freeze and gets away with it because a car on the grid is
+-- stationary with nothing pressed. A derby ends with somebody's foot flat to the
+-- floor, and a freeze applied over that captures the throttle: the engine sits
+-- screaming against a locked car and lets go the instant the freeze lifts. So
+-- the inputs are neutralised FIRST -- throttle off, brakes on -- and the freeze
+-- goes over the top of a car that is already trying to stop.
+--
+-- Controls are deliberately left ENABLED. There is nothing left to win, the car
+-- cannot move, and taking someone's steering away as a prize for having been in
+-- a derby is worse than pointless. What IS taken away is the reset: a reset would
+-- reload the vehicle out from under the freeze and hand them a driveable car in
+-- the middle of a settled result.
+spectate.derbyStoodDown = function () return derbyState.stoodDown == true end
+
+local function derbyStandDown(down)
+  if down == derbyState.stoodDown then return end
+  derbyState.stoodDown = down
+  local veh = playerVehicle()
+  if down then
+    if veh then
+      -- Order matters: let go of the throttle before anything locks.
+      pcall(function ()
+        veh:queueLuaCommand('input.event("throttle", 0, 1)')
+        veh:queueLuaCommand('input.event("brake", 1, 1)')
+        veh:queueLuaCommand('input.event("parkingbrake", 1, 1)')
+      end)
+    end
+    setLocalVehicleFrozen(true, 'derby')
+    pushNotice('derby', 'Derby over — hold still')
+  else
+    setLocalVehicleFrozen(false, 'derby')
+    if veh then
+      pcall(function ()
+        veh:queueLuaCommand('input.event("brake", 0, 1)')
+        veh:queueLuaCommand('input.event("parkingbrake", 0, 1)')
+      end)
+    end
+  end
 end
 
 local function derbyPushWarning()
@@ -5475,6 +5538,11 @@ onDerbyUpdate = function (rawData)
   if not fromCurrentServer(data) then return end
 
   local newPhase = data.derbyPhase or 'idle'
+  -- Decided and running out the cool-down. Stood down while that is true, and
+  -- released the moment the derby is no longer running -- so a car is never left
+  -- frozen by a derby that has ended, whatever order the broadcasts arrive in.
+  derbyState.over = data.derbyOver == true
+  derbyStandDown(derbyState.over and newPhase == 'running')
   if newPhase == 'running' and derbyState.phase ~= 'running' then
     -- Fresh derby: re-arm local detection from a clean slate. The derby reset
     -- allowance is per-derby, so it starts over too.
