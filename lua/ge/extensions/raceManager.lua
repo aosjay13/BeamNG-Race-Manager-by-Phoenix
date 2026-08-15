@@ -651,10 +651,9 @@ end
 -- stops compiling and the whole mod is gone.
 --
 -- THE MOUSE IS BORROWED, NOT TAKEN. In free cam the mouse IS the camera, so
--- there is no way to drag anything without first releasing it (core_canvas
--- wraps lockMouse for exactly this). That is why this is a mode you turn on and
--- off rather than something always live: a stray click while flying around
--- looking at a track must never move a gate.
+-- there is no way to drag anything without first releasing it. That is why this
+-- is a mode you turn on and off rather than something always live: a stray click
+-- while flying around looking at a track must never move a gate.
 local nudge = {
   on       = false,   -- mode active: cursor released, picking live
   sel      = nil,     -- index into the ACTIVE editor list, not always `route`
@@ -666,6 +665,7 @@ local nudge = {
   -- Everything here is optional: a build without them leaves the mode simply
   -- unavailable rather than erroring in the frame loop.
   im       = nil,
+  cv       = nil,
   ready    = nil,
 }
 
@@ -5517,16 +5517,64 @@ end
 -- Are the engine pieces this needs present? Resolved once. `ui_imgui` is how
 -- every stock tool reads the mouse, and cameraMouseRayCast is the same call the
 -- world editor's own object placement uses.
+-- Releasing and recapturing the mouse.
+--
+-- There is NO `core_canvas` global. The cursor helpers live in
+-- lua/ge/client/canvas.lua, which is not an extension: the game reaches it with
+-- require('client/canvas'), and so does this. Guessing a global that reads like
+-- the other core_* ones is what made the first build of this refuse to start
+-- with "needs a newer BeamNG build" on a build that had everything.
+--
+-- Resolved once and remembered as false, because require() on a name that does
+-- not resolve walks the whole package path.
+function nudge.canvas()
+  if nudge.cv ~= nil then return nudge.cv or nil end
+  local ok, mod = pcall(require, 'client/canvas')
+  nudge.cv = (ok and type(mod) == 'table' and type(mod.showCursor) == 'function')
+    and mod or false
+  return nudge.cv or nil
+end
+
+-- Show or hide the cursor, preferring the module and falling back to the raw
+-- engine call it wraps. canvas.lua is lockMouse plus a setCursorVisible on the
+-- scenetree Canvas, so lockMouse alone still frees the mouse from the camera,
+-- which is the half that matters here.
+function nudge.cursor(show)
+  local cv = nudge.canvas()
+  if cv then
+    local ok = pcall(function ()
+      if show then cv.showCursor() else cv.hideCursor() end
+    end)
+    if ok then return true end
+  end
+  if type(lockMouse) == 'function' then
+    return pcall(lockMouse, not show) and true or false
+  end
+  return false
+end
+
+-- Which pieces are present. Each is named separately so a refusal says what is
+-- actually missing rather than blaming the game version.
+function nudge.missing()
+  local gaps = {}
+  local okIm, im = pcall(function () return ui_imgui end)
+  nudge.im = (okIm and type(im) == 'table' and type(im.IsMouseDown) == 'function')
+    and im or nil
+  if not nudge.im then gaps[#gaps + 1] = 'ui_imgui' end
+  if type(cameraMouseRayCast) ~= 'function' then gaps[#gaps + 1] = 'cameraMouseRayCast' end
+  if not (nudge.canvas() or type(lockMouse) == 'function') then
+    gaps[#gaps + 1] = 'the cursor lock'
+  end
+  return gaps
+end
+
 function nudge.available()
   if nudge.ready ~= nil then return nudge.ready end
-  local okIm, im = pcall(function () return ui_imgui end)
-  nudge.im = (okIm and type(im) == 'table' and im.IsMouseDown) and im or nil
-  nudge.ready = (nudge.im ~= nil)
-    and (type(cameraMouseRayCast) == 'function')
-    and (core_canvas ~= nil)
+  local gaps = nudge.missing()
+  nudge.ready = (#gaps == 0)
   if not nudge.ready then
-    log('W', 'raceManager', 'Nudge mode unavailable: this build has no '
-      .. (nudge.im and 'cameraMouseRayCast/core_canvas' or 'ui_imgui'))
+    log('W', 'raceManager', 'Nudge mode unavailable, missing: '
+      .. table.concat(gaps, ', '))
   end
   return nudge.ready
 end
@@ -5538,7 +5586,7 @@ end
 function nudge.release()
   if not nudge.on then return end
   nudge.on, nudge.sel, nudge.dragging, nudge.list = false, nil, false, nil
-  pcall(function () core_canvas.hideCursor() end)
+  nudge.cursor(false)
   log('I', 'raceManager', 'Nudge mode off, mouse returned to the camera')
 end
 
@@ -5548,11 +5596,11 @@ function nudge.set(on)
   if not on then nudge.release(); pushRouteState(); return end
   if not nudge.available() then
     guihooks.trigger('RaceManagerEditorMsg', {
-      msg = 'Nudge mode needs a newer BeamNG build' })
+      msg = 'Nudge mode cannot start, missing: ' .. table.concat(nudge.missing(), ', ') })
     return
   end
   nudge.on, nudge.sel, nudge.dragging = true, nil, false
-  pcall(function () core_canvas.showCursor() end)
+  nudge.cursor(true)
   log('I', 'raceManager', 'Nudge mode on, mouse released from the camera')
   pushRouteState()
 end
@@ -6400,6 +6448,27 @@ end
 -- rebuilt the route while emptying the joker route and the grid, so a Load there
 -- followed by a Save here overwrote a server layout with a partial one. Server
 -- layouts are the only copy now.
+-- Diagnostic for the in-game Lua console:
+--   dump(raceManager.nudgeStatus())
+-- Answers "why will nudge mode not turn on" without reading the log: which
+-- engine pieces resolved, and whether a cursor call actually succeeded.
+function M.nudgeStatus()
+  local gaps = nudge.missing()
+  return {
+    on          = nudge.on,
+    selected    = nudge.sel,
+    usable      = #gaps == 0,
+    missing     = gaps,
+    imgui       = nudge.im ~= nil,
+    rayCast     = type(cameraMouseRayCast) == 'function',
+    mouseRay    = type(getCameraMouseRay) == 'function',
+    canvas      = nudge.canvas() ~= nil,
+    lockMouse   = type(lockMouse) == 'function',
+    editorOpen  = editorOpen,
+    isAdmin     = isAdmin,
+  }
+end
+
 function M.setNudgeMode(on)
   nudge.set(on == true or on == 'true')
 end

@@ -53,11 +53,34 @@ cameraMouseRayCast = function () return rayHit end
 -- Flat ground at z = 0: the ray starts 50 above and travels 50 to reach it.
 castRayStatic = function (origin, dir, maxDist) return 50 end
 
+-- THE CURSOR, REACHED THE WAY THE GAME REACHES IT.
+--
+-- There is no `core_canvas` global in BeamNG. The helpers live in
+-- lua/ge/client/canvas.lua, which is not an extension: the game does
+-- require('client/canvas') and so must the mod. The first build of nudge mode
+-- checked for a core_canvas that has never existed, so the mode refused to start
+-- with "needs a newer BeamNG build" on a build that had everything it needed.
+--
+-- The stub is a require() hook rather than a global for exactly that reason: a
+-- test that invents the API it is testing against proves nothing about the game.
 local cursorShown = nil
-core_canvas = {
+local canvasModule = {
   showCursor = function () cursorShown = true end,
   hideCursor = function () cursorShown = false end,
 }
+local requiredCanvas = 0
+local realRequire = require
+require = function (name)
+  if name == 'client/canvas' then
+    requiredCanvas = requiredCanvas + 1
+    return canvasModule
+  end
+  return realRequire(name)
+end
+-- The raw engine call canvas.lua wraps, and the fallback when the module is not
+-- reachable. Recorded so the fallback can be tested on its own.
+local locked = nil
+lockMouse = function (v) locked = v end
 
 local veh = { id = VEH_ID, x = 0, y = 0, z = 0 }
 function veh:getID() return self.id end
@@ -172,8 +195,19 @@ RM.setNudgeMode(true)
 check(cursorShown == true, 'the cursor is released so the camera stops eating the mouse')
 check(routeState and routeState.nudgeOn == true, 'and the UI is told')
 
+check(requiredCanvas > 0,
+  "the cursor comes from require('client/canvas'), the path the game itself "
+    .. 'uses: there is no core_canvas global and never has been')
+
 RM.setNudgeMode(false)
 check(cursorShown == false, 'turning it off hands the mouse straight back')
+
+-- The refusal has to name what is actually missing. "Needs a newer build" sent
+-- somebody looking for a game update to fix a typo in this file.
+local status = RM.nudgeStatus()
+check(status.usable == true, 'the mode reports itself usable with the real API present')
+check(status.imgui and status.rayCast and status.canvas,
+  'and names each piece it resolved, so a refusal can be diagnosed from the console')
 
 -- Closing the editor has to hand it back too, or the camera stops answering
 -- with nothing on screen to explain why.
