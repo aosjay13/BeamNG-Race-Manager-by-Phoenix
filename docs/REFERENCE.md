@@ -751,6 +751,14 @@ still racing:
   into freecam — and from there **tab cycles targets** exactly as it normally
   does. The mod never changes your camera *mode*: whatever view you were driving
   in is the view you spectate in.
+  If the car you are watching **finishes too**, the view moves on to the next one
+  still moving — once, and only because that car is gone. A car that merely
+  parks is left alone, and a car you tabbed to yourself is never taken off you.
+- **The node grabber is switched off for the whole of a derby** — form-up,
+  countdown and running. Dragging physics nodes is a debug tool everywhere else
+  and a winning move in a demolition derby: it will right your own wreck, or put
+  somebody else into a wall without touching them. It comes back when the derby
+  ends.
 - **When the field comes back, it comes back on the starting grid.** Cars are
   removed as they take the flag, so every one of them is removed within a few
   metres of the start/finish line — putting them all back where they were removed

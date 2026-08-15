@@ -1653,7 +1653,43 @@ local spectate = {
     'nitrousOxideActive', 'toggleWalkingMode',
   },
   blocked = false,
+  -- BeamNG's node grabber: click a car and drag its physics nodes around. In a
+  -- demolition derby that is not a debug tool, it is a winning move -- drag your
+  -- own wreck back onto its wheels, or drag somebody else's into the wall
+  -- without touching them. It is switched off for the length of a derby.
+  --
+  -- The names are BeamNG's own input actions. Extra names in a filter group are
+  -- ignored rather than fatal, so the list is written wide on purpose: a build
+  -- that calls one of these something else loses that one binding, not the block.
+  GRAB = {
+    'nodegrabber_action', 'nodegrabber_grab', 'nodegrabber_strength',
+    'nodegrabber_range', 'nodegrabber_mode', 'nodegrabber_fixedMode',
+    'toggleNodegrabberMode', 'nodeGrabberAction', 'nodeGrabberStrength',
+    'nodeGrabberRange',
+  },
+  grabBlocked = false,
 }
+
+-- Same shape as the two blocks either side of it. Kept separate from the driving
+-- block because they answer to different things: driving is filtered while a
+-- driver is OUT of a session, the grabber while a derby is ON, and an eliminated
+-- driver in a running derby is both at once.
+function spectate.setGrabberBlocked(blocked)
+  blocked = blocked and true or false
+  if blocked == spectate.grabBlocked then return end
+  if not (core_input_actionFilter and core_input_actionFilter.setGroup
+      and core_input_actionFilter.addAction) then
+    return
+  end
+  local ok = pcall(function ()
+    core_input_actionFilter.setGroup('raceManagerGrabber', spectate.GRAB)
+    core_input_actionFilter.addAction(0, 'raceManagerGrabber', blocked)
+  end)
+  if ok then
+    spectate.grabBlocked = blocked
+    log('I', 'raceManager', 'Node grabber ' .. (blocked and 'BLOCKED' or 'released'))
+  end
+end
 
 -- Same shape as setResetInputsBlocked, and for the same reason: with the filter
 -- armed the keys are dead at the source, so an eliminated driver cannot drive
@@ -1797,10 +1833,55 @@ end
 --
 -- The target is the driver's from the first attach onward. The only things that
 -- move it are their own tab presses.
+-- ...WITH ONE EXCEPTION, AND IT IS AN EVENT AND NOT A TIMER: the car being
+-- watched can stop existing.
+--
+-- A race takes finishers off the track, and they finish BACK TO BACK. Attach a
+-- driver to the car in front and a second later that car crosses the line and is
+-- removed -- and with two or three coming in together the car after it goes the
+-- same way. The view is left on nothing, and BeamNG hands it wherever it likes.
+--
+-- So the target is followed, not enforced. Whatever the driver is attached to is
+-- recorded every tick, INCLUDING a car they tabbed to themselves, and the only
+-- thing that triggers a re-acquire is that car ceasing to exist. Somebody who
+-- picked a car keeps it for as long as it is there; nobody is ever moved off
+-- something they chose.
+--
+-- The distinction that makes this safe: gone, not stopped. A car that has parked
+-- is still a car, and if a driver wants to watch it park that is their business.
 local function spectatorUpdate(dt)
-  if not spectatorLock then return end
-  -- Held, and left alone. The input filter is what enforces the lock; the camera
-  -- is the driver's business.
+  if not spectatorLock then
+    spectate.target = nil
+    return
+  end
+  spectate.recheck = (spectate.recheck or 0) - dt
+  if spectate.recheck > 0 then return end
+  spectate.recheck = 0.25
+
+  local now = playerVehicle()
+  local id  = now and vehicleId(now) or nil
+  -- Still on something, and it is whatever the driver last chose. Record it and
+  -- do nothing -- this is the branch that runs almost every tick.
+  if id and getObjectByID and getObjectByID(id) then
+    spectate.target = id
+    return
+  end
+  -- The car being watched is gone. Advance ONCE to the next moving one; if the
+  -- field has all finished there is nothing to advance to, and the view is left
+  -- alone rather than flicked between cars that are not there.
+  --
+  -- No guard on having recorded a target first. An earlier version only
+  -- re-acquired when `spectate.target` was already set, which reads as caution
+  -- and is exactly backwards: in a bunched finish the car in front is removed
+  -- within a frame or two of being attached to, often before a single tick has
+  -- run to record it -- so the one case this exists for was the one case it
+  -- refused to act on. Reaching here already means the lock is held and the car
+  -- being watched is not there, and that is the whole of the question.
+  if spectate.attachToRunner() then
+    local v = playerVehicle()
+    spectate.target = v and vehicleId(v) or nil
+    log('I', 'raceManager', 'Spectate target gone — moved to the next moving car')
+  end
 end
 
 -- The reset allowance applies for the whole of a live session — qualifying as
@@ -5415,7 +5496,12 @@ function M.onUpdate(dt)
   snapshotUpdate(dt)        -- Module 1: rolling "last good position"
   resetGuardUpdate(dt)      -- Module 1: teleport-echo window + notice throttle
   resetInputBlockUpdate()   -- Module 1: dead reset keys once the allowance is gone
-  spectatorUpdate(dt)       -- Module 1: keep a spectator in freecam
+  spectatorUpdate(dt)       -- Module 1: follow the spectate target when it goes
+  -- The node grabber is off for the whole of a derby -- form-up, countdown and
+  -- running -- not just while the cars are moving. Dragging a car into position
+  -- on the grid before GO is the same cheat with better timing.
+  spectate.setGrabberBlocked(derbyState.phase == 'forming'
+    or derbyState.phase == 'countdown' or derbyState.phase == 'running')
   ghostUpdate(dt)           -- ghost mode qualifying
   vehicleConfigUpdate(dt)   -- Module 4: declare setup changes to the server
   derbyUpdate(dt)
@@ -7413,6 +7499,12 @@ local function resetToIdle(reason)
   poles.clear()                  -- scene objects: never leave them standing
   clearGhostReasons()
   setResetInputsBlocked(false)   -- never leave the reset keys dead after unload
+  -- Same rule for the two filters this mod added. Unloading with the driving or
+  -- the node grabber still filtered off would leave the player in a car they
+  -- cannot drive with nothing on screen explaining why -- and nothing left
+  -- loaded that could give it back.
+  spectate.setInputsBlocked(false)
+  spectate.setGrabberBlocked(false)
   holdWanted = nil               -- nothing is meant to be held any more
   maxResets       = -1
   resetsUsed      = 0
