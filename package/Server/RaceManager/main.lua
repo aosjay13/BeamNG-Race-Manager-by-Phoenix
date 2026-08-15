@@ -36,25 +36,21 @@ local MAX_RESET_LIMIT    = 99
 -- for a moment, so the car they materialise on top of is not hit by them and
 -- they are not hit by anyone.
 --
--- These live here rather than on the client because they are a LEAGUE rule: a
--- client running a five-second ghost against a field running eight is a field
--- where two cars disagree about whether they can touch. They are broadcast with
--- the rest of the regulations and mirrored by every client.
+-- Server-side because it is a LEAGUE rule: a client running a five-second ghost
+-- against a field running eight is a field where two cars disagree about whether
+-- they can touch.
 --
--- The maximum caps the BASE TIMER only. It is not a cap on the ghost: a car that
--- is still sitting inside another when the timer runs out stays ghosted for as
--- long as that remains true, with no limit and no override. See the occupancy
--- check on the client, which is the only place that can see where cars are.
--- Grid hold. The server cannot freeze a car -- it has no physics -- but it owns
--- the hold, so it judges whether each held car is where it was put and pulls
--- back the ones that are not. The tolerance is generous enough to absorb the
--- settling of a car dropped onto a slot and tight enough that creeping forward
--- to steal a start is caught immediately.
--- Forward declaration. The checkpoint/start-position validator lives with the
--- layout store far below, but the grid-hold code above it needs the same
--- validation applied to the coordinates a client reports -- and a second,
--- nearly-identical sanitizer sitting up here would be one more thing to keep in
--- step with the first.
+-- The maximum caps the BASE TIMER only, not the ghost. A car still sitting
+-- inside another when the timer runs out stays ghosted for as long as that is
+-- true, with no limit. See the occupancy check on the client, the only place
+-- that can see where cars are.
+-- Grid hold. The server has no physics and cannot freeze a car, but it owns the
+-- hold: it judges whether each held car is where it was put and pulls back the
+-- ones that are not. The tolerance absorbs a car settling onto its suspension
+-- and still catches a creep off the line.
+-- Forward declaration: the validator lives with the layout store far below, but
+-- the grid-hold code above needs the same validation on client-reported
+-- coordinates, and a second near-identical sanitizer would drift from the first.
 local sanitizeCheckpoints
 local sanitizeBranches
 -- One table rather than two constants: the top level of this file is a function
@@ -219,36 +215,24 @@ local FINAL_LAP_GRACE  = 180    -- seconds
 -- Does the session now running open with an OUT LAP -- one trip past the line
 -- that is neither timed nor scored nor counted against the lap allowance?
 --
--- Qualifying starts from a standing grid, so a driver's first crossing is the
--- lap they spent getting off the line: it is a measure of a launch, not of a
--- car and a driver over a circuit, and on any track with a slow first corner it
--- is a time nobody can beat later in the session for reasons that have nothing
--- to do with pace. Every real qualifying session gives that lap away, and this
--- one does too -- the clock starts when the driver next crosses the line.
---
--- Nothing here is the out lap of the version this replaced. That one existed
--- because qualifying had no defined starting point at all (drivers began from
--- wherever they were parked), so the first crossing was arbitrary and a "3 lap"
--- session took five or six laps to get through. This out lap starts on the
--- grid, ends at the line, and is COUNTED SEPARATELY from the allowance, so
--- three qualifying laps still means three timed laps.
+-- Qualifying starts from a standing grid, so the first crossing measures a
+-- launch rather than a lap, and on a track with a slow first corner it is a time
+-- nobody can beat later for reasons that have nothing to do with pace. It is
+-- counted SEPARATELY from the allowance, so three qualifying laps still means
+-- three timed laps.
 --
 -- A sprint stage is the exception and has to be: a point-to-point run is driven
--- once, first gate to last, so a lap given away is the whole session given
--- away. There is no line to come back past either.
+-- once, so a lap given away is the session given away, and there is no line to
+-- come back past.
 --
--- A RACE owes one too, whenever the track says its grid is not on the line.
+-- A RACE owes one whenever the track says its grid is not on the line. Same
+-- problem, not a qualifying rule in disguise: a lap is only a lap if it starts
+-- where it ends. Grid the field around the circuit, which a head-on layout must,
+-- and the run to the first crossing is a fraction of a lap that would take
+-- fastest lap off every honest one.
 --
--- That is not a qualifying rule wearing a different hat, it is the same problem:
--- a lap is only a lap if it starts where it ends. Park the field around a circuit
--- rather than on the start line -- which a head-on layout must, since the two
--- directions cannot share one row of slots -- and the run from the grid to the
--- first crossing is a fraction of a lap. Timed, it goes on the board as the
--- fastest lap of the race, every race, and no honest lap can ever beat it.
---
--- It belongs to the TRACK, so it travels with the layout (race.gridOffLine, set
--- by the layout as it loads) rather than being a switch an admin has to
--- remember on the night. The same reasoning pointToPoint is stored under.
+-- It belongs to the TRACK, so it travels with the layout (race.gridOffLine)
+-- rather than being a switch an admin has to remember on the night.
 local function outLapOwed()
   -- A sprint stage never owes one: it is driven once, first gate to last, so a
   -- lap given away is the whole session given away.
@@ -1627,7 +1611,7 @@ local function finishSession(reason)
     if cupOnSessionComplete then cupOnSessionComplete('quali') end
     respawnAll('race')
     broadcastState()
-    MP.SendChatMessage(-1, '[RaceManager] Qualifying is over — ' .. reason .. '.')
+    MP.SendChatMessage(-1, '[RaceManager] Qualifying is over: ' .. reason .. '.')
     print('[RaceManager] Qualifying closed: ' .. reason)
     return
   end
@@ -1834,7 +1818,7 @@ local function beginFinalLap()
   race.finalLap     = true
   race.finalLapLeft = FINAL_LAP_GRACE
   broadcastState()
-  MP.SendChatMessage(-1, '[RaceManager] TIME EXPIRED — the lap you are on is your '
+  MP.SendChatMessage(-1, '[RaceManager] TIME EXPIRED: the lap you are on is your '
     .. 'FINAL LAP. Your session ends as you cross the line.')
   print(string.format('[RaceManager] Qualifying time expired: final lap armed for %d driver(s)',
     driversOnTrack()))
@@ -1930,7 +1914,7 @@ formGrid = function (kind, byName)
   race.bestLapTime, race.bestLapPid = nil, nil
 
   -- Purge ghost records first: drivers kept after disconnecting (DNF/finished,
-  -- so the previous results file could list them) must not be re-gridded — a
+  -- so the previous results file could list them) must not be re-gridded - a
   -- ghost would be flipped to running at GO, never report a lap, and block the
   -- "all drivers finished" auto-finish forever.
   --
@@ -1983,7 +1967,7 @@ formGrid = function (kind, byName)
       and string.format('[RaceManager] Nobody is on the server to grid '
         .. '(%d connected, entry is open to everyone).', connected)
       or string.format('[RaceManager] Nobody is entered for this session '
-        .. '(%d connected, entry is opt-in) — press Join Race in the Race Manager '
+        .. '(%d connected, entry is opt-in): press Join Race in the Race Manager '
         .. 'app, or switch entry to Everyone races.', connected))
     return false
   end
@@ -2046,7 +2030,7 @@ formGrid = function (kind, byName)
   broadcastState()
   if race.startSlots > 0 and #ordered > race.startSlots then
     MP.SendChatMessage(-1, string.format(
-      '[RaceManager] Warning: %d drivers but only %d start positions placed — '
+      '[RaceManager] Warning: %d drivers but only %d start positions placed: '
         .. 'the back of the grid has nowhere to line up.', #ordered, race.startSlots))
   end
   print(string.format('[RaceManager] %s grid formed by %s (%d drivers, %s order, pole: %s)',
@@ -2082,7 +2066,7 @@ function RM_onGenerateGrid(pid)
   if not requireAuth(pid) then return end
   local who = MP.GetPlayerName(pid) or pid
   if race.phase == 'racing' or race.phase == 'countdown' then
-    MP.SendChatMessage(pid, '[RaceManager] A race is under way — press End Session '
+    MP.SendChatMessage(pid, '[RaceManager] A race is under way: press End Session '
       .. 'first, then Generate Grid.')
     print('[RaceManager] Generate Grid refused: a race is already running')
     return
@@ -2247,7 +2231,7 @@ function RM_onPitStop(pid, rawData)
     if ok and type(data) == 'table' then stall = tonumber(data.stall) or 0 end
   end
   rec.pitStops = (rec.pitStops or 0) + 1
-  print(string.format('[RaceManager] %s pitted (stall %s) on lap %s at race time %.1fs — stop #%d',
+  print(string.format('[RaceManager] %s pitted (stall %s) on lap %s at race time %.1fs: stop #%d',
     rec.name, tostring(stall), tostring(rec.currentLap or '?'), race.time, rec.pitStops))
   broadcastState()
 end
@@ -2348,7 +2332,7 @@ function RM_onHoldPos(pid, rawData)
   }))
   print(string.format(
     '[RaceManager] HOLD violation: %s was %.2fm off grid slot %d during %s '
-    .. '(tolerance %.2fm) — pulled back, correction #%d',
+    .. '(tolerance %.2fm): pulled back, correction #%d',
     rec.name, drift, rec.gridPos, race.phase, HOLD_TOLERANCE, rec.holdCorrections))
 end
 
@@ -2420,7 +2404,7 @@ function RM_onSetAlias(pid, rawData)
   if not isAuthenticated(pid) then
     print('[RaceManager] Ignored alias command from unauthenticated player ' .. tostring(pid))
     MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({ success = false }))
-    aliasResult(pid, false, 'Not logged in as an admin on this server — log in again.')
+    aliasResult(pid, false, 'Not logged in as an admin on this server: log in again.')
     return
   end
 
@@ -2460,7 +2444,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Host sets how many vehicle resets/repairs each driver gets per session.
 --   -1 (or any negative value)  unlimited (default)
---    0                          no resets at all — the first one ends your race
+--    0                          no resets at all - the first one ends your race
 --    N                          N resets, the N+1st ends your race
 -- Locked once the countdown/race is under way so the rule can't change under a
 -- driver who has already spent their allowance.
@@ -2514,8 +2498,8 @@ function RM_onVehicleReset(pid)
   broadcastState()
 end
 
--- Client pressed a reset it was not entitled to. The client BLOCKS the reset —
--- it puts the car straight back where it was — so this is not a penalty and
+-- Client pressed a reset it was not entitled to. The client BLOCKS the reset -
+-- it puts the car straight back where it was - so this is not a penalty and
 -- never ends anyone's race: the attempt is only counted, so the live table and
 -- the results file show who kept reaching for a reset they no longer had.
 function RM_onResetDenied(pid)
@@ -2567,7 +2551,7 @@ function RM_onGhostStart(pid, rawData)
   -- costs no extra traffic: running order, lap, and how far it was from its next
   -- checkpoint at the moment it went intangible.
   print(string.format(
-    '[RaceManager] %s GHOSTED %.1fs at race time %.1fs — P%s, lap %s, %s to next gate%s (ghost #%d this session)',
+    '[RaceManager] %s GHOSTED %.1fs at race time %.1fs: P%s, lap %s, %s to next gate%s (ghost #%d this session)',
     rec.name, requested, race.time,
     tostring(rec.position or '?'), tostring(rec.currentLap or '?'),
     rec.distNext and string.format('%.0fm', rec.distNext) or 'distance unknown',
@@ -2601,7 +2585,7 @@ function RM_onGhostBlocked(pid, rawData)
   end
   print(string.format(
     '[RaceManager] %s is still ghosted: another car has been occupying its space '
-    .. 'for %.1fs (race time %.1fs). Not forced — restoring collision on '
+    .. 'for %.1fs (race time %.1fs). Not forced: restoring collision on '
     .. 'overlapping cars would weld them together.', rec.name, seconds, race.time))
 end
 
@@ -2631,7 +2615,7 @@ function RM_onSetJokerEnabled(pid, rawData)
   -- arm something, and silently having it off would be its own surprise.
   if want and race.jokerGates == 0 then
     MP.SendChatMessage(pid, '[RaceManager] This track has no Joker Route. '
-      .. 'Place joker gates in the editor first — arming the joker lap without '
+      .. 'Place joker gates in the editor first: arming the joker lap without '
       .. 'them would disqualify everyone who finishes.')
     print('[RaceManager] Joker lap refused: the loaded track has no joker gates')
     broadcastState()
@@ -2725,11 +2709,11 @@ function RM_CountdownTick()
   -- that never started. Chat, because it reaches a driver who has not opened the
   -- app; the app itself says it again on the driver's own timing readout.
   if outLapOwed() and isQualiSession() then
-    MP.SendChatMessage(-1, '[RaceManager] GO! Your first lap is an OUT LAP — it is '
+    MP.SendChatMessage(-1, '[RaceManager] GO! Your first lap is an OUT LAP: it is '
       .. 'not timed and does not count. Timing starts as you cross the line.')
   elseif outLapOwed() then
     MP.SendChatMessage(-1, '[RaceManager] GO! Your first lap COUNTS but is not '
-      .. 'timed — a standing start is not a lap time.')
+      .. 'timed: a standing start is not a lap time.')
     -- WHY, in the console, because "my race keeps giving a lap away and I do not
     -- know what is asking for it" is otherwise unanswerable from the outside.
     print('[RaceManager] Out lap owed: sessionKind=' .. tostring(race.sessionKind)
@@ -2750,8 +2734,8 @@ function RM_CountdownTick()
   end
   print('[RaceManager] GO! (' .. (isQualiSession() and 'qualifying' or 'race') .. ', '
     .. lapNote .. ')'
-    .. (race.jokerEnabled and not isQualiSession() and ' — JOKER LAP REQUIRED' or '')
-    .. (race.maxResets >= 0 and (' — resets limited to ' .. race.maxResets) or ''))
+    .. (race.jokerEnabled and not isQualiSession() and ': JOKER LAP REQUIRED' or '')
+    .. (race.maxResets >= 0 and (': resets limited to ' .. race.maxResets) or ''))
 end
 
 -- End Session: during a race anyone still on track becomes DNF; during
@@ -2877,7 +2861,7 @@ end
 -- handler for both kinds of session, which is the point: qualifying used to
 -- report its laps on a channel of its own with its own counting rules, and that
 -- second implementation is what drifted. The server decides Laps Led (first
--- report per lap number wins — one arrival order for everyone) and the finish
+-- report per lap number wins - one arrival order for everyone) and the finish
 -- (the session's lap target reached).
 function RM_onLap(pid, rawData)
   if not sessionRunning() then return end
@@ -2888,35 +2872,22 @@ function RM_onLap(pid, rawData)
   -- THE OUT LAP, and every rule about it in one place.
   --
   -- A driver's first crossing ends the lap they spent getting off the grid, in
-  -- any session that owes one -- every qualifying session, and a race on a track
-  -- whose grid is not on the start/finish line. It is thrown away entirely: no
-  -- Best Lap, no session fastest lap, nothing against the allowance -- and,
-  -- because this returns before the terminal check below, it can never be the
-  -- crossing that ends a driver's session either.
+  -- any session that owes one. QUALIFYING throws it away entirely (no best lap,
+  -- no session fastest, nothing against the allowance) and returns here. A RACE
+  -- keeps the lap and drops only its TIME, falling through to the scoring below
+  -- with lapTime suppressed.
   --
-  -- On a head-on layout that is the difference between a working race and a
-  -- broken one. The cars are gridded around the circuit rather than on the line,
-  -- so the first crossing comes after a fraction of a lap; timed, it would take
-  -- fastest lap off every driver who ever set an honest one.
-  --
-  -- That last one matters most when the clock has expired. `race.finalLap` makes
-  -- the next crossing terminal for everybody still out, and a driver who was on
-  -- their out lap when it expired would otherwise be stood down with no time at
-  -- all -- eliminated by the one lap the session had already promised not to
-  -- score. They finish the out lap, start the flying lap, and take the flag on
-  -- that, which is what every other driver on track gets.
-  --
-  -- The crossing still counts as a crossing: the lap counter advances and the
-  -- checkpoint telemetry is cleared, exactly as it would for a scored lap.
-  -- A RACE keeps the lap and drops only its TIME, so it falls through to the
-  -- scoring below with lapTime suppressed. Only QUALIFYING gives the whole lap
-  -- away, and only qualifying returns here.
+  -- Returning before the terminal check matters most once the clock has expired:
+  -- race.finalLap makes the next crossing terminal for everyone still out, and a
+  -- driver on their out lap would otherwise be stood down with no time at all,
+  -- eliminated by the one lap the session promised not to score. The crossing
+  -- still counts as a crossing: lap counter advances, telemetry cleared.
   local untimedFirstLap = false
   if rec.outLap and not quali then
     rec.outLap = false
     untimedFirstLap = true
     MP.SendChatMessage(rec.id,
-      '[RaceManager] First lap done — it counts, but it set no lap time.')
+      '[RaceManager] First lap done: it counts, but it set no lap time.')
   end
   if rec.outLap and quali then
     rec.outLap = false
@@ -2927,7 +2898,7 @@ function RM_onLap(pid, rawData)
     -- drivers reach at twenty different moments, and announcing each of them to
     -- the whole server would bury the messages that are everybody's business.
     MP.SendChatMessage(rec.id,
-      '[RaceManager] Out lap complete — your next lap is TIMED.')
+      '[RaceManager] Out lap complete: your next lap is TIMED.')
     print(string.format('[RaceManager] %s completed their out lap (not timed)', rec.name))
     return
   end
@@ -2990,11 +2961,11 @@ function RM_onLap(pid, rawData)
   if lastLap then
     local why
     if quali and race.finalLap and not (target and completed >= target) then
-      why = 'Qualifying over — you took the flag on the final lap'
+      why = 'Qualifying over: you took the flag on the final lap'
     elseif quali then
-      why = 'Qualifying session complete — spectating until the flag'
+      why = 'Qualifying session complete: spectating until the flag'
     else
-      why = 'You finished the race — spectating until the flag'
+      why = 'You finished the race: spectating until the flag'
     end
     -- A car that is done is taken off the track: it has nothing left to gain and
     -- a parked (or cruising) driver is an obstacle for everyone still running.
@@ -3478,23 +3449,14 @@ function RM_onSaveLayout(pid, rawData)
     return
   end
   -- ---------------------------------------------------------------------
-  -- The silent-drop guard.
+  -- The silent-drop guard. A save writes whatever the sending client is holding,
+  -- so any client path that empties one collection and leaves the route alone
+  -- turns the next same-name save into unannounced data loss. Reported live as a
+  -- track that came back with no joker route, no pit stall and no grid.
   --
-  -- A save writes whatever the sending client happens to be holding. That is
-  -- fine when it is holding the whole track, and catastrophic when it is not:
-  -- any client-side path that empties one collection and leaves the route alone
-  -- turns the next same-name save into permanent, unannounced data loss. An
-  -- admin who loaded a track, nudged a pole height and pressed Save got back a
-  -- layout with no joker route, no pit stall and no grid, and nothing anywhere
-  -- said so.
-  --
-  -- So the server compares against what it already has, and a save that would
-  -- empty a section the stored layout HAS is refused and reported back. The
-  -- admin can still do it -- the UI asks, and sends confirmDrop -- but it can no
-  -- longer happen by accident, whatever emptied the client's copy.
-  --
-  -- Only whole sections count, not shrinkage: deleting one of six start
-  -- positions is ordinary editing. Going from six to none is not.
+  -- A save that would empty a section the stored layout HAS is refused and
+  -- reported back; the UI asks and re-sends confirmDrop. Only whole sections
+  -- count: deleting one of six start positions is ordinary editing.
   if existing and data.confirmDrop ~= true then
     local function had(t) return type(t) == 'table' and #t or 0 end
     local lost = {}
@@ -3546,13 +3508,10 @@ function RM_onSaveLayout(pid, rawData)
   sendLayoutList(-1)
 end
 
--- Delete a saved layout by name, under the current map only.
---
--- Refused while a session is under way for the same reason loading is: the file
--- being raced on is not one to remove out from under the field. The layout
--- currently loaded is forgotten as well as deleted -- leaving race.layout
--- pointing at an entry that no longer exists would keep serving it to joining
--- players from a track nobody could load again.
+-- Delete a saved layout by name, under the current map only. Refused mid-session
+-- like loading is. A deleted layout that is currently loaded is forgotten too:
+-- race.layout pointing at a removed entry would keep serving joining players a
+-- track nobody could load again.
 function RM_onDeleteLayout(pid, rawData)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then
@@ -3591,7 +3550,7 @@ end
 
 -- Load a saved layout: look it up under the current map only and broadcast the
 -- checkpoint set to every connected client, which instantly rebuilds its gates.
--- Locked once a countdown/race is under way — nobody swaps the track mid-race.
+-- Locked once a countdown/race is under way - nobody swaps the track mid-race.
 function RM_onLoadLayout(pid, rawData)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
@@ -3657,7 +3616,7 @@ end
 --   2. RM_VehicleConfig: the client reports the exact signature of every
 --      vehicle it spawns or re-tunes. A signature that is not on the list gets
 --      the vehicle removed and an error pushed to that player's UI.
--- Authenticated admins are exempt — otherwise an admin could never spawn the
+-- Authenticated admins are exempt - otherwise an admin could never spawn the
 -- car they are about to whitelist.
 local GARAGE_FILE        = LAYOUTS_DIR .. '/garage.json'
 local MAX_GARAGE_ENTRIES = 60
@@ -3759,7 +3718,7 @@ garageSnapshot = function ()
 end
 
 -- Enforcement only bites when it is switched on AND at least one car has been
--- captured — an empty whitelist would otherwise lock every player out.
+-- captured - an empty whitelist would otherwise lock every player out.
 local function garageEnforcing()
   local g = getGarage()
   return g.enforce and #g.list > 0
@@ -3785,7 +3744,7 @@ end
 -- Garage List takes after a BeamNG update that renamed vehicle parts: the
 -- driver is in an allowed car, but the stored signature was built from part
 -- names the game no longer uses. When the entry was captured on a different
--- build than the driver is running, say so — the admin has to re-capture, and
+-- build than the driver is running, say so - the admin has to re-capture, and
 -- nothing on the server can work that out for them. Returns nil when the
 -- versions match, are unknown, or the model was never approved in the first
 -- place, so an ordinary "you tuned a car that isn't allowed" rejection keeps
@@ -3914,7 +3873,7 @@ function RM_onVehicleConfig(pid, rawData)
   if stale then
     rejectVehicle(pid, tonumber(data.vid), 'the Garage List entry for "' .. stale.label
       .. '" was captured on BeamNG ' .. stale.game .. ' and you are on '
-      .. tostring(data.game) .. ' — a game update can rename vehicle parts, so an '
+      .. tostring(data.game) .. ': a game update can rename vehicle parts, so an '
       .. 'admin needs to re-capture the Garage List')
     return
   end
@@ -4362,7 +4321,7 @@ function derby.armEnd(reason)
   if derby.endsAt then return end
   derby.endsAt    = derby.time + derby.endDelay
   derby.endReason = reason
-  MP.SendChatMessage(-1, string.format('[RaceManager] %s — derby ends in %d seconds.',
+  MP.SendChatMessage(-1, string.format('[RaceManager] %s: derby ends in %d seconds.',
     reason, derby.endDelay))
   print('[RaceManager] Derby decided (' .. reason .. '), ending in '
     .. derby.endDelay .. 's')
@@ -4415,9 +4374,9 @@ local function derbyEliminate(pid, reason)
   rec.elimTime = derby.time
   -- Forced spectator mode (Module 1): an eliminated driver loses their car and
   -- their camera goes to freecam until the derby ends. This only *sends* a
-  -- client event — no racing state is read or written, so the isolation of this
+  -- client event - no racing state is read or written, so the isolation of this
   -- module is intact.
-  forceSpectate(pid, reason .. ' — you are out of this derby', 'derby')
+  forceSpectate(pid, reason .. ': you are out of this derby', 'derby')
   print(string.format('[RaceManager] Derby: %s eliminated (%s) at %s',
     rec.name, reason, derbyFmtTime(derby.time)))
 
@@ -4703,7 +4662,7 @@ function RM_onDerbyVehicleReset(pid)
 end
 
 -- Client blocked a derby reset the driver was no longer entitled to. Logged
--- only — the block itself already happened client-side and costs nothing.
+-- only - the block itself already happened client-side and costs nothing.
 function RM_onDerbyResetDenied(pid)
   if derby.phase ~= 'running' then return end
   local rec = derbyPlayers[pid]
@@ -4716,7 +4675,7 @@ end
 -- Derby arena layouts: persistent, per-map, same workflow as track layouts
 -- ---------------------------------------------------------------------------
 -- An arena is its boundary polygon plus the two timers. Admins build one with
--- the marker tool, save it under a name, and load it back on a later session —
+-- the marker tool, save it under a name, and load it back on a later session -
 -- loading broadcasts the boundary to every client at once, exactly the way a
 -- track layout does. Stored in its own file so the derby module keeps owning
 -- its own persistence.
@@ -4874,7 +4833,7 @@ end
 
 -- Load a saved arena: adopt its boundary and timers, then push the new derby
 -- state to every client so their point-in-polygon test uses the new perimeter.
--- Refused while a derby is running — the arena cannot move under the drivers.
+-- Refused while a derby is running - the arena cannot move under the drivers.
 function RM_onDerbyLoadLayout(pid, rawData)
   if not requireAuth(pid) then return end
   if derbyActive() then return end
@@ -4960,7 +4919,7 @@ end
 
 -- Form up: build the field, stand everyone on a slot and HOLD them there until
 -- the countdown lets go. The derby's Generate Grid, and the same two-step shape
--- the circuit races use — form the grid, then start it.
+-- the circuit races use - form the grid, then start it.
 function RM_onDerbyFormUp(pid)
   if not requireAuth(pid) then return end
   if derby.phase == 'running' or derby.phase == 'countdown' then return end
@@ -4991,7 +4950,7 @@ function RM_onDerbyFormUp(pid)
     -- obvious, an empty entry list looks like a broken button.
     if optIn then
       print('[RaceManager] Derby form-up ignored: nobody has joined (opt-in entry is on)')
-      MP.SendChatMessage(pid, '[RaceManager] Nobody has joined — press Join Race, '
+      MP.SendChatMessage(pid, '[RaceManager] Nobody has joined: press Join Race, '
         .. 'or switch derby entry to Everyone.')
     else
       print('[RaceManager] Derby form-up ignored: no players connected')
@@ -5004,7 +4963,7 @@ function RM_onDerbyFormUp(pid)
   -- Slots go out AFTER the state broadcast, so every client already holds the
   -- slot list it is about to be told to use. Join order (pid ascending) is
   -- deterministic and fair enough for a derby. Everyone is held whether or not
-  -- a slot was placed for them — a driver with nowhere to line up still waits
+  -- a slot was placed for them - a driver with nowhere to line up still waits
   -- for GO rather than getting a free run at the rest of the field.
   local ordered = {}
   for id in pairs(derbyPlayers) do ordered[#ordered + 1] = id end
@@ -5029,7 +4988,7 @@ function RM_onDerbyStart(pid)
   -- out. Mirrors Start Countdown needing a generated grid.
   if derby.phase ~= 'forming' then
     if derby.phase ~= 'running' and derby.phase ~= 'countdown' then
-      MP.SendChatMessage(pid, '[RaceManager] Press Form Up first — it places the '
+      MP.SendChatMessage(pid, '[RaceManager] Press Form Up first: it places the '
         .. 'field and holds it for the countdown.')
     end
     return
@@ -5344,7 +5303,7 @@ rosterRemember = function (rec)
     entry = bound
   else
     if #list >= MAX_ROSTER_ENTRIES then
-      print('[RaceManager] Roster full (' .. MAX_ROSTER_ENTRIES .. ' entries) — "'
+      print('[RaceManager] Roster full (' .. MAX_ROSTER_ENTRIES .. ' entries): "'
         .. rec.alias .. '" not saved. Reset the cup or prune the roster.')
       return nil
     end
@@ -5402,7 +5361,7 @@ rosterBindTo = function (rec, entryId)
     local other = players[heldBy]
     return false, '"' .. entry.name .. '" is already assigned to '
       .. (other and other.name or ('player ' .. tostring(heldBy)))
-      .. ' — unassign them first.'
+      .. ': unassign them first.'
   end
   if aliasInUse(entry.name, rec.id) then
     return false, 'The name "' .. entry.name .. '" is in use by somebody else on the server.'
@@ -5499,14 +5458,14 @@ local function rosterEnsure(rec)
     -- rosterBindTo), which is why losing them here would be the worse failure.
     if #list >= MAX_ROSTER_ENTRIES then
       print('[RaceManager] Roster full (' .. MAX_ROSTER_ENTRIES
-        .. ' entries) — ' .. rec.name .. ' could not be entered')
+        .. ' entries): ' .. rec.name .. ' could not be entered')
       return nil
     end
     entry = { id = rosterNextId, name = rec.name, provisional = true }
     rosterNextId = rosterNextId + 1
     list[#list + 1] = entry
     print(string.format(
-      '[RaceManager] Roster: provisional entry #%d for %s (no display name set) — '
+      '[RaceManager] Roster: provisional entry #%d for %s (no display name set): '
         .. 'bind them to a driver to keep their points together',
       entry.id, entry.name))
   end
@@ -6106,7 +6065,7 @@ local function cupAwardBonuses(kind, ctx, byPid)
       if target then
         if b.key == 'fastestLap' and cup.scoring.fastestLapRequiresFinish
             and not target.classified then
-          print('[RaceManager] Cup: fastest lap bonus withheld — ' .. target.entry.name
+          print('[RaceManager] Cup: fastest lap bonus withheld: ' .. target.entry.name
             .. ' did not finish')
         else
           target.row.bonus[b.key] = worth
@@ -6184,7 +6143,7 @@ local function cupScoreRace()
     cup.name ~= '' and cup.name or 'unnamed', round, scored))
   if leader then
     MP.SendChatMessage(-1, string.format(
-      '[RaceManager] Cup round %d scored — %s leads on %d point%s.',
+      '[RaceManager] Cup round %d scored: %s leads on %d point%s.',
       round, leader.name, leader.total, leader.total == 1 and '' or 's'))
   end
   -- The round this race banked, for the results file about to be written.
@@ -6251,7 +6210,7 @@ local function cupScoreDerby(classification, info)
     cup.name ~= '' and cup.name or 'unnamed', round, scored))
   if leader then
     MP.SendChatMessage(-1, string.format(
-      '[RaceManager] Cup round %d (derby) scored — %s leads on %d point%s.',
+      '[RaceManager] Cup round %d (derby) scored: %s leads on %d point%s.',
       round, leader.name, leader.total, leader.total == 1 and '' or 's'))
   end
   -- The round this derby banked, for the results file about to be written.
@@ -6716,7 +6675,7 @@ function RM_onCupAdjust(pid, rawData)
   local msg = string.format('[RaceManager] Cup: %s %s%d point%s%s',
     entry.name, delta > 0 and '+' or '', delta,
     (delta == 1 or delta == -1) and '' or 's',
-    cupCleanNote(data.reason) ~= '' and (' — ' .. cupCleanNote(data.reason)) or '')
+    cupCleanNote(data.reason) ~= '' and (': ' .. cupCleanNote(data.reason)) or '')
   MP.SendChatMessage(-1, msg)
   print(msg .. ' (by ' .. (MP.GetPlayerName(pid) or pid) .. ')')
 end
@@ -6807,7 +6766,7 @@ function RM_Tick()
         -- building the list while that is going on is the shape of bug that
         -- reached only the last name in it.
         for _, rec in ipairs(stranded) do
-          retireDriver(rec, 'Qualifying over — the session closed before you reached the line')
+          retireDriver(rec, 'Qualifying over: the session closed before you reached the line')
         end
         if #stranded > 0 then
           MP.SendChatMessage(-1, string.format(
@@ -6877,7 +6836,7 @@ function RM_onPlayerJoin(pid)
   if sessionUnderWay() or race.derbyUnderWay() then
     rec.status    = 'waiting'
     rec.bystander = true
-    MP.SendChatMessage(pid, '[RaceManager] A session is already running — you are '
+    MP.SendChatMessage(pid, '[RaceManager] A session is already running: you are '
       .. 'a spectator until it ends, and your car is a ghost so you cannot '
       .. 'interfere with it.')
     print(string.format('[RaceManager] %s joined mid-session: bystander + ghosted',
