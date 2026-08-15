@@ -2837,6 +2837,30 @@ angular.module('beamng.apps')
         $element[0].style.setProperty('--rm-panel-bg', 'rgba(15, 17, 22, ' + Number(op) + ')');
       });
 
+      // THE BOARD'S WIDTH, MEASURED, so the rest of the driver's column can be
+      // told to match it.
+      //
+      // CSS cannot say "as wide as that one child". fit-content on the root says
+      // "as wide as the WIDEST child", and that is the driver bar -- lap clock,
+      // joker, resets, checkpoint counter, distance, race clock, a slider and
+      // three buttons -- which is reliably wider than the board it sits above.
+      // So the bar sized the column and the board still did not match it.
+      //
+      // The board is the thing with a size the driver chose, so it is the thing
+      // everything else follows. Measured rather than read from panelSize because
+      // that is null until the grip has been dragged, and the mismatch is at its
+      // most obvious before anyone has touched it.
+      //
+      // A custom property has to be set on the element directly: jqLite's .css()
+      // camel-cases the name, so a --custom-prop through ng-style is dropped.
+      $scope.$watch(function () {
+        if (!$scope.minimalMode()) { return 0; }
+        var board = $element[0].querySelector('.rm-table-wrap');
+        return board ? board.offsetWidth : 0;
+      }, function (w) {
+        $element[0].style.setProperty('--rm-lb-width', w > 0 ? (w + 'px') : '100%');
+      });
+
 
       // BeamNG paints this app inside its HUD app host: an absolutely
       // positioned box, sized in px from the layout and clipped with

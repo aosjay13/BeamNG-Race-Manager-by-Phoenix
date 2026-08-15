@@ -3139,19 +3139,26 @@
   .rm-minimal {
     background: transparent !important;
     overflow: visible;
-    /* SHRINK-WRAP THE WHOLE COLUMN TO THE BOARD.
-       The root is the full HUD app window, and in minimal mode nothing was
-       sizing it -- so the driver bar stretched to the window while the table
-       shrank to its own content, and the countdown (position: absolute; inset: 0
-       against this element) covered the lot. Everything read as a different
-       width from the leaderboard it belongs to.
-       fit-content makes the root as wide as its widest child, and the children
-       then stretch to match it: bar, board and overlays all one width. When the
-       grip has set an explicit width on the board, that IS the widest child, so
-       the column follows the drag. */
-    width: fit-content;
+    /* THE BOARD SIZES THE COLUMN, and the controller measures it (see the
+       --rm-lb-width watcher in app.js) because CSS cannot express "as wide as
+       that one child".
+
+       fit-content was tried first and sizes the root to the WIDEST child, which
+       is the driver bar -- it carries the lap clock, the joker, the resets, the
+       checkpoint counter, the distance, the race clock, a slider and three
+       buttons, so it is reliably wider than the board it belongs under. The bar
+       then stretched to itself and nothing lined up, which is the same symptom
+       one layer along.
+
+       The board is the thing with a size a driver chose (the grip stores it), so
+       it is the thing the rest follows. */
+    width: var(--rm-lb-width, 100%);
     max-width: 100%;
   }
+  /* Content-sized, so it is never stretched by the width it is itself setting. */
+  .rm-minimal .rm-table-wrap { align-self: flex-start; }
+  /* ...and the bar wraps rather than forcing the column wider than the board. */
+  .rm-minimal .rm-driverbar { flex-wrap: wrap; }
   .rm-minimal .rm-table-wrap {
     flex: none;
     position: relative;
