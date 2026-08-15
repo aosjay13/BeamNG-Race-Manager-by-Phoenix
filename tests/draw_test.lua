@@ -128,9 +128,10 @@ check(#quads == 0,
   'a driver gets no FILLED gate surfaces -- that is the authoring view')
 check(#texts == 2,
   'and exactly two gate labels: the one they are aiming at and the one after it')
-check(#cylinders == 6,
-  'drawn as two POLE GATES -- two uprights and a top bar each, not a circuit of '
-    .. 'rectangles and not the stock markers')
+check(#cylinders == 4,
+  'drawn as TWO POLES each and nothing else -- no top bar, because the thing '
+    .. 'being marked is the line BETWEEN them at any height, and a bar reads as '
+    .. 'a hoop to aim at')
 
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {},
   youAreAdmin = true })

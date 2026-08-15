@@ -42,10 +42,10 @@ local TUNE = {
   MIN_HEIGHT = 1,
   MAX_HEIGHT = 100,
   EDGE_RADIUS = 0.15,  -- meters; thickness of the drawn rectangle edge
-  -- Thickness of a race POLE. Fatter than an editor edge on purpose: this is the
-  -- one a driver reads at a hundred miles an hour, and the complaint that
-  -- produced it was that the stock markers could not be seen at all.
-  POLE_RADIUS = 0.35,
+  -- Thickness of a race POLE. Fatter than an editor edge -- this is the one a
+  -- driver reads at a hundred miles an hour -- but only just: the first attempt
+  -- at 0.35 read as a pair of pillars rather than a gate.
+  POLE_RADIUS = 0.18,
   GHOST_ALPHA = 0.35,  -- mesh alpha applied to a ghosted car
   -- Reset ghosting. The DURATIONS are not here: they are a league rule, so the
   -- server owns them and broadcasts them (see ghost.rules). What is left is
@@ -1644,11 +1644,13 @@ local function respawnRemovedVehicle()
     spawned = pcall(core_vehicles.replaceVehicle, snap.model, opts)
   end
   if spawned then
-    -- Turn it to face down the slot. placeOnStartPosition is what the grid uses
-    -- and it is the only call that knows about BeamNG's -Y vehicle forward; the
-    -- spawn above deliberately did not try, because getting that half-turn wrong
-    -- is what put every respawned car on its slot pointing backwards.
-    if sp then placeOnStartPosition(sp) end
+    -- NOT placed or turned here. BeamNG spawns asynchronously and the vehicle
+    -- does not exist on this frame, so a placement call made now finds nothing
+    -- and silently does nothing -- which is why cars kept coming back facing
+    -- whichever way they finished. The placement scheduler already has a step
+    -- for this: it waits out a spawn grace and THEN calls placeOnAssignedSlot,
+    -- which is the same call the grid itself uses. releaseSpectator hands it the
+    -- slot so that step has something to place onto.
     log('I', 'raceManager', 'Respawned ' .. tostring(snap.model) .. ' after the session ended')
   else
     -- Keep the snapshot: a failed spawn is worth another attempt when the
@@ -1868,8 +1870,13 @@ local function releaseSpectator(source, order, count)
   -- nothing to interpenetrate. respawnRemovedVehicle stays in the placement path
   -- as a safety net for a snapshot taken by an older build -- with nothing
   -- removed it is a no-op.
+  -- The slot this driver owned, taken from the snapshot rather than gridSlot:
+  -- the phase change to 'finished' clears gridSlot and lands BEFORE this. The
+  -- scheduler places the car on it after the spawn grace, which is the only
+  -- moment the vehicle actually exists to be placed.
+  local slot = (removedVehicle and removedVehicle.slot) or gridSlot
   if queueFieldPlacement then
-    queueFieldPlacement({ respawn = true, order = order, count = count })
+    queueFieldPlacement({ respawn = true, slot = slot, order = order, count = count })
   else
     respawnRemovedVehicle()
     bindCameraToOwnVehicle()
@@ -4594,18 +4601,22 @@ end
 --
 -- So the shape is kept and drawn here instead, out of the same cylinders the
 -- editor rectangle is built from: full opacity, this mod's own colours, and a
--- height that is the gate's own. Two verticals at the gate edges, a bar across
--- the top so it still reads as a gate rather than two unrelated posts, and the
--- label above it.
+-- height that is the gate's own. TWO VERTICALS AND NOTHING ELSE, with the label
+-- floating between them.
 --
--- No fill and no bottom edge: a filled surface across the racing line is the
--- editor's view, and a bar at road height is a thing to drive into.
+-- No top bar: it was there so the pair would read as a gate rather than two
+-- unrelated posts, and on track it reads as a hoop to aim at instead -- which is
+-- wrong, because the thing being marked is the LINE BETWEEN the poles, at any
+-- height. Two poles is what BeamNG's own markers are, and it is what a driver
+-- already understands.
+--
+-- No fill and no bottom edge either: a filled surface across the racing line is
+-- the editor's view, and a bar at road height is a thing to drive into.
 local function drawPoleGate(wp, color, label)
   local g = gateGeometry(wp)
   local r = TUNE.POLE_RADIUS
   debugDrawer:drawCylinder(g.bl, g.tl, r, color)
   debugDrawer:drawCylinder(g.br, g.tr, r, color)
-  debugDrawer:drawCylinder(g.tl, g.tr, r * 0.6, color)
   if label then
     local p = palette()
     debugDrawer:drawTextAdvanced(g.mid, String(label), p.text, true, false, p.textBg)
@@ -5756,6 +5767,16 @@ end
 -- Told to the server as well as kept locally, because the lap count is the
 -- server's and a sprint stage is one traversal by definition -- leaving an
 -- admin to also remember "and set laps to 1" is the workaround this replaces.
+-- Out lap: 'auto' trusts the track (a grid away from the start/finish line owes
+-- one), 'on' and 'off' override it. See outLapOwed on the server.
+function M.setOutLapMode(mode)
+  mode = tostring(mode or 'auto')
+  if mode ~= 'auto' and mode ~= 'on' and mode ~= 'off' then mode = 'auto' end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetOutLapMode', jsonEncode({ mode = mode }))
+  end
+end
+
 function M.setPointToPoint(on)
   pointToPoint = on == true
   labelCache.route = {}          -- the gate labels say which mode this is

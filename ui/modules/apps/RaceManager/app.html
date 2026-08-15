@@ -34,7 +34,7 @@
       <!-- A running clock reads as a time being taken, so the out lap does not
            get one. The driver is told what the lap is for instead. -->
       <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
-            title="Qualifying gives the first lap away: it starts from a standing grid, so it measures the launch rather than the lap. Timing starts as you cross the line.">
+            title="This session gives its first lap away: it starts from a standing grid, so it measures the launch rather than the lap. Timing starts as you cross the line.">
         OUT LAP — NOT TIMED
       </span>
       <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()"
@@ -53,8 +53,8 @@
     <!-- Session rule, not this driver's state: it stands for the whole session
          so a spectator or an admin can see which rules are in force. Whether the
          driver is on their own out lap right now is the readout above. -->
-    <span class="rm-out-badge" ng-if="phase === 'qualifying' && qualiOutLap"
-          title="The first lap of this session is an out lap: not timed, not scored, and not counted against the lap allowance.">OUT LAP RULE</span>
+    <span class="rm-out-badge" ng-if="sessionUnderWay() && qualiOutLap"
+          title="The first lap of this session is an out lap: not timed, not scored, and not counted against the lap target. A race owes one when its grid is not on the start/finish line.">OUT LAP RULE</span>
     <!-- Your own grid slot, and the hold before the lights go out -->
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
       START P{{ gridSlot }}<b ng-if="gridFrozen"> — HOLD</b>
@@ -325,6 +325,21 @@
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': resetMode === 'checkpoint'}"
               ng-click="setResetMode('checkpoint')"
               ng-disabled="phase === 'countdown' || phase === 'racing'">Last checkpoint</button>
+    </span>
+    <!-- Out lap. Auto reads it off the track: a grid that is not on the
+         start/finish line owes one, because the run to the first crossing is a
+         part lap that must not be timed. An inference can be wrong about
+         somebody's track, so it can be forced either way. -->
+    <span class="rm-setting" title="The first lap is an out lap: not timed, not scored, and added on top of the lap target. Auto turns it on when the grid is away from the start/finish line, which a head-on layout always is.">
+      <label>Out lap</label>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': outLapMode === 'auto'}"
+              ng-click="setOutLapMode('auto')" ng-disabled="sessionUnderWay()"
+              title="Decide from the track: on when the grid is away from the start/finish line.">Auto</button>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': outLapMode === 'on'}"
+              ng-click="setOutLapMode('on')" ng-disabled="sessionUnderWay()">Always</button>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': outLapMode === 'off'}"
+              ng-click="setOutLapMode('off')" ng-disabled="sessionUnderWay()">Never</button>
+      <span class="rm-setting-val" ng-if="outLapMode === 'auto'">{{ gridOffLine ? 'on (grid off the line)' : 'off (grid on the line)' }}</span>
     </span>
     <!-- Module 2: rallycross joker lap -->
     <span class="rm-setting" title="Rallycross joker lap: every finisher must take the Joker Route exactly once (never on lap 1) or the server disqualifies them at the flag.">
@@ -1708,7 +1723,7 @@
            minimal mode, so a running number here is the only thing they have to
            go on — and on a lap that is not being timed it would be a lie. -->
       <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
-            title="Qualifying gives the first lap away: it starts from a standing grid, so it measures the launch rather than the lap. Timing starts as you cross the line.">
+            title="This session gives its first lap away: it starts from a standing grid, so it measures the launch rather than the lap. Timing starts as you cross the line.">
         OUT LAP — NOT TIMED
       </span>
       <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()">
@@ -1896,7 +1911,7 @@
                    title="Type a starting slot and press Enter to pin this driver to it">
           </td>
           <td class="rm-col-name" title="{{ driverName(row) }}{{ realName(row) ? ' (' + realName(row) + ')' : '' }}">{{ driverName(row) }}</td>
-          <td class="rm-col-lap" title="{{ row.cpCleared ? row.cpCleared + ' checkpoint(s) cleared this lap' : '' }}">{{ row.currentLap ? row.currentLap + '/' + totalLaps : '—' }}</td>
+          <td class="rm-col-lap" title="{{ row.outLap ? 'On the out lap — not timed and not counted' : (row.cpCleared ? row.cpCleared + ' checkpoint(s) cleared this lap' : '') }}">{{ lapLabel(row) }}</td>
           <!-- Fastest lap of the session, in gold. A plain equality test per
                row, evaluated by the same digest that already renders the cell. -->
           <td class="rm-col-time" ng-class="{'rm-best-lap': row.id === bestLapPid && row.raceBest}"

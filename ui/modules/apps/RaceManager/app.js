@@ -1021,6 +1021,24 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.setAlias(' + row.id + ", '')");
       };
 
+      // THE LAP A DRIVER IS ON, which is not the number of times they have
+      // crossed the line.
+      //
+      // currentLap counts CROSSINGS, and on a track that owes an out lap the
+      // first of those is a lap nobody scored -- so a two lap race read "3/2" on
+      // the last lap: three crossings against a target that never counted the
+      // give-away one. The two numbers were measuring different things.
+      //
+      // While the out lap is still owed there is no racing lap yet, so the cell
+      // says so rather than claiming lap 1.
+      $scope.lapLabel = function (row) {
+        if (!row || !row.currentLap) { return '—'; }
+        if (row.outLap) { return 'OUT'; }
+        var lap = row.currentLap - ($scope.qualiOutLap ? 1 : 0);
+        if (lap < 1) { lap = 1; }
+        return lap + '/' + $scope.totalLaps;
+      };
+
       $scope.phaseLabel = function () {
         if ($scope.sessionKind === 'quali' && QUALI_PHASE_LABELS[$scope.phase]) {
           return QUALI_PHASE_LABELS[$scope.phase];
@@ -1296,6 +1314,7 @@ angular.module('beamng.apps')
           // leaderboard shows a Line column — on an ordinary circuit it is a
           // column that would say the same thing on every row.
           $scope.hasBranches = !!data.hasBranches;
+          if (typeof data.outLapMode === 'string') { $scope.outLapMode = data.outLapMode; }
           // Joker gates the LOADED TRACK has, which is not the same as the ones
           // this client happens to have placed in its editor: the toggle has to
           // reflect what the server would actually enforce.
@@ -2285,6 +2304,10 @@ angular.module('beamng.apps')
       $scope.toggleEntryMode = function () {
         bngApi.engineLua('raceManager.setEntryMode("'
           + ($scope.entryMode === 'all' ? 'join' : 'all') + '")');
+      };
+      $scope.outLapMode = 'auto';
+      $scope.setOutLapMode = function (mode) {
+        bngApi.engineLua('raceManager.setOutLapMode("' + mode + '")');
       };
       $scope.setGridMode = function (mode) {
         bngApi.engineLua('raceManager.setGridMode("' + mode + '")');
