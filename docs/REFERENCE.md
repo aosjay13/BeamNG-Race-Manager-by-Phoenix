@@ -109,6 +109,21 @@ course you want to race:
    moves. Both work on the joker route and pit stalls too.
 5. **Undo** removes the last gate, **Clear** wipes the route,
    **Hide/Show Gates** toggles the in-world drawing.
+6. **Nudge** is the mouse pass. Turn it on and the cursor is released from the
+   camera: click a gate to pick it, drag to move it along the ground, scroll to
+   turn it. It works on whichever editor tab you are on, so checkpoints, joker
+   gates, pit stalls, lane gates and start positions are all movable.
+
+   Turning it off leaves the cursor free unless the mode is certain it took the
+   mouse from the camera in the first place. BeamNG offers no way to ask what the
+   cursor was doing, and guessing wrong in the other direction leaves an admin
+   unable to click anything at all, including the button that would give the
+   cursor back. Use your normal camera key to return the mouse to the view.
+
+   Driving to a spot and pressing the button is still how a track gets built: it
+   puts a gate where a car actually fits, facing the way one actually travels.
+   Nudge is for the pass afterwards, where a gate is ten metres late or a few
+   degrees off and re-driving the corner is the expensive part.
 6. There is no local scratch copy. Tracks live on the server, where everyone
    races on the same one - save as you go with **Overwrite**.
 

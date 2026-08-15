@@ -78,6 +78,8 @@ angular.module('beamng.apps')
         return EDITOR_TARGETS[value] ? value : 'main';
       }
       $scope.editorTarget = 'main';
+      $scope.nudgeOn = false;
+      $scope.nudgeSel = null;
       // Branching routes: the other ways round this track. A branch is a sparse
       // set of per-slot gate overrides on the main route, so it never adds slots
       // - which is why the leaderboard needs no lane arithmetic at all.
@@ -1466,6 +1468,11 @@ angular.module('beamng.apps')
           $scope.jokerTaken = !!data.jokerTaken;
           $scope.jokerLap = data.jokerLap || null;
           $scope.editorTarget = editorTargetOf(data.editorTarget);
+          // Nudge mode. The CLIENT owns whether it is on: it can end the mode by
+          // itself when a session starts or the editor closes, and the button
+          // has to follow that rather than what it last asked for.
+          $scope.nudgeOn = data.nudgeOn === true;
+          $scope.nudgeSel = data.nudgeSel || null;
           // Branching routes.
           $scope.branches = toArray(data.branches);
           $scope.branchEdit = data.branchEdit || null;
@@ -2469,6 +2476,13 @@ angular.module('beamng.apps')
       $scope.editorClear = function () {
         bngApi.engineLua('raceManager.editorClear()');
       };
+      // Nudge mode borrows the mouse from the camera, so the panel has to show
+      // clearly when it is on. The client echoes the real state back through the
+      // route broadcast; this is only the request.
+      $scope.toggleNudge = function () {
+        bngApi.engineLua('raceManager.setNudgeMode(' + (!$scope.nudgeOn) + ')');
+      };
+
       $scope.editorToggleVisualize = function () {
         bngApi.engineLua('raceManager.editorToggleVisualize()');
       };
