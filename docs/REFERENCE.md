@@ -37,8 +37,10 @@ Build/Load a track  →  Start Quali  →  Start Countdown  →  Qualifying
 
 Qualifying and the race run the **same** session lifecycle: form the grid,
 hold the field, count down, run, take finished cars off the track, give
-everybody their car back. The only things that differ are the lap target and
-how a lap is scored (best lap in qualifying, running order in the race).
+everybody their car back. The only things that differ are the lap target, how
+a lap is scored (best lap in qualifying, running order in the race), and the
+qualifying **out lap** — the first lap of a qualifying session is not timed,
+because it starts from a standing grid (see [Step 5](#step-5--qualifying)).
 
 ### Step 1 — Open the app
 
@@ -191,16 +193,24 @@ panel) live on the server and persist across server restarts:
 
 ### Step 4 — Who is actually in the race
 
-Being connected is **not** the same as being entered. Every player gets a
-**Race Entry** bar with a **Join Race** button; only drivers who joined are
-put on the grid, and the bar shows how many have entered. Withdrawing
-(**Leave Race**) gives up your slot. Entry closes once the countdown starts.
+**Everyone races** is the default: every connected player is in the field, and
+a server nobody has configured grids the people who turned up. The **Race
+Entry** bar shows how many that is.
 
-An admin can flip the mode to **Everyone races** if a session is simpler that
-way — then every connected player is in the field, which is how the plugin
-behaved before entry lists existed. Entry survives a **Start Quali**, so
-drivers only ever have to join once per event (**Reset** stands the whole
-field down and everyone joins again).
+That default is the one that fails safe. Under opt-in, an admin who has not
+realised the setting exists presses Generate Grid and forms a grid of *nobody* —
+every driver on the server left standing while the one person who could fix it
+works out that a button they have never needed was the problem. Under
+**Everyone races**, the mistake is that somebody who wanted to watch is put on
+the grid, and they undo it with one press.
+
+An admin can flip the mode to **Opt-in entry** when the field needs to be a
+subset of who is connected — a league night on a public server, say. Then being
+connected is **not** being entered: every player gets a **Join Race** button and
+only drivers who pressed it are gridded, withdrawing (**Leave Race**) gives up
+the slot, and entry closes once the countdown starts. Entry survives a **Start
+Quali**, so drivers only ever have to join once per event (**Reset** stands the
+whole field down and everyone joins again).
 
 The two modes are two answers to "who is in the field" and nothing more —
 from there they run identical code. A field of drivers who all pressed **Join
@@ -214,10 +224,41 @@ qualifying grid exactly the way Generate Grid forms a race one — every
 entrant is stood on a start position and held — and the countdown releases
 the field.
 
-Lap 1 starts at the line, so **three qualifying laps means three laps**.
-There is no out-lap: qualifying used to begin wherever each driver happened
-to be parked, which cost everyone a lap before their first one counted and
-made a "3 lap" session take five or six.
+**The out lap.** The field starts from a standing grid, so the first lap is
+the lap you spent getting off the line. It is given away: **not timed, not
+scored, and not counted against the lap allowance.** Your clock starts as you
+cross the line for the first time, and **three qualifying laps still means
+three timed laps** — four trips past the line in total.
+
+This is not the out-lap the mod used to have. That one existed because
+qualifying began wherever each driver happened to be parked, so the first
+crossing arrived at a different point of the circuit for everybody and a
+"3 lap" session took five or six laps to finish. This one starts on the grid
+with everyone else's and is counted *separately* from the allowance, so
+nothing is taken out of a driver's session — only the standing start is
+excluded from the timing.
+
+Drivers are told, rather than left to work it out from a lap time that never
+appears:
+
+- chat announces it at **GO**, and again to each driver as they complete it
+  (`Out lap complete — your next lap is TIMED`);
+- the driver's own lap readout shows `OUT LAP — NOT TIMED` in place of the
+  running clock, then `OUT LAP DONE — TIMING` as they cross the line;
+- the timing table shows `OUT LAP` in the Best Lap column for every driver
+  still on theirs, and an **OUT LAP RULE** badge sits in the header for the
+  session;
+- the results file records `out lap not timed` in the qualifying format line,
+  so a lap count read months later still adds up.
+
+**A point-to-point stage has no out lap.** A sprint is driven once, first gate
+to last — a lap given away there is the whole session given away, and there is
+no line to come back past to start a timed one.
+
+The out lap is also never the crossing that *ends* a driver's session. If the
+qualifying clock expires while you are still on it (see the final lap below),
+you complete it, start your flying lap, and take the flag on that — the same
+one timed lap everybody else on track gets.
 
 Each full lap through all gates posts to the server — the table shows
 everyone's **Best Lap**, laps run and live provisional grid order, fastest on
@@ -225,13 +266,26 @@ top. Only your best counts. A driver who uses their lap allowance is taken
 off the track until the session ends, then gets their car back with everyone
 else. **End Session** closes qualifying early but keeps the times.
 
-Three qualifying options sit in the admin settings:
+Two qualifying options sit in the admin settings:
 
 | Setting | What it does |
 |---------|--------------|
 | **Ghost quali** | Rival cars stop being obstacles for the session, so a flying lap can't be ruined by traffic. Ghosted cars are faded so you can see who they are. |
-| **Quali laps** | Timed laps each driver gets. Their session ends when they use them up; the whole session closes once nobody has laps left. `0` = unlimited. |
-| **Quali mins** | Wall-clock limit. The header shows the countdown; when it expires the session runs a **final lap** (below) rather than stopping dead. `0` = no limit. |
+| **Quali length** | Whether the session is run to a **lap allowance** or to a **clock** — pick one, and only that box is shown. |
+
+**A qualifying session runs to laps or to a clock, not both.** The **Quali
+length** row is a choice between the two:
+
+- **Laps** — the number of **timed** laps each driver gets. The out lap is not
+  one of them, so `3` gives an out lap and then 3 flying laps. A driver's
+  session ends when they use them up; the session closes once nobody has laps
+  left.
+- **Timed** — minutes of wall clock. The header shows the countdown; when it
+  expires the session runs a **final lap** (below) rather than stopping dead.
+
+Whichever you pick, `0` means unlimited, and switching between them switches the
+other off — so the two can never be armed together by accident. Both are locked
+while qualifying is actually running, so nobody has the rug pulled mid-lap.
 
 **The final lap.** When a timed session's clock expires it does not end the
 session — everyone still out is mid-lap, and in qualifying that is the lap
@@ -251,21 +305,31 @@ the last driver has taken the flag.
 Two rules keep it from hanging. A crossing the server sees *after* expiry is
 terminal — there is no extra lap for whoever was closest to the line, and
 arrival order at the server decides it, the same way it decides every other
-question of who was first. And a driver who never comes round (parked, in the
+question of who was first. (The one exception is the out lap, which is never
+terminal: a driver still on theirs at expiry would otherwise be stood down
+with no time at all, eliminated by the one lap the session had already
+promised not to score.) And a driver who never comes round (parked, in the
 pits, never left the grid) is bounded by a **3 minute grace**, after which
 the stragglers are taken where they stand and the session closes normally.
 
-Both limits are locked while qualifying is actually running, so nobody has
-the rug pulled mid-lap.
-
 ### Step 6 — Grid and race
 
-1. Set the race distance with the **Laps** field + **Set** (visible to
-   everyone as `race: N`).
+1. Set the race distance in the **Laps** field. It applies as you type — there
+   is no Set button (see [Settings apply
+   themselves](#settings-apply-themselves)) — and the value in force is shown
+   beside the box, and to everyone else, as `race: N`.
 2. Choose the **Grid order**:
    - **Quali** — fastest-first from quali bests; drivers without a time go to
      the back (the default, and with no qualifying at all it falls back to
      join order).
+   - **Reverse** — a reverse grid: **slowest qualifier on pole, fastest at the
+     back**, so the quick drivers have to come through the field. It inverts
+     the *times* and nothing else — a driver who set no time still starts at
+     the back, behind everyone who did. A literal reversal would put them on
+     pole, and then the quickest way to start first is to sit in the pits and
+     set nothing; a reverse grid is meant to reward the slow, not the absent.
+     (Which also means the fastest qualifier lines up last of the drivers who
+     actually ran.)
    - **Random** — a random draw, for a race with no qualifying behind it.
    - **Custom** — type a slot number next to any driver in the **Start**
      column and press Enter. Pinning a slot someone else holds takes it off
@@ -343,11 +407,18 @@ finish are not eligible — there is no finishing position to have gained to —
 if nobody gained a place the line is left out rather than given to whoever lost
 the fewest.
 
+**If a cup is running**, the file ends with the championship round this race
+just banked — see [Cup points in the results file](#cup-points-in-the-results-file).
+
 Housekeeping:
 
 - **Reset** wipes the session back to Waiting with fresh driver records.
 - **Clear Results Cache** deletes all saved result `.txt` files on the
-  server (chat confirms how many were removed).
+  server (chat confirms how many were removed). It asks first: the button is
+  replaced by *Delete every saved results file on the server?* with **Yes,
+  clear them** and **Cancel**, the same two-press step **End Cup** is behind.
+  Once a session is over that file is the only record a league has that the
+  race happened, and there is no undo.
 
 ## Live position tracking
 
@@ -482,9 +553,13 @@ resets/repairs each driver gets per session:
 
 | Value | Meaning |
 |-------|---------|
-| `-1` (or blank) | Unlimited — the default |
+| `-1` | Unlimited — the default |
 | `0` | No resets at all: the reset button does nothing |
 | `N` | `N` resets; every press after that is blocked |
+
+The field applies itself as you type (see [Settings apply
+themselves](#settings-apply-themselves)), so an **empty** box means "still
+typing" and is never sent — `-1` is how you ask for unlimited.
 
 The BeamMP server never sees a reset happen, so the **client** polices it.
 Every reset inside the allowance is counted and reported (the leaderboard
@@ -738,6 +813,55 @@ Authenticated admins are exempt (otherwise you could never spawn the car you
 are about to whitelist), and an empty list never enforces anything, so it is
 impossible to lock the whole server out by accident.
 
+### Settings apply themselves
+
+**Laps**, **Max resets** and the qualifying **Laps / Minutes** boxes have no Set
+button. Type a number and it applies — half a second after you stop typing, or
+immediately if you click away from the box. The value the server actually holds
+is displayed beside each field, so what is in force is always readable.
+
+A Set button earns its place when an edit is several fields that only make sense
+applied together, which is why the **cup points tables keep theirs**. A single
+number that is cheap to send and trivially changed again is not that, and
+forgetting to press the button is a silent failure that turns up as the wrong
+race distance.
+
+Two consequences worth knowing:
+
+- **An empty box is never sent.** It means "still typing", not zero and not
+  unlimited — clearing `5` to type `12` must not spend the moment in between
+  running an open session or an unlimited reset allowance. Type `-1` for
+  unlimited resets, or `0` for an unlimited qualifying session.
+- **Settings stay put for the whole event.** They live on the server, not in
+  the app, and nothing but changing them again moves them: they survive Start
+  Quali, Generate Grid, a countdown and **Reset**, and every admin's panel
+  shows the same values because all of them are reading the server's. (They are
+  *not* written to disk — restarting the server returns them to their
+  defaults. Track layouts, the garage, the roster and the cup are the things
+  that survive that.)
+
+### What a checkpoint looks like
+
+Two different drawings of the same checkpoint, for two different jobs:
+
+- **In the editor** — the flat rectangle the crossing test actually uses, with
+  its number and a direction arrow, drawn for the whole route at once so a
+  layout can be checked. White is the start/finish line, orange the rest of the
+  route, green your next target, violet the joker, amber a pit stall.
+- **On track during a session** — BeamNG's own **gate poles**, two columns
+  either side of the racing line, on the gate you are heading for and the one
+  after it. Only those two: a whole circuit wearing poles is a wall of gates.
+
+Both are as bright as their colour allows. The poles take BeamNG's palette and
+lift each colour to the luminous version of itself — the hue is the engine's,
+and the meanings a BeamNG driver already knows still hold, but a marker that was
+a dark silhouette against a pale road or a low sun is now plainly a marker. The
+one pole that is not merely brightened is **the gate after the one you are on**:
+the engine ships that mode black, because in its own races it is not your
+concern yet. This mod puts a marker there specifically so the line through the
+corner reads before you arrive, so it is painted the orange of the route ahead
+instead — visible, and a shade under the gate actually being aimed at.
+
 ### Driver UI (non-admins)
 
 - **Checkpoint gates are drawn for everyone.** During a countdown, qualifying
@@ -940,6 +1064,51 @@ A mixed cup therefore contains a race championship and a derby championship as
 well as an overall one, and you can read any of the three. A cup that only ever
 held one kind shows just the combined table, without an empty column for the
 discipline it never ran.
+
+### Cup points in the results file
+
+When a cup is running, every results file ends with the round that event
+banked — so the standings leave the game with the result, instead of being
+retyped off a screenshot by whoever compiles them. **Derby results files carry
+the same section**, in the same layout: a league reading two files from one
+evening should not have to learn two formats, or find the championship in only
+one of them.
+
+```
+--- CUP: Winter Series (round 4) ---
+ Scoring: 30P Aggressive to P24, qualifying to P3 | DNF: none
+Pos   Driver                 Race   Quali  Bonus  Round   Total
+P1    Ryder                  25     0      0      25      110
+P2    Phoenix                27     0      0      27      108
+P3    Falcon                 30     0      8      38      91
+P4    Nomad                  23     0      0      23      77
+
+ BONUSES THIS ROUND
+ Fastest Lap: Falcon (+5)
+ Hard Charger: Falcon (+3)
+```
+
+- **Pos** is the championship position *after* this round, not the finishing
+  position — the table is the standings, with what each driver scored today
+  broken out beside their total.
+- **Race / Quali / Bonus** are the parts of this round's score; **Round** is
+  their sum. A driver who was not in this round shows `-` in all four rather
+  than `0`: not scoring and not being there are different facts.
+- Bonuses are **listed by name and recipient** underneath. A `+8` in a column
+  does not say what it was for, which is the question somebody checking a
+  championship a month later actually has.
+- Manual adjustments, if any, are listed the same way — a total nobody can take
+  apart is a total nobody can check.
+- The numbers come from the cup's own tables, so the file and the Cup panel can
+  never disagree about a total.
+
+A race night with no cup running produces exactly the results file it always
+did; the section is simply absent. Qualifying does not get one either — its
+points are [held, not banked](#qualifying-points), and they appear in the
+**Quali** column of the race that banks them. Nor does an event that scored
+nothing (a cup that is switched off, one at its round cap, or a derby in a cup
+whose derby points are off): the file reports the round that was actually
+banked, never "the round the cup is on".
 
 Ties break on wins. Manual adjustments sit outside both disciplines — a penalty
 applies to a driver's standing in the cup, not to one half of it.

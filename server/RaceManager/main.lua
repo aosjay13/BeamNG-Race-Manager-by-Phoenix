@@ -79,14 +79,24 @@ local race = {
   maxResets    = UNLIMITED_RESETS,  -- vehicle resets allowed per driver per session
   resetMode    = 'inplace',  -- what a legal reset does: 'inplace' | 'checkpoint'
   jokerEnabled = false,      -- rallycross joker lap required exactly once per race
-  -- Race entry. 'join' (default): drivers opt in with the UI's Join Race button
-  -- and only they are gridded. 'all': every connected session is a participant,
-  -- which is how the plugin behaved before entry lists existed.
-  entryMode    = 'join',
+  -- Race entry. 'all' (default): every connected session is a participant, so a
+  -- server that never touches this setting grids everybody who is there. 'join':
+  -- drivers opt in with the UI's Join Race button and only they are gridded.
+  --
+  -- The default is 'all' because it is the answer that fails safe. Getting it
+  -- wrong under 'join' means an admin presses Generate Grid and forms a grid of
+  -- nobody -- every driver on the server is left standing while the one person
+  -- who could fix it works out that a button they have never needed was the
+  -- problem. Getting it wrong under 'all' means somebody who wanted to watch is
+  -- put on the grid, which they undo with one press of Leave. The demo derby
+  -- has defaulted to 'all' since it was written; this is the racing side
+  -- agreeing with it.
+  entryMode    = 'all',
   -- Starting grid. gridMode decides how the slots are filled:
-  --   quali  -- fastest qualifying lap first (the classic behaviour)
-  --   random -- a random draw, for when no qualifying was run
-  --   custom -- the order the admin set by hand (RM_SetDriverGrid)
+  --   quali   -- fastest qualifying lap first (the classic behaviour)
+  --   reverse -- slowest qualifying lap first, so the fastest starts last
+  --   random  -- a random draw, for when no qualifying was run
+  --   custom  -- the order the admin set by hand (RM_SetDriverGrid)
   gridMode     = 'quali',
   startSlots   = 0,          -- start positions the loaded track layout has
   -- Is the loaded track a sprint stage rather than a circuit? A point-to-point
@@ -103,9 +113,18 @@ local race = {
   startPositions = {},
   -- Qualifying session rules.
   ghostQuali     = false,    -- rivals are ghosts during qualifying
+  -- qualiLapLimit counts TIMED laps, which is not the same as crossings: every
+  -- driver owes an OUT LAP first (see qualiOutLap below), so a 3 lap session is
+  -- four trips past the line and three times that can go on the board.
   qualiLapLimit  = 0,        -- timed laps allowed per driver (0 = unlimited)
   qualiTimeLimit = 0,        -- seconds the session runs for (0 = unlimited)
   qualiTime      = 0.0,      -- seconds elapsed in the current quali session
+  -- Did the qualifying session that produced the times on the board give an out
+  -- lap away? A RECORD of what was run, not the rule: the results file is
+  -- written at the end of the RACE, by which point the live rule reads 'race'
+  -- and the track underneath may even have been swapped. The file has to
+  -- describe the session the times came from.
+  qualiOutLapRun = false,
   -- Post-expiry state for a TIMED session, and the one piece of the lifecycle a
   -- lap-limited session has no equivalent of.
   --
@@ -157,6 +176,30 @@ local MAX_QUALI_TIME   = 7200   -- seconds (2 h)
 -- the session closes normally.
 local FINAL_LAP_GRACE  = 180    -- seconds
 
+-- Does the session now running open with an OUT LAP -- one trip past the line
+-- that is neither timed nor scored nor counted against the lap allowance?
+--
+-- Qualifying starts from a standing grid, so a driver's first crossing is the
+-- lap they spent getting off the line: it is a measure of a launch, not of a
+-- car and a driver over a circuit, and on any track with a slow first corner it
+-- is a time nobody can beat later in the session for reasons that have nothing
+-- to do with pace. Every real qualifying session gives that lap away, and this
+-- one does too -- the clock starts when the driver next crosses the line.
+--
+-- Nothing here is the out lap of the version this replaced. That one existed
+-- because qualifying had no defined starting point at all (drivers began from
+-- wherever they were parked), so the first crossing was arbitrary and a "3 lap"
+-- session took five or six laps to get through. This out lap starts on the
+-- grid, ends at the line, and is COUNTED SEPARATELY from the allowance, so
+-- three qualifying laps still means three timed laps.
+--
+-- A sprint stage is the exception and has to be: a point-to-point run is driven
+-- once, first gate to last, so a lap given away is the whole session given
+-- away. There is no line to come back past either.
+local function qualiOutLap()
+  return race.sessionKind == 'quali' and not race.pointToPoint
+end
+
 -- ---------------------------------------------------------------------------
 -- Admin authentication
 -- ---------------------------------------------------------------------------
@@ -196,6 +239,12 @@ local function newRecord(pid)
     customGrid = nil,        -- slot the admin pinned this driver to (custom mode)
     qualiBest  = nil,        -- best qualifying lap (seconds)
     qualiLaps  = 0,          -- timed qualifying laps completed this session
+    -- This driver still owes the out lap: their next crossing is the one that
+    -- starts their timing rather than one that records anything. Per driver and
+    -- not a session-wide flag, because the field is spread around the circuit --
+    -- one driver can be two flying laps in while another is still on their out
+    -- lap, and each of them has to be told the truth about their own lap.
+    outLap     = false,
     raceBest   = nil,        -- best race lap (seconds)
     currentLap = 0,          -- lap the driver is currently on (1-based once racing)
     lapsLed    = 0,          -- laps this driver crossed the line first on
@@ -449,9 +498,16 @@ local derbyEntryListChanged
 --                         rather than reading derbyPlayers, so the cup never
 --                         reaches into the derby module's tables and the derby
 --                         module hands over a result instead of exposing state.
+--   cupResultsLines       the round just banked, as text lines for the results
+--                         file. The traffic goes the other way here -- results
+--                         asking the cup, rather than the cup being told -- and
+--                         it is still a read of a finished round, after the
+--                         cars have stopped. It returns nil when no cup is
+--                         running, which is what keeps a plain race night's
+--                         results file byte-for-byte what it always was.
 local rosterRemember, rosterUnbind, rosterEntryFor
 local rosterBindTo, rosterList, rosterForget
-local cupOnSessionComplete, cupOnDerbyComplete
+local cupOnSessionComplete, cupOnDerbyComplete, cupResultsLines
 -- Boot-time cache warm for the two, called from onInit. They exist because both
 -- modules are wrapped in a `do ... end` block: Lua allows 200 locals per
 -- function and this chunk was already close to it, so everything those modules
@@ -573,7 +629,7 @@ end
 local DRIVER_WIRE_FIELDS = {
   'id', 'name', 'alias', 'status', 'joined',
   'gridPos', 'customGrid', 'position',
-  'qualiBest', 'qualiLaps', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
+  'qualiBest', 'qualiLaps', 'outLap', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
   'finishTime', 'resets', 'resetsBlocked',
   'jokerTaken', 'jokerLap', 'outReason', 'dnfPos',
 }
@@ -667,7 +723,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.7.0'
+local RM_BUILD = '0.8.0'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -773,6 +829,11 @@ local function broadcastState(targetPid)
     ghosts       = ghostRoster(),
     -- Qualifying rules and clock.
     ghostQuali     = race.ghostQuali,
+    -- Whether this session opens with an out lap, so a client can say so before
+    -- the driver has crossed anything -- and can stop saying it on the sprint
+    -- stage that has none. The per-driver half of this rides on the driver rows
+    -- (`outLap`), because who is still owing one is a per-driver question.
+    qualiOutLap    = qualiOutLap(),
     qualiLapLimit  = race.qualiLapLimit,
     qualiTimeLimit = race.qualiTimeLimit,
     qualiTime      = race.qualiTime,
@@ -1081,7 +1142,7 @@ local function sessionAwards(final)
   return awards
 end
 
-local function buildResultsText()
+local function buildResultsText(cupRound)
   local quali = qualiClassification()
   local final = raceClassification()
   local lines = {}
@@ -1099,9 +1160,14 @@ local function buildResultsText()
   add('==================================================')
   add('')
   add('--- QUALIFYING RESULTS ---')
-  add(string.format(' Format: %s%s%s',
+  -- The lap limit is a limit on TIMED laps, and the out lap is not one of them.
+  -- Spelled out because a results file is read months later by somebody who was
+  -- not there: "3 lap limit" beside a driver who crossed the line four times is
+  -- a discrepancy nobody can settle after the fact.
+  add(string.format(' Format: %s%s%s%s',
     race.ghostQuali and 'ghost mode' or 'standard',
-    race.qualiLapLimit > 0 and (', ' .. race.qualiLapLimit .. ' lap limit') or '',
+    race.qualiOutLapRun and ', out lap not timed' or '',
+    race.qualiLapLimit > 0 and (', ' .. race.qualiLapLimit .. ' timed lap limit') or '',
     race.qualiTimeLimit > 0 and (', ' .. race.qualiTimeLimit .. 's limit') or ''))
   add(string.format('%-5s %-22s %-10s %s', 'Pos', 'Driver', 'Best Lap', 'Laps'))
   for i, rec in ipairs(quali) do
@@ -1174,14 +1240,20 @@ local function buildResultsText()
       displayName(hcRec), awards.hardChargerFrom, awards.hardChargerTo,
       awards.hardChargerGain, awards.hardChargerGain == 1 and '' or 's'))
   end
+  -- The championship this race just fed, if there is one. Asked for rather than
+  -- assembled here: the points, the order and the ledger all belong to the cup
+  -- module, and a second copy of its arithmetic living in the results writer is
+  -- how two totals for the same driver come to disagree.
+  local cupLines = cupResultsLines and cupResultsLines(cupRound) or nil
+  for _, l in ipairs(cupLines or {}) do add(l) end
   add('')
   return table.concat(lines, '\n') .. '\n'
 end
 
-local function writeResults()
+local function writeResults(cupRound)
   ensureResultsDir()
   local path = uniqueResultsPath('results')
-  local text = buildResultsText()
+  local text = buildResultsText(cupRound)
   local f, err = io.open(path, 'w')
   if not f then return false, tostring(err) end
   f:write(text)
@@ -1233,7 +1305,13 @@ local function sessionLapTarget()
   -- switching a circuit layout back in.
   if race.pointToPoint then return 1 end
   if isQualiSession() then
-    return race.qualiLapLimit > 0 and race.qualiLapLimit or nil
+    if race.qualiLapLimit <= 0 then return nil end
+    -- Crossings, not timed laps. The allowance is expressed in laps that COUNT,
+    -- and the out lap is one every driver has to make and none of them is
+    -- scored for, so it is added on top rather than taken out of the allowance:
+    -- a 3 lap session is three flying laps, and the fourth crossing is the one
+    -- that ends it.
+    return race.qualiLapLimit + (qualiOutLap() and 1 or 0)
   end
   return race.totalLaps
 end
@@ -1410,7 +1488,11 @@ local function finishSession(reason)
   -- turns a finisher into a disqualification, and a driver scored ahead of it
   -- would bank winner's points for a race they were excluded from. Does nothing
   -- at all unless a cup is running.
-  if cupOnSessionComplete then cupOnSessionComplete('race') end
+  --
+  -- The round it banks is carried to the results file below rather than looked
+  -- up there: a cup at its round cap scores nothing, and a file that asked the
+  -- cup for "the current round" would then print the previous race's points.
+  local cupRound = cupOnSessionComplete and cupOnSessionComplete('race') or nil
   -- The session is over: every car taken off the track comes back.
   respawnAll('race')
   broadcastState()
@@ -1420,7 +1502,7 @@ local function finishSession(reason)
       excluded, excluded == 1 and '' or 's'))
   end
   print('[RaceManager] Race over: ' .. reason)
-  local ok, wrote, pathOrErr = pcall(writeResults)
+  local ok, wrote, pathOrErr = pcall(writeResults, cupRound)
   if ok and wrote then
     MP.SendChatMessage(-1, '[RaceManager] Session complete! Results saved on the server: ' .. pathOrErr)
     print('[RaceManager] Results written to ' .. pathOrErr)
@@ -1459,12 +1541,14 @@ function RM_onStartQualifying(pid)
   if not formGrid('quali', MP.GetPlayerName(pid) or pid) then return end
   print(string.format('[RaceManager] Qualifying grid formed by %s (%d entrant(s), entry: %s%s%s)',
     MP.GetPlayerName(pid) or pid, entrantCount(), race.entryMode,
-    race.qualiLapLimit > 0 and (', ' .. race.qualiLapLimit .. ' lap limit') or '',
+    race.qualiLapLimit > 0 and (', ' .. race.qualiLapLimit .. ' timed lap limit') or '',
     race.qualiTimeLimit > 0 and (', ' .. race.qualiTimeLimit .. 's limit') or ''))
   MP.SendChatMessage(-1, string.format(
-    '[RaceManager] Qualifying grid formed (%s). Start Countdown to begin the session.',
-    race.qualiLapLimit > 0 and (race.qualiLapLimit .. ' lap' .. (race.qualiLapLimit == 1 and '' or 's'))
-      or 'unlimited laps'))
+    '[RaceManager] Qualifying grid formed (%s%s). Start Countdown to begin the session.',
+    race.qualiLapLimit > 0
+      and (race.qualiLapLimit .. ' timed lap' .. (race.qualiLapLimit == 1 and '' or 's'))
+      or 'unlimited laps',
+    qualiOutLap() and ' + an out lap that is not timed' or ''))
 end
 
 -- ---------------------------------------------------------------------------
@@ -1623,18 +1707,37 @@ local function shuffle(list)
 end
 
 -- Fill the grid in the order race.gridMode asks for:
---   quali  -- fastest qualifying Best Lap first, no-time last (join order breaks ties)
---   random -- a random draw, for a race with no qualifying behind it
---   custom -- slots the admin pinned by hand come first, in slot order; anyone
---             unpinned falls in behind them, still by quali time
+--   quali   -- fastest qualifying Best Lap first, no-time last (join order breaks ties)
+--   reverse -- SLOWEST Best Lap first, so the fastest qualifier starts last;
+--              no-time drivers still line up at the back (see below)
+--   random  -- a random draw, for a race with no qualifying behind it
+--   custom  -- slots the admin pinned by hand come first, in slot order; anyone
+--              unpinned falls in behind them, still by quali time
 local function orderForGrid(ordered)
   if race.gridMode == 'random' then
     return shuffle(ordered)
   end
+  -- Reverse grids invert ONE of the two rules below, and which one is the whole
+  -- design of the mode.
+  --
+  -- Inverted: the times. Slowest qualifier on pole, fastest at the back, which
+  -- is the format -- the quick drivers have to come through the field.
+  --
+  -- NOT inverted: where a driver with no time at all goes. They stay at the
+  -- back, behind everyone who set one, exactly as they do in a normal grid. A
+  -- literal reversal would put them on pole, and then the fastest way to start
+  -- first is to sit in the pits and set nothing -- a reverse grid is meant to
+  -- reward the slow, not the absent. It also means the fastest qualifier is last
+  -- of the drivers who ran, rather than last on the road, which is the honest
+  -- reading of "fastest starts last".
+  local reverse = race.gridMode == 'reverse'
   local function byQuali(a, b)
     local ta, tb = a.qualiBest, b.qualiBest
     if ta and tb then
-      if ta ~= tb then return ta < tb end
+      if ta ~= tb then
+        if reverse then return ta > tb end
+        return ta < tb
+      end
     elseif ta ~= tb then
       return ta ~= nil
     end
@@ -1722,10 +1825,16 @@ formGrid = function (kind, byName)
       '[RaceManager] Grid not formed: no entrants (entry mode "%s", %d connected, %d record(s): %s)',
       race.entryMode, connected, #skipped,
       #skipped > 0 and table.concat(skipped, ', ') or 'none'))
-    MP.SendChatMessage(-1, string.format(
-      '[RaceManager] Nobody is entered for this session (%d connected, entry mode "%s") — '
-        .. 'press Join Race in the Race Manager app, or switch entry to Everyone.',
-      connected, race.entryMode))
+    -- The advice has to match the mode. Telling an admin to switch entry to
+    -- Everyone when it is already on Everyone sends them to the one setting
+    -- that is not the problem -- and under that mode an empty field means
+    -- something quite different: there is nobody here.
+    MP.SendChatMessage(-1, race.entryMode == 'all'
+      and string.format('[RaceManager] Nobody is on the server to grid '
+        .. '(%d connected, entry is open to everyone).', connected)
+      or string.format('[RaceManager] Nobody is entered for this session '
+        .. '(%d connected, entry is opt-in) — press Join Race in the Race Manager '
+        .. 'app, or switch entry to Everyone races.', connected))
     return false
   end
 
@@ -1755,6 +1864,10 @@ formGrid = function (kind, byName)
       rec.qualiBest = nil
       rec.qualiLaps = 0
     end
+    -- Everyone stood on the grid owes the out lap (and nobody in a race does).
+    -- Set here as well as at GO so the timing screen can say so while the field
+    -- is still being held, rather than only once the lights have gone out.
+    rec.outLap = qualiOutLap()
     clearProgress(rec)
     -- Put the car on its start position and hold it there until GO. The order
     -- and the field size travel with the slot so the client can stagger its
@@ -1793,7 +1906,9 @@ function RM_onSetGridMode(pid, rawData)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
   local mode = decodeString(rawData, 'mode')
-  if mode ~= 'quali' and mode ~= 'random' and mode ~= 'custom' then return end
+  if mode ~= 'quali' and mode ~= 'reverse' and mode ~= 'random' and mode ~= 'custom' then
+    return
+  end
   race.gridMode = mode
   broadcastState()
   print('[RaceManager] Grid mode set to "' .. mode .. '" by ' .. (MP.GetPlayerName(pid) or pid))
@@ -2324,13 +2439,36 @@ function RM_CountdownTick()
         rec.qualiBest = nil
         rec.qualiLaps = 0
       end
+      rec.outLap     = qualiOutLap()
       clearProgress(rec)
     end
   end
+  -- What this session is about to run under, kept for the results file that is
+  -- written long after the rule has moved on (see race.qualiOutLapRun).
+  if isQualiSession() then race.qualiOutLapRun = qualiOutLap() end
   broadcastState()
+  -- The out lap is the first thing that happens in a qualifying session, so it
+  -- is announced at GO rather than left for drivers to work out from a clock
+  -- that never started. Chat, because it reaches a driver who has not opened the
+  -- app; the app itself says it again on the driver's own timing readout.
+  if isQualiSession() and qualiOutLap() then
+    MP.SendChatMessage(-1, '[RaceManager] GO! Your first lap is an OUT LAP — it is '
+      .. 'not timed and does not count. Timing starts as you cross the line.')
+  end
   local target = sessionLapTarget()
+  -- The target is a count of CROSSINGS, so a qualifying session logs the two
+  -- halves it is made of rather than a number that matches neither the setting
+  -- an admin typed nor the laps that will appear on the board.
+  local lapNote
+  if isQualiSession() then
+    lapNote = (race.qualiLapLimit > 0 and (race.qualiLapLimit .. ' timed lap'
+      .. (race.qualiLapLimit == 1 and '' or 's')) or 'unlimited timed laps')
+      .. (qualiOutLap() and ' + out lap' or '')
+  else
+    lapNote = target and (target .. ' laps') or 'unlimited laps'
+  end
   print('[RaceManager] GO! (' .. (isQualiSession() and 'qualifying' or 'race') .. ', '
-    .. (target and (target .. ' laps') or 'unlimited laps') .. ')'
+    .. lapNote .. ')'
     .. (race.jokerEnabled and not isQualiSession() and ' — JOKER LAP REQUIRED' or '')
     .. (race.maxResets >= 0 and (' — resets limited to ' .. race.maxResets) or ''))
 end
@@ -2387,6 +2525,7 @@ function RM_onResetLeaderboard(pid)
   race.sessionKind = 'race'
   race.time = 0.0
   race.qualiTime = 0.0
+  race.qualiOutLapRun = false
   race.finalLap     = false
   race.finalLapLeft = 0
   -- The records are gone and so is the entry list, but the display names are
@@ -2454,6 +2593,38 @@ function RM_onLap(pid, rawData)
   local rec = ensurePlayer(pid)
   if not rec or not onTrack(rec) then return end
   local quali = isQualiSession()
+
+  -- THE OUT LAP, and every rule about it in one place.
+  --
+  -- A driver's first crossing of a qualifying session ends the lap they spent
+  -- getting off the grid. It is thrown away entirely: no Best Lap, no session
+  -- fastest lap, nothing against the allowance -- and, because this returns
+  -- before the terminal check below, it can never be the crossing that ends a
+  -- driver's session either.
+  --
+  -- That last one matters most when the clock has expired. `race.finalLap` makes
+  -- the next crossing terminal for everybody still out, and a driver who was on
+  -- their out lap when it expired would otherwise be stood down with no time at
+  -- all -- eliminated by the one lap the session had already promised not to
+  -- score. They finish the out lap, start the flying lap, and take the flag on
+  -- that, which is what every other driver on track gets.
+  --
+  -- The crossing still counts as a crossing: the lap counter advances and the
+  -- checkpoint telemetry is cleared, exactly as it would for a scored lap.
+  if quali and rec.outLap then
+    rec.outLap = false
+    clearProgress(rec)
+    rec.currentLap = rec.currentLap + 1
+    broadcastState()
+    -- Told to that driver alone. The out lap is a per-driver event twenty
+    -- drivers reach at twenty different moments, and announcing each of them to
+    -- the whole server would bury the messages that are everybody's business.
+    MP.SendChatMessage(rec.id,
+      '[RaceManager] Out lap complete — your next lap is TIMED.')
+    print(string.format('[RaceManager] %s completed their out lap (not timed)', rec.name))
+    return
+  end
+
   local lapTime = decodeNumber(rawData, 'lapTime')
   if lapTime and lapTime > 0 then
     if not rec.raceBest or lapTime < rec.raceBest then rec.raceBest = lapTime end
@@ -2522,8 +2693,12 @@ function RM_onLap(pid, rawData)
     print(string.format('[RaceManager] %s completed %d lap(s) at %.3fs (led %d)%s',
       rec.name, completed, race.time, rec.lapsLed, race.finalLap and ' [final lap]' or ''))
     if quali and target and completed >= target then
+      -- The ALLOWANCE, not the crossing target it was turned into: a driver told
+      -- they have used all four laps of a session an admin set to three would be
+      -- right to ask which one they were given.
+      local used = race.qualiLapLimit
       MP.SendChatMessage(-1, string.format('[RaceManager] %s has used all %d qualifying lap%s.',
-        displayName(rec), target, target == 1 and '' or 's'))
+        displayName(rec), used, used == 1 and '' or 's'))
     elseif race.finalLap then
       MP.SendChatMessage(-1, string.format('[RaceManager] %s has taken the flag (%d still out).',
         displayName(rec), driversOnTrack()))
@@ -3558,7 +3733,7 @@ local function derbyFmtTime(t)
   return string.format('%d:%02d', m, math.floor(t - m * 60))
 end
 
-local function buildDerbyResultsText()
+local function buildDerbyResultsText(cupRound)
   local list = derbyClassification()
   local lines = {}
   local function add(s) lines[#lines + 1] = s end
@@ -3588,16 +3763,21 @@ local function buildDerbyResultsText()
       i, displayName(rec), result, elimAt, resetVal, aliasNote(rec), tag))
   end
   if #list == 0 then add('(no drivers)') end
+  -- A derby banks a cup round exactly as a race does, so its results file
+  -- carries the same section. Same call, same numbers, same layout -- a league
+  -- reading two files from one evening should not have to learn two formats.
+  local cupLines = cupResultsLines and cupResultsLines(cupRound) or nil
+  for _, l in ipairs(cupLines or {}) do add(l) end
   add('')
   return table.concat(lines, '\n') .. '\n'
 end
 
-local function writeDerbyResults()
+local function writeDerbyResults(cupRound)
   ensureResultsDir()
   local path = uniqueResultsPath('derby_results')
   local f, err = io.open(path, 'w')
   if not f then return false, tostring(err) end
-  f:write(buildDerbyResultsText())
+  f:write(buildDerbyResultsText(cupRound))
   f:close()
   return true, path
 end
@@ -3643,10 +3823,15 @@ local function finishDerby(reason)
   -- The classification is handed over rather than the cup coming to fetch it:
   -- this module's tables stay private, and the cup goes on being a consumer of
   -- results exactly as it is for a race. Does nothing unless a cup is running.
+  --
+  -- The round it banks is carried to the results file, for the same reason the
+  -- racing side carries it: a cup at its round cap scores nothing, and a file
+  -- that asked for "the current round" would print the last event's points.
+  local cupRound = nil
   if cupOnDerbyComplete then
-    cupOnDerbyComplete(derbyClassification(), { duration = derby.time })
+    cupRound = cupOnDerbyComplete(derbyClassification(), { duration = derby.time })
   end
-  local ok, wrote, pathOrErr = pcall(writeDerbyResults)
+  local ok, wrote, pathOrErr = pcall(writeDerbyResults, cupRound)
   if ok and wrote then
     local msg = derby.winner
       and ('[RaceManager] DEMO DERBY WINNER: ' .. derby.winner .. '! Results saved: ' .. pathOrErr)
@@ -5432,6 +5617,8 @@ local function cupScoreRace()
       '[RaceManager] Cup round %d scored — %s leads on %d point%s.',
       round, leader.name, leader.total, leader.total == 1 and '' or 's'))
   end
+  -- The round this race banked, for the results file about to be written.
+  return round
 end
 
 -- A derby ended. Banks one round, on the derby side of the cup.
@@ -5497,22 +5684,142 @@ local function cupScoreDerby(classification, info)
       '[RaceManager] Cup round %d (derby) scored — %s leads on %d point%s.',
       round, leader.name, leader.total, leader.total == 1 and '' or 's'))
   end
+  -- The round this derby banked, for the results file about to be written.
+  return round
 end
 
 -- THE entry points, filling the forward declarations beside the entry list.
 -- One call at the end of finishSession for each kind of session, one at the end
 -- of finishDerby, and one boolean test when no cup is running.
+--
+-- Returns the round number a RACE banked, so the results file written moments
+-- later can report that round specifically (see cupResultsLines). Qualifying
+-- banks no round -- its points are held for the race that follows -- and
+-- returns nothing, which is also what a cup that is switched off or at its
+-- round cap returns.
 cupOnSessionComplete = function (kind)
-  if not getCup().enabled then return end
+  if not getCup().enabled then return nil end
   if kind == 'quali' then
     cupScoreQuali()
-  else
-    cupScoreRace()
+    return nil
   end
+  return cupScoreRace()
 end
 
+-- The round just banked, as lines for the results file.
+--
+-- This is the cup being READ rather than told, and it is the only call that
+-- goes that way. It stays inside the module's rules all the same: it is called
+-- from the two results writers, after the classification is final and the round
+-- is scored, so nothing cup-shaped runs while cars are on track. It computes
+-- nothing new -- the numbers are the ones already banked and the order is
+-- cupStandings' own.
+--
+-- `round` is the round the finished session actually banked, handed down from
+-- finishSession (or finishDerby) rather than read from cup.round here. Those
+-- differ in exactly the case that matters: a cup at the round cap scores
+-- nothing, and asking for "the current round" would then print the PREVIOUS
+-- event's points onto this one's results file.
+--
+-- Returns nil when there is nothing to say, which is the normal case: no cup
+-- running, nothing banked, or a round nobody scored in. A race night without a
+-- championship gets exactly the results file it always got.
+cupResultsLines = function (round)
+  if not getCup().enabled or not round then return nil end
+
+  -- What each driver took out of THIS round, keyed by entry. Read off the round
+  -- rows the scoring wrote; a driver with no row simply did not score here.
+  local roundBy, anyRow = {}, false
+  for _, e in ipairs(cup.entries) do
+    for _, r in ipairs(e.rounds) do
+      if r.round == round then
+        roundBy[e.entryId] = r
+        anyRow = true
+        break
+      end
+    end
+  end
+  if not anyRow then return nil end
+
+  local lines = {}
+  local function add(s) lines[#lines + 1] = s end
+  local function bonusOf(r)
+    local n = 0
+    for _, b in ipairs(CUP_BONUSES) do n = n + (tonumber(r.bonus and r.bonus[b.key]) or 0) end
+    return n
+  end
+
+  local preset = cupPresetByKey(cup.scoring.preset)
+  add('')
+  add(string.format('--- CUP: %s (round %d) ---',
+    cup.name ~= '' and cup.name or 'unnamed cup', round))
+  add(string.format(' Scoring: %s to P%d%s | DNF: %s',
+    preset and preset.label or 'custom', #cup.scoring.race,
+    #cup.scoring.quali > 0 and (', qualifying to P' .. #cup.scoring.quali) or '',
+    cup.scoring.dnfScoring))
+  -- One table, ordered by championship position after this round. It answers
+  -- both questions a league asks of a results file -- what did each driver score
+  -- today, and where does that leave them -- without printing the same field
+  -- twice in two orders.
+  add(string.format('%-5s %-22s %-6s %-6s %-6s %-7s %s',
+    'Pos', 'Driver', 'Race', 'Quali', 'Bonus', 'Round', 'Total'))
+  for _, s in ipairs(cupStandings()) do
+    local r = roundBy[s.entryId]
+    local racePts  = r and (tonumber(r.racePts) or 0) or 0
+    local qualiPts = r and (tonumber(r.qualiPts) or 0) or 0
+    local bonusPts = r and bonusOf(r) or 0
+    local roundPts = racePts + qualiPts + bonusPts
+    -- A driver who was not in this round is shown with dashes rather than
+    -- zeroes: not scoring and not being there are different facts, and a column
+    -- of noughts against a name that never appeared reads as the first.
+    add(string.format('P%-4d %-22s %-6s %-6s %-6s %-7s %d',
+      s.pos, s.name,
+      r and tostring(racePts)  or '-',
+      r and tostring(qualiPts) or '-',
+      r and tostring(bonusPts) or '-',
+      r and tostring(roundPts) or '-',
+      s.total))
+  end
+  -- Which bonuses were paid, and to whom. The table above can only show a total,
+  -- and "+2" against a name does not say what it was for -- the one question
+  -- somebody checking a championship a month later will actually have.
+  local paid = {}
+  for _, b in ipairs(CUP_BONUSES) do
+    for _, e in ipairs(cup.entries) do
+      local r = roundBy[e.entryId]
+      local worth = r and tonumber(r.bonus and r.bonus[b.key]) or nil
+      if worth and worth > 0 then
+        paid[#paid + 1] = string.format(' %s: %s (+%d)', b.label, e.name, worth)
+      end
+    end
+  end
+  if #paid > 0 then
+    add('')
+    add(' BONUSES THIS ROUND')
+    for _, l in ipairs(paid) do add(l) end
+  end
+  -- Adjustments are part of a total and are invisible in it. A standings table
+  -- nobody can take apart is a standings table nobody can check.
+  local adjusted = {}
+  for _, s in ipairs(cupStandings()) do
+    if (s.adjustPts or 0) ~= 0 then
+      adjusted[#adjusted + 1] = string.format(' %s: %+d (manual adjustment%s)',
+        s.name, s.adjustPts, #(s.adjustments or {}) == 1 and '' or 's')
+    end
+  end
+  if #adjusted > 0 then
+    add('')
+    add(' ADJUSTMENTS INCLUDED IN THE TOTALS')
+    for _, l in ipairs(adjusted) do add(l) end
+  end
+  return lines
+end
+
+-- Returns the round a derby banked, on the same contract cupOnSessionComplete
+-- follows: nil when nothing was scored, which includes a cup that does not pay
+-- for derbies at all.
 cupOnDerbyComplete = function (classification, info)
-  if not getCup().enabled then return end
+  if not getCup().enabled then return nil end
   -- An empty derby points table means derbies are not part of THIS cup, and it
   -- means it completely: no round is banked and no derby bonus is paid.
   --
@@ -5521,9 +5828,9 @@ cupOnDerbyComplete = function (classification, info)
   -- "Turn derby points off" has said derbies do not count here, and a survivor
   -- quietly collecting a last-man-standing bonus afterwards would contradict
   -- them. Same rule qualifying already follows.
-  if #cup.scoring.derby == 0 then return end
-  if type(classification) ~= 'table' or #classification == 0 then return end
-  cupScoreDerby(classification, info)
+  if #cup.scoring.derby == 0 then return nil end
+  if type(classification) ~= 'table' or #classification == 0 then return nil end
+  return cupScoreDerby(classification, info)
 end
 
 -- ---------------------------------------------------------------------------

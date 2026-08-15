@@ -21,11 +21,23 @@
     <!-- Own lap clock (same feed the driver bar uses; the header is the
          admin/spectator equivalent, since minimal mode removes it). -->
     <span class="rm-laptime" ng-if="showLapTime()">
-      <span class="rm-laptime-hold" ng-if="lapHolding()"
+      <!-- The out lap, ending: no time to hold, because none was taken. The slot
+           says what the lap was and that the next one counts. -->
+      <span class="rm-laptime-out" ng-if="lapHolding() && outLapDone()"
+            title="Your out lap is over — the lap you are on now is being timed">
+        OUT LAP DONE — TIMING
+      </span>
+      <span class="rm-laptime-hold" ng-if="lapHolding() && !outLapDone()"
             title="Lap just completed — held briefly so it can be read">
         LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}
       </span>
-      <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive"
+      <!-- A running clock reads as a time being taken, so the out lap does not
+           get one. The driver is told what the lap is for instead. -->
+      <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
+            title="Qualifying gives the first lap away: it starts from a standing grid, so it measures the launch rather than the lap. Timing starts as you cross the line.">
+        OUT LAP — NOT TIMED
+      </span>
+      <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()"
             title="Time on the current lap">
         LAP {{ formatLapLive(lapElapsed()) }}
       </span>
@@ -38,6 +50,11 @@
     <span class="rm-clock rm-final-lap" ng-if="phase === 'qualifying' && finalLap"
           title="The qualifying clock has expired — the lap you are on is your last">FINAL LAP</span>
     <span class="rm-ghost-badge" ng-if="phase === 'qualifying' && ghostQuali" title="Rival cars are ghosted this session">GHOST</span>
+    <!-- Session rule, not this driver's state: it stands for the whole session
+         so a spectator or an admin can see which rules are in force. Whether the
+         driver is on their own out lap right now is the readout above. -->
+    <span class="rm-out-badge" ng-if="phase === 'qualifying' && qualiOutLap"
+          title="The first lap of this session is an out lap: not timed, not scored, and not counted against the lap allowance.">OUT LAP RULE</span>
     <!-- Your own grid slot, and the hold before the lights go out -->
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
       START P{{ gridSlot }}<b ng-if="gridFrozen"> — HOLD</b>
@@ -104,7 +121,7 @@
             ng-class="{'rm-btn-toggle-on': entryMode === 'all'}"
             ng-click="toggleEntryMode()"
             ng-disabled="phase === 'countdown' || phase === 'racing'"
-            title="Opt-in: only drivers who press Join Race are gridded. Everyone: every connected player is in the field.">
+            title="Everyone races (the default): every connected player is in the field. Opt-in: only drivers who press Join Race are gridded.">
       {{ entryMode === 'all' ? 'Everyone races' : 'Opt-in entry' }}
     </button>
   </div>
@@ -266,23 +283,29 @@
   <div class="rm-settings" ng-if="isMode('race') && isAdminTab('race')">
     <!-- Laps mean nothing on a sprint stage, so the field says so rather than
          sitting there accepting a number that will be ignored. The setting is
-         kept, not clamped, so switching a circuit layout back in restores it. -->
-    <span class="rm-setting">
+         kept, not clamped, so switching a circuit layout back in restores it.
+
+         No Set button here or on any other single-value setting: they apply
+         themselves. See the note in app.js — the value settles half a second
+         after typing stops (or instantly on leaving the field), and the
+         authoritative value the server holds is displayed beside the box, so
+         what is in force is always readable. -->
+    <span class="rm-setting" title="Race distance. Applies as you type — the value beside the box is what the server has.">
       <label>Laps</label>
       <input type="number" min="1" max="500" ng-model="settingsUi.laps"
+             ng-model-options="{ debounce: { default: 500, blur: 0 } }"
+             ng-change="applyTotalLaps()"
              ng-disabled="pointToPoint || phase === 'countdown' || phase === 'racing'">
-      <button class="rm-btn rm-btn-mini" ng-click="applyTotalLaps()"
-              ng-disabled="pointToPoint || phase === 'countdown' || phase === 'racing'">Set</button>
       <span class="rm-setting-val" ng-if="!pointToPoint">race: {{ totalLaps }}</span>
       <span class="rm-setting-val rm-p2p-note" ng-if="pointToPoint">point to point — driven once</span>
     </span>
     <!-- Module 1: vehicle reset ruleset -->
-    <span class="rm-setting" title="How many vehicle resets/repairs each driver gets this session. 0 = no resets at all; -1 (or blank) = unlimited. Once the allowance is gone the reset button is blocked — the car is put straight back where it was. Nobody is disqualified for it.">
+    <span class="rm-setting" title="How many vehicle resets/repairs each driver gets this session. 0 = no resets at all; -1 = unlimited. Once the allowance is gone the reset button is blocked — the car is put straight back where it was. Nobody is disqualified for it. Applies as you type.">
       <label>Max resets</label>
       <input type="number" class="rm-width-num" min="-1" max="99" step="1" ng-model="settingsUi.resets"
+             ng-model-options="{ debounce: { default: 500, blur: 0 } }"
+             ng-change="applyMaxResets()"
              ng-disabled="phase === 'countdown' || phase === 'racing'">
-      <button class="rm-btn rm-btn-mini" ng-click="applyMaxResets()"
-              ng-disabled="phase === 'countdown' || phase === 'racing'">Set</button>
       <span class="rm-setting-val">{{ resetRuleLabel() }}</span>
     </span>
     <span class="rm-setting" title="What a legal reset does while racing: repair the car where it stands, or respawn it at the last checkpoint it crossed (falls back to in-place before the first checkpoint).">
@@ -315,28 +338,55 @@
         {{ ghostQuali ? '✓ Enabled' : 'Disabled' }}
       </button>
     </span>
-    <span class="rm-setting" title="Timed laps each driver gets in qualifying. 0 = unlimited. Their session ends when they use them up.">
-      <label>Quali laps</label>
-      <input type="number" class="rm-width-num" min="0" max="99" step="1" ng-model="settingsUi.qualiLaps"
-             ng-disabled="phase === 'qualifying'">
-      <label>Quali mins</label>
-      <input type="number" class="rm-width-num" min="0" max="120" step="1" ng-model="settingsUi.qualiMins"
-             ng-disabled="phase === 'qualifying'">
-      <button class="rm-btn rm-btn-mini" ng-click="applyQualiLimits()"
-              ng-disabled="phase === 'qualifying'">Set</button>
+    <!-- A qualifying session is run to a LAP ALLOWANCE or to a CLOCK, not both.
+         The server takes both numbers and treats 0 as unlimited, so both at
+         once is a state it can hold — and two boxes side by side is how it gets
+         armed by accident. Pick one; the other is sent as 0. -->
+    <span class="rm-setting" title="Is this qualifying session run to a lap allowance or to a clock? Pick one — the other is switched off. Whichever you pick, 0 means unlimited.">
+      <label>Quali length</label>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': isQualiLimitMode('laps')}"
+              ng-click="setQualiLimitMode('laps')" ng-disabled="phase === 'qualifying'"
+              title="Each driver gets a fixed number of TIMED laps. Their session ends when they use them up; the session closes once nobody has laps left.">Laps</button>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': isQualiLimitMode('timed')}"
+              ng-click="setQualiLimitMode('timed')" ng-disabled="phase === 'qualifying'"
+              title="The session runs to a clock. When it expires everyone still out runs a final lap rather than stopping dead.">Timed</button>
+
+      <span class="rm-setting-sub" ng-if="isQualiLimitMode('laps')"
+            title="TIMED laps each driver gets. 0 = unlimited. The first lap of the session is an out lap — it starts from the grid, so it is not timed, not scored and not one of these: set 3 and drivers get an out lap and then 3 flying laps. (A point-to-point stage has no out lap: it is driven once.) Applies as you type.">
+        <label>Laps</label>
+        <input type="number" class="rm-width-num" min="0" max="99" step="1" ng-model="settingsUi.qualiLaps"
+               ng-model-options="{ debounce: { default: 500, blur: 0 } }"
+               ng-change="applyQualiLimits()"
+               ng-disabled="phase === 'qualifying'">
+      </span>
+      <span class="rm-setting-sub" ng-if="isQualiLimitMode('timed')"
+            title="Minutes the session runs for. 0 = no limit. When the clock expires the session does not stop dead — everyone still out finishes the lap they are on as their final lap. Applies as you type.">
+        <label>Minutes</label>
+        <input type="number" class="rm-width-num" min="0" max="120" step="1" ng-model="settingsUi.qualiMins"
+               ng-model-options="{ debounce: { default: 500, blur: 0 } }"
+               ng-change="applyQualiLimits()"
+               ng-disabled="phase === 'qualifying'">
+      </span>
       <span class="rm-setting-val">{{ qualiLimitLabel() }}</span>
     </span>
     <span class="rm-setting" title="How the starting grid is filled when you press Generate Grid.">
       <label>Grid order</label>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'quali'}"
               ng-click="setGridMode('quali')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'">Quali</button>
+              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              title="Fastest qualifier on pole. Drivers with no time line up at the back.">Quali</button>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'reverse'}"
+              ng-click="setGridMode('reverse')"
+              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              title="Reverse grid: SLOWEST qualifier on pole, fastest at the back, so the quick drivers have to come through the field. Drivers with no time still start at the back — a reverse grid rewards the slow, not the absent.">Reverse</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'random'}"
               ng-click="setGridMode('random')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'">Random</button>
+              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              title="A random draw, for a race with no qualifying behind it.">Random</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'custom'}"
               ng-click="setGridMode('custom')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'">Custom</button>
+              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              title="The order you set by hand: type a slot number next to any driver in the Start column. Unpinned drivers fall in behind by quali time.">Custom</button>
       <span class="rm-setting-val">{{ startSlots }} start position{{ startSlots === 1 ? '' : 's' }}</span>
     </span>
     <span class="rm-setting-warn" ng-if="startSlots > 0 && entrants > startSlots">
@@ -388,7 +438,7 @@
               title="End the cup and delete every point in it. Display names are not affected.">
         End Cup
       </button>
-      <span class="rm-cup-confirm" ng-if="cupUi.confirmReset">
+      <span class="rm-confirm" ng-if="cupUi.confirmReset">
         Delete all {{ cup.standings.length }} standings?
         <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="cupReset()">Yes, end it</button>
         <button class="rm-btn rm-btn-mini" ng-click="cupCancelReset()">Cancel</button>
@@ -1305,8 +1355,16 @@
     </div>
     <div class="rm-adminbar">
       <span class="rm-adminbar-label">Results</span>
-      <button class="rm-btn rm-btn-reset rm-btn-mini" ng-click="clearResults()"
+      <!-- Two presses. The file this deletes is the only record a league has of
+           a race night once the session is over, and there is no undo. -->
+      <button class="rm-btn rm-btn-reset rm-btn-mini" ng-if="!resultsUi.confirmClear"
+              ng-click="askClearResults()"
               title="Delete all saved result .txt files on the server">Clear Results Cache</button>
+      <span class="rm-confirm" ng-if="resultsUi.confirmClear">
+        Delete every saved results file on the server?
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="clearResults()">Yes, clear them</button>
+        <button class="rm-btn rm-btn-mini" ng-click="cancelClearResults()">Cancel</button>
+      </span>
       <span class="rm-layouts-hint">
         Result files are written automatically when a session closes; this only
         clears the ones already saved on the server.
@@ -1425,10 +1483,21 @@
          few seconds and is styled differently so it never reads as a stalled
          clock; the live clock underneath never stops. -->
     <span class="rm-laptime" ng-if="showLapTime()">
-      <span class="rm-laptime-hold" ng-if="lapHolding()">
+      <span class="rm-laptime-out" ng-if="lapHolding() && outLapDone()"
+            title="Your out lap is over — the lap you are on now is being timed">
+        OUT LAP DONE — TIMING
+      </span>
+      <span class="rm-laptime-hold" ng-if="lapHolding() && !outLapDone()">
         LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}
       </span>
-      <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive">
+      <!-- No clock on the out lap. This bar is the whole HUD for a driver in
+           minimal mode, so a running number here is the only thing they have to
+           go on — and on a lap that is not being timed it would be a lie. -->
+      <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
+            title="Qualifying gives the first lap away: it starts from a standing grid, so it measures the launch rather than the lap. Timing starts as you cross the line.">
+        OUT LAP — NOT TIMED
+      </span>
+      <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()">
         LAP {{ formatLapLive(lapElapsed()) }}
       </span>
     </span>
@@ -1494,10 +1563,15 @@
     <table class="rm-table">
       <thead>
         <tr>
-          <th class="rm-col-grid">Grid</th>
+          <!-- This column is the provisional GRID only when the grid is filled
+               from the qualifying order. Under a reverse, random or custom grid
+               it is the qualifying position and nothing more — labelling it Grid
+               there would promise a slot the grid is about to contradict. -->
+          <th class="rm-col-grid"
+              title="{{ qualiOrderIsGrid() ? 'Provisional grid: this order is what Generate Grid will use' : 'Qualifying position. The grid is filled by ' + gridModeLabel() + ', so it will not match this order.' }}">{{ qualiOrderIsGrid() ? 'Grid' : 'Pos' }}</th>
           <th class="rm-col-name">Driver</th>
           <th class="rm-col-time">Best Lap</th>
-          <th class="rm-col-led" title="Timed qualifying laps completed">Laps</th>
+          <th class="rm-col-led" title="Timed qualifying laps completed. The out lap is not one of them.">Laps</th>
           <th class="rm-col-status">Status</th>
         </tr>
       </thead>
@@ -1508,7 +1582,15 @@
           <!-- Fastest lap of the session, in gold. Qualifying is scored on the
                quali best, so that is the number highlighted here; the race table
                below highlights the race best. One id from the server either way. -->
-          <td class="rm-col-time" ng-class="{'rm-best-lap': row.id === bestLapPid && row.qualiBest}"
+          <!-- A driver still on their out lap has no time and is not going to
+               have one this lap. An em dash says "no time yet" and leaves the
+               reason open; this says which of the two it is, which is what
+               stops a spectator (or the driver's own team) reading a blank as a
+               lap gone wrong. -->
+          <td class="rm-col-time rm-col-outlap" ng-if="showOutLap(row)"
+              title="On the out lap: not timed, not scored, and not counted against the lap allowance">OUT LAP</td>
+          <td class="rm-col-time" ng-if="!showOutLap(row)"
+              ng-class="{'rm-best-lap': row.id === bestLapPid && row.qualiBest}"
               title="{{ row.id === bestLapPid && row.qualiBest ? 'Fastest lap of the session' : '' }}">{{ formatLap(row.qualiBest) }}</td>
           <td class="rm-col-led">{{ row.qualiLaps || 0 }}{{ qualiLapLimit > 0 ? '/' + qualiLapLimit : '' }}</td>
           <td class="rm-col-status">
@@ -1518,7 +1600,9 @@
         </tr>
         <tr ng-if="!drivers.length">
           <td colspan="5" class="rm-empty">
-            No drivers on track yet — lap times appear as drivers cross the start/finish gate.
+            No drivers on track yet — lap times appear on the <b>second</b> crossing of the
+            start/finish gate. The first is the out lap: it starts from a standing grid, so
+            it is not timed and does not count.
           </td>
         </tr>
       </tbody>
@@ -1708,6 +1792,21 @@
     animation: rm-lap-pop 0.25s ease-out;
   }
   .rm-laptime-hold b { font-weight: 700; }
+  /* The out lap takes the same slot as both of those and must not be mistaken
+     for either: not the quiet grey of a clock that is running, and not the amber
+     box of a time that was set. Purple is qualifying's colour throughout this
+     app (the phase chip, the session clock), and this is a qualifying rule. */
+  .rm-laptime-out {
+    display: inline-block;
+    padding: 0 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: #ce93d8;
+    background: rgba(171, 71, 188, 0.18);
+    border: 1px solid rgba(171, 71, 188, 0.55);
+  }
   @keyframes rm-lap-pop {
     0%   { transform: scale(1.12); opacity: 0.6; }
     100% { transform: scale(1);    opacity: 1; }
@@ -1899,6 +1998,10 @@
   }
   .rm-setting input[type="range"] { width: 90px; accent-color: #ff6600; }
   .rm-setting-val { color: #9aa0a6; font-size: 10px; font-variant-numeric: tabular-nums; }
+  /* A label + input pair that appears inside a setting row rather than being
+     the row: the half of a laps/timed choice that is currently in use. Same
+     flex rules as the row itself so it lays out as if it were part of it. */
+  .rm-setting-sub { display: flex; align-items: center; gap: 5px; }
 
   /* Checkpoint editor */
   .rm-editor {
@@ -2110,6 +2213,25 @@
     border-radius: 8px;
     background: rgba(138, 180, 248, 0.2);
     color: #8ab4f8;
+  }
+  /* Same shape as the ghost badge — both are "a rule is in force this session" —
+     in qualifying's purple. */
+  .rm-out-badge {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: rgba(171, 71, 188, 0.22);
+    color: #ce93d8;
+  }
+  /* The timing table's own out-lap cell: a state, not a time, so it does not
+     borrow the tabular figures the times beside it are set in. */
+  .rm-col-outlap {
+    color: #ce93d8;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
   }
   .rm-gridslot {
     font-size: 10px;
@@ -2339,7 +2461,10 @@
   }
   .rm-cup-next { color: #9aa0a6; font-size: 10px; }
   .rm-cup-pending { color: #fdd663; font-size: 10px; }
-  .rm-cup-confirm {
+  /* The "are you sure" row, shared by every control in the app that destroys
+     something with no undo (End Cup, Clear Results Cache). One class, so a
+     second irreversible button cannot end up looking like an ordinary one. */
+  .rm-confirm {
     display: flex;
     align-items: center;
     gap: 5px;

@@ -11,8 +11,9 @@
 --      the frame-to-frame movement segment with that rectangle (the server has
 --      no physics access). The last checkpoint placed is the start/finish line;
 --      completing the checkpoint sequence and crossing it again scores a lap,
---      which is timed locally and reported upstream (RM_QualiLap during
---      qualifying, RM_Lap in race).
+--      which is timed locally and reported upstream on RM_Lap. ONE event for
+--      both kinds of session: which laps count is the server's rule, not this
+--      file's (qualifying, for one, does not count the first).
 --   3. Starting grid: place start positions along the grid, then put the local
 --      car on the slot the server assigns and hold it there until GO.
 --   4. Receive the server's state broadcasts, reset local lap tracking on
@@ -108,14 +109,31 @@ local TUNE = {
   -- Plain {r, g, b} arrays rather than ColorF: these are written into the engine
   -- marker's own colour table, which is three numbers. They match palette()'s
   -- `joker` and `jokerUsed` so the editor and the track agree.
-  JOKER_POLE_RGB      = { 0.65, 0.3, 0.95 },
-  JOKER_POLE_USED_RGB = { 0.45, 0.45, 0.5 },
+  JOKER_POLE_RGB      = { 0.72, 0.35, 1 },
+  JOKER_POLE_USED_RGB = { 0.62, 0.62, 0.7 },
+  -- How far each stock pole colour is lifted toward white once it has been
+  -- taken to full value (see poles.brighten). This is the difference between a
+  -- saturated colour and a luminous one; past about a third it starts costing
+  -- more in hue than it buys in visibility.
+  POLE_LIFT = 0.25,
+  -- Pole colours set outright rather than lifted, because their stock value is
+  -- black and there is no brighter version of black to compute.
+  --
+  -- `next` is the gate AFTER the one being aimed at. The engine ships it black
+  -- because in its own races that gate is not your concern yet; this mod puts a
+  -- marker there on purpose, so the line through the corner reads before the
+  -- driver gets there. Orange, matching the editor's colour for the route
+  -- ahead, and a shade under the gate actually being aimed at so the two are
+  -- never confused for one another.
+  POLE_MODE_RGB = {
+    next = { 0.95, 0.45, 0.12 },
+  },
   ROUTE_FILE = 'settings/raceManager/route.json',
 }
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.7.0'
+local RM_BUILD = '0.8.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -410,7 +428,7 @@ local isAdmin   = false
 
 -- Race entry (opt-in). Mirrored from the server so the UI can show a Join /
 -- Leave button and whether entry is open to everyone or by request.
-local entryMode = 'join'         -- 'join' (opt-in) | 'all' (everyone races)
+local entryMode = 'all'          -- 'all' (everyone races, the default) | 'join' (opt-in)
 local joined    = false          -- this client is on the entry list
 
 -- Qualifying: ghost mode + session limits, all mirrored from the server.
@@ -426,6 +444,11 @@ local lastBestLapTime = nil
 local ghostQuali     = false
 local qualiLapLimit  = 0         -- 0 = unlimited
 local qualiTimeLimit = 0         -- seconds, 0 = unlimited
+-- Does this session open with an out lap -- one trip past the line that is not
+-- timed and not scored? The server decides (it is off on a sprint stage, which
+-- is driven once), and this client mirrors the answer so it can say so on the
+-- driver's own readout before they have crossed anything.
+local qualiOutLap    = false
 
 -- Forced spectator mode (Module 1). Non-nil while this client is out of the
 -- session: it holds the source ('race' or 'derby') that imposed the penalty, so
@@ -732,10 +755,16 @@ end
 -- ---------------------------------------------------------------------------
 -- One session is running (the lights are out and laps count). Qualifying and
 -- racing are the same thing here on purpose: both start from the grid, both
--- count a lap per completed circuit of the route, and both report it upstream on
--- the same event. Qualifying used to have detection of its own -- an out-lap
+-- report a lap per completed circuit of the route, and both report it upstream
+-- on the same event. Qualifying used to have detection of its own -- an out-lap
 -- before the clock started, and no defined starting point because there was no
 -- grid -- which is why a three-lap session took five or six laps to get through.
+--
+-- Qualifying's first lap is given away again (see onOutLap), and deliberately
+-- not by going back to that: the crossing is still detected here, still reported
+-- on the same event, and the SERVER decides it does not count. What this file
+-- does about it is presentation -- it does not show the driver a time for a lap
+-- that was not timed.
 local function sessionRunning()
   return phase == 'racing' or phase == 'qualifying'
 end
@@ -757,9 +786,13 @@ local function resetLapTracking()
   -- so the leaderboard has a distance for this driver from the first moments.
   progressLeft = 0
   -- Cars launch from the grid at the line, so the first target is checkpoint 1
-  -- and the clock is already running — for a qualifying session exactly as much
-  -- as for a race. Outside a running session the start/finish line is armed, so
-  -- a driver pottering about before the lights still gets sensible gate colours.
+  -- and detection is live from GO — for a qualifying session exactly as much as
+  -- for a race. (In qualifying that first circuit is the out lap: it is detected
+  -- and reported like any other, and the server is what declines to score it.
+  -- Nothing here stops timing, because a lap the client did not measure is a lap
+  -- the client cannot report.) Outside a running session the start/finish line is
+  -- armed, so a driver pottering about before the lights still gets sensible
+  -- gate colours.
   if sessionRunning() then
     armedWp = 1
     timingActive = true
@@ -802,6 +835,18 @@ function M.clearTrackState()
   if inMultiplayer() then TriggerServerEvent('RM_ClearTrackState', '') end
 end
 
+-- Is the lap this driver is on the out lap -- the one qualifying gives away?
+--
+-- Worked out locally rather than read off this client's own driver row, and the
+-- distinction matters: the row is authoritative but arrives on a broadcast three
+-- times a second, so a readout driven by it would go on saying NOT TIMED for up
+-- to a third of a second after the driver had crossed the line and started a
+-- lap that very much was. The two agree by construction — both count crossings
+-- from the grid, and the server's rule (qualiOutLap) is what gates this.
+local function onOutLap()
+  return qualiOutLap and phase == 'qualifying' and localLap <= 1
+end
+
 local function onLapCompleted()
   local lapTime = localTime - lapStart
   if timingActive and lapTime < TUNE.LAP_DEBOUNCE then return end  -- double-fire guard
@@ -814,18 +859,33 @@ local function onLapCompleted()
     guihooks.trigger('RaceManagerLapDone', { lapTime = lapTime, lap = n })
   end
 
-  -- ONE report, for both kinds of session. The server knows which one is
-  -- running and scores the lap accordingly (best lap in qualifying, running
-  -- order and laps led in a race); the client's job is only to say "that was a
+  -- ONE report, for both kinds of session, and for the out lap as much as for a
+  -- scored one. The server knows which session is running and scores the lap
+  -- accordingly (best lap in qualifying, running order and laps led in a race,
+  -- nothing at all for the out lap); the client's job is only to say "that was a
   -- lap, and it took this long". The separate RM_QualiLap channel this replaced
-  -- is what let qualifying's lap counting drift away from the race's.
+  -- is what let qualifying's lap counting drift away from the race's, and a
+  -- client that withheld the out lap because it knew it would not be scored
+  -- would be the same mistake in a new place -- the server needs the crossing
+  -- either way, to advance the lap counter and clear the checkpoint telemetry.
   if not sessionRunning() then return end
+  local outLap = onOutLap()
   if inMultiplayer() then
     TriggerServerEvent('RM_Lap', jsonEncode({ lapTime = lapTime }))
   end
-  announceLap(localLap)
-  log('I', 'raceManager', string.format('Lap %d done: %.3fs (%s)',
-    localLap, lapTime, phase))
+  if outLap then
+    -- No time is presented for a lap that was not timed. The readout says what
+    -- happened instead, and the notice channel says what happens next -- this is
+    -- the moment the driver most needs to know their timing has started, and it
+    -- is the moment they are least able to go looking for it.
+    guihooks.trigger('RaceManagerLapDone', { outLap = true, lap = localLap })
+    pushNotice('session', 'OUT LAP COMPLETE — you are on a TIMED lap now')
+    log('I', 'raceManager', string.format('Out lap done: %.3fs (not timed)', lapTime))
+  else
+    announceLap(localLap)
+    log('I', 'raceManager', string.format('Lap %d done: %.3fs (%s)',
+      localLap, lapTime, phase))
+  end
   localLap = localLap + 1
   lapStart = localTime
 end
@@ -937,6 +997,11 @@ local function lapTimerUpdate(dt)
     running = true,
     lap     = localLap,
     elapsed = localTime - lapStart,
+    -- The clock still runs and is still sent; what changes is what the app is
+    -- allowed to do with it. On the out lap it shows the lap for what it is
+    -- instead of a number that looks like a time being taken -- a driver
+    -- watching a lap clock tick has every reason to think it counts.
+    outLap  = onOutLap(),
   })
 end
 
@@ -3200,13 +3265,29 @@ local PALETTE = nil
 
 local function palette()
   if PALETTE then return PALETTE end
+  -- Every gate colour is at FULL VALUE: the brightest form of its own hue,
+  -- rather than that hue mixed with black. The hues themselves are unchanged --
+  -- green next, orange route, white line, violet joker, amber pit -- because
+  -- what a colour means here is learned, and a driver who has learned that
+  -- green is the gate they are heading for should not have to learn it twice.
+  --
+  -- What moved is value and alpha. These are drawn over whatever the map
+  -- happens to be, in whatever light the level has: a gate at 70% alpha in a
+  -- hue two thirds of the way to black is legible against tarmac at noon and
+  -- close to invisible against a bright desert, a snow map, or a low sun. There
+  -- is no cost to being certain here -- the shapes are thin cylinder edges, not
+  -- fills, so a fully opaque gate still shows the track through the middle of
+  -- itself, which is the part that matters.
   PALETTE = {
-    finish    = ColorF(1, 1, 1, 0.9),          -- start/finish: white
-    armed     = ColorF(0.2, 0.85, 0.35, 0.9),  -- next target: green
-    route     = ColorF(1, 0.4, 0, 0.7),        -- rest of route: orange
-    joker     = ColorF(0.65, 0.3, 0.95, 0.8),  -- joker route: violet
-    jokerUsed = ColorF(0.45, 0.45, 0.5, 0.45), -- joker already taken: dimmed
-    pit       = ColorF(1, 0.72, 0.1, 0.85),    -- pit stalls: amber
+    finish    = ColorF(1, 1, 1, 1),            -- start/finish: white
+    armed     = ColorF(0.25, 1, 0.45, 1),      -- next target: green
+    route     = ColorF(1, 0.45, 0.05, 0.95),   -- rest of route: orange
+    joker     = ColorF(0.72, 0.35, 1, 1),      -- joker route: violet
+    -- Still visibly duller than the rest, because "already taken" is what it
+    -- has to say at a glance -- but lifted with everything else, so it reads as
+    -- a gate that is spent rather than one that failed to draw.
+    jokerUsed = ColorF(0.62, 0.62, 0.7, 0.6),  -- joker already taken: dimmed
+    pit       = ColorF(1, 0.78, 0.15, 1),      -- pit stalls: amber
     text      = ColorF(1, 1, 1, 1),
     -- The editor gate's filled surface. Deliberately faint: it has to show the
     -- gate's extent without hiding the road it is judged against.
@@ -3497,6 +3578,10 @@ function poles.create()
   if not mod then return nil end
   local made, marker = pcall(mod.createRaceMarker, true, 'sideColumnMarker')
   if not made or type(marker) ~= 'table' then return nil end
+  -- Brighten the whole mode table now, while it is a fresh per-instance copy
+  -- and before anything has been put on screen. Once per marker, which is what
+  -- keeps repeated re-pointing from washing the colours out (see brighten).
+  poles.brighten(marker)
   return marker
 end
 
@@ -3529,6 +3614,78 @@ end
 -- both directions: a build that renames, restructures or shares that table
 -- leaves the pole on its stock mode colour, which is exactly where it was
 -- before any of this existed.
+-- Lift one colour to the brightest form of ITS OWN hue.
+--
+-- Two steps, and neither of them changes the hue. Scale so the strongest
+-- channel is full -- a colour that was that hue mixed with black becomes the
+-- pure article -- then mix the result toward white by `lift`, which raises the
+-- weakest channels and is what turns a saturated colour into a luminous one.
+-- Adding equal whiteness to every channel is a saturation change, so the hue
+-- comes through both steps untouched: a red pole stays exactly as red, it just
+-- stops being dark red.
+--
+-- Black is returned unchanged and that is not an oversight. Black has no hue to
+-- preserve, so there is no "brighter version of it" to compute -- anything this
+-- produced would be a colour invented here rather than one lifted. The modes
+-- that ship black are handled by name below.
+local function brighterRGB(c, lift)
+  local r, g, b = tonumber(c[1]) or 0, tonumber(c[2]) or 0, tonumber(c[3]) or 0
+  local mx = math.max(r, g, b)
+  if mx <= 0 then return nil end
+  local s = 1 / mx
+  r, g, b = r * s, g * s, b * s
+  return { r + (1 - r) * lift, g + (1 - g) * lift, b + (1 - b) * lift }
+end
+
+-- Brighten every mode this marker can be put into, ONCE, as it is created.
+--
+-- The race poles are BeamNG's own, and its palette is built for its own races:
+-- `default` is a deep red-orange (1, 0.07, 0), which is a strong colour and a
+-- dark one -- against a bright map, a low sun or a pale road surface it is a
+-- silhouette rather than a marker. Every mode with a colour is lifted to the
+-- luminous version of that same colour, so a driver's learned meanings survive
+-- and the poles stop disappearing into the scenery.
+--
+-- Done at CREATION and never again, which is what keeps it correct: lifting a
+-- colour that has already been lifted would wash it out a little further every
+-- time a marker was re-pointed at a new gate, and a marker is re-pointed every
+-- time the driver clears a checkpoint. One pass, on a fresh table, per marker.
+--
+-- Two modes are handled by name:
+--   hidden -- ships black and is MEANT to be invisible. Left alone.
+--   next   -- ships black too, which is the engine saying "not your gate yet".
+--             This mod puts a marker there deliberately, so the line through
+--             the corner reads before the driver arrives, and a black pole is
+--             the one thing that cannot do that job. It gets a colour of its
+--             own: the route ahead, plainly visible but subordinate to the gate
+--             actually being aimed at.
+local POLE_KEEP_BLACK = { hidden = true }
+
+function poles.brighten(marker)
+  local ok, done = pcall(function ()
+    local infos = marker.modeInfos
+    if type(infos) ~= 'table' then return false end
+    local touched = false
+    for mode, info in pairs(infos) do
+      if type(info) == 'table' and type(info.color) == 'table'
+          and not POLE_KEEP_BLACK[mode] then
+        local rgb = TUNE.POLE_MODE_RGB[mode] or brighterRGB(info.color, TUNE.POLE_LIFT)
+        if rgb then
+          info.color[1], info.color[2], info.color[3] = rgb[1], rgb[2], rgb[3]
+          touched = true
+        end
+      end
+    end
+    return touched
+  end)
+  if (not ok or not done) and not poles.brightenFailed then
+    poles.brightenFailed = true
+    log('W', 'raceManager', 'Race marker colours could not be brightened on this '
+      .. 'build — the poles keep their stock colours')
+  end
+  return ok and done
+end
+
 function poles.tint(marker, mode, rgb)
   local ok, done = pcall(function ()
     local infos = marker.modeInfos
@@ -5225,6 +5382,7 @@ local function onServerUpdate(rawData)
   if type(data.entryMode) == 'string' then entryMode = data.entryMode end
   if type(data.pointToPoint) == 'boolean' then pointToPoint = data.pointToPoint end
   ghostQuali = data.ghostQuali == true
+  qualiOutLap = data.qualiOutLap == true
   if type(data.qualiLapLimit)  == 'number' then qualiLapLimit  = data.qualiLapLimit  end
   if type(data.qualiTimeLimit) == 'number' then qualiTimeLimit = data.qualiTimeLimit end
   -- Reset-ghosting rules are the server's, so every client in a league runs the
@@ -5275,8 +5433,15 @@ local function onServerUpdate(rawData)
   if newPhase ~= phase then
     phase = newPhase
     -- Any session transition re-arms local detection from a clean slate:
-    -- quali start begins a fresh out-lap, GO starts lap 1 at the line.
+    -- lap 1 starts at the line, from the grid, for both kinds of session.
     resetLapTracking()
+    -- Qualifying opens on the out lap, so say so at the moment the lights go
+    -- out. The lap readout carries it for the whole lap; this is the one push
+    -- that arrives while the driver is still stationary and reading.
+    if newPhase == 'qualifying' and qualiOutLap then
+      pushNotice('session',
+        'OUT LAP — this lap is NOT timed. Timing starts as you cross the line.')
+    end
     -- Leaving the start procedure must never leave a car frozen.
     if newPhase ~= 'grid' and newPhase ~= 'countdown' then releaseGridHold('race') end
     if newPhase ~= 'grid' and newPhase ~= 'countdown' and not sessionRunning() then
@@ -5734,7 +5899,11 @@ end
 -- admin sets by hand.
 function M.setGridMode(mode)
   mode = tostring(mode or 'quali')
-  if mode ~= 'random' and mode ~= 'custom' then mode = 'quali' end
+  -- Every mode the server accepts has to be named here too. This list was left
+  -- behind when reverse grids were added, so pressing Reverse normalised to
+  -- 'quali' on the way out and the panel lit Quali back up -- a dead button that
+  -- looked like it had picked the wrong one.
+  if mode ~= 'random' and mode ~= 'custom' and mode ~= 'reverse' then mode = 'quali' end
   if inMultiplayer() then
     TriggerServerEvent('RM_SetGridMode', jsonEncode({ mode = mode }))
   end

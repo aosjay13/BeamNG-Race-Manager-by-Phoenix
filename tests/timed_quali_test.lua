@@ -83,6 +83,15 @@ local function startTimedQuali(seconds, laps)
   RM_onStartCountdown(0)
   RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
 end
+-- Qualifying opens with an out lap: one crossing per driver that is not timed,
+-- not scored and not part of any allowance. Every test below that wants drivers
+-- on timed laps has to get them past it first, so it is one call rather than a
+-- line repeated in each of them.
+local function takeOutLaps(...)
+  local pids = { ... }
+  if #pids == 0 then for pid in pairs(connected) do pids[#pids + 1] = pid end end
+  for _, pid in ipairs(pids) do RM_onLap(pid, '{"lapTime":50.0}') end
+end
 
 onInit()
 RM_onLogin(0, '{"password":"phoenix"}')
@@ -94,6 +103,10 @@ for pid in pairs(connected) do RM_onPlayerJoin(pid) end
 startTimedQuali(2)
 check(lastState.phase == 'qualifying', 'timed qualifying is running')
 check(lastState.finalLap ~= true, 'the final lap is not armed while time remains')
+-- Everyone out of the way of the out lap first: this section is about what the
+-- clock does to a driver on a TIMED lap. The out lap has a final-lap rule of its
+-- own, and it gets its own section at the bottom of this file.
+takeOutLaps()
 
 clearSignals()
 ticks(25)   -- past the 2 second limit (100 ms a tick)
@@ -151,6 +164,7 @@ check(lastState.drivers[1].id == 0, 'and they decide the provisional grid order'
 -- Without a bound the session waits on them forever. The grace timeout takes
 -- them where they stand and closes normally.
 startTimedQuali(2)
+takeOutLaps()
 clearSignals()
 ticks(25)
 check(lastState.finalLap == true, 'final lap armed again')
@@ -170,6 +184,7 @@ end
 -- Edge case: a driver disconnects during the final lap
 -- ===========================================================================
 startTimedQuali(2)
+takeOutLaps()
 clearSignals()
 ticks(25)
 RM_onLap(0, '{"lapTime":90.0}')
@@ -187,12 +202,14 @@ RM_onPlayerJoin(2)
 -- ===========================================================================
 -- Every driver already used a lap allowance, so there is no final lap to run.
 -- The session must close cleanly rather than arming a state nothing can leave.
-startTimedQuali(3, 1)                 -- 3 s limit AND a 1 lap allowance
+startTimedQuali(3, 1)                 -- 3 s limit AND a 1 timed lap allowance
+takeOutLaps()
 for pid = 0, 2 do RM_onLap(pid, '{"lapTime":80.0}') end
 check(lastState.phase == 'waiting', 'the lap allowance closed the session first')
 
 -- ...and the same again where the clock is what runs out on an empty track.
 startTimedQuali(3, 1)
+takeOutLaps()
 clearSignals()
 for pid = 0, 2 do RM_onLap(pid, '{"lapTime":80.0}') end
 ticks(60)
@@ -209,18 +226,57 @@ clearSignals()
 ticks(600)                            -- a minute; no clock to expire
 check(lastState.phase == 'qualifying', 'and does not end on a timer it never had')
 check(lastState.finalLap ~= true, 'and never arms the final lap')
+takeOutLaps()
+check(lastState.phase == 'qualifying',
+  'an out lap never spends any of a lap allowance, whatever the allowance is')
 for lap = 1, 2 do
   for pid = 0, 2 do RM_onLap(pid, '{"lapTime":' .. (90 + pid) .. '}') end
 end
 check(lastState.phase == 'waiting', 'it still closes on the lap allowance')
 for pid = 0, 2 do
-  check(driver(pid).qualiLaps == 2, 'driver ' .. pid .. ' ran exactly their 2 laps')
+  check(driver(pid).qualiLaps == 2, 'driver ' .. pid .. ' ran exactly their 2 timed laps')
   check(released[pid] ~= nil, 'driver ' .. pid .. ' got their car back')
 end
 
 -- ===========================================================================
+-- The out lap and an expired clock
+-- ===========================================================================
+-- The final-lap rule says the next crossing is terminal. Applied to a driver
+-- still on their out lap, that would stand them down with no lap time at all --
+-- eliminated by the one lap the session had already promised not to score, for
+-- being at the wrong point of the circuit when a clock they cannot see ran out.
+--
+-- So the out lap is never terminal. It ends, the flying lap starts, and THAT one
+-- is the driver's final lap: exactly what every other driver on track gets.
+startTimedQuali(2)
+clearSignals()
+ticks(25)
+check(lastState.finalLap == true, 'the clock expires with all three still on their out lap')
+for pid = 0, 2 do
+  check(driver(pid).outLap == true, 'driver ' .. pid .. ' has not crossed the line yet')
+end
+
+RM_onLap(0, '{"lapTime":45.0}')       -- out lap completed AFTER expiry
+check(driver(0).status == 'qualifying',
+  'the out lap does not end a driver\'s session even with the final lap armed')
+check(driver(0).qualiBest == nil, 'and it still sets no time')
+check(driver(0).outLap == false, 'they are on their flying lap now')
+check(lastState.phase == 'qualifying', 'and the session is still open for it')
+
+RM_onLap(0, '{"lapTime":93.0}')       -- the flying lap they were owed
+check(driver(0).status == 'finished', 'the timed lap after it IS terminal')
+check(driver(0).qualiBest == 93.0, 'and it counts in full')
+
+-- The other two never come round; the grace timeout closes it as it always does.
+ticks(1800)
+check(lastState.phase == 'waiting', 'the grace timeout still closes the session')
+
+-- ===========================================================================
 -- And a RACE is untouched by any of it
 -- ===========================================================================
+-- No out lap in a race: lap 1 is a scored lap of the race, from the same
+-- standing start. A race gives nothing away because a race is not timing one
+-- lap at a time -- the flag is what decides it.
 RM_onSetTotalLaps(0, '{"laps":2}')
 RM_onGenerateGrid(0)
 RM_onStartCountdown(0)

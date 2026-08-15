@@ -81,6 +81,38 @@ expect(bound('cpEdit.width') and bound('cpEdit.height'),
   'gate size is edited on the gate itself')
 expect(bound('settingsUi.qualiLaps'), 'Quali lap limit input binds settingsUi.qualiLaps')
 expect(bound('settingsUi.qualiMins'), 'Quali time limit input binds settingsUi.qualiMins')
+
+-- ...and they are never both on screen. A qualifying session runs to a lap
+-- allowance OR to a clock; the server holds both numbers and treats 0 as
+-- unlimited, so both at once is a state it can hold, and two boxes side by side
+-- is how it gets armed by accident.
+do
+  expect(html:find("setQualiLimitMode('laps')", 1, true) ~= nil
+    and html:find("setQualiLimitMode('timed')", 1, true) ~= nil,
+    'the panel offers a Laps / Timed choice for the qualifying session length')
+  local gated = {
+    laps  = { model = 'settingsUi.qualiLaps', what = 'lap allowance' },
+    timed = { model = 'settingsUi.qualiMins', what = 'time limit' },
+  }
+  for mode, g in pairs(gated) do
+    local block = html:match('ng%-if="isQualiLimitMode%(\'' .. mode .. '\'%)"(.-)</span>')
+    expect(block ~= nil and block:find(g.model, 1, true) ~= nil,
+      'the ' .. g.what .. ' input is not inside the ' .. mode .. ' mode block')
+    -- One input, and it is that one: a second copy anywhere else in the
+    -- template would render alongside it and both would be on screen again.
+    local _, n = html:gsub('ng%-model="' .. g.model:gsub('%.', '%%.') .. '"', '')
+    expect(n == 1,
+      'expected exactly one ' .. g.model .. ' input (found ' .. n .. ')')
+  end
+  -- The mode that is not in use has to be sent as 0, or switching the toggle
+  -- leaves the old limit armed under a panel that no longer shows it.
+  local push = js:match('function pushQualiLimits%(%)(.-)\n%s*}')
+  expect(push ~= nil, 'found pushQualiLimits in the controller')
+  expect(push ~= nil and push:find("=== 'laps'", 1, true) ~= nil
+    and push:find("=== 'timed'", 1, true) ~= nil,
+    'pushQualiLimits sends both numbers unconditionally, so the limit the '
+      .. 'panel is not showing stays armed on the server')
+end
 expect(bound('derbyUi.name'),      'Derby arena name input binds derbyUi.name')
 expect(bound('lbUi.opacity'),      'Leaderboard opacity slider binds lbUi.opacity')
 
@@ -90,11 +122,48 @@ expect(not html:find('settingsUi.depth', 1, true), 'the gate depth input is gone
 expect(not js:find('setCheckpointDepth', 1, true), 'the depth command is gone from the controller')
 expect(not html:find('cpEdit.depth', 1, true), 'the per-gate depth override is gone')
 
--- UI -> server: the Set handlers read the value the inputs actually write.
+-- UI -> server: the apply handlers read the value the inputs actually write.
 expect(js:find('$scope.settingsUi.laps', 1, true) ~= nil,
   'applyTotalLaps reads settingsUi.laps')
 expect(js:find('$scope.settingsUi.resets', 1, true) ~= nil,
   'applyMaxResets reads settingsUi.resets')
+
+-- ---------------------------------------------------------------------------
+-- 3b. The session settings apply themselves, and they debounce
+--
+-- They used to sit behind a Set button, and forgetting to press it is a silent
+-- failure that surfaces as the wrong race distance. They now apply on change --
+-- which is only safe with a debounce: without one, typing "125" sends 1, then
+-- 12, then 125, and each of those is a setting the server really applied and
+-- really broadcast to every client on the way past.
+-- ---------------------------------------------------------------------------
+do
+  local applying = 0
+  for tag in html:gmatch('<input[^>]->') do
+    if tag:find('ng%-change=') and tag:find('ng%-model="settingsUi%.') then
+      applying = applying + 1
+      local field = tag:match('ng%-model="(settingsUi%.[%w_]+)"') or '?'
+      expect(tag:find('ng%-model%-options=') ~= nil and tag:find('debounce', 1, true) ~= nil,
+        field .. ' applies on change with no debounce: every keystroke would be '
+          .. 'a separate setting, applied and broadcast')
+      -- blur has to commit immediately, or clicking away from a box leaves the
+      -- typed value sitting there unapplied -- the same failure as the button.
+      expect(tag:find('blur', 1, true) ~= nil,
+        field .. ' debounces without a blur:0 rule, so leaving the field does '
+          .. 'not commit what was typed')
+    end
+  end
+  expect(applying >= 4,
+    'expected the laps, resets and both qualifying inputs to apply themselves '
+      .. '(found ' .. applying .. ')')
+  -- ...and the buttons they replaced are gone, or the panel still teaches that
+  -- a typed number does nothing until something is pressed.
+  for _, fn in ipairs({ 'applyTotalLaps', 'applyMaxResets', 'applyQualiLimits' }) do
+    expect(html:find('ng%-click="' .. fn .. '%(%)"') == nil,
+      fn .. ' is still on a button: the field applies itself now, and a Set '
+        .. 'button beside it says otherwise')
+  end
+end
 
 -- server -> UI: the state broadcast re-seeds the same inputs, so a clamped or
 -- another admin's value shows up in the panel.
@@ -127,6 +196,37 @@ wired('setEntryMode',       'toggleEntryMode',    'Entry mode')
 wired('setGridMode',        'setGridMode',        'Grid order')
 wired('setDriverGridSlot',  'pinGridSlot',        'Custom grid slot')
 wired('setGhostQuali',      'toggleGhostQuali',   'Ghost qualifying')
+-- Every grid order the panel offers must be one the server accepts. A button
+-- for a mode its validator drops is a dead button: the panel un-highlights the
+-- old mode, the server keeps it, and the next broadcast puts it back.
+do
+  local modes = {}
+  for mode in html:gmatch("setGridMode%('([%w_]+)'%)") do modes[mode] = true end
+  expect(modes.quali and modes.reverse and modes.random and modes.custom,
+    'the panel offers Quali, Reverse, Random and Custom grid orders')
+  local validator = readFile('server/RaceManager/main.lua')
+    :match('function RM_onSetGridMode.-\n(.-)\nend')
+  expect(validator ~= nil, 'found RM_onSetGridMode in the server plugin')
+  for mode in pairs(modes) do
+    expect(validator ~= nil and validator:find("'" .. mode .. "'", 1, true) ~= nil,
+      'the panel offers the "' .. mode .. '" grid order but RM_onSetGridMode '
+        .. 'never names it, so pressing it changes nothing')
+  end
+  -- ...and so must the CLIENT RELAY between them, which is where this went
+  -- wrong. Checking the panel against the server skipped the one layer in the
+  -- middle: M.setGridMode normalises anything it does not recognise back to
+  -- 'quali', so Reverse -- a mode both ends knew about -- was rewritten on the
+  -- way out and the panel lit Quali up instead. Every hop has to name the mode,
+  -- not just the two ends.
+  local relay = readFile('lua/ge/extensions/raceManager.lua')
+    :match('function M%.setGridMode.-\n(.-)\nend')
+  expect(relay ~= nil, 'found M.setGridMode in the client bridge')
+  for mode in pairs(modes) do
+    expect(relay ~= nil and relay:find("'" .. mode .. "'", 1, true) ~= nil,
+      'the panel offers the "' .. mode .. '" grid order but M.setGridMode never '
+        .. 'names it, so the client rewrites it before the server ever sees it')
+  end
+end
 wired('setQualiLimits',     'applyQualiLimits',   'Qualifying limits')
 wired('moveStartPosition',  'moveStartPosition',  'Move start position')
 wired('removeStartPosition','removeStartPosition','Remove start position')
@@ -186,6 +286,59 @@ for _, field in ipairs({ 'entryMode', 'gridMode', 'ghostQuali', 'startSlots',
 end
 
 -- ---------------------------------------------------------------------------
+-- 4a2. The qualifying out lap is SHOWN, not just enforced
+--
+-- The rule is worth nothing to a driver who cannot tell it is in force: a lap
+-- clock ticking away on a lap that is not being timed is worse than no readout
+-- at all, because it is a number they will drive to. So the app has to render
+-- the out lap as a state, and must never render a time in its place.
+-- ---------------------------------------------------------------------------
+expect(js:find('data.qualiOutLap', 1, true) ~= nil,
+  'the out-lap rule is mirrored from the server broadcast')
+for _, fn in ipairs({ 'onOutLap', 'outLapDone' }) do
+  expect(html:find(fn .. '()', 1, true) ~= nil and js:find('$scope.' .. fn, 1, true) ~= nil,
+    'the template calls ' .. fn .. '() and the controller defines it — an '
+      .. 'undefined one is not an error in Angular, it is a readout that '
+      .. 'silently never appears')
+end
+expect(html:find('showOutLap(row)', 1, true) ~= nil
+  and js:find('$scope.showOutLap', 1, true) ~= nil,
+  'the qualifying table shows which drivers are still on their out lap')
+-- ...and only for drivers who are actually in the session. The server's flag
+-- stays set on a driver who withdrew or was taken by the grace timeout — they
+-- never completed one — so a row announcing an out lap beside a status of DNF
+-- is what this guards against.
+do
+  local body = js:match('%$scope%.showOutLap = function %(row%)(.-)\n%s*};')
+  expect(body ~= nil, 'found showOutLap in the controller')
+  expect(body ~= nil and body:find("'qualifying'", 1, true) ~= nil
+    and body:find("'gridded'", 1, true) ~= nil,
+    'showOutLap does not check the driver is still in the session')
+end
+
+-- The live clock and the out-lap label share one slot. Both rendering at once
+-- is the failure this prevents, and it is invisible until a qualifying session
+-- is actually running in the game.
+do
+  local live = 0
+  for cond in html:gmatch('class="rm%-laptime%-live"%s+ng%-if="([^"]*)"') do
+    live = live + 1
+    expect(cond:find('!onOutLap()', 1, true) ~= nil,
+      'a live lap clock renders without excluding the out lap, so a driver on '
+        .. 'an untimed lap is shown a running time: ' .. cond)
+  end
+  expect(live >= 2, 'found the lap clock in both the header and the driver bar '
+    .. '(found ' .. live .. ')')
+
+  -- ...and the out-lap slot itself must not format a lap time into the gap.
+  for block in html:gmatch('class="rm%-laptime%-out"(.-)</span>') do
+    expect(block:find('formatLap', 1, true) == nil,
+      'the out-lap readout renders a lap time, which is exactly the number that '
+        .. 'lap does not have')
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- 4b. Cup / series points
 --
 -- The cup panel is entirely server-driven: it renders standings it is sent and
@@ -212,6 +365,35 @@ wired('cupSetFastestLapRule',  'cupToggleFlRule',   'Fastest lap rule')
 -- Ending a cup destroys a season of points, so it must not be a single click.
 expect(html:find('cupAskReset()', 1, true) ~= nil and html:find('cupCancelReset()', 1, true) ~= nil,
   'End Cup is behind a confirmation step, not a bare button')
+
+-- ---------------------------------------------------------------------------
+-- 4d2. Every irreversible control is behind a confirmation
+--
+-- Two controls in this app destroy something no undo can bring back: End Cup
+-- deletes a season of points, and Clear Results Cache deletes every saved
+-- results file -- which, once a session is over, is the only record a league
+-- has that the race happened. Both sit in panels an admin opens for other
+-- things, one click away from a mis-aimed press.
+-- ---------------------------------------------------------------------------
+for _, c in ipairs({
+  { ask = 'cupAskReset',     cancel = 'cupCancelReset',     go = 'cupReset',     what = 'End Cup' },
+  { ask = 'askClearResults', cancel = 'cancelClearResults', go = 'clearResults', what = 'Clear Results Cache' },
+}) do
+  for _, fn in ipairs({ c.ask, c.cancel, c.go }) do
+    expect(html:find(fn .. '()', 1, true) ~= nil,
+      c.what .. ': the template has no ' .. fn .. '() control')
+    expect(js:find('$scope.' .. fn .. ' ', 1, true) ~= nil
+      or js:find('$scope.' .. fn .. '=', 1, true) ~= nil,
+      c.what .. ': ' .. fn .. ' is not defined on the controller')
+  end
+  -- The destructive call must be reachable ONLY from the confirmed branch. A
+  -- second bare button calling it directly would make the confirmation
+  -- decorative, which is the way this protection actually gets lost.
+  local _, bare = html:gsub('ng%-click="' .. c.go .. '%(%)"', '')
+  expect(bare == 1,
+    c.what .. ': expected exactly one control calling ' .. c.go
+      .. '() (the confirmed one), found ' .. bare)
+end
 
 -- The panel renders the ARRAYS the broadcast carries, not just summary counts:
 -- a standings block bound to a total alone can say "5 drivers" and list none.
@@ -452,7 +634,7 @@ end
 -- And the ones the controller reads off a driver row it was handed.
 for _, field in ipairs({ 'alias', 'currentLap', 'finishTime', 'id', 'jokerLap',
                          'jokerTaken', 'name', 'outReason', 'position', 'resets',
-                         'status', 'qualiBest' }) do
+                         'status', 'qualiBest', 'outLap' }) do
   expect(onWire[field],
     'the controller reads ' .. field .. ' off a driver row, so it must be on the wire')
 end

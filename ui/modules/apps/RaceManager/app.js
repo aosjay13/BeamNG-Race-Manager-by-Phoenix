@@ -80,13 +80,15 @@ angular.module('beamng.apps')
       // Garage list (approved vehicles/setups).
       $scope.garage = [];             // [{ model, label }]
       $scope.garageEnforce = false;
-      // Race entry (opt-in): players add themselves to the field instead of
-      // every session on the server being assumed to be racing.
-      $scope.entryMode = 'join';      // 'join' (opt-in) | 'all' (everyone races)
+      // Race entry: everyone connected is in the field by default, and an admin
+      // can switch to opt-in when it should be a subset of who is on the server.
+      // Only ever a mirror of the server's answer — this is the value the panel
+      // shows for the fraction of a second before the first broadcast lands.
+      $scope.entryMode = 'all';       // 'all' (everyone races, the default) | 'join' (opt-in)
       $scope.joined = false;          // is THIS client in the field?
       $scope.entrants = 0;
       // Starting grid.
-      $scope.gridMode = 'quali';      // quali | random | custom
+      $scope.gridMode = 'quali';      // quali | reverse | random | custom
       $scope.startSlots = 0;          // start positions the loaded track has
       $scope.startPositions = [];     // placed on this client
       $scope.gridSlot = null;         // the slot this client was given
@@ -100,6 +102,14 @@ angular.module('beamng.apps')
       $scope.qualiTimeLimit = 0;
       $scope.qualiLeft = null;        // seconds remaining, null = no limit
       $scope.finalLap  = false;       // quali clock expired: this lap is the last
+      // Does the session on track open with an out lap — one trip past the line
+      // that is not timed and does not count? Mirrored from the server (it is
+      // off on a point-to-point stage, which is driven once) and shown as a
+      // header badge, so a spectator or an admin can see which rules the session
+      // is running under. Whether THIS driver is on theirs right now is a
+      // separate question, answered by the lap clock feed below, which is
+      // instant rather than a broadcast behind.
+      $scope.qualiOutLap = false;
       // Forced spectator mode.
       $scope.spectating = false;
       $scope.spectatorReason = null;
@@ -157,6 +167,19 @@ angular.module('beamng.apps')
       $scope.showLapTime = function () {
         return !!$scope.lapLive || !!$scope.lapHold;
       };
+      // Is this driver on the out lap right now? The lap clock feed carries it,
+      // which is what makes this instant: the bridge knows the moment the car
+      // crosses the line, while the driver row that also carries it arrives on a
+      // broadcast up to a third of a second later. A readout still reading NOT
+      // TIMED into a lap that is being timed is the one error this must not make.
+      $scope.onOutLap = function () {
+        return !!($scope.lapLive && $scope.lapLive.outLap);
+      };
+      // ...and the moment it ENDS, held on screen for a few seconds in place of
+      // the lap time a scored lap would leave there.
+      $scope.outLapDone = function () {
+        return !!($scope.lapHold && $scope.lapHold.outLap);
+      };
 
       // Live lap clock from the bridge (250 ms), interpolated between pushes.
       $scope.$on('RaceManagerLapTime', function (event, data) {
@@ -169,7 +192,8 @@ angular.module('beamng.apps')
           $scope.lapLive = {
             elapsed: data.elapsed || 0,
             at: Date.now(),
-            lap: data.lap || null
+            lap: data.lap || null,
+            outLap: !!data.outLap
           };
           startLapTicker();
         });
@@ -177,11 +201,18 @@ angular.module('beamng.apps')
 
       // A lap just completed: hold its time on screen. The live clock above is
       // already counting the new lap — this only parks a copy of the old one.
+      //
+      // An out lap arrives here with NO time, deliberately: it was not timed, so
+      // there is nothing to hold, and the slot says what the lap was instead. A
+      // time shown for it — even a greyed-out one — is a number a driver will
+      // try to beat.
       $scope.$on('RaceManagerLapDone', function (event, data) {
-        if (!data || typeof data.lapTime !== 'number') { return; }
+        if (!data) { return; }
+        if (!data.outLap && typeof data.lapTime !== 'number') { return; }
         $scope.$evalAsync(function () {
           $scope.lapHold = {
-            lapTime: data.lapTime,
+            lapTime: data.outLap ? null : data.lapTime,
+            outLap: !!data.outLap,
             lap: data.lap || null,
             until: Date.now() + LAP_HOLD_MS
           };
@@ -629,8 +660,8 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.cupSetEnabled(' + (!!on) + ')');
       };
       $scope.cupToggleEnabled = function () { $scope.cupSetEnabled(!$scope.cup.enabled); };
-      // Two presses, because this is the only control in the app that destroys
-      // a season's worth of points.
+      // Two presses, because one press destroys a season's worth of points.
+      // Clear Results Cache is behind the same pattern for the same reason.
       $scope.cupAskReset = function () { $scope.cupUi.confirmReset = true; };
       $scope.cupCancelReset = function () { $scope.cupUi.confirmReset = false; };
       $scope.cupReset = function () {
@@ -950,7 +981,7 @@ angular.module('beamng.apps')
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.7.0';
+      var APP_BUILD = '0.8.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -978,6 +1009,19 @@ angular.module('beamng.apps')
         return PHASE_LABELS[$scope.phase] || $scope.phase;
       };
       $scope.statusLabel = function (s) { return STATUS_LABELS[s] || s; };
+
+      // Should this driver's row read OUT LAP where its lap time goes?
+      //
+      // The server's flag answers "does this driver's next crossing complete an
+      // out lap", which is only a statement about somebody still in the session.
+      // A driver who withdrew, went out, or was taken by the grace timeout keeps
+      // it set — they never completed one — and their row would otherwise
+      // announce an out lap they are no longer driving, next to a status of DNF
+      // or Not entered.
+      $scope.showOutLap = function (row) {
+        if (!row || !row.outLap) { return false; }
+        return row.status === 'qualifying' || row.status === 'gridded';
+      };
 
       // Full text for a driver's status cell: the server's ruling reason wins
       // (e.g. "Disqualified - Missed Joker") so the live table matches the
@@ -1221,15 +1265,25 @@ angular.module('beamng.apps')
           // and resets fields are: only when the server's value actually moved,
           // so an edit in progress is never yanked out from under the admin.
           $scope.ghostQuali = !!data.ghostQuali;
+          $scope.qualiOutLap = !!data.qualiOutLap;
+          // A limit becoming non-zero is also what picks the Laps/Timed toggle,
+          // so an admin opening the app onto a session somebody else set up
+          // lands on the mode it is actually running. Keyed on the value having
+          // MOVED, like the boxes above and for a sharper reason: this fires
+          // three times a second, and re-deciding the mode from the standing
+          // values on every broadcast would snap the toggle back to the old
+          // mode in the gap between a press and the server's echo of it.
           if (typeof data.qualiLapLimit === 'number') {
             if ($scope.qualiLapLimit !== data.qualiLapLimit) {
               $scope.settingsUi.qualiLaps = data.qualiLapLimit;
+              if (data.qualiLapLimit > 0) { $scope.qualiUi.mode = 'laps'; }
             }
             $scope.qualiLapLimit = data.qualiLapLimit;
           }
           if (typeof data.qualiTimeLimit === 'number') {
             if ($scope.qualiTimeLimit !== data.qualiTimeLimit) {
               $scope.settingsUi.qualiMins = Math.round(data.qualiTimeLimit / 60);
+              if (data.qualiTimeLimit > 0) { $scope.qualiUi.mode = 'timed'; }
             }
             $scope.qualiTimeLimit = data.qualiTimeLimit;
           }
@@ -1928,22 +1982,57 @@ angular.module('beamng.apps')
       $scope.resetLeaderboard = function () {
         bngApi.engineLua('raceManager.resetLeaderboard()');
       };
+      // Clear Results Cache, behind the same two-press confirmation End Cup
+      // uses, and for the same reason: it deletes every saved .txt in the
+      // results folder on the server, there is no undo, and the button sits one
+      // row under Set Password in a panel an admin opens for other things. A
+      // results file is the only record a league has of a race night once the
+      // session is over.
+      $scope.resultsUi = { confirmClear: false };
+      $scope.askClearResults    = function () { $scope.resultsUi.confirmClear = true; };
+      $scope.cancelClearResults = function () { $scope.resultsUi.confirmClear = false; };
       $scope.clearResults = function () {
+        $scope.resultsUi.confirmClear = false;
         bngApi.engineLua('raceManager.clearResults()');
       };
 
       // ------------------------------------------------------------------
       // UI -> LUA commands (race settings)
       // ------------------------------------------------------------------
+      // ------------------------------------------------------------------
+      // Session settings apply themselves
+      // ------------------------------------------------------------------
+      // These used to sit behind a Set button, and forgetting to press it is a
+      // silent failure that only shows up as the wrong race distance. A commit
+      // button earns its place when an edit is multi-field and only makes sense
+      // applied together -- the cup points tables, where 24 boxes are one
+      // decision -- or when applying is expensive or destructive. A single
+      // number that is cheap to send, trivially changed again, and displayed
+      // back from the server right beside the box is none of those things.
+      //
+      // The inputs carry ng-model-options="{ debounce: { default: 500, blur: 0
+      // } }": the model settles half a second after typing stops, or instantly
+      // when the field loses focus, and ng-change sends it. Debounce is what
+      // makes this safe rather than chatty -- without it "12" would be sent as
+      // 1 and then 12, and every one of those is a broadcast to every client.
+      //
+      // An empty box is NEVER sent. It is a field mid-edit, not an instruction:
+      // a driver clearing 5 to type 12 must not spend the half second in
+      // between racing to whatever an empty box would mean.
       $scope.applyTotalLaps = function () {
         var n = parseInt($scope.settingsUi.laps, 10);
         if (!n || n < 1) { return; }
         bngApi.engineLua('raceManager.setTotalLaps(' + n + ')');
       };
       // Module 1: reset allowance. Blank or negative = unlimited, 0 = none.
+      // Unlimited is -1, and only -1. A blank box used to mean it too, which
+      // cannot survive auto-apply: clearing the field to retype a number would
+      // spend the moment in between setting the allowance to unlimited, and
+      // announce it. Blank is now "still typing" here, exactly as it is for the
+      // laps field, and the one documented way to say unlimited is to type -1.
       $scope.applyMaxResets = function () {
         var n = parseInt($scope.settingsUi.resets, 10);
-        if (isNaN(n)) { n = -1; }
+        if (isNaN(n)) { return; }
         if (n < 0) { n = -1; }
         bngApi.engineLua('raceManager.setMaxResets(' + n + ')');
       };
@@ -2000,10 +2089,17 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.setGridMode("' + mode + '")');
       };
       $scope.gridModeLabel = function () {
-        if ($scope.gridMode === 'random') { return 'Random draw'; }
-        if ($scope.gridMode === 'custom') { return 'Custom order'; }
+        if ($scope.gridMode === 'random')  { return 'Random draw'; }
+        if ($scope.gridMode === 'custom')  { return 'Custom order'; }
+        if ($scope.gridMode === 'reverse') { return 'Reversed quali order'; }
         return 'Qualifying order';
       };
+      // Does the provisional order shown in the qualifying table double as the
+      // starting grid? Only under 'quali'. Every other mode decides the grid
+      // somewhere else — a draw that has not happened, pins the table does not
+      // show, or a reversal — so the column stops calling itself Grid rather
+      // than showing a number the grid will contradict.
+      $scope.qualiOrderIsGrid = function () { return $scope.gridMode === 'quali'; };
       // Custom grid: pin one driver to one slot.
       $scope.pinGridSlot = function (row) {
         var n = parseInt($scope.gridUi.slot[row.id], 10);
@@ -2018,26 +2114,81 @@ angular.module('beamng.apps')
       $scope.toggleGhostQuali = function () {
         bngApi.engineLua('raceManager.setGhostQuali(' + (!$scope.ghostQuali) + ')');
       };
-      // Qualifying session length. Laps are per driver; the time limit is
-      // entered in minutes and sent as seconds. 0 means unlimited for both.
+      // Qualifying session length: LAPS or TIMED, one or the other.
+      //
+      // The server takes both numbers and treats 0 as unlimited, so "3 laps and
+      // 10 minutes" is a state it can hold — and a panel offering both boxes at
+      // once invites it by accident. A qualifying session is one thing or the
+      // other, so the panel asks which, shows that box alone, and sends 0 for
+      // the one not in use. Nothing about the server contract changes; what
+      // changes is that the two cannot be armed together by mistake.
+      //
+      // Which mode the panel is in is a display choice, so it lives here rather
+      // than on the wire — but it is seeded from the server below, so an admin
+      // opening the app on a session somebody else configured lands on the mode
+      // that session is actually running.
+      $scope.qualiUi = { mode: loadPref('qualiLimitMode', 'laps') === 'timed' ? 'timed' : 'laps' };
+      $scope.isQualiLimitMode = function (mode) { return $scope.qualiUi.mode === mode; };
+
+      // The numbers as the boxes currently read them, cleaned. Laps are per
+      // driver; the time limit is entered in minutes and sent as seconds.
+      function qualiLapsInput() {
+        var n = parseInt($scope.settingsUi.qualiLaps, 10);
+        return (isNaN(n) || n < 0) ? 0 : n;
+      }
+      function qualiSecondsInput() {
+        var n = parseFloat($scope.settingsUi.qualiMins);
+        return (isNaN(n) || n < 0) ? 0 : Math.round(n * 60);
+      }
+      // Send whichever limit the current mode governs, and 0 for the other.
+      function pushQualiLimits() {
+        var laps = $scope.qualiUi.mode === 'laps' ? qualiLapsInput() : 0;
+        var secs = $scope.qualiUi.mode === 'timed' ? qualiSecondsInput() : 0;
+        bngApi.engineLua('raceManager.setQualiLimits(' + laps + ', ' + secs + ')');
+      }
+      // Typing in the box that is on screen. An empty box is skipped, for the
+      // same reason it is on the laps and resets fields — here it would read as
+      // 0, which in a qualifying session means UNLIMITED, so clearing "3" to
+      // type "12" would spend the half second in between running an open
+      // session. (Switching MODE goes straight to pushQualiLimits below and is
+      // not skipped: that call has to land even with an empty box, because
+      // zeroing the limit the panel has stopped showing is the point of it.)
       $scope.applyQualiLimits = function () {
-        var laps = parseInt($scope.settingsUi.qualiLaps, 10);
-        var mins = parseFloat($scope.settingsUi.qualiMins);
-        if (isNaN(laps) || laps < 0) { laps = 0; }
-        if (isNaN(mins) || mins < 0) { mins = 0; }
-        bngApi.engineLua('raceManager.setQualiLimits('
-          + laps + ', ' + Math.round(mins * 60) + ')');
+        var box = $scope.qualiUi.mode === 'laps'
+          ? $scope.settingsUi.qualiLaps : $scope.settingsUi.qualiMins;
+        if (box === '' || box === null || box === undefined) { return; }
+        pushQualiLimits();
+      };
+      // Switching mode applies immediately, like every other toggle in this
+      // panel. Waiting for Set would leave the old limit live underneath a
+      // panel showing the new mode's empty box — which is the state this whole
+      // control exists to make impossible.
+      $scope.setQualiLimitMode = function (mode) {
+        mode = (mode === 'timed') ? 'timed' : 'laps';
+        if ($scope.qualiUi.mode === mode) { return; }
+        $scope.qualiUi.mode = mode;
+        savePref('qualiLimitMode', mode);
+        pushQualiLimits();
       };
       // Remaining qualifying time for the header readout.
       $scope.qualiClock = function () {
         if ($scope.qualiLeft === null || $scope.qualiLeft === undefined) { return ''; }
         return $scope.formatRaceTime($scope.qualiLeft);
       };
+      // The lap allowance is an allowance of TIMED laps, so the label says so
+      // and names the out lap that sits in front of them: an admin setting 3 and
+      // then watching drivers cross the line four times is owed the arithmetic.
       $scope.qualiLimitLabel = function () {
         var bits = [];
-        if ($scope.qualiLapLimit > 0) { bits.push($scope.qualiLapLimit + ' laps'); }
+        if ($scope.qualiLapLimit > 0) { bits.push($scope.qualiLapLimit + ' timed laps'); }
         if ($scope.qualiTimeLimit > 0) { bits.push(Math.round($scope.qualiTimeLimit / 60) + ' min'); }
-        return bits.length ? bits.join(' / ') : 'open';
+        var base = bits.length ? bits.join(' / ') : 'open';
+        // Keyed on the TRACK, not on the running session: this label is read
+        // while setting a session up, when the session running is a race or
+        // nothing at all. `qualiOutLap` on the broadcast answers the other
+        // question — whether the session on track right now has one — and is
+        // what the driver-facing chrome uses.
+        return $scope.pointToPoint ? base : (base + ' + out lap');
       };
 
       // ------------------------------------------------------------------

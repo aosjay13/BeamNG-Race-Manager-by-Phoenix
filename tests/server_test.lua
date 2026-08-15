@@ -202,12 +202,17 @@ RM_onLogout(7)
 check(lastState.adminPresent == true, 'adminPresent stays true while pids 1 & 2 are admin')
 lastState = nil
 
--- Players connect. Connecting is NOT entering: in the default opt-in mode the
--- field is empty until drivers press Join Race.
+-- Players connect. By default everyone on the server is in the field, so a
+-- server nobody has configured grids the people who turned up.
 RM_onPlayerJoin(1); RM_onPlayerJoin(2); RM_onPlayerJoin(3)
 check(#lastState.drivers == 3, 'three drivers after join')
 check(lastState.phase == 'waiting', 'initial phase waiting')
-check(lastState.entryMode == 'join', 'race entry defaults to opt-in')
+check(lastState.entryMode == 'all', 'race entry defaults to everyone racing')
+check(lastState.entrants == 3, 'all three connected players are entered')
+
+-- Switched to opt-in, connecting is NOT entering: the field is empty until
+-- drivers press Join Race.
+RM_onSetEntryMode(1, '{"mode":"join"}')
 check(lastState.entrants == 0, 'nobody is entered before anyone joins')
 
 -- Generate Grid with an empty entry list must not form a grid.
@@ -243,14 +248,24 @@ check(lastState.phase == 'grid', 'Start Qualifying forms a grid')
 RM_onStartCountdown(1)
 RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
 check(lastState.phase == 'qualifying', 'phase qualifying after GO')
+-- Out laps first: everyone gives one away off the standing start, and nothing
+-- set on it reaches the board.
+RM_onLap(1, '{"lapTime":50.0}')
+RM_onLap(2, '{"lapTime":50.0}')
+RM_onLap(3, '{"lapTime":50.0}')
+check(driver('Bob').qualiBest == nil, 'nothing from the out lap reaches Best Lap')
 RM_onLap(1, '{"lapTime":95.5}')
 RM_onLap(2, '{"lapTime":99.0}')
 RM_onLap(2, '{"lapTime":92.1}')   -- improvement
 RM_onLap(2, '{"lapTime":97.0}')   -- slower, must not overwrite
 RM_onLap(3, '{"lapTime":90.0}')
 check(driver('Bob').qualiBest == 92.1, 'best lap keeps the fastest (92.1)')
-check(driver('Bob').qualiLaps == 3, 'and every lap is counted')
-check(driver('Alice').currentLap == 2, 'a qualifying driver advances a lap like a racer')
+check(driver('Bob').qualiLaps == 3, 'and every timed lap is counted')
+-- Alice has crossed twice: the out lap, then one timed lap. The lap counter
+-- counts CROSSINGS and is advanced by both — an out lap that left the counter
+-- where it was would rank her against the field a lap down.
+check(driver('Alice').currentLap == 3, 'a qualifying driver advances a lap like a racer')
+check(driver('Alice').qualiLaps == 1, 'while the allowance only counts the timed one')
 
 -- A lap reported outside a running session is ignored.
 RM_onEndRace(1)
@@ -345,6 +360,14 @@ check(not raceSec:match('P%d+%s+Cara%s[^\n]*WINNER'), 'pole sitter is not tagged
 check(raceSec:match('DNF%s+%S+%s+Alice'), 'Alice listed as DNF')
 check(raceSec:find('1:31.500', 1, true), "Bob's best race lap formatted in race section")
 check(qualiSec:find('1:30.000', 1, true), "Cara's quali best formatted in quali section")
+-- The lap count in this section is TIMED laps, and every driver crossed the line
+-- once more than that. A results file is read months later by somebody who was
+-- not there, so the format line has to say which laps were counted rather than
+-- leave a discrepancy nobody can settle afterwards.
+check(qualiSec:find('out lap not timed', 1, true),
+  'the qualifying format line records that the out lap was not timed')
+check(qualiSec:match('Cara%s+1:30%.000%s+1'),
+  "Cara's out lap is not in her lap count")
 
 -- Clear Results Cache: all .txt files removed, chat confirms
 lastChat = nil

@@ -249,11 +249,32 @@ local function jokerMarker()
     if m.alive and m.mode == 'branch' then return m end
   end
 end
+-- The colour is read out of the extension rather than repeated here. A test
+-- holding its own copy of a colour is a test that fails the day somebody tunes
+-- one, which says nothing about whether the repaint still works -- the property
+-- worth pinning is "the marker gets the colour the mod declares", not "the
+-- marker is this exact violet".
+local clientSrc
+do
+  local f = assert(io.open('lua/ge/extensions/raceManager.lua', 'r'))
+  clientSrc = f:read('*a')
+  f:close()
+end
+local function rgbFromSource(pattern, what)
+  local r, g, b = clientSrc:match(pattern)
+  check(r ~= nil, 'found ' .. what .. ' in the client extension')
+  return { tonumber(r), tonumber(g), tonumber(b) }
+end
+local JOKER_RGB = rgbFromSource(
+  'JOKER_POLE_RGB%s*=%s*{%s*([%d%.]+),%s*([%d%.]+),%s*([%d%.]+)%s*}',
+  "the joker gate's pole colour")
+
 local jm = jokerMarker()
 check(jm ~= nil, 'the joker marker is the one in branch mode')
 local jc = jm and jm.modeInfos.branch.color
-check(jc and math.abs(jc[1] - 0.65) < 1e-9 and math.abs(jc[2] - 0.3) < 1e-9
-  and math.abs(jc[3] - 0.95) < 1e-9,
+check(jc and math.abs(jc[1] - JOKER_RGB[1]) < 1e-9
+  and math.abs(jc[2] - JOKER_RGB[2]) < 1e-9
+  and math.abs(jc[3] - JOKER_RGB[3]) < 1e-9,
   'the joker marker is repainted violet, not left on the stock branch orange')
 
 -- The repaint must land on THIS marker and nowhere else. If a build ever shared
@@ -362,6 +383,128 @@ check(#madeMarkers - madeSoFar <= 2,
 -- many times the markers come and go.
 check(requireCalls == 1,
   'the marker module is looked up once, not per frame (was ' .. requireCalls .. ')')
+
+-- ===========================================================================
+-- The poles are brightened, and brightened ONCE
+-- ===========================================================================
+-- BeamNG's palette is built for BeamNG's races: `default` is a deep red-orange
+-- (1, 0.07, 0) -- a strong colour and a dark one, which against a bright map or
+-- a pale road surface is a silhouette rather than a marker. Every mode with a
+-- colour is lifted to the luminous version of the SAME colour, so what a driver
+-- has learned each one means still holds.
+do
+  local stock = stockModeInfos()
+  local m = madeMarkers[1]
+  check(m ~= nil and type(m.modeInfos) == 'table', 'found a created marker to inspect')
+  local infos = m and m.modeInfos or {}
+
+  -- Hue, as the ratio the middle channel sits at between the other two. It is
+  -- what "the same colour, brighter" has to hold constant, and both halves of
+  -- the lift (scale to full value, then mix toward white) preserve it exactly.
+  local function hueRatio(c)
+    local mx = math.max(c[1], c[2], c[3])
+    local mn = math.min(c[1], c[2], c[3])
+    if mx == mn then return nil end          -- grey: no hue to compare
+    local mid = c[1] + c[2] + c[3] - mx - mn
+    return (mid - mn) / (mx - mn)
+  end
+  local function luma(c) return c[1] + c[2] + c[3] end
+
+  for _, mode in ipairs({ 'default', 'lap', 'recovery' }) do
+    local before, after = stock[mode].color, infos[mode] and infos[mode].color
+    check(after ~= nil, 'the marker has a ' .. mode .. ' mode')
+    if after then
+      check(luma(after) > luma(before) + 0.05,
+        'the ' .. mode .. ' pole is brighter than the stock colour ('
+          .. string.format('%.2f vs %.2f', luma(after), luma(before)) .. ')')
+      local h1, h2 = hueRatio(before), hueRatio(after)
+      check(h1 == nil or (h2 ~= nil and math.abs(h1 - h2) < 1e-6),
+        'the ' .. mode .. ' pole kept its hue: a driver who learned that colour '
+          .. 'should not have to learn it again')
+      check(math.max(after[1], after[2], after[3]) > 0.99,
+        'the ' .. mode .. ' pole is at full value')
+    end
+  end
+
+  -- `hidden` ships black because it is meant to be invisible. Brightening it
+  -- would put a white pole on track where the mod asked for nothing at all.
+  local hid = infos.hidden and infos.hidden.color
+  check(hid and hid[1] == 0 and hid[2] == 0 and hid[3] == 0,
+    'the hidden mode is left black — it is not a colour, it is an absence')
+
+  -- `next` ships black too, and that one IS a problem: this mod puts a marker
+  -- on the gate after the one being aimed at precisely so the line through the
+  -- corner reads early, and a black pole cannot do that job.
+  local nxt = infos.next and infos.next.color
+  check(nxt and luma(nxt) > 0.5,
+    'the next-gate pole is visible rather than the stock black')
+  check(nxt and nxt[1] > nxt[2] and nxt[2] > nxt[3],
+    'and it is the orange of the route ahead, not an invented colour')
+end
+
+-- Brightening is applied ONCE, to a fresh per-instance table, and it has to
+-- stay that way: lifting a colour that has already been lifted washes it out a
+-- little further every time. The hazard is not hypothetical -- it is the same
+-- one this whole file is about. If a build ever shared modeInfos between
+-- markers, every marker created over a race night would lift the same table
+-- again, and the poles would fade out over the evening.
+do
+  local firstColor = {
+    madeMarkers[1].modeInfos.default.color[1],
+    madeMarkers[1].modeInfos.default.color[2],
+    madeMarkers[1].modeInfos.default.color[3],
+  }
+  local madeBefore = #madeMarkers
+  for _ = 1, 4 do
+    serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+    frames(2)
+    racing()
+    frames(2)
+  end
+  local newest = madeMarkers[#madeMarkers]
+  check(#madeMarkers > madeBefore or newest == madeMarkers[madeBefore],
+    'the session cycling either reused or rebuilt the markers')
+  local c = newest.modeInfos.default.color
+  check(math.abs(c[1] - firstColor[1]) < 1e-9
+    and math.abs(c[2] - firstColor[2]) < 1e-9
+    and math.abs(c[3] - firstColor[3]) < 1e-9,
+    'a marker created later carries the same colour as the first one: the lift '
+      .. 'is applied once to a per-instance table, never compounded ('
+      .. string.format('%.3f,%.3f,%.3f vs %.3f,%.3f,%.3f',
+           c[1], c[2], c[3], firstColor[1], firstColor[2], firstColor[3]) .. ')')
+end
+
+-- ===========================================================================
+-- The joker's pole colour and its editor colour are the same colour
+-- ===========================================================================
+-- They are two separate literals in two forms -- a {r,g,b} array written into
+-- the engine marker's own colour table, and a ColorF in the drawing palette --
+-- because the two renderers take colours differently. Nothing but this check
+-- keeps them in step, and drifting is not a visible bug while you are looking
+-- at either one on its own: the joker gate is simply a slightly different
+-- violet in the editor than it is on track, which is exactly the kind of
+-- difference a driver reads as two different things.
+do
+  local rgbOf = rgbFromSource
+  local pairsToCheck = {
+    { tune = 'JOKER_POLE_RGB%s*=%s*{%s*([%d%.]+),%s*([%d%.]+),%s*([%d%.]+)%s*}',
+      pal  = 'joker%s*=%s*ColorF%(([%d%.]+),%s*([%d%.]+),%s*([%d%.]+)',
+      what = 'the joker gate' },
+    { tune = 'JOKER_POLE_USED_RGB%s*=%s*{%s*([%d%.]+),%s*([%d%.]+),%s*([%d%.]+)%s*}',
+      pal  = 'jokerUsed%s*=%s*ColorF%(([%d%.]+),%s*([%d%.]+),%s*([%d%.]+)',
+      what = 'a joker already taken' },
+  }
+  for _, p in ipairs(pairsToCheck) do
+    local pole = rgbOf(p.tune, p.what .. "'s pole colour")
+    local pal  = rgbOf(p.pal,  p.what .. "'s palette colour")
+    for i = 1, 3 do
+      check(pole[i] == pal[i],
+        p.what .. ' is a different colour on track than in the editor '
+          .. '(channel ' .. i .. ': pole ' .. tostring(pole[i])
+          .. ' vs palette ' .. tostring(pal[i]) .. ')')
+    end
+  end
+end
 
 print(string.format('poles_test: %d checks, %d failures', checks, fails))
 if fails > 0 then os.exit(1) end

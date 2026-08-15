@@ -98,11 +98,17 @@ end
 onInit()
 RM_onLogin(0, '{"password":"phoenix"}')
 for pid in pairs(connected) do RM_onPlayerJoin(pid) end
-check(lastState.entrants == 0, 'five connected players, nobody entered yet')
+check(lastState.entryMode == 'all', 'entry defaults to everyone racing')
+check(lastState.entrants == 5, 'so all five connected players are in the field')
 
 -- ===========================================================================
 -- Criterion 2: all-opted-in behaves identically to "everyone races"
 -- ===========================================================================
+-- Which needs the OPT-IN mode to say anything: the failure was drivers who had
+-- each pressed Join Race being left off a grid that "everyone races" filled
+-- from the same five names.
+RM_onSetEntryMode(0, '{"mode":"join"}')
+check(lastState.entrants == 0, 'switched to opt-in, nobody is entered yet')
 -- The two entry modes are two ways of answering "who is in the field", and from
 -- there they must be the same code. They were not: with everyone opted in the
 -- field came out empty and no car was ever teleported, while flipping entry to
@@ -175,7 +181,13 @@ check(shown(0) == 'Phoenix' and shown(4) == 'Comet', 'display names are set')
 -- Grid -> hold -> session -> remove finished -> respawn all, parameterised by
 -- the lap count. Qualifying used to flip straight to a running phase with no
 -- grid, so a driver's first crossing of the line was an out-lap nobody asked
--- for and three laps took five or six to complete.
+-- for, arriving at a different point of the circuit for every driver, and three
+-- laps took five or six to complete.
+--
+-- There is an out lap again, and it is not that one: it starts on the grid with
+-- everybody else's, ends at the line, and is counted separately from the
+-- allowance. Three laps is three TIMED laps — the fourth crossing is what ends
+-- a driver's session, and nothing but the standing start is given away.
 RM_onSetQualiLimits(0, '{"laps":3,"seconds":0}')
 clearSignals()
 RM_onStartQualifying(0)
@@ -191,10 +203,29 @@ runCountdown()
 check(lastState.phase == 'qualifying', 'the qualifying session is running')
 for pid in pairs(connected) do
   check(driver(pid).currentLap == 1,
-    'driver ' .. pid .. ' starts on lap 1, with no out-lap')
+    'driver ' .. pid .. ' starts on lap 1, from the grid')
+  check(driver(pid).outLap == true,
+    'driver ' .. pid .. ' owes an out lap before anything is timed')
 end
+check(lastState.qualiOutLap == true,
+  'and the session says so, so a client can tell a driver before they cross anything')
 
--- Exactly three laps each. Not four, not six.
+-- The out lap: one crossing each, scored nowhere.
+clearSignals()
+for pid = 0, 4 do
+  RM_onLap(pid, '{"lapTime":' .. (70 + pid) .. '}')   -- quicker than anything below
+end
+for pid = 0, 4 do
+  check(driver(pid).qualiBest == nil,
+    'driver ' .. pid .. ' has no time from the out lap, however fast it was')
+  check(driver(pid).qualiLaps == 0, 'and it did not touch their lap allowance')
+  check(driver(pid).outLap == false, 'and they are on a timed lap now')
+  check(driver(pid).status == 'qualifying', 'nobody is retired by an out lap')
+end
+check(lastState.bestLapTime == nil,
+  'an out lap cannot take the fastest lap of the session either')
+
+-- Exactly three TIMED laps each. Not four, not six.
 clearSignals()
 for lap = 1, 3 do
   for pid = 0, 4 do
@@ -203,7 +234,7 @@ for lap = 1, 3 do
 end
 for pid = 0, 4 do
   check(driver(pid).qualiLaps == 3,
-    'driver ' .. pid .. ' finished qualifying on exactly 3 laps')
+    'driver ' .. pid .. ' finished qualifying on exactly 3 timed laps')
   check(driver(pid).qualiBest == 91 + pid,
     'driver ' .. pid .. ' keeps their fastest lap')
 end
