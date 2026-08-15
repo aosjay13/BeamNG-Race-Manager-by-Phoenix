@@ -4234,8 +4234,11 @@ local function drawDriverGate(derbyLive)
   if not debugDrawer or not visualize then return end
   if derbyLive or spectatorLock then return end
   if #route == 0 then return end
-  if phase ~= 'racing' and phase ~= 'qualifying' and phase ~= 'countdown'
-     and phase ~= 'grid' then return end
+  -- EVERY PHASE, not just a running session. A driver who loads a track and
+  -- looks at it wants to see where the gates are as much as one racing through
+  -- them, and the joker LABEL is drawn on those terms already, so gating the
+  -- poles on the phase left a label floating over an invisible gate until the
+  -- lights went out. The stock markers this replaced had no phase gate either.
   local p = palette()
   local n = #route
   local lane = branch.lane

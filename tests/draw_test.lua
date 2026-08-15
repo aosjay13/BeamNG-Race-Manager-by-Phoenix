@@ -122,6 +122,19 @@ handlers['RM_ApplyLayout']({
 --
 -- An admin with the editor open still gets the authoring view of every gate:
 -- the filled surface, the number, and which way through counts.
+-- A LOADED TRACK IS VISIBLE BEFORE THE LIGHTS, not only once a session starts.
+--
+-- Reported live: on the Race tab nothing showed until the race began, and the
+-- joker LABEL hung in the air over a gate that was not drawn. drawDriverGate had
+-- a phase gate; drawJokerLabel, drawing the same gate, did not, and neither did
+-- the stock markers this replaced. A driver looking over a circuit they are
+-- about to race wants to see it.
+serverState({ phase = 'waiting', totalLaps = 3, maxResets = -1, drivers = {} })
+frame()
+check(#cylinders == 4,
+  'the armed gate and the next are drawn while the session is still WAITING')
+check(#quads == 0, 'and still as poles, not the authoring view')
+
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
 frame()
 check(#quads == 0,
