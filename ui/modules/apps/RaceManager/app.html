@@ -372,21 +372,6 @@
               ng-click="setResetMode('checkpoint')"
               ng-disabled="phase === 'countdown' || phase === 'racing'">Last checkpoint</button>
     </span>
-    <!-- Out lap. Auto reads it off the track: a grid that is not on the
-         start/finish line owes one, because the run to the first crossing is a
-         part lap that must not be timed. An inference can be wrong about
-         somebody's track, so it can be forced either way. -->
-    <span class="rm-setting" title="The first lap is an out lap: not timed, not scored, and added on top of the lap target. Auto turns it on when the grid is away from the start/finish line, which a head-on layout always is.">
-      <label>Out lap</label>
-      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': outLapMode === 'auto'}"
-              ng-click="setOutLapMode('auto')" ng-disabled="sessionUnderWay()"
-              title="Decide from the track: on when the grid is away from the start/finish line.">Auto</button>
-      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': outLapMode === 'on'}"
-              ng-click="setOutLapMode('on')" ng-disabled="sessionUnderWay()">Always</button>
-      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': outLapMode === 'off'}"
-              ng-click="setOutLapMode('off')" ng-disabled="sessionUnderWay()">Never</button>
-      <span class="rm-setting-val" ng-if="outLapMode === 'auto'">{{ gridOffLine ? 'on (grid off the line)' : 'off (grid on the line)' }}</span>
-    </span>
     <!-- Module 2: rallycross joker lap -->
     <span class="rm-setting" title="Rallycross joker lap: every finisher must take the Joker Route exactly once (never on lap 1) or the server disqualifies them at the flag.">
       <label>Joker lap</label>

@@ -1329,7 +1329,6 @@ angular.module('beamng.apps')
           // leaderboard shows a Line column — on an ordinary circuit it is a
           // column that would say the same thing on every row.
           $scope.hasBranches = !!data.hasBranches;
-          if (typeof data.outLapMode === 'string') { $scope.outLapMode = data.outLapMode; }
           // Joker gates the LOADED TRACK has, which is not the same as the ones
           // this client happens to have placed in its editor: the toggle has to
           // reflect what the server would actually enforce.
@@ -2319,10 +2318,6 @@ angular.module('beamng.apps')
       $scope.toggleEntryMode = function () {
         bngApi.engineLua('raceManager.setEntryMode("'
           + ($scope.entryMode === 'all' ? 'join' : 'all') + '")');
-      };
-      $scope.outLapMode = 'auto';
-      $scope.setOutLapMode = function (mode) {
-        bngApi.engineLua('raceManager.setOutLapMode("' + mode + '")');
       };
       $scope.setGridMode = function (mode) {
         bngApi.engineLua('raceManager.setGridMode("' + mode + '")');

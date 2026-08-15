@@ -2510,11 +2510,23 @@ function M.onVehicleResetted(vehId)
     end
   end
 
+  -- EVERY legal reset makes the new position the good one, immediately.
+  --
+  -- This lived inside the allowance check below, so on a server running unlimited
+  -- resets -- the default -- it never ran. The position references then still
+  -- described where the car was before the FIRST reset, and the next press
+  -- dragged it back there: press one key, drive on, press the other, and land
+  -- where you reset a minute ago. It read as the two keys disagreeing, and they
+  -- were not: they were both measuring against the same stale sample.
+  --
+  -- prevPos goes with it. It is the per-frame sample the crossing test carries
+  -- forward, and after a teleport it is a position on the far side of one --
+  -- cleared here, checkGates re-seeds it from where the car actually is on the
+  -- next frame rather than carrying the old one across.
+  snapshotLeft = 0
+  prevPos = nil
   if resetsEnforced() then
     resetsUsed = resetsUsed + 1
-    -- A legal reset makes the new position the good one immediately, so a second
-    -- (blocked) press right after it doesn't drag the car back to before the first.
-    snapshotLeft = 0
     if inMultiplayer() then TriggerServerEvent('RM_VehicleReset', '') end
     local left = maxResets - resetsUsed
     pushNotice('reset', string.format('Reset %d/%d used — %d left', resetsUsed, maxResets, left))
@@ -5876,16 +5888,6 @@ end
 -- Told to the server as well as kept locally, because the lap count is the
 -- server's and a sprint stage is one traversal by definition -- leaving an
 -- admin to also remember "and set laps to 1" is the workaround this replaces.
--- Out lap: 'auto' trusts the track (a grid away from the start/finish line owes
--- one), 'on' and 'off' override it. See outLapOwed on the server.
-function M.setOutLapMode(mode)
-  mode = tostring(mode or 'auto')
-  if mode ~= 'auto' and mode ~= 'on' and mode ~= 'off' then mode = 'auto' end
-  if inMultiplayer() then
-    TriggerServerEvent('RM_SetOutLapMode', jsonEncode({ mode = mode }))
-  end
-end
-
 function M.setPointToPoint(on)
   pointToPoint = on == true
   labelCache.route = {}          -- the gate labels say which mode this is

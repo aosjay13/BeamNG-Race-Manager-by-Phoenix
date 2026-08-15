@@ -143,14 +143,6 @@ local race = {
   -- then the run from the grid to the first crossing is a part lap that must not
   -- be timed. See outLapOwed.
   gridOffLine  = false,
-  -- ADMIN OVERRIDE of the line above: 'auto' trusts the track, 'on' and 'off'
-  -- do not.
-  --
-  -- gridOffLine is INFERRED from where the grid sits, and an inference can be
-  -- wrong about somebody's track -- at which point a race quietly grows an extra
-  -- crossing and gives its first lap away, and there is nothing an admin can do
-  -- about it. A guess this consequential needs a switch beside it.
-  outLapMode   = 'auto',   -- auto | on | off
   -- WHERE those start positions are: { x, y, z, hx, hy, branch? } per slot, slot
   -- 1 first. Reported by a client when a track is loaded or edited, and set
   -- directly when a saved layout is loaded. The count above is enough to warn
@@ -261,8 +253,6 @@ local function outLapOwed()
   -- A sprint stage never owes one: it is driven once, first gate to last, so a
   -- lap given away is the whole session given away.
   if race.pointToPoint then return false end
-  if race.outLapMode == 'off' then return false end
-  if race.outLapMode == 'on'  then return true end
   return race.sessionKind == 'quali' or race.gridOffLine == true
 end
 
@@ -941,7 +931,6 @@ local function broadcastState(targetPid)
     -- needs on every tick to know whether to show a lane column at all.
     hasBranches  = #race.branches > 0,
     gridOffLine  = race.gridOffLine,
-    outLapMode   = race.outLapMode,
     -- So the panel can grey the joker toggle out and say why, rather than
     -- offering a switch the server is going to refuse.
     jokerGates   = race.jokerGates,
@@ -2266,20 +2255,6 @@ end
 -- Admin toggled the loaded track between a circuit and a point-to-point sprint.
 -- Locked once a session is under way, like every other regulation: the shape of
 -- the race must not change under the drivers running it.
--- The admin's switch. Locked once a session is under way, like every other
--- regulation: changing whether a lap counts while it is being driven is not a
--- setting, it is a rule change mid-race.
-function RM_onSetOutLapMode(pid, rawData)
-  if not requireAuth(pid) then return end
-  if sessionUnderWay() then return end
-  local mode = decodeString(rawData, 'mode')
-  if mode ~= 'auto' and mode ~= 'on' and mode ~= 'off' then return end
-  race.outLapMode = mode
-  broadcastState()
-  print('[RaceManager] Out lap mode set to "' .. mode .. '" by '
-    .. (MP.GetPlayerName(pid) or pid))
-end
-
 function RM_onSetPointToPoint(pid, rawData)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
@@ -2757,10 +2732,8 @@ function RM_CountdownTick()
       .. 'timed — a standing start is not a lap time.')
     -- WHY, in the console, because "my race keeps giving a lap away and I do not
     -- know what is asking for it" is otherwise unanswerable from the outside.
-    print('[RaceManager] Out lap owed: mode=' .. tostring(race.outLapMode)
-      .. ', sessionKind=' .. tostring(race.sessionKind)
-      .. ', gridOffLine=' .. tostring(race.gridOffLine)
-      .. ' (set Out lap: Never in Race settings to stop this)')
+    print('[RaceManager] Out lap owed: sessionKind=' .. tostring(race.sessionKind)
+      .. ', gridOffLine=' .. tostring(race.gridOffLine))
   end
   local target = sessionLapTarget()
   -- The target is a count of CROSSINGS, so a qualifying session logs the two
@@ -6883,7 +6856,6 @@ function onInit()
   MP.RegisterEvent('RM_SetDriverGrid',      'RM_onSetDriverGrid')
   MP.RegisterEvent('RM_StartPositionCount', 'RM_onStartPositionCount')
   MP.RegisterEvent('RM_SetPointToPoint',    'RM_onSetPointToPoint')
-  MP.RegisterEvent('RM_SetOutLapMode',      'RM_onSetOutLapMode')
   MP.RegisterEvent('RM_PitStop',            'RM_onPitStop')
   MP.RegisterEvent('RM_HoldPos',            'RM_onHoldPos')
   -- Qualifying session rules

@@ -383,39 +383,6 @@ do
   RM_onEndRace(0)
 end
 
--- ---------------------------------------------------------------------------
--- The out lap can be forced either way
--- ---------------------------------------------------------------------------
--- Whether a race owes one is INFERRED from where the grid sits, and an inference
--- can be wrong about somebody's track -- at which point a race quietly grows an
--- extra crossing and gives its first lap away with nothing an admin can do. A
--- guess that consequential needs a switch beside it.
-do
-  RM_onEndRace(0)
-  RM_onResetLeaderboard(0)
-  RM_onSetEntryMode(0, '{"mode":"all"}')
-  check(lastState.outLapMode == 'auto', 'the out lap decides from the track by default')
-
-  RM_onSetOutLapMode(0, '{"mode":"on"}')
-  RM_onGenerateGrid(0)
-  check(lastState.qualiOutLap == true, 'forced on: the race owes an out lap')
-  RM_onEndRace(0)
-
-  RM_onSetOutLapMode(0, '{"mode":"off"}')
-  RM_onGenerateGrid(0)
-  check(lastState.qualiOutLap == false,
-    'forced off: it does not, whatever the grid looks like')
-  check(lastState.outLapMode == 'off', 'and the panel is told which way it was set')
-
-  -- Locked once a session is under way, like every other regulation: changing
-  -- whether a lap counts while it is being driven is a rule change mid-race.
-  runCountdown()
-  RM_onSetOutLapMode(0, '{"mode":"on"}')
-  check(lastState.outLapMode == 'off', 'the mode is locked once the session starts')
-  RM_onEndRace(0)
-  RM_onSetOutLapMode(0, '{"mode":"auto"}')
-end
-
 if fails == 0 then
   print('session_test: ' .. checks .. ' checks, 0 failures')
 else
