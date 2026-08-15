@@ -2495,14 +2495,29 @@ function M.onVehicleResetted(vehId)
     -- a quarter of a second old -- and a car at racing speed covers more ground
     -- in a quarter of a second than the threshold allows, so an ordinary reset
     -- looked exactly like a teleport and was undone. Two tests caught it.
-    local veh, pos = sampledVehicle()
-    if pos then
-      local dx, dy, dz = pos.x - prevPos.x, pos.y - prevPos.y, pos.z - prevPos.z
+    -- prevPos ONLY, never the rolling lastGoodPos. That snapshot is up to a
+    -- quarter of a second old, and a car at racing speed covers more ground in
+    -- that time than the threshold allows -- so using it as the reference makes
+    -- an ordinary in-place reset look like a teleport and undoes it. Two tests
+    -- catch that, and have twice.
+    local was = prevPos
+    -- READ THE CAR DIRECTLY, not through the per-frame sample.
+    --
+    -- sampledVehicle() caches for the frame, and a reset arrives mid-frame -- so
+    -- it hands back the position from BEFORE the teleport, the distance comes out
+    -- as nothing, and the teleport is judged not to have happened. That is why a
+    -- recovery key still put a driver on their start position: the undo ran,
+    -- measured zero, and did nothing.
+    local veh = playerVehicle()
+    local pos = nil
+    if veh then pcall(function () pos = veh:getPosition() end) end
+    if pos and was then
+      local dx, dy, dz = pos.x - was.x, pos.y - was.y, pos.z - was.z
       if (dx * dx + dy * dy + dz * dz) > (TUNE.RECOVER_SNAP_RANGE * TUNE.RECOVER_SNAP_RANGE) then
-        noteSelfTeleport(prevPos.x, prevPos.y, prevPos.z)
+        noteSelfTeleport(was.x, was.y, was.z)
         pcall(function ()
           local rot = veh:getRotation()
-          veh:setPositionRotation(prevPos.x, prevPos.y, prevPos.z, rot.x, rot.y, rot.z, rot.w)
+          veh:setPositionRotation(was.x, was.y, was.z, rot.x, rot.y, rot.z, rot.w)
         end)
         pushNotice('reset', 'Recovered in place — a race reset does not move you off the track')
         log('I', 'raceManager', 'Undid a recovery teleport during a session')
@@ -2519,12 +2534,19 @@ function M.onVehicleResetted(vehId)
   -- where you reset a minute ago. It read as the two keys disagreeing, and they
   -- were not: they were both measuring against the same stale sample.
   --
-  -- prevPos goes with it. It is the per-frame sample the crossing test carries
-  -- forward, and after a teleport it is a position on the far side of one --
-  -- cleared here, checkGates re-seeds it from where the car actually is on the
-  -- next frame rather than carrying the old one across.
+  -- prevPos is RE-SEEDED, not cleared. It is the per-frame sample the crossing
+  -- test carries forward, and after a teleport it describes a position on the far
+  -- side of one -- but clearing it leaves a hole, and the next reset to land in
+  -- that hole has no reference to undo itself with. BeamNG's teleport then simply
+  -- stands, which is a recovery key putting a driver back on their start position
+  -- in the middle of a lap.
+  --
+  -- Seeded from where the car actually is now, which is both fresh and true.
   snapshotLeft = 0
-  prevPos = nil
+  do
+    local _, nowPos = sampledVehicle()
+    prevPos = nowPos and vec3(nowPos.x, nowPos.y, nowPos.z) or prevPos
+  end
   if resetsEnforced() then
     resetsUsed = resetsUsed + 1
     if inMultiplayer() then TriggerServerEvent('RM_VehicleReset', '') end

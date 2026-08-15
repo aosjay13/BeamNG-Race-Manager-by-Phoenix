@@ -163,6 +163,53 @@ end
 local function clearLog() sent, hooks, teleports = {}, {}, {} end
 
 -- ===========================================================================
+-- TWO RESETS IN A ROW, on an unlimited-reset server
+-- ===========================================================================
+-- The reported failure: press one reset key, drive on, press the other, and land
+-- where you reset the first time. The two keys were not disagreeing -- they were
+-- both measuring against the same stale sample. The refresh that prevents it
+-- existed but sat inside the ALLOWANCE check, so a server running unlimited
+-- resets (the default) never ran it.
+--
+-- And the first fix for that cleared the reference instead of re-seeding it,
+-- which left a hole: the next reset had nothing to undo itself with, so BeamNG's
+-- teleport simply stood -- a recovery key putting a driver on their start
+-- position in the middle of a lap.
+do
+  -- A route has to exist, because the reference the undo measures against is the
+  -- crossing test's own per-frame sample -- and the crossing test does not run on
+  -- a track with no gates. That is a real dependency, not a test detail: with no
+  -- layout loaded there is nothing to undo a recovery teleport with.
+  RM.setFinishLine(0, 500, 0, 0, 1)
+  serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+  serverState({ phase = 'racing',  maxResets = -1, totalLaps = 3, drivers = {} })
+
+  veh.x, veh.y, veh.z = 100, 0, 0
+  frames(0.6)
+  teleports = {}
+
+  -- A recovery-style teleport: the car ends up a long way from where it was.
+  veh.x, veh.y, veh.z = 900, 900, 0
+  resetHook()
+  check(#teleports == 1, 'the teleport is undone on an unlimited-reset server too')
+  local back = teleports[#teleports]
+  check(back and math.abs(back.x - 100) < 1 and math.abs(back.y - 0) < 1,
+    'and puts the car back where it was, not where the game sent it')
+
+  -- Drive on, then do it again. THIS is the one that used to land on the first
+  -- reset's position: the reference has to have moved with the car.
+  veh.x, veh.y, veh.z = 300, 0, 0
+  frames(0.6)
+  teleports = {}
+  veh.x, veh.y, veh.z = 900, 900, 0
+  resetHook()
+  check(#teleports == 1, 'a second reset is undone as well')
+  local back2 = teleports[#teleports]
+  check(back2 and math.abs(back2.x - 300) < 1,
+    'and lands where the car was THIS time, not where it reset before')
+end
+
+-- ===========================================================================
 -- A reset inside the allowance is counted and left alone
 -- ===========================================================================
 serverState({ phase = 'waiting', maxResets = 1, totalLaps = 3, drivers = {} })
@@ -172,7 +219,10 @@ veh.x, veh.y, veh.z = 100, 0, 0
 frames(0.6)                                  -- rolling snapshot: (100, 0, 0)
 clearLog()
 
-driverPressedReset(5, 5, 0)
+-- An in-place recovery leaves the car where it stood, so this lands next to the
+-- snapshot. Dropping it across the map here would BE a teleport, and the undo is
+-- right to reverse one -- that is the whole point of the rule.
+driverPressedReset(101, 1, 0)
 resetHook()
 check(countSent('RM_VehicleReset') == 1, 'a reset inside the allowance is reported to the server')
 check(#teleports == 0, 'a legal reset is not undone')
@@ -307,9 +357,10 @@ serverState({ phase = 'racing', maxResets = -1, resetMode = 'checkpoint',
   totalLaps = 3, drivers = {} })
 
 -- Before any gate is crossed the mode has nothing to respawn at: in place.
+veh.x, veh.y, veh.z = 0, 0, 0
 frames(1.2)
 clearLog()
-driverPressedReset(30, 30, 0)
+driverPressedReset(1, 1, 0)
 resetHook()
 check(#teleports == 0, 'checkpoint mode before the first gate stays in place')
 
