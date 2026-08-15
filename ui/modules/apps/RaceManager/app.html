@@ -1,4 +1,4 @@
-<div class="rm-root" ng-class="{'rm-minimal': minimalMode(), 'rm-admin': isAdmin}"
+<div class="rm-root" ng-class="{'rm-minimal': minimalMode(), 'rm-admin': isAdmin, 'rm-collapsed': hudCollapsed}"
      ng-style="!minimalMode() && hudStyle()">
   <!-- NOTHING may sit outside this root div — not even a comment. The directive
        is `replace: true`, and the Angular 1.5.8 the game ships counts a sibling
@@ -74,11 +74,17 @@
          fade the HUD out of the way and undo a corner drag. The header renders
          in every non-minimal view, so these are reachable from any tab, for
          admins and for drivers between sessions alike. -->
-    <label class="rm-driverbar-op rm-hud-op" title="HUD background opacity">
+    <label class="rm-driverbar-op rm-hud-op" title="HUD background opacity" ng-if="!hudCollapsed">
       <span>◑</span>
       <input type="range" min="0" max="1" step="0.05" ng-model="lbUi.opacity" ng-change="applyOpacity()">
     </label>
-    <button class="rm-btn rm-btn-mini" ng-click="resetHudSize()" title="Reset the HUD size">⤢</button>
+    <button class="rm-btn rm-btn-mini" ng-click="resetHudSize()" ng-if="!hudCollapsed"
+            title="Reset the HUD size">⤢</button>
+    <!-- Collapse. Stays in the header when collapsed -- it is the way back, and
+         a control that could hide itself would leave the app unrecoverable
+         without the game's app editor. -->
+    <button class="rm-btn rm-btn-mini rm-btn-collapse" ng-click="toggleCollapsed()"
+            title="{{ hudCollapsed ? 'Expand Race Manager' : 'Collapse Race Manager to this bar' }}">{{ hudCollapsed ? '▼' : '▲' }}</button>
   </div>
 
   <!-- ================= Admin login (dismissable — spectators bypass it) ==== -->
@@ -1716,12 +1722,19 @@
       RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
     </span>
     <span class="rm-driverbar-spacer"></span>
-    <label class="rm-driverbar-op" title="Leaderboard background opacity">
+    <label class="rm-driverbar-op" title="Leaderboard background opacity" ng-if="!hudCollapsed">
       <span>◑</span>
       <input type="range" min="0" max="1" step="0.05" ng-model="lbUi.opacity" ng-change="applyOpacity()">
     </label>
-    <button class="rm-driverbar-btn" ng-click="resetLeaderboardSize()" title="Reset the leaderboard size">⤢</button>
-    <button class="rm-driverbar-btn" ng-click="openLogin()" title="Admin login">🔒</button>
+    <button class="rm-driverbar-btn" ng-click="resetLeaderboardSize()" ng-if="!hudCollapsed"
+            title="Reset the leaderboard size">⤢</button>
+    <button class="rm-driverbar-btn" ng-click="openLogin()" ng-if="!hudCollapsed"
+            title="Admin login">🔒</button>
+    <!-- In minimal mode THIS bar is the whole HUD, so collapsing drops the
+         leaderboard and leaves the driver their own lap clock and lane. The
+         button stays for the same reason it does in the header. -->
+    <button class="rm-driverbar-btn" ng-click="toggleCollapsed()"
+            title="{{ hudCollapsed ? 'Show the leaderboard' : 'Hide the leaderboard' }}">{{ hudCollapsed ? '▼' : '▲' }}</button>
   </div>
 
   <!-- ================= Derby standings ===================================
@@ -2672,6 +2685,39 @@
     border-color: #a64dff;
     color: #e0c4ff;
   }
+  /* ---------------------------------------------------------------------
+     Collapsed HUD
+     ---------------------------------------------------------------------
+     Every panel in this app is a DIRECT child of .rm-root, so folding the whole
+     thing away is one rule rather than a `&& !hudCollapsed` bolted onto forty
+     ng-ifs -- which is the version that goes wrong, because the fortieth gets
+     missed and one panel hangs on screen with nothing around it.
+
+     WHAT SURVIVES A COLLAPSE IS THE POINT. The header (or, for a driver mid
+     session, the driver bar) stays, because it carries the phase, the clock and
+     the button that brings the app back; a HUD that could hide its own restore
+     control is not collapsed, it is gone.
+
+     So do the ALERTS. A countdown, an out-of-bounds timer, a rejected vehicle, a
+     regulation notice, a pit or ghost readout -- none of those are panels a
+     driver went looking for, they are the app telling them something is
+     happening to them right now. Collapsing hides what you browse, never what
+     finds you. */
+  .rm-collapsed > *:not(.rm-header):not(.rm-driverbar):not(.rm-countdown):not(.rm-derby-warning):not(.rm-vehicle-error):not(.rm-notice):not(.rm-spectator-bar):not(.rm-pit):not(.rm-ghost) {
+    display: none !important;
+  }
+  /* The dragged HEIGHT belongs to the expanded panel: collapsed, the root is
+     whatever its one remaining bar needs, or a HUD dragged tall folds into a
+     tall empty box. The inline width and the opacity background stay -- they are
+     set by the same ng-style, and dropping the lot would leave the collapsed bar
+     an unstyled default-width strip that jumps every time it is toggled. */
+  .rm-collapsed {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible;
+  }
+  .rm-btn-collapse { min-width: 22px; }
+
   .rm-route-tab-note { font-size: 10px; color: #9aa0a6; }
   .rm-editor-joker { color: #d1a8ff; }
   .rm-editor-branch { color: #7fe6f7; }

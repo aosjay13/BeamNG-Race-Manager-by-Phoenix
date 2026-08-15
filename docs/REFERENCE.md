@@ -970,6 +970,19 @@ instead — visible, and a shade under the gate actually being aimed at.
   leaderboard* while a session is live — header, session controls, editor,
   derby panel, login bar and all panel backgrounds are removed from the DOM.
   During a derby the leaderboard shows the derby standings instead.
+- **Collapse it when you are not using it.** The **▲** button in the header —
+  or on the driver bar, mid-session — folds the whole app down to that one
+  line, and **▼** brings it back. The bar that stays still shows the phase, the
+  clock and your own lap, so a collapsed HUD is a status strip rather than
+  nothing at all.
+
+  **Alerts are not collapsed away.** A countdown, an out-of-bounds timer, a
+  rejected vehicle, a pit or ghost readout and the regulation notices all keep
+  showing: collapsing hides the panels you go looking for, never the messages
+  that come to find you.
+
+  The state is remembered in `localStorage` like the size and the opacity, so
+  it survives the pause menu and the next session.
 - **Resize & fade — everywhere the app renders.** Drag the grip in the
   bottom-right corner to resize the panel, and use the ◑ slider to set its
   background opacity so it does not obstruct the view. In minimal mode the

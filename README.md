@@ -146,7 +146,7 @@ would expect without touching any of it.
 | **[Display names](docs/REFERENCE.md#display-names)** | Give `Guest_4471` a readable name for the leaderboard and the results file. Saved on the server, so it survives a restart. |
 | **[Live position tracking](docs/REFERENCE.md#live-position-tracking)** | True running order from laps, checkpoints cleared and distance to the next gate — not just the grid order. |
 | **[Demo Derby](docs/REFERENCE.md#demo-derby-parallel-game-mode)** | A separate last-man-standing mode with its own arena, timers and results, fully isolated from the racing. |
-| **[Driver UI](docs/REFERENCE.md#driver-ui-non-admins)** | Non-admins see just the leaderboard during a session. Resizable, and fades so it doesn't block the view. |
+| **[Driver UI](docs/REFERENCE.md#driver-ui-non-admins)** | Non-admins see just the leaderboard during a session. Resizable, fades so it doesn't block the view, and collapses to a single status line when you don't want it — alerts still get through. |
 
 ## Troubleshooting
 

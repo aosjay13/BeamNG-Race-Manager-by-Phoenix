@@ -2711,6 +2711,29 @@ angular.module('beamng.apps')
       // the ng-if child scope, leaving the slider moving a copy nothing reads.
       $scope.lbUi = { opacity: loadPref('opacity', 0.85) };   // 0 (invisible) .. 1 (solid)
 
+      // ------------------------------------------------------------------
+      // Collapsing the HUD
+      // ------------------------------------------------------------------
+      // The app is painted over the windscreen and most of it is only wanted
+      // some of the time: an admin setting a race up needs the panels, and the
+      // same admin driving one does not. Collapsed, everything folds away to the
+      // single status line the header (or the driver bar) already is.
+      //
+      // IT NEVER COLLAPSES TO NOTHING. The bar that stays carries the phase, the
+      // clock and the button to bring it back, so there is always something to
+      // press -- an app that could hide its own restore control would need the
+      // game's app editor to recover, which is not a HUD toggle, it is a trap.
+      //
+      // Persisted like the size and the opacity, so it survives the pause menu
+      // and the next session. Kept OUT of lbUi: that object exists because
+      // ng-model needs a property to write through from an ng-if child scope,
+      // and this is set by a click handler on the parent scope instead.
+      $scope.hudCollapsed = loadPref('collapsed', false) === true;
+      $scope.toggleCollapsed = function () {
+        $scope.hudCollapsed = !$scope.hudCollapsed;
+        savePref('collapsed', $scope.hudCollapsed);
+      };
+
       // Two panels can be resized, but never both at once: in minimal mode the
       // leaderboard IS the HUD, and everywhere else the HUD is the whole app
       // root with its chrome. Same drag, same storage, separate keys — the

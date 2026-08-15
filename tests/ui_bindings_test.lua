@@ -224,6 +224,44 @@ do
       .. 'replaces the earlier: ' .. table.concat(dupes, ', '))
 end
 
+-- THE COLLAPSED HUD MUST ALWAYS BE ABLE TO UNCOLLAPSE ITSELF.
+--
+-- Collapsing hides every direct child of .rm-root except a short keep-list. If
+-- the bar carrying the toggle is not on that list, pressing it once hides the
+-- app AND the only control that brings it back -- and the way out is the game's
+-- app editor, which nobody reading a leaderboard is going to guess at.
+--
+-- Exactly one of the two bars renders at a time: the header is ng-if
+-- !minimalMode() and the driver bar is ng-if minimalMode(), which are exact
+-- complements. So BOTH have to carry the toggle and BOTH have to survive the
+-- collapse, or the half of the time the other one is showing is unrecoverable.
+do
+  local rule = html:match('%.rm%-collapsed%s*>%s*%*([^{]*){')
+  expect(rule ~= nil, 'found the .rm-collapsed hide rule')
+  for _, keep in ipairs({ 'rm-header', 'rm-driverbar' }) do
+    expect(rule ~= nil and rule:find(':not(.' .. keep .. ')', 1, true) ~= nil,
+      'collapsing must not hide .' .. keep .. ' — it carries the button that '
+        .. 'brings the app back')
+  end
+  -- The alerts are the app telling a driver something is happening to them, not
+  -- panels they went looking for. A countdown nobody can see is a race start
+  -- nobody can see.
+  for _, keep in ipairs({ 'rm-countdown', 'rm-vehicle-error', 'rm-notice',
+                          'rm-derby-warning', 'rm-spectator-bar' }) do
+    expect(rule ~= nil and rule:find(':not(.' .. keep .. ')', 1, true) ~= nil,
+      '.' .. keep .. ' must survive a collapse: it is an alert, not a panel')
+  end
+  -- And the toggle itself has to exist in both bars.
+  local header = html:match('<div class="rm%-header".-\n  </div>')
+  local bar    = html:match('<div class="rm%-driverbar".-\n  </div>')
+  expect(header ~= nil and header:find('toggleCollapsed()', 1, true) ~= nil,
+    'the header carries the collapse toggle')
+  expect(bar ~= nil and bar:find('toggleCollapsed()', 1, true) ~= nil,
+    'the driver bar carries the collapse toggle, for a driver mid-session')
+  expect(js:find('$scope.toggleCollapsed', 1, true) ~= nil,
+    'toggleCollapsed is defined in the app')
+end
+
 -- Every grid order the panel offers must be one the server accepts. A button
 -- for a mode its validator drops is a dead button: the panel un-highlights the
 -- old mode, the server keeps it, and the next broadcast puts it back.
