@@ -2173,7 +2173,18 @@ function RM_onStartPositionCount(pid, rawData)
         -- the results file, and laneName already falls back to the id. Sending a
         -- gate list the server would have to validate against a route length it
         -- does not hold would be validation theatre.
-        race.gridOffLine = data.gridOffLine == true
+        -- ...but ONLY when no layout came through this server.
+        --
+        -- This report is sent by pushRouteState, which fires constantly and from
+        -- EVERY client, not just an admin -- so one player with start positions
+        -- sitting in their local editor could flip the whole server's grid rule
+        -- and hand a race an out lap nobody asked for, which is exactly what was
+        -- happening: the race ran fine, and told everybody about a lap that was
+        -- not timed. A loaded layout is authored, saved and shared, and it is
+        -- the authority on its own grid.
+        if race.layout == nil then
+          race.gridOffLine = data.gridOffLine == true
+        end
         -- How many joker gates this client has placed, so the joker lap can be
         -- refused on a track that has none even when it was never saved as a
         -- named layout (see RM_onSetJokerEnabled).
@@ -2737,6 +2748,12 @@ function RM_CountdownTick()
   if outLapOwed() then
     MP.SendChatMessage(-1, '[RaceManager] GO! Your first lap is an OUT LAP — it is '
       .. 'not timed and does not count. Timing starts as you cross the line.')
+    -- WHY, in the console, because "my race keeps giving a lap away and I do not
+    -- know what is asking for it" is otherwise unanswerable from the outside.
+    print('[RaceManager] Out lap owed: mode=' .. tostring(race.outLapMode)
+      .. ', sessionKind=' .. tostring(race.sessionKind)
+      .. ', gridOffLine=' .. tostring(race.gridOffLine)
+      .. ' (set Out lap: Never in Race settings to stop this)')
   end
   local target = sessionLapTarget()
   -- The target is a count of CROSSINGS, so a qualifying session logs the two
@@ -3375,6 +3392,13 @@ end
 local function clearTrackState(reason)
   layouts = nil
   race.layout = nil
+  -- The track's RULES go with the track. A purge that left gridOffLine standing
+  -- carried the old layout's out lap onto whatever was loaded next -- including
+  -- onto no track at all, where nothing could explain where it came from.
+  race.gridOffLine = false
+  race.slotCount   = 0
+  race.branches    = {}
+  race.jokerGates  = 0
   MP.TriggerClientEvent(-1, 'RM_ClearTrack', Util.JsonEncode({ reason = reason or 'clear' }))
   print('[RaceManager] Track state cleared: ' .. (reason or 'clear'))
 end

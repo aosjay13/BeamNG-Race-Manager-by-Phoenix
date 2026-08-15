@@ -1020,6 +1020,47 @@ do
   RM_onPlayerDisconnect(8)
 end
 
+-- ---------------------------------------------------------------------------
+-- ONE PLAYER'S EDITOR CANNOT GIVE THE WHOLE SERVER AN OUT LAP
+-- ---------------------------------------------------------------------------
+-- RM_StartPositionCount is sent by pushRouteState, which fires constantly and
+-- from EVERY client, not just an admin. It carries whether that client thinks
+-- its grid is off the start/finish line -- so one player with start positions
+-- sitting in their local editor could flip the rule for the whole server, and a
+-- race would quietly give its first lap away and announce it to everybody.
+--
+-- A loaded layout is authored, saved and shared. It is the authority on its own
+-- grid, and a live client report does not get to overrule it.
+do
+  -- Out of any grid or session first: the report is refused outright while one is
+  -- under way, and a test that passed on THAT guard would prove nothing about
+  -- the one being tested here.
+  RM_onEndRace(1)
+  check(lastState.phase ~= 'grid', 'not on a grid, so the report is not refused outright')
+  RM_onLoadLayout(1, '{"name":"Suicide Oval"}')   -- saved with gridOffLine = true
+  -- Loading does not broadcast state on its own, so ask for one: otherwise this
+  -- reads a snapshot from before the load and proves nothing.
+  RM_onRequestState(1)
+  check(lastState.gridOffLine == true, 'the loaded layout says its grid is off the line')
+
+  -- A non-admin client reports the opposite from its own editor.
+  RM_onStartPositionCount(3, '{"count":0,"positions":[],"gridOffLine":false}')
+  RM_onRequestState(1)
+  check(lastState.gridOffLine == true,
+    'a client report does not overrule the loaded layout')
+
+  -- And the other way round: no layout loaded, so the report IS the only source
+  -- of truth and is taken.
+  RM_onClearTrackState(1)
+  RM_onStartPositionCount(1, '{"count":0,"positions":[],"gridOffLine":true}')
+  RM_onRequestState(1)
+  check(lastState.gridOffLine == true,
+    'with no layout loaded the client report is used, which is the unsaved path')
+  RM_onStartPositionCount(1, '{"count":0,"positions":[],"gridOffLine":false}')
+  RM_onRequestState(1)
+  check(lastState.gridOffLine == false, 'and it can be turned back off the same way')
+end
+
 -- Clean up the directory tree the test created in the repo root
 removeTree('Resources')
 
