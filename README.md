@@ -35,7 +35,12 @@ Server/RaceManager/main.lua   →  Resources/Server/RaceManager/main.lua
 ```
 
 Restart the server and you're done. BeamMP pushes `RaceManager.zip` to everyone
-who joins, so **players install nothing by hand**. The client zip is always
+who joins, so **players install nothing by hand**.
+
+Building from source instead? `python3 tools/deploy.py` writes the package and
+installs both halves onto a BeamMP server it finds, backing up whatever it
+replaces and leaving your saved layouts and results alone. Add `--dry-run` to see
+what it would do first. The client zip is always
 called `RaceManager.zip`, with no version in the name, so an update overwrites
 the old one instead of leaving two copies side by side.
 
