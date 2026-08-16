@@ -70,14 +70,29 @@ the admin presses **Log out**).
 You never have to log in just to watch: close the login bar with **✕** and the
 live timing is already there.
 
+**Retiring** is how you leave a session you are already in. **⚑ Retire** in the
+Race Entry row asks first, then treats it exactly like taking the flag: the car
+comes off the track and you go to spectate. It is a **classified** retirement,
+not a disappearance. You hold a position, you are in the results file, and you
+score cup points like any other DNF.
+
+Where you place is **behind every car that can still finish**. Retiring from
+second of a running field does not keep second, because everyone still going
+will come past. Retire later and fewer cars are left to pass you, so you
+classify higher, which is how motorsport has always ordered retirements. The
+place you were *running* in is kept separately: the results line prints it as
+`was P2`, and a cup set to pay retirements at their **held** position uses that
+rather than where they finally classified.
+
 **Sitting a session out** is a different thing, and it has its own control.
 **👁 Spectate** in the Race Entry row takes you out of the field even under
 *everyone races*, which otherwise has no opt-out short of leaving the server.
 Your car stays exactly where it is and becomes a ghost, so nothing is deleted
 and nothing is respawned, and you watch however you like: BeamNG's own controls
-tab between cars and free camera works as it always does. **↩ Rejoin the field**
-puts you back, and like joining, it is refused while a session is already
-running.
+tab between cars and free camera works as it always does. **↩ Rejoin the field** puts you back. Neither direction is available while a
+session is running: sitting out decides whether you are in the field, and the
+field is decided when the grid forms. Leaving a race you are already in is
+retiring, above.
 
 > The server ships with a **default password of `phoenix`** (set at the top of
 > `server/RaceManager/main.lua`). **Change it before your first public

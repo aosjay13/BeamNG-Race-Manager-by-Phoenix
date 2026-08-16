@@ -1500,6 +1500,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           if (typeof data.youSpectating === 'boolean') {
             $scope.spectating = data.youSpectating;
           }
+          // A confirmation left hanging after the session ended would offer to
+          // retire from nothing.
+          if (!$scope.sessionUnderWay()) { $scope.confirmRetire = false; }
           // Nudge mode. The CLIENT owns whether it is on: it can end the mode by
           // itself when a session starts or the editor closes, and the button
           // has to follow that rather than what it last asked for.
@@ -2297,6 +2300,13 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         if ($scope.driverFlag === 'yellow') { return 'Yellow flag: caution, race back to the line'; }
         if ($scope.driverFlag === 'white') { return 'White flag: last lap'; }
         return 'Green flag: racing';
+      };
+
+      // Retiring cannot be undone, so the button asks first. `confirmRetire` is
+      // plain scope state and is cleared by the session ending underneath it.
+      $scope.confirmRetire = false;
+      $scope.retire = function () {
+        bngApi.engineLua('raceManager.retire()');
       };
 
       $scope.setSpectating = function (on) {

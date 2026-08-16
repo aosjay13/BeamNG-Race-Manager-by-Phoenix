@@ -386,7 +386,8 @@ local function newRecord(pid)
     -- right for a leaderboard of who is still racing and wrong for a record of
     -- what happened -- a driver who was second when their engine let go was
     -- second, whatever the reason they stopped.
-    dnfPos     = nil,
+    dnfPos     = nil,      -- where a retirement CLASSIFIES: behind the field
+    heldPos    = nil,      -- the place it was running in when it stopped
     -- Live position tracking (see the "Running order" section below).
     position   = nil,        -- current place in the running order (1 = leader)
     cpCleared  = 0,          -- checkpoints passed on the current lap
@@ -765,9 +766,7 @@ local DRIVER_WIRE_FIELDS = {
   'gridPos', 'customGrid', 'position',
   'qualiBest', 'qualiLaps', 'outLap', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
   'finishTime', 'resets', 'resetsBlocked',
-  'jokerTaken', 'jokerLap', 'outReason', 'dnfPos', 'lane', 'bystander',
-  -- NOT 'spectating': choosing to sit out is a decision about the evening, not
-  -- about one session, so it survives a reset exactly as `joined` does.
+  'jokerTaken', 'jokerLap', 'outReason', 'dnfPos', 'heldPos', 'lane', 'bystander',
 }
 
 -- Projection buffers are kept ON the record and reused, so a broadcast costs no
@@ -1371,7 +1370,7 @@ local function buildResultsText(cupRound)
       -- shear. The reason text is already the variable-width field on this row.
       pos = 'DNF'
       finish = (rec.outReason or 'DNF')
-        .. (rec.dnfPos and (' (was P' .. rec.dnfPos .. ')') or '')
+        .. (rec.heldPos and (' (was P' .. rec.heldPos .. ')') or '')
     end
     local tag = (i == 1 and classified) and '  << RACE WINNER' or ''
     local jokerVal = race.jokerEnabled
@@ -1563,12 +1562,37 @@ end
 -- `position` is stamped on every state broadcast (three times a second while a
 -- session runs), so it is at most a fraction of a second old here. Before the
 -- lights there is no running order yet, so the grid slot is the honest answer.
+-- BEHIND THE LAST CAR THAT CAN STILL FINISH.
+--
+-- Not the place they were running in. A driver retiring from P3 of six does not
+-- keep third: the five cars still going will all finish ahead of them, so they
+-- are sixth. Retire later and fewer cars are left to pass you, so you classify
+-- higher, which is how motorsport has always ordered retirements and is what
+-- "behind the last running car" means in practice.
+--
+-- It also stops two drivers scoring the same position, which the held-position
+-- rule could do whenever two cars stopped from the same place.
+--
+-- Finishers count as ahead too: they already have their positions.
 local function retireAsDnf(rec, reason)
   if not rec then return false end
   rec.status = 'dnf'
   rec.outReason = rec.outReason or reason
+  -- WHERE THEY WERE, kept separately from where they CLASSIFY. The cup can pay
+  -- a retirement at the position it held when it stopped, and the results file
+  -- says "was P3"; neither of those is the same fact as finishing sixth of six.
+  -- One field could not be both, and it used to try.
+  if rec.heldPos == nil then
+    rec.heldPos = rec.position or rec.gridPos
+  end
   if rec.dnfPos == nil then
-    rec.dnfPos = rec.position or rec.gridPos
+    local ahead = 0
+    for _, other in pairs(players) do
+      if other ~= rec and (onTrack(other) or other.finishTime ~= nil) then
+        ahead = ahead + 1
+      end
+    end
+    rec.dnfPos = ahead + 1
   end
   return true
 end
@@ -1785,6 +1809,34 @@ end
 -- No admin needed: it is their own participation. Allowed mid-session in one
 -- direction only -- you can always drop out, but you cannot join a race that is
 -- already running, which is the same rule RM_onJoinRace enforces.
+-- A driver pulling out of a running session.
+--
+-- Their own race to end, so no admin rights, and the result is a CLASSIFIED
+-- retirement rather than a disappearance: they hold a position, they are in the
+-- results file, and they score cup points like any other DNF. Somebody who
+-- stops is still somebody who took part.
+--
+-- Treated exactly like taking the flag from there on: the car comes off the
+-- track and the driver goes to spectate, which is the path finishers already
+-- use and the only one that handles a car being removed cleanly.
+function RM_onRetire(pid)
+  local rec = players[pidKey(pid)]
+  if not rec then return end
+  if not sessionUnderWay() then
+    MP.SendChatMessage(pid, '[RaceManager] Nothing to retire from.')
+    return
+  end
+  if not onTrack(rec) then return end
+  retireAsDnf(rec, 'Retired')
+  clearGhost(rec.id, 'driver retired')
+  forceSpectate(rec.id, 'You retired from the session', 'race')
+  MP.SendChatMessage(-1, string.format('[RaceManager] %s RETIRED (classified P%d).',
+    rec.name, rec.dnfPos or 0))
+  print(string.format('[RaceManager] %s retired, classified P%s',
+    rec.name, tostring(rec.dnfPos)))
+  broadcastState()
+end
+
 function RM_onSetSpectating(pid, rawData)
   local rec = ensurePlayer(pid)
   if not rec then return end
@@ -1796,9 +1848,15 @@ function RM_onSetSpectating(pid, rawData)
     end
   end
   if rec.spectating == want then return end
-  if not want and sessionUnderWay() then
-    MP.SendChatMessage(pid, '[RaceManager] A session is running: you can rejoin the '
-      .. 'field when it ends.')
+  -- NEITHER DIRECTION MID-SESSION. Sitting out is a decision about whether you
+  -- are in the field, and the field is decided when the grid forms. Dropping out
+  -- of a race you are already in is RETIRING, which is a different thing with a
+  -- different result: a classified retirement rather than never having entered.
+  if sessionUnderWay() then
+    MP.SendChatMessage(pid, want
+      and '[RaceManager] A session is running. Use Retire to pull out of it; you '
+        .. 'can sit the next one out once this ends.'
+      or  '[RaceManager] A session is running: you can rejoin the field when it ends.')
     return
   end
   rec.spectating = want
@@ -2083,6 +2141,7 @@ formGrid = function (kind, byName)
     rec.jokerLap   = nil
     rec.outReason  = nil
     rec.dnfPos     = nil
+    rec.heldPos    = nil
     -- A qualifying grid also clears the times it is about to replace.
     if isQualiSession() then
       rec.qualiBest = nil
@@ -2792,6 +2851,7 @@ function RM_CountdownTick()
       rec.jokerLap   = nil
       rec.outReason  = nil
       rec.dnfPos     = nil
+      rec.heldPos    = nil
       if isQualiSession() then
         rec.qualiBest = nil
         rec.qualiLaps = 0
@@ -6263,9 +6323,11 @@ local function cupScoreRace()
       if cup.scoring.dnfScoring == 'classified' then
         scorePos = i
       elseif cup.scoring.dnfScoring == 'held' then
-        -- Falls back to the classification when the driver stopped before a
-        -- running order existed -- there is no held position to honour then.
-        scorePos = rec.dnfPos or i
+        -- The place they were RUNNING IN, which is what "held" means and is a
+        -- different fact from where they classify. Falls back to the
+        -- classification when the driver stopped before a running order existed:
+        -- there is no held position to honour then.
+        scorePos = rec.heldPos or rec.dnfPos or i
       end
     end
     local entry = cupEntryFor(rec)
@@ -7101,6 +7163,7 @@ function onInit()
   MP.RegisterEvent('RM_DeleteLayout',     'RM_onDeleteLayout')
   MP.RegisterEvent('RM_SetFlag',          'RM_onSetFlag')
   MP.RegisterEvent('RM_SetSpectating',    'RM_onSetSpectating')
+  MP.RegisterEvent('RM_Retire',           'RM_onRetire')
   MP.RegisterEvent('RM_ClearTrackState',  'RM_onClearTrackState')
   -- Demo Derby module (isolated event namespace; see the DEMO DERBY section).
   MP.RegisterEvent('RM_DerbySetConfig',     'RM_onDerbySetConfig')

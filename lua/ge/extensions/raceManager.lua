@@ -5930,6 +5930,13 @@ end
 -- Put yourself in or out of the field. Their own participation, so no admin
 -- rights are involved; the server enforces the one rule that matters, which is
 -- that you cannot rejoin a session already under way.
+-- Pull out of the session you are in. A classified retirement, not a
+-- disappearance: the server keeps you in the results and scores you like any
+-- other DNF.
+function M.retire()
+  if inMultiplayer() then TriggerServerEvent('RM_Retire', '') end
+end
+
 function M.setSpectating(on)
   if inMultiplayer() then
     TriggerServerEvent('RM_SetSpectating', jsonEncode({ spectating = on == true }))

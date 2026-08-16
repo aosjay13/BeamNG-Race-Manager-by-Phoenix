@@ -682,14 +682,21 @@ check(ryderRound.status == 'dnf', 'a driver who never took the flag is a DNF')
 check(ryderRound.racePts == 0, 'by default a DNF scores nothing')
 check(ryderRound.dnfPos == nil, 'and is credited with no position at all')
 
--- The held position is recorded regardless of what it is worth: the results
--- file and the cup both need to know where the driver actually was.
+-- TWO DIFFERENT FACTS, and they used to share one field.
+--
+-- `heldPos` is where the driver WAS when they stopped, which is what the cup's
+-- "held" scoring pays and what the results file prints as "was P2". `dnfPos` is
+-- where they CLASSIFY, which is behind every car that can still finish: retiring
+-- from second of a running field does not keep second, because everybody still
+-- going will come past.
 check(lastState ~= nil, 'the session broadcast is available')
-local held = nil
+local held, classified = nil, nil
 for _, d in ipairs(lastState.drivers or {}) do
-  if d.name == 'Guest_B' then held = d.dnfPos end
+  if d.name == 'Guest_B' then held, classified = d.heldPos, d.dnfPos end
 end
 check(held == 2, 'the position the driver was running in when they stopped is kept')
+check(classified ~= nil and classified >= 2,
+  'and the place they classify is separate, behind the cars still running')
 check(cupEntry('Ryder') ~= nil,
   'a driver who disconnects mid-race is still scored against their OWN cup entry')
 check(cupEntry('Guest_B') == nil,

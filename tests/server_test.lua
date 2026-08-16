@@ -1261,18 +1261,82 @@ RM_onRequestState(11)
 check(lastState.youSpectating == true,
   'and cannot rejoin a session already under way')
 
--- Dropping out mid-session IS allowed: that direction never disturbs a race.
+-- NEITHER DIRECTION MID-SESSION. Sitting out decides whether you are in the
+-- field, and the field is decided when the grid forms. Leaving a race you are
+-- already in is RETIRING, which is a different thing with a different result.
 connected[12] = 'Quitter'
 RM_onPlayerJoin(12)
 RM_onSetSpectating(12, '{"spectating":true}')
 RM_onRequestState(12)
-check(lastState.youSpectating == true, 'but anyone may drop out mid-session')
+check(lastState.youSpectating ~= true,
+  'and nobody can switch to spectating mid-session either: that is what Retire '
+    .. 'is for')
 
 RM_onEndRace(1, '')
 RM_onSetSpectating(11, '{"spectating":false}')
 RM_onRequestState(11)
 check(lastState.youSpectating ~= true, 'and rejoin once it is over')
 connected[11], connected[12] = nil, nil
+
+-- ---------------------------------------------------------------------------
+-- Retiring: classified behind the field, and later is better
+-- ---------------------------------------------------------------------------
+-- A driver retiring from P2 of four does not keep second. The cars still going
+-- will all come past, so they are last of those who took part. Retire later and
+-- fewer cars are left to pass you, which is how motorsport has always ordered
+-- retirements.
+for pid = 20, 23 do
+  connected[pid] = 'R' .. pid
+  RM_onPlayerJoin(pid)
+end
+RM_onSetEntryMode(1, '{"mode":"all"}')
+RM_onGenerateGrid(1, '')
+RM_onStartCountdown(1, '')
+for _ = 1, 4 do RM_CountdownTick() end
+
+local function recOf(pid)
+  RM_onRequestState(pid)
+  for _, d in ipairs(lastState.drivers or {}) do
+    if d.name == 'R' .. pid then return d end
+  end
+end
+
+-- Four on track (plus Alice, who is also entered under 'all'). The first to
+-- retire is classified last of everyone who can still finish.
+RM_onRetire(20)
+local first = recOf(20)
+check(first ~= nil and first.status == 'dnf', 'retiring is a DNF, not a vanishing')
+local firstPos = first and first.dnfPos
+check(firstPos ~= nil, 'and it is classified')
+
+-- The next to retire classifies AHEAD of the first: one fewer car is left to
+-- come past.
+RM_onRetire(21)
+local second = recOf(21)
+check(second and second.dnfPos ~= nil, 'the second retirement is classified too')
+check(second and firstPos and second.dnfPos < firstPos,
+  'and places AHEAD of the earlier one (' .. tostring(second.dnfPos) .. ' vs '
+    .. tostring(firstPos) .. '): retiring later means fewer cars still to pass you')
+
+-- The two facts stay separate.
+check(second and second.heldPos ~= nil,
+  'the place it was running in is kept as well, for the results line and for a '
+    .. 'cup paying retirements at the position they held')
+
+-- And a retirement is still SCORED: it holds a position and takes points like
+-- any other DNF. Somebody who stops is still somebody who took part.
+check(second and second.dnfPos ~= nil and second.status == 'dnf',
+  'a retirement is classified and scoreable, not removed from the results')
+
+-- Retiring outside a session does nothing. Ending the race retires everyone
+-- still out as a DNF anyway, so this checks the CALL is refused rather than the
+-- status, by watching for the chat line it answers with.
+RM_onEndRace(1, '')
+lastChat = nil
+RM_onRetire(23)
+check(type(lastChat) == 'string' and lastChat:find('Nothing to retire', 1, true),
+  'retiring with no session running is refused, and says so')
+for pid = 20, 23 do connected[pid] = nil end
 
 -- LAST IN THE FILE ON PURPOSE. This block starts a race, and everything above
 -- it either needs no session running (loading and deleting a layout are both

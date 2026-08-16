@@ -162,11 +162,27 @@
     <span class="rm-entry-state rm-entry-out" ng-if="spectating">
       👁 You are SPECTATING: the session runs without you. Tab between cars to watch.
     </span>
+    <!-- SPECTATE IS AN ENTRY DECISION, so it is settled before the lights. Once
+         a session is running the way out is RETIRE, which is a different thing
+         with a different result. -->
     <button class="rm-btn rm-btn-mini" ng-click="setSpectating(!spectating)"
-            ng-disabled="spectating && sessionUnderWay()"
-            title="{{ spectating ? 'Rejoin the field. Not possible while a session is running.' : 'Sit this one out. Your car stays where it is as a ghost, and you can tab between cars to watch.' }}">
+            ng-if="!sessionUnderWay()"
+            title="{{ spectating ? 'Rejoin the field for the next session.' : 'Sit the next session out. Your car stays where it is as a ghost, and you watch with the game's own camera controls.' }}">
       {{ spectating ? '↩ Rejoin the field' : '👁 Spectate' }}
     </button>
+    <span class="rm-entry-state" ng-if="sessionUnderWay() && !spectating && !confirmRetire">
+      <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="confirmRetire = true"
+              title="Pull out of this session. You keep a classified position and score like any other retirement.">
+        ⚑ Retire
+      </button>
+    </span>
+    <!-- Asked for, because it cannot be undone: there is no rejoining a session
+         you have retired from. -->
+    <span class="rm-entry-state" ng-if="sessionUnderWay() && confirmRetire">
+      Retire from this session?
+      <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="retire(); confirmRetire = false">Yes, retire</button>
+      <button class="rm-btn rm-btn-mini" ng-click="confirmRetire = false">Cancel</button>
+    </span>
     <span class="rm-entry-state rm-entry-in" ng-if="entryMode !== 'all' && joined">✓ You are entered</span>
     <span class="rm-entry-state" ng-if="entryMode !== 'all' && !joined && canJoin()">You are spectating: press Join Race to take part</span>
     <span class="rm-entry-state" ng-if="entryMode !== 'all' && !joined && !canJoin()">The race is under way: entry is closed</span>
