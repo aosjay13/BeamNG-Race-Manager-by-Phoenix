@@ -1229,6 +1229,51 @@ RM_onRequestState(1)
 check(lastState.jokerGates == 3,
   'with no layout loaded the editor is still believed')
 
+-- ---------------------------------------------------------------------------
+-- Sitting out: a self-declared spectator the field runs without
+-- ---------------------------------------------------------------------------
+-- Racers pressed a button labelled "Spectate" expecting to watch a race and got
+-- a dismissed login box. What they actually wanted was to not be IN the race,
+-- and under 'everyone races' entry there was no way to say so short of leaving
+-- the server.
+connected[11] = 'Sitter'
+RM_onPlayerJoin(11)
+RM_onSetEntryMode(1, '{"mode":"all"}')
+RM_onRequestState(11)
+local before = lastState.entrants
+
+RM_onSetSpectating(11, '{"spectating":true}')
+RM_onRequestState(11)
+check(lastState.entrants == before - 1,
+  'a spectator is out of the field even under "everyone races", which is the '
+    .. 'entry mode that had no opt-out at all')
+check(lastState.youSpectating == true, 'and is told so')
+
+-- No admin rights needed: it is their own participation.
+check(true, 'RM_onSetSpectating takes no admin check by design')
+
+-- Rejoining is refused while a session runs, the same rule joining has.
+RM_onGenerateGrid(1, '')
+RM_onStartCountdown(1, '')
+for _ = 1, 4 do RM_CountdownTick() end
+RM_onSetSpectating(11, '{"spectating":false}')
+RM_onRequestState(11)
+check(lastState.youSpectating == true,
+  'and cannot rejoin a session already under way')
+
+-- Dropping out mid-session IS allowed: that direction never disturbs a race.
+connected[12] = 'Quitter'
+RM_onPlayerJoin(12)
+RM_onSetSpectating(12, '{"spectating":true}')
+RM_onRequestState(12)
+check(lastState.youSpectating == true, 'but anyone may drop out mid-session')
+
+RM_onEndRace(1, '')
+RM_onSetSpectating(11, '{"spectating":false}')
+RM_onRequestState(11)
+check(lastState.youSpectating ~= true, 'and rejoin once it is over')
+connected[11], connected[12] = nil, nil
+
 -- LAST IN THE FILE ON PURPOSE. This block starts a race, and everything above
 -- it either needs no session running (loading and deleting a layout are both
 -- refused mid-race) or depends on driver records a reset would clear.

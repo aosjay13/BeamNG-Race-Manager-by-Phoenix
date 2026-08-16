@@ -1160,6 +1160,24 @@ expect(headerOrder == barOrder,
 expect(headerOrder:find('flag') ~= nil and headerOrder:match('([%w]+)$') == 'flag',
   'and the flag ends the run in both, so it is always in the same place')
 
+-- SPECTATING IS A THING YOU DO, not a way to close a dialog.
+--
+-- The login panel's button said "Spectate" and only ever dismissed the box, so
+-- racers pressed it expecting to watch a race. It is a close button now, and
+-- sitting out lives in the entry row where entry decisions belong.
+expect(html:find('ng%-click="spectate%(%)"[^>]-rm%-btn%-mini') ~= nil
+    or html:find('rm%-btn%-mini" ng%-click="spectate%(%)"') ~= nil,
+  'the login panel\'s dismiss is a small close button')
+expect(html:find('Spectate »', 1, true) == nil,
+  'and no longer promises a mode it never delivered')
+
+expect(html:find('ng%-click="setSpectating%(!spectating%)"') ~= nil,
+  'the entry row has a real Spectate toggle')
+expect(js:find('$scope.setSpectating = function', 1, true) ~= nil,
+  'with a handler in app.js')
+expect(js:find('data.youSpectating', 1, true) ~= nil,
+  'and the panel follows the server, which owns whether you are in the field')
+
 -- ---------------------------------------------------------------------------
 -- Nudge mode: the button, and who owns whether it is on
 -- ---------------------------------------------------------------------------

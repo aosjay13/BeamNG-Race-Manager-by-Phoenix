@@ -67,12 +67,17 @@ rotate constantly, admin rights are gated by this shared password rather than
 a name/ID whitelist, and they are dropped as soon as you disconnect (or when
 the admin presses **Log out**).
 
-You never have to log in just to watch: press **Spectate »** on the login bar
-to dismiss it and follow the timing. If an admin is already running the
-session the prompt hides itself automatically. Either way a **🔒 Login**
-button stays in the header so you can bring the login screen back at any time.
-Admins can rotate the master password to **anything they like** from the
-**Change password** bar - it applies on the server immediately.
+You never have to log in just to watch: close the login bar with **✕** and the
+live timing is already there.
+
+**Sitting a session out** is a different thing, and it has its own control.
+**👁 Spectate** in the Race Entry row takes you out of the field even under
+*everyone races*, which otherwise has no opt-out short of leaving the server.
+Your car stays exactly where it is and becomes a ghost, so nothing is deleted
+and nothing is respawned, and you watch however you like: BeamNG's own controls
+tab between cars and free camera works as it always does. **↩ Rejoin the field**
+puts you back, and like joining, it is refused while a session is already
+running.
 
 > The server ships with a **default password of `phoenix`** (set at the top of
 > `server/RaceManager/main.lua`). **Change it before your first public

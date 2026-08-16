@@ -341,6 +341,11 @@ local function newRecord(pid)
     -- waiting | qualifying | gridded | racing | finished | dsq | dnf
     status     = 'waiting',
     joined     = false,      -- opted into the race (see race.entryMode)
+    -- SELF-DECLARED SPECTATOR. Not the same thing as `joined`: that is opting IN
+    -- under 'join' entry, this is opting OUT, and it has to work under 'all'
+    -- entry too. With everyone racing by default there was no way to say "run
+    -- without me" short of leaving the server.
+    spectating = false,
     gridPos    = nil,        -- locked-in starting position (Generate Grid)
     customGrid = nil,        -- slot the admin pinned this driver to (custom mode)
     qualiBest  = nil,        -- best qualifying lap (seconds)
@@ -649,6 +654,10 @@ local rosterWarm, cupWarm
 -- the plugin used to do implicitly for everyone).
 local function isEntrant(rec)
   if not rec then return false end
+  -- A self-declared spectator is never in the field, whatever the entry mode
+  -- says. This is checked FIRST for that reason: under 'all' entry every other
+  -- answer is yes, which is exactly the case somebody opting out is stuck in.
+  if rec.spectating then return false end
   if race.entryMode == 'all' then return true end
   return rec.joined == true
 end
@@ -757,6 +766,8 @@ local DRIVER_WIRE_FIELDS = {
   'qualiBest', 'qualiLaps', 'outLap', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
   'finishTime', 'resets', 'resetsBlocked',
   'jokerTaken', 'jokerLap', 'outReason', 'dnfPos', 'lane', 'bystander',
+  -- NOT 'spectating': choosing to sit out is a decision about the evening, not
+  -- about one session, so it survives a reset exactly as `joined` does.
 }
 
 -- Projection buffers are kept ON the record and reused, so a broadcast costs no
@@ -917,7 +928,12 @@ local function broadcastState(targetPid)
   -- the UI app sends every time it mounts) an authoritative answer to "am I
   -- still logged in", instead of the client having to remember on its own.
   local selfAdmin = nil
-  if targetPid then selfAdmin = isAuthenticated(targetPid) end
+  local selfSpectating = nil
+  if targetPid then
+    selfAdmin = isAuthenticated(targetPid)
+    local selfRec = players[pidKey(targetPid)]
+    selfSpectating = selfRec and selfRec.spectating == true or nil
+  end
   local payload = Util.JsonEncode({
     rmProtocol   = RM_PROTOCOL,
     serverBuild  = RM_BUILD,
@@ -936,6 +952,8 @@ local function broadcastState(targetPid)
     jokerEnabled = race.jokerEnabled,
     -- Race entry + starting grid.
     entryMode    = race.entryMode,
+    -- "Are YOU sitting this one out" (targeted sends only, like youAreAdmin).
+    youSpectating = selfSpectating,
     entrants     = entrantCount(),
     gridMode     = race.gridMode,
     startSlots   = race.startSlots,
@@ -1762,6 +1780,46 @@ function RM_onJoinRace(pid, rawData)
 end
 
 -- Admin switches between opt-in entry and "everyone on the server races".
+-- A player putting themselves in or out of the field.
+--
+-- No admin needed: it is their own participation. Allowed mid-session in one
+-- direction only -- you can always drop out, but you cannot join a race that is
+-- already running, which is the same rule RM_onJoinRace enforces.
+function RM_onSetSpectating(pid, rawData)
+  local rec = ensurePlayer(pid)
+  if not rec then return end
+  local want = true
+  if type(rawData) == 'string' and rawData ~= '' then
+    local ok, data = pcall(Util.JsonDecode, rawData)
+    if ok and type(data) == 'table' and data.spectating ~= nil then
+      want = data.spectating == true or data.spectating == 1
+    end
+  end
+  if rec.spectating == want then return end
+  if not want and sessionUnderWay() then
+    MP.SendChatMessage(pid, '[RaceManager] A session is running: you can rejoin the '
+      .. 'field when it ends.')
+    return
+  end
+  rec.spectating = want
+  if want then
+    -- Their car stays exactly where it is and becomes a ghost, the same way a
+    -- mid-session joiner's does. Nothing is deleted: in BeamMP a delete is a
+    -- delete for everyone, and respawning a field is what caused cars to weld.
+    rec.bystander = true
+    if sessionUnderWay() then
+      rec.status = 'waiting'
+      clearProgress(rec)
+    end
+    MP.SendChatMessage(-1, '[RaceManager] ' .. rec.name .. ' is spectating.')
+  else
+    rec.bystander = nil
+    MP.SendChatMessage(-1, '[RaceManager] ' .. rec.name .. ' rejoined the field.')
+  end
+  print(string.format('[RaceManager] %s set spectating=%s', rec.name, tostring(want)))
+  broadcastState()
+end
+
 function RM_onSetEntryMode(pid, rawData)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
@@ -7042,6 +7100,7 @@ function onInit()
   MP.RegisterEvent('RM_LoadLayout',       'RM_onLoadLayout')
   MP.RegisterEvent('RM_DeleteLayout',     'RM_onDeleteLayout')
   MP.RegisterEvent('RM_SetFlag',          'RM_onSetFlag')
+  MP.RegisterEvent('RM_SetSpectating',    'RM_onSetSpectating')
   MP.RegisterEvent('RM_ClearTrackState',  'RM_onClearTrackState')
   -- Demo Derby module (isolated event namespace; see the DEMO DERBY section).
   MP.RegisterEvent('RM_DerbySetConfig',     'RM_onDerbySetConfig')

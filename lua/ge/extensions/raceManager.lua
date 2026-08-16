@@ -229,7 +229,8 @@ local branch = {
 local checkpointWidth  = TUNE.DEFAULT_WIDTH
 local checkpointHeight = TUNE.DEFAULT_HEIGHT
 local checkpointDepth  = TUNE.DEFAULT_DEPTH
-local raceFlag         = 'green'   -- green | yellow, mirrored from the server
+local raceFlag         = 'green'   -- green | yellow | red, mirrored from the server
+local selfSpectating   = false     -- this player has opted out of the field
 local visualize        = true
 
 -- Starting grid: ordered list of { x, y, z, hx, hy } placed by the race
@@ -5926,6 +5927,15 @@ end
 
 -- Admin: show the field a flag. Advisory, and the server is what decides
 -- whether this session is in a state to be flagged at all.
+-- Put yourself in or out of the field. Their own participation, so no admin
+-- rights are involved; the server enforces the one rule that matters, which is
+-- that you cannot rejoin a session already under way.
+function M.setSpectating(on)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetSpectating', jsonEncode({ spectating = on == true }))
+  end
+end
+
 function M.setFlag(f)
   f = tostring(f or '')
   if f ~= 'green' and f ~= 'yellow' and f ~= 'red' then return end
@@ -6137,6 +6147,7 @@ local function onServerUpdate(rawData)
   if data.resetMode == 'checkpoint' or data.resetMode == 'inplace' then
     resetMode = data.resetMode
   end
+  if type(data.youSpectating) == 'boolean' then selfSpectating = data.youSpectating end
   jokerEnabled = data.jokerEnabled == true
   -- The flag, and a notice the moment it CHANGES. A caution that only appears
   -- on a panel is a caution the driver watching the road never sees.

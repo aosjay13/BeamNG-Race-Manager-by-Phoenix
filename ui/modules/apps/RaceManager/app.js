@@ -31,6 +31,10 @@ angular.module('beamng.apps')
       // The flag THIS driver is shown: green, yellow or white on their last lap.
       // Resolved by the client, which is the only half that knows their lap.
       $scope.driverFlag = 'green';
+      // This player has taken themselves out of the field. Not the inverse of
+      // `joined`: that is opting IN under 'join' entry, this is opting OUT and
+      // has to work under 'all' entry too.
+      $scope.spectating = false;
       // 'race' | 'quali' - which session the phases above belong to. Qualifying
       // runs the same lifecycle a race does, so this is what tells them apart.
       $scope.sessionKind = 'race';
@@ -1493,6 +1497,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.jokerLap = data.jokerLap || null;
           $scope.editorTarget = editorTargetOf(data.editorTarget);
           if (data.driverFlag) { $scope.driverFlag = data.driverFlag; }
+          if (typeof data.youSpectating === 'boolean') {
+            $scope.spectating = data.youSpectating;
+          }
           // Nudge mode. The CLIENT owns whether it is on: it can end the mode by
           // itself when a session starts or the editor closes, and the button
           // has to follow that rather than what it last asked for.
@@ -2290,6 +2297,10 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         if ($scope.driverFlag === 'yellow') { return 'Yellow flag: caution, race back to the line'; }
         if ($scope.driverFlag === 'white') { return 'White flag: last lap'; }
         return 'Green flag: racing';
+      };
+
+      $scope.setSpectating = function (on) {
+        bngApi.engineLua('raceManager.setSpectating(' + (on ? 'true' : 'false') + ')');
       };
 
       $scope.setFlag = function (f) {

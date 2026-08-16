@@ -124,10 +124,15 @@
            placeholder="Password…"
            ng-keydown="$event.keyCode === 13 && login()">
     <button class="rm-btn rm-btn-start" ng-click="login()">Login</button>
-    <button class="rm-btn" ng-click="spectate()" title="Dismiss and just watch the live timing">Spectate »</button>
+    <!-- THIS ONLY EVER CLOSED THE BOX. It used to be labelled as spectating, so
+         racers pressed it expecting to watch a race and got a dismissed dialog.
+         Sitting out is its own control now, in the entry row where entry
+         decisions belong, and this is a close button that looks like one. -->
+    <button class="rm-btn rm-btn-mini" ng-click="spectate()"
+            title="Close this. You do not need to log in to watch the timing.">✕</button>
     <span class="rm-login-error" ng-if="authError">Incorrect password</span>
-    <span class="rm-login-hint" ng-if="!authError &amp;&amp; adminPresent">An admin is running this session: log in to manage, or spectate.</span>
-    <span class="rm-login-hint" ng-if="!authError &amp;&amp; !adminPresent">Log in to unlock race, derby &amp; track editor controls, or spectate.</span>
+    <span class="rm-login-hint" ng-if="!authError &amp;&amp; adminPresent">An admin is running this session. Log in to manage it, or close this and watch.</span>
+    <span class="rm-login-hint" ng-if="!authError &amp;&amp; !adminPresent">Log in to unlock race, derby &amp; track editor controls, or close this and watch.</span>
   </div>
 
   <!-- ================= Race entry (everyone, admin or not) ================ -->
@@ -146,9 +151,22 @@
             title="Withdraw from the field">
       Leave Race
     </button>
-    <span class="rm-entry-state" ng-if="entryMode === 'all'">
+    <span class="rm-entry-state" ng-if="entryMode === 'all' && !spectating">
       Entry is open to everyone on the server: you are in the field.
     </span>
+    <!-- SITTING OUT. The gap this fills: under 'everyone races' there was no way
+         to say "run without me" short of leaving the server, which is what
+         racers were reaching for when they pressed the old Spectate button.
+         Their car stays where it is and turns into a ghost, so nothing is
+         deleted and nothing is respawned. -->
+    <span class="rm-entry-state rm-entry-out" ng-if="spectating">
+      👁 You are SPECTATING: the session runs without you. Tab between cars to watch.
+    </span>
+    <button class="rm-btn rm-btn-mini" ng-click="setSpectating(!spectating)"
+            ng-disabled="spectating && sessionUnderWay()"
+            title="{{ spectating ? 'Rejoin the field. Not possible while a session is running.' : 'Sit this one out. Your car stays where it is as a ghost, and you can tab between cars to watch.' }}">
+      {{ spectating ? '↩ Rejoin the field' : '👁 Spectate' }}
+    </button>
     <span class="rm-entry-state rm-entry-in" ng-if="entryMode !== 'all' && joined">✓ You are entered</span>
     <span class="rm-entry-state" ng-if="entryMode !== 'all' && !joined && canJoin()">You are spectating: press Join Race to take part</span>
     <span class="rm-entry-state" ng-if="entryMode !== 'all' && !joined && !canJoin()">The race is under way: entry is closed</span>
@@ -2853,6 +2871,7 @@
   /* The phase pill in the driver bar: same colours as the header's, smaller,
      so both panels open their status run the same way. */
   .rm-driverbar-phase { font-size: 9px; padding: 1px 5px; }
+  .rm-entry-out { color: #9aa0a6; font-style: italic; }
   .rm-flagset { display: inline-flex; gap: 4px; }
   .rm-btn-redflag { border-color: rgba(255, 82, 82, 0.85); color: #ff8a8a; }
   .rm-btn-caution { border-color: rgba(251, 188, 5, 0.85); color: #fdd663; }

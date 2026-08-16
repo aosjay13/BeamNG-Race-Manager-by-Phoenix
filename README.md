@@ -73,7 +73,10 @@ car back. Only the lap target and the scoring differ.
 **1. Open the app and log in.** Join the server, open the HUD app menu and add
 **Race Manager** (under *Racing* and *Info*). Everyone sees the live timing, but
 the editor and race controls stay hidden until you type the master password into
-the **Admin Login** bar. Anyone who just wants to watch presses **Spectate »**.
+the **Admin Login** bar; anyone who just wants to watch closes it with **✕**.
+To sit a session out entirely, press **👁 Spectate** in the Race Entry row: the
+field runs without you, your car stays put as a ghost, and you watch with
+BeamNG's own camera controls.
 
 **2. Build a track.** Press **Editor**, then drive the course. At each timing
 gate, drive through it *in the direction of travel* and press **+ Checkpoint
