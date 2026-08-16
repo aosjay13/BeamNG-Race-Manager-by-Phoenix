@@ -124,6 +124,39 @@ def find_server(explicit=None):
     return seen[0]
 
 
+def rival_plugins(server):
+    """Any OTHER Race Manager under Resources/Server.
+
+    BeamMP loads EVERY folder under Resources/Server as a plugin, so a folder
+    named "deactivated_plugins" is not deactivated in the slightest. One sat
+    there for weeks holding a Race Manager from July, running beside the real
+    one, registering the same events and keeping its own auth state. The admin
+    logged in against the old copy, so End Session and Reset went to a plugin
+    that was not running the race and the real one answered "unauthenticated".
+    From the outside the buttons were simply dead.
+
+    Nothing about that is visible in game, which is why it is checked here.
+    """
+    out = []
+    base = os.path.join(server, 'Resources', 'Server')
+    if not os.path.isdir(base):
+        return out
+    for name in sorted(os.listdir(base)):
+        d = os.path.join(base, name)
+        if name == 'RaceManager' or not os.path.isdir(d):
+            continue
+        main = os.path.join(d, 'main.lua')
+        if not os.path.isfile(main):
+            continue
+        try:
+            head = open(main, encoding='utf-8', errors='ignore').read(4000)
+        except OSError:
+            continue
+        if 'RaceManager' in head or 'RM_' in head:
+            out.append(os.path.relpath(main, server))
+    return out
+
+
 def server_running():
     """Is BeamMP-Server up? Only ever reported, never acted on: stopping
     somebody's live server is their call, not a deploy script's."""
@@ -220,7 +253,20 @@ def main():
               'startup, and\n        mods.json still advertises the old zip until '
               'then. RESTART IT.')
 
-    ok = deploy(server, client, args.dry_run)
+    ok = True
+    rivals = rival_plugins(server)
+    if rivals:
+        print('\n  ANOTHER RACE MANAGER IS INSTALLED AS A PLUGIN:')
+        for r in rivals:
+            print('    ' + r)
+        print('  BeamMP loads every folder under Resources/Server, so this'
+              ' one is RUNNING: same events, its own auth state, taking'
+              ' turns with the real plugin.')
+        print('  It looks like dead buttons, not like a conflict. Move it out'
+              ' of Resources/Server, then restart.')
+        ok = False
+
+    ok = deploy(server, client, args.dry_run) and ok
     if args.tidy:
         tidy(server, args.dry_run)
 

@@ -49,6 +49,15 @@ hash check.
 
 ## Things that have gone wrong here before
 
+- **Two Race Manager plugins ran side by side for weeks.** BeamMP loads EVERY
+  folder under `Resources/Server` as a plugin, so a folder called
+  `deactivated_plugins` is not deactivated: its `main.lua` registered the same
+  events, kept its own auth state, and took the admin login. End Session and
+  Reset went to a plugin that was not running the race while the real one logged
+  "unauthenticated". From the game it looked like dead buttons. `deploy.py`
+  checks for this now and fails the deploy; if it reports one, move it out of
+  `Resources/Server` and restart.
+
 - **A stale file fails silently in this mod.** A button just stops doing
   anything, with no error anywhere. If the user reports a dead control right
   after a deploy, check that both halves actually landed before debugging code.

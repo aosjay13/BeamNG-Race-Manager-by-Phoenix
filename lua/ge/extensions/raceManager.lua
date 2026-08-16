@@ -52,8 +52,18 @@ local TUNE = {
   MIN_HEIGHT = 1,
   MAX_HEIGHT = 100,
   DEFAULT_DEPTH = 2,      -- metres it drops BELOW it
-  MIN_DEPTH = 0,
+  -- NEGATIVE DEPTH LIFTS THE BOTTOM BAR ABOVE the placement point, which is how
+  -- a gate is floated clear of the ground entirely. The label and the state
+  -- glyph sit at the middle of the gate's face, so on a gate that reaches as far
+  -- down as it does up that middle is exactly ground level and the glyph is
+  -- buried. Raising the bottom is what lifts it out.
+  MIN_DEPTH = -100,
   MAX_DEPTH = 100,
+  -- The shortest gate the bottom is allowed to leave. Depth is free to cross
+  -- above the placement point, but not above the TOP: a band with no height is a
+  -- gate nothing can ever cross, which is not a floating checkpoint, it is a
+  -- broken one.
+  MIN_SPAN = 0.5,
   EDGE_RADIUS = 0.15,  -- meters; thickness of the drawn rectangle edge
   -- Thickness of a race POLE. Fatter than an editor edge -- this is the one a
   -- driver reads at a hundred miles an hour -- but only just: the first attempt
@@ -747,8 +757,11 @@ local function gateDims(wp)
     local half = wp.height * 0.5
     return w, clampHeight(half), clampDepth(half)
   end
-  return w, clampHeight(wp.height or checkpointHeight),
-         clampDepth(wp.depth or checkpointDepth)
+  local h = clampHeight(wp.height or checkpointHeight)
+  local d = clampDepth(wp.depth or checkpointDepth)
+  -- The bottom may rise above the placement point, but never above the top.
+  if -d > h - TUNE.MIN_SPAN then d = -(h - TUNE.MIN_SPAN) end
+  return w, h, d
 end
 
 -- ---------------------------------------------------------------------------
@@ -5882,6 +5895,17 @@ function nudge.place(list, hit, ray)
   pushRouteState()
 end
 
+-- Turn the picked gate from the panel. The scroll wheel is the fast way and not
+-- everybody has one, so the same step is on a pair of buttons. `dir` is -1 or 1.
+function M.nudgeTurn(dir)
+  if not (nudge.on and nudge.sel and nudge.list) then return end
+  local wp = nudge.list[nudge.sel]
+  if not wp then return end
+  nudge.turn(wp, (tonumber(dir) or 1) >= 0 and nudge.TURN_PER_STEP or -nudge.TURN_PER_STEP)
+  if editorTarget == 'branch' then branch.rebuild() end
+  pushRouteState()
+end
+
 -- Delete the picked gate, from the panel rather than a key. Guessing a keybind
 -- for a destructive action on a build that cannot be tested here is how the node
 -- grabber block shipped listening for names nothing answered to.
@@ -6695,6 +6719,8 @@ function M.setCheckpointOverride(index, w, h, d)
     log('W', 'raceManager', 'setCheckpointOverride: no checkpoint at index ' .. tostring(index))
     return
   end
+  -- Blank means inherit, and for width and height a zero is blank: neither has
+  -- any meaning at zero.
   local function opt(v, clamp)
     v = tonumber(v)
     if not v or v <= 0 then return nil end
@@ -6702,10 +6728,13 @@ function M.setCheckpointOverride(index, w, h, d)
   end
   wp.width  = opt(w, clampWidth)
   wp.height = opt(h, clampHeight)
-  -- Written even when blank, because a gate carrying a height and NO depth is
-  -- read as a legacy full-span gate. Leaving depth unset here would quietly
-  -- reinterpret the height the admin just typed as half of itself.
-  wp.depth  = opt(d, clampDepth) or clampDepth(checkpointDepth)
+  -- DEPTH IS DIFFERENT, and reusing `opt` for it was a bug: zero is a real depth
+  -- (a gate that stops dead at the surface) and negative is a real depth (one
+  -- lifted clear of the ground). Sending either was silently turned into "blank"
+  -- and then into the session default, so a depth of 0 could not be set at all.
+  -- Only nil and a non-number mean inherit here.
+  local dv = tonumber(d)
+  wp.depth = dv and clampDepth(dv) or clampDepth(checkpointDepth)
   pushRouteState()
 end
 

@@ -923,7 +923,10 @@ angular.module('beamng.apps')
       // beside it for the same reason: the broadcast handler reads this, and a
       // `var` further down the controller is only assigned when execution
       // reaches it.
-      var rectSeen = { width: null, length: null, rot: null, wall: null };
+      // Every key syncRectField is called with MUST be seeded null. An unseeded key
+// is undefined, which matches neither branch of the follow test, so the slider
+// silently never follows the server again.
+var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: null };
       function syncRectField(key, value) {
         if (typeof value !== 'number') { return; }
         var rounded = Math.round(value * 10) / 10;
@@ -2501,6 +2504,11 @@ angular.module('beamng.apps')
       // Delete lives on a button rather than a key: guessing a keybind for a
       // destructive action on an engine that cannot be tested from here is how
       // the node grabber block shipped listening for names nothing answered to.
+      $scope.nudgeTurn = function (dir) {
+        if (!$scope.nudgeSel) { return; }
+        bngApi.engineLua('raceManager.nudgeTurn(' + (dir < 0 ? -1 : 1) + ')');
+      };
+
       $scope.nudgeDelete = function () {
         if (!$scope.nudgeSel) { return; }
         bngApi.engineLua('raceManager.nudgeDelete()');
@@ -2541,16 +2549,19 @@ angular.module('beamng.apps')
         if (!$scope.selectedCp) { return; }
         var w = parseFloat($scope.cpEdit.width)  || 0;
         var h = parseFloat($scope.cpEdit.height) || 0;
-        var d = parseFloat($scope.cpEdit.depth)  || 0;
+        var dRaw = parseFloat($scope.cpEdit.depth);
+        var d = isFinite(dRaw) ? dRaw : '';
         bngApi.engineLua('raceManager.setCheckpointOverride('
-          + $scope.selectedCp + ', ' + w + ', ' + h + ', ' + d + ')');
+          + $scope.selectedCp + ', ' + w + ', ' + h + ', '
+          + (d === '' ? 'nil' : d) + ')');
       };
 
       // Reset the selected gate back to the global defaults (clear all overrides).
       $scope.resetCheckpointOverride = function () {
         if (!$scope.selectedCp) { return; }
         $scope.cpEdit = { width: '', height: '', depth: '' };
-        bngApi.engineLua('raceManager.setCheckpointOverride(' + $scope.selectedCp + ', 0, 0, 0)');
+        bngApi.engineLua('raceManager.setCheckpointOverride('
+          + $scope.selectedCp + ', 0, 0, nil)');
       };
 
       // A gate's size, as shown on its row. Every gate placed or loaded carries

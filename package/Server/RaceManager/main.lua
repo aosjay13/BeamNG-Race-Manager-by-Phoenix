@@ -3244,6 +3244,17 @@ sanitizeCheckpoints = function (raw)
     out[i] = { x = x, y = y, z = z, hx = tonumber(cp.hx) or 0, hy = tonumber(cp.hy) or 1 }
     if tonumber(cp.width)  then out[i].width  = tonumber(cp.width)  end
     if tonumber(cp.height) then out[i].height = tonumber(cp.height) end
+    -- DEPTH IS BACK, and it means something new.
+    --
+    -- The old one was a third box dimension and was dropped when a gate became a
+    -- flat rectangle. This one is the other half of the vertical: height is how
+    -- far the gate rises above the point it was placed at, depth how far it
+    -- drops below. A gate used to be centred, so making it tall enough to see
+    -- buried an equal amount of it under the road.
+    --
+    -- Carried, not validated against height: they are independent, and a gate
+    -- with no depth is a legal gate that simply does not reach below the surface.
+    if tonumber(cp.depth) then out[i].depth = tonumber(cp.depth) end
     -- Gates score in either direction; oneWay puts one back for the geometry
     -- where direction is the only thing separating two legs of a track. Carried
     -- only when set, like the size overrides above.
@@ -3418,7 +3429,8 @@ function RM_onSaveLayout(pid, rawData)
     name        = name,
     map         = map,
     width       = tonumber(data.width)  or 20,
-    height      = tonumber(data.height) or 10,
+    height      = tonumber(data.height) or 8,
+    depth       = tonumber(data.depth)  or 2,
     checkpoints = checkpoints,
     -- Optional rallycross joker route (Module 2): a second, independent gate
     -- set stored with the layout. Absent on plain circuits.
@@ -3950,6 +3962,10 @@ local DERBY_DEFAULT_EXTENT = 60
 local DERBY_MIN_WALL     = 2
 local DERBY_MAX_WALL     = 30
 local DERBY_DEFAULT_WALL = 6
+-- The wall's SKIRT, how far it drops below the boundary plane, runs 0 to 30 with
+-- a default of 1.5. Spelled at its two use sites rather than named here: this
+-- file is at Lua's 200-active-locals ceiling and three more names do not fit,
+-- and going over does not warn, it stops compiling.
 
 local derby = {
   phase     = 'idle',   -- idle | running | finished
@@ -3999,6 +4015,7 @@ local derby = {
   boundaryMode = 'polygon',  -- polygon | rect
   shape     = nil,      -- { cx, cy, cz, halfW, halfL, rot } while mode is 'rect'
   wallHeight = DERBY_DEFAULT_WALL,  -- visual only; see the constant above
+  wallDepth  = 1.5,                 -- how far it drops below the boundary plane
   startPositions = {},  -- derby starting grid { x, y, z, hx, hy }, slot 1 first
   winner    = nil,      -- winner's name once decided
 }
@@ -4213,6 +4230,7 @@ local function broadcastDerbyState(targetPid)
     boundaryMode = derby.boundaryMode,
     shape      = derby.shape,
     wallHeight = derby.wallHeight,
+    wallDepth  = derby.wallDepth,
     startPositions = derby.startPositions,
     winner     = derby.winner,
     players    = derbyClassification(),
@@ -4520,6 +4538,10 @@ function RM_onDerbySetShape(pid, rawData)
     local h = derbyClampNum(data.wallHeight, DERBY_MIN_WALL, DERBY_MAX_WALL, derby.wallHeight)
     if h ~= derby.wallHeight then derby.wallHeight = h; changed = true end
   end
+  if data.wallDepth ~= nil then
+    local d = derbyClampNum(data.wallDepth, 0, 30, derby.wallDepth)
+    if d ~= derby.wallDepth then derby.wallDepth = d; changed = true end
+  end
 
   if derby.boundaryMode == 'rect' then
     local shape = sanitizeDerbyShape(data, derby.shape)
@@ -4802,6 +4824,7 @@ function RM_onDerbySaveLayout(pid, rawData)
     boundaryMode = rect and 'rect' or 'polygon',
     shape     = rect,
     wallHeight = derbyClampNum(data.wallHeight, DERBY_MIN_WALL, DERBY_MAX_WALL, derby.wallHeight),
+    wallDepth  = derbyClampNum(data.wallDepth, 0, 30, derby.wallDepth),
     oobLimit  = derbyClampLimit(data.oobLimit,  derby.oobLimit),
     demoLimit = derbyClampLimit(data.demoLimit, derby.demoLimit),
     maxResets = resets or derby.maxResets,

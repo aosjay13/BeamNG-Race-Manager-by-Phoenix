@@ -999,9 +999,14 @@
     </div>
     <div class="rm-nudge-hint" ng-if="nudgeOn">
       <div><b>Click</b> a gate to pick it, <b>drag</b> to move it, <b>scroll</b> to
-      turn it. <b>Ctrl+click</b> open ground to place a new one, which lands after
-      the picked gate if there is one. Works on whichever tab you are editing.</div>
+      turn it, or use ↺ ↻ below if your mouse has no wheel. <b>Ctrl+click</b> open
+      ground to place a new one, which lands after the picked gate if there is
+      one. Works on whichever tab you are editing.</div>
       <div class="rm-nudge-row">
+        <button class="rm-btn rm-btn-mini" ng-click="nudgeTurn(-1)"
+                ng-disabled="!nudgeSel" title="Turn the picked gate anticlockwise">↺</button>
+        <button class="rm-btn rm-btn-mini" ng-click="nudgeTurn(1)"
+                ng-disabled="!nudgeSel" title="Turn the picked gate clockwise">↻</button>
         <button class="rm-btn rm-btn-end rm-btn-mini" ng-click="nudgeDelete()"
                 ng-disabled="!nudgeSel" title="Delete the picked gate">
           ✕ Delete picked
@@ -1239,10 +1244,10 @@
                    ng-change="applyCheckpointOverride()">
             <input type="number" min="1" max="100" ng-model="cpEdit.height"
                    placeholder="height"></span>
-          <span class="rm-setting rm-cp-dim" title="How far it drops BELOW. Keep this small so the gate does not hang under the road."><label>Dn</label>
-            <input type="range" min="0" max="100" step="1" ng-model="cpEdit.depth"
+          <span class="rm-setting rm-cp-dim" title="How far it drops BELOW where it was placed. NEGATIVE lifts the bottom above the ground, which also lifts the joker label and glyph out of it."><label>Dn</label>
+            <input type="range" min="-100" max="100" step="1" ng-model="cpEdit.depth"
                    ng-change="applyCheckpointOverride()">
-            <input type="number" min="0" max="100" ng-model="cpEdit.depth"
+            <input type="number" min="-100" max="100" ng-model="cpEdit.depth"
                    placeholder="depth"></span>
           <button class="rm-btn rm-btn-mini rm-btn-start" ng-click="applyCheckpointOverride()">Apply</button>
           <button class="rm-btn rm-btn-mini" ng-click="resetCheckpointOverride()"
