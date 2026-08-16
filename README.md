@@ -106,11 +106,13 @@ no retyping. Both ask first. A save can never quietly empty part of a stored
 layout; if the client sending it isn't holding a section the saved copy has, the
 server refuses and says exactly what would have gone.
 
-**4. Decide who's racing.** By default **everyone on the server is in the
-field**, so there's nothing to do. Flip to **Opt-in entry** when the field should
-be a subset of who's connected: each player then gets a **Join Race** button and
-only they are gridded. Entry survives Start Quali, so drivers join once per
-event.
+**4. Decide who's racing.** **Everyone on the server is in the field**, so
+there's nothing to do. A driver who'd rather watch presses **Spectate** and the
+session runs without them; their car stays put as a ghost, and **Rejoin the
+field** puts them back. That's the whole entry system, and it's the driver's own
+call, not an admin setting. A one on one is two people racing and everybody else
+spectating. Once a session is running the field is fixed: the way out from there
+is **Retire**, which keeps a classified position and scores like any other DNF.
 
 **5. Qualifying.** Press **Start Quali**, then **Start Countdown**. The field
 starts from the grid, so the first lap is an **out lap**: not timed, not scored,

@@ -3,7 +3,7 @@
 -- Run from the repo root: lua5.3 tests/grid_test.lua
 --
 -- Covers, in one session-shaped pass:
---   * opt-in entry: connecting is not entering, and only entrants are gridded
+--   * spectating: a driver sitting out is not gridded
 --   * grid order: qualifying, random draw and a hand-picked custom order
 --   * grid assignment: every gridded driver is told which start position to
 --     stand on, and drivers who withdraw are told to stand down
@@ -69,44 +69,18 @@ RM_onLogin(1, '{"password":"phoenix"}')
 for id in pairs(connected) do RM_onPlayerJoin(id) end
 
 -- ===========================================================================
--- Race entry: everyone races by default, and opt-in is a mode you choose
--- ===========================================================================
--- The default grids whoever is on the server. It is the setting that fails
--- safe: getting it wrong the other way forms a grid of nobody, and the driver
--- worst placed to notice is the admin who never touched the setting.
-check(lastState.entryMode == 'all', 'entry defaults to everyone racing')
-check(lastState.entrants == 4, 'so all four connected players are in the field')
+-- ENTRY IS ONE SWITCH: everyone races, and a driver who does not want to
+-- presses Spectate. There is no mode for an admin to set.
+check(lastState.entrants == 4, 'everyone connected is in the field by default')
 
--- The rest of this section is about the OPT-IN mode, so it asks for it.
-RM_onSetEntryMode(1, '{"mode":"join"}')
-check(lastState.entryMode == 'join', 'an admin can switch to opt-in')
-check(lastState.entrants == 0, 'and then nobody is entered until they say so')
+-- Dan sits this one out.
+RM_onSetSpectating(4, '{"spectating":true}')
+check(driver('Dan').spectating == true, 'the player who sat out is not an entrant')
+check(lastState.entrants == 3, 'three of the four players are racing')
 
-RM_onJoinRace(2, '{"join":true}')
-RM_onJoinRace(3, '{"join":true}')
-RM_onJoinRace(1, '{"join":true}')
-check(lastState.entrants == 3, 'three of the four players entered')
-check(driver('Dan').joined ~= true, 'the player who never joined is not an entrant')
-
--- ===========================================================================
--- Qualifying with a lap allowance
--- ===========================================================================
 RM_onSetQualiLimits(1, '{"laps":2,"seconds":0}')
-check(lastState.qualiLapLimit == 2, 'lap allowance set to 2')
 RM_onSetGhostQuali(1, '{"enabled":true}')
-check(lastState.ghostQuali == true, 'ghost qualifying armed')
-
--- Qualifying runs the SAME lifecycle a race does: form the grid, hold the
--- field, count down, run the session, take finished cars off and give every car
--- back. It used to skip straight to a running phase with no grid at all, which
--- is why a driver's first crossing of the line was an out-lap and a "2 lap"
--- session took three or four laps to get through.
 RM_onStartQualifying(1)
-check(lastState.phase == 'grid', 'Start Qualifying forms a grid, exactly like a race')
-check(driver('Alice').gridPos ~= nil, 'entrants are gridded for qualifying')
-check(driver('Alice').status == 'gridded', 'and are held on the grid, not loose on track')
-check(driver('Dan').gridPos == nil, 'a non-entrant is left off the qualifying grid')
-check(driver('Alice').joined == true, 'entry survives the session wipe')
 check(gridAssign[1] == driver('Alice').gridPos,
   'every qualifying entrant is told which start position to take')
 
@@ -157,16 +131,25 @@ RM_onGenerateGrid(1)
 check(lastState.phase == 'grid', 'grid formed')
 check(driver('Bob').gridPos == 1 and driver('Alice').gridPos == 2
   and driver('Cara').gridPos == 3, 'quali order puts the fastest on pole')
-check(driver('Dan').gridPos == nil, 'a non-entrant is left off the grid')
+check(driver('Dan').gridPos == nil, 'a driver sitting out is left off the grid')
 check(gridAssign[2] == 1 and gridAssign[1] == 2 and gridAssign[3] == 3,
   'every gridded driver is told which start position to take')
-check(gridAssign[4] == false, 'a non-entrant is told to stand down')
+check(gridAssign[4] == false, 'and is told to stand down')
 
--- Withdrawing from a formed grid clears that driver's placement.
-RM_onJoinRace(3, '{"join":false}')
-check(gridAssign[3] == false, 'withdrawing clears the start position')
+-- Sitting out AFTER a grid has formed clears that driver's placement: the slot
+-- goes back, and the client is told to stand down rather than sit on a grid it
+-- is no longer part of.
+RM_onSetSpectating(3, '{"spectating":true}')
+check(gridAssign[3] == false, 'sitting out clears the start position')
 check(lastState.entrants == 2, 'the field shrinks to two')
-RM_onJoinRace(3, '{"join":true}')
+RM_onSetSpectating(3, '{"spectating":false}')
+check(lastState.entrants == 3, 'and rejoining before the lights puts them back')
+
+-- Dan comes back for the race without having set a qualifying time. Where he
+-- grids is the whole point of the reverse-grid rule below.
+RM_onSetSpectating(4, '{"spectating":false}')
+check(lastState.entrants == 4, 'a driver who sat qualifying out can still race')
+RM_onGenerateGrid(1)
 
 -- ===========================================================================
 -- Reverse grid: slowest on pole, fastest at the back
@@ -175,7 +158,6 @@ RM_onJoinRace(3, '{"join":true}')
 -- still gridded last, because a literal reversal would put them on pole -- and
 -- then the quickest way to start first is to sit in the pits and set nothing. A
 -- reverse grid is meant to reward the slow, not the absent.
-RM_onJoinRace(4, '{"join":true}')            -- Dan: entered, never set a time
 RM_onSetGridMode(1, '{"mode":"reverse"}')
 check(lastState.gridMode == 'reverse', 'grid mode switched to a reverse grid')
 RM_onGenerateGrid(1)
@@ -193,7 +175,6 @@ RM_onSetGridMode(1, '{"mode":"quali"}')
 RM_onGenerateGrid(1)
 check(driver('Bob').gridPos == 1 and driver('Cara').gridPos == 3,
   'switching back to quali order puts the fastest on pole again')
-RM_onJoinRace(4, '{"join":false}')           -- Dan back out
 
 -- Random draw: still a complete 1..N permutation of the entry list.
 RM_onSetGridMode(1, '{"mode":"random"}')
@@ -219,7 +200,9 @@ check(driver('Cara').gridPos == 3, 'the driver whose slot was taken falls in beh
 check(gridAssign[2] == 1 and gridAssign[1] == 2 and gridAssign[3] == 3,
   'the custom order is what gets sent to the clients')
 
--- Grid order cannot be rewritten once the lights go out.
+-- Grid order cannot be rewritten once the lights go out. Dan sits this one out
+-- again, so the three who race are the three who have to finish it.
+RM_onSetSpectating(4, '{"spectating":true}')
 RM_onSetTotalLaps(1, '{"laps":1}')
 RM_onGenerateGrid(1)
 RM_onStartCountdown(1)
@@ -227,8 +210,7 @@ RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
 check(lastState.phase == 'racing', 'race running')
 RM_onSetGridMode(1, '{"mode":"quali"}')
 check(lastState.gridMode == 'custom', 'grid mode locked during the race')
-RM_onJoinRace(4, '{"join":true}')
-check(lastState.entrants == 3, 'nobody can enter a race already under way')
+check(lastState.entrants == 3, 'the field is fixed once the race is under way')
 
 -- ===========================================================================
 -- A finished driver is taken off the track, and gets their car back at the flag
@@ -254,9 +236,14 @@ check(#released > 0 and released[#released].source == 'race',
 -- that lap is the one that matters. See tests/timed_quali_test.lua for the whole
 -- final-lap path and its edge cases; this only pins the transition.
 RM_onResetLeaderboard(1)
+-- Reset Session puts everyone back in the field, so the rest stand down: Alice
+-- alone out there is what makes "the last driver home" a single crossing.
+RM_onSetSpectating(2, '{"spectating":true}')
+RM_onSetSpectating(3, '{"spectating":true}')
+RM_onSetSpectating(4, '{"spectating":true}')
+check(lastState.entrants == 1, 'Alice is the only driver out for timed qualifying')
 RM_onSetQualiLimits(1, '{"laps":0,"seconds":2}')
 check(lastState.qualiTimeLimit == 2, 'a 2 second qualifying limit is accepted')
-RM_onJoinRace(1, '{"join":true}')
 RM_onStartQualifying(1)
 RM_onStartCountdown(1)
 RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
@@ -308,7 +295,6 @@ RM_onEndRace(1)
 RM_onResetLeaderboard(1)
 connected[0] = 'Zed'
 RM_onPlayerJoin(0)
-RM_onSetEntryMode(1, '{"mode":"all"}')
 RM_onSetGridMode(1, '{"mode":"custom"}')
 RM_onSetDriverGrid(1, '{"pid":0,"slot":1}')
 RM_onGenerateGrid(1)

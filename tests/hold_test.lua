@@ -383,8 +383,6 @@ dofile('server/RaceManager/main.lua')
 onInit()
 RM_onLogin(1, '{"password":"phoenix"}')
 for id in pairs(connected) do RM_onPlayerJoin(id) end
-RM_onJoinRace(1, '{"join":true}')
-RM_onJoinRace(2, '{"join":true}')
 
 -- The grid geometry. Two slots, 10 m apart down the track.
 RM_onStartPositionCount(1, '{"count":2,"positions":['
@@ -439,7 +437,6 @@ check(#corrections == 0, 'a racing car is never corrected onto a grid slot')
 RM_onEndRace(1)
 RM_onResetLeaderboard(1)
 for id in pairs(connected) do RM_onPlayerJoin(id) end
-RM_onJoinRace(1, '{"join":true}')
 -- A count-only report from an older client, for a grid that is no longer the
 -- one whose coordinates the server holds. What it has is stale: slot 1 is not
 -- where it thinks it is any more.

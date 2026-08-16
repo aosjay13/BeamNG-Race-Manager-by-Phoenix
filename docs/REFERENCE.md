@@ -289,29 +289,30 @@ panel) live on the server and persist across server restarts:
 
 ### Step 4 - Who is actually in the race
 
-**Everyone races** is the default: every connected player is in the field, and
-a server nobody has configured grids the people who turned up. The **Race
-Entry** bar shows how many that is.
+**Everyone races.** Every connected player is in the field, so a server nobody
+has configured grids the people who turned up. The **Race Entry** bar shows how
+many that is.
 
-That default is the one that fails safe. Under opt-in, an admin who has not
-realised the setting exists presses Generate Grid and forms a grid of *nobody*
-every driver on the server left standing while the one person who could fix it
-works out that a button they have never needed was the problem. Under
-**Everyone races**, the mistake is that somebody who wanted to watch is put on
-the grid, and they undo it with one press.
+A driver who does not want to race presses **Spectate** and the session runs
+without them. Their car stays exactly where it is and becomes a ghost: nothing
+is deleted and nothing is respawned. **Rejoin the field** puts them back. That
+one control is the whole entry system, and it belongs to the driver rather than
+to an admin.
 
-An admin can flip the mode to **Opt-in entry** when the field needs to be a
-subset of who is connected - a league night on a public server, say. Then being
-connected is **not** being entered: every player gets a **Join Race** button and
-only drivers who pressed it are gridded, withdrawing (**Leave Race**) gives up
-the slot, and entry closes once the countdown starts. Entry survives a **Start
-Quali**, so drivers only ever have to join once per event (**Reset** stands the
-whole field down and everyone joins again).
+It covers the case an admin-set opt-in mode used to: a one on one is two drivers
+racing and everybody else pressing **Spectate**, with no mode to set first.
 
-The two modes are two answers to "who is in the field" and nothing more
-from there they run identical code. A field of drivers who all pressed **Join
-Race** grids exactly the same way, slot for slot, as flipping to **Everyone
-races**.
+**Spectate is settled before the lights.** Once a session is running, the field
+is fixed and the button disables. The way out of a race you are already in is
+**Retire**, which is a different thing with a different result - a classified
+retirement that keeps a position and scores like any other DNF, rather than
+never having entered. Sitting out *between* sessions survives a reconnect;
+**Reset** puts the whole field back in.
+
+This replaced three overlapping answers to "am I in this race": an admin-set
+entry mode, a per-driver **Join Race**, and spectating. They could disagree, and
+the failure that made the case for cutting them down to one was a driver who sat
+out and then had no way back in.
 
 ### Step 5 - Qualifying
 
@@ -1460,8 +1461,8 @@ there, under the mode it belongs to.
 Both modes have an **Editor** sub-tab, and each one is a *render gate* as well as
 a panel: opening it is what puts that mode's authoring visuals in the world, and
 they belong to the admin who opened it. The **Race Entry** bar stays visible in
-every mode, because it is one entry list - a driver who pressed **Join Race**
-is entered for both, and never has to join twice.
+every mode, because it is one entry list - a driver who is spectating sits out
+both, and nobody has to enter anything twice.
 
 **The leaderboard at the bottom follows the mode too.** In Race mode it is the
 race (or qualifying) table; in Derby mode it is the **derby standings**, on both
@@ -1588,14 +1589,13 @@ and derby controls are not shown while you are in Race - see
    eliminates you, so you have to be able to see it - but nothing authoring-only
    is. Closing the Derby Editor is enough to get the driving view: you do not
    have to start a derby to see what your drivers will see.
-3. **Entry** decides who takes part. **Everyone** (the default) puts every
-   connected player in the field, which is how the derby has always behaved.
-   **Opt-in** honours the same **Join Race** button the circuit races use, so
-   somebody who only wants to watch is not dragged in - worth knowing that being
-   entered means losing your car to freecam the moment you are eliminated.
-   Drivers never have to join twice: it is one entry list, read by both modes.
-   The counter beside the toggle shows how many would be in a derby started
-   right now, and the mode is locked from Form Up onward.
+3. **Entry** is the same one switch the circuit races use: every connected
+   player is in the field unless they have pressed **Spectate**, which is how
+   the derby has always behaved by default. Somebody who only wants to watch
+   sits out both modes with one press - worth knowing that being entered means
+   losing your car to freecam the moment you are eliminated. The counter shows
+   how many would be in a derby started right now, and the field is locked from
+   Form Up onward.
 4. **Form Up**, then **Start Derby** - the same two steps a circuit race uses.
    **Form Up** stands every participant on a start slot and **holds them there**;
    the header reads *Formed up - held*. **Start Derby** then runs a synchronised

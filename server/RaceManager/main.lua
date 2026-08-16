@@ -113,7 +113,6 @@ local race = {
   -- put on the grid, which they undo with one press of Leave. The demo derby
   -- has defaulted to 'all' since it was written; this is the racing side
   -- agreeing with it.
-  entryMode    = 'all',
   -- Starting grid. gridMode decides how the slots are filled:
   --   quali   -- fastest qualifying lap first (the classic behaviour)
   --   reverse -- slowest qualifying lap first, so the fastest starts last
@@ -340,11 +339,9 @@ local function newRecord(pid)
     alias      = nil,
     -- waiting | qualifying | gridded | racing | finished | dsq | dnf
     status     = 'waiting',
-    joined     = false,      -- opted into the race (see race.entryMode)
-    -- SELF-DECLARED SPECTATOR. Not the same thing as `joined`: that is opting IN
-    -- under 'join' entry, this is opting OUT, and it has to work under 'all'
-    -- entry too. With everyone racing by default there was no way to say "run
-    -- without me" short of leaving the server.
+    -- SELF-DECLARED SPECTATOR, and the only thing that takes a driver out of the
+    -- field. Everyone connected races unless this is set. Durable: it is mirrored
+    -- into the identity registry so it survives the online purge.
     spectating = false,
     gridPos    = nil,        -- locked-in starting position (Generate Grid)
     customGrid = nil,        -- slot the admin pinned this driver to (custom mode)
@@ -501,7 +498,7 @@ end
 -- the CONNECTION still matches: same id AND same guest name. A different player
 -- inheriting the id starts clean, which is what stops an accidental
 -- impersonation.
-local identities = {}   -- [pid] = { name = <guest name>, alias = ..., joined = bool }
+local identities = {}   -- [pid] = { name = <guest name>, alias = ..., spectating = bool }
 
 -- Every player id that reaches this file goes through here first.
 --
@@ -555,17 +552,24 @@ local function rememberIdentity(rec)
   identities[rec.id] = {
     name   = rec.name,
     alias  = rec.alias,
-    joined = rec.joined == true,
+    spectating = rec.spectating == true,
   }
 end
 
--- Stand the whole field down. Reset Session is the "start the evening again"
--- button, so the entry list goes with it -- but the display names do NOT: an
--- admin who spent five minutes naming a grid should not have to do it twice
--- because they cleared a leaderboard.
+-- Put the whole field back in. Reset Session is the "start the evening again"
+-- button, and the evening starts with everyone racing, so it clears every
+-- sit-out decision. The display names do NOT go with it: an admin who spent
+-- five minutes naming a grid should not have to do it twice because they
+-- cleared a leaderboard.
+--
+-- Both halves, because they can disagree: the record is what the next grid
+-- reads and the registry is what survives the online purge.
 local function clearEntries()
   for _, ident in pairs(identities) do
-    ident.joined = false
+    ident.spectating = false
+  end
+  for _, rec in pairs(players) do
+    rec.spectating = false
   end
 end
 
@@ -580,7 +584,7 @@ local function ensurePlayer(pid)
     local ident = identityFor(pid, rec.name)
     if ident then
       rec.alias  = ident.alias
-      rec.joined = ident.joined == true
+      rec.spectating = ident.spectating == true
     end
     players[pid] = rec
     rememberIdentity(rec)
@@ -589,8 +593,8 @@ local function ensurePlayer(pid)
 end
 
 -- Forward declaration: the derby module lives further down the file, but its
--- entrant count is DERIVED from the racing entry list below (opt-in derbies
--- honour the same Join Race). So anything that changes who is entered has to
+-- entrant count is DERIVED from the racing entry list below (a driver who is
+-- spectating sits out both modes). So anything that changes who is entered has to
 -- refresh the derby panel too, or an admin watching it reads a stale field size
 -- and presses Start Derby expecting a different set of drivers. Same pattern
 -- the garage store uses to be reachable from the state broadcast above it.
@@ -653,14 +657,19 @@ local rosterWarm, cupWarm
 -- Nothing below assumes "connected == racing". A driver is a participant when
 -- they opted in, or when the admin put the server in 'all' mode (which is what
 -- the plugin used to do implicitly for everyone).
+-- EVERYONE RACES UNLESS THEY SAY OTHERWISE, and that is the whole rule.
+--
+-- There used to be two overlapping ones: an admin picked "everyone races" or
+-- "opt-in", and under opt-in each driver pressed Join Race. Then spectating
+-- arrived and made a third answer to the same question, so a player could be
+-- joined AND spectating and the panel had to explain which won.
+--
+-- Spectating is the only switch now. It covers what opt-in was for -- a one on
+-- one where two people race and the rest watch is two entrants and everybody
+-- else pressing Spectate -- without an admin having to set a mode first.
 local function isEntrant(rec)
   if not rec then return false end
-  -- A self-declared spectator is never in the field, whatever the entry mode
-  -- says. This is checked FIRST for that reason: under 'all' entry every other
-  -- answer is yes, which is exactly the case somebody opting out is stuck in.
-  if rec.spectating then return false end
-  if race.entryMode == 'all' then return true end
-  return rec.joined == true
+  return not rec.spectating
 end
 
 local function entrantCount()
@@ -762,7 +771,7 @@ end
 -- becomes nil in the app; tests/ui_bindings_test.lua checks the template
 -- against this list so that cannot happen quietly.
 local DRIVER_WIRE_FIELDS = {
-  'id', 'name', 'alias', 'status', 'joined',
+  'id', 'name', 'alias', 'status', 'spectating',
   'gridPos', 'customGrid', 'position',
   'qualiBest', 'qualiLaps', 'outLap', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
   'finishTime', 'resets', 'resetsBlocked',
@@ -950,7 +959,6 @@ local function broadcastState(targetPid)
     resetMode    = race.resetMode,
     jokerEnabled = race.jokerEnabled,
     -- Race entry + starting grid.
-    entryMode    = race.entryMode,
     -- "Are YOU sitting this one out" (targeted sends only, like youAreAdmin).
     youSpectating = selfSpectating,
     entrants     = entrantCount(),
@@ -1748,7 +1756,7 @@ function RM_onStartQualifying(pid)
   race.qualiTime = 0.0
   if not formGrid('quali', MP.GetPlayerName(pid) or pid) then return end
   print(string.format('[RaceManager] Qualifying grid formed by %s (%d entrant(s), entry: %s%s%s)',
-    MP.GetPlayerName(pid) or pid, entrantCount(), race.entryMode,
+    MP.GetPlayerName(pid) or pid, entrantCount(), 'everyone races',
     race.qualiLapLimit > 0 and (', ' .. race.qualiLapLimit .. ' timed lap limit') or '',
     race.qualiTimeLimit > 0 and (', ' .. race.qualiTimeLimit .. 's limit') or ''))
   MP.SendChatMessage(-1, string.format(
@@ -1759,56 +1767,13 @@ function RM_onStartQualifying(pid)
     outLapOwed() and ' + an out lap that is not timed' or ''))
 end
 
--- ---------------------------------------------------------------------------
--- Race entry (opt-in)
--- ---------------------------------------------------------------------------
--- Any player can add or remove themselves; no admin rights involved, because
--- this is a statement about their own participation. Joining mid-qualifying is
--- allowed (you just have less time); joining once the grid is locked is not,
--- because the field is already set.
-function RM_onJoinRace(pid, rawData)
-  local rec = ensurePlayer(pid)
-  local join = true
-  if type(rawData) == 'string' and rawData ~= '' then
-    local ok, data = pcall(Util.JsonDecode, rawData)
-    if ok and type(data) == 'table' and data.join ~= nil then
-      join = data.join == true or data.join == 1
-    end
-  end
-  if join and sessionUnderWay() then
-    print('[RaceManager] Join refused for ' .. rec.name .. ': the session is under way')
-    return
-  end
-  if rec.joined == join then return end
-  rec.joined = join
-  -- Entering is a decision about the EVENT, not about one session, so it goes
-  -- in the registry and survives every session wipe below.
-  rememberIdentity(rec)
-  if join then
-    if race.phase == 'qualifying' then rec.status = 'qualifying' end
-  else
-    -- Withdrawing gives up any grid slot and any placement on track.
-    rec.status  = 'waiting'
-    rec.gridPos = nil
-    rec.customGrid = nil
-    if race.phase == 'grid' then assignGridSlot(pid, nil) end
-  end
-  broadcastState()
-  -- An opt-in derby draws its field from this same list, so refresh that panel
-  -- too or its entrant count sits stale until something else moves.
-  if derbyEntryListChanged then derbyEntryListChanged() end
-  MP.SendChatMessage(-1, string.format('[RaceManager] %s %s the race (%d entrant%s).',
-    displayName(rec), join and 'JOINED' or 'left', entrantCount(),
-    entrantCount() == 1 and '' or 's'))
-  print('[RaceManager] ' .. rec.name .. (join and ' joined' or ' left') .. ' the race')
-end
 
 -- Admin switches between opt-in entry and "everyone on the server races".
 -- A player putting themselves in or out of the field.
 --
 -- No admin needed: it is their own participation. Allowed mid-session in one
 -- direction only -- you can always drop out, but you cannot join a race that is
--- already running, which is the same rule RM_onJoinRace enforces.
+-- already running.
 -- A driver pulling out of a running session.
 --
 -- Their own race to end, so no admin rights, and the result is a CLASSIFIED
@@ -1860,21 +1825,33 @@ function RM_onSetSpectating(pid, rawData)
     return
   end
   rec.spectating = want
+  -- STRAIGHT INTO THE REGISTRY. The record is disposable: the online purge drops
+  -- and rebuilds it, and ensurePlayer restores the entry decision from here. Set
+  -- the record alone and the next purge silently puts the driver back in the
+  -- field, which is how sitting out came undone by itself.
+  rememberIdentity(rec)
   if want then
     -- Their car stays exactly where it is and becomes a ghost, the same way a
     -- mid-session joiner's does. Nothing is deleted: in BeamMP a delete is a
     -- delete for everyone, and respawning a field is what caused cars to weld.
     rec.bystander = true
-    if sessionUnderWay() then
-      rec.status = 'waiting'
-      clearProgress(rec)
-    end
+    -- HAND THE SLOT BACK. Spectating between the grid forming and the lights is
+    -- the one window where a driver holds a start position they are giving up;
+    -- leave it assigned and their client stays parked on the grid all race.
+    rec.gridPos = nil
+    rec.status  = 'waiting'
+    assignGridSlot(rec.id, nil)
     MP.SendChatMessage(-1, '[RaceManager] ' .. rec.name .. ' is spectating.')
   else
     rec.bystander = nil
     MP.SendChatMessage(-1, '[RaceManager] ' .. rec.name .. ' rejoined the field.')
   end
   print(string.format('[RaceManager] %s set spectating=%s', rec.name, tostring(want)))
+  -- The derby DERIVES its field from this list, so its panel goes stale the
+  -- moment somebody sits out and nothing tells it. An admin reading an entrant
+  -- count that is one race behind presses Start Derby expecting a different set
+  -- of cars than the one that turns up.
+  if derbyEntryListChanged then derbyEntryListChanged() end
   -- TWICE, AND BOTH ARE NEEDED.
   --
   -- Everyone gets the entrant count, which just changed. But `youSpectating` is
@@ -1887,17 +1864,6 @@ function RM_onSetSpectating(pid, rawData)
   broadcastState(pid)
 end
 
-function RM_onSetEntryMode(pid, rawData)
-  if not requireAuth(pid) then return end
-  if sessionUnderWay() then return end
-  local mode = decodeString(rawData, 'mode')
-  if mode ~= 'all' and mode ~= 'join' then return end
-  race.entryMode = mode
-  broadcastState()
-  if derbyEntryListChanged then derbyEntryListChanged() end
-  print('[RaceManager] Race entry mode set to "' .. mode .. '" by '
-    .. (MP.GetPlayerName(pid) or pid))
-end
 
 -- ---------------------------------------------------------------------------
 -- Qualifying session rules
@@ -2113,19 +2079,15 @@ formGrid = function (kind, byName)
     local connected = 0
     for _ in pairs(online) do connected = connected + 1 end
     print(string.format(
-      '[RaceManager] Grid not formed: no entrants (entry mode "%s", %d connected, %d record(s): %s)',
-      race.entryMode, connected, #skipped,
+      '[RaceManager] Grid not formed: no entrants (%d connected, %d record(s): %s)',
+      connected, #skipped,
       #skipped > 0 and table.concat(skipped, ', ') or 'none'))
-    -- The advice has to match the mode. Telling an admin to switch entry to
-    -- Everyone when it is already on Everyone sends them to the one setting
-    -- that is not the problem -- and under that mode an empty field means
-    -- something quite different: there is nobody here.
-    MP.SendChatMessage(-1, race.entryMode == 'all'
-      and string.format('[RaceManager] Nobody is on the server to grid '
-        .. '(%d connected, entry is open to everyone).', connected)
-      or string.format('[RaceManager] Nobody is entered for this session '
-        .. '(%d connected, entry is opt-in): press Join Race in the Race Manager '
-        .. 'app, or switch entry to Everyone races.', connected))
+    -- Everyone races by default, so an empty field means one of exactly two
+    -- things now: nobody is here, or everybody here has pressed Spectate.
+    MP.SendChatMessage(-1, connected > 0
+      and string.format('[RaceManager] Everyone on the server is spectating '
+        .. '(%d connected). Press Race in the Race Manager panel to take part.', connected)
+      or '[RaceManager] Nobody is on the server to grid.')
     return false
   end
 
@@ -4202,7 +4164,6 @@ local derby = {
   -- This READS the racing entry list rather than keeping a second one: players
   -- would otherwise have to opt in twice for no benefit. It is a read, so the
   -- derby still never mutates racing state.
-  entryMode = 'all',    -- all | join
   oobLimit  = DERBY_DEFAULT_OOB_LIMIT,
   demoLimit = DERBY_DEFAULT_DEMO_LIMIT,
   maxResets = DERBY_UNLIMITED_RESETS,  -- vehicle resets per driver per derby
@@ -4395,7 +4356,7 @@ local function derbyEligibleCount()
   -- server -- the same way it emptied the race grid.
   for id in pairs(onlinePlayers()) do
     local rec = players[id]
-    if derby.entryMode ~= 'join' or (rec and rec.joined) then n = n + 1 end
+    if isEntrant(rec) then n = n + 1 end
   end
   return n
 end
@@ -4433,7 +4394,6 @@ local function broadcastDerbyState(targetPid)
   MP.TriggerClientEvent(targetPid or -1, 'RM_DerbyUpdate', Util.JsonEncode({
     rmProtocol = RM_PROTOCOL,
     derbyPhase = derby.phase,
-    entryMode  = derby.entryMode,
     -- How many would take part if the derby started right now, so the admin can
     -- see an empty opt-in field before pressing Start rather than after.
     entrants   = derbyEligibleCount(),
@@ -5148,21 +5108,6 @@ function RM_onDerbyDeleteLayout(pid, rawData)
   end
 end
 
--- Start Derby: snapshot every connected player as an active participant and
--- start the derby clock. A fresh start from 'finished' wipes the last session.
--- Who takes part in the next derby: everyone connected, or only drivers who
--- opted in with Join Race. Locked while a derby is running -- the field cannot
--- change under the drivers.
-function RM_onDerbySetEntryMode(pid, rawData)
-  if not requireAuth(pid) then return end
-  if derbyActive() then return end
-  local mode = decodeString(rawData, 'mode')
-  if mode ~= 'all' and mode ~= 'join' then return end
-  derby.entryMode = mode
-  broadcastDerbyState()
-  print('[RaceManager] Derby entry mode set to "' .. mode .. '" by '
-    .. (MP.GetPlayerName(pid) or pid))
-end
 
 -- Form up: build the field, stand everyone on a slot and HOLD them there until
 -- the countdown lets go. The derby's Generate Grid, and the same two-step shape
@@ -5173,13 +5118,11 @@ function RM_onDerbyFormUp(pid)
   derbyPlayers = {}
   derby.winner = nil
   derby.time   = 0
-  local optIn = derby.entryMode == 'join'
   for id in pairs(onlinePlayers()) do
-    -- In opt-in mode only drivers who pressed Join Race take part. Read-only
-    -- against the racing entry list; a player with no racing record at all has
-    -- plainly not joined anything.
+    -- Same entry rule as a race: everyone takes part unless they are spectating.
+    -- A player with no racing record has never pressed anything, so they are in.
     local rec = players[id]
-    if (not optIn) or (rec and rec.joined) then
+    if (not rec) or isEntrant(rec) then
       derbyPlayers[id] = {
         id       = id,
         name     = MP.GetPlayerName(id) or ('Player ' .. id),
@@ -7060,7 +7003,7 @@ function RM_onPlayerJoin(pid)
     if current and current ~= existing.name then
       existing.name  = current
       existing.alias = nil
-      existing.joined = false
+      existing.spectating = false
       -- A different person now holds this id, so whatever the departed player
       -- was bound to in the roster is emphatically not theirs.
       if rosterUnbind then rosterUnbind(pid) end
@@ -7147,8 +7090,6 @@ function onInit()
   MP.RegisterEvent('RM_SetTotalLaps',     'RM_onSetTotalLaps')
   MP.RegisterEvent('RM_SetAlias',         'RM_onSetAlias')
   -- Race entry (opt-in) + starting grid
-  MP.RegisterEvent('RM_JoinRace',           'RM_onJoinRace')
-  MP.RegisterEvent('RM_SetEntryMode',       'RM_onSetEntryMode')
   MP.RegisterEvent('RM_SetGridMode',        'RM_onSetGridMode')
   MP.RegisterEvent('RM_SetDriverGrid',      'RM_onSetDriverGrid')
   MP.RegisterEvent('RM_StartPositionCount', 'RM_onStartPositionCount')
@@ -7212,7 +7153,6 @@ function onInit()
   MP.RegisterEvent('RM_DerbyDisqualified',  'RM_onDerbyDisqualified')
   MP.RegisterEvent('RM_DerbyDemolished',    'RM_onDerbyDemolished')
   MP.RegisterEvent('RM_DerbyRequestState',  'RM_onDerbyRequestState')
-  MP.RegisterEvent('RM_DerbySetEntryMode',  'RM_onDerbySetEntryMode')
   MP.RegisterEvent('RM_DerbyFormUp',        'RM_onDerbyFormUp')
   -- Derby arena layouts (save/load, mirroring the track layout workflow)
   MP.RegisterEvent('RM_DerbyRequestLayouts','RM_onDerbyRequestLayouts')

@@ -31,9 +31,9 @@ angular.module('beamng.apps')
       // The flag THIS driver is shown: green, yellow or white on their last lap.
       // Resolved by the client, which is the only half that knows their lap.
       $scope.driverFlag = 'green';
-      // This player has taken themselves out of the field. Not the inverse of
-      // `joined`: that is opting IN under 'join' entry, this is opting OUT and
-      // has to work under 'all' entry too.
+      // THE ENTRY DECISION: this player has taken themselves out of the field.
+      // Durable, server-owned, and answered only by `youSpectating`. Distinct
+      // from carTaken below, which is about the camera.
       $scope.spectating = false;
       // 'race' | 'quali' - which session the phases above belong to. Qualifying
       // runs the same lifecycle a race does, so this is what tells them apart.
@@ -116,8 +116,6 @@ angular.module('beamng.apps')
       // can switch to opt-in when it should be a subset of who is on the server.
       // Only ever a mirror of the server's answer - this is the value the panel
       // shows for the fraction of a second before the first broadcast lands.
-      $scope.entryMode = 'all';       // 'all' (everyone races, the default) | 'join' (opt-in)
-      $scope.joined = false;          // is THIS client in the field?
       $scope.entrants = 0;
       // Starting grid.
       $scope.gridMode = 'quali';      // quali | reverse | random | custom
@@ -142,8 +140,12 @@ angular.module('beamng.apps')
       // separate question, answered by the lap clock feed below, which is
       // instant rather than a broadcast behind.
       $scope.qualiOutLap = false;
-      // Forced spectator mode.
-      $scope.spectating = false;
+      // FORCED SPECTATOR: the car has been removed and the view is in freecam.
+      // A finisher and a driver serving a penalty are both here without having
+      // opted out of anything, so this must never be read as an entry decision.
+      // It used to be the same variable, and every route push overwrote the
+      // entry decision with it, which is what made Rejoin look broken.
+      $scope.carTaken = false;
       $scope.spectatorReason = null;
       // Transient banners: regulation notices and vehicle rejections.
       $scope.notice = null;           // { kind, msg }
@@ -907,7 +909,6 @@ angular.module('beamng.apps')
         wallDepth: 1.5,       // how far they drop below the boundary (visual only)
         // Who takes part: 'all' (every connected player, the historical
         // behaviour) or 'join' (only drivers who pressed Join Race).
-        entryMode: 'all',
         entrants: 0,          // how many would be in a derby started right now
         maxResets: -1,        // resets per driver per derby (-1 = unlimited)
         visualize: true,      // boundary/grid visuals shown (client-local)
@@ -1372,7 +1373,6 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           // reflect what the server would actually enforce.
           $scope.jokerGates = data.jokerGates || 0;
           // Race entry + starting grid.
-          $scope.entryMode = data.entryMode === 'all' ? 'all' : 'join';
           $scope.entrants = data.entrants || 0;
           $scope.gridMode = data.gridMode || 'quali';
           $scope.startSlots = data.startSlots || 0;
@@ -1494,8 +1494,6 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.gridSlot = data.gridSlot || null;
           $scope.gridFrozen = !!data.gridFrozen;
           // Race entry state as this client knows it.
-          if (typeof data.entryMode === 'string') { $scope.entryMode = data.entryMode; }
-          if (typeof data.joined === 'boolean') { $scope.joined = data.joined; }
           // Joker route + reset allowance state pushed by the client Lua.
           $scope.jokerRoute = toArray(data.jokerRoute);
           $scope.jokerNext = data.jokerNext || 1;
@@ -1536,7 +1534,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           if (data.resetMode === 'checkpoint' || data.resetMode === 'inplace') {
             $scope.resetMode = data.resetMode;
           }
-          if (typeof data.spectating === 'boolean') { $scope.spectating = data.spectating; }
+          if (typeof data.carTaken === 'boolean') { $scope.carTaken = data.carTaken; }
           // Keep the override editor in sync (a gate may have been removed, or
           // its stored overrides changed by the last command).
           if ($scope.selectedCp != null && !$scope.editorWaypoints()[$scope.selectedCp - 1]) {
@@ -1770,8 +1768,8 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
 
       $scope.$on('RaceManagerSpectator', function (event, data) {
         $scope.$evalAsync(function () {
-          $scope.spectating = !!(data && data.spectating);
-          $scope.spectatorReason = $scope.spectating ? (data.reason || null) : null;
+          $scope.carTaken = !!(data && data.spectating);
+          $scope.spectatorReason = $scope.carTaken ? (data.reason || null) : null;
         });
       });
 
@@ -1904,7 +1902,6 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         if (!data) { return; }
         $scope.$evalAsync(function () {
           $scope.derby.phase = data.derbyPhase || 'idle';
-          $scope.derby.entryMode = data.entryMode === 'join' ? 'join' : 'all';
           $scope.derby.entrants = data.entrants || 0;
           $scope.derby.time = data.derbyTime || 0;
           $scope.derby.winner = data.winner || null;
@@ -2134,11 +2131,6 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         bngApi.engineLua('raceManager.derbyFormUp()');
       };
 
-      // Derby entry: everyone connected, or only drivers who pressed Join Race.
-      $scope.toggleDerbyEntryMode = function () {
-        bngApi.engineLua('raceManager.derbySetEntryMode("'
-          + ($scope.derby.entryMode === 'all' ? 'join' : 'all') + '")');
-      };
 
       $scope.derbyStart = function () {
         // No config push here - the rules were sent at Form Up and are locked
@@ -2420,24 +2412,6 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // its size when it is placed, inherits it from the gate before, and is
       // edited on its own row -- so resizing one gate can never move another.
 
-      // ------------------------------------------------------------------
-      // UI -> LUA commands (race entry, grid and qualifying rules)
-      // ------------------------------------------------------------------
-      // Any player can enter or withdraw; this is not an admin control.
-      $scope.joinRace = function () {
-        bngApi.engineLua('extensions.load("raceManager"); raceManager.joinRace(true)');
-      };
-      $scope.leaveRace = function () {
-        bngApi.engineLua('raceManager.joinRace(false)');
-      };
-      $scope.canJoin = function () {
-        return $scope.phase !== 'countdown' && $scope.phase !== 'racing';
-      };
-      // Admin: opt-in entry vs "everyone on the server races".
-      $scope.toggleEntryMode = function () {
-        bngApi.engineLua('raceManager.setEntryMode("'
-          + ($scope.entryMode === 'all' ? 'join' : 'all') + '")');
-      };
       $scope.setGridMode = function (mode) {
         bngApi.engineLua('raceManager.setGridMode("' + mode + '")');
       };

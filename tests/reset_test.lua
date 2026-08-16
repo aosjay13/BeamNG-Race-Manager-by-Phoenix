@@ -525,7 +525,7 @@ for _, hook in ipairs({ 'onBeamMPServerLeave', 'onServerLeave' }) do
   RM[hook]()
   local st = lastRouteState()
   check(st ~= nil and #st.waypoints == 0, hook .. ' clears the placed track')
-  check(st ~= nil and st.spectating == false, hook .. ' lifts any spectator lock')
+  check(st ~= nil and st.carTaken == false, hook .. ' lifts any spectator lock')
   check(st ~= nil and st.maxResets == -1, hook .. ' drops the reset allowance')
   frames(0.2)
   check(inputsBlocked == false, hook .. ' gives the reset keys back')

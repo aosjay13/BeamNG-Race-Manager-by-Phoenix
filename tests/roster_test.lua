@@ -281,7 +281,6 @@ check(takeMsg and takeMsg.success == false
 -- ---------------------------------------------------------------------------
 RM_onCupStart(9, '{"name":"Roster Cup"}')
 RM_onCupSetScoring(9, '{"race":[30,27,25]}')
-RM_onSetEntryMode(9, '{"mode":"all"}')
 RM_onPlayerDisconnect(1)
 connected[1] = 'Guest_LATE'
 RM_onPlayerJoin(1)
@@ -361,7 +360,6 @@ check(msg and msg.success == false and tostring(msg.message):find('already in us
 -- 8. Race records are untouched by any of this: the roster is a name store, not
 --    a key. Drivers are still keyed by session id everywhere it matters.
 -- ---------------------------------------------------------------------------
-RM_onSetEntryMode(9, '{"mode":"all"}')
 RM_onSetTotalLaps(9, '{"laps":1}')
 RM_onGenerateGrid(9)
 RM_onStartCountdown(9)
@@ -380,7 +378,6 @@ RM_onEndRace(9)
 -- ---------------------------------------------------------------------------
 RM_onCupStart(9, '{"name":"Restart Cup"}')
 RM_onCupSetScoring(9, '{"race":[30,27,25]}')
-RM_onSetEntryMode(9, '{"mode":"all"}')
 connected[1] = 'Guest_UNNAMED'
 RM_onPlayerDisconnect(1)
 RM_onPlayerJoin(1)

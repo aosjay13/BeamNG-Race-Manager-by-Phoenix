@@ -85,10 +85,6 @@ end
 local function clearSignals()
   gridAssign, spectated, released, releaseSeq = {}, {}, {}, {}
 end
--- Everyone opts in, one press each, exactly as five racers would.
-local function everybodyJoins()
-  for pid in pairs(connected) do RM_onJoinRace(pid, '{"join":true}') end
-end
 -- Form up and go, whichever kind of session is armed.
 local function runCountdown()
   RM_onStartCountdown(0)
@@ -98,44 +94,42 @@ end
 onInit()
 RM_onLogin(0, '{"password":"phoenix"}')
 for pid in pairs(connected) do RM_onPlayerJoin(pid) end
-check(lastState.entryMode == 'all', 'entry defaults to everyone racing')
+check(lastState.entrants == 5, 'entry defaults to everyone racing')
 check(lastState.entrants == 5, 'so all five connected players are in the field')
 
 -- ===========================================================================
--- Criterion 2: all-opted-in behaves identically to "everyone races"
+-- Criterion 2: sitting out and coming back grids like never having moved
 -- ===========================================================================
--- Which needs the OPT-IN mode to say anything: the failure was drivers who had
--- each pressed Join Race being left off a grid that "everyone races" filled
--- from the same five names.
-RM_onSetEntryMode(0, '{"mode":"join"}')
-check(lastState.entrants == 0, 'switched to opt-in, nobody is entered yet')
--- The two entry modes are two ways of answering "who is in the field", and from
--- there they must be the same code. They were not: with everyone opted in the
--- field came out empty and no car was ever teleported, while flipping entry to
--- "all" gridded the same five drivers without complaint.
-everybodyJoins()
-check(lastState.entrants == 5, 'all five drivers opted in')
+-- The old failure this replaces: two entry modes were two ways of answering
+-- "who is in the field" and had drifted apart, so a field that had each pressed
+-- Join Race came out empty while "everyone races" gridded the same five names.
+-- One switch cannot disagree with itself, but the round trip still has to be
+-- clean: sit out, come back, and be gridded like everybody else.
+for pid in pairs(connected) do RM_onSetSpectating(pid, '{"spectating":true}') end
+check(lastState.entrants == 0, 'a field where everyone sits out is empty')
+RM_onGenerateGrid(0)
+check(lastState.phase == 'waiting', 'and no grid forms from nobody')
+for pid in pairs(connected) do RM_onSetSpectating(pid, '{"spectating":false}') end
+check(lastState.entrants == 5, 'all five drivers came back')
 
 clearSignals()
 RM_onGenerateGrid(0)
-check(lastState.phase == 'grid', 'the opt-in path reaches the grid')
-local optInSlots = {}
+check(lastState.phase == 'grid', 'the round trip reaches the grid')
+local rejoinSlots = {}
 for pid in pairs(connected) do
   check(gridAssign[pid] ~= nil and gridAssign[pid].slot ~= nil,
-    'opt-in: driver ' .. pid .. ' is told which start position to take')
-  optInSlots[pid] = gridAssign[pid] and gridAssign[pid].slot
+    'rejoined driver ' .. pid .. ' is told which start position to take')
+  rejoinSlots[pid] = gridAssign[pid] and gridAssign[pid].slot
 end
 
 -- The same five drivers, reached the other way.
 RM_onEndRace(0)
-for pid in pairs(connected) do RM_onJoinRace(pid, '{"join":false}') end
-RM_onSetEntryMode(0, '{"mode":"all"}')
 clearSignals()
 RM_onGenerateGrid(0)
 check(lastState.phase == 'grid', '"everyone races" reaches the grid')
 local sameField = true
 for pid in pairs(connected) do
-  if not (gridAssign[pid] and gridAssign[pid].slot == optInSlots[pid]) then
+  if not (gridAssign[pid] and gridAssign[pid].slot == rejoinSlots[pid]) then
     sameField = false
   end
 end
@@ -150,8 +144,6 @@ check(sameField, 'both entry modes produce the same grid, slot for slot')
 -- In "all" mode that is invisible, because nothing looks at the flag.
 -- ---------------------------------------------------------------------------
 RM_onEndRace(0)
-RM_onSetEntryMode(0, '{"mode":"join"}')
-everybodyJoins()
 stringKeyedPlayers = true
 clearSignals()
 RM_onGenerateGrid(0)
@@ -295,7 +287,6 @@ check(sequenceOk, 'the respawn order is a clean 1..5 with no two cars sharing a 
 -- ===========================================================================
 -- Criterion 1 (third half): names survive into a SECOND race
 -- ===========================================================================
-everybodyJoins()
 RM_onGenerateGrid(0)
 runCountdown()
 check(lastState.phase == 'racing', 'a second race starts')
@@ -308,10 +299,12 @@ check(shown(0) == 'Phoenix' and shown(1) == 'Ryder' and shown(2) == 'Nomad'
 RM_onVehicleReset(2)
 check(shown(2) == 'Nomad', 'a respawn does not cost a driver their display name')
 
--- Reset Session clears the field but not the names.
+-- Reset Session puts the whole field back in, but keeps the names. Everyone
+-- races by default, so "start the evening again" clears every sit-out decision
+-- rather than emptying the entry list.
 RM_onEndRace(0)
 RM_onResetLeaderboard(0)
-check(lastState.entrants == 0, 'Reset Session stands the whole field down')
+check(lastState.entrants == 5, 'Reset Session puts the whole field back in')
 check(shown(0) == 'Phoenix' and shown(4) == 'Comet',
   'but the display names an admin set are still there')
 
@@ -336,7 +329,6 @@ check(shown(0) == 'Phoenix', 'and everybody else keeps theirs')
 do
   RM_onEndRace(0)
   RM_onResetLeaderboard(0)
-  RM_onSetEntryMode(0, '{"mode":"all"}')
   RM_onStartQualifying(0)
   runCountdown()
   check(lastState.phase == 'qualifying', 'a qualifying session is running')

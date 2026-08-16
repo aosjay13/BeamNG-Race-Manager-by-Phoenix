@@ -141,35 +141,36 @@
        is visible to spectators too (outside minimal mode). -->
   <div class="rm-entry" ng-if="!minimalMode()">
     <span class="rm-entry-label">Race Entry</span>
-    <button class="rm-btn rm-btn-start" ng-if="!joined && !spectating && entryMode !== 'all'"
-            ng-click="joinRace()" ng-disabled="!canJoin()"
-            title="Add yourself to the field for the next race">
-      ✚ Join Race
-    </button>
-    <button class="rm-btn rm-btn-end" ng-if="joined && !spectating && entryMode !== 'all'"
-            ng-click="leaveRace()" ng-disabled="!canJoin()"
-            title="Withdraw from the field">
-      Leave Race
-    </button>
-    <span class="rm-entry-state" ng-if="entryMode === 'all' && !spectating">
-      Entry is open to everyone on the server: you are in the field.
+    <!-- ONE SWITCH, AND IT IS THE DRIVER'S. Everyone on the server races; a
+         driver who does not want to presses Spectate. There used to be an admin
+         mode (Everyone races / Opt-in) AND a Join Race button AND this, so the
+         panel had to answer "am I in?" three times and could disagree with
+         itself. Spectating covers what opt-in was for: a one on one is two
+         drivers racing and everybody else pressing Spectate, with no mode to
+         set first. -->
+    <span class="rm-entry-state rm-entry-in" ng-if="!spectating">
+      ✓ You are in the field.
     </span>
-    <!-- SITTING OUT. The gap this fills: under 'everyone races' there was no way
-         to say "run without me" short of leaving the server, which is what
-         racers were reaching for when they pressed the old Spectate button.
-         Their car stays where it is and turns into a ghost, so nothing is
-         deleted and nothing is respawned. -->
     <span class="rm-entry-state rm-entry-out" ng-if="spectating">
-      👁 You are SPECTATING: the session runs without you. Tab between cars to watch.
+      👁 You are SPECTATING: sessions run without you. Tab between cars to watch.
     </span>
-    <!-- SPECTATE IS AN ENTRY DECISION, so it is settled before the lights. Once
-         a session is running the way out is RETIRE, which is a different thing
-         with a different result. -->
+
+    <!-- SPECTATE IS AN ENTRY DECISION, so it is settled before the lights. The
+         button stays PUT during a session rather than vanishing: a spectator who
+         cannot find the way back assumes it is broken, so it disables and says
+         why instead. Mid-session the way out is Retire, which is a different
+         thing with a different result. -->
     <button class="rm-btn rm-btn-mini" ng-click="setSpectating(!spectating)"
-            ng-if="!sessionUnderWay()"
-            title="{{ spectating ? 'Rejoin the field for the next session.' : 'Sit the next session out. Your car stays where it is as a ghost, and you watch with your own camera controls.' }}">
-      {{ spectating ? '↩ Rejoin the field' : '👁 Spectate' }}
+            ng-if="!spectating ? !sessionUnderWay() : true"
+            ng-disabled="sessionUnderWay()"
+            title="{{ sessionUnderWay()
+                      ? 'A session is running. You rejoin the field when it ends.'
+                      : (spectating
+                         ? 'Rejoin the field. You are in the next session.'
+                         : 'Sit the next session out. Your car stays where it is as a ghost, and you watch with your own camera controls.') }}">
+      {{ spectating ? (sessionUnderWay() ? 'Rejoin when this ends' : '↩ Rejoin the field') : '👁 Spectate' }}
     </button>
+
     <span class="rm-entry-state" ng-if="sessionUnderWay() && !spectating && !retireUi.confirm">
       <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="retireUi.confirm = true"
               title="Pull out of this session. You keep a classified position and score like any other retirement.">
@@ -183,17 +184,7 @@
       <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="retire(); retireUi.confirm = false">Yes, retire</button>
       <button class="rm-btn rm-btn-mini" ng-click="retireUi.confirm = false">Cancel</button>
     </span>
-    <span class="rm-entry-state rm-entry-in" ng-if="entryMode !== 'all' && joined && !spectating">✓ You are entered</span>
-    <span class="rm-entry-state" ng-if="entryMode !== 'all' && !joined && !spectating && canJoin()">Not entered: press Join Race to take part</span>
-    <span class="rm-entry-state" ng-if="entryMode !== 'all' && !joined && !canJoin()">The race is under way: entry is closed</span>
-    <span class="rm-entry-count">{{ entrants }} entered</span>
-    <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-if="isAdmin"
-            ng-class="{'rm-btn-toggle-on': entryMode === 'all'}"
-            ng-click="toggleEntryMode()"
-            ng-disabled="phase === 'countdown' || phase === 'racing'"
-            title="Everyone: all connected players race. Opt-in: only those who press Join Race.">
-      {{ entryMode === 'all' ? 'Everyone races' : 'Opt-in entry' }}
-    </button>
+    <span class="rm-entry-count">{{ entrants }} racing</span>
   </div>
 
   <!-- ================= Cup standings (drivers) ===========================
@@ -1445,18 +1436,8 @@
               ng-disabled="derbyActive()">Set Rules</button>
       <span class="rm-setting" title="Everyone: all connected players take part. Opt-in: only those who pressed Join Race, so spectators are left alone.">
         <label>Entry</label>
-        <button class="rm-btn rm-btn-mini rm-btn-toggle"
-                ng-class="{'rm-btn-toggle-on': derby.entryMode === 'all'}"
-                ng-click="toggleDerbyEntryMode()"
-                ng-disabled="derbyActive()">
-          {{ derby.entryMode === 'all' ? 'Everyone' : 'Opt-in (Join Race)' }}
-        </button>
         <span class="rm-setting-val">{{ derby.entrants }} in</span>
       </span>
-    </div>
-    <div class="rm-derby-hint" ng-if="derby.entryMode === 'join' && !derby.entrants && derby.phase !== 'running'">
-      ⚠ Opt-in entry is on and nobody has pressed <b>Join Race</b>: Start Derby
-      will have no field.
     </div>
 
     <div class="rm-derby-winner" ng-if="derby.winner">🏆 WINNER: {{ derby.winner }}</div>
@@ -1845,7 +1826,7 @@
 
   <!-- ================= Regulation banners (always visible) ================ -->
   <!-- Forced spectator: shown for as long as the penalty lasts. -->
-  <div class="rm-spectator-bar" ng-if="spectating">
+  <div class="rm-spectator-bar" ng-if="carTaken">
     <span class="rm-spectator-tag">SPECTATING</span>
     <span class="rm-spectator-text">{{ spectatorReason || 'You are out of this session' }}</span>
   </div>
@@ -2028,7 +2009,7 @@
         </tr>
       </thead>
       <tbody>
-        <tr ng-repeat="row in drivers track by row.id" ng-class="{'rm-row-out': !row.joined && entryMode !== 'all'}">
+        <tr ng-repeat="row in drivers track by row.id" ng-class="{'rm-row-out': row.spectating}">
           <td class="rm-col-grid">P{{ $index + 1 }}</td>
           <td class="rm-col-name" title="{{ driverName(row) }}{{ realName(row) ? ' (' + realName(row) + ')' : '' }}">{{ driverName(row) }}</td>
           <!-- Fastest lap of the session, in gold. Qualifying is scored on the
@@ -2047,7 +2028,7 @@
           <td class="rm-col-led">{{ row.qualiLaps || 0 }}{{ qualiLapLimit > 0 ? '/' + qualiLapLimit : '' }}</td>
           <td class="rm-col-status">
             <span class="rm-light" ng-class="'rm-light-' + row.status"></span>
-            <span class="rm-status-text">{{ (!row.joined && entryMode !== 'all') ? 'Not entered' : statusLabel(row.status) }}</span>
+            <span class="rm-status-text">{{ row.spectating ? 'Spectating' : statusLabel(row.status) }}</span>
           </td>
         </tr>
         <tr ng-if="!drivers.length">

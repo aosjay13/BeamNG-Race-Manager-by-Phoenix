@@ -698,14 +698,6 @@ function D.derbyToggleVisualize()
   guihooks.trigger('RaceManagerDerbyVisual', { visualize = D.derbyState.visualize })
 end
 
--- Who takes part in the next derby: everyone connected, or only drivers who
--- pressed Join Race. Server-owned like every other derby rule.
-function D.derbySetEntryMode(mode)
-  if not host.inMultiplayer() then return end
-  TriggerServerEvent('RM_DerbySetEntryMode', jsonEncode({
-    mode = (mode == 'join') and 'join' or 'all',
-  }))
-end
 
 -- Form up: stand every participant on their slot and hold them there, ready
 -- for the countdown. The derby equivalent of Generate Grid.

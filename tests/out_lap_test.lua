@@ -78,7 +78,6 @@ local function lap(pid, t) RM_onLap(pid, '{"lapTime":' .. t .. '}') end
 local function startQuali(laps)
   RM_onEndRace(0)
   RM_onSetQualiLimits(0, '{"laps":' .. (laps or 0) .. ',"seconds":0}')
-  for pid in pairs(connected) do RM_onJoinRace(pid, '{"join":true}') end
   RM_onStartQualifying(0)
   RM_onStartCountdown(0)
   RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
@@ -97,7 +96,6 @@ for pid in pairs(connected) do RM_onPlayerJoin(pid) end
 -- can), and in chat at GO (so it reaches a driver with no app open).
 clearSignals()
 RM_onSetQualiLimits(0, '{"laps":3,"seconds":0}')
-for pid in pairs(connected) do RM_onJoinRace(pid, '{"join":true}') end
 RM_onStartQualifying(0)
 check(lastState.qualiOutLap == true, 'the qualifying grid already says there is an out lap')
 check(driver(0).outLap == true, 'and every gridded driver is carrying one')

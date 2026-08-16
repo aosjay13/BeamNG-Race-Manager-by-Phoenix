@@ -78,7 +78,6 @@ local function ticks(n) for _ = 1, n do RM_Tick() end end
 -- Start a timed qualifying session: everyone in, grid, hold, countdown, GO.
 local function startTimedQuali(seconds, laps)
   RM_onSetQualiLimits(0, '{"laps":' .. (laps or 0) .. ',"seconds":' .. seconds .. '}')
-  for pid in pairs(connected) do RM_onJoinRace(pid, '{"join":true}') end
   RM_onStartQualifying(0)
   RM_onStartCountdown(0)
   RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()

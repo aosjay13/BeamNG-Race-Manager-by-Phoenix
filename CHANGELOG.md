@@ -95,16 +95,23 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 ### Changed (defaults)
 
-- **Everyone on the server races by default.** Race entry used to default to
-  opt-in, so a server nobody had configured started with a field of nobody. That
-  is the setting that fails unsafe: an admin who has not realised it exists
-  presses Generate Grid and forms an empty grid, leaving every driver standing
-  while the one person who could fix it works out that a button they have never
-  needed was the problem. The other way round, the mistake is that somebody who
-  wanted to watch is put on the grid, and they undo it with one press of Leave.
-  **Opt-in entry** is unchanged and one click away; the demo derby has defaulted
-  to "everyone" since it was written, so this is the racing side agreeing with
-  it.
+- **Race entry is one switch, and it belongs to the driver.** Everyone connected
+  is in the field; a driver who would rather watch presses **Spectate**, and
+  **Rejoin the field** puts them back. The admin-set entry mode (Everyone races
+  / Opt-in) and the per-driver **Join Race** and **Leave Race** buttons are gone.
+  There were three ways to answer "am I in this race", they could disagree, and
+  the one that broke was a driver who sat out and then had no way back in.
+  Spectating covers what opt-in was for: a one on one is two people racing and
+  everybody else spectating, with no mode to set first.
+
+  The demo derby shares it. It used to have its own entry mode that resolved by
+  reading the *racing* opt-in flag, so a driver had to join a race to be put in
+  a derby; sitting out now sits you out of both.
+
+  Spectate is settled before the lights: once a session is running the field is
+  fixed, and the button disables in place rather than disappearing. The way out
+  of a race you are already in is **Retire**. Sitting out survives a reconnect,
+  and **Reset** puts the whole field back in.
 
 ### Added
 

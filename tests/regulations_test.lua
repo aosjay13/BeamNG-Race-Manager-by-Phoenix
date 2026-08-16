@@ -90,7 +90,6 @@ onInit()
 RM_onPlayerJoin(1); RM_onPlayerJoin(2); RM_onPlayerJoin(3)
 -- This suite predates the entry list; run it with entry open to everyone.
 adminLogin(1)
-RM_onSetEntryMode(1, '{"mode":"all"}')
 RM_onLogout(1)
 lastState = nil
 

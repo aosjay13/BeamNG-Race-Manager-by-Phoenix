@@ -507,11 +507,6 @@ local BLOCK_NOTICE_EVERY = 1.0   -- seconds between blocked-reset reports
 -- re-confirmed by the server on RM_RequestState (which the app sends on mount).
 local isAdmin   = false
 
--- Race entry (opt-in). Mirrored from the server so the UI can show a Join /
--- Leave button and whether entry is open to everyone or by request.
-local entryMode = 'all'          -- 'all' (everyone races, the default) | 'join' (opt-in)
-local joined    = false          -- this client is on the entry list
-
 -- Qualifying: ghost mode + session limits, all mirrored from the server.
 -- finalLap is the timed session's post-expiry state: the clock has run out and
 -- the lap this driver is on is their last.
@@ -846,9 +841,6 @@ local function pushRouteState()
     -- Admin session, so a freshly mounted UI app knows straight away that this
     -- client is still logged in (see the isAdmin declaration above).
     isAdmin      = isAdmin,
-    -- Race entry (opt-in)
-    entryMode    = entryMode,
-    joined       = joined,
     -- Joker route (Module 2)
     pitRoute     = pitRoute,
     pitActive    = pit.active,
@@ -883,7 +875,12 @@ local function pushRouteState()
     maxResets    = maxResets,
     resetsUsed   = resetsUsed,
     resetMode    = resetMode,
-    spectating   = spectatorLock ~= nil,
+    -- YOUR CAR HAS BEEN TAKEN AWAY, which is not the same question as whether
+    -- you entered. A finisher and a driver serving a penalty are both in freecam
+    -- without having opted out of anything. Named apart from the entry decision
+    -- because they shared one field once, and every route push overwrote "I am
+    -- sitting this one out" with "my car is gone".
+    carTaken     = spectatorLock ~= nil,
   })
 end
 
@@ -4676,7 +4673,7 @@ for _, name in ipairs({
   'derbyMoveStartPosition', 'derbyPreviewMarker', 'derbyPreviewStartPosition',
   'derbyRemoveMarker', 'derbyRemoveStartPosition', 'derbyRequestLayouts',
   'derbyRequestState', 'derbySaveLayout', 'derbySetBoundaryMode',
-  'derbySetConfig', 'derbySetEntryMode', 'derbySetShape',
+  'derbySetConfig', 'derbySetShape',
   'derbySetShapeCenter', 'derbyStart', 'derbyToggleVisualize',
   'setDerbyEditorOpen',
 }) do
@@ -6190,7 +6187,6 @@ local function onServerUpdate(rawData)
     pushNotice('session', 'TIME EXPIRED: FINAL LAP. Your session ends as you cross the line.')
   end
   -- Race entry + qualifying rules.
-  if type(data.entryMode) == 'string' then entryMode = data.entryMode end
   if type(data.pointToPoint) == 'boolean' then pointToPoint = data.pointToPoint end
   ghostQuali = data.ghostQuali == true
   qualiOutLap = data.qualiOutLap == true
@@ -6208,16 +6204,13 @@ local function onServerUpdate(rawData)
   -- reconnected) DURING a ghost see it, instead of only clients that happened to
   -- be listening when the one-shot event went out.
   if type(data.ghosts) == 'table' then ghost.applyRoster(data.ghosts) end
-  -- Whether THIS client is on the entry list, read off its own driver row.
-  local wasJoined = joined
+  -- Whether we turned up in the middle of somebody else's session, read off our
+  -- own driver row. ghostUpdate acts on this: a car that is not in the race is a
+  -- ghost to the cars that are.
   local myId = localServerId()
   if myId and type(data.drivers) == 'table' then
     for _, d in ipairs(data.drivers) do
       if tonumber(d.id) == myId then
-        joined = d.joined == true
-        -- ...and whether we turned up in the middle of somebody else's session.
-        -- ghostUpdate acts on this: a car that is not in the race is a ghost to
-        -- the cars that are.
         isBystander = d.bystander == true
         break
       end
@@ -6271,7 +6264,6 @@ local function onServerUpdate(rawData)
   -- State broadcasts arrive several times a second while racing; only re-push
   -- the route/entry state to the UI when something in it actually moved.
   -- (resetLapTracking already pushes on a phase change.)
-  if not phaseChanged and joined ~= wasJoined then pushRouteState() end
   -- THE FLAG RIDES THIS BROADCAST, which arrives three times a second.
   --
   -- It used to travel only on pushRouteState, which fires on edits and events
@@ -6765,31 +6757,6 @@ function M.setJokerEnabled(enabled)
   end
 end
 
--- --- Race entry (opt-in) ---------------------------------------------------
--- Players opt into the race instead of every session on the server being
--- assumed to be racing. Admins switch the mode between opt-in and everyone.
-function M.joinRace(join)
-  join = (join == nil) and true or (join and true or false)
-  if inMultiplayer() then
-    TriggerServerEvent('RM_JoinRace', jsonEncode({ join = join }))
-  else
-    joined = join
-    pushRouteState()
-  end
-end
-
-function M.leaveRace() M.joinRace(false) end
-
-function M.setEntryMode(mode)
-  mode = (tostring(mode or 'join') == 'all') and 'all' or 'join'
-  if inMultiplayer() then
-    TriggerServerEvent('RM_SetEntryMode', jsonEncode({ mode = mode }))
-  else
-    entryMode = mode
-    pushRouteState()
-  end
-end
-
 -- --- Qualifying rules ------------------------------------------------------
 -- Ghost mode: rivals stop being obstacles during qualifying.
 function M.setGhostQuali(enabled)
@@ -7180,7 +7147,6 @@ local function resetToIdle(reason)
   editorTarget    = 'main'
   lastReportedSig = nil
   gridSlot        = nil
-  joined          = false
   finalLap        = false
   ghostQuali      = false
   -- Same purge for the isolated derby module: markers and warnings must not

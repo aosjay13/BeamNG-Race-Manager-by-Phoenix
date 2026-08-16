@@ -223,7 +223,6 @@ local ADMIN = 99
 connected[ADMIN] = 'Admin'
 for id in pairs(connected) do RM_onPlayerJoin(id) end
 RM_onLogin(ADMIN, '{"password":"phoenix"}')
-RM_onSetEntryMode(ADMIN, '{"mode":"all"}')
 
 -- ---------------------------------------------------------------------------
 -- One race, driven tick by tick the way the server actually runs one.

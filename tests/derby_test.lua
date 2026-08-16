@@ -677,52 +677,51 @@ if dpath then
 end
 
 -- ---------------------------------------------------------------------------
--- Derby entry: everyone, or only drivers who opted in
+-- Derby entry: the same one switch the race uses
 -- ---------------------------------------------------------------------------
--- Also after the isolation assertion: opting in is RM_onJoinRace, which writes
--- to the racing record and broadcasts RM_Update. The derby only ever READS that
--- list, which is why players do not have to join twice.
+-- A DERBY HAS NO ENTRY MODE OF ITS OWN. It used to, and it read the RACING
+-- record's opt-in flag to resolve it, so a driver had to join the race to be put
+-- in a derby. One decision covers both now: if you are spectating you sit out
+-- whatever is running. The derby still only READS the racing entry list, which
+-- is why nobody has to opt in twice.
 RM_onDerbyEnd(1)   -- back to setup from the section above
 RM_onDerbyEnd(1)
 
-check(lastDerby.entryMode == 'all', 'derby entry defaults to everyone (unchanged behaviour)')
+check(lastDerby.entrants == 3, 'everyone connected is in the derby field by default')
 
--- Opt-in with nobody joined: no field, and the derby must not start.
-RM_onDerbySetEntryMode(1, '{"mode":"join"}')
-check(lastDerby.entryMode == 'join', 'derby entry mode switches to opt-in')
-check(lastDerby.entrants == 0, 'nobody counts as entered before anyone joins')
+-- Everybody sits out: no field, and the derby must not start.
+RM_onSetSpectating(1, '{"spectating":true}')
+RM_onSetSpectating(2, '{"spectating":true}')
+RM_onSetSpectating(3, '{"spectating":true}')
+check(lastDerby.entrants == 0, 'a server where everyone spectates has no derby field')
 startDerby(1)
 check(lastDerby.derbyPhase ~= 'running', 'a derby with no entrants does not start')
 
--- One driver opts in: only they are in the field.
-RM_onJoinRace(2, '{"join":true}')
+-- One driver comes back: only they are in the field.
+RM_onSetSpectating(2, '{"spectating":false}')
 check(lastDerby.entrants == 1, 'the entrant count follows the racing entry list')
 startDerby(1)
-check(lastDerby.derbyPhase == 'running', 'the derby starts once somebody has joined')
+check(lastDerby.derbyPhase == 'running', 'the derby starts once somebody is in')
 local inField = 0
 for _, p in ipairs(lastDerby.players) do inField = inField + 1 end
-check(inField == 1, 'only the driver who joined is a participant')
-check(derbyRec(2) ~= nil, 'the driver who joined is in the field')
-check(derbyRec(1) == nil, 'a connected player who did not join is left out')
+check(inField == 1, 'only the driver who is racing is a participant')
+check(derbyRec(2) ~= nil, 'the driver who is in is in the field')
+check(derbyRec(1) == nil, 'a connected player who is spectating is left out')
 
--- The mode is locked while a derby runs -- the field cannot change underneath.
-RM_onDerbySetEntryMode(1, '{"mode":"all"}')
-check(lastDerby.entryMode == 'join', 'entry mode is locked while a derby is running')
+-- The field cannot change underneath a running derby.
+RM_onSetSpectating(1, '{"spectating":false}')
+check(lastDerby.entrants == 1, 'entry is locked while a derby is running')
 RM_onDerbyEnd(1)
 RM_onDerbyEnd(1)
 
--- Back to everyone: every connected player is in the field again.
-RM_onDerbySetEntryMode(1, '{"mode":"all"}')
+-- Everyone back in: the full field turns up again.
+RM_onSetSpectating(3, '{"spectating":false}')
 startDerby(1)
 inField = 0
 for _, p in ipairs(lastDerby.players) do inField = inField + 1 end
-check(inField == 3, 'everyone mode puts every connected player in the field')
+check(inField == 3, 'every connected player is in the field again')
 RM_onDerbyEnd(1)
 RM_onDerbyEnd(1)
-
--- Admin-only, like every other derby rule.
-RM_onDerbySetEntryMode(3, '{"mode":"join"}')
-check(lastDerby.entryMode == 'all', 'a non-admin cannot change the derby entry mode')
 
 -- ---------------------------------------------------------------------------
 -- Form up and countdown: the derby's own start procedure
@@ -733,7 +732,6 @@ check(lastDerby.entryMode == 'all', 'a non-admin cannot change the derby entry m
 -- the phases, the hold flag on the grid assign, and the countdown broadcast.
 RM_onDerbyEnd(1)
 RM_onDerbyEnd(1)
-RM_onDerbySetEntryMode(1, '{"mode":"all"}')
 check(lastDerby.derbyPhase == 'idle', 'derby back to idle before the start-procedure checks')
 
 -- Start Derby without forming up first is refused.

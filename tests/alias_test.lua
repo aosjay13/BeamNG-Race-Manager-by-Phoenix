@@ -231,7 +231,6 @@ RM_onEndRace(1)
 -- ---------------------------------------------------------------------------
 RM_onResetLeaderboard(1)
 for id in pairs(connected) do RM_onPlayerJoin(id) end
-RM_onSetEntryMode(1, '{"mode":"all"}')
 setAlias(1, 3, 'Cara Speed')
 RM_onSetTotalLaps(1, '{"laps":1}')
 RM_onGenerateGrid(1)

@@ -203,8 +203,7 @@ local function wired(command, handler, msg)
     msg .. ': the handler sends raceManager.' .. command)
 end
 
-wired('joinRace',           'joinRace',           'Join Race')
-wired('setEntryMode',       'toggleEntryMode',    'Entry mode')
+wired('setSpectating',      'setSpectating',      'Sit out / rejoin')
 wired('setGridMode',        'setGridMode',        'Grid order')
 wired('setDriverGridSlot',  'pinGridSlot',        'Custom grid slot')
 wired('setGhostQuali',      'toggleGhostQuali',   'Ghost qualifying')
@@ -390,7 +389,7 @@ end
 -- The arena's own state has to come back off the broadcast, or the panel drifts
 -- from what every other client is drawing: which editor is in use, the
 -- rectangle itself, and how tall its walls are.
-for _, field in ipairs({ 'entryMode', 'gridMode', 'ghostQuali', 'startSlots',
+for _, field in ipairs({ 'gridMode', 'ghostQuali', 'startSlots',
                          'boundaryMode', 'shape', 'wallHeight' }) do
   expect(js:find('data.' .. field, 1, true) ~= nil,
     field .. ' is mirrored from the server broadcast')
@@ -1301,3 +1300,52 @@ else
   print('ui_bindings_test: ' .. fails .. ' FAILURES of ' .. checks .. ' checks')
   os.exit(1)
 end
+
+
+-- ---------------------------------------------------------------------------
+-- Race entry is ONE switch
+-- ---------------------------------------------------------------------------
+-- There used to be three ways to answer "am I in this race": an admin-set entry
+-- mode, a per-driver Join Race, and spectating. They could disagree, and the one
+-- that broke was a driver who sat out and then had no way back in. Spectating is
+-- the only mechanism now, so nothing here may come back.
+for _, gone in ipairs({ 'entryMode', 'joinRace', 'leaveRace', 'canJoin',
+                        'toggleEntryMode', 'setEntryMode' }) do
+  expect(html:find(gone, 1, true) == nil,
+    'the template no longer mentions ' .. gone)
+  expect(js:find(gone, 1, true) == nil,
+    'the panel script no longer mentions ' .. gone)
+end
+
+-- A spectator must always be able to see the way back. The button stays put
+-- during a session and disables instead of vanishing: one that disappears reads
+-- as broken, which is exactly how the trap was reported.
+local entryRow = html:match('<div class="rm%-entry".-</div>')
+expect(entryRow ~= nil, 'the Race Entry row is still there')
+expect(entryRow and entryRow:find('Rejoin', 1, true) ~= nil,
+  'and it offers a way back into the field')
+expect(entryRow and entryRow:find('ng%-disabled="sessionUnderWay%(%)"') ~= nil,
+  'the sit-out toggle disables mid-session rather than disappearing')
+
+
+-- ---------------------------------------------------------------------------
+-- The entry decision and the camera state are two different facts
+-- ---------------------------------------------------------------------------
+-- They shared one $scope.spectating once. The route push carries "your car has
+-- been taken away" (a finisher, a driver serving a penalty) and it overwrote
+-- "I am sitting this one out" several times a second, so Rejoin looked broken
+-- and the entry row lied to anybody who had just finished.
+--
+-- `spectating` is the ENTRY decision and may only ever be written from the
+-- server's own youSpectating. `carTaken` is the camera.
+local writes = 0
+for _ in js:gmatch('%$scope%.spectating%s*=') do writes = writes + 1 end
+expect(writes == 2, 'only the initialiser and one server-owned write set $scope.spectating')
+expect(js:find('$scope.spectating = data.youSpectating', 1, true) ~= nil,
+  'and that write is youSpectating, the entry decision')
+expect(js:find('$scope.carTaken', 1, true) ~= nil,
+  'the forced-spectator camera state has its own name')
+expect(js:find('$scope.spectating = !!(data', 1, true) == nil,
+  'the RaceManagerSpectator event never writes the entry decision')
+expect(html:find('class="rm-spectator-bar" ng-if="carTaken"', 1, true) ~= nil,
+  'the spectator bar follows the camera, not the entry decision')

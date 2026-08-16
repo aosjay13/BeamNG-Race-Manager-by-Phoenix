@@ -186,7 +186,6 @@ local function bootPlugin()
   onInit()
   for id in pairs(connected) do RM_onPlayerJoin(id) end
   RM_onLogin(ADMIN, '{"password":"phoenix"}')
-  RM_onSetEntryMode(ADMIN, '{"mode":"all"}')
 end
 
 -- Put the names back after a restart.
@@ -516,7 +515,6 @@ local function runDerby(order, opts)
   -- `order` is the pids in elimination order, first out first. Everyone left
   -- over survives; the last one standing wins.
   opts = opts or {}
-  RM_onDerbySetEntryMode(ADMIN, '{"mode":"all"}')
   RM_onDerbyFormUp(ADMIN)
   RM_onDerbyStart(ADMIN)
   for _ = 1, 5 do RM_DerbyCountdownTick() end
@@ -876,9 +874,7 @@ local rosterBefore = #(lastCup.roster or {})
 -- which is the state a derby night actually runs in -- and the one whose record
 -- is deleted outright when a connection drops.
 RM_onResetLeaderboard(ADMIN)
-RM_onSetEntryMode(ADMIN, '{"mode":"all"}')
 
-RM_onDerbySetEntryMode(ADMIN, '{"mode":"all"}')
 RM_onDerbyFormUp(ADMIN)
 RM_onDerbyStart(ADMIN)
 for _ = 1, 5 do RM_DerbyCountdownTick() end

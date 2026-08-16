@@ -223,30 +223,27 @@ lastState = nil
 RM_onPlayerJoin(1); RM_onPlayerJoin(2); RM_onPlayerJoin(3)
 check(#lastState.drivers == 3, 'three drivers after join')
 check(lastState.phase == 'waiting', 'initial phase waiting')
-check(lastState.entryMode == 'all', 'race entry defaults to everyone racing')
 check(lastState.entrants == 3, 'all three connected players are entered')
 
--- Switched to opt-in, connecting is NOT entering: the field is empty until
--- drivers press Join Race.
-RM_onSetEntryMode(1, '{"mode":"join"}')
-check(lastState.entrants == 0, 'nobody is entered before anyone joins')
+-- SPECTATING IS THE ONLY WAY OUT of the field, and it is the driver's own call:
+-- no admin rights, no entry mode to set first.
+RM_onSetSpectating(1, '{"spectating":true}')
+RM_onSetSpectating(2, '{"spectating":true}')
+RM_onSetSpectating(3, '{"spectating":true}')
+check(lastState.entrants == 0, 'a server where everyone spectates has no field')
+check(driver('Alice').spectating == true, 'the spectating flag is broadcast per driver')
 
 -- Generate Grid with an empty entry list must not form a grid.
 RM_onGenerateGrid(1)
 check(lastState.phase == 'waiting', 'Generate Grid refused with no entrants')
 
--- Everyone enters the race.
-RM_onJoinRace(1, '{"join":true}')
-RM_onJoinRace(2, '{"join":true}')
-RM_onJoinRace(3, '{"join":true}')
-check(lastState.entrants == 3, 'three entrants after joining')
-check(driver('Alice').joined == true, 'the entry flag is broadcast per driver')
-
--- Leaving takes a driver back out of the field, then they rejoin for the race.
-RM_onJoinRace(3, '{"join":false}')
-check(lastState.entrants == 2, 'leaving removes a driver from the entry list')
-RM_onJoinRace(3, '{"join":true}')
-check(lastState.entrants == 3, 'and rejoining puts them back')
+-- Rejoining is the same button again. This is the path that had no way back:
+-- a driver could sit out and then could not put themselves in.
+RM_onSetSpectating(1, '{"spectating":false}')
+RM_onSetSpectating(2, '{"spectating":false}')
+check(lastState.entrants == 2, 'rejoining puts a driver back in the field')
+RM_onSetSpectating(3, '{"spectating":false}')
+check(lastState.entrants == 3, 'and the last one back makes three')
 
 -- Total laps setting (JSON path + clamping)
 RM_onSetTotalLaps(1, '{"laps":2}')
@@ -624,8 +621,6 @@ check(storedLayout('Brand New') == nil, 'the delete survives a server restart')
 -- (State is fresh here: the file was just re-dofile'd + onInit'd above.)
 -- ---------------------------------------------------------------------------
 RM_onPlayerJoin(1); RM_onPlayerJoin(2); RM_onPlayerJoin(3)
--- This block predates the entry list, so it uses the "everyone races" mode.
-RM_onSetEntryMode(1, '{"mode":"all"}')
 RM_onSetTotalLaps(1, '{"laps":1}')
 RM_onGenerateGrid(1)
 RM_onStartCountdown(1)
@@ -670,8 +665,6 @@ check(fileExists(ghostPath1) and fileExists(ghostPath2),
 RM_onLogin(1, '{"password":"phoenix"}')
 RM_onResetLeaderboard(1)
 for id in pairs(connected) do RM_onPlayerJoin(id) end
-RM_onJoinRace(1, '{"join":true}')
-RM_onJoinRace(2, '{"join":true}')
 -- A long race, so nobody takes the flag part-way through this and stops being
 -- eligible to score laps.
 RM_onSetTotalLaps(1, '{"laps":10}')
@@ -711,7 +704,6 @@ RM_onLogin(1, '{"password":"phoenix"}')
 RM_onResetLeaderboard(1)
 connected[3] = 'Cara'
 for id in pairs(connected) do RM_onPlayerJoin(id) end
-for id in pairs(connected) do RM_onJoinRace(id, '{"join":true}') end
 RM_onSetTotalLaps(1, '{"laps":1}')
 -- A known grid: Alice pole, Bob second, Cara third.
 RM_onSetGridMode(1, '{"mode":"custom"}')
@@ -757,7 +749,6 @@ check(hcLine and hcLine:find('+2', 1, true) ~= nil, 'and the gain is stated')
 RM_onResetLeaderboard(1)
 connected[4] = 'Dan'
 for id in pairs(connected) do RM_onPlayerJoin(id) end
-for id in pairs(connected) do RM_onJoinRace(id, '{"join":true}') end
 RM_onSetTotalLaps(1, '{"laps":1}')
 RM_onSetGridMode(1, '{"mode":"custom"}')
 -- Custom slots are renumbered to 1..N in the order given, so these ARE the
@@ -796,7 +787,6 @@ check(tieLine and tieLine:find('Dan', 1, true) == nil,
 -- is decided at lap 3, the same as a 6-lap one.
 RM_onResetLeaderboard(1)
 for id in pairs(connected) do RM_onPlayerJoin(id) end
-for id in pairs(connected) do RM_onJoinRace(id, '{"join":true}') end
 RM_onSetTotalLaps(1, '{"laps":5}')
 RM_onGenerateGrid(1)
 RM_onStartCountdown(1)
@@ -837,7 +827,6 @@ check(hwLine and hwLine:find('lap 3 of 5', 1, true) ~= nil,
 -- A one-lap race has no half way -- lap 1 is the flag.
 RM_onResetLeaderboard(1)
 for id in pairs(connected) do RM_onPlayerJoin(id) end
-for id in pairs(connected) do RM_onJoinRace(id, '{"join":true}') end
 RM_onSetTotalLaps(1, '{"laps":1}')
 RM_onGenerateGrid(1)
 RM_onStartCountdown(1)
@@ -863,7 +852,6 @@ check(shortText ~= '' and shortText:find('HALF-WAY LEADER', 1, true) == nil,
 RM_onLogin(1, '{"password":"phoenix"}')
 RM_onResetLeaderboard(1)
 for id in pairs(connected) do RM_onPlayerJoin(id) end
-RM_onJoinRace(1, '{"join":true}')
 RM_onSetTotalLaps(1, '{"laps":7}')
 RM_onSetPointToPoint(1, '{"enabled":true}')
 check(lastState.pointToPoint == true, 'the track can be set to point to point')
@@ -884,7 +872,6 @@ RM_onResetLeaderboard(1)
 RM_onSetPointToPoint(1, '{"enabled":false}')
 check(lastState.pointToPoint == false, 'and it can be switched back to a circuit')
 for id in pairs(connected) do RM_onPlayerJoin(id) end
-RM_onJoinRace(1, '{"join":true}')
 RM_onSetTotalLaps(1, '{"laps":2}')
 RM_onGenerateGrid(1)
 RM_onStartCountdown(1)
@@ -899,7 +886,6 @@ check(driver('Alice') and driver('Alice').status ~= 'racing', 'the second lap fi
 -- change under the drivers running it.
 RM_onResetLeaderboard(1)
 for id in pairs(connected) do RM_onPlayerJoin(id) end
-RM_onJoinRace(1, '{"join":true}')
 RM_onGenerateGrid(1)
 RM_onStartCountdown(1)
 RM_onSetPointToPoint(1, '{"enabled":true}')
@@ -998,7 +984,6 @@ local startJson = '[{"x":0,"y":-100,"z":0,"hx":1,"hy":0},'
 RM_onStartPositionCount(1, '{"count":4,"positions":' .. startJson
   .. ',"gridOffLine":true,"laneNames":[{"id":"ccw","name":"Counter-clockwise"}]}')
 
-RM_onSetEntryMode(1, '{"mode":"all"}')
 RM_onSetTotalLaps(1, '{"laps":3}')
 RM_onGenerateGrid(1)
 lastState = nil
@@ -1106,7 +1091,6 @@ end
 -- arrive with a car, a spawn point and no idea a race is running, which is how a
 -- leader ends up in a wall.
 do
-  RM_onSetEntryMode(1, '{"mode":"all"}')
   RM_onSetTotalLaps(1, '{"laps":5}')
   RM_onGenerateGrid(1)
   RM_onStartCountdown(1)
@@ -1253,7 +1237,6 @@ check(lastState.jokerGates == 3,
 -- the server.
 connected[11] = 'Sitter'
 RM_onPlayerJoin(11)
-RM_onSetEntryMode(1, '{"mode":"all"}')
 RM_onRequestState(11)
 local before = lastState.entrants
 
@@ -1312,7 +1295,6 @@ for pid = 20, 23 do
   connected[pid] = 'R' .. pid
   RM_onPlayerJoin(pid)
 end
-RM_onSetEntryMode(1, '{"mode":"all"}')
 RM_onGenerateGrid(1, '')
 RM_onStartCountdown(1, '')
 for _ = 1, 4 do RM_CountdownTick() end
