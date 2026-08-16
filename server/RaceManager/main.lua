@@ -3244,6 +3244,17 @@ sanitizeCheckpoints = function (raw)
     out[i] = { x = x, y = y, z = z, hx = tonumber(cp.hx) or 0, hy = tonumber(cp.hy) or 1 }
     if tonumber(cp.width)  then out[i].width  = tonumber(cp.width)  end
     if tonumber(cp.height) then out[i].height = tonumber(cp.height) end
+    -- DEPTH IS BACK, and it means something new.
+    --
+    -- The old one was a third box dimension and was dropped when a gate became a
+    -- flat rectangle. This one is the other half of the vertical: height is how
+    -- far the gate rises above the point it was placed at, depth how far it
+    -- drops below. A gate used to be centred, so making it tall enough to see
+    -- buried an equal amount of it under the road.
+    --
+    -- Carried, not validated against height: they are independent, and a gate
+    -- with no depth is a legal gate that simply does not reach below the surface.
+    if tonumber(cp.depth) then out[i].depth = tonumber(cp.depth) end
     -- Gates score in either direction; oneWay puts one back for the geometry
     -- where direction is the only thing separating two legs of a track. Carried
     -- only when set, like the size overrides above.
@@ -3418,7 +3429,8 @@ function RM_onSaveLayout(pid, rawData)
     name        = name,
     map         = map,
     width       = tonumber(data.width)  or 20,
-    height      = tonumber(data.height) or 10,
+    height      = tonumber(data.height) or 8,
+    depth       = tonumber(data.depth)  or 2,
     checkpoints = checkpoints,
     -- Optional rallycross joker route (Module 2): a second, independent gate
     -- set stored with the layout. Absent on plain circuits.

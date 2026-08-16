@@ -38,9 +38,22 @@ local TUNE = {
   DEFAULT_WIDTH = 20,    -- meters across the gate (lateral span)
   MIN_WIDTH = 2,
   MAX_WIDTH = 120,
-  DEFAULT_HEIGHT = 10,    -- meters the trigger extends up/down (vertical)
+  -- HEIGHT IS UP, DEPTH IS DOWN, both measured from the placement point.
+  --
+  -- A gate used to be `height` tall CENTRED on where the car was standing, so
+  -- half of every gate hung below the road. Making a gate tall enough to see
+  -- buried an equal amount of it under the map, and there was no way to have one
+  -- without the other. They are separate now: height raises the top bar, depth
+  -- lowers the bottom bar.
+  --
+  -- The default is weighted upward for exactly that reason. The total is the 10
+  -- metres it always was; where it sits is what changed.
+  DEFAULT_HEIGHT = 8,     -- metres the gate rises ABOVE the placement point
   MIN_HEIGHT = 1,
   MAX_HEIGHT = 100,
+  DEFAULT_DEPTH = 2,      -- metres it drops BELOW it
+  MIN_DEPTH = 0,
+  MAX_DEPTH = 100,
   EDGE_RADIUS = 0.15,  -- meters; thickness of the drawn rectangle edge
   -- Thickness of a race POLE. Fatter than an editor edge -- this is the one a
   -- driver reads at a hundred miles an hour -- but only just: the first attempt
@@ -211,6 +224,7 @@ local branch = {
 }
 local checkpointWidth  = TUNE.DEFAULT_WIDTH
 local checkpointHeight = TUNE.DEFAULT_HEIGHT
+local checkpointDepth  = TUNE.DEFAULT_DEPTH
 local visualize        = true
 
 -- Starting grid: ordered list of { x, y, z, hx, hy } placed by the race
@@ -714,9 +728,27 @@ end
 -- fallback is only reached by a gate from a layout saved before sizes were
 -- per-gate -- and onApplyLayout fills those in from the layout's own stored
 -- width/height as it loads, so even they only pass through here once.
+local function clampDepth(d)
+  d = tonumber(d) or TUNE.DEFAULT_DEPTH
+  if d < TUNE.MIN_DEPTH then d = TUNE.MIN_DEPTH elseif d > TUNE.MAX_DEPTH then d = TUNE.MAX_DEPTH end
+  return d
+end
+
+-- Width across, height ABOVE the placement point, depth BELOW it.
+--
+-- A gate saved before the two were separate carries a height and no depth, and
+-- back then height meant the FULL span, centred. Splitting it in half here is
+-- what makes such a gate keep the exact shape it has always had, rather than
+-- silently doubling in size the day this shipped. Anything the editor touches is
+-- written back with both fields, so a track only reads this way once.
 local function gateDims(wp)
-  return clampWidth(wp.width   or checkpointWidth),
-         clampHeight(wp.height or checkpointHeight)
+  local w = clampWidth(wp.width or checkpointWidth)
+  if wp.depth == nil and wp.height ~= nil then
+    local half = wp.height * 0.5
+    return w, clampHeight(half), clampDepth(half)
+  end
+  return w, clampHeight(wp.height or checkpointHeight),
+         clampDepth(wp.depth or checkpointDepth)
 end
 
 -- ---------------------------------------------------------------------------
@@ -778,6 +810,7 @@ local function pushRouteState()
     nextWp       = armedWp,
     width        = checkpointWidth,
     height       = checkpointHeight,
+    depth        = checkpointDepth,
     visualize    = visualize,
     -- Starting grid
     startPositions = startPositions,
@@ -877,7 +910,7 @@ end
 -- Returns (crossed, backwards). The second matters because a gate shared between
 -- two lanes is stored with one heading and driven both ways, so relocateToGate
 -- cannot read the car's direction off the gate afterwards.
-local function rectCrossesGate(wp, prev, cur, w, h)
+local function rectCrossesGate(wp, prev, cur, w, h, d)
   local fx, fy = wp.hx, wp.hy
 
   -- Signed distance to the gate plane before and after this frame's movement.
@@ -893,7 +926,11 @@ local function rectCrossesGate(wp, prev, cur, w, h)
   local iz = prev.z + (cur.z - prev.z) * t
   local lateral = (ix - wp.x) * fy - (iy - wp.y) * fx
   if math.abs(lateral) > w * 0.5 then return false end
-  if math.abs(iz - wp.z) > h * 0.5 then return false end
+  -- Not symmetric any more: `h` above the placement point, `d` below it. Passing
+  -- the two separately is what lets a gate stand tall enough to see without an
+  -- equal amount of it being buried under the road.
+  local dz = iz - wp.z
+  if dz > h or dz < -d then return false end
   return true, backward
 end
 
@@ -901,8 +938,8 @@ end
 -- crossing test. Keeps callers unchanged (segmentCrossesGate(wp, a, b)), and
 -- passes the backwards flag straight back out.
 local function segmentCrossesGate(wp, prev, cur)
-  local w, h = gateDims(wp)
-  return rectCrossesGate(wp, prev, cur, w, h)
+  local w, h, d = gateDims(wp)
+  return rectCrossesGate(wp, prev, cur, w, h, d)
 end
 
 -- ---------------------------------------------------------------------------
@@ -2112,14 +2149,14 @@ end
 -- would let a car trigger a pit stop by clipping the box at racing speed, which
 -- is the opposite of what a pit stop is.
 function pit.inside(wp, pos)
-  local w, h = gateDims(wp)
+  local w, h, d = gateDims(wp)
   local dx, dy, dz = pos.x - wp.x, pos.y - wp.y, pos.z - wp.z
   local fx, fy = wp.hx or 0, wp.hy or 1
   local lat = dx * fy - dy * fx          -- across the stall
   local fwd = dx * fx + dy * fy          -- along it
   return math.abs(lat) <= w * 0.5
      and math.abs(fwd) <= TUNE.PIT_DEPTH
-     and math.abs(dz)  <= h * 0.5
+     and dz <= h and dz >= -d
 end
 
 -- Ghosting for the duration of a stop.
@@ -4039,25 +4076,28 @@ local gateCache = setmetatable({}, { __mode = 'k' })
 -- read, and that is far cheaper than the allocation it guards against -- a
 -- global width change has to be picked up without anything telling us about it.
 local function gateGeometry(wp)
-  local w, h = gateDims(wp)
+  local w, h, d = gateDims(wp)
   local g = gateCache[wp]
-  if g and g.w == w and g.h == h
+  if g and g.w == w and g.h == h and g.d == d
       and g.x == wp.x and g.y == wp.y and g.z == wp.z
       and g.hx == wp.hx and g.hy == wp.hy then
     return g
   end
 
-  local hw, hh = w * 0.5, h * 0.5
+  local hw = w * 0.5
   local rx, ry = wp.hy, -wp.hx          -- lateral (width) axis
-  -- corner(sr, su): center + lateral*sr*hw + up*su*hh
-  local function corner(sr, su)
-    return vec3(wp.x + rx * sr * hw, wp.y + ry * sr * hw, wp.z + su * hh)
+  -- corner(sr, up): centre + lateral*sr*hw, then h ABOVE or d BELOW. The
+  -- vertical is no longer symmetric, so the two ends are named rather than
+  -- signed: `up` true is the top bar, false the bottom.
+  local function corner(sr, up)
+    return vec3(wp.x + rx * sr * hw, wp.y + ry * sr * hw,
+                wp.z + (up and h or -d))
   end
   g = {
-    w = w, h = h,
+    w = w, h = h, d = d,
     x = wp.x, y = wp.y, z = wp.z, hx = wp.hx, hy = wp.hy,
-    bl = corner(-1, -1), br = corner(1, -1),
-    tl = corner(-1,  1), tr = corner(1,  1),
+    bl = corner(-1, false), br = corner(1, false),
+    tl = corner(-1, true),  tr = corner(1, true),
   }
   g.mid = (g.tl + g.tr) * 0.5 + vec3(0, 0, 0.8)
   -- The middle of the gate's own face. `mid` floats above the top edge, which is
@@ -6063,6 +6103,7 @@ function M.editorAdd(place)
     local prev = target[#target]
     place.width  = clampWidth(prev and prev.width  or checkpointWidth)
     place.height = clampHeight(prev and prev.height or checkpointHeight)
+    place.depth  = clampDepth(prev and prev.depth  or checkpointDepth)
   end
   -- A branch gate is placed AGAINST A SLOT: it is not a new checkpoint, it is the
   -- other way of taking one that already exists. Placing it is what makes the
@@ -6325,6 +6366,7 @@ function M.insertCheckpoint(index, place)
     local prev = list[index] or list[#list]
     place.width  = clampWidth(prev and prev.width  or checkpointWidth)
     place.height = clampHeight(prev and prev.height or checkpointHeight)
+    place.depth  = clampDepth(prev and prev.depth  or checkpointDepth)
   end
   if editorTarget == 'branch' then
     guihooks.trigger('RaceManagerEditorMsg', {
@@ -6624,10 +6666,15 @@ function M.setCheckpointHeight(h)
   pushRouteState()
 end
 
+function M.setCheckpointDepth(d)
+  checkpointDepth = clampDepth(d)
+  pushRouteState()
+end
+
 -- Per-checkpoint override editor. index is 1-based into the placed route; a
 -- nil/blank/non-positive value for a dimension clears that override so the gate
 -- falls back to the global default. Pass both blank to fully reset a gate.
-function M.setCheckpointOverride(index, w, h)
+function M.setCheckpointOverride(index, w, h, d)
   index = math.floor(tonumber(index) or 0)
   local wp = activeEditorRoute()[index]
   if not wp then
@@ -6641,6 +6688,10 @@ function M.setCheckpointOverride(index, w, h)
   end
   wp.width  = opt(w, clampWidth)
   wp.height = opt(h, clampHeight)
+  -- Written even when blank, because a gate carrying a height and NO depth is
+  -- read as a legacy full-span gate. Leaving depth unset here would quietly
+  -- reinterpret the height the admin just typed as half of itself.
+  wp.depth  = opt(d, clampDepth) or clampDepth(checkpointDepth)
   pushRouteState()
 end
 
@@ -6731,6 +6782,7 @@ function M.saveLayout(name, confirmDrop)
       -- Carry per-checkpoint overrides through only when set.
       if tonumber(wp.width)  then out[i].width  = clampWidth(wp.width)   end
       if tonumber(wp.height) then out[i].height = clampHeight(wp.height) end
+      if tonumber(wp.depth)  then out[i].depth  = clampDepth(wp.depth)   end
       if wp.oneWay == true   then out[i].oneWay = true end
       -- Start positions only: the lane a car on this slot races. Dropping it here
       -- would save a head-on grid as an ordinary one, and the field would all set
@@ -6778,6 +6830,7 @@ function M.saveLayout(name, confirmDrop)
         }
         if tonumber(g.width)  then out.width  = clampWidth(g.width)   end
         if tonumber(g.height) then out.height = clampHeight(g.height) end
+        if tonumber(g.depth)  then out.depth  = clampDepth(g.depth)   end
         if g.oneWay == true   then out.oneWay = true end
         gates[#gates + 1] = out
       end
@@ -6794,6 +6847,7 @@ function M.saveLayout(name, confirmDrop)
     name        = name,
     width       = clampWidth(checkpointWidth),
     height      = clampHeight(checkpointHeight),
+    depth       = clampDepth(checkpointDepth),
     checkpoints = cps,
     joker       = jokerCps,
     startPositions = starts,
@@ -7169,8 +7223,21 @@ local function onApplyLayout(rawData)
       -- given the layout's stored default here, so it keeps exactly the size it
       -- was drawn with and never depends on a live setting again.
       if what ~= 'start position' then
-        out[i].width  = clampWidth(tonumber(cp.width)  or data.width  or checkpointWidth)
-        out[i].height = clampHeight(tonumber(cp.height) or data.height or checkpointHeight)
+        out[i].width = clampWidth(tonumber(cp.width) or data.width or checkpointWidth)
+        local h = tonumber(cp.height) or data.height
+        local d = tonumber(cp.depth)  or data.depth
+        if d == nil and h ~= nil then
+          -- A layout saved before height and depth were separate. Back then
+          -- height was the FULL span, centred on the placement point, so half of
+          -- it goes each way. Converted HERE, once, as it loads, which means the
+          -- gate keeps the exact shape it has always had and the next save
+          -- writes it in the new form.
+          out[i].height = clampHeight(h * 0.5)
+          out[i].depth  = clampDepth(h * 0.5)
+        else
+          out[i].height = clampHeight(h or checkpointHeight)
+          out[i].depth  = clampDepth(d or checkpointDepth)
+        end
       end
     end
     return out
@@ -7208,8 +7275,10 @@ local function onApplyLayout(rawData)
             local gate = {
               x = x, y = y, z = z,
               hx = tonumber(g.hx) or 0, hy = tonumber(g.hy) or 1,
-              width  = clampWidth(tonumber(g.width)  or data.width  or checkpointWidth),
+              width  = clampWidth(tonumber(g.width) or data.width or checkpointWidth),
               height = clampHeight(tonumber(g.height) or data.height or checkpointHeight),
+              depth  = clampDepth(tonumber(g.depth) or data.depth
+                or ((tonumber(g.height) or data.height or 0) * 0.5)),
             }
             if g.oneWay == true then gate.oneWay = true end
             slots[math.floor(slot)] = gate
@@ -7232,7 +7301,17 @@ local function onApplyLayout(rawData)
   branch.bySlot = bySlot
   branch.gridOffLine = data.gridOffLine == true
   checkpointWidth  = clampWidth(data.width or checkpointWidth)
-  checkpointHeight = clampHeight(data.height or checkpointHeight)
+  -- The layout's DEFAULT is migrated the same way its gates are, or the two
+  -- disagree: every placed gate would keep the shape it always had while a
+  -- newly placed one, or one whose override was cleared, took the old full-span
+  -- number as a height and stood twice as tall.
+  if data.depth == nil and data.height ~= nil then
+    checkpointHeight = clampHeight(data.height * 0.5)
+    checkpointDepth  = clampDepth(data.height * 0.5)
+  else
+    checkpointHeight = clampHeight(data.height or checkpointHeight)
+    checkpointDepth  = clampDepth(data.depth or checkpointDepth)
+  end
   pointToPoint     = data.pointToPoint == true
   resetLapTracking()
   editorMsg('Loaded layout "' .. tostring(data.name) .. '" ('

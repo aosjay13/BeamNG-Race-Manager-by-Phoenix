@@ -15,7 +15,7 @@
 -- number of slots, armedWp stays an integer bounded by #route, and the lap
 -- completes on armedWp >= #route whichever way round a driver went.
 
-local function rectCrossesGate(wp, prev, cur, w, h)
+local function rectCrossesGate(wp, prev, cur, w, h, d)
   local fx, fy = wp.hx, wp.hy
   local dPrev = (prev.x - wp.x) * fx + (prev.y - wp.y) * fy
   local dCur  = (cur.x  - wp.x) * fx + (cur.y  - wp.y) * fy
@@ -27,7 +27,13 @@ local function rectCrossesGate(wp, prev, cur, w, h)
   local iy = prev.y + (cur.y - prev.y) * t
   local iz = prev.z + (cur.z - prev.z) * t
   if math.abs((ix - wp.x) * fy - (iy - wp.y) * fx) > w * 0.5 then return false end
-  if math.abs(iz - wp.z) > h * 0.5 then return false end
+  -- Height is UP from the placement point and depth is DOWN, so the vertical
+  -- test is a range rather than a symmetric one. `d` defaults to h here so the
+  -- cases written before the split still describe the gate they were written
+  -- for: back then height was the full span, centred.
+  d = d or h
+  local dz = iz - wp.z
+  if dz > h or dz < -d then return false end
   return true, backward
 end
 

@@ -116,11 +116,23 @@ end
 expect(bound('derbyUi.name'),      'Derby arena name input binds derbyUi.name')
 expect(bound('lbUi.opacity'),      'Leaderboard opacity slider binds lbUi.opacity')
 
--- A checkpoint is a flat width x height rectangle: the depth control and every
--- reference to it are gone from both ends.
-expect(not html:find('settingsUi.depth', 1, true), 'the gate depth input is gone from the template')
-expect(not js:find('setCheckpointDepth', 1, true), 'the depth command is gone from the controller')
-expect(not html:find('cpEdit.depth', 1, true), 'the per-gate depth override is gone')
+-- DEPTH IS BACK, meaning something new. The field that was removed was a third
+-- box dimension from when a gate was a volume. This one is the other half of the
+-- vertical: height is how far a gate rises above the point it was placed at,
+-- depth how far it drops below, so a gate can be tall enough to see without an
+-- equal amount of it buried under the road.
+expect(html:find('cpEdit.depth', 1, true) ~= nil,
+  'a gate can be given its own depth')
+expect(js:find('cpEdit.depth', 1, true) ~= nil,
+  'and the controller reads it')
+
+-- Both ends of the override travel together. A gate carrying a height and NO
+-- depth is read as a legacy full-span gate and split in half, so sending one
+-- without the other would silently reinterpret the number the admin just typed.
+local ovr = js:match('%$scope%.applyCheckpointOverride = function %(%)(.-)\n%s*};')
+expect(ovr ~= nil, 'applyCheckpointOverride found')
+expect(ovr and ovr:find('cpEdit.depth', 1, true) ~= nil,
+  'applyCheckpointOverride sends depth alongside width and height, never alone')
 
 -- UI -> server: the apply handlers read the value the inputs actually write.
 expect(js:find('$scope.settingsUi.laps', 1, true) ~= nil,

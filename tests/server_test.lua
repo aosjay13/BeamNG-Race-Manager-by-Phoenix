@@ -406,8 +406,10 @@ check(lastLayouts ~= nil and lastLayouts.map == 'gridmap_v2'
   and #lastLayouts.layouts == 1, 'save broadcasts refreshed layout list')
 check(lastLayouts.layouts[1].width == 24
   and #lastLayouts.layouts[1].checkpoints == 3, 'saved layout keeps width and gates')
-check(lastLayouts.layouts[1].height == 10,
-  'saved layout gets the default height when the client omits it')
+check(lastLayouts.layouts[1].height == 8 and lastLayouts.layouts[1].depth == 2,
+  'saved layout gets the default height AND depth when the client omits them. '
+    .. 'The default is weighted upward: the total is the 10 metres it always '
+    .. 'was, but 8 of it is above the road instead of 5')
 
 -- Same name on the same map overwrites instead of duplicating
 RM_onSaveLayout(1, '{"name":"gp circuit","width":30,"checkpoints":' .. cpJson .. '}')
@@ -490,8 +492,13 @@ for _, l in ipairs(lastLayouts.layouts) do if l.name == 'Banked Oval' then saved
 check(saved ~= nil and saved.height == 20, 'saved layout keeps the layout-wide height')
 check(saved and saved.checkpoints[1].width == 40 and saved.checkpoints[1].height == 25,
   'per-checkpoint override round-trips through save')
-check(saved and saved.checkpoints[1].depth == nil,
-  'a depth sent by an old client is dropped, not persisted')
+-- DEPTH IS CARRIED NOW, and it is not the old one. The dropped field was a
+-- third box dimension from when a gate was a volume. This one is the other half
+-- of the vertical: height is how far a gate rises above the point it was placed
+-- at, depth how far it drops below, so a gate can be tall enough to see without
+-- an equal amount of it buried under the road.
+check(saved and saved.checkpoints[1].depth == 6,
+  'a per-checkpoint depth round-trips through save')
 check(saved and saved.checkpoints[2].width == nil and saved.checkpoints[2].height == nil,
   'a checkpoint without an override stays override-free')
 -- The starting grid is saved with the track.

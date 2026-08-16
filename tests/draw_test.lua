@@ -211,20 +211,30 @@ check(near(cylinders[1].a.x, wasX),
   'changing the default does NOT resize gates that are already placed')
 
 -- Per-gate override: only that gate moves.
-RM.setCheckpointOverride(1, 60, 20)
+--
+-- HEIGHT IS UP AND DEPTH IS DOWN, measured from the placement point, so a gate
+-- can stand tall enough to see without an equal amount of it hanging under the
+-- road. The gates here sit at z = 5, so a 20/3 gate runs from 2 up to 25.
+RM.setCheckpointOverride(1, 60, 20, 3)
 frame()
-check(near(cylinders[1].a.x, -30) and near(cylinders[1].a.z, -5),
-  'a per-gate override is picked up on that gate')
+check(near(cylinders[1].a.x, -30) and near(cylinders[1].a.z, 2),
+  'a per-gate override is picked up on that gate, and DEPTH puts the bottom bar '
+    .. '3 m below the placement point rather than half the height below it')
+check(near(cylinders[1].b.z, 25),
+  'while HEIGHT puts the top bar 20 m above it: the two ends are independent')
 -- Each gate emits four edges then a three-part arrow, so gate 2's first edge
 -- is index 8.
 check(near(cylinders[8].a.x, -10) and near(cylinders[8].a.z, 0),
-  'and leaves the gates that did not change alone, at the size they were loaded with')
+  'and leaves the gates that did not change alone, at the size they were loaded '
+    .. 'with: this layout predates depth, so its 10 was a full centred span and '
+    .. 'migrates to 5 up and 5 down, which is the same gate it always was')
 
 -- Clearing the override falls back to the global default again.
-RM.setCheckpointOverride(1, nil, nil)
+RM.setCheckpointOverride(1, nil, nil, nil)
 frame()
 check(near(cylinders[1].a.x, -20) and near(cylinders[1].a.z, 0),
-  'clearing an override falls back to the session default')
+  'clearing an override falls back to the session default, which was migrated '
+    .. 'the same way the gates were rather than being left as a raw 10')
 
 -- ===========================================================================
 -- Labels follow the route, and the route can change under them

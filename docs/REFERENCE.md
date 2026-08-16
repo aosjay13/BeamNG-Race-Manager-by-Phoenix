@@ -90,13 +90,27 @@ course you want to race:
 2. **The last gate you place is the start/finish line** (drawn white in the
    world; earlier gates are orange, and your next target turns green during
    a session).
-3. Every gate has a **width** (how far it reaches across) and a **height**
-   (how far it reaches up and down), and **each gate owns its own**. The first
+3. Every gate has a **width** (how far it reaches across) and two independent
+   vertical extents: **up**, how far it rises above the point it was placed at,
+   and **down**, how far it drops below. **Each gate owns its own.** The first
    gate of a new route gets the standard size; every gate after it inherits the
    size of the one placed before, so you set it once and drive the rest of the
-   route. Click any placed gate to change it - **nothing else moves**. Raise the
-   height on **high-banked tracks** so the rectangle covers the banking; what
-   you see drawn in the world *is* the trigger, so you can verify it at a glance.
+   route. Click any placed gate to change it - **nothing else moves**. Raise
+   **up** on **high-banked tracks** so the rectangle covers the banking; what you
+   see drawn in the world *is* the trigger, so you can verify it at a glance.
+
+   > **Why the vertical is two numbers.** It used to be one, centred on the
+   > placement point, so half of every gate hung below the road. Making a gate
+   > tall enough to see from a distance buried an equal amount of it under the
+   > map, and there was no way to have one without the other. Splitting them
+   > costs nothing and fixes both. The default is weighted upward for the same
+   > reason: 8 metres up, 2 down, the same 10 metres of gate in a more useful
+   > place.
+   >
+   > A layout saved before the split carries one height that meant the full
+   > span, and is converted as it loads: half up, half down. The gate keeps
+   > exactly the shape it always had, and the next save writes it in the new
+   > form.
 
    > There used to be a global width/height that every gate without an override
    > read live. Nudging that slider resized the entire circuit at once,

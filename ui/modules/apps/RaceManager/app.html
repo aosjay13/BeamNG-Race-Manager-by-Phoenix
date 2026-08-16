@@ -1164,7 +1164,7 @@
       <div class="rm-editor-wp-wrap" ng-repeat="wp in editorWaypoints() track by $index">
         <div class="rm-editor-wp" ng-class="{'rm-editor-wp-sel': selectedCp === $index + 1}"
              ng-click="selectCheckpoint($index + 1)"
-             title="Click to change this gate's Width / Height">
+             title="Click to change this gate's width, and how far it rises above and drops below where it was placed">
           <!-- A lane gate is numbered by the SLOT it stands in for, not by its
                place in the lane's own list: it is not a checkpoint of its own,
                it is the other way of taking one that already exists. -->
@@ -1194,7 +1194,8 @@
           </div>
           <span class="rm-editor-dims">
             <span ng-class="{'rm-dim-set': wp.width != null}">W{{ cpDim(wp, 'width') }}</span>
-            <span ng-class="{'rm-dim-set': wp.height != null}">H{{ cpDim(wp, 'height') }}</span>
+            <span ng-class="{'rm-dim-set': wp.height != null}">↑{{ cpDim(wp, 'height') }}</span>
+            <span ng-class="{'rm-dim-set': wp.depth != null}">↓{{ cpDim(wp, 'depth') }}</span>
           </span>
           <!-- The same pair the starting grid has: stand the car on a placed
                gate, or move the gate to where the car is. Without them a gate
@@ -1233,11 +1234,16 @@
                    ng-change="applyCheckpointOverride()">
             <input type="number" min="2" max="120" ng-model="cpEdit.width"
                    placeholder="width"></span>
-          <span class="rm-setting rm-cp-dim"><label>H</label>
+          <span class="rm-setting rm-cp-dim" title="How far the gate rises ABOVE where it was placed"><label>Up</label>
             <input type="range" min="1" max="100" step="1" ng-model="cpEdit.height"
                    ng-change="applyCheckpointOverride()">
             <input type="number" min="1" max="100" ng-model="cpEdit.height"
                    placeholder="height"></span>
+          <span class="rm-setting rm-cp-dim" title="How far it drops BELOW. Keep this small so the gate does not hang under the road."><label>Dn</label>
+            <input type="range" min="0" max="100" step="1" ng-model="cpEdit.depth"
+                   ng-change="applyCheckpointOverride()">
+            <input type="number" min="0" max="100" ng-model="cpEdit.depth"
+                   placeholder="depth"></span>
           <button class="rm-btn rm-btn-mini rm-btn-start" ng-click="applyCheckpointOverride()">Apply</button>
           <button class="rm-btn rm-btn-mini" ng-click="resetCheckpointOverride()"
                   title="Back to the standard size. Only this gate changes.">Default</button>
@@ -1275,7 +1281,10 @@
       Drive through each checkpoint location <b>in the direction of travel</b> and press
       <b>+ Checkpoint Here</b>. Each checkpoint becomes a flat rectangle standing
       perpendicular to your heading; the last one placed is the <b>start/finish line</b>.
-      Click a placed checkpoint to override its <b>Width / Height</b>.
+      Click a placed checkpoint to override its <b>width</b>, and how far it
+      rises <b>up</b> and drops <b>down</b> from where it was placed. Height and
+      depth are separate so a gate can stand tall enough to see without an equal
+      amount of it hanging under the road.
     </div>
     <div class="rm-editor-hint" ng-if="!jokerRoute.length && editorTarget === 'joker'">
       Drive the <b>alternate rallycross route</b> and drop a gate at its entry, through it,

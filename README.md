@@ -81,8 +81,11 @@ Here**. Gates are flat rectangles standing across your heading, and what you see
 drawn in the world **is** the trigger.
 
 - **The last gate you place is the start/finish line.**
-- Set **Gate width** and **Gate height**. Raise the height on **banked tracks**
-  so the rectangle covers the banking. Any single gate can override both.
+- Set **Gate width**, and the two halves of the vertical: **up** is how far the
+  gate rises above where it was placed, **down** how far it drops below. They are
+  independent, so a gate can stand tall enough to see without an equal amount of
+  it hanging under the road. Raise **up** on **banked tracks** so the rectangle
+  covers the banking. Any single gate can override all three.
 - **Undo**, **Clear** and **Hide/Show Gates** do what you'd expect.
 
 Then switch to the **Start Grid** tab and drive to each grid slot *facing down

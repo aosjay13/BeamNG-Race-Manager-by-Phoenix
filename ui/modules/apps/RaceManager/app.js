@@ -48,7 +48,8 @@ angular.module('beamng.apps')
         laps: 5,
         resets: -1,            // -1 unlimited, 0 none, N per driver per session
         width: 20,             // checkpoint rectangle: lateral span
-        height: 10,            // checkpoint rectangle: vertical extent
+        height: 8,             // metres the gate rises ABOVE where it was placed
+        depth: 2,              // metres it drops BELOW; the two are independent
         qualiLaps: 0,          // qualifying lap allowance (0 = unlimited)
         qualiMins: 0           // qualifying time limit in minutes (0 = none)
       };
@@ -360,7 +361,7 @@ angular.module('beamng.apps')
       // Per-checkpoint override editor: which gate (1-based) is selected, plus
       // its edit fields. Blank fields mean "use the global default".
       $scope.selectedCp = null;
-      $scope.cpEdit = { width: '', height: '' };
+      $scope.cpEdit = { width: '', height: '', depth: '' };
 
       // Track layout state (server-side persistent layouts, current map only)
       $scope.layouts = [];              // [{ name, map, width, checkpoints }]
@@ -1455,6 +1456,7 @@ angular.module('beamng.apps')
           }
           if (typeof data.width === 'number') { $scope.settingsUi.width = data.width; }
           if (typeof data.height === 'number') { $scope.settingsUi.height = data.height; }
+          if (typeof data.depth === 'number') { $scope.settingsUi.depth = data.depth; }
           // Starting grid placed/loaded on this client.
           $scope.startPositions = toArray(data.startPositions);
           $scope.gridSlot = data.gridSlot || null;
@@ -2515,7 +2517,8 @@ angular.module('beamng.apps')
         var wp = $scope.editorWaypoints()[index - 1] || {};
         $scope.cpEdit = {
           width:  (typeof wp.width === 'number') ? wp.width : '',
-          height: (typeof wp.height === 'number') ? wp.height : ''
+          height: (typeof wp.height === 'number') ? wp.height : '',
+          depth:  (typeof wp.depth === 'number') ? wp.depth : ''
         };
       };
 
@@ -2525,15 +2528,16 @@ angular.module('beamng.apps')
         if (!$scope.selectedCp) { return; }
         var w = parseFloat($scope.cpEdit.width)  || 0;
         var h = parseFloat($scope.cpEdit.height) || 0;
+        var d = parseFloat($scope.cpEdit.depth)  || 0;
         bngApi.engineLua('raceManager.setCheckpointOverride('
-          + $scope.selectedCp + ', ' + w + ', ' + h + ')');
+          + $scope.selectedCp + ', ' + w + ', ' + h + ', ' + d + ')');
       };
 
       // Reset the selected gate back to the global defaults (clear all overrides).
       $scope.resetCheckpointOverride = function () {
         if (!$scope.selectedCp) { return; }
-        $scope.cpEdit = { width: '', height: '' };
-        bngApi.engineLua('raceManager.setCheckpointOverride(' + $scope.selectedCp + ', 0, 0)');
+        $scope.cpEdit = { width: '', height: '', depth: '' };
+        bngApi.engineLua('raceManager.setCheckpointOverride(' + $scope.selectedCp + ', 0, 0, 0)');
       };
 
       // A gate's size, as shown on its row. Every gate placed or loaded carries
@@ -2541,7 +2545,9 @@ angular.module('beamng.apps')
       // before that was true, and the client fills those in as it loads.
       $scope.cpDim = function (wp, field) {
         if (wp && typeof wp[field] === 'number') { return wp[field]; }
-        return field === 'width' ? $scope.settingsUi.width : $scope.settingsUi.height;
+        if (field === 'width') { return $scope.settingsUi.width; }
+        if (field === 'depth') { return $scope.settingsUi.depth; }
+        return $scope.settingsUi.height;
       };
 
       // ------------------------------------------------------------------
