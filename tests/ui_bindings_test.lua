@@ -1114,6 +1114,53 @@ expect(js:find('--rm-lb-height', 1, true) ~= nil,
   'and the controller measures one')
 
 -- ---------------------------------------------------------------------------
+-- Both panels read in the SAME ORDER
+-- ---------------------------------------------------------------------------
+-- The admin header and the driver bar carry the same facts, and they used to
+-- carry them in different orders with different subsets: switching between admin
+-- and driver moved every number, and the flag was never twice in the same place.
+--
+-- The order is: phase, checkpoint, distance, race clock, lap, line, joker,
+-- resets, flag. This compares the two RUNS against each other rather than
+-- against a copy of the list, so adding a field to one panel and not the other
+-- fails here rather than in somebody's peripheral vision mid-race.
+local function fieldOrder(chunk)
+  local seen = {}
+  local marks = {
+    { 'phase',  'rm%-phase' },
+    { 'cp',     'CP <?b?>?{?{? ?nextWp' },
+    { 'dist',   'formatDistance%(progress%.dist%)' },
+    { 'clock',  'formatRaceTime%(raceTime%)' },
+    { 'lap',    'class="rm%-laptime"' },
+    { 'line',   'LINE <b>' },
+    { 'joker',  'JOKER <b' },
+    { 'resets', 'RESETS <b' },
+    { 'flag',   'rm%-flag rm%-flag%-' },
+  }
+  local found = {}
+  for _, m in ipairs(marks) do
+    local at = chunk:find(m[2])
+    if at then found[#found + 1] = { name = m[1], at = at } end
+  end
+  table.sort(found, function (a, b) return a.at < b.at end)
+  for _, f in ipairs(found) do seen[#seen + 1] = f.name end
+  return table.concat(seen, ',')
+end
+
+local headerChunk = html:match('<div class="rm%-header".-<!%-%- =+ Admin login')
+local barChunk    = html:match('<div class="rm%-driverbar".-<!%-%- =+ Derby standings')
+expect(headerChunk ~= nil, 'found the admin header')
+expect(barChunk ~= nil, 'found the driver bar')
+
+local headerOrder = fieldOrder(headerChunk or '')
+local barOrder    = fieldOrder(barChunk or '')
+expect(headerOrder == barOrder,
+  'the two panels list their status fields in the same order.\n    admin: '
+    .. headerOrder .. '\n    driver: ' .. barOrder)
+expect(headerOrder:find('flag') ~= nil and headerOrder:match('([%w]+)$') == 'flag',
+  'and the flag ends the run in both, so it is always in the same place')
+
+-- ---------------------------------------------------------------------------
 -- Nudge mode: the button, and who owns whether it is on
 -- ---------------------------------------------------------------------------
 expect(html:find('ng%-click="toggleNudge%(%)"') ~= nil,

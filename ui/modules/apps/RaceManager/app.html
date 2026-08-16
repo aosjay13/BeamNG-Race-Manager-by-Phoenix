@@ -61,10 +61,19 @@
     <span class="rm-out-badge" ng-if="sessionUnderWay() && qualiOutLap && onOutLap()"
           title="{{ sessionKind === 'quali' ? 'Out lap: not timed, not scored, not counted.' : 'Counts toward the distance, but sets no lap time.' }}">{{ sessionKind === 'quali' ? 'OUT LAP' : 'LAP 1: NOT TIMED' }}</span>
     <!-- Your own grid slot, and the hold before the lights go out -->
-    <!-- The flag, in the header. Red lamp while the field is locked on the grid,
-         then an actual FLAG once a session is running: green racing, yellow
-         caution, white last lap. A flag is read faster than a coloured dot and
-         it is what a driver already looks for. -->
+    <!-- SAME THREE READOUTS THE DRIVER BAR CARRIES, in the same order, because
+         an admin running the session is usually driving it as well. -->
+    <span class="rm-driverbar-label rm-driverbar-lane" ng-if="lane">
+      LINE <b>{{ laneName || lane }}</b>
+    </span>
+    <span class="rm-driverbar-label" ng-if="jokerEnabled">
+      JOKER <b ng-class="{'rm-joker-done': jokerTaken}">{{ jokerTaken ? 'DONE (lap ' + jokerLap + ')' : 'PENDING' }}</b>
+    </span>
+    <span class="rm-driverbar-label" ng-if="resetsLimited()">
+      RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
+    </span>
+    <!-- THE FLAG ENDS THE STATUS RUN, in both panels. Green racing, yellow
+         caution, white last lap, red held or stopped. -->
     <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
           title="{{ flagTitle() }}">⚑</span>
 
@@ -1838,50 +1847,14 @@
   <!-- The only chrome a non-admin keeps during a live session: leaderboard
        opacity, a size reset, and a way back to the login prompt. -->
   <div class="rm-driverbar" ng-if="minimalMode()" ng-style="{'background-color': 'rgba(15, 17, 22, ' + (lbUi.opacity * 0.8) + ')'}">
-    <!-- Own lap clock. A held time (just-completed lap) takes the slot for a
-         few seconds and is styled differently so it never reads as a stalled
-         clock; the live clock underneath never stops. -->
-    <span class="rm-laptime" ng-if="showLapTime()">
-      <span class="rm-laptime-out" ng-if="lapHolding() && outLapDone()"
-            title="Your out lap is over: the lap you are on now is being timed">
-        {{ sessionKind === 'quali' ? 'OUT LAP DONE, TIMING' : 'TIMING FROM HERE' }}
-      </span>
-      <span class="rm-laptime-hold" ng-if="lapHolding() && !outLapDone()">
-        LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}
-      </span>
-      <!-- No clock on the out lap. This bar is the whole HUD for a driver in
-           minimal mode, so a running number here is the only thing they have to
-           go on - and on a lap that is not being timed it would be a lie. -->
-      <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
-            title="Standing start, so the first lap is not timed. Timing starts as you cross the line.">
-        {{ sessionKind === 'quali' ? 'OUT LAP: NOT TIMED' : 'LAP 1: NOT TIMED' }}
-      </span>
-      <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()">
-        LAP {{ formatLapLive(lapElapsed()) }}
-      </span>
-    </span>
-    <!-- THE FLAG, for a non-admin too. Minimal mode is the entire HUD for a
-         driver, and a caution nobody in the field can see is a caution that may
-         as well not have been called. -->
-    <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
-          title="{{ flagTitle() }}">⚑</span>
-    <!-- Which way round this driver is going. On a head-on layout it is the one
-         thing they most need to be sure of, and it is decided by the grid slot
-         they were given rather than by anything they can choose. -->
-    <span class="rm-driverbar-label rm-driverbar-lane" ng-if="lane">
-      LINE <b>{{ laneName || lane }}</b>
-    </span>
-    <span class="rm-driverbar-label" ng-if="jokerEnabled">
-      JOKER <b ng-class="{'rm-joker-done': jokerTaken}">{{ jokerTaken ? 'DONE (lap ' + jokerLap + ')' : 'PENDING' }}</b>
-    </span>
-    <span class="rm-driverbar-label" ng-if="resetsLimited()">
-      RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
-    </span>
-    <!-- THE SAME NUMBERS THE HEADER GIVES AN ADMIN.
-         Minimal mode removes the header, and with it the checkpoint counter, the
-         distance to your own next gate and the race clock -- so a driver, who is
-         the one person actually using them, was the only one who could not see
-         them. They are their own readouts, not admin tooling. -->
+    <!-- THE SAME STATUS RUN AS THE ADMIN HEADER, IN THE SAME ORDER:
+         phase, CP, next, race clock, lap, line, joker, resets, flag.
+
+         It used to be its own order with its own subset, so switching between
+         admin and driver moved every number and the flag was never in the same
+         place twice. ui_bindings_test pins the order in both panels now. -->
+    <span class="rm-phase rm-driverbar-phase" ng-class="'rm-phase-' + phase"
+          ng-if="phase !== 'waiting'">{{ phaseLabel() }}</span>
     <span class="rm-driverbar-label" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">
       CP <b>{{ nextWp }}/{{ routeWaypoints.length }}</b>
     </span>
@@ -1891,6 +1864,40 @@
     <span class="rm-driverbar-label" ng-if="phase === 'racing' || phase === 'finished'">
       RACE <b>{{ formatRaceTime(raceTime) }}</b>
     </span>
+    <!-- Own lap clock. A held time (just-completed lap) takes the slot for a few
+         seconds and is styled differently so it never reads as a stalled clock;
+         the live clock underneath never stops. -->
+    <span class="rm-laptime" ng-if="showLapTime()">
+      <span class="rm-laptime-out" ng-if="lapHolding() && outLapDone()"
+            title="Your out lap is over: the lap you are on now is being timed">
+        {{ sessionKind === 'quali' ? 'OUT LAP DONE, TIMING' : 'TIMING FROM HERE' }}
+      </span>
+      <span class="rm-laptime-hold" ng-if="lapHolding() && !outLapDone()">
+        LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}
+      </span>
+      <!-- No clock on the out lap. A running number on a lap that is not being
+           timed is a lie, and this bar is the whole HUD for a driver. -->
+      <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
+            title="Standing start, so the first lap is not timed. Timing starts as you cross the line.">
+        {{ sessionKind === 'quali' ? 'OUT LAP: NOT TIMED' : 'LAP 1: NOT TIMED' }}
+      </span>
+      <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()">
+        LAP {{ formatLapLive(lapElapsed()) }}
+      </span>
+    </span>
+    <!-- Which way round this driver is going. On a head-on layout it is the one
+         thing they most need to be sure of. -->
+    <span class="rm-driverbar-label rm-driverbar-lane" ng-if="lane">
+      LINE <b>{{ laneName || lane }}</b>
+    </span>
+    <span class="rm-driverbar-label" ng-if="jokerEnabled">
+      JOKER <b ng-class="{'rm-joker-done': jokerTaken}">{{ jokerTaken ? 'DONE (lap ' + jokerLap + ')' : 'PENDING' }}</b>
+    </span>
+    <span class="rm-driverbar-label" ng-if="resetsLimited()">
+      RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
+    </span>
+    <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
+          title="{{ flagTitle() }}">⚑</span>
     <span class="rm-driverbar-spacer"></span>
     <label class="rm-driverbar-op" title="Leaderboard background opacity" ng-if="!hudCollapsed">
       <span>◑</span>
@@ -2843,6 +2850,9 @@
     animation: rm-flagpulse 1s ease-in-out infinite;
   }
   @keyframes rm-flagpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  /* The phase pill in the driver bar: same colours as the header's, smaller,
+     so both panels open their status run the same way. */
+  .rm-driverbar-phase { font-size: 9px; padding: 1px 5px; }
   .rm-flagset { display: inline-flex; gap: 4px; }
   .rm-btn-redflag { border-color: rgba(255, 82, 82, 0.85); color: #ff8a8a; }
   .rm-btn-caution { border-color: rgba(251, 188, 5, 0.85); color: #fdd663; }
