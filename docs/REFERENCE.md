@@ -161,6 +161,15 @@ back in restores it. The mode is locked once a countdown or race starts.
 Switch the editor to the **Pit Stalls** tab, drive into each stall and press
 **+ Place Pit Stall Here**. Stalls are drawn amber and labelled `PIT 1`, `PIT 2`.
 
+**The box is drawn, because the box is the rule.** A stall is not a gate you
+cross, it is a volume you occupy: the gate's width across, three metres either
+way along it, measured on the stall's own axes so an angled stall still reads
+correctly. On track it appears as a translucent amber floor with low side walls
+and a corner post at each corner, open front and back because a stall is driven
+into and out of. The walls are deliberately short: the height part of the test
+excludes nobody, so drawing it full height would imply a constraint that is not
+doing any work, while the footprint, which is what decides, is drawn exactly.
+
 **You have to stop in the box yourself.** Driving into a stall is not enough
 the car has to actually come to a stop inside it. While you are in the box and
 still rolling the panel says *"come to a stop inside the box"*; the moment you
@@ -857,9 +866,16 @@ markers, which could not be made bright enough to see.
 **No text on them.** The poles say where the gate is and the colour says which
 one is next; "CP 3" read at racing speed tells a driver nothing they can act on,
 and it is one more thing painted across the racing line. Pit stalls are the same:
-amber, unlabelled. **The joker is the only gate that carries text**, because it is
-the only one whose wording changes what you should *do* - owed, taken, or
-forbidden on lap 1 - and getting that wrong is a disqualification. The editor
+amber, unlabelled, drawn as the box they test.
+
+**The joker is the only gate that carries text**, because it is the only one
+whose state changes what you should *do* (owed, taken, or forbidden on lap 1)
+and getting it wrong is a disqualification either way. It is drawn to be read at
+speed: a faint violet fill between its poles with the label **on the gate face**
+rather than floating above it, plus a symbol for the state that matters most.
+A translucent red **cross** while the joker is shut, a green **tick** once it has
+been taken. A sentence read at racing speed is a sentence a driver has no
+attention for; a cross is not. The editor
 still numbers everything; that is where the numbers are worth reading. Just those two - a whole lap's worth of numbered rectangles
 across the racing line is clutter, but a checkpoint nobody can see is worse.
 

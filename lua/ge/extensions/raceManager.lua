@@ -121,6 +121,12 @@ local TUNE = {
   -- swallow physics jiggle.
   PIT_STOP_SPEED = 0.7,
   PIT_PROMPT_EVERY = 1.5, -- seconds between "stop in the box" reminders
+  -- How high a pit stall's side walls are DRAWN. Not a rule: the height half of
+  -- pit.inside excludes nobody, so the walls are kept low and out of the way
+  -- while the footprint, which is the part that decides, is drawn honestly.
+  PIT_WALL_H     = 1.4,
+  START_SLOT_LEN  = 4.6,  -- metres; roughly one car long
+  START_SLOT_WIDE = 2.2,
   -- The joker gate's pole colour, and its colour once the joker has been taken.
   -- Pole colours set outright rather than lifted, because their stock value is
   -- black and there is no brighter version of black to compute.
@@ -3981,6 +3987,18 @@ local function palette()
     -- route beside them is one they still owe, and it has to be tellable from a
     -- checkpoint label at a glance.
     jokerLabelBg = ColorI(70, 20, 110, 190),
+    -- A driver's fills. Fainter than the editor's: an admin is judging a gate
+    -- against the track and wants to see its extent, a driver is driving through
+    -- it at speed and wants to see the road.
+    jokerFill    = ColorF(0.72, 0.35, 1, 0.13),
+    jokerUsedFill = ColorF(0.62, 0.62, 0.7, 0.10),
+    pitFill      = ColorF(1, 0.72, 0.1, 0.11),
+    pitWall      = ColorF(1, 0.72, 0.1, 0.07),
+    -- The state glyph drawn across a joker gate: a cross while it is shut, a
+    -- tick once it is spent. Both semi-transparent, because they are drawn over
+    -- the piece of track the driver is about to aim at.
+    glyphShut    = ColorF(1, 0.25, 0.25, 0.5),
+    glyphDone    = ColorF(0.3, 1, 0.45, 0.5),
     -- Demo derby arena. Its own entries rather than its own table: the derby
     -- module keeps its state and its logic separate, but a colour is a colour,
     -- and building these per frame is what this exists to stop.
@@ -4042,6 +4060,10 @@ local function gateGeometry(wp)
     tl = corner(-1,  1), tr = corner(1,  1),
   }
   g.mid = (g.tl + g.tr) * 0.5 + vec3(0, 0, 0.8)
+  -- The middle of the gate's own face. `mid` floats above the top edge, which is
+  -- right for an editor label sitting clear of the rectangle and wrong for a
+  -- driver's, where the words want to be ON the gate they describe.
+  g.centre = (g.bl + g.tr) * 0.5
   -- The authoring direction arrow, cached with the corners for the same reason
   -- they are: it is fixed by the gate's placement, and rebuilding four vec3 per
   -- gate per frame is precisely the garbage this cache exists to stop.
@@ -4102,13 +4124,11 @@ end
 -- pointing the way the car will face, numbered from pole. Drawn while the
 -- editor is visible and during the grid/countdown phases so drivers can see
 -- where they are being placed.
-local START_SLOT_LEN  = 4.6      -- meters; roughly one car long
-local START_SLOT_WIDE = 2.2
 
 local function drawStartPosition(sp, index, mine)
   local fx, fy = sp.hx, sp.hy
   local rx, ry = sp.hy, -sp.hx
-  local hl, hw = START_SLOT_LEN * 0.5, START_SLOT_WIDE * 0.5
+  local hl, hw = TUNE.START_SLOT_LEN * 0.5, TUNE.START_SLOT_WIDE * 0.5
   local function corner(sf, sr)
     return vec3(sp.x + fx * sf * hl + rx * sr * hw,
                 sp.y + fy * sf * hl + ry * sr * hw,
@@ -4208,45 +4228,6 @@ end
 -- would mark a target that does not score. drawPoleGate draws the same two-pole
 -- shape out of the editor's own cylinders instead.
 
--- The joker route's LABEL, for a driver.
---
--- Split from the pole above because the two cannot come from the same place:
--- sideColumnMarker renders no text whatsoever (every drawTextAdvanced in it is
--- commented out), so a pole can say where the joker is and never what state it
--- is in. For the joker that is the half that matters -- "used" and
--- "lap 1: closed" are the difference between a route you must take and one you
--- must not, and taking it wrong is a disqualification either way.
---
--- Deliberately the same text the editor shows, from the same jokerLabel cache,
--- so an admin and a driver are reading the identical words about the identical
--- gate. Only the label is drawn here: the pole is the shape, and repeating the
--- editor's filled rectangle over it would be the clutter the poles replaced.
--- `derbyLive` is passed in rather than read, because the derby module is scoped
--- further down this file and its state does not exist yet up here. A running
--- derby is a different game mode on the same map: whatever race track happens to
--- be loaded is not what anyone in the arena is driving, and a JOKER ROUTE label
--- hanging over a demolition derby is exactly the authoring-debris problem the
--- arena visuals were just cleaned up for.
-local function drawJokerLabel(derbyLive)
-  if not debugDrawer then return end
-  -- The editor draws its own, for every joker gate at once and with the
-  -- rectangle attached. This is the other view of the same thing.
-  if editorOpen and isAdmin then return end
-  if spectatorLock or derbyLive then return end
-  local jn = #jokerRoute
-  if not jokerEnabled or jn == 0 then return end
-  local j = jokerArmed
-  if j < 1 or j > jn then j = 1 end
-  local wp = jokerRoute[j]
-  if not wp then return end
-  local active = sessionRunning() or phase == 'countdown' or phase == 'grid'
-  local state = jokerTaken and 'used'
-    or ((active and localLap <= 1) and 'closed' or 'open')
-  local p = palette()
-  debugDrawer:drawTextAdvanced(gateGeometry(wp).mid,
-    String(jokerLabel(j, jn, state)), p.text, true, false, p.jokerLabelBg)
-end
-
 -- THE DRIVER'S VIEW OF THE GATE THEY ARE AIMING AT.
 --
 -- Reported live as "racers cannot see the default BeamNG checkpoints". The stock
@@ -4266,14 +4247,107 @@ end
 -- to aim through at one height and what is marked is the LINE between the poles
 -- at any height. No fill or bottom edge either: a bar at road height is a thing
 -- to drive into.
-local function drawPoleGate(wp, color, label)
+-- Drawing helpers that are not a gate. ONE local, because this file sits at
+-- Lua's 200-active-locals ceiling and three bare names did not fit: the failure
+-- is not a warning, the file stops compiling and the whole mod is gone.
+local paint = {}
+
+-- A CROSS or a TICK across a gate's face, for a joker whose state changes what
+-- the driver must do.
+--
+-- Drawn rather than written because the two states are read at speed from a
+-- distance, and "JOKER 1/2: closed" is a sentence at the moment a driver has
+-- least attention to give a sentence. Sized off the gate but capped, so a
+-- twenty-metre gate gets a symbol rather than scaffolding across the road.
+function paint.glyph(g, kind)
+  local p = palette()
+  local half = math.min(g.w, g.h) * 0.22
+  if half > 2.2 then half = 2.2 end
+  if half < 0.6 then half = 0.6 end
+  local c  = g.centre
+  -- The gate's own axes, so the glyph lies IN the gate's plane at any angle.
+  local rx, ry = g.hy, -g.hx
+  local function at(sr, su)
+    return vec3(c.x + rx * sr * half, c.y + ry * sr * half, c.z + su * half)
+  end
+  local r = TUNE.POLE_RADIUS * 0.8
+  if kind == 'shut' then
+    debugDrawer:drawCylinder(at(-1, -1), at(1, 1), r, p.glyphShut)
+    debugDrawer:drawCylinder(at(-1, 1), at(1, -1), r, p.glyphShut)
+  elseif kind == 'done' then
+    -- A tick: short stroke down into the corner, long stroke up and out.
+    debugDrawer:drawCylinder(at(-0.9, 0.1), at(-0.25, -0.85), r, p.glyphDone)
+    debugDrawer:drawCylinder(at(-0.25, -0.85), at(1, 1), r, p.glyphDone)
+  end
+end
+
+-- THE PIT STALL IS A BOX, SO IT IS DRAWN AS ONE.
+--
+-- pit.inside tests a volume: the gate's width across, TUNE.PIT_DEPTH either way
+-- along, the gate's height vertically, measured on the stall's own axes. Two
+-- poles showed a PLANE for a rule that is a volume, and then the mod asked the
+-- driver to "come to a stop inside the box" without ever drawing the box. This
+-- draws the actual test.
+--
+-- The walls are low on purpose. The height half of the test excludes nobody -- a
+-- car on the road is always within a few metres of the stall vertically -- so
+-- drawing it at full gate height would be a tall pair of walls implying a
+-- constraint that is not doing any work. The FOOTPRINT is the part that decides,
+-- so the footprint is what is drawn honestly and the rest is kept out of the way.
+function paint.pitBox(wp, color)
+  local w = (gateDims(wp))
+  local hw = w * 0.5
+  local d  = TUNE.PIT_DEPTH
+  local fx, fy = wp.hx or 0, wp.hy or 1
+  local rx, ry = fy, -fx
+  local z = wp.z
+  -- corner(sr, sf): centre + lateral*sr*hw + forward*sf*d
+  local function corner(sr, sf, up)
+    return vec3(wp.x + rx * sr * hw + fx * sf * d,
+                wp.y + ry * sr * hw + fy * sf * d,
+                z + (up or 0))
+  end
+  local p = palette()
+  local bl, br = corner(-1, -1), corner(1, -1)
+  local fl, fr = corner(-1,  1), corner(1,  1)
+  -- The floor: where to stop, filled so the extent is unmistakable and faint
+  -- enough that the road under it stays readable.
+  debugDrawer:drawQuadSolid(bl, br, fr, fl, p.pitFill)
+  -- Two side walls, open front and back: a stall is driven into and out of.
+  local blu, flu = corner(-1, -1, TUNE.PIT_WALL_H), corner(-1, 1, TUNE.PIT_WALL_H)
+  local bru, fru = corner(1, -1, TUNE.PIT_WALL_H), corner(1, 1, TUNE.PIT_WALL_H)
+  debugDrawer:drawQuadSolid(bl, fl, flu, blu, p.pitWall)
+  debugDrawer:drawQuadSolid(br, fr, fru, bru, p.pitWall)
+  -- Corner posts, so the box has an outline at distance and in flat light where
+  -- a translucent fill alone disappears.
+  local r = TUNE.POLE_RADIUS
+  debugDrawer:drawCylinder(bl, blu, r, color)
+  debugDrawer:drawCylinder(br, bru, r, color)
+  debugDrawer:drawCylinder(fl, flu, r, color)
+  debugDrawer:drawCylinder(fr, fru, r, color)
+  -- The line across the middle of the box: where the car actually wants to be.
+  local ml = vec3(wp.x + rx * hw, wp.y + ry * hw, z + 0.05)
+  local mr = vec3(wp.x - rx * hw, wp.y - ry * hw, z + 0.05)
+  debugDrawer:drawCylinder(ml, mr, r * 0.6, color)
+end
+
+-- `fill` and `glyph` are for the joker and nothing else. An ordinary checkpoint
+-- stays two bare poles: it is passed at speed, it means one thing, and anything
+-- painted across it is one more object between a driver and the corner.
+local function drawPoleGate(wp, color, label, fill, glyph)
   local g = gateGeometry(wp)
   local r = TUNE.POLE_RADIUS
+  if fill then debugDrawer:drawQuadSolid(g.bl, g.br, g.tr, g.tl, fill) end
   debugDrawer:drawCylinder(g.bl, g.tl, r, color)
   debugDrawer:drawCylinder(g.br, g.tr, r, color)
+  if glyph then paint.glyph(g, glyph) end
   if label then
     local p = palette()
-    debugDrawer:drawTextAdvanced(g.mid, String(label), p.text, true, false, p.textBg)
+    -- ON the gate, not floating above it. A label at `mid` hangs over the top
+    -- edge, which reads as a sign near the gate rather than a fact about it, and
+    -- from a car it can sit against the sky with nothing behind it.
+    debugDrawer:drawTextAdvanced(fill and g.centre or g.mid,
+      String(label), p.text, true, false, p.textBg)
   end
 end
 
@@ -4322,8 +4396,15 @@ local function drawDriverGate(derbyLive)
     if wp then
       local state = jokerTaken and 'used'
         or ((sessionRunning() and localLap <= 1) and 'closed' or 'open')
+      -- The joker is the one gate whose STATE changes what a driver must do, so
+      -- it is the one gate that earns a fill, a label on its face and a symbol.
+      -- Getting it wrong is a disqualification either way round.
+      local glyph = (state == 'used' and 'done')
+        or (state == 'closed' and 'shut')
+        or nil
       drawPoleGate(wp, jokerTaken and p.jokerUsed or p.joker,
-        jokerLabel(j, #jokerRoute, state))
+        jokerLabel(j, #jokerRoute, state),
+        jokerTaken and p.jokerUsedFill or p.jokerFill, glyph)
     end
   end
   if #pitRoute > 0 then
@@ -4337,8 +4418,9 @@ local function drawDriverGate(derbyLive)
       end
     end
     -- Amber, and unlabelled like the rest: a pit stall is somewhere you either
-    -- meant to go or did not.
-    if pitRoute[best] then drawPoleGate(pitRoute[best], p.pit, nil) end
+    -- meant to go or did not. Drawn as the BOX pit.inside actually tests, so
+    -- "come to a stop inside the box" refers to something the driver can see.
+    if pitRoute[best] then paint.pitBox(pitRoute[best], p.pit) end
   end
 end
 
@@ -4411,7 +4493,12 @@ local function drawGates(derbyLive)
   -- are not part of the checkpoint sequence and must not look as though they
   -- are. Editor only -- a driver gets a pole on the nearest one instead.
   for i, wp in ipairs(pitRoute) do
-    drawGate(wp, nudgeSelected(pitRoute, i) and p.nudged or p.pit, 'PIT ' .. i, authoring)
+    local col = nudgeSelected(pitRoute, i) and p.nudged or p.pit
+    -- The footprint too, in the editor: a stall is placed as a box and judged
+    -- against the lane it sits in, and the rectangle alone says nothing about
+    -- how far along the stall a car still counts as being in it.
+    paint.pitBox(wp, col)
+    drawGate(wp, col, 'PIT ' .. i, authoring)
   end
 
   -- Joker route: violet, so it never reads as part of the main lap. The next
@@ -5389,8 +5476,6 @@ function M.onUpdate(dt)
   lapTimerUpdate(dt)        -- live lap clock for this driver's own HUD
   reportProgress(dt)        -- live position telemetry (distance to next gate)
   drawGates(derbyState.phase == 'running')
-  -- The one label a driver gets: the gate poles carry no text at all.
-  drawJokerLabel(derbyState.phase == 'running')
   drawStartPositions()      -- starting grid slots
   nudge.update()            -- mouse editing, only while the mode is on
   fieldUpdate(dt)           -- ghosted, staggered grid placement / mass respawn

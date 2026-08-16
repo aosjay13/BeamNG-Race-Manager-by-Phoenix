@@ -138,7 +138,9 @@ check(#quads == 0, 'and still as poles, not the authoring view')
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
 frame()
 check(#quads == 0,
-  'a driver gets no FILLED gate surfaces -- that is the authoring view')
+  'an ordinary checkpoint gets no FILLED surface for a driver -- that is the '
+    .. 'authoring view, and a plain gate means one thing and needs no help '
+    .. 'saying it. The joker and the pit box are the exceptions, below')
 check(#texts == 0,
   'and NO text on them: the poles say where the gate is and the colour says which '
     .. 'one is next, so "CP 3" at racing speed is one more thing painted across '
@@ -443,9 +445,98 @@ check(near(cylinders[15].a.x, -22), 'and the one after it alone')
 RM.setEditorOpen(false)
 
 
+-- ===========================================================================
+-- The joker wears its state, and the pit stall is drawn as the box it tests
+-- ===========================================================================
+-- These two are the exceptions to "a driver gets poles and nothing else", and
+-- both earn it the same way: what the driver has to DO changes with state, and
+-- getting either wrong costs them the race.
+-- A running derby correctly suppresses every race gate, so it is stood down
+-- first: a checkpoint hanging over a demolition arena is debris. This block
+-- lives at the END of the file because doing that mid-way disturbs the derby
+-- sections above, which is worth one comment to save the next person the hunt.
+derbyState({ derbyPhase = 'idle', boundary = {}, players = {},
+  oobLimit = 5, demoLimit = 10 })
+RM.setDerbyEditorOpen(false)
+RM.setEditorOpen(false)
+handlers['RM_ApplyLayout']({
+  name = 'joker + pits', width = 20, height = 10,
+  checkpoints = {
+    { x = 0, y = 100, z = 5, hx = 0, hy = 1 },
+    { x = 0, y = 200, z = 5, hx = 0, hy = 1 },
+  },
+  joker = { { x = 50, y = 150, z = 5, hx = 1, hy = 0 } },
+  pits  = { { x = -50, y = 100, z = 5, hx = 1, hy = 0 } },
+})
+serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {},
+  jokerEnabled = true })
+cylinders, texts, quads = {}, {}, {}
+frame()
+
+-- The joker: a fill behind it so the words have something to sit on, and the
+-- label ON the gate rather than floating over its top edge where it can end up
+-- against the sky with nothing behind it.
+local jokerText
+for _, t in ipairs(texts) do
+  if t.text:find('JOKER', 1, true) then jokerText = t end
+end
+check(jokerText ~= nil, 'the joker still says which gate it is and what state it is in')
+check(near(jokerText.at.z, 5),
+  'and the label sits at the middle of the gate face, not above its top edge '
+    .. '(got z=' .. tostring(jokerText.at.z) .. ')')
+check(#quads > 0, 'the joker gate is filled, faintly, so the text reads against it')
+
+-- Lap 1 with the joker enabled is the forbidden state, and a cross says so
+-- faster than a sentence read at racing speed.
+-- The glyph strokes are the only cylinders passing through the gate's own
+-- CENTRE: its poles stand at the edges, ten metres out either side.
+local through = 0
+for _, c in ipairs(cylinders) do
+  local mx = (c.a.x + c.b.x) * 0.5
+  local my = (c.a.y + c.b.y) * 0.5
+  local mz = (c.a.z + c.b.z) * 0.5
+  local dx, dy, dz = mx - 50, my - 150, mz - 5
+  if math.sqrt(dx * dx + dy * dy + dz * dz) < 3 then through = through + 1 end
+end
+check(through >= 2,
+  'a CROSS is drawn across a joker that is shut on lap 1: two strokes through '
+    .. 'the gate centre, where its poles never reach (got ' .. through .. ')')
+
+local jokerLabels = 0
+for _, t in ipairs(texts) do
+  if t.text:find('JOKER', 1, true) then jokerLabels = jokerLabels + 1 end
+end
+check(jokerLabels == 1,
+  'and it is labelled ONCE. drawJokerLabel and drawPoleGate both drew it, at '
+    .. 'the same point, so the duplication was invisible until the driver label '
+    .. 'moved onto the gate face and the two separated')
+
+-- The pit box: the footprint pit.inside actually tests, which is the gate's
+-- width across and PIT_DEPTH either way ALONG. Two poles used to show a plane
+-- for a rule that is a volume, while the mod asked the driver to stop in a box
+-- it never drew.
+local minX, maxX, minY, maxY = math.huge, -math.huge, math.huge, -math.huge
+for _, q in ipairs(quads) do
+  for _, pt in ipairs({ q.a, q.b, q.c, q.d }) do
+    if pt.x < -20 then           -- the pit stall is out at x = -50
+      if pt.x < minX then minX = pt.x end
+      if pt.x > maxX then maxX = pt.x end
+      if pt.y < minY then minY = pt.y end
+      if pt.y > maxY then maxY = pt.y end
+    end
+  end
+end
+-- The stall faces +X, so PIT_DEPTH runs along X and the width runs along Y.
+check(near(maxX - minX, 6),
+  'the box runs PIT_DEPTH either way along the stall (6 m, got '
+    .. tostring(maxX - minX) .. ')')
+check(near(maxY - minY, 20),
+  'and the gate width across it (20 m, got ' .. tostring(maxY - minY) .. ')')
+
 if fails == 0 then
   print('draw_test: ' .. checks .. ' checks, 0 failures')
 else
   print('draw_test: ' .. fails .. ' FAILURES of ' .. checks .. ' checks')
   os.exit(1)
 end
+
