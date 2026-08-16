@@ -75,7 +75,7 @@
     <!-- THE FLAG ENDS THE STATUS RUN, in both panels. Green racing, yellow
          caution, white last lap, red held or stopped. -->
     <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
-          title="{{ flagTitle() }}"></span>
+          title="{{ flagTitle() }}">&#x2691;&#xFE0E;</span>
 
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
       START P{{ gridSlot }}<b ng-if="gridFrozen"> HOLD</b>
@@ -1912,7 +1912,7 @@
       RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
     </span>
     <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
-          title="{{ flagTitle() }}"></span>
+          title="{{ flagTitle() }}">&#x2691;&#xFE0E;</span>
     <span class="rm-driverbar-label rm-entry-out" ng-if="spectating">👁 SPECTATING</span>
     <!-- THEIR OWN PARTICIPATION, reachable from the only thing they can see.
          Both of these used to live in the Race Entry row, which is hidden for a
@@ -2109,7 +2109,7 @@
               ng-class="{'rm-reset-low': resetsLow(row)}">{{ resetLabel(row) }}</td>
           <td class="rm-col-status">
             <span class="rm-light" ng-class="'rm-light-' + row.status"></span>
-            <span ng-if="row.status === 'finished'" class="rm-flag">🏁</span>
+            <span ng-if="row.status === 'finished'" class="rm-finished-flag">🏁</span>
             <span class="rm-status-text" title="{{ row.outReason }}">{{ (row.finishTime != null && row.status !== 'dsq') ? formatLap(row.finishTime) : outcomeLabel(row) }}</span>
           </td>
         </tr>
@@ -2881,27 +2881,20 @@
      A pole and a cloth, both from CSS, so the colour is ours. Static on purpose:
      the lamp this replaced pulsed, and a symbol that flickers is harder to read
      at speed than one that simply is. */
+  /* U+2691 plus U+FE0E. The variation selector requests the TEXT form of the
+     glyph; without it this arrives as an emoji, which carries its own colour and
+     ignores `color` entirely. The font stack is the same request made a second
+     way: name symbol fonts so the emoji font is not the one that answers.
+     NO PSEUDO-ELEMENTS. They used to draw a pole and cloth over the element,
+     which also painted over the checkered flag in the results table, since that
+     borrows this class for its own glyph. */
   .rm-flag {
     display: inline-block;
-    position: relative;
-    width: 15px;
-    height: 13px;
     vertical-align: middle;
-  }
-  .rm-flag::before {          /* the pole */
-    content: '';
-    position: absolute;
-    left: 0; top: 0; bottom: 0;
-    width: 2px;
-    background: rgba(255, 255, 255, 0.6);
-  }
-  .rm-flag::after {           /* the cloth, in whatever colour the state sets */
-    content: '';
-    position: absolute;
-    left: 3px; top: 1px;
-    width: 11px; height: 8px;
-    background: currentColor;
-    box-shadow: 0 0 7px currentColor;
+    font-family: 'Segoe UI Symbol', 'Apple Symbols', 'DejaVu Sans', sans-serif;
+    font-size: 14px;
+    line-height: 1;
+    text-shadow: 0 0 7px currentColor;
   }
   .rm-flag-green  { color: #34a853; }
   .rm-flag-yellow { color: #fdd663; }
@@ -2978,7 +2971,7 @@
   .rm-light-racing     { background: #34a853; box-shadow: 0 0 6px rgba(52, 168, 83, 0.9); }
   .rm-light-finished   { background: #e8eaed; }
   .rm-light-dnf        { background: #ea4335; }
-  .rm-flag { margin-right: 3px; }
+  .rm-finished-flag { margin-right: 3px; vertical-align: middle; }
   .rm-status-text { vertical-align: middle; }
 
   /* ============ Live positions =========================================== */

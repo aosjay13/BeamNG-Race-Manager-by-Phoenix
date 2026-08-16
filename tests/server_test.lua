@@ -6,6 +6,7 @@
 
 local connected = { [1] = 'Alice', [2] = 'Bob', [3] = 'Cara' }
 local lastState = nil     -- last decoded RM_Update payload
+local targetedStates = {} -- [pid] = last RM_Update sent to that pid alone
 local lastChat = nil      -- last broadcast chat message
 local lastLayouts = nil   -- last RM_Layouts payload
 local lastHeld    = nil   -- last RM_SaveHeld payload (a refused overwrite)
@@ -27,7 +28,13 @@ MP = {
   end,
   TriggerClientEvent = function (target, event, payload)
     eventSeq[#eventSeq + 1] = event
-    if event == 'RM_Update'      then lastState   = payload end
+    -- Kept PER TARGET as well as last-wins. The "you" fields (youAreAdmin,
+    -- youSpectating) only ride on targeted sends, so a test that reads them off
+    -- the global broadcast is reading a payload that never carried them.
+    if event == 'RM_Update' then
+      lastState = payload
+      if target ~= -1 then targetedStates[target] = payload end
+    end
     if event == 'RM_Layouts'     then lastLayouts = payload end
     if event == 'RM_ApplyLayout' then lastApplied = payload; appliedLayouts[target] = payload end
     if event == 'RM_ClearTrack'  then lastCleared = payload end
@@ -45,6 +52,8 @@ MP = {
 -- pcall and treats a raised error as "reject this payload", so a payload that
 -- is not valid JSON has to raise rather than silently produce a table -- which
 -- is what the tests for malformed saves are actually asserting.
+local function targetedState(pid) return targetedStates[pid] end
+
 local function jsonDecode(text)
   if type(text) ~= 'string' then error('json: not a string', 0) end
   local pos = 1
@@ -240,6 +249,13 @@ check(lastState.phase == 'waiting', 'Generate Grid refused with no entrants')
 -- Rejoining is the same button again. This is the path that had no way back:
 -- a driver could sit out and then could not put themselves in.
 RM_onSetSpectating(1, '{"spectating":false}')
+-- AND THE PANEL HAS TO BE TOLD. youSpectating is a targeted field, and it was
+-- built with `rec and rec.spectating == true or nil`, which cannot return false:
+-- the `or` swallowed it, the key dropped out of the JSON, and the panel kept the
+-- last value it saw. Spectating ON could be sent; spectating OFF could not, so a
+-- driver rejoined the field and was still told they were spectating.
+check(targetedState(1) ~= nil and targetedState(1).youSpectating == false,
+  'a driver who rejoined is told so, not left with the last value')
 RM_onSetSpectating(2, '{"spectating":false}')
 check(lastState.entrants == 2, 'rejoining puts a driver back in the field')
 RM_onSetSpectating(3, '{"spectating":false}')

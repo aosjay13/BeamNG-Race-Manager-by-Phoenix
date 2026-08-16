@@ -1188,19 +1188,15 @@ expect(js:find('$scope.setSpectating = function', 1, true) ~= nil,
 expect(js:find('data.youSpectating', 1, true) ~= nil,
   'and the panel follows the server, which owns whether you are in the field')
 
--- THE FLAG IS DRAWN, NOT TYPED.
+-- THE FLAG IS A GLYPH, AND IT MUST STILL TAKE ITS COLOUR FROM THE STATE.
 --
--- It was the ⚑ character, and the font renders that as an EMOJI: it carries its
--- own colour and ignores CSS `color`, so the flag stayed green while a yellow
--- was out. The chat line and the notice were correct the whole time, which is
--- what made it look like a state bug rather than a font one.
-expect(html:find('rm%-flag rm%-flag%-{{ driverFlag }}"[^>]->[^<]*⚑') == nil,
-  'the flag carries no glyph text: a character with its own colour cannot be '
-    .. 'recoloured by the state')
-expect(html:find('%.rm%-flag::after') ~= nil,
-  'it is drawn from CSS instead')
-expect(html:find('background: currentColor') ~= nil,
-  'and the cloth takes its colour from the state class, which is the whole point')
+-- A bare ⚑ renders as an EMOJI, carrying its own colour and ignoring CSS
+-- `color`, so the flag stayed one shade while a yellow was out. The chat line
+-- and the notice were correct the whole time, which is what made it look like a
+-- state bug rather than a font one. See the variation-selector checks below for
+-- how the text form is asked for.
+expect(html:find('rm%-flag rm%-flag%-{{ driverFlag }}"[^>]->[^<]*⚑[^9]') == nil,
+  'the flag glyph is never left bare: an emoji cannot be recoloured by the state')
 for _, colour in ipairs({ 'green', 'yellow', 'white', 'red' }) do
   expect(html:find('%.rm%-flag%-' .. colour .. '%s*{') ~= nil,
     'the ' .. colour .. ' flag has a colour rule')
@@ -1349,3 +1345,25 @@ expect(js:find('$scope.spectating = !!(data', 1, true) == nil,
   'the RaceManagerSpectator event never writes the entry decision')
 expect(html:find('class="rm-spectator-bar" ng-if="carTaken"', 1, true) ~= nil,
   'the spectator bar follows the camera, not the entry decision')
+
+
+-- ---------------------------------------------------------------------------
+-- The flag is a glyph, and it does not paint over anything else
+-- ---------------------------------------------------------------------------
+-- U+2691 arrives as an EMOJI unless the text form is asked for, and an emoji
+-- carries its own colour: the flag stayed one shade whatever the session was
+-- doing. The workaround was to draw a flag out of ::before and ::after, which
+-- then painted over the checkered flag in the results table, because that
+-- borrowed the same class. VS15 is the actual fix.
+expect(html:find('&#x2691;&#xFE0E;', 1, true) ~= nil,
+  'the flag glyph asks for its text form with a variation selector')
+expect(html:find('%.rm%-flag::before') == nil and html:find('%.rm%-flag::after') == nil,
+  'and nothing is drawn on top of it')
+expect(html:find('class="rm%-finished%-flag"') ~= nil,
+  'the results table checkered flag has its own class')
+expect(html:find('class="rm%-flag">🏁') == nil,
+  'so the flag styling can never paint over it')
+-- Both panels show the same glyph.
+local flagUses = 0
+for _ in html:gmatch('rm%-flag rm%-flag%-{{ driverFlag }}') do flagUses = flagUses + 1 end
+expect(flagUses == 2, 'the driver flag appears in both the admin header and the driver bar')
