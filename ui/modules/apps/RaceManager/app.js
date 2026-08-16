@@ -1315,6 +1315,12 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         $scope.$evalAsync(function () {
           $scope.phase = data.phase || 'waiting';
           $scope.flag = (data.flag === 'yellow' || data.flag === 'red') ? data.flag : 'green';
+          // READ HERE, on the state broadcast, which is the one that arrives on a
+          // clock. It was read only in the ROUTE handler, and that fires on
+          // editor changes and checkpoint crossings -- so the flag changed when
+          // the driver went through a gate and at no other time. The client was
+          // sending it on both channels the whole while; only one was listening.
+          if (data.driverFlag) { $scope.driverFlag = data.driverFlag; }
           // Which session the shared lifecycle is running. Qualifying and racing
           // go through the same phases now (grid -> countdown -> running ->
           // done), so the phase alone no longer says which one you are looking

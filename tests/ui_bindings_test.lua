@@ -1066,6 +1066,17 @@ expect(barStart and flagInBar and flagInBar > barStart,
 -- panel only renders it. The UI has no idea which lap anybody is on.
 expect(js:find('$scope.driverFlag = data.driverFlag', 1, true) ~= nil,
   'the panel takes the shown flag from the client rather than deriving it')
+
+-- ...AND READS IT ON THE STATE BROADCAST, not only on the route push. It was
+-- read in the RaceManagerRoute handler alone, which fires on editor changes and
+-- checkpoint crossings, so the flag changed when the driver went through a gate
+-- and at no other time. The client had been sending it on both channels; only
+-- one end was listening.
+local updateHandler = js:match("%$scope%.%$on%('RaceManagerUpdate'.-\n      }%);")
+expect(updateHandler ~= nil, 'found the state-broadcast handler')
+expect(updateHandler and updateHandler:find('$scope.driverFlag = data.driverFlag', 1, true) ~= nil,
+  'and it reads driverFlag, so the flag follows a caution called while nobody '
+    .. 'happens to be crossing a checkpoint')
 expect(js:find("=== 'white'", 1, true) ~= nil,
   'and knows about the white last-lap flag')
 
