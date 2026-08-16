@@ -3014,14 +3014,24 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       //
       // A custom property must be set on the element directly: jqLite's .css()
       // camel-cases the name, so a --custom-prop through ng-style is dropped.
+      // BOTH DIMENSIONS. Width alone was enough for the driver bar, but the
+      // overlays need a height too or they stay full-window tall: a narrow
+      // column of red down the whole screen instead of a box over the panel.
       $scope.$watch(function () {
-        if (!$scope.minimalMode()) { return 0; }
+        if (!$scope.minimalMode()) { return ''; }
         var board = $element[0].querySelector('.rm-table-wrap');
-        return board ? board.offsetWidth : 0;
-      }, function (w) {
+        var bar   = $element[0].querySelector('.rm-driverbar');
+        var w = board ? board.offsetWidth : 0;
+        var h = (board ? board.offsetHeight : 0) + (bar ? bar.offsetHeight : 0);
+        return w + 'x' + h;
+      }, function (size) {
+        var parts = String(size).split('x');
+        var w = parseInt(parts[0], 10) || 0;
+        var h = parseInt(parts[1], 10) || 0;
         // 'auto' rather than 0 while there is nothing to measure: a bar with no
         // width is a bar nobody can find the login button on.
         $element[0].style.setProperty('--rm-lb-width', w > 0 ? (w + 'px') : 'auto');
+        $element[0].style.setProperty('--rm-lb-height', h > 0 ? (h + 'px') : 'auto');
       });
 
 

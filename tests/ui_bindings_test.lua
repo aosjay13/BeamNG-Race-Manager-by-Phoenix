@@ -1073,6 +1073,38 @@ expect(clearLine and clearLine:find('countdown !== 0', 1, true) ~= nil,
   'and it spares the GO frame, which owns its own lifetime on a timer')
 
 -- ---------------------------------------------------------------------------
+-- Every full-window overlay is confined to the panel in minimal mode
+-- ---------------------------------------------------------------------------
+-- These are `position: absolute; inset: 0` against the root, and the root is the
+-- whole HUD app window, so inset:0 can never mean "the panel". The countdown was
+-- confined on its own and the derby's OUT OF BOUNDS warning was not, so a
+-- non-admin driving a derby got a red flash across their entire screen.
+--
+-- This asserts the LIST is complete rather than that one entry exists: patching
+-- them one at a time is exactly what let the second one through.
+local overlays = {}
+for cls in html:gmatch('\n  %.([%w%-]+) {\n    position: absolute;\n    inset: 0;') do
+  overlays[#overlays + 1] = cls
+end
+expect(#overlays > 0, 'found the full-window overlays (got ' .. #overlays .. ')')
+
+for _, cls in ipairs(overlays) do
+  -- Escaped: `-` is a quantifier in a Lua pattern, so a bare class name here
+  -- silently matches nothing and the guard passes by never looking.
+  local safe = cls:gsub('%-', '%%-')
+  expect(html:find('%.rm%-minimal %.' .. safe) ~= nil,
+    'the ' .. cls .. ' overlay is confined to the panel in minimal mode. Any '
+      .. 'new overlay that covers the window belongs in that selector list too')
+end
+
+-- And the confinement needs a measured HEIGHT, not just a width: width alone
+-- leaves a narrow column of overlay down the whole screen.
+expect(html:find('var(--rm-lb-height', 1, true) ~= nil,
+  'the confinement uses a measured panel height')
+expect(js:find('--rm-lb-height', 1, true) ~= nil,
+  'and the controller measures one')
+
+-- ---------------------------------------------------------------------------
 -- Nudge mode: the button, and who owns whether it is on
 -- ---------------------------------------------------------------------------
 expect(html:find('ng%-click="toggleNudge%(%)"') ~= nil,

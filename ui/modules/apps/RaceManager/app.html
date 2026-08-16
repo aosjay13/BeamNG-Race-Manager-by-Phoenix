@@ -3344,15 +3344,25 @@
     max-width: 100%;
     box-sizing: border-box;
   }
-  /* The countdown is position: absolute; inset: 0 against the root, so it filled
-     the whole HUD app window rather than the panel it belongs over. Pinned to
-     the top-left corner at the board's width instead -- the root is still the
-     full window and always will be, so `inset: 0` can never mean "the panel". */
-  .rm-minimal .rm-countdown {
+  /* EVERY FULL-WINDOW OVERLAY IS CONFINED TO THE PANEL IN MINIMAL MODE.
+     ONE RULE, LISTING ALL OF THEM.
+     
+     These are `position: absolute; inset: 0` against the root, and the root is
+     the whole HUD app window and always will be, so `inset: 0` can never mean
+     "the panel". Pinned to the top-left corner at the panel's measured size
+     instead.
+     
+     The countdown was fixed on its own and the derby's OUT OF BOUNDS warning was
+     not, so a non-admin driving a derby got a red flash across their entire
+     screen. Patching them one at a time is what let that happen: anything new
+     that covers the window belongs in this selector list, not in a rule of its
+     own. */
+  .rm-minimal .rm-countdown,
+  .rm-minimal .rm-derby-warning {
     right: auto;
     bottom: auto;
     width: var(--rm-lb-width, 100%);
-    height: 100%;
+    height: var(--rm-lb-height, 100%);
   }
   /* A driver's panel is narrow, so the gantry shrinks with it rather than
      pushing the lamps off the side. */
