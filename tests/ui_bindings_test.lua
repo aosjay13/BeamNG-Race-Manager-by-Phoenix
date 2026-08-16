@@ -1041,6 +1041,25 @@ local greenLamp = html:find('rm%-flaglamp%-green')
 expect(greenLamp == nil,
   'and no green one: an always-lit lamp is one nobody reads')
 
+-- The flag is shown to DRIVERS, not just admins. Minimal mode is the whole HUD
+-- for a non-admin, and a caution nobody in the field can see may as well not
+-- have been called.
+local _, flagsInHtml = html:gsub('rm%-flag rm%-flag%-{{ driverFlag }}', '')
+expect(flagsInHtml == 2,
+  'the flag appears twice: the admin header and the driver bar (found '
+    .. flagsInHtml .. ')')
+local barStart = html:find('<div class="rm%-driverbar"')
+local flagInBar = html:find('rm%-flag rm%-flag%-{{ driverFlag }}', barStart or 1)
+expect(barStart and flagInBar and flagInBar > barStart,
+  'one of them is inside the driver bar, which is a non-admin\'s entire HUD')
+
+-- White is a fact about ONE driver's lap, so the client resolves it and the
+-- panel only renders it. The UI has no idea which lap anybody is on.
+expect(js:find('$scope.driverFlag = data.driverFlag', 1, true) ~= nil,
+  'the panel takes the shown flag from the client rather than deriving it')
+expect(js:find("=== 'white'", 1, true) ~= nil,
+  'and knows about the white last-lap flag')
+
 -- ---------------------------------------------------------------------------
 -- Nudge mode: the button, and who owns whether it is on
 -- ---------------------------------------------------------------------------

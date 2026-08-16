@@ -19,6 +19,7 @@
 --
 -- Run from the repo root: lua5.3 tests/spectate_test.lua
 
+local placements = {}   -- every setPositionRotation the mod performed
 local checks, fails = 0, 0
 local function check(cond, msg)
   checks = checks + 1
@@ -38,8 +39,13 @@ local function makeVehicle(id, speed)
   function v:getPosition() return { x = 0, y = 0, z = 0 } end
   function v:getRotation() return { x = 0, y = 0, z = 0, w = 1 } end
   function v:getVelocity() return { x = 0, y = self.speed, z = 0 } end
+  -- Needed by vehiclePlacement, which the derby-release test below drives to
+  -- create a race start position for the fallback to reach for.
+  function v:getDirectionVector() return { x = 0, y = 1, z = 0 } end
   function v:getJBeamFilename() return 'etk800' end
-  function v:setPositionRotation() end
+  function v:setPositionRotation(x, y, z)
+    placements[#placements + 1] = { x = x, y = y, z = z }
+  end
   function v:queueLuaCommand(cmd) vehCommands[#vehCommands + 1] = tostring(cmd) end
   function v:setMeshAlpha() end
   function v:delete() world[self.id] = nil end
@@ -260,6 +266,41 @@ do
   check(frozen == false, 'the freeze lifts when the derby ends')
   check(blockedGroups['raceManagerResets'] ~= true, 'and the reset keys come back')
 end
+
+-- ---------------------------------------------------------------------------
+-- A DERBY RELEASE DOES NOT PUT THE CAR ON THE RACE'S START LINE
+-- ---------------------------------------------------------------------------
+-- Reported live: the derby ended, the five-second cool-down ran out, and the
+-- driver was respawned onto the start position of whatever race had been run
+-- last.
+--
+-- A derby leaves the wreck in the arena on purpose, so nothing was removed and
+-- there is nothing to put back. The placement fallback is the RACE's grid, so
+-- with no removed vehicle and no race grid slot it fell all the way through to
+-- race start position 1. Released where they sit now; they reset themselves.
+RM.setEditorTarget('start')
+RM.editorAdd()                          -- a race start position now exists
+RM.setEditorTarget('main')
+
+placements = {}
+handlers['RM_ForceSpectate']({ reason = 'Eliminated', source = 'derby' })
+frames(0.2)
+handlers['RM_ReleaseSpectate']({ source = 'derby', order = 1, count = 1 })
+frames(3.0)
+check(#placements == 0,
+  'a derby release places the car nowhere: it is left where the derby left it '
+    .. '(got ' .. #placements .. ' placement(s))')
+
+-- The race path is untouched by that. A finishing field still gets stood up on
+-- slots, which is what stops it respawning into itself.
+placements = {}
+handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race' })
+frames(0.2)
+handlers['RM_ReleaseSpectate']({ source = 'race', order = 1, count = 1 })
+frames(3.0)
+check(#placements > 0,
+  'a RACE release still stands the car on a start position (got '
+    .. #placements .. ')')
 
 if fails == 0 then
   print('spectate_test: ' .. checks .. ' checks, 0 failures')

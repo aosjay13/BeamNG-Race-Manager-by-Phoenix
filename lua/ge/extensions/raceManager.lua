@@ -807,6 +807,21 @@ local function reportStartCount()
   }))
 end
 
+-- GREEN, YELLOW or WHITE, for this driver, right now.
+--
+-- Yellow is the server's and beats everything: a caution is a fact about the
+-- session. White is the last lap and is per-driver, which is why it cannot be
+-- decided server-side for everybody at once. A sprint stage never shows one,
+-- having only the one lap there ever was.
+local function driverFlag()
+  if raceFlag == 'yellow' then return 'yellow' end
+  if phase == 'racing' and not pointToPoint and totalLaps > 0
+     and localLap >= totalLaps then
+    return 'white'
+  end
+  return 'green'
+end
+
 local function pushRouteState()
   reportStartCount()
   guihooks.trigger('RaceManagerRoute', {
@@ -838,6 +853,10 @@ local function pushRouteState()
     jokerLap     = jokerLapUsed,
     jokerEnabled = jokerEnabled,
     editorTarget = editorTarget,
+    -- Which flag is out FOR THIS DRIVER. Resolved here rather than in the UI
+    -- because the white flag is a fact about one driver's own lap, and the panel
+    -- has no idea which lap that is. One field, one meaning, both panels.
+    driverFlag   = driverFlag(),
     nudgeOn      = nudge.on,
     nudgeSel     = nudge.sel,
     -- Branching routes (the other ways round this track)
@@ -1948,8 +1967,19 @@ local function releaseSpectator(source, order, count)
   -- is spawned and never stood up -- it keeps whatever heading the spawn gave it,
   -- which is the "sideways" half of the report. Any placed slot is a spaced,
   -- road-level, correctly-facing piece of track.
-  local slot = (removedVehicle and removedVehicle.slot) or gridSlot
-    or (startPositions[1] and 1 or nil)
+  -- A DERBY RELEASE NEVER PLACES THE CAR.
+  --
+  -- A derby leaves the wreck in the arena on purpose, so nothing was removed and
+  -- there is nothing to put back. The fallback below is the RACE's grid, which
+  -- is how ending a derby put everybody on the start line of whatever race ran
+  -- last: no removedVehicle, no race gridSlot, so it fell through to race slot 1.
+  --
+  -- Released where they sit, and they reset themselves if they want to move.
+  local slot = nil
+  if source ~= 'derby' then
+    slot = (removedVehicle and removedVehicle.slot) or gridSlot
+      or (startPositions[1] and 1 or nil)
+  end
   if queueFieldPlacement then
     queueFieldPlacement({ respawn = true, slot = slot, order = order, count = count })
   else

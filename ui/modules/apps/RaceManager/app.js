@@ -27,7 +27,10 @@ angular.module('beamng.apps')
       $scope.phase = 'waiting';   // waiting | grid | countdown | qualifying | racing | finished
       // The flag the field is racing under. NOT a phase: it rides alongside one,
       // because a caution does not change what the session is doing.
-      $scope.flag = 'green';      // green | yellow
+      $scope.flag = 'green';      // green | yellow, the SESSION's flag
+      // The flag THIS driver is shown: green, yellow or white on their last lap.
+      // Resolved by the client, which is the only half that knows their lap.
+      $scope.driverFlag = 'green';
       // 'race' | 'quali' - which session the phases above belong to. Qualifying
       // runs the same lifecycle a race does, so this is what tells them apart.
       $scope.sessionKind = 'race';
@@ -1415,7 +1418,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // it on a timer instead makes the overlay own its own lifetime, and gives
       // GO! a readable beat in both modes rather than however long the next
       // broadcast happens to take.
-      var GO_OVERLAY_MS = 1500;
+      // GO holds longer than the counts do. It is the one frame everybody is
+      // actually looking at, and 1.5s was gone before a driver had looked up.
+      var GO_OVERLAY_MS = 3000;
       var goTimer = null;
 
       $scope.$on('RaceManagerCountdown', function (event, data) {
@@ -1481,6 +1486,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.jokerTaken = !!data.jokerTaken;
           $scope.jokerLap = data.jokerLap || null;
           $scope.editorTarget = editorTargetOf(data.editorTarget);
+          if (data.driverFlag) { $scope.driverFlag = data.driverFlag; }
           // Nudge mode. The CLIENT owns whether it is on: it can end the mode by
           // itself when a session starts or the editor closes, and the button
           // has to follow that rather than what it last asked for.
@@ -2258,6 +2264,17 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       };
       // Advisory only: it is shown to the field and announced in chat, and the
       // server decides whether the session is in a state to be flagged at all.
+      // Shown once a session is actually running. On the grid the red lamp says
+      // what is happening, and out of a session a flag would be furniture.
+      $scope.flagShowing = function () {
+        return $scope.phase === 'racing' || $scope.phase === 'qualifying';
+      };
+      $scope.flagTitle = function () {
+        if ($scope.driverFlag === 'yellow') { return 'Yellow flag: caution, race back to the line'; }
+        if ($scope.driverFlag === 'white') { return 'White flag: last lap'; }
+        return 'Green flag: racing';
+      };
+
       $scope.setFlag = function (f) {
         bngApi.engineLua('raceManager.setFlag("' + (f === 'yellow' ? 'yellow' : 'green') + '")');
       };

@@ -3555,9 +3555,9 @@ function RM_onSetFlag(pid, rawData)
   race.flag = want
   local who = MP.GetPlayerName(pid) or pid
   if want == 'yellow' then
-    MP.SendChatMessage(-1, '[RaceManager] YELLOW FLAG: caution, hold position. Called by ' .. who .. '.')
+    MP.SendChatMessage(-1, '[RaceManager] YELLOW FLAG: caution called, race back to the line. By ' .. who .. '.')
   else
-    MP.SendChatMessage(-1, '[RaceManager] GREEN FLAG: racing. Called by ' .. who .. '.')
+    MP.SendChatMessage(-1, '[RaceManager] GREEN FLAG: racing. By ' .. who .. '.')
   end
   print('[RaceManager] Flag set to ' .. want .. ' by ' .. tostring(who))
   broadcastState()

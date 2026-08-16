@@ -61,14 +61,14 @@
     <span class="rm-out-badge" ng-if="sessionUnderWay() && qualiOutLap && onOutLap()"
           title="{{ sessionKind === 'quali' ? 'Out lap: not timed, not scored, not counted.' : 'Counts toward the distance, but sets no lap time.' }}">{{ sessionKind === 'quali' ? 'OUT LAP' : 'LAP 1: NOT TIMED' }}</span>
     <!-- Your own grid slot, and the hold before the lights go out -->
-    <!-- One lamp, in the header. RED while the field is locked on the grid,
-         AMBER under caution, and nothing at all when the race is simply green:
-         a lamp that is always lit is a lamp nobody reads. -->
+    <!-- The flag, in the header. Red lamp while the field is locked on the grid,
+         then an actual FLAG once a session is running: green racing, yellow
+         caution, white last lap. A flag is read faster than a coloured dot and
+         it is what a driver already looks for. -->
     <span class="rm-flaglamp rm-flaglamp-red" ng-if="phase === 'grid'"
           title="Held on the grid">●</span>
-    <span class="rm-flaglamp rm-flaglamp-amber"
-          ng-if="flag === 'yellow' && (phase === 'racing' || phase === 'qualifying')"
-          title="Yellow flag: caution, hold position">●</span>
+    <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
+          title="{{ flagTitle() }}">⚑</span>
 
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
       START P{{ gridSlot }}<b ng-if="gridFrozen"> HOLD</b>
@@ -1854,6 +1854,11 @@
         LAP {{ formatLapLive(lapElapsed()) }}
       </span>
     </span>
+    <!-- THE FLAG, for a non-admin too. Minimal mode is the entire HUD for a
+         driver, and a caution nobody in the field can see is a caution that may
+         as well not have been called. -->
+    <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
+          title="{{ flagTitle() }}">⚑</span>
     <!-- Which way round this driver is going. On a head-on layout it is the one
          thing they most need to be sure of, and it is decided by the grid slot
          they were given rather than by anything they can choose. -->
@@ -2818,6 +2823,12 @@
   /* The header lamp. Small on purpose: it shares a strip with the phase, the
      clock and the lap, and none of those may move to make room for it. */
   .rm-flaglamp { font-size: 13px; line-height: 1; }
+  /* Static on purpose. The lamp pulsed, and a symbol that flickers is harder to
+     read at speed than one that simply is. */
+  .rm-flag { font-size: 15px; line-height: 1; }
+  .rm-flag-green  { color: #34a853; text-shadow: 0 0 7px rgba(52, 168, 83, 0.85); }
+  .rm-flag-yellow { color: #fdd663; text-shadow: 0 0 8px rgba(251, 188, 5, 0.95); }
+  .rm-flag-white  { color: #ffffff; text-shadow: 0 0 8px rgba(255, 255, 255, 0.9); }
   .rm-flaglamp-red   { color: #ff5252; text-shadow: 0 0 8px rgba(255, 82, 82, 0.8); }
   .rm-flaglamp-amber {
     color: #fdd663;
