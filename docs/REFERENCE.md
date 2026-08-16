@@ -1480,8 +1480,13 @@ and derby controls are not shown while you are in Race - see
    that bounds it. **Clear Boundary** throws the arena away and starts over with
    an empty drive-and-place one.
 
-   **Wall height** (2–30 m) belongs to both and is **visual only** - it is how
-   far up the walls are drawn, never what they enclose.
+   **Wall height** (2 to 30 m) and **Wall depth** (0 to 30 m) belong to both and
+   are **visual only**: how far the walls are drawn up from the boundary and down
+   below it, never what they enclose. The out-of-bounds test is flat, so neither
+   changes who is in or out. Height decides how easily a driver sees the edge
+   from inside a car; depth decides whether the wall still reaches the ground
+   where the ground drops away, which on uneven terrain it previously could not,
+   the drop being fixed at 1.5 m with no way to change it.
 
    Optionally place a **starting grid**: drive to each slot facing the way the
    car should point and press **+ Start Position** (slot 1 first;

@@ -367,6 +367,40 @@ for _, q in ipairs(quads) do
 end
 check(near(tallest, 12), 'a wall height change is picked up (got ' .. tallest .. ')')
 
+-- WALL DEPTH: how far the wall drops BELOW the boundary plane, and the other
+-- half of the same problem the race gates had. It was a hardcoded 1.5 with no
+-- way to change it, so on uneven ground the wall floated over every dip.
+--
+-- Part of the draw cache key for the same reason height is: it changes the
+-- geometry without a single marker moving, and a cache that missed it would go
+-- on drawing the arena at its old skirt.
+derbyState({ derbyPhase = 'running', boundary = markers(), players = {},
+  oobLimit = 5, demoLimit = 10, wallHeight = 12, wallDepth = 4 })
+quads = {}
+RM.onUpdate(0.016)
+local lowest = math.huge
+for _, q in ipairs(quads) do
+  for _, pt in ipairs({ q.a, q.b, q.c, q.d }) do
+    if pt.z < lowest then lowest = pt.z end
+  end
+end
+check(near(lowest, -4),
+  'a wall depth change is picked up and drops the wall below the boundary (got '
+    .. lowest .. ')')
+
+derbyState({ derbyPhase = 'running', boundary = markers(), players = {},
+  oobLimit = 5, demoLimit = 10, wallHeight = 12, wallDepth = 0 })
+quads = {}
+RM.onUpdate(0.016)
+lowest = math.huge
+for _, q in ipairs(quads) do
+  for _, pt in ipairs({ q.a, q.b, q.c, q.d }) do
+    if pt.z < lowest then lowest = pt.z end
+  end
+end
+check(near(lowest, 0),
+  'and zero depth stops the wall dead at the boundary plane (got ' .. lowest .. ')')
+
 -- --- The editor view --------------------------------------------------------
 -- The same boundary, drawn for somebody laying it out: the extent stated
 -- exactly, every corner numbered, and the arena named.

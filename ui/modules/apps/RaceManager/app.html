@@ -1502,15 +1502,24 @@
       </button>
     </div>
 
-    <!-- Wall height belongs to both modes: it is how the arena is DRAWN, not
-         what it encloses. The out-of-bounds test is flat, so a taller wall
-         never changes who is in or out - it only decides how easily a driver
-         can see the edge from inside a car. -->
+    <!-- Wall height and depth belong to both modes: they are how the arena is
+         DRAWN, not what it encloses. The out-of-bounds test is flat, so neither
+         changes who is in or out. Height decides how easily a driver sees the
+         edge from inside a car; depth decides whether the wall still reaches
+         the ground where the ground drops away. -->
     <span class="rm-setting rm-cp-dim" title="How tall the arena walls are drawn. Visual only: it does not change the boundary.">
       <label>Wall height</label>
       <input type="range" min="2" max="30" step="1" ng-model="rectUi.wall"
              ng-change="derbyApplyWallHeight()" ng-disabled="derbyActive()">
       <input type="number" min="2" max="30" ng-model="rectUi.wall"
+             ng-change="derbyApplyWallHeight()" ng-disabled="derbyActive()">
+      <span class="rm-setting-val">m</span></span>
+
+    <span class="rm-setting rm-cp-dim" title="How far the wall drops BELOW the boundary. Raise it on uneven ground so the wall does not float over the dips.">
+      <label>Wall depth</label>
+      <input type="range" min="0" max="30" step="0.5" ng-model="rectUi.wallDepth"
+             ng-change="derbyApplyWallHeight()" ng-disabled="derbyActive()">
+      <input type="number" min="0" max="30" step="0.5" ng-model="rectUi.wallDepth"
              ng-change="derbyApplyWallHeight()" ng-disabled="derbyActive()">
       <span class="rm-setting-val">m</span></span>
 

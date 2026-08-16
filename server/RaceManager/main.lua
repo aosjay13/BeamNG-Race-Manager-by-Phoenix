@@ -3962,6 +3962,10 @@ local DERBY_DEFAULT_EXTENT = 60
 local DERBY_MIN_WALL     = 2
 local DERBY_MAX_WALL     = 30
 local DERBY_DEFAULT_WALL = 6
+-- The wall's SKIRT, how far it drops below the boundary plane, runs 0 to 30 with
+-- a default of 1.5. Spelled at its two use sites rather than named here: this
+-- file is at Lua's 200-active-locals ceiling and three more names do not fit,
+-- and going over does not warn, it stops compiling.
 
 local derby = {
   phase     = 'idle',   -- idle | running | finished
@@ -4011,6 +4015,7 @@ local derby = {
   boundaryMode = 'polygon',  -- polygon | rect
   shape     = nil,      -- { cx, cy, cz, halfW, halfL, rot } while mode is 'rect'
   wallHeight = DERBY_DEFAULT_WALL,  -- visual only; see the constant above
+  wallDepth  = 1.5,                 -- how far it drops below the boundary plane
   startPositions = {},  -- derby starting grid { x, y, z, hx, hy }, slot 1 first
   winner    = nil,      -- winner's name once decided
 }
@@ -4225,6 +4230,7 @@ local function broadcastDerbyState(targetPid)
     boundaryMode = derby.boundaryMode,
     shape      = derby.shape,
     wallHeight = derby.wallHeight,
+    wallDepth  = derby.wallDepth,
     startPositions = derby.startPositions,
     winner     = derby.winner,
     players    = derbyClassification(),
@@ -4532,6 +4538,10 @@ function RM_onDerbySetShape(pid, rawData)
     local h = derbyClampNum(data.wallHeight, DERBY_MIN_WALL, DERBY_MAX_WALL, derby.wallHeight)
     if h ~= derby.wallHeight then derby.wallHeight = h; changed = true end
   end
+  if data.wallDepth ~= nil then
+    local d = derbyClampNum(data.wallDepth, 0, 30, derby.wallDepth)
+    if d ~= derby.wallDepth then derby.wallDepth = d; changed = true end
+  end
 
   if derby.boundaryMode == 'rect' then
     local shape = sanitizeDerbyShape(data, derby.shape)
@@ -4814,6 +4824,7 @@ function RM_onDerbySaveLayout(pid, rawData)
     boundaryMode = rect and 'rect' or 'polygon',
     shape     = rect,
     wallHeight = derbyClampNum(data.wallHeight, DERBY_MIN_WALL, DERBY_MAX_WALL, derby.wallHeight),
+    wallDepth  = derbyClampNum(data.wallDepth, 0, 30, derby.wallDepth),
     oobLimit  = derbyClampLimit(data.oobLimit,  derby.oobLimit),
     demoLimit = derbyClampLimit(data.demoLimit, derby.demoLimit),
     maxResets = resets or derby.maxResets,

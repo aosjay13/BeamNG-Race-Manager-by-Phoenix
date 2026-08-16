@@ -894,6 +894,7 @@ angular.module('beamng.apps')
         boundaryMode: 'polygon',
         shape: null,          // { cx, cy, cz, halfW, halfL, rot } while 'rect'
         wallHeight: 6,        // how tall the arena walls are drawn (visual only)
+        wallDepth: 1.5,       // how far they drop below the boundary (visual only)
         // Who takes part: 'all' (every connected player, the historical
         // behaviour) or 'join' (only drivers who pressed Join Race).
         entryMode: 'all',
@@ -909,7 +910,7 @@ angular.module('beamng.apps')
       // which is what an admin measures an arena in - the server stores half
       // extents and the conversion happens in the Lua command. `square` links
       // the two so one slider drives both.
-      $scope.rectUi = { width: 120, length: 120, rot: 0, wall: 6, square: false };
+      $scope.rectUi = { width: 120, length: 120, rot: 0, wall: 6, wallDepth: 1.5, square: false };
       // Saved arenas for the hosted map (same workflow as track layouts).
       $scope.derbyLayouts = [];
       $scope.derbyLayoutMap = '';
@@ -939,6 +940,9 @@ angular.module('beamng.apps')
       function syncRectUi() {
         if ($scope.derby.wallHeight != null) {
           syncRectField('wall', $scope.derby.wallHeight);
+        }
+        if ($scope.derby.wallDepth != null) {
+          syncRectField('wallDepth', $scope.derby.wallDepth);
         }
         var s = $scope.derby.shape;
         if (!s) { return; }
@@ -1873,6 +1877,9 @@ angular.module('beamng.apps')
           if (typeof data.wallHeight === 'number') {
             $scope.derby.wallHeight = data.wallHeight;
           }
+          if (typeof data.wallDepth === 'number') {
+            $scope.derby.wallDepth = data.wallDepth;
+          }
           syncRectUi();
           // Keep the open edit controls pointed at something that still exists.
           // An entry deleted here (by this admin or another one) must not leave
@@ -1980,11 +1987,17 @@ angular.module('beamng.apps')
       };
       // Wall height applies to a drive-and-place arena too, so it is its own
       // call: the rectangle fields must not ride along and switch the mode.
+      // Height and depth ride the same command: both are how the arena is drawn
+      // and neither touches the flat out-of-bounds test, so there is no reason
+      // for them to travel separately.
       $scope.derbyApplyWallHeight = function () {
         if ($scope.derbyActive()) { return; }
         var h = parseFloat($scope.rectUi.wall);
+        var d = parseFloat($scope.rectUi.wallDepth);
         if (!isFinite(h)) { return; }
-        bngApi.engineLua('raceManager.derbySetShape(nil, nil, nil, ' + h + ')');
+        if (!isFinite(d)) { d = 1.5; }
+        bngApi.engineLua('raceManager.derbySetShape(nil, nil, nil, '
+          + h + ', ' + d + ')');
       };
       $scope.derbyIsRect = function () { return $scope.derby.boundaryMode === 'rect'; };
       // Derby starting grid: drive to each slot and place it; slot 1 first.

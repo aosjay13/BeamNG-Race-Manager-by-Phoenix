@@ -975,6 +975,16 @@ local delGuard = html:match('ng%-click="nudgeDelete%(%)"[^>]-ng%-disabled="([^"]
 expect(delGuard and delGuard:find('nudgeSel') ~= nil,
   'and it is disabled until something is picked')
 
+-- The derby wall has a depth as well as a height, and both ride one command:
+-- they are how the arena is DRAWN and neither touches the flat out-of-bounds
+-- test, so there is no reason for them to travel separately.
+expect(html:find('rectUi.wallDepth', 1, true) ~= nil,
+  'the derby editor has a wall depth control')
+expect(js:find('rectUi.wallDepth', 1, true) ~= nil,
+  'and the controller reads it')
+expect(js:find('$scope.derby.wallDepth = data.wallDepth', 1, true) ~= nil,
+  'the server owns it: the panel follows what it broadcasts, like wall height')
+
 -- ---------------------------------------------------------------------------
 -- Nudge mode: the button, and who owns whether it is on
 -- ---------------------------------------------------------------------------

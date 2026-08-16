@@ -4600,6 +4600,12 @@ local DERBY_STOP_SPEED    = 0.7   -- m/s; below this the car counts as stopped
 -- an admin to ask for, not a side effect of adding a countdown.
 local DERBY_START_GRACE   = 5
 local DERBY_POLE_HEIGHT   = 6     -- fallback wall height, until the server says
+-- Fallback skirt, likewise. This used to BE the answer: a hardcoded drop with no
+-- way to change it, so on uneven ground the wall floated above every dip and
+-- there was nothing an admin could do about it. Declared HERE rather than beside
+-- the wall builder that uses it, because derbyState reads it hundreds of lines
+-- earlier and a local used before its declaration is a nil global, not an error.
+local DERBY_WALL_SKIRT    = 1.5
 local DERBY_POLE_RADIUS   = 0.2
 
 -- One table rather than a dozen file-scope locals, for the same reason the
@@ -4619,6 +4625,7 @@ derbyState = {
   boundaryMode = 'polygon',  -- polygon | rect
   shape     = nil,      -- { cx, cy, cz, halfW, halfL, rot } while mode is 'rect'
   wallHeight = DERBY_POLE_HEIGHT,
+  wallDepth  = DERBY_WALL_SKIRT,
   -- True while an admin has the Derby Editor sub-tab open. The editor's arena
   -- and a driver's arena are different drawings of the same boundary, exactly
   -- the way an authoring checkpoint and a race one are (see drawGate).
@@ -4803,9 +4810,7 @@ end
 --   * Every panel is emitted TWICE, with the winding reversed the second time.
 --     Drivers stand inside this box looking out, which is the one view a
 --     single-sided quad would be invisible from.
-local DERBY_WALL_SKIRT = 1.5   -- metres the wall drops below the boundary plane
-
-local function derbyBuildWalls(boundary, height)
+local function derbyBuildWalls(boundary, height, depth)
   local n = #boundary
   local walls = {}
   if n < 2 then return walls end
@@ -4815,8 +4820,8 @@ local function derbyBuildWalls(boundary, height)
     -- Two markers is a line, not a ring: draw the single panel once rather than
     -- the same panel twice back to back.
     if not (n == 2 and i == 2) then
-      local a0 = vec3(a.x, a.y, a.z - DERBY_WALL_SKIRT)
-      local b0 = vec3(b.x, b.y, b.z - DERBY_WALL_SKIRT)
+      local a0 = vec3(a.x, a.y, a.z - depth)
+      local b0 = vec3(b.x, b.y, b.z - depth)
       local a1 = vec3(a.x, a.y, a.z + height)
       local b1 = vec3(b.x, b.y, b.z + height)
       walls[#walls + 1] = { bl = a0, br = b0, tr = b1, tl = a1 }
@@ -4880,18 +4885,22 @@ derbyDrawBoundary = function ()
   -- the boundary moving, and a cache that missed them would draw a resized
   -- arena at its old height, or keep the editor's floor through a live derby.
   local height = derbyState.wallHeight or DERBY_POLE_HEIGHT
+  local depth  = derbyState.wallDepth or DERBY_WALL_SKIRT
   local cache = derbyState.draw
+  -- Depth is part of the cache key for the same reason height is: it changes the
+  -- geometry without any marker moving, and a cache that missed it would keep
+  -- drawing the arena at its old skirt.
   if not cache or cache.src ~= boundary or cache.height ~= height
-      or cache.authoring ~= authoring then
-    cache = { src = boundary, height = height, authoring = authoring }
-    cache.walls = derbyBuildWalls(boundary, height)
+      or cache.depth ~= depth or cache.authoring ~= authoring then
+    cache = { src = boundary, height = height, depth = depth, authoring = authoring }
+    cache.walls = derbyBuildWalls(boundary, height, depth)
     -- Corner posts, the full height of the wall. Both views draw them -- they
     -- are what stops a translucent wall from disappearing against a bright sky
     -- -- but the driving view draws them thinner, so they mark the corners
     -- without becoming scenery.
     cache.posts = {}
     for i, m in ipairs(boundary) do
-      local base = vec3(m.x, m.y, m.z - DERBY_WALL_SKIRT)
+      local base = vec3(m.x, m.y, m.z - depth)
       cache.posts[i] = { a = base, b = vec3(m.x, m.y, m.z + height) }
     end
     -- A rail along the top of the wall, and one along the ground. The ground
@@ -5069,7 +5078,7 @@ end
 -- optional: the server keeps whatever this payload leaves out, so a slider only
 -- ever sends the thing it moved. Width and length arrive as the FULL span an
 -- admin reads off the panel; the server stores half-extents.
-function M.derbySetShape(width, length, rotDeg, wallHeight)
+function M.derbySetShape(width, length, rotDeg, wallHeight, wallDepth)
   if not inMultiplayer() then return end
   local payload = {}
   local w, l = tonumber(width), tonumber(length)
@@ -5078,6 +5087,8 @@ function M.derbySetShape(width, length, rotDeg, wallHeight)
   if l then payload.halfL = l * 0.5 end
   if r then payload.rot = math.rad(r) end
   if h then payload.wallHeight = h end
+  local dp = tonumber(wallDepth)
+  if dp then payload.wallDepth = dp end
   if next(payload) == nil then return end
   TriggerServerEvent('RM_DerbySetShape', jsonEncode(payload))
 end
@@ -5243,6 +5254,7 @@ function M.derbyRequestState()
       derbyPhase = 'idle', oobLimit = derbyState.oobLimit, demoLimit = derbyState.demoLimit,
       maxResets = derbyMaxResets, derbyTime = 0, boundary = {},
       boundaryMode = 'polygon', shape = nil, wallHeight = derbyState.wallHeight,
+      wallDepth = derbyState.wallDepth,
       startPositions = {}, players = {},
     })
   end
@@ -5294,6 +5306,7 @@ function M.derbySaveLayout(name)
     boundaryMode = derbyState.boundaryMode,
     shape = derbyState.shape,
     wallHeight = derbyState.wallHeight,
+    wallDepth  = derbyState.wallDepth,
     oobLimit = derbyState.oobLimit, demoLimit = derbyState.demoLimit,
     maxResets = derbyMaxResets, startPositions = starts,
   }))
@@ -5389,6 +5402,7 @@ onDerbyUpdate = function (rawData)
   -- out-of-bounds test, which reads `boundary` and nothing else.
   derbyState.boundaryMode = (data.boundaryMode == 'rect') and 'rect' or 'polygon'
   if type(data.wallHeight) == 'number' then derbyState.wallHeight = data.wallHeight end
+  if type(data.wallDepth) == 'number' then derbyState.wallDepth = data.wallDepth end
   if derbyState.boundaryMode == 'rect' and type(data.shape) == 'table' then
     local s = data.shape
     local cx, cy, cz = tonumber(s.cx), tonumber(s.cy), tonumber(s.cz)
