@@ -6,6 +6,97 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.8.1 - One switch for race entry, start lights and flags, joker and pit visuals
+
+### Changed (race entry)
+
+- **Race entry is one switch, and it belongs to the driver.** Everyone connected
+  is in the field; a driver who would rather watch presses **Spectate**, and
+  **Race** puts them back. The admin-set entry mode (Everyone races / Opt-in) and
+  the per-driver **Join Race** and **Leave Race** buttons are gone. There were
+  three ways to answer "am I in this race", they could disagree, and the one that
+  broke was a driver who sat out and then had no way back in. Spectating covers
+  what opt-in was for: a one on one is two people racing and everybody else
+  spectating, with no mode to set first.
+
+  The demo derby shares it. It had its own entry mode that resolved by reading
+  the *racing* opt-in flag, so a driver had to join a race to be put in a derby.
+  Sitting out now sits you out of both.
+
+  Spectate is settled before the lights. Once a session is running the field is
+  fixed and the controls disable in place rather than disappearing; the way out
+  of a race you are already in is **Retire**. Sitting out survives a reconnect,
+  and **Reset** puts the whole field back in.
+
+- **Retire**, for pulling out of a session you are already in. It is a classified
+  retirement, not a disappearance: the driver keeps a position, appears in the
+  results and scores like any other DNF. A retirement classifies **behind the
+  last car that can still finish**, which is how motorsport has always ordered
+  them, so stopping later classifies higher. Asked for before it happens, because
+  it cannot be undone.
+
+### Added (visuals)
+
+- **Start lights and flags.** A three-lamp gantry counts the field down, amber to
+  green. A flag reports the session at a glance in both panels: green racing,
+  yellow caution, white on the last lap, red while the grid is held or a red flag
+  is out. A caution is a **condition, not a phase** -- the session keeps running
+  underneath it, and red goes to yellow, then back to green.
+- **The joker and the pit stall wear their state.** The pit stall is drawn as the
+  box it actually tests, with semi-transparent walls. The joker shows an arrow
+  while it is open, a cross when it is closed and a tick once it has been taken,
+  so it reads at speed without stopping to think.
+- **Height and depth are separate.** A gate used to be one measurement centred on
+  the placement point, so half of every gate hung under the road and making one
+  tall enough to see buried an equal amount. Height raises the top bar, depth
+  lowers the bottom. The derby arena walls got the same split.
+
+### Fixed
+
+- **Spectating had no way back.** Three separate faults, each of which alone was
+  enough: the entry decision was written to the record but never the identity
+  registry, so the online purge undid it; the wire could express "you are
+  spectating" but not "you are not", because `rec and x == true or nil` cannot
+  return false; and the panel's single toggle took both its label and its action
+  from its own belief about the state, so one stale broadcast left the driver
+  holding a button for the state they were already in. Entry is now **two
+  buttons sending absolute values**, and a redundant request resyncs the panel
+  rather than being answered with silence.
+- **Racing twice without a Reset left the grid hold asleep.** The hold's rate
+  limiter kept a stamp from the previous race's clock, which read as "corrected a
+  moment ago" and swallowed the first correction of the new session -- the one
+  that matters, with the field stood on the grid. Reset Session had been hiding
+  it by dropping the records outright.
+- **On the grid, the two highlighted gates were the ones behind the field**: the
+  finish line and checkpoint 1, instead of checkpoints 1 and 2.
+- **Loading a layout told the panel nothing**, so a joker track had to be loaded
+  twice before the joker lap setting unlocked.
+- **The flag never changed colour.** It was a glyph the font renders as an emoji,
+  which carries its own colour and ignores CSS. It asks for the text form now.
+- **The Race Entry row did not render at all** on account of an apostrophe inside
+  a single-quoted Angular string, which is a parse error rather than a warning.
+- Ending a derby put everyone on the last race's start line; a ghost timer
+  stacked when a ghosted driver reset; full-window overlays escaped the panel in
+  minimal mode; and a refused admin command now says so instead of failing quiet.
+
+### Internal
+
+- **The Demo Derby is its own module** (`lua/ge/extensions/raceManager/derby.lua`),
+  the first split out of the client. This matters more than it sounds: Lua allows
+  200 active locals per function, the top level of a file **is** a function, and
+  going over does not warn -- the file silently fails to compile and the mod is
+  simply absent. Both large files were at zero headroom.
+- **The deploy script grew two guards.** It refuses to write the server plugin
+  while BeamMP is running, because the server hot-reloads a changed plugin
+  immediately and that ends any live session -- which happened, and was reported
+  as a joker bug until the log said otherwise. It also detects a rival copy of
+  the plugin loaded from another folder: BeamMP loads *every* folder under
+  `Resources/Server`, so one called `deactivated_plugins` is not deactivated, and
+  two copies had been registering the same events and stealing the admin login.
+- **A frame-cost budget** (`tests/perf_test.lua`) measures what the client costs
+  per frame rather than only whether it is correct: UI pushes per second, draw
+  calls and allocations, with the draw calls held flat as the circuit grows.
+
 ## 0.8.0 - Branching routes, mouse track editing, the qualifying out lap
 
 ### Added (track building)
@@ -95,23 +186,16 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 ### Changed (defaults)
 
-- **Race entry is one switch, and it belongs to the driver.** Everyone connected
-  is in the field; a driver who would rather watch presses **Spectate**, and
-  **Rejoin the field** puts them back. The admin-set entry mode (Everyone races
-  / Opt-in) and the per-driver **Join Race** and **Leave Race** buttons are gone.
-  There were three ways to answer "am I in this race", they could disagree, and
-  the one that broke was a driver who sat out and then had no way back in.
-  Spectating covers what opt-in was for: a one on one is two people racing and
-  everybody else spectating, with no mode to set first.
-
-  The demo derby shares it. It used to have its own entry mode that resolved by
-  reading the *racing* opt-in flag, so a driver had to join a race to be put in
-  a derby; sitting out now sits you out of both.
-
-  Spectate is settled before the lights: once a session is running the field is
-  fixed, and the button disables in place rather than disappearing. The way out
-  of a race you are already in is **Retire**. Sitting out survives a reconnect,
-  and **Reset** puts the whole field back in.
+- **Everyone on the server races by default.** Race entry used to default to
+  opt-in, so a server nobody had configured started with a field of nobody. That
+  is the setting that fails unsafe: an admin who has not realised it exists
+  presses Generate Grid and forms an empty grid, leaving every driver standing
+  while the one person who could fix it works out that a button they have never
+  needed was the problem. The other way round, the mistake is that somebody who
+  wanted to watch is put on the grid, and they undo it with one press of Leave.
+  **Opt-in entry** is unchanged and one click away; the demo derby has defaulted
+  to "everyone" since it was written, so this is the racing side agreeing with
+  it.
 
 ### Added
 

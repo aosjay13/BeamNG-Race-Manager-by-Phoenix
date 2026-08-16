@@ -867,7 +867,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.8.0'
+local RM_BUILD = '0.8.1'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -1817,7 +1817,16 @@ function RM_onSetSpectating(pid, rawData)
       want = data.spectating == true or data.spectating == 1
     end
   end
-  if rec.spectating == want then return end
+  -- ALREADY IN THAT STATE, so nothing changes -- but SAY SO ANYWAY. Returning
+  -- silently is what strands a panel that has drifted: the client thinks it is
+  -- racing, presses Spectate, the server agrees it is already spectating and
+  -- says nothing, and the panel goes on showing the wrong answer with no way to
+  -- correct itself. A targeted broadcast here makes every press a resync, so a
+  -- disagreement can only ever survive until the driver next touches the button.
+  if rec.spectating == want then
+    broadcastState(pid)
+    return
+  end
   -- NEITHER DIRECTION MID-SESSION. Sitting out is a decision about whether you
   -- are in the field, and the field is decided when the grid forms. Dropping out
   -- of a race you are already in is RETIRING, which is a different thing with a
