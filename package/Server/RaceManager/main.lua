@@ -84,6 +84,23 @@ local race = {
   -- without them: the rule disqualifies anyone who did not complete the route,
   -- and with no route that is the whole field.
   jokerGates   = 0,
+  -- THE FLAG THE FIELD IS RACING UNDER: green, yellow or red.
+  --
+  -- RED IS A CONDITION, NOT A STATE CHANGE. It means stop, something is being
+  -- cleaned up, and the session then goes yellow and back to green. Nothing is
+  -- ended, nobody is frozen and no phase moves: the race is still running the
+  -- whole time. That is the entire reason this is a field and not a phase.
+  --
+  -- Advisory: it is shown, announced and
+  -- written into the results, and it polices nothing. Deciding automatically
+  -- that an overtake under yellow was illegal means holding a second running
+  -- order that survives the caution and reconciles on green, and a marshal who
+  -- can see the incident is better at that than a distance comparison.
+  --
+  -- Deliberately NOT a phase. There are fifty-odd `phase ==` tests across the
+  -- two Lua halves and most would be wrong by default for a new one; a separate
+  -- field is read only where it is wanted.
+  flag         = 'green',
   -- Race entry. 'all' (default): every connected session is a participant, so a
   -- server that never touches this setting grids everybody who is there. 'join':
   -- drivers opt in with the UI's Join Race button and only they are gridded.
@@ -294,9 +311,23 @@ end
 
 -- Guard placed at the top of every admin-level event handler. Any command from
 -- a session that has not logged in is dropped (and logged so it's diagnosable).
+-- A REFUSAL HAS TO REACH THE CLIENT, not just the log.
+--
+-- The client caches its own admin flag on purpose, so it survives the pause
+-- menu, and `youAreAdmin` only rides targeted replies. Nothing else tells it the
+-- server dropped that flag. Session ids are REUSED, so a reconnect clears the
+-- auth here while the panel goes on showing admin controls that silently do
+-- nothing: every button dead, no error anywhere, and logging out and back in
+-- the only cure anybody could stumble onto.
+--
+-- So the refusal is answered. The client corrects its flag, the panel offers the
+-- login again, and a dead button becomes a sentence.
 local function requireAuth(pid)
   if authenticatedPlayers[pid] then return true end
   print('[RaceManager] Ignored admin command from unauthenticated player ' .. tostring(pid))
+  MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({
+    success = false, lapsed = true,
+  }))
   return false
 end
 
@@ -310,6 +341,11 @@ local function newRecord(pid)
     -- waiting | qualifying | gridded | racing | finished | dsq | dnf
     status     = 'waiting',
     joined     = false,      -- opted into the race (see race.entryMode)
+    -- SELF-DECLARED SPECTATOR. Not the same thing as `joined`: that is opting IN
+    -- under 'join' entry, this is opting OUT, and it has to work under 'all'
+    -- entry too. With everyone racing by default there was no way to say "run
+    -- without me" short of leaving the server.
+    spectating = false,
     gridPos    = nil,        -- locked-in starting position (Generate Grid)
     customGrid = nil,        -- slot the admin pinned this driver to (custom mode)
     qualiBest  = nil,        -- best qualifying lap (seconds)
@@ -350,7 +386,8 @@ local function newRecord(pid)
     -- right for a leaderboard of who is still racing and wrong for a record of
     -- what happened -- a driver who was second when their engine let go was
     -- second, whatever the reason they stopped.
-    dnfPos     = nil,
+    dnfPos     = nil,      -- where a retirement CLASSIFIES: behind the field
+    heldPos    = nil,      -- the place it was running in when it stopped
     -- Live position tracking (see the "Running order" section below).
     position   = nil,        -- current place in the running order (1 = leader)
     cpCleared  = 0,          -- checkpoints passed on the current lap
@@ -618,6 +655,10 @@ local rosterWarm, cupWarm
 -- the plugin used to do implicitly for everyone).
 local function isEntrant(rec)
   if not rec then return false end
+  -- A self-declared spectator is never in the field, whatever the entry mode
+  -- says. This is checked FIRST for that reason: under 'all' entry every other
+  -- answer is yes, which is exactly the case somebody opting out is stuck in.
+  if rec.spectating then return false end
   if race.entryMode == 'all' then return true end
   return rec.joined == true
 end
@@ -725,7 +766,7 @@ local DRIVER_WIRE_FIELDS = {
   'gridPos', 'customGrid', 'position',
   'qualiBest', 'qualiLaps', 'outLap', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
   'finishTime', 'resets', 'resetsBlocked',
-  'jokerTaken', 'jokerLap', 'outReason', 'dnfPos', 'lane', 'bystander',
+  'jokerTaken', 'jokerLap', 'outReason', 'dnfPos', 'heldPos', 'lane', 'bystander',
 }
 
 -- Projection buffers are kept ON the record and reused, so a broadcast costs no
@@ -886,7 +927,12 @@ local function broadcastState(targetPid)
   -- the UI app sends every time it mounts) an authoritative answer to "am I
   -- still logged in", instead of the client having to remember on its own.
   local selfAdmin = nil
-  if targetPid then selfAdmin = isAuthenticated(targetPid) end
+  local selfSpectating = nil
+  if targetPid then
+    selfAdmin = isAuthenticated(targetPid)
+    local selfRec = players[pidKey(targetPid)]
+    selfSpectating = selfRec and selfRec.spectating == true or nil
+  end
   local payload = Util.JsonEncode({
     rmProtocol   = RM_PROTOCOL,
     serverBuild  = RM_BUILD,
@@ -905,6 +951,8 @@ local function broadcastState(targetPid)
     jokerEnabled = race.jokerEnabled,
     -- Race entry + starting grid.
     entryMode    = race.entryMode,
+    -- "Are YOU sitting this one out" (targeted sends only, like youAreAdmin).
+    youSpectating = selfSpectating,
     entrants     = entrantCount(),
     gridMode     = race.gridMode,
     startSlots   = race.startSlots,
@@ -918,6 +966,7 @@ local function broadcastState(targetPid)
     -- So the panel can grey the joker toggle out and say why, rather than
     -- offering a switch the server is going to refuse.
     jokerGates   = race.jokerGates,
+    flag         = race.flag,
     -- Fastest lap of the session: whose row the leaderboard paints gold, and
     -- how quick it was. One driver id on a payload that already goes out.
     bestLapPid   = race.bestLapPid,
@@ -1321,7 +1370,7 @@ local function buildResultsText(cupRound)
       -- shear. The reason text is already the variable-width field on this row.
       pos = 'DNF'
       finish = (rec.outReason or 'DNF')
-        .. (rec.dnfPos and (' (was P' .. rec.dnfPos .. ')') or '')
+        .. (rec.heldPos and (' (was P' .. rec.heldPos .. ')') or '')
     end
     local tag = (i == 1 and classified) and '  << RACE WINNER' or ''
     local jokerVal = race.jokerEnabled
@@ -1513,12 +1562,37 @@ end
 -- `position` is stamped on every state broadcast (three times a second while a
 -- session runs), so it is at most a fraction of a second old here. Before the
 -- lights there is no running order yet, so the grid slot is the honest answer.
+-- BEHIND THE LAST CAR THAT CAN STILL FINISH.
+--
+-- Not the place they were running in. A driver retiring from P3 of six does not
+-- keep third: the five cars still going will all finish ahead of them, so they
+-- are sixth. Retire later and fewer cars are left to pass you, so you classify
+-- higher, which is how motorsport has always ordered retirements and is what
+-- "behind the last running car" means in practice.
+--
+-- It also stops two drivers scoring the same position, which the held-position
+-- rule could do whenever two cars stopped from the same place.
+--
+-- Finishers count as ahead too: they already have their positions.
 local function retireAsDnf(rec, reason)
   if not rec then return false end
   rec.status = 'dnf'
   rec.outReason = rec.outReason or reason
+  -- WHERE THEY WERE, kept separately from where they CLASSIFY. The cup can pay
+  -- a retirement at the position it held when it stopped, and the results file
+  -- says "was P3"; neither of those is the same fact as finishing sixth of six.
+  -- One field could not be both, and it used to try.
+  if rec.heldPos == nil then
+    rec.heldPos = rec.position or rec.gridPos
+  end
   if rec.dnfPos == nil then
-    rec.dnfPos = rec.position or rec.gridPos
+    local ahead = 0
+    for _, other in pairs(players) do
+      if other ~= rec and (onTrack(other) or other.finishTime ~= nil) then
+        ahead = ahead + 1
+      end
+    end
+    rec.dnfPos = ahead + 1
   end
   return true
 end
@@ -1730,6 +1804,80 @@ function RM_onJoinRace(pid, rawData)
 end
 
 -- Admin switches between opt-in entry and "everyone on the server races".
+-- A player putting themselves in or out of the field.
+--
+-- No admin needed: it is their own participation. Allowed mid-session in one
+-- direction only -- you can always drop out, but you cannot join a race that is
+-- already running, which is the same rule RM_onJoinRace enforces.
+-- A driver pulling out of a running session.
+--
+-- Their own race to end, so no admin rights, and the result is a CLASSIFIED
+-- retirement rather than a disappearance: they hold a position, they are in the
+-- results file, and they score cup points like any other DNF. Somebody who
+-- stops is still somebody who took part.
+--
+-- Treated exactly like taking the flag from there on: the car comes off the
+-- track and the driver goes to spectate, which is the path finishers already
+-- use and the only one that handles a car being removed cleanly.
+function RM_onRetire(pid)
+  local rec = players[pidKey(pid)]
+  if not rec then return end
+  if not sessionUnderWay() then
+    MP.SendChatMessage(pid, '[RaceManager] Nothing to retire from.')
+    return
+  end
+  if not onTrack(rec) then return end
+  retireAsDnf(rec, 'Retired')
+  clearGhost(rec.id, 'driver retired')
+  forceSpectate(rec.id, 'You retired from the session', 'race')
+  MP.SendChatMessage(-1, string.format('[RaceManager] %s RETIRED (classified P%d).',
+    rec.name, rec.dnfPos or 0))
+  print(string.format('[RaceManager] %s retired, classified P%s',
+    rec.name, tostring(rec.dnfPos)))
+  broadcastState()
+end
+
+function RM_onSetSpectating(pid, rawData)
+  local rec = ensurePlayer(pid)
+  if not rec then return end
+  local want = true
+  if type(rawData) == 'string' and rawData ~= '' then
+    local ok, data = pcall(Util.JsonDecode, rawData)
+    if ok and type(data) == 'table' and data.spectating ~= nil then
+      want = data.spectating == true or data.spectating == 1
+    end
+  end
+  if rec.spectating == want then return end
+  -- NEITHER DIRECTION MID-SESSION. Sitting out is a decision about whether you
+  -- are in the field, and the field is decided when the grid forms. Dropping out
+  -- of a race you are already in is RETIRING, which is a different thing with a
+  -- different result: a classified retirement rather than never having entered.
+  if sessionUnderWay() then
+    MP.SendChatMessage(pid, want
+      and '[RaceManager] A session is running. Use Retire to pull out of it; you '
+        .. 'can sit the next one out once this ends.'
+      or  '[RaceManager] A session is running: you can rejoin the field when it ends.')
+    return
+  end
+  rec.spectating = want
+  if want then
+    -- Their car stays exactly where it is and becomes a ghost, the same way a
+    -- mid-session joiner's does. Nothing is deleted: in BeamMP a delete is a
+    -- delete for everyone, and respawning a field is what caused cars to weld.
+    rec.bystander = true
+    if sessionUnderWay() then
+      rec.status = 'waiting'
+      clearProgress(rec)
+    end
+    MP.SendChatMessage(-1, '[RaceManager] ' .. rec.name .. ' is spectating.')
+  else
+    rec.bystander = nil
+    MP.SendChatMessage(-1, '[RaceManager] ' .. rec.name .. ' rejoined the field.')
+  end
+  print(string.format('[RaceManager] %s set spectating=%s', rec.name, tostring(want)))
+  broadcastState()
+end
+
 function RM_onSetEntryMode(pid, rawData)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
@@ -1993,6 +2141,7 @@ formGrid = function (kind, byName)
     rec.jokerLap   = nil
     rec.outReason  = nil
     rec.dnfPos     = nil
+    rec.heldPos    = nil
     -- A qualifying grid also clears the times it is about to replace.
     if isQualiSession() then
       rec.qualiBest = nil
@@ -2165,7 +2314,18 @@ function RM_onStartPositionCount(pid, rawData)
         -- How many joker gates this client has placed, so the joker lap can be
         -- refused on a track that has none even when it was never saved as a
         -- named layout (see RM_onSetJokerEnabled).
-        local jg = tonumber(data.jokerGates)
+        --
+        -- SAME GUARD AS gridOffLine ABOVE, and it was missing here. This report
+        -- fires constantly from EVERY client, so right after a layout loads a
+        -- client that has not applied it yet -- or a spectator with an empty
+        -- editor -- reported zero and wiped the count the layout had just set.
+        -- The joker toggle stayed locked on a track with joker gates, and
+        -- loading the layout a SECOND time fixed it, because by then everyone
+        -- was reporting the route they had. Exactly what was described.
+        --
+        -- A loaded layout is authored, saved and shared. It is the authority on
+        -- its own joker route, and no client's editor overrules it.
+        local jg = race.layout == nil and tonumber(data.jokerGates) or nil
         if jg then
           race.jokerGates = math.max(math.floor(jg), 0)
           if race.jokerGates == 0 and race.jokerEnabled then
@@ -2669,6 +2829,10 @@ function RM_CountdownTick()
   MP.CancelEventTimer('RM_CountdownTick')
   broadcastCountdown(0)
   race.phase = runningStatus()   -- 'qualifying' or 'racing'
+  -- Every session starts green. A caution belongs to the session it was called
+  -- in, and carrying one into the next race is the kind of state nobody thinks
+  -- to check.
+  race.flag = 'green'
   race.time = 0.0
   race.qualiTime = 0.0
   race.finalLap     = false
@@ -2687,6 +2851,7 @@ function RM_CountdownTick()
       rec.jokerLap   = nil
       rec.outReason  = nil
       rec.dnfPos     = nil
+      rec.heldPos    = nil
       if isQualiSession() then
         rec.qualiBest = nil
         rec.qualiLaps = 0
@@ -3376,6 +3541,11 @@ local function clearTrackState(reason)
   race.branches    = {}
   race.jokerGates  = 0
   MP.TriggerClientEvent(-1, 'RM_ClearTrack', Util.JsonEncode({ reason = reason or 'clear' }))
+  -- The panel has to hear about all of that. Same gap the layout LOAD had: the
+  -- fields above are session state the UI displays, RM_Tick does not run while
+  -- no session is going, and RM_ClearTrack only carries the gates. Clearing a
+  -- track left the joker toggle and the grid count reading the old layout's.
+  broadcastState()
   print('[RaceManager] Track state cleared: ' .. (reason or 'clear'))
 end
 
@@ -3520,6 +3690,37 @@ function RM_onSaveLayout(pid, rawData)
   sendLayoutList(-1)
 end
 
+-- Show the field a flag. Green or yellow, admin only, and only while something
+-- is actually running: a caution with nobody on track is noise.
+--
+-- Announced in chat as well as broadcast, because the panel is not where a
+-- driver's eyes are when a caution is called.
+function RM_onSetFlag(pid, rawData)
+  if not requireAuth(pid) then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local want = tostring(data.flag or '')
+  if want ~= 'green' and want ~= 'yellow' and want ~= 'red' then return end
+  if not sessionUnderWay() then
+    MP.SendChatMessage(pid, '[RaceManager] No session is running, so there is nothing to flag.')
+    return
+  end
+  if want == race.flag then return end
+  race.flag = want
+  local who = MP.GetPlayerName(pid) or pid
+  if want == 'red' then
+    MP.SendChatMessage(-1, '[RaceManager] RED FLAG: stop where you are and wait. '
+      .. 'The session is still running; it goes yellow, then green. By ' .. who .. '.')
+  elseif want == 'yellow' then
+    MP.SendChatMessage(-1, '[RaceManager] YELLOW FLAG: caution called, race back to the line. By ' .. who .. '.')
+  else
+    MP.SendChatMessage(-1, '[RaceManager] GREEN FLAG: racing. By ' .. who .. '.')
+  end
+  print('[RaceManager] Flag set to ' .. want .. ' by ' .. tostring(who))
+  broadcastState()
+end
+
 -- Delete a saved layout by name, under the current map only. Refused mid-session
 -- like loading is. A deleted layout that is currently loaded is forgotten too:
 -- race.layout pointing at a removed entry would keep serving joining players a
@@ -3602,6 +3803,20 @@ function RM_onLoadLayout(pid, rawData)
       print(string.format('[RaceManager] Broadcasting RM_ApplyLayout: "%s", %d checkpoint(s), %d start position(s), width %s',
         l.name, #l.checkpoints, race.startSlots, tostring(l.width)))
       MP.TriggerClientEvent(-1, 'RM_ApplyLayout', Util.JsonEncode(l))
+      -- TELL EVERYONE, and not just about the gates.
+      --
+      -- Loading a layout sets the joker gate count, the grid size, whether the
+      -- grid is off the line, the lane list and point-to-point. All of that is
+      -- session state the panel displays, and none of it went anywhere: this
+      -- handler broadcast the LAYOUT and nothing else.
+      --
+      -- Nothing covered for it either, because RM_Tick returns immediately when
+      -- no session is running, so there is no periodic broadcast while waiting
+      -- for one. The joker toggle stayed locked on a track that has joker gates
+      -- until some unrelated thing pushed state, and loading the layout a second
+      -- time was the reliable way to find one. That is the "click Load Layout
+      -- twice" report, and it survived a first fix aimed at the wrong half.
+      broadcastState()
       local msg = string.format('[RaceManager] Layout "%s" loaded on %s by %s (%d gates, %d start positions)',
         l.name, map, MP.GetPlayerName(pid) or pid, #l.checkpoints, race.startSlots)
       MP.SendChatMessage(-1, msg)
@@ -6127,9 +6342,11 @@ local function cupScoreRace()
       if cup.scoring.dnfScoring == 'classified' then
         scorePos = i
       elseif cup.scoring.dnfScoring == 'held' then
-        -- Falls back to the classification when the driver stopped before a
-        -- running order existed -- there is no held position to honour then.
-        scorePos = rec.dnfPos or i
+        -- The place they were RUNNING IN, which is what "held" means and is a
+        -- different fact from where they classify. Falls back to the
+        -- classification when the driver stopped before a running order existed:
+        -- there is no held position to honour then.
+        scorePos = rec.heldPos or rec.dnfPos or i
       end
     end
     local entry = cupEntryFor(rec)
@@ -6963,6 +7180,9 @@ function onInit()
   MP.RegisterEvent('RM_SaveLayout',       'RM_onSaveLayout')
   MP.RegisterEvent('RM_LoadLayout',       'RM_onLoadLayout')
   MP.RegisterEvent('RM_DeleteLayout',     'RM_onDeleteLayout')
+  MP.RegisterEvent('RM_SetFlag',          'RM_onSetFlag')
+  MP.RegisterEvent('RM_SetSpectating',    'RM_onSetSpectating')
+  MP.RegisterEvent('RM_Retire',           'RM_onRetire')
   MP.RegisterEvent('RM_ClearTrackState',  'RM_onClearTrackState')
   -- Demo Derby module (isolated event namespace; see the DEMO DERBY section).
   MP.RegisterEvent('RM_DerbySetConfig',     'RM_onDerbySetConfig')

@@ -6,6 +6,7 @@
     python3 tools/deploy.py --dry-run       say what it would do, write nothing
     python3 tools/deploy.py --server PATH   skip discovery, use this server
     python3 tools/deploy.py --tidy          also attic loose Race Manager files
+    python3 tools/deploy.py --force         write the plugin even with the server up
 
 Run from the repo root. Exit code is non-zero if anything failed.
 
@@ -184,7 +185,7 @@ def server_running():
         return None
 
 
-def deploy(server, client, dry_run=False):
+def deploy(server, client, dry_run=False, force=False, running=False):
     stamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     backup = os.path.join(server, '_attic', 'deploy-' + stamp)
     targets = [
@@ -196,6 +197,24 @@ def deploy(server, client, dry_run=False):
     ok = True
     for data, dest in targets:
         rel = os.path.relpath(dest, server)
+        # WRITING main.lua ON A LIVE SERVER ENDS THE SESSION.
+        #
+        # BeamMP watches plugin files and HOT-RELOADS on change: it does not wait
+        # for a restart. The reload runs onInit, which clears the track, so a
+        # deploy mid-race unloads the layout and drops the session back to
+        # waiting with no warning to anybody in it. That happened to a live race
+        # here, and from inside the game it looked like a bug in the joker gates,
+        # because that is what the driver was doing at the time.
+        #
+        # The client zip is safe: BeamMP only serves it to players as they join.
+        if running and not force and dest.endswith('main.lua'):
+            print('  REFUSED   %s' % rel)
+            print('            The server is UP, and BeamMP hot-reloads a changed')
+            print('            plugin immediately: this would clear the track and')
+            print('            end any session in progress. Stop the server, or')
+            print('            pass --force if nothing is running.')
+            ok = False
+            continue
         if os.path.exists(dest) and sha_file(dest) == sha(data):
             print('  unchanged  %s' % rel)
             continue
@@ -248,6 +267,8 @@ def main():
     ap.add_argument('--server', help='server directory (skips discovery)')
     ap.add_argument('--build-only', action='store_true')
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--force', action='store_true',
+                    help='write the server plugin even while the server is up')
     ap.add_argument('--tidy', action='store_true',
                     help='also move loose Race Manager files into _attic')
     args = ap.parse_args()
@@ -263,10 +284,12 @@ def main():
     print('\nserver: %s' % server)
     running = server_running()
     if running:
-        print('  NOTE: BeamMP-Server is RUNNING. Files are replaced on disk, but '
-              'the\n        plugin and the client zip are only picked up at '
-              'startup, and\n        mods.json still advertises the old zip until '
-              'then. RESTART IT.')
+        print('  NOTE: BeamMP-Server is RUNNING.')
+        print('        The plugin is NOT written while it is up. BeamMP watches')
+        print('        plugin files and hot-reloads on change, which runs onInit,')
+        print('        clears the track and ends any live session. --force')
+        print('        overrides, when you know nothing is running.')
+        print('        The client zip IS written: players pick it up as they join.')
 
     ok = True
     rivals = rival_plugins(server)
@@ -281,7 +304,7 @@ def main():
               ' of Resources/Server, then restart.')
         ok = False
 
-    ok = deploy(server, client, args.dry_run) and ok
+    ok = deploy(server, client, args.dry_run, args.force, running is True) and ok
     if args.tidy:
         tidy(server, args.dry_run)
 
