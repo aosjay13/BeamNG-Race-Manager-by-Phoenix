@@ -1040,11 +1040,21 @@ expect(flagset and flagset:find('racing', 1, true) ~= nil,
 expect(html:find("'rm%-flag%-on': flag === 'red'") ~= nil,
   'the flag currently out is marked, not hidden')
 
--- The header lamp is RED on the grid and AMBER under caution, and shows nothing
--- at all when the race is simply green: a lamp that is always lit is a lamp
--- nobody reads.
-expect(html:find('rm%-flaglamp%-red') ~= nil and html:find('rm%-flaglamp%-amber') ~= nil,
-  'the header carries a red grid lamp and an amber caution lamp')
+-- RED ON THE GRID, AMBER UNDER CAUTION, carried by the flag itself.
+--
+-- This used to assert a pair of separate header LAMP classes, and it went on
+-- passing long after the lamps were replaced -- first by the drawn flag, then by
+-- the glyph -- because the CSS for them was never deleted. A test that checks a
+-- rule exists rather than that anything WEARS it will hold dead code in place
+-- indefinitely, and here it held a rule carrying a permanent animation.
+--
+-- The flag is the one thing that says this now, so the colours are what to pin.
+for _, colour in ipairs({ 'red', 'yellow', 'white', 'green' }) do
+  expect(html:find('%.rm%-flag%-' .. colour .. '%s*{') ~= nil,
+    'the ' .. colour .. ' flag has a colour rule')
+end
+expect(js:find("$scope.phase === 'grid'", 1, true) ~= nil,
+  'and the flag is shown on the grid, where red means held')
 local greenLamp = html:find('rm%-flaglamp%-green')
 expect(greenLamp == nil,
   'and no green one: an always-lit lamp is one nobody reads')
@@ -1197,10 +1207,6 @@ expect(js:find('data.youSpectating', 1, true) ~= nil,
 -- how the text form is asked for.
 expect(html:find('rm%-flag rm%-flag%-{{ driverFlag }}"[^>]->[^<]*⚑[^9]') == nil,
   'the flag glyph is never left bare: an emoji cannot be recoloured by the state')
-for _, colour in ipairs({ 'green', 'yellow', 'white', 'red' }) do
-  expect(html:find('%.rm%-flag%-' .. colour .. '%s*{') ~= nil,
-    'the ' .. colour .. ' flag has a colour rule')
-end
 
 -- A driver has to be able to reach their own participation controls, and the
 -- entry row is hidden for a non-admin for exactly as long as a session is live.
@@ -1367,3 +1373,38 @@ expect(html:find('class="rm%-flag">🏁') == nil,
 local flagUses = 0
 for _ in html:gmatch('rm%-flag rm%-flag%-{{ driverFlag }}') do flagUses = flagUses + 1 end
 expect(flagUses == 2, 'the driver flag appears in both the admin header and the driver bar')
+
+
+-- ---------------------------------------------------------------------------
+-- Every infinite animation is gated, and every one of them is actually worn
+-- ---------------------------------------------------------------------------
+-- An element animating forever keeps the compositor repainting the UI layer for
+-- as long as it exists, which is the one thing in this template that can cost
+-- real frame time. All of them are inside an ng-if so they exist only while the
+-- thing they describe is happening: the derby badge while a derby runs, the
+-- out-of-bounds warning while a driver is outside the arena.
+--
+-- The rule this pins is narrower and mechanical: an infinite animation must
+-- belong to a class the MARKUP actually uses. A rule nobody wears is dead
+-- weight that still reads as a permanent animation to anyone auditing this
+-- file, which is exactly what the old flag-lamp CSS was after the start lights
+-- were built out of different classes.
+-- Class names contain hyphens, which are Lua pattern metacharacters, so the
+-- membership test is built out of plain finds rather than a pattern per class.
+local worn = {}
+for attr in html:gmatch('class="([^"]*)"') do
+  for cls in attr:gmatch('[^%s]+') do worn[cls] = true end
+end
+for attr in html:gmatch("'(rm%-[%w%-]+)'%s*:") do worn[attr] = true end   -- ng-class keys
+for attr in html:gmatch("'(rm%-[%w%-]+)'") do worn[attr] = true end       -- ng-class values
+local animated = 0
+for cls in html:gmatch('%.(rm%-[%w%-]+)%s*{[^}]-animation:[^}]-infinite') do
+  animated = animated + 1
+  expect(worn[cls] == true,
+    'the infinitely animated class ' .. cls .. ' is worn by an element')
+end
+-- A loop over nothing passes silently, which for a guard is the same as not
+-- having one. Two forever-animations exist by design: the derby-live badge and
+-- the out-of-bounds warning.
+expect(animated == 2, 'both infinite animations were found and checked, got '
+  .. animated)

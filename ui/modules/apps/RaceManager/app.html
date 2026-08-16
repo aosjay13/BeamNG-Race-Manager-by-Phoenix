@@ -2870,7 +2870,6 @@
 
   /* The header lamp. Small on purpose: it shares a strip with the phase, the
      clock and the lap, and none of those may move to make room for it. */
-  .rm-flaglamp { font-size: 13px; line-height: 1; }
   /* DRAWN, NOT TYPED.
      
      This was the ⚑ character, and the font renders it as an EMOJI: it carries
@@ -2900,13 +2899,6 @@
   .rm-flag-yellow { color: #fdd663; }
   .rm-flag-white  { color: #ffffff; }
   .rm-flag-red    { color: #ff5252; }
-  .rm-flaglamp-red   { color: #ff5252; text-shadow: 0 0 8px rgba(255, 82, 82, 0.8); }
-  .rm-flaglamp-amber {
-    color: #fdd663;
-    text-shadow: 0 0 8px rgba(251, 188, 5, 0.9);
-    animation: rm-flagpulse 1s ease-in-out infinite;
-  }
-  @keyframes rm-flagpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
   /* The phase pill in the driver bar: same colours as the header's, smaller,
      so both panels open their status run the same way. */
   .rm-driverbar-phase { font-size: 9px; padding: 1px 5px; }
