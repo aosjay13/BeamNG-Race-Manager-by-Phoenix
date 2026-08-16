@@ -85,6 +85,10 @@ jsonEncode = function (t) return t end
 jsonDecode = function (v) return v end
 math.atan2 = math.atan2 or function (y, x) return math.atan(y, x) end
 
+-- The extension `require`s its modules (raceManager/derby, and more to come),
+-- so the headless harness has to be able to find them the way the game can.
+-- One line, and it is what makes a split file testable at all.
+package.path = 'lua/ge/extensions/?.lua;' .. package.path
 local RM = dofile('lua/ge/extensions/raceManager.lua')
 RM.onExtensionLoaded()
 

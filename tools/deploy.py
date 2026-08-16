@@ -30,16 +30,28 @@ import shutil
 import sys
 import zipfile
 
-# What goes inside the client zip, at these exact paths. BeamNG mounts the zip
-# and reads them from its root, so an extra top-level folder means nothing loads.
-CLIENT_FILES = [
-    'scripts/raceManager/modScript.lua',
-    'lua/ge/extensions/raceManager.lua',
-    'ui/modules/apps/RaceManager/app.html',
-    'ui/modules/apps/RaceManager/app.js',
-    'ui/modules/apps/RaceManager/app.json',
-    'ui/modules/apps/RaceManager/app.png',
+# What goes inside the client zip. BeamNG mounts the zip and reads these from its
+# root, so an extra top-level folder means nothing loads.
+#
+# GLOBBED, not listed. The extension is split into modules now
+# (lua/ge/extensions/raceManager/*.lua) and a hardcoded list silently drops a new
+# one: the zip builds, the mod mounts, and the require fails on a machine that is
+# not this one. The trees below are the whole client surface.
+CLIENT_TREES = [
+    'scripts/raceManager',
+    'lua/ge/extensions',
+    'ui/modules/apps/RaceManager',
 ]
+
+
+def client_files():
+    out = []
+    for tree in CLIENT_TREES:
+        for root, _, names in os.walk(tree):
+            for n in sorted(names):
+                if n.endswith(('.lua', '.html', '.js', '.json', '.png')):
+                    out.append(os.path.join(root, n).replace(os.sep, '/'))
+    return sorted(out)
 SERVER_PLUGIN = 'server/RaceManager/main.lua'
 RELEASE_NAME = 'RaceManager-v0.8.0-branching-routes.zip'
 
@@ -61,13 +73,16 @@ def sha_file(path):
 
 def build():
     """Write the client zip in memory, then dist/ and package/ from it."""
-    missing = [f for f in CLIENT_FILES + [SERVER_PLUGIN] if not os.path.exists(f)]
-    if missing:
-        raise SystemExit('missing source files: ' + ', '.join(missing))
+    files = client_files()
+    if not os.path.exists(SERVER_PLUGIN):
+        raise SystemExit('missing ' + SERVER_PLUGIN)
+    # The extension itself is the one file whose absence would be silent.
+    if 'lua/ge/extensions/raceManager.lua' not in files:
+        raise SystemExit('the client extension is missing from the packaged trees')
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
-        for f in CLIENT_FILES:
+        for f in files:
             z.write(f, f)
     client = buf.getvalue()
 
@@ -84,7 +99,7 @@ def build():
         z.writestr('Client/RaceManager.zip', client)
         z.write(SERVER_PLUGIN, 'Server/RaceManager/main.lua')
 
-    print('built %s (%d bytes)' % (release, os.path.getsize(release)))
+    print('built %s (%d bytes) from %d client files' % (release, os.path.getsize(release), len(files)))
     print('  client zip %s  %d bytes' % (sha(client), len(client)))
     print('  server lua %s  %d bytes' % (sha_file(SERVER_PLUGIN),
                                          os.path.getsize(SERVER_PLUGIN)))
