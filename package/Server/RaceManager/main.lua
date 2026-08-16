@@ -940,7 +940,12 @@ local function broadcastState(targetPid)
   if targetPid then
     selfAdmin = isAuthenticated(targetPid)
     local selfRec = players[pidKey(targetPid)]
-    selfSpectating = selfRec and selfRec.spectating == true or nil
+    -- NOT `selfRec and selfRec.spectating == true or nil`. That idiom cannot
+    -- return false: the `or` swallows it and yields nil, the field drops out of
+    -- the JSON, and the panel's "is it a boolean" guard keeps the last value it
+    -- saw. Spectating ON could be sent and spectating OFF could not, so a driver
+    -- rejoined the field and the panel went on telling them they had not.
+    if selfRec then selfSpectating = selfRec.spectating == true end
   end
   local payload = Util.JsonEncode({
     rmProtocol   = RM_PROTOCOL,

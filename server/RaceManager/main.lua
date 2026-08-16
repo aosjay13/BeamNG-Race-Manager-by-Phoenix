@@ -2118,6 +2118,19 @@ formGrid = function (kind, byName)
     rec.outReason  = nil
     rec.dnfPos     = nil
     rec.heldPos    = nil
+    -- THE RACE CLOCK GOES BACK TO ZERO HERE, so anything holding a stamp from
+    -- the old one has to go with it. holdCorrectedAt is the one that bites: the
+    -- grid-hold rate limiter asks `race.time - holdCorrectedAt`, and a stamp
+    -- from the last race makes that NEGATIVE, which reads as "corrected a moment
+    -- ago" and suppresses corrections for the first minute of the new race --
+    -- exactly when the field is standing on the grid and the hold is the only
+    -- thing keeping it there. Only ever seen by an admin running races back to
+    -- back, because Reset Session drops the records entirely.
+    rec.holdCorrectedAt = nil
+    rec.holdCorrections = 0
+    -- Counters the record describes as "this session", so they have to mean it.
+    rec.pitStops   = 0
+    rec.ghosts     = 0
     -- A qualifying grid also clears the times it is about to replace.
     if isQualiSession() then
       rec.qualiBest = nil

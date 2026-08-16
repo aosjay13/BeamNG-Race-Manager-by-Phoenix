@@ -432,6 +432,25 @@ corrections = {}
 RM_onHoldPos(1, '{"x":0,"y":200,"z":0}')
 check(#corrections == 0, 'a racing car is never corrected onto a grid slot')
 
+-- ---------------------------------------------------------------------------
+-- Back to back: a second grid without Reset Session in between
+-- ---------------------------------------------------------------------------
+-- The rate limiter stamps rec.holdCorrectedAt with race.time, and formGrid puts
+-- race.time back to 0. The stamp was NOT cleared with it, so on the next grid
+-- `race.time - holdCorrectedAt` was zero or negative: it read as "corrected a
+-- moment ago" and swallowed the first correction of the new session, which is
+-- the one that matters, because that is the field standing on the grid.
+--
+-- Invisible to anyone who pressed Reset Session between races, since that drops
+-- the driver records outright and takes the stale stamp with them.
+RM_onEndRace(1)
+RM_onGenerateGrid(1)            -- deliberately NO RM_onResetLeaderboard
+check(lastState.phase == 'grid', 'a second grid forms without a session reset')
+corrections = {}
+RM_onHoldPos(1, '{"x":0,"y":2.5,"z":0}')
+check(#corrections == 1,
+  'a car off its slot on the second grid is corrected, not silently tolerated')
+
 -- A grid whose coordinates the server was never told is left to the clients
 -- rather than policed against a grid it does not have.
 RM_onEndRace(1)
