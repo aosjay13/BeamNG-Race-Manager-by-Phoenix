@@ -1265,6 +1265,24 @@ check(lastState.flag == 'yellow', 'a non-admin cannot wave a flag')
 RM_onSetFlag(1, '{"flag":"chartreuse"}')
 check(lastState.flag == 'yellow', 'and an invented colour is ignored')
 
+-- RED IS A CONDITION, NOT A STATE CHANGE. Stop, something gets cleaned up, then
+-- yellow and back to green. Nothing ends, nobody is frozen, and the phase does
+-- not move: the race is still running underneath it the whole time.
+lastChat = nil
+RM_onSetFlag(1, '{"flag":"red"}')
+check(lastState.flag == 'red', 'an admin can call a red flag')
+check(lastState.phase == 'racing',
+  'and the session is STILL RACING: red stops the cars, not the session')
+check(type(lastChat) == 'string' and lastChat:find('RED FLAG', 1, true),
+  'the field is told')
+check(type(lastChat) == 'string' and lastChat:find('still running', 1, true),
+  'and told the session has not ended, because red is the one flag that looks '
+    .. 'like it should have ended it')
+
+-- The sequence a marshal actually runs.
+RM_onSetFlag(1, '{"flag":"yellow"}')
+check(lastState.flag == 'yellow', 'red goes to yellow')
+
 RM_onSetFlag(1, '{"flag":"green"}')
 check(lastState.flag == 'green', 'the admin can go back to green')
 

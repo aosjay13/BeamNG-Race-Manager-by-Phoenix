@@ -814,6 +814,11 @@ end
 -- decided server-side for everybody at once. A sprint stage never shows one,
 -- having only the one lap there ever was.
 local function driverFlag()
+  -- RED FIRST. Held on the grid is a red flag, and so is an admin calling one:
+  -- both mean the same thing to a driver, which is that nobody is racing right
+  -- now. It is a CONDITION rather than a state change, and the session is still
+  -- running underneath it: red goes to yellow, then back to green.
+  if raceFlag == 'red' or phase == 'grid' or gridFrozen then return 'red' end
   if raceFlag == 'yellow' then return 'yellow' end
   if phase == 'racing' and not pointToPoint and totalLaps > 0
      and localLap >= totalLaps then
@@ -5923,7 +5928,7 @@ end
 -- whether this session is in a state to be flagged at all.
 function M.setFlag(f)
   f = tostring(f or '')
-  if f ~= 'green' and f ~= 'yellow' then return end
+  if f ~= 'green' and f ~= 'yellow' and f ~= 'red' then return end
   if inMultiplayer() then TriggerServerEvent('RM_SetFlag', jsonEncode({ flag = f })) end
 end
 
@@ -6136,10 +6141,14 @@ local function onServerUpdate(rawData)
   -- The flag, and a notice the moment it CHANGES. A caution that only appears
   -- on a panel is a caution the driver watching the road never sees.
   local wasFlag = raceFlag
-  if data.flag == 'green' or data.flag == 'yellow' then raceFlag = data.flag end
+  if data.flag == 'green' or data.flag == 'yellow' or data.flag == 'red' then
+    raceFlag = data.flag
+  end
   if raceFlag ~= wasFlag and sessionRunning() then
-    if raceFlag == 'yellow' then
-      pushNotice('flag', 'YELLOW FLAG: caution, hold position')
+    if raceFlag == 'red' then
+      pushNotice('flag', 'RED FLAG: stop where you are and wait')
+    elseif raceFlag == 'yellow' then
+      pushNotice('flag', 'YELLOW FLAG: caution called, race back to the line')
     else
       pushNotice('flag', 'GREEN FLAG: racing')
     end
@@ -6245,6 +6254,14 @@ local function onServerUpdate(rawData)
   -- the route/entry state to the UI when something in it actually moved.
   -- (resetLapTracking already pushes on a phase change.)
   if not phaseChanged and joined ~= wasJoined then pushRouteState() end
+  -- THE FLAG RIDES THIS BROADCAST, which arrives three times a second.
+  --
+  -- It used to travel only on pushRouteState, which fires on edits and events
+  -- and not on any clock, so calling a caution changed the flag on the client
+  -- and the panel went on showing the old one until something unrelated pushed
+  -- route state. Logging out and back in is such a thing, which is why that
+  -- looked like the cure.
+  data.driverFlag = driverFlag()
   guihooks.trigger('RaceManagerUpdate', data)
 end
 

@@ -1026,11 +1026,20 @@ expect(html:find("ng%-click=\"setFlag%('yellow'%)\"") ~= nil
 expect(js:find('$scope.setFlag = function', 1, true) ~= nil,
   'setFlag has a handler in app.js')
 
--- The caution button is only live while something is actually running.
-local cautionGuard = html:match("ng%-click=\"setFlag%('yellow'%)\"[^>]-ng%-disabled=\"([^\"]*)\"")
-expect(cautionGuard ~= nil, 'the caution button has a guard')
-expect(cautionGuard and cautionGuard:find('racing', 1, true) ~= nil,
-  'and it is only live during a session')
+-- ALL THREE FLAGS ARE ALWAYS PRESENT while a session runs, and the one that is
+-- out is MARKED rather than removed. A single toggle hid whichever flag was not
+-- next, so the sequence a marshal actually runs (red to clean up, yellow to pack
+-- them up, green to go) meant guessing which button would appear.
+for _, colour in ipairs({ 'red', 'yellow', 'green' }) do
+  expect(html:find("ng%-click=\"setFlag%('" .. colour .. "'%)\"") ~= nil,
+    'the ' .. colour .. ' flag has its own button')
+end
+local flagset = html:match('<span class="rm%-flagset"[^>]-ng%-if="([^"]*)"')
+expect(flagset ~= nil, 'the flag buttons are grouped')
+expect(flagset and flagset:find('racing', 1, true) ~= nil,
+  'and the group is only shown during a session')
+expect(html:find("'rm%-flag%-on': flag === 'red'") ~= nil,
+  'the flag currently out is marked, not hidden')
 
 -- The header lamp is RED on the grid and AMBER under caution, and shows nothing
 -- at all when the race is simply green: a lamp that is always lit is a lamp

@@ -65,8 +65,6 @@
          then an actual FLAG once a session is running: green racing, yellow
          caution, white last lap. A flag is read faster than a coloured dot and
          it is what a driver already looks for. -->
-    <span class="rm-flaglamp rm-flaglamp-red" ng-if="phase === 'grid'"
-          title="Held on the grid">●</span>
     <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
           title="{{ flagTitle() }}">⚑</span>
 
@@ -212,13 +210,21 @@
             title="Grid the field by qualifying time or your chosen order. Ends qualifying first, keeping the times.">Generate Grid</button>
     <button class="rm-btn rm-btn-start" ng-click="startCountdown()"  ng-disabled="phase !== 'grid'"
             title="Count the field down and release the hold. Starts whichever session is on the grid.">Start Countdown</button>
-    <button class="rm-btn rm-btn-caution" ng-click="setFlag('yellow')"
-            ng-if="flag !== 'yellow'"
-            ng-disabled="phase !== 'racing' && phase !== 'qualifying'"
-            title="Yellow flag: caution. Shown to the field and announced in chat. Advisory, it polices nothing.">⚑ Caution</button>
-    <button class="rm-btn rm-btn-green" ng-click="setFlag('green')"
-            ng-if="flag === 'yellow'"
-            title="Green flag: back to racing.">⚑ Green</button>
+    <!-- ALL THREE, ALWAYS. A single toggle hid whichever flag was not next, so
+         the sequence a marshal actually runs -- red to clean up, yellow to pack
+         them up, green to go -- meant guessing which button would appear. The
+         one that is out is marked rather than removed. -->
+    <span class="rm-flagset" ng-if="phase === 'racing' || phase === 'qualifying'">
+      <button class="rm-btn rm-btn-redflag" ng-click="setFlag('red')"
+              ng-class="{'rm-flag-on': flag === 'red'}"
+              title="Red flag: stop where you are. The session keeps running; go yellow, then green.">⚑ Red</button>
+      <button class="rm-btn rm-btn-caution" ng-click="setFlag('yellow')"
+              ng-class="{'rm-flag-on': flag === 'yellow'}"
+              title="Yellow flag: caution called, race back to the line.">⚑ Yellow</button>
+      <button class="rm-btn rm-btn-green" ng-click="setFlag('green')"
+              ng-class="{'rm-flag-on': flag === 'green'}"
+              title="Green flag: racing.">⚑ Green</button>
+    </span>
     <button class="rm-btn rm-btn-end"   ng-click="endRace()"         ng-disabled="phase !== 'racing' && phase !== 'countdown' && phase !== 'qualifying'">End Session</button>
     <button class="rm-btn rm-btn-reset" ng-click="resetLeaderboard()">Reset</button>
   </div>
@@ -2829,6 +2835,7 @@
   .rm-flag-green  { color: #34a853; text-shadow: 0 0 7px rgba(52, 168, 83, 0.85); }
   .rm-flag-yellow { color: #fdd663; text-shadow: 0 0 8px rgba(251, 188, 5, 0.95); }
   .rm-flag-white  { color: #ffffff; text-shadow: 0 0 8px rgba(255, 255, 255, 0.9); }
+  .rm-flag-red    { color: #ff5252; text-shadow: 0 0 8px rgba(255, 82, 82, 0.95); }
   .rm-flaglamp-red   { color: #ff5252; text-shadow: 0 0 8px rgba(255, 82, 82, 0.8); }
   .rm-flaglamp-amber {
     color: #fdd663;
@@ -2836,8 +2843,13 @@
     animation: rm-flagpulse 1s ease-in-out infinite;
   }
   @keyframes rm-flagpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  .rm-flagset { display: inline-flex; gap: 4px; }
+  .rm-btn-redflag { border-color: rgba(255, 82, 82, 0.85); color: #ff8a8a; }
   .rm-btn-caution { border-color: rgba(251, 188, 5, 0.85); color: #fdd663; }
   .rm-btn-green   { border-color: rgba(52, 168, 83, 0.85); color: #7ee2a8; }
+  /* The flag currently out. Marked rather than hidden, so the sequence is
+     always visible and the current state is never a guess. */
+  .rm-btn.rm-flag-on { background: rgba(255, 255, 255, 0.16); font-weight: 700; }
 
   /* Tables */
   .rm-table-wrap { flex: 1; overflow-y: auto; }

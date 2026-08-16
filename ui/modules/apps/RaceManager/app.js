@@ -1310,7 +1310,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         if (!data) { return; }
         $scope.$evalAsync(function () {
           $scope.phase = data.phase || 'waiting';
-          $scope.flag = (data.flag === 'yellow') ? 'yellow' : 'green';
+          $scope.flag = (data.flag === 'yellow' || data.flag === 'red') ? data.flag : 'green';
           // Which session the shared lifecycle is running. Qualifying and racing
           // go through the same phases now (grid -> countdown -> running ->
           // done), so the phase alone no longer says which one you are looking
@@ -2279,17 +2279,22 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // server decides whether the session is in a state to be flagged at all.
       // Shown once a session is actually running. On the grid the red lamp says
       // what is happening, and out of a session a flag would be furniture.
+      // Held on the grid counts: that IS a red flag, and it is the one moment a
+      // driver most wants to be told nothing is happening yet.
       $scope.flagShowing = function () {
-        return $scope.phase === 'racing' || $scope.phase === 'qualifying';
+        return $scope.phase === 'racing' || $scope.phase === 'qualifying'
+          || $scope.phase === 'grid';
       };
       $scope.flagTitle = function () {
+        if ($scope.driverFlag === 'red') { return 'Red flag: stop where you are and wait'; }
         if ($scope.driverFlag === 'yellow') { return 'Yellow flag: caution, race back to the line'; }
         if ($scope.driverFlag === 'white') { return 'White flag: last lap'; }
         return 'Green flag: racing';
       };
 
       $scope.setFlag = function (f) {
-        bngApi.engineLua('raceManager.setFlag("' + (f === 'yellow' ? 'yellow' : 'green') + '")');
+        var want = (f === 'yellow' || f === 'red') ? f : 'green';
+        bngApi.engineLua('raceManager.setFlag("' + want + '")');
       };
 
       $scope.endRace = function () {

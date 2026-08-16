@@ -84,7 +84,14 @@ local race = {
   -- without them: the rule disqualifies anyone who did not complete the route,
   -- and with no route that is the whole field.
   jokerGates   = 0,
-  -- THE FLAG THE FIELD IS RACING UNDER. Advisory: it is shown, announced and
+  -- THE FLAG THE FIELD IS RACING UNDER: green, yellow or red.
+  --
+  -- RED IS A CONDITION, NOT A STATE CHANGE. It means stop, something is being
+  -- cleaned up, and the session then goes yellow and back to green. Nothing is
+  -- ended, nobody is frozen and no phase moves: the race is still running the
+  -- whole time. That is the entire reason this is a field and not a phase.
+  --
+  -- Advisory: it is shown, announced and
   -- written into the results, and it polices nothing. Deciding automatically
   -- that an overtake under yellow was illegal means holding a second running
   -- order that survives the caution and reconciles on green, and a marshal who
@@ -3571,7 +3578,7 @@ function RM_onSetFlag(pid, rawData)
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
   local want = tostring(data.flag or '')
-  if want ~= 'green' and want ~= 'yellow' then return end
+  if want ~= 'green' and want ~= 'yellow' and want ~= 'red' then return end
   if not sessionUnderWay() then
     MP.SendChatMessage(pid, '[RaceManager] No session is running, so there is nothing to flag.')
     return
@@ -3579,7 +3586,10 @@ function RM_onSetFlag(pid, rawData)
   if want == race.flag then return end
   race.flag = want
   local who = MP.GetPlayerName(pid) or pid
-  if want == 'yellow' then
+  if want == 'red' then
+    MP.SendChatMessage(-1, '[RaceManager] RED FLAG: stop where you are and wait. '
+      .. 'The session is still running; it goes yellow, then green. By ' .. who .. '.')
+  elseif want == 'yellow' then
     MP.SendChatMessage(-1, '[RaceManager] YELLOW FLAG: caution called, race back to the line. By ' .. who .. '.')
   else
     MP.SendChatMessage(-1, '[RaceManager] GREEN FLAG: racing. By ' .. who .. '.')
