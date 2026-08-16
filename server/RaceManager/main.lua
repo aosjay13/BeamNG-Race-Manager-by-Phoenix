@@ -304,9 +304,23 @@ end
 
 -- Guard placed at the top of every admin-level event handler. Any command from
 -- a session that has not logged in is dropped (and logged so it's diagnosable).
+-- A REFUSAL HAS TO REACH THE CLIENT, not just the log.
+--
+-- The client caches its own admin flag on purpose, so it survives the pause
+-- menu, and `youAreAdmin` only rides targeted replies. Nothing else tells it the
+-- server dropped that flag. Session ids are REUSED, so a reconnect clears the
+-- auth here while the panel goes on showing admin controls that silently do
+-- nothing: every button dead, no error anywhere, and logging out and back in
+-- the only cure anybody could stumble onto.
+--
+-- So the refusal is answered. The client corrects its flag, the panel offers the
+-- login again, and a dead button becomes a sentence.
 local function requireAuth(pid)
   if authenticatedPlayers[pid] then return true end
   print('[RaceManager] Ignored admin command from unauthenticated player ' .. tostring(pid))
+  MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({
+    success = false, lapsed = true,
+  }))
   return false
 end
 

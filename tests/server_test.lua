@@ -9,6 +9,7 @@ local lastState = nil     -- last decoded RM_Update payload
 local lastChat = nil      -- last broadcast chat message
 local lastLayouts = nil   -- last RM_Layouts payload
 local lastHeld    = nil   -- last RM_SaveHeld payload (a refused overwrite)
+local lastLogin   = nil   -- last RM_LoginResult payload
 local appliedLayouts = {} -- [target] = last RM_ApplyLayout payload
 local lastApplied = nil   -- last RM_ApplyLayout payload
 local lastCleared = nil   -- last RM_ClearTrack payload
@@ -31,6 +32,7 @@ MP = {
     if event == 'RM_ApplyLayout' then lastApplied = payload; appliedLayouts[target] = payload end
     if event == 'RM_ClearTrack'  then lastCleared = payload end
     if event == 'RM_SaveHeld'    then lastHeld    = payload end
+    if event == 'RM_LoginResult' then lastLogin   = payload end
   end,
   RegisterEvent = function () end,
   CreateEventTimer = function (name) timers[name] = true end,
@@ -1173,6 +1175,26 @@ do
 end
 
 -- Clean up the directory tree the test created in the repo root
+-- ---------------------------------------------------------------------------
+-- A refused admin command answers the client
+-- ---------------------------------------------------------------------------
+-- Reported live: every admin button silently stopped working, with no error
+-- anywhere, and logging out and back in was the only cure anybody stumbled onto.
+--
+-- The client caches its own admin flag so it survives the pause menu, and
+-- `youAreAdmin` only rides targeted replies. Session ids are REUSED, so a
+-- reconnect clears the auth server-side while the panel goes on showing admin
+-- controls the server is quietly refusing. Nothing told the client.
+lastLogin = nil
+RM_onEndRace(4242)                    -- a pid that never logged in
+check(lastLogin ~= nil,
+  'a refused admin command answers the client instead of only logging it')
+check(lastLogin and lastLogin.success == false,
+  'and the answer corrects the flag the client was caching')
+check(lastLogin and lastLogin.lapsed == true,
+  'flagged as a LAPSE, not a failed password: nobody typed anything, so the '
+    .. 'panel must not accuse them of getting it wrong')
+
 -- LAST IN THE FILE ON PURPOSE. This block starts a race, and everything above
 -- it either needs no session running (loading and deleting a layout are both
 -- refused mid-race) or depends on driver records a reset would clear.

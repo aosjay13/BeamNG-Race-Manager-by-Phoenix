@@ -550,6 +550,32 @@ check(through >= 2,
   'a CROSS is drawn across a joker that is shut on lap 1: two strokes through '
     .. 'the gate centre, where its poles never reach (got ' .. through .. ')')
 
+-- An OPEN joker gets a faded arrow up. Same place, fewer strokes, and much
+-- fainter: this one sits on a gate the driver is aiming THROUGH, where the
+-- cross and the tick sit on one they must not take.
+-- Waiting, not racing: the joker is shut only on lap 1 of a running session, so
+-- before the lights it is open, which is the state being drawn here.
+serverState({ phase = 'waiting', totalLaps = 3, maxResets = -1, drivers = {},
+  jokerEnabled = true })
+cylinders = {}
+for _ = 1, 3 do frame() end
+local openStrokes = 0
+local faintest = 1
+for _, c in ipairs(cylinders) do
+  local mx = (c.a.x + c.b.x) * 0.5
+  local my = (c.a.y + c.b.y) * 0.5
+  local dx, dy = mx - 50, my - 150
+  if math.sqrt(dx * dx + dy * dy) < 3 then
+    openStrokes = openStrokes + 1
+    if c.color and c.color[4] and c.color[4] < faintest then faintest = c.color[4] end
+  end
+end
+check(openStrokes >= 3,
+  'an open joker draws an arrow: a shaft and two barbs through the gate centre '
+    .. '(got ' .. openStrokes .. ')')
+check(faintest < 0.35,
+  'and it is drawn faint enough to see the road through (alpha ' .. faintest .. ')')
+
 local jokerLabels = 0
 for _, t in ipairs(texts) do
   if t.text:find('JOKER', 1, true) then jokerLabels = jokerLabels + 1 end

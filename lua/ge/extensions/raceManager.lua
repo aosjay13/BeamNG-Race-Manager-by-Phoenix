@@ -4074,6 +4074,9 @@ local function palette()
     -- the piece of track the driver is about to aim at.
     glyphShut    = ColorF(1, 0.25, 0.25, 0.5),
     glyphDone    = ColorF(0.3, 1, 0.45, 0.5),
+    -- Fainter than the other two: it sits on a gate the driver is aiming
+    -- THROUGH, where the cross and the tick sit on one they must not take.
+    glyphOpen    = ColorF(0.85, 0.7, 1, 0.28),
     -- Demo derby arena. Its own entries rather than its own table: the derby
     -- module keeps its state and its logic separate, but a colour is a colour,
     -- and building these per frame is what this exists to stop.
@@ -4349,7 +4352,15 @@ function paint.glyph(g, kind)
     return vec3(c.x + rx * sr * half, c.y + ry * sr * half, c.z + su * half)
   end
   local r = TUNE.POLE_RADIUS * 0.8
-  if kind == 'shut' then
+  if kind == 'open' then
+    -- AN ARROW UP: take it. Faded hard on purpose, because unlike the cross and
+    -- the tick this one is drawn on a gate the driver is about to aim through,
+    -- and the whole point of the joker poles is that you can see the road
+    -- between them.
+    debugDrawer:drawCylinder(at(0, -1), at(0, 1), r * 0.8, p.glyphOpen)
+    debugDrawer:drawCylinder(at(0, 1), at(-0.55, 0.3), r * 0.8, p.glyphOpen)
+    debugDrawer:drawCylinder(at(0, 1), at(0.55, 0.3), r * 0.8, p.glyphOpen)
+  elseif kind == 'shut' then
     debugDrawer:drawCylinder(at(-1, -1), at(1, 1), r, p.glyphShut)
     debugDrawer:drawCylinder(at(-1, 1), at(1, -1), r, p.glyphShut)
   elseif kind == 'done' then
@@ -4479,7 +4490,7 @@ local function drawDriverGate(derbyLive)
       -- Getting it wrong is a disqualification either way round.
       local glyph = (state == 'used' and 'done')
         or (state == 'closed' and 'shut')
-        or nil
+        or 'open'
       drawPoleGate(wp, jokerTaken and p.jokerUsed or p.joker,
         jokerLabel(j, #jokerRoute, state),
         jokerTaken and p.jokerUsedFill or p.jokerFill, glyph)
@@ -6563,8 +6574,16 @@ local function onLoginResult(rawData)
   -- Remember it here as well as telling the UI: the UI's copy dies with the
   -- app, this one outlives the pause menu.
   isAdmin = data.success == true
-  guihooks.trigger('RaceManagerAuth', { success = isAdmin })
-  log('I', 'raceManager', 'Login result: ' .. tostring(isAdmin))
+  -- `lapsed` means this was not an answer to a login attempt: the server refused
+  -- a command because the session is no longer authenticated. Worth saying out
+  -- loud, because from the panel it looks exactly like the mod has stopped
+  -- working rather than like being logged out.
+  guihooks.trigger('RaceManagerAuth', { success = isAdmin, lapsed = data.lapsed == true })
+  if data.lapsed == true then
+    pushNotice('server', 'Admin session expired: log in again to run the session')
+  end
+  log('I', 'raceManager', 'Login result: ' .. tostring(isAdmin)
+    .. (data.lapsed == true and ' (session lapsed)' or ''))
 end
 
 -- Server broadcast that an admin rotated the master password (never the value).

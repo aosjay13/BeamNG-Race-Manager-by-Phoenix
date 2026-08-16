@@ -1794,8 +1794,15 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           // somebody just typed. Only a real attempt can fail, so only a real
           // attempt lights the "Incorrect password" warning.
           var restored = !!(data && data.restored);
+          // `lapsed`: the server refused a command because this session is no
+          // longer authenticated. Not a wrong password, so it must not light the
+          // "Incorrect password" warning, but it IS the one case where the login
+          // should come to the admin rather than waiting to be fetched. They
+          // were mid-session pressing buttons that had quietly stopped working.
+          var lapsed = !!(data && data.lapsed);
           $scope.isAdmin = ok;
-          $scope.authError = !ok && !restored;
+          $scope.authError = !ok && !restored && !lapsed;
+          if (lapsed) { $scope.showLogin = true; }
           if (ok) {
             $scope.authUi.password = '';
             $scope.showLogin = false;
