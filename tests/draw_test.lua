@@ -139,6 +139,44 @@ check(#cylinders == 4,
   'the armed gate and the next are drawn while the session is still WAITING')
 check(#quads == 0, 'and still as poles, not the authoring view')
 
+-- ON THE GRID, THE GATES SHOWN ARE THE ONES AHEAD.
+--
+-- Standing on the grid is standing at the line, so the gate a driver is aiming
+-- at is checkpoint 1 and the dim one after it is checkpoint 2. It used to arm
+-- the FINISH LINE through the whole hold, because the arming asked "is a session
+-- running" and a held grid is not one yet. That lit the gate BEHIND the field
+-- and dimmed CP1 as "the one after", so both markers were a gate late and the
+-- first corner was the one not drawn -- at exactly the moment a driver is sat
+-- still looking at where they are about to go.
+local function litGates()
+  local ys = {}
+  for _, c in ipairs(cylinders) do ys[c.a.y] = true end
+  local out = {}
+  for y in pairs(ys) do out[#out + 1] = y end
+  table.sort(out)
+  return out
+end
+
+serverState({ phase = 'grid', totalLaps = 3, maxResets = -1, drivers = {} })
+frame()
+local lit = litGates()
+check(#lit == 2 and lit[1] == 100 and lit[2] == 200,
+  'a held grid shows checkpoints 1 and 2, not the finish line and checkpoint 1')
+
+serverState({ phase = 'countdown', totalLaps = 3, maxResets = -1, drivers = {} })
+frame()
+lit = litGates()
+check(#lit == 2 and lit[1] == 100 and lit[2] == 200,
+  'and the countdown does not change what is being aimed at')
+
+-- Free driving with no session is the case the finish line IS right for: a
+-- driver pottering about is heading for the line, not for checkpoint 1.
+serverState({ phase = 'waiting', totalLaps = 3, maxResets = -1, drivers = {} })
+frame()
+lit = litGates()
+check(#lit == 2 and lit[1] == 100 and lit[2] == 300,
+  'outside a session the line is armed again, with checkpoint 1 as the next')
+
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
 frame()
 check(#quads == 0,

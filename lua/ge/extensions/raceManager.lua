@@ -1019,6 +1019,16 @@ local function resetLapTracking()
   if sessionRunning() then
     armedWp = 1
     timingActive = true
+  elseif phase == 'grid' or phase == 'countdown' then
+    -- STANDING ON THE GRID IS STANDING AT THE LINE, so the gate ahead is
+    -- checkpoint 1, exactly as it will be a second later at GO. Arming the
+    -- finish line here highlighted the gate BEHIND the field and dimmed CP1 as
+    -- "the one after", so both markers a driver reads while waiting for the
+    -- lights were one gate late, and the first corner was the one not shown.
+    --
+    -- Presentation only: checkGates refuses to run outside a running session,
+    -- so nothing can be crossed or scored from the grid.
+    armedWp = 1
   else
     armedWp = math.max(#route, 1)
   end
