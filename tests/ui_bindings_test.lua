@@ -1212,11 +1212,34 @@ end
 -- Retire lived only there, so the people it is for could never press it.
 local barChunk2 = html:match('<div class="rm%-driverbar".-<!%-%- =+ Derby standings')
 expect(barChunk2 ~= nil, 'found the driver bar')
-expect(barChunk2 and barChunk2:find('confirmRetire', 1, true) ~= nil,
+expect(barChunk2 and barChunk2:find('retireUi.confirm', 1, true) ~= nil,
   'the driver bar carries Retire, because it is a non-admin\'s whole HUD while a '
     .. 'session is live and the entry row is not shown then')
 expect(barChunk2 and barChunk2:find('setSpectating', 1, true) ~= nil,
   'and Spectate, for between sessions')
+
+-- ---------------------------------------------------------------------------
+-- Nothing writes a BARE name from an ng-click
+-- ---------------------------------------------------------------------------
+-- ng-if and ng-repeat make a child scope, so `confirmRetire = true` written from
+-- inside one lands on the CHILD and shadows the parent. The sibling that reads it
+-- never sees the change, and the button does nothing at all -- which is exactly
+-- what Retire did, in both panels, until it was bound through an object.
+--
+-- This file already warns about it for ng-model. An ng-click that ASSIGNS is the
+-- same trap with a different attribute, so it is checked the same way: any
+-- assignment has to go through a dot.
+local bareWrites = {}
+for expr in html:gmatch('ng%-click="([^"]*)"') do
+  for target in expr:gmatch('([%w_%.]+)%s*=[^=]') do
+    if not target:find('%.') then
+      bareWrites[#bareWrites + 1] = target .. '  (in: ' .. expr:sub(1, 45) .. ')'
+    end
+  end
+end
+expect(#bareWrites == 0,
+  'every ng-click assignment writes through an object, so a child scope cannot '
+    .. 'shadow it: ' .. (bareWrites[1] or 'none'))
 
 -- ---------------------------------------------------------------------------
 -- Angular expressions must actually PARSE

@@ -1508,7 +1508,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           }
           // A confirmation left hanging after the session ended would offer to
           // retire from nothing.
-          if (!$scope.sessionUnderWay()) { $scope.confirmRetire = false; }
+          if (!$scope.sessionUnderWay()) { $scope.retireUi.confirm = false; }
           // Nudge mode. The CLIENT owns whether it is on: it can end the mode by
           // itself when a session starts or the editor closes, and the button
           // has to follow that rather than what it last asked for.
@@ -2308,9 +2308,14 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         return 'Green flag: racing';
       };
 
-      // Retiring cannot be undone, so the button asks first. `confirmRetire` is
-      // plain scope state and is cleared by the session ending underneath it.
-      $scope.confirmRetire = false;
+      // Retiring cannot be undone, so the button asks first.
+      //
+      // THROUGH AN OBJECT, because both buttons live inside ng-if blocks and
+      // ng-if makes a child scope: `confirmRetire = true` written there lands on
+      // the CHILD and shadows the parent, so the sibling that shows the
+      // confirmation never sees it change. Pressing Retire did nothing at all,
+      // in both panels. The same trap the settings inputs carry a note about.
+      $scope.retireUi = { confirm: false };
       $scope.retire = function () {
         bngApi.engineLua('raceManager.retire()');
       };

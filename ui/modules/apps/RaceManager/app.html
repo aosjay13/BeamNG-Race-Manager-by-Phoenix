@@ -141,12 +141,12 @@
        is visible to spectators too (outside minimal mode). -->
   <div class="rm-entry" ng-if="!minimalMode()">
     <span class="rm-entry-label">Race Entry</span>
-    <button class="rm-btn rm-btn-start" ng-if="!joined && entryMode !== 'all'"
+    <button class="rm-btn rm-btn-start" ng-if="!joined && !spectating && entryMode !== 'all'"
             ng-click="joinRace()" ng-disabled="!canJoin()"
             title="Add yourself to the field for the next race">
       ✚ Join Race
     </button>
-    <button class="rm-btn rm-btn-end" ng-if="joined && entryMode !== 'all'"
+    <button class="rm-btn rm-btn-end" ng-if="joined && !spectating && entryMode !== 'all'"
             ng-click="leaveRace()" ng-disabled="!canJoin()"
             title="Withdraw from the field">
       Leave Race
@@ -170,21 +170,21 @@
             title="{{ spectating ? 'Rejoin the field for the next session.' : 'Sit the next session out. Your car stays where it is as a ghost, and you watch with your own camera controls.' }}">
       {{ spectating ? '↩ Rejoin the field' : '👁 Spectate' }}
     </button>
-    <span class="rm-entry-state" ng-if="sessionUnderWay() && !spectating && !confirmRetire">
-      <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="confirmRetire = true"
+    <span class="rm-entry-state" ng-if="sessionUnderWay() && !spectating && !retireUi.confirm">
+      <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="retireUi.confirm = true"
               title="Pull out of this session. You keep a classified position and score like any other retirement.">
         Retire
       </button>
     </span>
     <!-- Asked for, because it cannot be undone: there is no rejoining a session
          you have retired from. -->
-    <span class="rm-entry-state" ng-if="sessionUnderWay() && confirmRetire">
+    <span class="rm-entry-state" ng-if="sessionUnderWay() && retireUi.confirm">
       Retire from this session?
-      <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="retire(); confirmRetire = false">Yes, retire</button>
-      <button class="rm-btn rm-btn-mini" ng-click="confirmRetire = false">Cancel</button>
+      <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="retire(); retireUi.confirm = false">Yes, retire</button>
+      <button class="rm-btn rm-btn-mini" ng-click="retireUi.confirm = false">Cancel</button>
     </span>
-    <span class="rm-entry-state rm-entry-in" ng-if="entryMode !== 'all' && joined">✓ You are entered</span>
-    <span class="rm-entry-state" ng-if="entryMode !== 'all' && !joined && canJoin()">You are spectating: press Join Race to take part</span>
+    <span class="rm-entry-state rm-entry-in" ng-if="entryMode !== 'all' && joined && !spectating">✓ You are entered</span>
+    <span class="rm-entry-state" ng-if="entryMode !== 'all' && !joined && !spectating && canJoin()">Not entered: press Join Race to take part</span>
     <span class="rm-entry-state" ng-if="entryMode !== 'all' && !joined && !canJoin()">The race is under way: entry is closed</span>
     <span class="rm-entry-count">{{ entrants }} entered</span>
     <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-if="isAdmin"
@@ -1937,14 +1937,14 @@
          Both of these used to live in the Race Entry row, which is hidden for a
          non-admin for exactly as long as a session is live -- so a driver could
          not retire from a race, which is the one moment retiring is for. -->
-    <span class="rm-driverbar-act" ng-if="sessionUnderWay() && !spectating && !confirmRetire">
-      <button class="rm-driverbar-btn rm-driverbar-retire" ng-click="confirmRetire = true"
+    <span class="rm-driverbar-act" ng-if="sessionUnderWay() && !spectating && !retireUi.confirm">
+      <button class="rm-driverbar-btn rm-driverbar-retire" ng-click="retireUi.confirm = true"
               title="Pull out of this session. You keep a classified position and score like any other retirement.">Retire</button>
     </span>
-    <span class="rm-driverbar-act" ng-if="sessionUnderWay() && confirmRetire">
+    <span class="rm-driverbar-act" ng-if="sessionUnderWay() && retireUi.confirm">
       Retire?
-      <button class="rm-driverbar-btn rm-driverbar-retire" ng-click="retire(); confirmRetire = false">Yes</button>
-      <button class="rm-driverbar-btn" ng-click="confirmRetire = false">No</button>
+      <button class="rm-driverbar-btn rm-driverbar-retire" ng-click="retire(); retireUi.confirm = false">Yes</button>
+      <button class="rm-driverbar-btn" ng-click="retireUi.confirm = false">No</button>
     </span>
     <span class="rm-driverbar-act" ng-if="!sessionUnderWay()">
       <button class="rm-driverbar-btn" ng-click="setSpectating(!spectating)"

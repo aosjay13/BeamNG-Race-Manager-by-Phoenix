@@ -1257,7 +1257,15 @@ RM_onSetEntryMode(1, '{"mode":"all"}')
 RM_onRequestState(11)
 local before = lastState.entrants
 
+-- The player who opted out has to be TOLD, and `youSpectating` is targeted-only
+-- like youAreAdmin: the global payload is one message for the whole server and
+-- cannot say "you" to anybody. Without a targeted send they are the only person
+-- not told, so their count drops to zero while their panel still reads "you are
+-- entered" and the button still offers to do what they just did.
+lastState = nil
 RM_onSetSpectating(11, '{"spectating":true}')
+check(lastState ~= nil and lastState.youSpectating == true,
+  'opting out sends the player their own state, not just everybody the count')
 RM_onRequestState(11)
 check(lastState.entrants == before - 1,
   'a spectator is out of the field even under "everyone races", which is the '

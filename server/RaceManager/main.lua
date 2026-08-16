@@ -1875,7 +1875,16 @@ function RM_onSetSpectating(pid, rawData)
     MP.SendChatMessage(-1, '[RaceManager] ' .. rec.name .. ' rejoined the field.')
   end
   print(string.format('[RaceManager] %s set spectating=%s', rec.name, tostring(want)))
+  -- TWICE, AND BOTH ARE NEEDED.
+  --
+  -- Everyone gets the entrant count, which just changed. But `youSpectating` is
+  -- a targeted-only field, like youAreAdmin: the global payload is one message
+  -- for the whole server and cannot say "you" to anybody. Without the second
+  -- send the player who just opted out is the only person not told: their count
+  -- drops to zero while their panel still reads "you are entered", and the
+  -- button still offers to do the thing they have already done.
   broadcastState()
+  broadcastState(pid)
 end
 
 function RM_onSetEntryMode(pid, rawData)
