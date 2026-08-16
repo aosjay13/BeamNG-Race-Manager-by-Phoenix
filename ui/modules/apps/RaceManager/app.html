@@ -167,7 +167,7 @@
          with a different result. -->
     <button class="rm-btn rm-btn-mini" ng-click="setSpectating(!spectating)"
             ng-if="!sessionUnderWay()"
-            title="{{ spectating ? 'Rejoin the field for the next session.' : 'Sit the next session out. Your car stays where it is as a ghost, and you watch with the game's own camera controls.' }}">
+            title="{{ spectating ? 'Rejoin the field for the next session.' : 'Sit the next session out. Your car stays where it is as a ghost, and you watch with your own camera controls.' }}">
       {{ spectating ? '↩ Rejoin the field' : '👁 Spectate' }}
     </button>
     <span class="rm-entry-state" ng-if="sessionUnderWay() && !spectating && !confirmRetire">

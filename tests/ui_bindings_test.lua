@@ -1219,6 +1219,36 @@ expect(barChunk2 and barChunk2:find('setSpectating', 1, true) ~= nil,
   'and Spectate, for between sessions')
 
 -- ---------------------------------------------------------------------------
+-- Angular expressions must actually PARSE
+-- ---------------------------------------------------------------------------
+-- A stray apostrophe inside a single-quoted string ("the game's own controls")
+-- is a $parse syntax error, and Angular reports it by failing to compile the
+-- element -- which took the entire Race Entry row off the panel for admins and
+-- drivers alike. Nothing else broke, nothing was logged where anybody would see
+-- it, and every text-matching check in this file still passed, because the
+-- string was all present and correct. It just could not be parsed.
+--
+-- Counting quotes is enough to catch it: a well-formed expression closes every
+-- string it opens, so an ODD count is a broken one.
+local exprBad = {}
+for expr in html:gmatch('{{(.-)}}') do
+  local n = select(2, expr:gsub("'", ''))
+  if n % 2 == 1 then exprBad[#exprBad + 1] = expr:sub(1, 60) end
+end
+expect(#exprBad == 0,
+  'every {{ }} expression closes its strings (odd-quoted: '
+    .. (exprBad[1] or 'none') .. ')')
+
+-- The same trap in an ng-* attribute, which is an expression too.
+local attrBad = {}
+for attr, val in html:gmatch('(ng%-[%w-]+)="([^"]*)"') do
+  local n = select(2, val:gsub("'", ''))
+  if n % 2 == 1 then attrBad[#attrBad + 1] = attr .. '="' .. val:sub(1, 50) end
+end
+expect(#attrBad == 0,
+  'and so does every ng-* attribute (odd-quoted: ' .. (attrBad[1] or 'none') .. ')')
+
+-- ---------------------------------------------------------------------------
 -- Nudge mode: the button, and who owns whether it is on
 -- ---------------------------------------------------------------------------
 expect(html:find('ng%-click="toggleNudge%(%)"') ~= nil,
