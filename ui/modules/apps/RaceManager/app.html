@@ -75,7 +75,7 @@
     <!-- THE FLAG ENDS THE STATUS RUN, in both panels. Green racing, yellow
          caution, white last lap, red held or stopped. -->
     <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
-          title="{{ flagTitle() }}">⚑</span>
+          title="{{ flagTitle() }}"></span>
 
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
       START P{{ gridSlot }}<b ng-if="gridFrozen"> HOLD</b>
@@ -173,7 +173,7 @@
     <span class="rm-entry-state" ng-if="sessionUnderWay() && !spectating && !confirmRetire">
       <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="confirmRetire = true"
               title="Pull out of this session. You keep a classified position and score like any other retirement.">
-        ⚑ Retire
+        Retire
       </button>
     </span>
     <!-- Asked for, because it cannot be undone: there is no rejoining a session
@@ -260,13 +260,13 @@
     <span class="rm-flagset" ng-if="phase === 'racing' || phase === 'qualifying'">
       <button class="rm-btn rm-btn-redflag" ng-click="setFlag('red')"
               ng-class="{'rm-flag-on': flag === 'red'}"
-              title="Red flag: stop where you are. The session keeps running; go yellow, then green.">⚑ Red</button>
+              title="Red flag: stop where you are. The session keeps running; go yellow, then green.">Red flag</button>
       <button class="rm-btn rm-btn-caution" ng-click="setFlag('yellow')"
               ng-class="{'rm-flag-on': flag === 'yellow'}"
-              title="Yellow flag: caution called, race back to the line.">⚑ Yellow</button>
+              title="Yellow flag: caution called, race back to the line.">Yellow flag</button>
       <button class="rm-btn rm-btn-green" ng-click="setFlag('green')"
               ng-class="{'rm-flag-on': flag === 'green'}"
-              title="Green flag: racing.">⚑ Green</button>
+              title="Green flag: racing.">Green flag</button>
     </span>
     <button class="rm-btn rm-btn-end"   ng-click="endRace()"         ng-disabled="phase !== 'racing' && phase !== 'countdown' && phase !== 'qualifying'">End Session</button>
     <button class="rm-btn rm-btn-reset" ng-click="resetLeaderboard()">Reset</button>
@@ -1931,7 +1931,27 @@
       RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
     </span>
     <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
-          title="{{ flagTitle() }}">⚑</span>
+          title="{{ flagTitle() }}"></span>
+    <span class="rm-driverbar-label rm-entry-out" ng-if="spectating">👁 SPECTATING</span>
+    <!-- THEIR OWN PARTICIPATION, reachable from the only thing they can see.
+         Both of these used to live in the Race Entry row, which is hidden for a
+         non-admin for exactly as long as a session is live -- so a driver could
+         not retire from a race, which is the one moment retiring is for. -->
+    <span class="rm-driverbar-act" ng-if="sessionUnderWay() && !spectating && !confirmRetire">
+      <button class="rm-driverbar-btn rm-driverbar-retire" ng-click="confirmRetire = true"
+              title="Pull out of this session. You keep a classified position and score like any other retirement.">Retire</button>
+    </span>
+    <span class="rm-driverbar-act" ng-if="sessionUnderWay() && confirmRetire">
+      Retire?
+      <button class="rm-driverbar-btn rm-driverbar-retire" ng-click="retire(); confirmRetire = false">Yes</button>
+      <button class="rm-driverbar-btn" ng-click="confirmRetire = false">No</button>
+    </span>
+    <span class="rm-driverbar-act" ng-if="!sessionUnderWay()">
+      <button class="rm-driverbar-btn" ng-click="setSpectating(!spectating)"
+              title="{{ spectating ? 'Rejoin the field for the next session.' : 'Sit the next session out. Your car stays where it is as a ghost.' }}">
+        {{ spectating ? '↩ Rejoin' : '👁 Spectate' }}
+      </button>
+    </span>
     <span class="rm-driverbar-spacer"></span>
     <label class="rm-driverbar-op" title="Leaderboard background opacity" ng-if="!hudCollapsed">
       <span>◑</span>
@@ -2870,13 +2890,42 @@
   /* The header lamp. Small on purpose: it shares a strip with the phase, the
      clock and the lap, and none of those may move to make room for it. */
   .rm-flaglamp { font-size: 13px; line-height: 1; }
-  /* Static on purpose. The lamp pulsed, and a symbol that flickers is harder to
-     read at speed than one that simply is. */
-  .rm-flag { font-size: 15px; line-height: 1; }
-  .rm-flag-green  { color: #34a853; text-shadow: 0 0 7px rgba(52, 168, 83, 0.85); }
-  .rm-flag-yellow { color: #fdd663; text-shadow: 0 0 8px rgba(251, 188, 5, 0.95); }
-  .rm-flag-white  { color: #ffffff; text-shadow: 0 0 8px rgba(255, 255, 255, 0.9); }
-  .rm-flag-red    { color: #ff5252; text-shadow: 0 0 8px rgba(255, 82, 82, 0.95); }
+  /* DRAWN, NOT TYPED.
+     
+     This was the ⚑ character, and the font renders it as an EMOJI: it carries
+     its own colour and ignores `color` completely, so the flag sat there green
+     while a yellow was out. The chat line and the notice were right the whole
+     time, which is what made it look like a state bug rather than a font one.
+     
+     A pole and a cloth, both from CSS, so the colour is ours. Static on purpose:
+     the lamp this replaced pulsed, and a symbol that flickers is harder to read
+     at speed than one that simply is. */
+  .rm-flag {
+    display: inline-block;
+    position: relative;
+    width: 15px;
+    height: 13px;
+    vertical-align: middle;
+  }
+  .rm-flag::before {          /* the pole */
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 2px;
+    background: rgba(255, 255, 255, 0.6);
+  }
+  .rm-flag::after {           /* the cloth, in whatever colour the state sets */
+    content: '';
+    position: absolute;
+    left: 3px; top: 1px;
+    width: 11px; height: 8px;
+    background: currentColor;
+    box-shadow: 0 0 7px currentColor;
+  }
+  .rm-flag-green  { color: #34a853; }
+  .rm-flag-yellow { color: #fdd663; }
+  .rm-flag-white  { color: #ffffff; }
+  .rm-flag-red    { color: #ff5252; }
   .rm-flaglamp-red   { color: #ff5252; text-shadow: 0 0 8px rgba(255, 82, 82, 0.8); }
   .rm-flaglamp-amber {
     color: #fdd663;
@@ -2887,6 +2936,8 @@
   /* The phase pill in the driver bar: same colours as the header's, smaller,
      so both panels open their status run the same way. */
   .rm-driverbar-phase { font-size: 9px; padding: 1px 5px; }
+  .rm-driverbar-act { display: inline-flex; gap: 4px; align-items: center; font-size: 10px; }
+  .rm-driverbar-retire { border-color: rgba(234, 67, 53, 0.8); color: #ff8a8a; }
   .rm-entry-out { color: #9aa0a6; font-style: italic; }
   .rm-flagset { display: inline-flex; gap: 4px; }
   .rm-btn-redflag { border-color: rgba(255, 82, 82, 0.85); color: #ff8a8a; }

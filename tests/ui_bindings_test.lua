@@ -1178,6 +1178,35 @@ expect(js:find('$scope.setSpectating = function', 1, true) ~= nil,
 expect(js:find('data.youSpectating', 1, true) ~= nil,
   'and the panel follows the server, which owns whether you are in the field')
 
+-- THE FLAG IS DRAWN, NOT TYPED.
+--
+-- It was the ⚑ character, and the font renders that as an EMOJI: it carries its
+-- own colour and ignores CSS `color`, so the flag stayed green while a yellow
+-- was out. The chat line and the notice were correct the whole time, which is
+-- what made it look like a state bug rather than a font one.
+expect(html:find('rm%-flag rm%-flag%-{{ driverFlag }}"[^>]->[^<]*⚑') == nil,
+  'the flag carries no glyph text: a character with its own colour cannot be '
+    .. 'recoloured by the state')
+expect(html:find('%.rm%-flag::after') ~= nil,
+  'it is drawn from CSS instead')
+expect(html:find('background: currentColor') ~= nil,
+  'and the cloth takes its colour from the state class, which is the whole point')
+for _, colour in ipairs({ 'green', 'yellow', 'white', 'red' }) do
+  expect(html:find('%.rm%-flag%-' .. colour .. '%s*{') ~= nil,
+    'the ' .. colour .. ' flag has a colour rule')
+end
+
+-- A driver has to be able to reach their own participation controls, and the
+-- entry row is hidden for a non-admin for exactly as long as a session is live.
+-- Retire lived only there, so the people it is for could never press it.
+local barChunk2 = html:match('<div class="rm%-driverbar".-<!%-%- =+ Derby standings')
+expect(barChunk2 ~= nil, 'found the driver bar')
+expect(barChunk2 and barChunk2:find('confirmRetire', 1, true) ~= nil,
+  'the driver bar carries Retire, because it is a non-admin\'s whole HUD while a '
+    .. 'session is live and the entry row is not shown then')
+expect(barChunk2 and barChunk2:find('setSpectating', 1, true) ~= nil,
+  'and Spectate, for between sessions')
+
 -- ---------------------------------------------------------------------------
 -- Nudge mode: the button, and who owns whether it is on
 -- ---------------------------------------------------------------------------
