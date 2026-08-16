@@ -3826,7 +3826,7 @@ function RM_onLoadLayout(pid, rawData)
 end
 
 -- ---------------------------------------------------------------------------
--- Module 4: "BeamJoy" vehicle & setup locking (the Garage List)
+-- Module 4: vehicle & setup locking (the Garage List)
 -- ---------------------------------------------------------------------------
 -- An admin drives the car they want to allow, presses "Whitelist Current
 -- Vehicle", and the client captures that vehicle's exact configuration (model

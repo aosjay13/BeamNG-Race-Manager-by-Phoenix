@@ -6,7 +6,6 @@
 -- BeamNG's own hotlapping and flowgraph races, drag, drift, and BeamJoy if it is
 -- installed. Its setupMarkers() rebuilds ONE global marker list, so calling it
 -- deletes every marker all of them had placed, and the next caller deletes ours.
--- BeamJoy uses that shared path and documents crashes on disconnect.
 --
 -- The mod used to drive detached markers from it and now draws its own two poles
 -- out of debugDrawer cylinders instead (drawPoleGate, covered by draw_test).
