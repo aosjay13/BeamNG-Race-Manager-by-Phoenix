@@ -155,21 +155,33 @@
       👁 You are SPECTATING: sessions run without you. Tab between cars to watch.
     </span>
 
-    <!-- SPECTATE IS AN ENTRY DECISION, so it is settled before the lights. The
-         button stays PUT during a session rather than vanishing: a spectator who
-         cannot find the way back assumes it is broken, so it disables and says
-         why instead. Mid-session the way out is Retire, which is a different
-         thing with a different result. -->
-    <button class="rm-btn rm-btn-mini" ng-click="setSpectating(!spectating)"
-            ng-if="!spectating ? !sessionUnderWay() : true"
-            ng-disabled="sessionUnderWay()"
-            title="{{ sessionUnderWay()
-                      ? 'A session is running. You rejoin the field when it ends.'
-                      : (spectating
-                         ? 'Rejoin the field. You are in the next session.'
-                         : 'Sit the next session out. Your car stays where it is as a ghost, and you watch with your own camera controls.') }}">
-      {{ spectating ? (sessionUnderWay() ? 'Rejoin when this ends' : '↩ Rejoin the field') : '👁 Spectate' }}
-    </button>
+    <!-- TWO BUTTONS, NOT A TOGGLE, and each one sends an ABSOLUTE value.
+         A toggle takes both its label and its action from what the panel
+         believes: `setSpectating(!spectating)`. Get that belief wrong by one
+         broadcast and the only button on offer is the state you are already in,
+         so pressing it changes nothing and there is no way back. That is the
+         "I can spectate but I cannot re-enter" trap, and no amount of fixing
+         the sync removes it -- it just makes it rarer.
+         Race always sends false and Spectate always sends true, so either is
+         reachable whatever the panel thinks, and the marked one reports the
+         state rather than gating the action. Same shape as the flag buttons:
+         the one that is out is marked, not removed. -->
+    <span class="rm-entryset">
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-flag-on': !spectating}"
+              ng-click="setSpectating(false)" ng-disabled="sessionUnderWay()"
+              title="{{ sessionUnderWay()
+                        ? 'A session is running. You are in the field from the next one.'
+                        : 'Race. You are in the field for the next session.' }}">
+        Race
+      </button>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-flag-on': spectating}"
+              ng-click="setSpectating(true)" ng-disabled="sessionUnderWay()"
+              title="{{ sessionUnderWay()
+                        ? 'A session is running. Use Retire to pull out of this one.'
+                        : 'Sit the next session out. Your car stays where it is as a ghost, and you watch with your own camera controls.' }}">
+        👁 Spectate
+      </button>
+    </span>
 
     <span class="rm-entry-state" ng-if="sessionUnderWay() && !spectating && !retireUi.confirm">
       <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="retireUi.confirm = true"
@@ -1928,10 +1940,13 @@
       <button class="rm-driverbar-btn" ng-click="retireUi.confirm = false">No</button>
     </span>
     <span class="rm-driverbar-act" ng-if="!sessionUnderWay()">
-      <button class="rm-driverbar-btn" ng-click="setSpectating(!spectating)"
-              title="{{ spectating ? 'Rejoin the field for the next session.' : 'Sit the next session out. Your car stays where it is as a ghost.' }}">
-        {{ spectating ? '↩ Rejoin' : '👁 Spectate' }}
-      </button>
+      <!-- The same absolute pair as the full panel: see the Race Entry row. -->
+      <button class="rm-driverbar-btn" ng-class="{'rm-flag-on': !spectating}"
+              ng-click="setSpectating(false)"
+              title="Race. You are in the field for the next session.">Race</button>
+      <button class="rm-driverbar-btn" ng-class="{'rm-flag-on': spectating}"
+              ng-click="setSpectating(true)"
+              title="Sit the next session out. Your car stays where it is as a ghost.">👁 Spectate</button>
     </span>
     <span class="rm-driverbar-spacer"></span>
     <label class="rm-driverbar-op" title="Leaderboard background opacity" ng-if="!hudCollapsed">
@@ -2906,6 +2921,7 @@
   .rm-driverbar-retire { border-color: rgba(234, 67, 53, 0.8); color: #ff8a8a; }
   .rm-entry-out { color: #9aa0a6; font-style: italic; }
   .rm-flagset { display: inline-flex; gap: 4px; }
+  .rm-entryset { display: inline-flex; gap: 4px; }
   .rm-btn-redflag { border-color: rgba(255, 82, 82, 0.85); color: #ff8a8a; }
   .rm-btn-caution { border-color: rgba(251, 188, 5, 0.85); color: #fdd663; }
   .rm-btn-green   { border-color: rgba(52, 168, 83, 0.85); color: #7ee2a8; }

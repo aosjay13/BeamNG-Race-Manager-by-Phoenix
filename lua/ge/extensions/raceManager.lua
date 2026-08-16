@@ -3890,7 +3890,14 @@ local function ghostUpdate(dt)
   if isBystander ~= (ghost.field.bystander == true) then
     setGhostReason('bystander', isBystander)
     if isBystander then
-      pushNotice('spectate', 'A session is already running: you are a ghost until it ends')
+      -- TWO WAYS TO BECOME ONE, and they need different words. A mid-session
+      -- arrival is a ghost because a race is running; somebody who pressed
+      -- Spectate is a ghost because they asked to sit out, and telling them a
+      -- session is running when the panel says WAITING and they just logged in
+      -- alone is how a working feature reads as a broken one.
+      pushNotice('spectate', selfSpectating
+        and 'You are spectating: your car is a ghost, so nobody can hit it.'
+        or  'A session is already running: you are a ghost until it ends')
     end
   end
 

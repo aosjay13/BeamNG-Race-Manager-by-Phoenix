@@ -1817,7 +1817,16 @@ function RM_onSetSpectating(pid, rawData)
       want = data.spectating == true or data.spectating == 1
     end
   end
-  if rec.spectating == want then return end
+  -- ALREADY IN THAT STATE, so nothing changes -- but SAY SO ANYWAY. Returning
+  -- silently is what strands a panel that has drifted: the client thinks it is
+  -- racing, presses Spectate, the server agrees it is already spectating and
+  -- says nothing, and the panel goes on showing the wrong answer with no way to
+  -- correct itself. A targeted broadcast here makes every press a resync, so a
+  -- disagreement can only ever survive until the driver next touches the button.
+  if rec.spectating == want then
+    broadcastState(pid)
+    return
+  end
   -- NEITHER DIRECTION MID-SESSION. Sitting out is a decision about whether you
   -- are in the field, and the field is decided when the grid forms. Dropping out
   -- of a race you are already in is RETIRING, which is a different thing with a

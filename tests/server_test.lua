@@ -256,6 +256,13 @@ RM_onSetSpectating(1, '{"spectating":false}')
 -- driver rejoined the field and was still told they were spectating.
 check(targetedState(1) ~= nil and targetedState(1).youSpectating == false,
   'a driver who rejoined is told so, not left with the last value')
+-- A REDUNDANT REQUEST STILL ANSWERS. If the panel has drifted it will ask for a
+-- state the server already holds; returning silently there is what leaves the
+-- wrong answer on screen with no way to correct it. Every press is a resync.
+targetedStates[1] = nil
+RM_onSetSpectating(1, '{"spectating":false}')   -- already false
+check(targetedState(1) ~= nil and targetedState(1).youSpectating == false,
+  'asking for the state you are already in still resyncs the panel')
 RM_onSetSpectating(2, '{"spectating":false}')
 check(lastState.entrants == 2, 'rejoining puts a driver back in the field')
 RM_onSetSpectating(3, '{"spectating":false}')

@@ -1191,8 +1191,24 @@ expect(html:find('ng%-click="spectate%(%)"[^>]-rm%-btn%-mini') ~= nil
 expect(html:find('Spectate »', 1, true) == nil,
   'and no longer promises a mode it never delivered')
 
-expect(html:find('ng%-click="setSpectating%(!spectating%)"') ~= nil,
-  'the entry row has a real Spectate toggle')
+-- ABSOLUTE, NOT A TOGGLE. `setSpectating(!spectating)` derives the action from
+-- what the panel believes, so one stale broadcast leaves the driver holding a
+-- button for the state they are already in: pressing it does nothing and there
+-- is no way back. Two buttons that each send a fixed value are reachable
+-- whatever the panel thinks, which is the property that makes the trap
+-- unreachable rather than merely rare.
+expect(html:find('ng%-click="setSpectating%(!spectating%)"') == nil,
+  'nothing toggles spectating off its own belief about the current state')
+expect(html:find('ng%-click="setSpectating%(false%)"') ~= nil,
+  'there is always a button that puts you IN the field')
+expect(html:find('ng%-click="setSpectating%(true%)"') ~= nil,
+  'and always one that takes you out')
+-- Both panels, because a driver in minimal mode has only the bar.
+local racing, sitting = 0, 0
+for _ in html:gmatch('setSpectating%(false%)') do racing = racing + 1 end
+for _ in html:gmatch('setSpectating%(true%)') do sitting = sitting + 1 end
+expect(racing == 2 and sitting == 2,
+  'both the Race Entry row and the driver bar carry the pair')
 expect(js:find('$scope.setSpectating = function', 1, true) ~= nil,
   'with a handler in app.js')
 expect(js:find('data.youSpectating', 1, true) ~= nil,
@@ -1324,10 +1340,10 @@ end
 -- as broken, which is exactly how the trap was reported.
 local entryRow = html:match('<div class="rm%-entry".-</div>')
 expect(entryRow ~= nil, 'the Race Entry row is still there')
-expect(entryRow and entryRow:find('Rejoin', 1, true) ~= nil,
+expect(entryRow and entryRow:find('setSpectating(false)', 1, true) ~= nil,
   'and it offers a way back into the field')
 expect(entryRow and entryRow:find('ng%-disabled="sessionUnderWay%(%)"') ~= nil,
-  'the sit-out toggle disables mid-session rather than disappearing')
+  'entry controls disable mid-session rather than disappearing')
 
 
 -- ---------------------------------------------------------------------------
