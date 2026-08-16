@@ -3541,6 +3541,11 @@ local function clearTrackState(reason)
   race.branches    = {}
   race.jokerGates  = 0
   MP.TriggerClientEvent(-1, 'RM_ClearTrack', Util.JsonEncode({ reason = reason or 'clear' }))
+  -- The panel has to hear about all of that. Same gap the layout LOAD had: the
+  -- fields above are session state the UI displays, RM_Tick does not run while
+  -- no session is going, and RM_ClearTrack only carries the gates. Clearing a
+  -- track left the joker toggle and the grid count reading the old layout's.
+  broadcastState()
   print('[RaceManager] Track state cleared: ' .. (reason or 'clear'))
 end
 
@@ -3798,6 +3803,20 @@ function RM_onLoadLayout(pid, rawData)
       print(string.format('[RaceManager] Broadcasting RM_ApplyLayout: "%s", %d checkpoint(s), %d start position(s), width %s',
         l.name, #l.checkpoints, race.startSlots, tostring(l.width)))
       MP.TriggerClientEvent(-1, 'RM_ApplyLayout', Util.JsonEncode(l))
+      -- TELL EVERYONE, and not just about the gates.
+      --
+      -- Loading a layout sets the joker gate count, the grid size, whether the
+      -- grid is off the line, the lane list and point-to-point. All of that is
+      -- session state the panel displays, and none of it went anywhere: this
+      -- handler broadcast the LAYOUT and nothing else.
+      --
+      -- Nothing covered for it either, because RM_Tick returns immediately when
+      -- no session is running, so there is no periodic broadcast while waiting
+      -- for one. The joker toggle stayed locked on a track that has joker gates
+      -- until some unrelated thing pushed state, and loading the layout a second
+      -- time was the reliable way to find one. That is the "click Load Layout
+      -- twice" report, and it survived a first fix aimed at the wrong half.
+      broadcastState()
       local msg = string.format('[RaceManager] Layout "%s" loaded on %s by %s (%d gates, %d start positions)',
         l.name, map, MP.GetPlayerName(pid) or pid, #l.checkpoints, race.startSlots)
       MP.SendChatMessage(-1, msg)

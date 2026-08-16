@@ -187,6 +187,10 @@ onInit()
 local function adminLogin(pid) RM_onLogin(pid, '{"password":"phoenix"}') end
 
 RM_onLogin(1, '{"password":"wrong"}')          -- bad password: no admin rights
+-- Cleared first: server startup legitimately broadcasts once (clearing the track
+-- is state the panel displays), so "nil since boot" is not what this is testing.
+-- What it tests is that the REFUSED command changes nothing.
+lastState = nil
 RM_onStartQualifying(1)
 check(lastState == nil, 'admin command ignored before authentication')
 
@@ -1209,10 +1213,16 @@ check(lastLogin and lastLogin.lapsed == true,
 RM_onSaveLayout(1, '{"name":"Joker Track","width":20,"checkpoints":'
   .. '[{"x":0,"y":100,"z":0,"hx":0,"hy":1},{"x":0,"y":200,"z":0,"hx":0,"hy":1}]'
   .. ',"joker":[{"x":50,"y":150,"z":0,"hx":1,"hy":0},{"x":50,"y":160,"z":0,"hx":1,"hy":0}]}')
+-- ONE LOAD, AND NOTHING ELSE. lastState is cleared first so this can only pass
+-- if the load itself broadcast: that is the entire bug. Loading set jokerGates,
+-- startSlots, pointToPoint and the lanes and told nobody, and RM_Tick does not
+-- run while no session is going, so nothing else was coming. The joker toggle
+-- stayed locked until some unrelated thing pushed state, and clicking Load
+-- Layout a second time was the reliable way to find one.
+lastState = nil
 RM_onLoadLayout(1, '{"name":"Joker Track"}')
--- Loading broadcasts the LAYOUT, not the state, so ask for state explicitly
--- rather than reading a copy from before the load.
-RM_onRequestState(1)
+check(lastState ~= nil,
+  'loading a layout broadcasts state by itself, without a second click')
 check(lastState.jokerGates == 2, 'loading a joker track reports its two gates')
 
 -- A client that has not applied it yet says zero. It must not be believed.
@@ -1223,7 +1233,12 @@ check(lastState.jokerGates == 2,
 
 -- With no layout loaded the client IS the authority, which is how a track built
 -- in the editor and never saved still gets a joker lap.
+-- Clearing the track is the same class of change and had the same gap.
+lastState = nil
 RM_onClearTrackState(1)
+check(lastState ~= nil and lastState.jokerGates == 0,
+  'and clearing the track broadcasts too, rather than leaving the panel showing '
+    .. 'the layout that is no longer loaded')
 RM_onStartPositionCount(2, '{"count":0,"positions":[],"jokerGates":3}')
 RM_onRequestState(1)
 check(lastState.jokerGates == 3,
