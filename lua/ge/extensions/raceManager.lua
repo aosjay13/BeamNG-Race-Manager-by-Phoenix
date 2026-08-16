@@ -52,18 +52,12 @@ local TUNE = {
   MIN_HEIGHT = 1,
   MAX_HEIGHT = 100,
   DEFAULT_DEPTH = 2,      -- metres it drops BELOW it
-  -- NEGATIVE DEPTH LIFTS THE BOTTOM BAR ABOVE the placement point, which is how
-  -- a gate is floated clear of the ground entirely. The label and the state
-  -- glyph sit at the middle of the gate's face, so on a gate that reaches as far
-  -- down as it does up that middle is exactly ground level and the glyph is
-  -- buried. Raising the bottom is what lifts it out.
-  MIN_DEPTH = -100,
+  -- Zero is the floor: the bottom bar reaches down from the placement point or
+  -- sits level with it, never above. Lifting it clear was tried and taken back
+  -- out; a gate you have to float by hand is a strange thing to ask of somebody
+  -- who just wants one on a road.
+  MIN_DEPTH = 0,
   MAX_DEPTH = 100,
-  -- The shortest gate the bottom is allowed to leave. Depth is free to cross
-  -- above the placement point, but not above the TOP: a band with no height is a
-  -- gate nothing can ever cross, which is not a floating checkpoint, it is a
-  -- broken one.
-  MIN_SPAN = 0.5,
   EDGE_RADIUS = 0.15,  -- meters; thickness of the drawn rectangle edge
   -- Thickness of a race POLE. Fatter than an editor edge -- this is the one a
   -- driver reads at a hundred miles an hour -- but only just: the first attempt
@@ -757,11 +751,8 @@ local function gateDims(wp)
     local half = wp.height * 0.5
     return w, clampHeight(half), clampDepth(half)
   end
-  local h = clampHeight(wp.height or checkpointHeight)
-  local d = clampDepth(wp.depth or checkpointDepth)
-  -- The bottom may rise above the placement point, but never above the top.
-  if -d > h - TUNE.MIN_SPAN then d = -(h - TUNE.MIN_SPAN) end
-  return w, h, d
+  return w, clampHeight(wp.height or checkpointHeight),
+         clampDepth(wp.depth or checkpointDepth)
 end
 
 -- ---------------------------------------------------------------------------
@@ -6728,11 +6719,10 @@ function M.setCheckpointOverride(index, w, h, d)
   end
   wp.width  = opt(w, clampWidth)
   wp.height = opt(h, clampHeight)
-  -- DEPTH IS DIFFERENT, and reusing `opt` for it was a bug: zero is a real depth
-  -- (a gate that stops dead at the surface) and negative is a real depth (one
-  -- lifted clear of the ground). Sending either was silently turned into "blank"
-  -- and then into the session default, so a depth of 0 could not be set at all.
-  -- Only nil and a non-number mean inherit here.
+  -- DEPTH IS DIFFERENT, and reusing `opt` for it was a bug: zero is a real
+  -- depth, a gate that stops dead at the surface, and `opt` treats zero as blank
+  -- and substitutes the session default. So a depth of 0 could not be set at
+  -- all. Only nil and a non-number mean inherit here.
   local dv = tonumber(d)
   wp.depth = dv and clampDepth(dv) or clampDepth(checkpointDepth)
   pushRouteState()

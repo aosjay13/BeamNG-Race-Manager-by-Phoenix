@@ -1244,10 +1244,10 @@
                    ng-change="applyCheckpointOverride()">
             <input type="number" min="1" max="100" ng-model="cpEdit.height"
                    placeholder="height"></span>
-          <span class="rm-setting rm-cp-dim" title="How far it drops BELOW where it was placed. NEGATIVE lifts the bottom above the ground, which also lifts the joker label and glyph out of it."><label>Dn</label>
-            <input type="range" min="-100" max="100" step="1" ng-model="cpEdit.depth"
+          <span class="rm-setting rm-cp-dim" title="How far it drops BELOW where it was placed. Zero keeps the gate entirely above the surface."><label>Dn</label>
+            <input type="range" min="0" max="100" step="1" ng-model="cpEdit.depth"
                    ng-change="applyCheckpointOverride()">
-            <input type="number" min="-100" max="100" ng-model="cpEdit.depth"
+            <input type="number" min="0" max="100" ng-model="cpEdit.depth"
                    placeholder="depth"></span>
           <button class="rm-btn rm-btn-mini rm-btn-start" ng-click="applyCheckpointOverride()">Apply</button>
           <button class="rm-btn rm-btn-mini" ng-click="resetCheckpointOverride()"
