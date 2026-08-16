@@ -25,6 +25,9 @@ angular.module('beamng.apps')
       // State
       // ------------------------------------------------------------------
       $scope.phase = 'waiting';   // waiting | grid | countdown | qualifying | racing | finished
+      // The flag the field is racing under. NOT a phase: it rides alongside one,
+      // because a caution does not change what the session is doing.
+      $scope.flag = 'green';      // green | yellow
       // 'race' | 'quali' - which session the phases above belong to. Qualifying
       // runs the same lifecycle a race does, so this is what tells them apart.
       $scope.sessionKind = 'race';
@@ -1304,6 +1307,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         if (!data) { return; }
         $scope.$evalAsync(function () {
           $scope.phase = data.phase || 'waiting';
+          $scope.flag = (data.flag === 'yellow') ? 'yellow' : 'green';
           // Which session the shared lifecycle is running. Qualifying and racing
           // go through the same phases now (grid -> countdown -> running ->
           // done), so the phase alone no longer says which one you are looking
@@ -2252,6 +2256,12 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.startCountdown = function () {
         bngApi.engineLua('raceManager.startCountdown()');
       };
+      // Advisory only: it is shown to the field and announced in chat, and the
+      // server decides whether the session is in a state to be flagged at all.
+      $scope.setFlag = function (f) {
+        bngApi.engineLua('raceManager.setFlag("' + (f === 'yellow' ? 'yellow' : 'green') + '")');
+      };
+
       $scope.endRace = function () {
         bngApi.engineLua('raceManager.endRace()');
       };

@@ -170,6 +170,25 @@ the layout**, so a sprint stage stays a sprint stage.
 Your lap setting is kept rather than overwritten, so switching a circuit layout
 back in restores it. The mode is locked once a countdown or race starts.
 
+#### Flags
+
+An admin can show the field a **caution** at any point during a race or a
+qualifying session, and go back to **green** when it is clear. Both are
+announced in chat and pushed to every driver's panel as a notice, because the
+panel is not where a driver is looking when a caution is called. A yellow lamp
+pulses in the header for as long as it lasts; a red one shows while the field is
+locked on the grid.
+
+**The flag is advisory. It polices nothing.** Nobody is penalised for an
+overtake under yellow and the running order is not frozen. Deciding that
+automatically means holding a second running order that survives the caution and
+reconciles on green, and a marshal who can see the incident is better at that
+than a distance comparison. The flag tells the field what is happening; you
+decide what it means.
+
+Every session starts green: a caution belongs to the session it was called in
+and is never carried into the next one.
+
 #### Pit stalls
 
 Switch the editor to the **Pit Stalls** tab, drive into each stall and press
@@ -401,6 +420,10 @@ the stragglers are taken where they stand and the session closes normally.
    occupied slot or arrive interpenetrated and blow itself apart; collisions
    come back once everyone is standing still on their slot.
 4. Press **Start Countdown**: everyone gets a synchronized 3‑2‑1‑**GO!**
+   shown as **start lights**. Three lamps go amber one at a time as the count
+   falls, then all three snap green together on GO, which is what a short-track
+   start actually looks like. The number stays under the lamps, because it is
+   the part that reads at a glance on a narrow panel.
    overlay, every car is released by that same broadcast, and the race clock
    starts.
 

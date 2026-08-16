@@ -61,6 +61,15 @@
     <span class="rm-out-badge" ng-if="sessionUnderWay() && qualiOutLap && onOutLap()"
           title="{{ sessionKind === 'quali' ? 'Out lap: not timed, not scored, not counted.' : 'Counts toward the distance, but sets no lap time.' }}">{{ sessionKind === 'quali' ? 'OUT LAP' : 'LAP 1: NOT TIMED' }}</span>
     <!-- Your own grid slot, and the hold before the lights go out -->
+    <!-- One lamp, in the header. RED while the field is locked on the grid,
+         AMBER under caution, and nothing at all when the race is simply green:
+         a lamp that is always lit is a lamp nobody reads. -->
+    <span class="rm-flaglamp rm-flaglamp-red" ng-if="phase === 'grid'"
+          title="Held on the grid">●</span>
+    <span class="rm-flaglamp rm-flaglamp-amber"
+          ng-if="flag === 'yellow' && (phase === 'racing' || phase === 'qualifying')"
+          title="Yellow flag: caution, hold position">●</span>
+
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
       START P{{ gridSlot }}<b ng-if="gridFrozen"> HOLD</b>
     </span>
@@ -203,6 +212,13 @@
             title="Grid the field by qualifying time or your chosen order. Ends qualifying first, keeping the times.">Generate Grid</button>
     <button class="rm-btn rm-btn-start" ng-click="startCountdown()"  ng-disabled="phase !== 'grid'"
             title="Count the field down and release the hold. Starts whichever session is on the grid.">Start Countdown</button>
+    <button class="rm-btn rm-btn-caution" ng-click="setFlag('yellow')"
+            ng-if="flag !== 'yellow'"
+            ng-disabled="phase !== 'racing' && phase !== 'qualifying'"
+            title="Yellow flag: caution. Shown to the field and announced in chat. Advisory, it polices nothing.">⚑ Caution</button>
+    <button class="rm-btn rm-btn-green" ng-click="setFlag('green')"
+            ng-if="flag === 'yellow'"
+            title="Green flag: back to racing.">⚑ Green</button>
     <button class="rm-btn rm-btn-end"   ng-click="endRace()"         ng-disabled="phase !== 'racing' && phase !== 'countdown' && phase !== 'qualifying'">End Session</button>
     <button class="rm-btn rm-btn-reset" ng-click="resetLeaderboard()">Reset</button>
   </div>
@@ -1762,9 +1778,20 @@
     <div class="rm-derby-warning-timer">DEMOLISHED IN {{ derbyWarning.remaining.toFixed(1) }}s</div>
   </div>
 
-  <!-- ================= Countdown overlay ================= -->
+  <!-- ================= Start lights ================= -->
+  <!-- Three lamps going amber one at a time on 3-2-1, then all three snapping
+       green together on GO. That is what a short-track or oval start actually
+       looks like, and a driver who races knows what it means before reading
+       anything. The number stays underneath: it is still the thing you count
+       along with out loud, and it is the only part that reads at a glance on a
+       collapsed panel. -->
   <div class="rm-countdown" ng-if="countdown !== null">
-    <span ng-class="{'rm-count-go': countdown === 0}">{{ countdown === 0 ? 'GO!' : countdown }}</span>
+    <div class="rm-lights">
+      <span class="rm-lamp" ng-class="countdown === 0 ? 'rm-lamp-green' : (countdown <= 3 ? 'rm-lamp-amber' : '')"></span>
+      <span class="rm-lamp" ng-class="countdown === 0 ? 'rm-lamp-green' : (countdown <= 2 ? 'rm-lamp-amber' : '')"></span>
+      <span class="rm-lamp" ng-class="countdown === 0 ? 'rm-lamp-green' : (countdown <= 1 ? 'rm-lamp-amber' : '')"></span>
+    </div>
+    <div class="rm-count-num" ng-class="{'rm-count-go': countdown === 0}">{{ countdown === 0 ? 'GO!' : countdown }}</div>
   </div>
 
   <!-- ================= Regulation banners (always visible) ================ -->
@@ -2757,13 +2784,49 @@
     z-index: 5;
     pointer-events: none;
   }
-  .rm-countdown span {
-    font-size: 64px;
+  .rm-countdown { flex-direction: column; gap: 10px; }
+  .rm-lights { display: flex; gap: 12px; }
+  .rm-lamp {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    /* Unlit is a dark socket rather than nothing, so the gantry reads as three
+       lamps waiting rather than as however many happen to be on. */
+    background: rgba(255, 255, 255, 0.07);
+    border: 2px solid rgba(255, 255, 255, 0.18);
+    transition: background 90ms linear, box-shadow 90ms linear;
+  }
+  .rm-lamp-amber {
+    background: #fdd663;
+    border-color: #fdd663;
+    box-shadow: 0 0 16px rgba(251, 188, 5, 0.75);
+  }
+  .rm-lamp-green {
+    background: #34a853;
+    border-color: #7ee2a8;
+    box-shadow: 0 0 20px rgba(52, 168, 83, 0.85);
+  }
+  .rm-count-num {
+    font-size: 44px;
     font-weight: 800;
     color: #fdd663;
     text-shadow: 0 0 18px rgba(251, 188, 5, 0.6);
+    line-height: 1;
   }
-  .rm-countdown .rm-count-go { color: #7ee2a8; text-shadow: 0 0 18px rgba(52, 168, 83, 0.7); }
+  .rm-count-num.rm-count-go { color: #7ee2a8; text-shadow: 0 0 18px rgba(52, 168, 83, 0.7); }
+
+  /* The header lamp. Small on purpose: it shares a strip with the phase, the
+     clock and the lap, and none of those may move to make room for it. */
+  .rm-flaglamp { font-size: 13px; line-height: 1; }
+  .rm-flaglamp-red   { color: #ff5252; text-shadow: 0 0 8px rgba(255, 82, 82, 0.8); }
+  .rm-flaglamp-amber {
+    color: #fdd663;
+    text-shadow: 0 0 8px rgba(251, 188, 5, 0.9);
+    animation: rm-flagpulse 1s ease-in-out infinite;
+  }
+  @keyframes rm-flagpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  .rm-btn-caution { border-color: rgba(251, 188, 5, 0.85); color: #fdd663; }
+  .rm-btn-green   { border-color: rgba(52, 168, 83, 0.85); color: #7ee2a8; }
 
   /* Tables */
   .rm-table-wrap { flex: 1; overflow-y: auto; }
@@ -3280,6 +3343,11 @@
     width: var(--rm-lb-width, 100%);
     height: 100%;
   }
+  /* A driver's panel is narrow, so the gantry shrinks with it rather than
+     pushing the lamps off the side. */
+  .rm-minimal .rm-lamp { width: 22px; height: 22px; }
+  .rm-minimal .rm-lights { gap: 8px; }
+  .rm-minimal .rm-count-num { font-size: 30px; }
   .rm-minimal .rm-table-wrap {
     flex: none;
     align-self: flex-start;

@@ -153,6 +153,13 @@ local function fileExists(path)
   return false
 end
 
+-- ---------------------------------------------------------------------------
+-- Flags: advisory, admin-only, and never carried into the next session
+-- ---------------------------------------------------------------------------
+-- The flag is a FIELD, not a phase. There are fifty-odd `phase ==` tests across
+-- the two Lua halves and most would be wrong by default for a new one, so a
+-- caution rides alongside `racing` rather than replacing it. These checks are
+-- what keep it that way.
 removeTree('Resources')
 
 dofile('server/RaceManager/main.lua')
@@ -1166,6 +1173,55 @@ do
 end
 
 -- Clean up the directory tree the test created in the repo root
+-- LAST IN THE FILE ON PURPOSE. This block starts a race, and everything above
+-- it either needs no session running (loading and deleting a layout are both
+-- refused mid-race) or depends on driver records a reset would clear.
+adminLogin(1)
+RM_onSetFlag(1, '{"flag":"yellow"}')
+check(lastState.flag == nil or lastState.flag == 'green',
+  'a flag with no session running is refused: a caution with nobody on track '
+    .. 'is noise')
+
+-- Put a session on track.
+connected[1] = 'Alice'
+connected[2] = 'Bob'
+RM_onPlayerJoin(1); RM_onPlayerJoin(2)
+RM_onGenerateGrid(1, '')
+RM_onStartCountdown(1, '')
+for _ = 1, 4 do RM_CountdownTick() end
+check(lastState.phase == 'racing', 'a race is running')
+check(lastState.flag == 'green', 'and it starts green')
+
+lastChat = nil
+RM_onSetFlag(1, '{"flag":"yellow"}')
+check(lastState.flag == 'yellow', 'an admin can call a caution')
+check(lastState.phase == 'racing',
+  'and the session is still RACING: the flag rides alongside the phase rather '
+    .. 'than replacing it, so nothing that tests the phase changes behaviour')
+check(type(lastChat) == 'string' and lastChat:find('YELLOW', 1, true),
+  'the field is told in chat, because the panel is not where a driver is looking')
+
+-- pid 2 is an admin by this point in the file, so an unauthenticated pid is
+-- used rather than assuming.
+RM_onSetFlag(99, '{"flag":"green"}')
+check(lastState.flag == 'yellow', 'a non-admin cannot wave a flag')
+
+RM_onSetFlag(1, '{"flag":"chartreuse"}')
+check(lastState.flag == 'yellow', 'and an invented colour is ignored')
+
+RM_onSetFlag(1, '{"flag":"green"}')
+check(lastState.flag == 'green', 'the admin can go back to green')
+
+-- A caution belongs to the session it was called in.
+RM_onSetFlag(1, '{"flag":"yellow"}')
+RM_onEndRace(1, '')
+RM_onGenerateGrid(1, '')
+RM_onStartCountdown(1, '')
+for _ = 1, 4 do RM_CountdownTick() end
+check(lastState.flag == 'green',
+  'the next session starts green: a caution carried into the next race is the '
+    .. 'kind of state nobody thinks to check')
+
 removeTree('Resources')
 
 if fails == 0 then

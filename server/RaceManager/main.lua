@@ -84,6 +84,16 @@ local race = {
   -- without them: the rule disqualifies anyone who did not complete the route,
   -- and with no route that is the whole field.
   jokerGates   = 0,
+  -- THE FLAG THE FIELD IS RACING UNDER. Advisory: it is shown, announced and
+  -- written into the results, and it polices nothing. Deciding automatically
+  -- that an overtake under yellow was illegal means holding a second running
+  -- order that survives the caution and reconciles on green, and a marshal who
+  -- can see the incident is better at that than a distance comparison.
+  --
+  -- Deliberately NOT a phase. There are fifty-odd `phase ==` tests across the
+  -- two Lua halves and most would be wrong by default for a new one; a separate
+  -- field is read only where it is wanted.
+  flag         = 'green',
   -- Race entry. 'all' (default): every connected session is a participant, so a
   -- server that never touches this setting grids everybody who is there. 'join':
   -- drivers opt in with the UI's Join Race button and only they are gridded.
@@ -918,6 +928,7 @@ local function broadcastState(targetPid)
     -- So the panel can grey the joker toggle out and say why, rather than
     -- offering a switch the server is going to refuse.
     jokerGates   = race.jokerGates,
+    flag         = race.flag,
     -- Fastest lap of the session: whose row the leaderboard paints gold, and
     -- how quick it was. One driver id on a payload that already goes out.
     bestLapPid   = race.bestLapPid,
@@ -2669,6 +2680,10 @@ function RM_CountdownTick()
   MP.CancelEventTimer('RM_CountdownTick')
   broadcastCountdown(0)
   race.phase = runningStatus()   -- 'qualifying' or 'racing'
+  -- Every session starts green. A caution belongs to the session it was called
+  -- in, and carrying one into the next race is the kind of state nobody thinks
+  -- to check.
+  race.flag = 'green'
   race.time = 0.0
   race.qualiTime = 0.0
   race.finalLap     = false
@@ -3518,6 +3533,34 @@ function RM_onSaveLayout(pid, rawData)
   MP.SendChatMessage(-1, msg)
   print(msg)
   sendLayoutList(-1)
+end
+
+-- Show the field a flag. Green or yellow, admin only, and only while something
+-- is actually running: a caution with nobody on track is noise.
+--
+-- Announced in chat as well as broadcast, because the panel is not where a
+-- driver's eyes are when a caution is called.
+function RM_onSetFlag(pid, rawData)
+  if not requireAuth(pid) then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local want = tostring(data.flag or '')
+  if want ~= 'green' and want ~= 'yellow' then return end
+  if not sessionUnderWay() then
+    MP.SendChatMessage(pid, '[RaceManager] No session is running, so there is nothing to flag.')
+    return
+  end
+  if want == race.flag then return end
+  race.flag = want
+  local who = MP.GetPlayerName(pid) or pid
+  if want == 'yellow' then
+    MP.SendChatMessage(-1, '[RaceManager] YELLOW FLAG: caution, hold position. Called by ' .. who .. '.')
+  else
+    MP.SendChatMessage(-1, '[RaceManager] GREEN FLAG: racing. Called by ' .. who .. '.')
+  end
+  print('[RaceManager] Flag set to ' .. want .. ' by ' .. tostring(who))
+  broadcastState()
 end
 
 -- Delete a saved layout by name, under the current map only. Refused mid-session
@@ -6963,6 +7006,7 @@ function onInit()
   MP.RegisterEvent('RM_SaveLayout',       'RM_onSaveLayout')
   MP.RegisterEvent('RM_LoadLayout',       'RM_onLoadLayout')
   MP.RegisterEvent('RM_DeleteLayout',     'RM_onDeleteLayout')
+  MP.RegisterEvent('RM_SetFlag',          'RM_onSetFlag')
   MP.RegisterEvent('RM_ClearTrackState',  'RM_onClearTrackState')
   -- Demo Derby module (isolated event namespace; see the DEMO DERBY section).
   MP.RegisterEvent('RM_DerbySetConfig',     'RM_onDerbySetConfig')

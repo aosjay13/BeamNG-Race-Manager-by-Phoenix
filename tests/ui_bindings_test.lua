@@ -986,6 +986,62 @@ expect(js:find('$scope.derby.wallDepth = data.wallDepth', 1, true) ~= nil,
   'the server owns it: the panel follows what it broadcasts, like wall height')
 
 -- ---------------------------------------------------------------------------
+-- Start lights, and the flag that is not a phase
+-- ---------------------------------------------------------------------------
+-- Three lamps going amber one at a time on 3-2-1, then all three green together
+-- on GO. The mapping is asserted here because it is the whole feature: a lamp
+-- lighting on the wrong count is a start nobody can read.
+local lamps = {}
+for cls in html:gmatch('<span class="rm%-lamp" ng%-class="([^"]*)"') do
+  lamps[#lamps + 1] = cls
+end
+expect(#lamps == 3, 'three lamps in the gantry (found ' .. #lamps .. ')')
+for i, cls in ipairs(lamps) do
+  -- Plain find, not a pattern: `?` is a quantifier in Lua patterns and this
+  -- string is full of them.
+  expect(cls:find("countdown === 0 ? 'rm-lamp-green'", 1, true) ~= nil,
+    'lamp ' .. i .. ' goes GREEN on GO, with the others: a start is all three '
+      .. 'at once, not a wave')
+end
+-- Lamp 1 lights at 3, lamp 2 at 2, lamp 3 at 1, so they accumulate.
+expect(lamps[1] and lamps[1]:find('countdown <= 3', 1, true) ~= nil,
+  'the first lamp lights at three')
+expect(lamps[2] and lamps[2]:find('countdown <= 2', 1, true) ~= nil,
+  'the second at two')
+expect(lamps[3] and lamps[3]:find('countdown <= 1', 1, true) ~= nil,
+  'the third at one, so they accumulate rather than chase')
+
+-- The number stays. It is the part that reads at a glance on a narrow panel,
+-- and the thing people count along with out loud.
+expect(html:find('rm%-count%-num') ~= nil, 'the count is still shown as a number too')
+
+-- THE FLAG IS A FIELD, NOT A PHASE. Fifty-odd `phase ==` tests across the two
+-- Lua halves would each need an answer for a 'caution' phase, and most would be
+-- wrong by default. The UI has to read it the same way.
+expect(js:find('$scope.flag = (data.flag', 1, true) ~= nil,
+  'the panel reads the flag off the state broadcast')
+expect(html:find("ng%-click=\"setFlag%('yellow'%)\"") ~= nil
+  and html:find("ng%-click=\"setFlag%('green'%)\"") ~= nil,
+  'an admin can call a caution and go back to green')
+expect(js:find('$scope.setFlag = function', 1, true) ~= nil,
+  'setFlag has a handler in app.js')
+
+-- The caution button is only live while something is actually running.
+local cautionGuard = html:match("ng%-click=\"setFlag%('yellow'%)\"[^>]-ng%-disabled=\"([^\"]*)\"")
+expect(cautionGuard ~= nil, 'the caution button has a guard')
+expect(cautionGuard and cautionGuard:find('racing', 1, true) ~= nil,
+  'and it is only live during a session')
+
+-- The header lamp is RED on the grid and AMBER under caution, and shows nothing
+-- at all when the race is simply green: a lamp that is always lit is a lamp
+-- nobody reads.
+expect(html:find('rm%-flaglamp%-red') ~= nil and html:find('rm%-flaglamp%-amber') ~= nil,
+  'the header carries a red grid lamp and an amber caution lamp')
+local greenLamp = html:find('rm%-flaglamp%-green')
+expect(greenLamp == nil,
+  'and no green one: an always-lit lamp is one nobody reads')
+
+-- ---------------------------------------------------------------------------
 -- Nudge mode: the button, and who owns whether it is on
 -- ---------------------------------------------------------------------------
 expect(html:find('ng%-click="toggleNudge%(%)"') ~= nil,

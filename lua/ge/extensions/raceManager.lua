@@ -229,6 +229,7 @@ local branch = {
 local checkpointWidth  = TUNE.DEFAULT_WIDTH
 local checkpointHeight = TUNE.DEFAULT_HEIGHT
 local checkpointDepth  = TUNE.DEFAULT_DEPTH
+local raceFlag         = 'green'   -- green | yellow, mirrored from the server
 local visualize        = true
 
 -- Starting grid: ordered list of { x, y, z, hx, hy } placed by the race
@@ -6757,6 +6758,14 @@ function M.nudgeStatus()
   }
 end
 
+-- Admin: show the field a flag. Advisory, and the server is what decides
+-- whether this session is in a state to be flagged at all.
+function M.setFlag(f)
+  f = tostring(f or '')
+  if f ~= 'green' and f ~= 'yellow' then return end
+  if inMultiplayer() then TriggerServerEvent('RM_SetFlag', jsonEncode({ flag = f })) end
+end
+
 function M.setNudgeMode(on)
   nudge.set(on == true or on == 'true')
 end
@@ -6963,6 +6972,17 @@ local function onServerUpdate(rawData)
     resetMode = data.resetMode
   end
   jokerEnabled = data.jokerEnabled == true
+  -- The flag, and a notice the moment it CHANGES. A caution that only appears
+  -- on a panel is a caution the driver watching the road never sees.
+  local wasFlag = raceFlag
+  if data.flag == 'green' or data.flag == 'yellow' then raceFlag = data.flag end
+  if raceFlag ~= wasFlag and sessionRunning() then
+    if raceFlag == 'yellow' then
+      pushNotice('flag', 'YELLOW FLAG: caution, hold position')
+    else
+      pushNotice('flag', 'GREEN FLAG: racing')
+    end
+  end
   -- Per-player admin status. Present only on a targeted reply (RM_RequestState),
   -- so the global broadcast never disturbs it. The server is the authority here:
   -- if it says this session is not authenticated, the local flag is wrong and
