@@ -490,28 +490,40 @@ driverReset(0, 0)
 frames(3.0)
 driverReset(0, 0)             -- second reset, 3 s into the first ghost
 check(countSent('RM_GhostStart') == 2, 'the second reset is reported too')
-check(lastSent('RM_GhostStart').duration == 10.0,
-  'and extends the base timer rather than starting a second ghost beside it')
-frames(9.0)
-check(own.ghosted == true, 'the extended timer is honoured in full')
+
+-- RESTARTS AT THE BASE. It used to ADD minSec to the previous total each time,
+-- capped at maxSec, which is what this file's own heading always said it did not
+-- do. Reported live as the ghost time stacking: two resets in traffic and a
+-- driver stayed intangible for fifteen seconds.
+--
+-- Restarting is also the safer reading. A ghost exists for the moment of
+-- materialising in the pack, and a second reset is a second such moment rather
+-- than a longer one. Anyone genuinely stuck inside another car is held by the
+-- occupancy check below, which has no time limit and is what actually decides
+-- when collision returns.
+check(lastSent('RM_GhostStart').duration == 5.0,
+  'and RESTARTS the base timer rather than adding to it')
+frames(4.0)
+check(own.ghosted == true, 'the restarted timer runs from the second reset')
 frames(2.0)
 check(own.ghosted == false, 'and then, clear, collisions come back')
 
--- The extension is capped. Holding the reset key cannot buy an unbounded ghost.
+-- Holding the reset key cannot buy a longer ghost, because there is nothing to
+-- accumulate any more.
 clearLog()
 driverReset(0, 0)
 for _ = 1, 10 do driverReset(0, 0) end
-check(lastSent('RM_GhostStart').duration == 15.0,
-  'repeat resets cap the base timer at the configured maximum')
+check(lastSent('RM_GhostStart').duration == 5.0,
+  'ten more resets still ask for the base duration, never a longer one')
 
--- ...and a held reset key does not become a message per frame. The reset hook
--- fires repeatedly while the key is down; the server hears the duration change
--- (5 -> 10 -> 15) and then nothing more, because it has stopped changing.
-check(countSent('RM_GhostStart') == 3,
-  'a held reset key reports each change in duration and then goes quiet')
+-- ...and a held reset key does not become a message per frame. The duration
+-- never changes now, so the throttle is the only thing keeping it quiet: one
+-- message, then silence until the half-second staleness window reopens.
+check(countSent('RM_GhostStart') <= 2,
+  'a held reset key does not turn into a message per frame')
 
--- ...but the cap is on the TIMER, never on the occupancy check. A capped ghost
--- sitting inside another car still refuses to go solid.
+-- The timer is not the occupancy check. A car sitting inside another still
+-- refuses to go solid however short its timer was.
 rival.x, rival.y = 0, 0
 frames(30.0)
 check(own.ghosted == true,

@@ -2190,7 +2190,18 @@ function RM_onStartPositionCount(pid, rawData)
         -- How many joker gates this client has placed, so the joker lap can be
         -- refused on a track that has none even when it was never saved as a
         -- named layout (see RM_onSetJokerEnabled).
-        local jg = tonumber(data.jokerGates)
+        --
+        -- SAME GUARD AS gridOffLine ABOVE, and it was missing here. This report
+        -- fires constantly from EVERY client, so right after a layout loads a
+        -- client that has not applied it yet -- or a spectator with an empty
+        -- editor -- reported zero and wiped the count the layout had just set.
+        -- The joker toggle stayed locked on a track with joker gates, and
+        -- loading the layout a SECOND time fixed it, because by then everyone
+        -- was reporting the route they had. Exactly what was described.
+        --
+        -- A loaded layout is authored, saved and shared. It is the authority on
+        -- its own joker route, and no client's editor overrules it.
+        local jg = race.layout == nil and tonumber(data.jokerGates) or nil
         if jg then
           race.jokerGates = math.max(math.floor(jg), 0)
           if race.jokerGates == 0 and race.jokerEnabled then

@@ -1334,7 +1334,16 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
             if ($scope.totalLaps !== data.totalLaps) { $scope.settingsUi.laps = data.totalLaps; }
             $scope.totalLaps = data.totalLaps;
           }
-          if ($scope.phase !== 'countdown') { $scope.countdown = null; }
+          // ...but never the GO frame, which owns its own lifetime on a timer.
+          //
+          // On GO the phase is ALREADY 'racing', and a race broadcasts state
+          // three times a second, so this line wiped GO! within a third of a
+          // second of it appearing. A derby sends no such broadcast, which is
+          // why GO showed there and nowhere else. The counts still clear this
+          // way, which is what tidies up an aborted countdown.
+          if ($scope.phase !== 'countdown' && $scope.countdown !== 0) {
+            $scope.countdown = null;
+          }
           // League regulations mirrored from the server (Modules 1, 2 & 4).
           if (typeof data.maxResets === 'number') {
             if ($scope.maxResets !== data.maxResets) { $scope.settingsUi.resets = data.maxResets; }
@@ -1411,13 +1420,10 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
 
       // How long GO! stays up after the lights go out.
       //
-      // A race clears this overlay as a side effect: the next state broadcast
-      // arrives with a phase that is no longer 'countdown' and nulls it. A DERBY
-      // never sends that broadcast -- it is an isolated module with its own
-      // state channel -- so GO! sat on screen for the rest of the derby. Clearing
-      // it on a timer instead makes the overlay own its own lifetime, and gives
-      // GO! a readable beat in both modes rather than however long the next
-      // broadcast happens to take.
+      // The overlay owns its own lifetime, in both modes. A race used to clear
+      // it as a side effect of the next state broadcast, which is why GO! was
+      // gone in a third of a second there and sat forever on a derby, which
+      // sends no such broadcast. Neither was the intent.
       // GO holds longer than the counts do. It is the one frame everybody is
       // actually looking at, and 1.5s was gone before a driver had looked up.
       var GO_OVERLAY_MS = 3000;

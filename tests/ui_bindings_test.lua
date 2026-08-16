@@ -1060,6 +1060,18 @@ expect(js:find('$scope.driverFlag = data.driverFlag', 1, true) ~= nil,
 expect(js:find("=== 'white'", 1, true) ~= nil,
   'and knows about the white last-lap flag')
 
+-- GO SURVIVES THE NEXT STATE BROADCAST.
+--
+-- Reported live: GO! showed on a derby and never on a race. On GO the phase is
+-- already 'racing', and a race broadcasts state three times a second, so the
+-- line that clears the overlay outside a countdown wiped GO within a third of a
+-- second. A derby sends no such broadcast, so it kept it. The counts still clear
+-- that way, which is what tidies up an aborted countdown.
+local clearLine = js:match("if %(%$scope%.phase !== 'countdown'[^\n]*\n[^\n]*")
+expect(clearLine ~= nil, 'the overlay-clearing guard is still there')
+expect(clearLine and clearLine:find('countdown !== 0', 1, true) ~= nil,
+  'and it spares the GO frame, which owns its own lifetime on a timer')
+
 -- ---------------------------------------------------------------------------
 -- Nudge mode: the button, and who owns whether it is on
 -- ---------------------------------------------------------------------------

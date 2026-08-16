@@ -3686,20 +3686,24 @@ end
 -- this one, not the one the server's acknowledgement arrives on. The broadcast
 -- follows so everyone else ghosts the same car.
 --
--- A repeat reset while already ghosted RESTARTS the timer rather than stacking a
--- second ghost, and the restart is capped: a driver holding the reset key can
--- reach ghostMaxDurationSec of base timer and no further. The cap applies to the
--- base timer ONLY -- it has no bearing on the occupancy check, which has no time
--- limit in either direction.
+-- A repeat reset while already ghosted RESTARTS the timer. It does not stack.
+--
+-- It used to say exactly that and do the opposite: each reset added minSec to
+-- the PREVIOUS TOTAL, capped at maxSec, so a driver resetting twice in traffic
+-- climbed 5s, 10s, 15s and stayed intangible far longer than the rule allows.
+-- The cap made it bounded, not correct.
+--
+-- Restarting is also the safer of the two. The reason a ghost exists is the
+-- moment of materialising in the pack; a second reset is a second such moment,
+-- not a longer one. Anyone genuinely stuck inside another car is covered by the
+-- occupancy check, which has no time limit in either direction and is what
+-- actually decides when collision comes back.
 function ghost.arm()
   local veh = ownVehicle()
   local vehId = veh and vehicleId(veh) or nil
   if not vehId then return end
   local rules = ghost.rules
   local base = rules.minSec
-  if ghost.own.vehId == vehId and ghost.own.total > 0 then
-    base = math.min(ghost.own.total + rules.minSec, rules.maxSec)
-  end
   ghost.own.pid      = localServerId()
   ghost.own.vehId    = vehId
   ghost.own.total    = base

@@ -1195,6 +1195,40 @@ check(lastLogin and lastLogin.lapsed == true,
   'flagged as a LAPSE, not a failed password: nobody typed anything, so the '
     .. 'panel must not accuse them of getting it wrong')
 
+-- ---------------------------------------------------------------------------
+-- A loaded layout owns its own joker route
+-- ---------------------------------------------------------------------------
+-- Reported live: a track with joker gates needed loading TWICE before the joker
+-- toggle would unlock.
+--
+-- Clients report their placed joker count constantly, from every client, not
+-- just the admin. Right after a load, one that had not applied the layout yet --
+-- or a spectator with an empty editor -- reported zero and wiped the count the
+-- layout had just set. The second load worked because by then everyone was
+-- reporting the route they had.
+RM_onSaveLayout(1, '{"name":"Joker Track","width":20,"checkpoints":'
+  .. '[{"x":0,"y":100,"z":0,"hx":0,"hy":1},{"x":0,"y":200,"z":0,"hx":0,"hy":1}]'
+  .. ',"joker":[{"x":50,"y":150,"z":0,"hx":1,"hy":0},{"x":50,"y":160,"z":0,"hx":1,"hy":0}]}')
+RM_onLoadLayout(1, '{"name":"Joker Track"}')
+-- Loading broadcasts the LAYOUT, not the state, so ask for state explicitly
+-- rather than reading a copy from before the load.
+RM_onRequestState(1)
+check(lastState.jokerGates == 2, 'loading a joker track reports its two gates')
+
+-- A client that has not applied it yet says zero. It must not be believed.
+RM_onStartPositionCount(2, '{"count":0,"positions":[],"jokerGates":0}')
+RM_onRequestState(1)
+check(lastState.jokerGates == 2,
+  'a client reporting zero does NOT wipe the count a loaded layout set')
+
+-- With no layout loaded the client IS the authority, which is how a track built
+-- in the editor and never saved still gets a joker lap.
+RM_onClearTrackState(1)
+RM_onStartPositionCount(2, '{"count":0,"positions":[],"jokerGates":3}')
+RM_onRequestState(1)
+check(lastState.jokerGates == 3,
+  'with no layout loaded the editor is still believed')
+
 -- LAST IN THE FILE ON PURPOSE. This block starts a race, and everything above
 -- it either needs no session running (loading and deleting a layout are both
 -- refused mid-race) or depends on driver records a reset would clear.
