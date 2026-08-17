@@ -209,10 +209,11 @@ check(driver('Alice').position == 3 and driver('Dan').position == 4,
 -- Drivers going opposite ways round the same track are ranked against each other
 -- ---------------------------------------------------------------------------
 -- The claim the whole branching design rests on, and it is a claim about THIS
--- file: a branch substitutes a gate into a slot that already exists rather than
--- adding one, so `cp` counts SLOTS and means the same thing whichever way round a
--- driver is going. The comparator needed no lane arithmetic, no normalisation and
--- no new wire field -- and this test fails if someone later adds any.
+-- file: a branch gate is another way through a checkpoint that already exists
+-- rather than an extra one, so `cp` counts CHECKPOINTS and means the same thing
+-- whichever gates a driver took. The comparator needed no lane arithmetic, no
+-- normalisation and no new wire field -- and this test fails if someone later
+-- adds any.
 --
 -- Alice and Bob are clockwise, Cara and Dan counter-clockwise, all on lap 2 of
 -- the same four-slot oval.

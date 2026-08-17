@@ -1,19 +1,20 @@
--- Headless test for BRANCHING ROUTES in lua/ge/extensions/raceManager.lua:
--- the lane/slot state machine that lets two halves of a field drive the same
--- track in different directions and be scored together.
+-- Headless test for BRANCH GATES in lua/ge/extensions/raceManager.lua: the
+-- other ways through a checkpoint, which is what lets two halves of a field
+-- drive the same track in different directions and be scored together.
 --
 -- Run from the repo root: lua5.3 tests/branch_test.lua
 --
 -- Mirror of the client's logic (kept in sync by hand; the extension needs the
 -- BeamNG GE environment and cannot be dofile'd here). Three pieces:
 --   * rectCrossesGate      -- the geometry, bidirectional unless oneWay
---   * branch.gateFor       -- which gate IS slot i, for this car
+--   * branch.crossedAt     -- did this movement clear slot i, by ANY of its gates
 --   * checkGates           -- the crossing/arming state machine
 --
--- The claim under test is the whole design: a branch SUBSTITUTES a gate into a
--- slot that already exists rather than adding one, so every lane has the same
--- number of slots, armedWp stays an integer bounded by #route, and the lap
--- completes on armedWp >= #route whichever way round a driver went.
+-- The claim under test is the whole design: a branch gate is another way through
+-- a checkpoint that already exists rather than an extra checkpoint, so armedWp
+-- stays an integer bounded by #route, the lap completes on armedWp >= #route
+-- whichever gates a driver took, and NOTHING is carried from one slot to the
+-- next. There is no lane, so there is nothing to assign, lock or remember.
 
 local function rectCrossesGate(wp, prev, cur, w, h, d)
   local fx, fy = wp.hx, wp.hy
@@ -42,34 +43,42 @@ end
 -- ---------------------------------------------------------------------------
 local S = {}
 
+-- `branches` is the FLAT authored list: { { slot = n, x, y, z, hx, hy }, ... }.
+-- Several gates may carry the same slot, and that is the feature.
 local function reset(route, branches)
   S.route   = route or {}
   S.list    = branches or {}
   S.bySlot  = {}
-  for _, b in ipairs(S.list) do
-    local slots = {}
-    for _, g in ipairs(b.gates) do slots[g.slot] = g end
-    S.bySlot[b.id] = slots
+  for _, g in ipairs(S.list) do
+    local at = S.bySlot[g.slot]
+    if not at then at = {}; S.bySlot[g.slot] = at end
+    at[#at + 1] = g
   end
   S.armedWp = 1
-  S.lane    = nil
-  S.lock    = false
   S.localLap = 1
   S.laps    = 0            -- completed crossings reported upstream
   S.scored  = 0            -- laps that were actually timed (out lap excluded)
   S.lastGate = nil
   S.lastBack = false
   S.outLapOwed = false     -- the session/track rule
-  S.notices = {}
 end
 
-local function gateFor(i, lane)
-  if lane then
-    local bySlot = S.bySlot[lane]
-    local g = bySlot and bySlot[i]
-    if g then return g end
+-- Mirror of branch.crossedAt: the main gate for slot i, then every branch gate
+-- authored against it. Returns the gate crossed and whether it was backwards.
+local function crossedAt(i, prev, cur)
+  local wp = S.route[i]
+  if wp then
+    local crossed, backwards = rectCrossesGate(wp, prev, cur, 20, 10)
+    if crossed then return wp, backwards end
   end
-  return S.route[i]
+  local alts = S.bySlot[i]
+  if alts then
+    for k = 1, #alts do
+      local crossed, backwards = rectCrossesGate(alts[k], prev, cur, 20, 10)
+      if crossed then return alts[k], backwards end
+    end
+  end
+  return nil, false
 end
 
 -- Mirror of onOutLap(): the rule, and "this driver has not crossed yet".
@@ -80,69 +89,56 @@ end
 -- Mirror of checkGates. Returns true when this movement scored a slot.
 local function drive(prev, cur)
   local onOut = onOutLap()
-  local wp = onOut and S.route[#S.route] or gateFor(S.armedWp, S.lane)
-  local crossed, backwards = false, false
-  if wp then crossed, backwards = rectCrossesGate(wp, prev, cur, 20, 10) end
+  local wp, backwards = crossedAt(S.armedWp, prev, cur)
+  local crossed = wp ~= nil
 
-  local took = nil
-  if not crossed and not onOut and not S.lane and not S.lock then
-    for _, b in ipairs(S.list) do
-      local g = S.bySlot[b.id] and S.bySlot[b.id][S.armedWp]
-      if g then
-        crossed, backwards = rectCrossesGate(g, prev, cur, 20, 10)
-        if crossed then wp, took = g, b end
-      end
-      if crossed then break end
+  -- On the out lap the LINE also ends the lap, from wherever the driver has got
+  -- to and with slots still owing.
+  local lineEndedOutLap = false
+  if onOut and not crossed and S.armedWp < #S.route then
+    local line = S.route[#S.route]
+    if line then
+      crossed, backwards = rectCrossesGate(line, prev, cur, 20, 10)
+      if crossed then wp, lineEndedOutLap = line, true end
     end
   end
   if not crossed then return false end
 
   S.lastGate, S.lastBack = wp, backwards or false
-  if took then
-    S.lane = took.id
-    S.notices[#S.notices + 1] = took.id
-  end
-  if onOut then
+  if lineEndedOutLap then
     S.laps = S.laps + 1
     S.localLap = S.localLap + 1
     S.armedWp = 1
   elseif S.armedWp >= #S.route then
     S.laps = S.laps + 1
-    S.scored = S.scored + 1
+    if not onOut then S.scored = S.scored + 1 end
     S.localLap = S.localLap + 1
     S.armedWp = 1
-    if not S.lock then S.lane = nil end
   else
     S.armedWp = S.armedWp + 1
   end
   return true
 end
 
--- Slot renumbering, mirrored from the editor. A lane addresses slots by number,
--- so editing the main route has to move the lanes with it.
+-- Slot renumbering, mirrored from the editor. A branch gate addresses its
+-- checkpoint by number, so editing the main route has to move them with it.
 local function shiftSlots(from, delta)
-  for _, b in ipairs(S.list) do
-    for _, g in ipairs(b.gates) do
-      if g.slot >= from then g.slot = g.slot + delta end
-    end
+  for _, g in ipairs(S.list) do
+    if g.slot >= from then g.slot = g.slot + delta end
   end
 end
 local function dropSlot(slot)
   local dropped = 0
-  for _, b in ipairs(S.list) do
-    for i = #b.gates, 1, -1 do
-      if b.gates[i].slot == slot then table.remove(b.gates, i); dropped = dropped + 1 end
-    end
+  for i = #S.list, 1, -1 do
+    if S.list[i].slot == slot then table.remove(S.list, i); dropped = dropped + 1 end
   end
   return dropped
 end
 local function reorderSlots(from, to)
   local lo, hi, step = math.min(from, to), math.max(from, to), (from < to) and -1 or 1
-  for _, b in ipairs(S.list) do
-    for _, g in ipairs(b.gates) do
-      if g.slot == from then g.slot = to
-      elseif g.slot >= lo and g.slot <= hi then g.slot = g.slot + step end
-    end
+  for _, g in ipairs(S.list) do
+    if g.slot == from then g.slot = to
+    elseif g.slot >= lo and g.slot <= hi then g.slot = g.slot + step end
   end
 end
 
@@ -166,7 +162,7 @@ end
 
 -- ===========================================================================
 -- THE OVAL, exactly as a head-on layout is described:
---   CP1, branch of CP3, CP2 for both lanes, CP3, branch of CP1, start/finish.
+--   CP1 and a branch of it, CP2 shared, CP3 and a branch of it, start/finish.
 -- ===========================================================================
 -- Four points round a ring. Going CLOCKWISE from the line:
 --   start/finish (0,-100) -> turn 1 (100,0) -> back stretch (0,100) -> turn 2 (-100,0)
@@ -180,467 +176,231 @@ local function oval()
     { x = TURN2.x, y = TURN2.y, z = 0, hx = 0,  hy = -1 },   -- slot 3: turn 2
     { x = LINE.x,  y = LINE.y,  z = 0, hx = 1,  hy = 0  },   -- slot 4: start/finish
   }
-  -- The counter-clockwise lane. It overrides ONLY the two turns: its slot 1 is a
-  -- gate at turn 2 and its slot 3 is a gate at turn 1, both facing the way a CCW
-  -- car travels. The back stretch and the line are left alone -- shared, and
-  -- crossed the other way round by this lane, which is what bidirectional gates
-  -- are for.
-  local ccw = { id = 'ccw', name = 'Counter-clockwise', gates = {
+  -- Two branch gates, one for each turn. The branch for slot 1 stands at turn 2
+  -- and the branch for slot 3 stands at turn 1, both facing the way an
+  -- anti-clockwise car travels. The back stretch and the line get none: they are
+  -- shared, and crossed the other way round by a CCW car, which is what
+  -- bidirectional gates are for.
+  local alts = {
     { slot = 1, x = TURN2.x, y = TURN2.y, z = 0, hx = 0, hy = 1  },
     { slot = 3, x = TURN1.x, y = TURN1.y, z = 0, hx = 0, hy = -1 },
-  } }
-  return route, { ccw }
+  }
+  return route, alts
 end
 
--- --- 1. A track with no branches behaves exactly as it always did ----------
-do
-  local route = oval()
-  reset(route, {})
-  check(#S.route == 4, 'plain oval has four slots')
-  local order = {}
-  for i = 1, 4 do
-    order[#order + 1] = S.armedWp
-    check(through(route[i]) == true, 'plain: slot ' .. i .. ' scores')
-  end
-  check(table.concat(order, ',') == '1,2,3,4', 'plain: armedWp walks 1,2,3,4')
-  check(S.armedWp == 1, 'plain: armedWp back to 1 after the line')
-  check(S.laps == 1 and S.scored == 1, 'plain: one lap, and it counted')
-  check(S.lane == nil, 'plain: no lane is ever set')
-end
+-- --- 1. A track with no branch gates behaves exactly as it always did -------
+local plain = select(1, oval())
+reset(plain, {})
+check(S.bySlot[1] == nil, 'a track with no branch gates has no per-slot entry at all')
+check(through(plain[1]) == true, 'CP 1 scores')
+check(S.armedWp == 2, 'and arms CP 2')
+check(through(plain[2]) == true, 'CP 2 scores')
+check(through(plain[3]) == true, 'CP 3 scores')
+check(through(plain[4]) == true, 'the line scores')
+check(S.armedWp == 1, 'and the lap wraps to CP 1')
+check(S.laps == 1 and S.scored == 1, 'one lap, timed')
 
--- --- 2. gateFor resolves overrides and falls through -----------------------
-do
-  local route, branches = oval()
-  reset(route, branches)
-  check(gateFor(1, nil) == route[1], 'main slot 1 is the main gate')
-  check(gateFor(1, 'ccw').x == TURN2.x, "ccw slot 1 is the gate at turn 2")
-  check(gateFor(3, 'ccw').x == TURN1.x, "ccw slot 3 is the gate at turn 1")
-  check(gateFor(2, 'ccw') == route[2], 'ccw slot 2 falls through: shared')
-  check(gateFor(4, 'ccw') == route[4], 'ccw slot 4 falls through: shared')
-  check(gateFor(1, 'nosuch') == route[1], 'an unknown lane falls through to the main route')
-end
+-- --- 2. crossedAt accepts the main gate OR any branch of it ----------------
+local route, alts = oval()
+reset(route, alts)
+check(#S.bySlot[1] == 1 and #S.bySlot[3] == 1, 'each branched slot holds its gate')
+check(S.bySlot[2] == nil and S.bySlot[4] == nil, 'a shared slot holds none')
+-- The main gate for slot 1 is at turn 1; its branch is at turn 2. Both clear it.
+check(crossedAt(1, P(TURN1.x, TURN1.y - 3), P(TURN1.x, TURN1.y + 3)) == route[1],
+  'the main gate clears its slot')
+check(crossedAt(1, P(TURN2.x, TURN2.y - 3), P(TURN2.x, TURN2.y + 3)) == alts[1],
+  'and so does its branch gate, at the other end of the circuit')
+check(crossedAt(2, P(TURN2.x, TURN2.y - 3), P(TURN2.x, TURN2.y + 3)) == nil,
+  'a gate only ever clears the slot it was authored against')
 
--- --- 3. THE HEAD-ON LAP: both directions, same slots, same lap ------------
--- The clockwise car.
-do
-  local route, branches = oval()
-  reset(route, branches)
-  S.lock = true            -- assigned by the grid, as a head-on race is
-  S.lane = nil             -- ...to the main route
-  check(through(route[1]) == true, 'CW: turn 1 scores slot 1')
-  check(S.armedWp == 2, 'CW: on slot 2')
-  check(through(route[2]) == true, 'CW: back stretch scores slot 2')
-  check(through(route[3]) == true, 'CW: turn 2 scores slot 3')
-  check(through(route[4]) == true, 'CW: the line completes the lap')
-  check(S.scored == 1 and S.armedWp == 1, 'CW: one scored lap, re-armed on slot 1')
-end
+-- --- 3. THE HEAD-ON LAP: both directions, same slots, same lap -------------
+-- The clockwise car, driving the main gates the way they point.
+reset(oval())
+check(through(route[1]) == true, 'CW: turn 1 clears CP 1')
+check(S.armedWp == 2, 'CW: CP 2 armed')
+check(through(route[2]) == true, 'CW: the back stretch clears CP 2')
+check(through(route[3]) == true, 'CW: turn 2 clears CP 3')
+check(through(route[4]) == true, 'CW: the line clears CP 4')
+check(S.laps == 1 and S.armedWp == 1, 'CW: one lap, back to CP 1')
 
--- The counter-clockwise car, over the SAME four slots, in the opposite
--- direction round the same ring.
-do
-  local route, branches = oval()
-  reset(route, branches)
-  S.lock = true
-  S.lane = 'ccw'           -- assigned by its grid slot
-  local ccw1 = gateFor(1, 'ccw')
-  local ccw3 = gateFor(3, 'ccw')
+-- The counter-clockwise car over the SAME four slots, in the opposite physical
+-- order, taking a branch gate wherever one exists. Nothing was assigned to it:
+-- it simply reaches the anti-clockwise gate for each slot first.
+local r2, a2 = oval()
+reset(r2, a2)
+check(through(a2[1]) == true, 'CCW: turn 2 clears CP 1, by the branch gate there')
+check(S.armedWp == 2, 'CCW: CP 2 armed, the same slot the CW car is on')
+check(through(r2[2], -1) == true, 'CCW: the shared back stretch, crossed backwards')
+check(S.lastBack == true, 'and it is recorded as a backwards crossing')
+check(through(a2[2]) == true, 'CCW: turn 1 clears CP 3, by the branch gate there')
+check(through(r2[4], -1) == true, 'CCW: the shared line, crossed backwards')
+check(S.laps == 1 and S.armedWp == 1, 'CCW: one lap over the same four slots')
 
-  check(through(ccw1) == true, 'CCW: turn 2 scores slot 1')
-  check(S.armedWp == 2, 'CCW: on slot 2')
-  check(S.lastBack == false, 'CCW: its own gate is crossed forwards')
+-- --- 4. NOTHING IS CARRIED FROM ONE SLOT TO THE NEXT -----------------------
+-- The property this whole design rests on, and the one the lane system did not
+-- have. Every slot is decided on its own, so a car that turns round mid-lap is
+-- not stuck on a line it can no longer reach: it clears the next checkpoint by
+-- whichever of that checkpoint's gates it actually drives through.
+local r3, a3 = oval()
+reset(r3, a3)
+check(through(a3[1]) == true, 'clear CP 1 by its branch gate, at turn 2')
+check(through(r3[2], -1) == true, 'clear CP 2 anti-clockwise')
+-- Now turn round and take CP 3 by its MAIN gate at turn 2, not the branch at
+-- turn 1. Under the old lane rules this car was locked to the CCW line and the
+-- main gate for slot 3 was not armed for it at all.
+check(through(r3[3]) == true, 'and CP 3 by its MAIN gate: the earlier branch bound nothing')
+check(S.armedWp == 4, 'the lap carries on normally from there')
 
-  -- The shared back stretch, driven the other way. This is the crossing that
-  -- only works because gates score in both directions.
-  check(through(route[2], -1) == true, 'CCW: the shared back stretch scores backwards')
-  check(S.lastBack == true, 'CCW: and is recorded as a backward crossing')
-  check(S.armedWp == 3, 'CCW: on slot 3')
+-- The reverse mix, for the same reason.
+local r4, a4 = oval()
+reset(r4, a4)
+check(through(r4[1]) == true, 'clear CP 1 by its main gate')
+check(through(r4[2]) == true, 'clear CP 2')
+check(through(a4[2]) == true, 'and CP 3 by its BRANCH gate: still no line to be on')
 
-  check(through(ccw3) == true, 'CCW: turn 1 scores slot 3')
-  check(through(route[4], -1) == true, 'CCW: the shared line completes the lap backwards')
-  check(S.scored == 1, 'CCW: one scored lap, over the same four slots')
-  check(S.armedWp == 1, 'CCW: re-armed on slot 1')
-  check(S.lane == 'ccw', 'CCW: a grid-assigned lane survives the lap boundary')
-end
+-- --- 5. Both directions complete the same number of laps -------------------
+-- The whole field is scored together on one clock, so this has to hold exactly.
+local function lapCW(r) through(r[1]); through(r[2]); through(r[3]); through(r[4]) end
+local function lapCCW(r, a) through(a[1]); through(r[2], -1); through(a[2]); through(r[4], -1) end
 
--- --- 4. A locked lane never arms the other lane's gates --------------------
-do
-  local route, branches = oval()
-  reset(route, branches)
-  S.lock, S.lane = true, 'ccw'
-  -- The CW car's turn-1 gate is not this lane's slot 1, so driving through it
-  -- does nothing at all -- exactly as driving through any unarmed gate does.
-  check(through(route[1]) == false, 'CCW: the main route\'s turn 1 gate is inert')
-  check(S.armedWp == 1, 'CCW: and the slot did not advance')
-  -- Its own slot-1 gate still works.
-  check(through(gateFor(1, 'ccw')) == true, 'CCW: its own slot 1 still scores')
-end
+local r5, a5 = oval()
+reset(r5, a5)
+for _ = 1, 3 do lapCW(r5) end
+local cwLaps = S.laps
+reset(r5, a5)
+for _ = 1, 3 do lapCCW(r5, a5) end
+check(S.laps == cwLaps and S.laps == 3,
+  'three laps each way is three laps, on one count that means the same thing')
 
--- The main-route half of a head-on grid is locked too, and that is the point.
--- Locking only the TAGGED half would leave a clockwise driver undecided, and an
--- undecided car is moved onto whichever lane's gate it crosses first: spin one
--- round on a head-on oval and it picks up the oncoming lane and starts scoring
--- laps the other way. Untagged means the main route, which is an assignment.
-do
-  local route, branches = oval()
-  reset(route, branches)
-  S.lock, S.lane = true, nil       -- main route, locked
-  check(through(gateFor(1, 'ccw')) == false, "CW: the ccw lane's gate is inert")
-  check(S.armedWp == 1, 'CW: and the slot did not advance')
-  check(S.lane == nil, 'CW: a locked main-route car is never moved onto a lane')
-
-  -- The same car, WITHOUT the lock, is exactly the failure that guards against.
-  reset(route, branches)
-  S.lock, S.lane = false, nil
-  check(through(gateFor(1, 'ccw')) == true,
-    'unlocked: the oncoming lane is live -- which is why a grid-assigned track locks everyone')
-  check(S.lane == 'ccw', 'unlocked: and the car is dragged onto it')
-end
-
--- --- 5. Both lanes complete the same number of laps ------------------------
-do
-  local route, branches = oval()
-  -- Clockwise, three laps.
-  reset(route, branches); S.lock = true
-  for _ = 1, 3 do
-    through(route[1]); through(route[2]); through(route[3]); through(route[4])
-  end
-  local cwLaps = S.scored
-  -- Counter-clockwise, three laps.
-  reset(route, branches); S.lock, S.lane = true, 'ccw'
-  for _ = 1, 3 do
-    through(gateFor(1, 'ccw')); through(route[2], -1)
-    through(gateFor(3, 'ccw')); through(route[4], -1)
-  end
-  check(cwLaps == 3 and S.scored == 3,
-    'three laps each way: the field is scored together, on the same slot count')
-end
-
--- --- 6. An unlocked lane is chosen by driving, and cleared each lap --------
--- The rally-style split: nobody is assigned, and whichever gate a car actually
--- drives through is the line it is on for that lap.
-do
-  local route, branches = oval()
-  reset(route, branches)
-  S.lock = false
-  check(S.lane == nil, 'split: undecided at the start of the lap')
-  check(through(gateFor(1, 'ccw')) == true, 'split: crossing the alternate gate scores')
-  check(S.lane == 'ccw', 'split: ...and commits this car to that lane')
-  check(S.notices[1] == 'ccw', 'split: the driver is told which line they are on')
-  through(route[2], -1); through(gateFor(3, 'ccw')); through(route[4], -1)
-  check(S.lane == nil, 'split: the lane is chosen again next lap')
-end
-
-do
-  local route, branches = oval()
-  reset(route, branches)
-  S.lock = false
-  check(through(route[1]) == true, 'split: the main gate scores just as well')
-  check(S.lane == nil, 'split: staying on the main route commits to no lane')
-end
-
--- --- 7. The out lap arms the LINE and nothing else -------------------------
+-- --- 6. The out lap arms the checkpoints AND the line ----------------------
 -- A head-on grid is spread round the circuit, so slot 1 can be behind a driver
--- at GO. On a lap nobody is scoring there is nothing to police.
-do
-  local route, branches = oval()
-  reset(route, branches)
-  S.lock, S.lane = true, 'ccw'
-  S.outLapOwed = true
-  check(onOutLap() == true, 'out lap: owed before the first crossing')
-  -- Slot 1's gate does nothing: it is not what is armed.
-  check(through(gateFor(1, 'ccw')) == false, 'out lap: slot 1 is not armed')
-  check(S.armedWp == 1, 'out lap: nothing advanced')
-  -- The line ends it, from either direction.
-  check(through(route[4], -1) == true, 'out lap: the line ends it, crossed backwards')
-  check(S.laps == 1, 'out lap: reported as a crossing')
-  check(S.scored == 0, 'out lap: but NOT scored -- no lap time goes on the board')
-  check(onOutLap() == false, 'out lap: done')
-  check(S.armedWp == 1, 'out lap: slot 1 armed for the first timed lap')
-  -- And now the normal lap works.
-  check(through(gateFor(1, 'ccw')) == true, 'after the out lap: slot 1 scores')
-end
+-- at the moment they are released. The checkpoints are armed like any other lap
+-- (it is the lap a driver least knows the circuit), and reaching the LINE ends
+-- it from wherever they have got to, with slots still owing.
+local r6, a6 = oval()
+reset(r6, a6)
+S.outLapOwed = true
+check(onOutLap() == true, 'the out lap is owed')
+check(through(r6[1]) == true, 'a checkpoint IS armed on the out lap and scores normally')
+check(S.armedWp == 2, 'and arms the next one')
+check(through(r6[4]) == true, 'reaching the line ends the out lap with slots still owing')
+check(S.armedWp == 1, 'slot 1 arms behind it')
+check(S.laps == 1 and S.scored == 0, 'the crossing is reported but not timed')
+check(onOutLap() == false, 'and the out lap is over')
+lapCW(r6)
+check(S.scored == 1, 'the next lap is the first timed one')
+
+-- A branch gate can end the out lap too, since it clears the same slot.
+local r7, a7 = oval()
+reset(r7, a7)
+S.outLapOwed = true
+check(through(a7[1]) == true, 'a branch gate scores on the out lap like any other')
 
 -- A track whose grid IS on the line owes nothing and behaves as before.
-do
-  local route = oval()
-  reset(route, {})
-  S.outLapOwed = false
-  check(through(route[1]) == true, 'no out lap: slot 1 is armed from GO')
-  check(S.scored == 0 and S.armedWp == 2, 'no out lap: normal progression')
-end
+local r8, a8 = oval()
+reset(r8, a8)
+check(onOutLap() == false, 'a grid on the line owes no out lap')
+lapCW(r8)
+check(S.scored == 1, 'so its first lap is timed')
 
--- --- 8. The respawn direction is recorded at the crossing ------------------
+-- --- 7. The respawn direction is recorded at the crossing -------------------
 -- A shared gate carries one heading and is driven both ways, so which way a car
--- was going cannot be read off the gate afterwards.
-do
-  local route, branches = oval()
-  reset(route, branches)
-  S.lock, S.lane = true, nil
-  through(route[1])
-  check(S.lastGate == route[1] and S.lastBack == false,
-    'CW: last gate recorded, forwards')
-  reset(route, branches)
-  S.lock, S.lane = true, 'ccw'
-  through(gateFor(1, 'ccw'))
-  through(route[2], -1)
-  check(S.lastGate == route[2], 'CCW: the shared gate is the last one crossed')
-  check(S.lastBack == true,
-    'CCW: recorded as backwards, so the respawn faces the way the car was going')
-end
+-- went through it is only knowable at the moment it did. The "Last Checkpoint"
+-- reset mode puts a car back facing the way it was going.
+local r9, a9 = oval()
+reset(r9, a9)
+through(r9[1])
+check(S.lastGate == r9[1] and S.lastBack == false,
+  'a forward crossing records the gate and its own direction')
+reset(r9, a9)
+through(a9[1])
+check(S.lastGate == a9[1] and S.lastBack == false,
+  'a branch gate is recorded as the last gate exactly like a main one')
+reset(r9, a9)
+through(a9[1]); through(r9[2], -1)
+check(S.lastGate == r9[2] and S.lastBack == true,
+  'and a shared gate taken backwards is recorded as backwards')
 
--- --- 9. Editing the main route renumbers the lanes ------------------------
-do
-  local _, branches = oval()
-  reset({}, branches)
-  -- Insert a gate before slot 2: the lane's slot 3 gate becomes slot 4.
-  shiftSlots(2, 1)
-  check(S.list[1].gates[1].slot == 1, 'insert: a slot before the change is untouched')
-  check(S.list[1].gates[2].slot == 4, 'insert: a slot after it moves up')
+-- --- 8. Editing the main route renumbers the branch gates -------------------
+-- A branch gate addresses its checkpoint by number, so inserting, deleting or
+-- moving a main gate changes what those numbers mean. One left un-renumbered
+-- silently comes to describe a different corner.
+local r10, a10 = oval()
+reset(r10, a10)
+shiftSlots(2, 1)          -- a checkpoint inserted at slot 2
+check(a10[1].slot == 1, 'a branch gate before the insert keeps its checkpoint')
+check(a10[2].slot == 4, 'and one after it moves up with the slot it belongs to')
 
-  local _, b2 = oval()
-  reset({}, b2)
-  -- Delete slot 1: the lane's override for it goes with it, and slot 3 drops to 2.
-  local dropped = dropSlot(1)
-  shiftSlots(2, -1)
-  check(dropped == 1, 'delete: the override for the removed slot is dropped')
-  check(#S.list[1].gates == 1, 'delete: the lane keeps its other gate')
-  check(S.list[1].gates[1].slot == 2, 'delete: the surviving slot moves down')
+reset(oval())
+local dropped = dropSlot(1)
+check(dropped == 1, 'removing a checkpoint drops the branch gates that belonged to it')
+check(#S.list == 1, 'and only those')
+shiftSlots(2, -1)
+check(S.list[1].slot == 2, 'the survivors renumber down behind it')
 
-  local _, b3 = oval()
-  reset({}, b3)
-  -- Move slot 3 to slot 1: the lane's slot 3 becomes slot 1, and its slot 1 -> 2.
-  reorderSlots(3, 1)
-  local bySlot = {}
-  for _, g in ipairs(S.list[1].gates) do bySlot[g.slot] = g end
-  check(bySlot[1] ~= nil and bySlot[1].x == TURN1.x, 'reorder: slot 3 became slot 1')
-  check(bySlot[2] ~= nil and bySlot[2].x == TURN2.x, 'reorder: slot 1 shifted to 2')
-end
+local r11, a11 = oval()
+reset(r11, a11)
+reorderSlots(1, 3)        -- checkpoint 1 dragged to position 3
+check(a11[1].slot == 3, 'a branch gate follows the checkpoint it belongs to when it moves')
+check(a11[2].slot == 2, 'and the ones it moved past shift the other way')
 
--- --- 10. Slots are what is counted, not gates -----------------------------
--- The property the whole server side rests on: the checkpoint count reported
--- upstream means the same thing whichever lane a driver is on, so the running
--- order needs no lane arithmetic at all.
-do
-  local route, branches = oval()
-  local cw, ccw = {}, {}
-  reset(route, branches); S.lock = true
-  through(route[1]); cw[#cw + 1] = S.armedWp - 1
-  through(route[2]); cw[#cw + 1] = S.armedWp - 1
-  through(route[3]); cw[#cw + 1] = S.armedWp - 1
-  reset(route, branches); S.lock, S.lane = true, 'ccw'
-  through(gateFor(1, 'ccw')); ccw[#ccw + 1] = S.armedWp - 1
-  through(route[2], -1);      ccw[#ccw + 1] = S.armedWp - 1
-  through(gateFor(3, 'ccw')); ccw[#ccw + 1] = S.armedWp - 1
-  check(table.concat(cw, ',') == '1,2,3', 'CW reports 1,2,3 checkpoints cleared')
-  check(table.concat(ccw, ',') == '1,2,3', 'CCW reports 1,2,3 -- the same numbers')
-end
+-- --- 9. Checkpoints are what is counted, not gates --------------------------
+-- The property the whole server side rests on: the count reported upstream is
+-- CHECKPOINTS CLEARED, and it means the same thing for the whole field however
+-- they got round. Nothing about branch gates can change it.
+local r12, a12 = oval()
+reset(r12, a12)
+through(r12[1]); through(r12[2])
+local cwCleared = S.armedWp - 1
+reset(r12, a12)
+through(a12[1]); through(r12[2], -1)
+check(S.armedWp - 1 == cwCleared and cwCleared == 2,
+  'two checkpoints cleared is two, whichever gates cleared them')
 
--- --- 11. A lane may leave every slot shared but one ------------------------
--- The rally split: one corner taken two ways, everything else common.
-do
-  local route = oval()
-  local left = { id = 'left', name = 'Left line', gates = {
-    { slot = 2, x = 0, y = 130, z = 0, hx = -1, hy = 0 },
-  } }
-  reset(route, { left })
-  S.lock, S.lane = true, 'left'
-  check(through(route[1]) == true, 'split: slot 1 is shared and scores')
-  check(through(route[2]) == false, 'split: the main line at slot 2 is inert for this lane')
-  check(through(gateFor(2, 'left')) == true, 'split: the left line scores slot 2')
-  check(through(route[3]) == true, 'split: slot 3 is shared again')
-  check(through(route[4]) == true, 'split: and the shared line ends the lap')
-  check(S.scored == 1, 'split: one lap, four slots, one of them taken the other way')
-end
+-- --- 10. Several branch gates on ONE checkpoint -----------------------------
+-- Three ways through one corner is three gates on the same slot. The old design
+-- could not express this at all: one gate per slot per lane meant a third route
+-- needed a third lane, and a lane is a thing a driver had to be put on.
+local r13 = select(1, oval())
+local three = {
+  { slot = 1, x = TURN1.x, y = TURN1.y + 30, z = 0, hx = 0, hy = 1 },
+  { slot = 1, x = TURN1.x, y = TURN1.y - 30, z = 0, hx = 0, hy = 1 },
+}
+reset(r13, three)
+check(#S.bySlot[1] == 2, 'one checkpoint holds as many branch gates as were placed')
+check(through(r13[1]) == true, 'the main gate clears it')
+reset(r13, three)
+check(through(three[1]) == true, 'so does the first branch')
+reset(r13, three)
+check(through(three[2]) == true, 'and so does the second')
+check(S.armedWp == 2, 'each of them arms the same next checkpoint')
 
--- --- 12. Generating a grid, and moving it without driving anywhere ---------
--- Mirror of layOutGrid/respaceGrid. A head-on grid is generated as one block,
--- half of it turned around and half of it tagged -- so the thing that has to
--- survive a slider drag is not the positions, it is everything the creator did
--- to the slots AFTER they were laid out.
-local starts = {}
--- `width` cars abreast, the row CENTRED on the anchor, and `stagger` the gap
--- between adjacent cars across it.
-local function layOut(anchor, count, spacing, stagger, width)
-  local fx, fy = anchor.hx, anchor.hy
-  local rx, ry = fy, -fx
-  width = width or 2
-  local mid = (width - 1) * 0.5
-  for i = 0, count - 1 do
-    local row  = math.floor(i / width)
-    local side = (i % width - mid) * stagger
-    starts[#starts + 1] = {
-      x = anchor.x - fx * (row * spacing) + rx * side,
-      y = anchor.y - fy * (row * spacing) + ry * side,
-      z = anchor.z, hx = fx, hy = fy,
-    }
-  end
-end
-local function respace(anchor, count, spacing, stagger, width)
-  local keep = #starts - count
-  if keep < 0 then keep = 0 end
-  local held = {}
-  for i = keep + 1, #starts do
-    local sp = starts[i]
-    held[i - keep] = { branch = sp.branch, hx = sp.hx, hy = sp.hy }
-  end
-  for i = #starts, keep + 1, -1 do table.remove(starts, i) end
-  layOut(anchor, count, spacing, stagger, width)
-  for i = 1, count do
-    local sp, was = starts[keep + i], held[i]
-    if sp and was then
-      sp.branch = was.branch
-      if was.hx and was.hy then sp.hx, sp.hy = was.hx, was.hy end
-    end
-  end
-end
+-- --- 11. A branch gate on the start/finish line -----------------------------
+-- Nothing special about the last slot: a branch of it completes the lap exactly
+-- as the main gate does, which is what a split run to the line needs.
+local r14 = select(1, oval())
+local lineAlt = { { slot = 4, x = LINE.x + 40, y = LINE.y, z = 0, hx = 1, hy = 0 } }
+reset(r14, lineAlt)
+through(r14[1]); through(r14[2]); through(r14[3])
+check(S.armedWp == 4, 'three checkpoints cleared, the line armed')
+check(through(lineAlt[1]) == true, 'a branch of the LINE completes the lap')
+check(S.laps == 1 and S.scored == 1 and S.armedWp == 1,
+  'and it is a scored lap that wraps to CP 1, like any other')
 
-do
-  -- Pole on the front straight, facing +X. Two abreast, 6 m across, 8 m rows.
-  local anchor = { x = 0, y = -100, z = 0, hx = 1, hy = 0 }
-  layOut(anchor, 12, 8, 6, 2)
-  check(#starts == 12, 'twelve slots generated from one anchor')
-  check(starts[1].x == 0 and starts[2].x == 0, 'row 1 is two abreast at the anchor')
-  check(starts[1].y == -97 and starts[2].y == -103,
-    'and centred on it, half a gap either side')
-  check(starts[3].x == -8, 'row 2 sits one spacing back down the heading')
-
-  -- The head-on grid: turn the back half round and tag it.
-  for i = 7, 12 do
-    starts[i].hx, starts[i].hy = -starts[i].hx, -starts[i].hy
-    starts[i].branch = 'ccw'
-  end
-  check(starts[7].hx == -1 and starts[1].hx == 1, 'half the grid faces the other way')
-
-  -- Now drag the spacing sliders. Positions move; everything else must not.
-  respace(anchor, 12, 16, 10, 2)
-  check(#starts == 12, 'respacing keeps the same number of slots')
-  check(starts[3].x == -16, 'rows spread out to the new spacing')
-  check(starts[1].y == -95 and starts[2].y == -105, 'and the row widens')
-  check(starts[7].hx == -1 and starts[8].hx == -1,
-    'the turned-around half stays turned around -- otherwise a slider drag would '
-      .. 'send both directions off the same way')
-  check(starts[1].hx == 1, 'and the front half still faces the way it was built')
-  check(starts[7].branch == 'ccw' and starts[12].branch == 'ccw',
-    'lane tags survive the move: they belong to the slot')
-  check(starts[1].branch == nil, 'and untagged slots stay untagged')
-end
-
--- --- 13. Rows wider than two --------------------------------------------
--- An oval short-track format starts three and four abreast, and a rally stage
--- starts single file. The row is CENTRED on the anchor whatever it is made of:
--- a row that grew off one edge would walk the whole grid sideways every time the
--- width changed, and on an oval it would walk it into the wall.
-do
-  starts = {}
-  local anchor = { x = 0, y = 0, z = 0, hx = 1, hy = 0 }
-  layOut(anchor, 9, 10, 4, 3)
-  check(#starts == 9, 'nine slots, three abreast')
-  -- Row 1 straddles the anchor: one car on it, one either side.
-  check(starts[1].y == 4 and starts[2].y == 0 and starts[3].y == -4,
-    'an odd row puts a car ON the anchor and one either side')
-  check(starts[1].x == 0 and starts[2].x == 0 and starts[3].x == 0,
-    'and all three sit level with each other')
-  check(starts[4].x == -10 and starts[6].x == -10, 'row 2 is one spacing back')
-  check(starts[7].x == -20, 'row 3 is two back -- nine cars in three rows')
-
-  -- Four abreast: no car on the centre line, two either side.
-  starts = {}
-  layOut(anchor, 8, 10, 4, 4)
-  check(starts[1].y == 6 and starts[2].y == 2 and starts[3].y == -2 and starts[4].y == -6,
-    'an even row straddles the anchor with no car on it')
-  check(starts[5].x == -10, 'and eight cars four abreast is two rows')
-
-  -- Single file, for a stage start.
-  starts = {}
-  layOut(anchor, 4, 12, 4, 1)
-  check(starts[1].y == 0 and starts[2].y == 0, 'single file puts every car on the line')
-  check(starts[1].x == 0 and starts[2].x == -12 and starts[4].x == -36,
-    'one car per row, a spacing apart')
-end
-
--- Changing the WIDTH re-flows the same slots into different rows, and the tags
--- follow the slot rather than the row -- which is what keeps a head-on split
--- ("slots 7 to 12 go the other way") true whatever shape the rows are.
-do
-  starts = {}
-  local anchor = { x = 0, y = 0, z = 0, hx = 1, hy = 0 }
-  layOut(anchor, 12, 8, 6, 2)
-  for i = 7, 12 do
-    starts[i].hx, starts[i].hy = -starts[i].hx, -starts[i].hy
-    starts[i].branch = 'ccw'
-  end
-  respace(anchor, 12, 8, 6, 3)     -- two abreast -> three abreast
-  check(#starts == 12, 're-flowing to three abreast keeps every slot')
-  check(starts[4].x == -8, 'slot 4 is now row 2 rather than row 2 of a pair')
-  check(starts[7].branch == 'ccw' and starts[12].branch == 'ccw',
-    'the lane split survives a width change')
-  check(starts[7].hx == -1 and starts[6].hx == 1,
-    'and so does which way each slot faces')
-end
-
-do
-  -- Slots placed BEFORE a generate are not the generator's to move.
-  starts = {}
-  starts[1] = { x = 500, y = 500, z = 0, hx = 0, hy = 1 }   -- hand-placed
-  local anchor = { x = 0, y = 0, z = 0, hx = 1, hy = 0 }
-  layOut(anchor, 4, 8, 6, 2)
-  check(#starts == 5, 'the generated block is appended to what was there')
-  respace(anchor, 4, 20, 12, 2)
-  check(starts[1].x == 500 and starts[1].y == 500,
-    'the hand-placed slot is left exactly where the creator put it')
-  check(#starts == 5, 'and the grid does not grow on a respace')
-end
-
--- --- 14. Dealing lanes across the grid, one slot at a time -----------------
--- P1 main, P2 the next lane, P3 back to main. On a grid as many abreast as
--- there are lanes that puts each lane in its own COLUMN -- two abreast with two
--- lanes is one car of each direction in every row, side by side, facing
--- opposite ways, which is the head-on grid as it is actually lined up.
-local function stripe(slots, lanes)
-  for i = 1, #slots do
-    local pick = lanes[((i - 1) % #lanes) + 1]
-    slots[i].branch = pick or nil
-  end
-end
-
-do
-  local slots = {}
-  for i = 1, 8 do slots[i] = {} end
-  stripe(slots, { false, 'ccw' })
-  check(slots[1].branch == nil and slots[3].branch == nil and slots[5].branch == nil,
-    'odd slots stay on the main route')
-  check(slots[2].branch == 'ccw' and slots[4].branch == 'ccw' and slots[8].branch == 'ccw',
-    'even slots take the other lane')
-  local main, other = 0, 0
-  for _, sp in ipairs(slots) do
-    if sp.branch then other = other + 1 else main = main + 1 end
-  end
-  check(main == 4 and other == 4, 'and the field splits evenly without being told where the middle is')
-
-  -- An ODD field still splits as evenly as it can, and pole is always main.
-  local odd = {}
-  for i = 1, 7 do odd[i] = {} end
-  stripe(odd, { false, 'ccw' })
-  check(odd[1].branch == nil, 'pole is always the main route')
-  local m2, o2 = 0, 0
-  for _, sp in ipairs(odd) do
-    if sp.branch then o2 = o2 + 1 else m2 = m2 + 1 end
-  end
-  check(m2 == 4 and o2 == 3, 'seven drivers split 4/3 rather than leaving a block empty')
-
-  -- Three lanes deal three ways, so a three-abreast grid is one lane per column.
-  local three = {}
-  for i = 1, 9 do three[i] = {} end
-  stripe(three, { false, 'left', 'right' })
-  check(three[1].branch == nil and three[2].branch == 'left' and three[3].branch == 'right',
-    'three lanes deal across the first row')
-  check(three[4].branch == nil and three[5].branch == 'left' and three[6].branch == 'right',
-    'and the second row lines up under it -- one lane per column')
-end
+-- --- 12. One-way still means one way ---------------------------------------
+-- Bidirectional gates are what make a shared corner work, but where direction is
+-- the only thing separating two legs of a track, oneWay puts it back. A branch
+-- gate honours the flag exactly as a main gate does.
+local r15 = select(1, oval())
+local oneWayAlt = { { slot = 1, x = TURN2.x, y = TURN2.y, z = 0, hx = 0, hy = 1, oneWay = true } }
+reset(r15, oneWayAlt)
+check(through(oneWayAlt[1], -1) == false, 'a one-way branch gate refuses the wrong way')
+check(S.armedWp == 1, 'and nothing is cleared by the attempt')
+check(through(oneWayAlt[1]) == true, 'the right way through it still scores')
 
 if fails == 0 then
   print('branch_test: ' .. checks .. ' checks, 0 failures')
 else
-  print('branch_test: ' .. fails .. ' FAILURES of ' .. checks .. ' checks')
+  print('branch_test: ' .. checks .. ' checks, ' .. fails .. ' FAILURES')
   os.exit(1)
 end

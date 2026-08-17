@@ -91,22 +91,19 @@ angular.module('beamng.apps')
       $scope.editorTarget = 'main';
       $scope.nudgeOn = false;
       $scope.nudgeSel = null;
-      // Branching routes: the other ways round this track. A branch is a sparse
-      // set of per-slot gate overrides on the main route, so it never adds slots
-      // - which is why the leaderboard needs no lane arithmetic at all.
-      $scope.branches = [];        // [{ id, name, gates: [{ slot, x, y, z, ... }] }]
-      $scope.branchEdit = null;    // id of the lane the editor is pointed at
-      $scope.branchSlot = 1;       // slot the next placed branch gate overrides
-      $scope.lane = null;          // the lane THIS client is racing, if any
-      $scope.laneName = null;      // its display name
-      $scope.laneLocked = false;   // assigned by the grid (a head-on race) vs chosen
+      // Branch gates: the other ways through a checkpoint. Each carries the
+      // checkpoint it belongs to and never adds one, so driving through either
+      // gate clears the same slot - which is why the leaderboard needs no lane
+      // arithmetic at all, and why nothing here tracks which way a driver went.
+      $scope.branches = [];        // [{ slot, x, y, z, ... }]
+      $scope.branchSlot = 1;       // checkpoint the next placed branch gate belongs to
       $scope.gridOffLine = false;  // grid is away from the line, so an out lap is owed
-      $scope.hasBranches = false;  // mirrored from the server: does the track have lanes?
+      $scope.hasBranches = false;  // mirrored from the server: any branch gates on this track?
       // Bound with ng-model from inside ng-if blocks, so every one of these has to
       // hang off an object: a bare primitive is shadowed on the child scope
       // Angular creates, leaving the control editing a copy nobody reads.
-      $scope.laneUi = { newName: '', menu: null };
-      $scope.laneRange = { from: 1, to: 1, id: '' };   // bulk lane tagging
+      $scope.laneUi = { menu: null };
+      $scope.laneRange = { from: 1, to: 1 };   // the slot range Turn Around acts on
       $scope.gridGen = { count: 12, spacing: 8, stagger: 6, width: 2, from: 0 };
       $scope.gridGenerated = false;   // is there a generated grid the sliders may move?
       // Garage list (approved vehicles/setups).
@@ -1032,7 +1029,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.8.1';
+      var APP_BUILD = '0.8.2';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -1512,13 +1509,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           // has to follow that rather than what it last asked for.
           $scope.nudgeOn = data.nudgeOn === true;
           $scope.nudgeSel = data.nudgeSel || null;
-          // Branching routes.
+          // Branch gates.
           $scope.branches = toArray(data.branches);
-          $scope.branchEdit = data.branchEdit || null;
           if (typeof data.branchSlot === 'number') { $scope.branchSlot = data.branchSlot; }
-          $scope.lane = data.lane || null;
-          $scope.laneName = data.laneName || null;
-          $scope.laneLocked = !!data.laneLocked;
           $scope.gridOffLine = !!data.gridOffLine;
           // The spacing sliders are only offered while the generator owns a
           // block of slots; hand-placing, moving or dropping one lets go of it.
@@ -1555,23 +1548,14 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         if ($scope.editorTarget === 'joker') { return $scope.jokerRoute; }
         if ($scope.editorTarget === 'pit')   { return $scope.pitRoute; }
         if ($scope.editorTarget === 'start') { return $scope.startPositions; }
-        if ($scope.editorTarget === 'branch') {
-          var b = $scope.editingBranch();
-          return b ? toArray(b.gates) : [];
-        }
+        if ($scope.editorTarget === 'branch') { return $scope.branches; }
         return $scope.routeWaypoints;
       };
 
       // ------------------------------------------------------------------
-      // Branching routes (editor)
+      // Branch gates (editor)
       // ------------------------------------------------------------------
-      $scope.editingBranch = function () {
-        for (var i = 0; i < $scope.branches.length; i++) {
-          if ($scope.branches[i].id === $scope.branchEdit) { return $scope.branches[i]; }
-        }
-        return null;
-      };
-      // Only one lane menu is ever open, so one key identifies it. Same custom
+      // Only one picker menu is ever open, so one key identifies it. Same custom
       // dropdown the layout and cup pickers use: a native <select> renders an OS
       // popup that CEF never draws over the game, so it looks like a control and
       // then does nothing.
@@ -1587,28 +1571,6 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         $scope.laneUi.menu = null;
         $scope.setBranchGateSlot(index, s);
       };
-      $scope.pickBulkLane = function (id) {
-        $scope.laneUi.menu = null;
-        $scope.laneRange.id = id;
-      };
-      $scope.laneRangeLabel = function () {
-        if (!$scope.laneRange.id) { return 'Main route'; }
-        for (var i = 0; i < $scope.branches.length; i++) {
-          if ($scope.branches[i].id === $scope.laneRange.id) { return $scope.branches[i].name; }
-        }
-        return $scope.laneRange.id;
-      };
-      $scope.addBranch = function () {
-        var n = ($scope.laneUi.newName || '').trim();
-        bngApi.engineLua('raceManager.addBranch("' + n.replace(/"/g, '') + '")');
-        $scope.laneUi.newName = '';
-      };
-      $scope.selectBranch = function (id) {
-        bngApi.engineLua('raceManager.selectBranch("' + String(id).replace(/"/g, '') + '")');
-      };
-      $scope.removeBranch = function (id) {
-        bngApi.engineLua('raceManager.removeBranch("' + String(id).replace(/"/g, '') + '")');
-      };
       $scope.setBranchSlot = function (slot) {
         bngApi.engineLua('raceManager.setBranchSlot(' + (parseInt(slot, 10) || 1) + ')');
       };
@@ -1616,23 +1578,23 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         bngApi.engineLua('raceManager.setBranchGateSlot(' + index + ', '
           + (parseInt(slot, 10) || 1) + ')');
       };
-      // Every slot on the main route, so the pickers can offer them by number.
+      $scope.removeBranchGate = function (index) {
+        bngApi.engineLua('raceManager.removeBranchGate(' + (parseInt(index, 10) || 0) + ')');
+      };
+      // Every checkpoint on the main route, so the pickers can offer them by number.
       $scope.routeSlots = function () {
         var out = [];
         for (var i = 1; i <= $scope.routeWaypoints.length; i++) { out.push(i); }
         return out;
       };
-      // Which lanes override a given slot - drawn beside the main gate in the
-      // route list, so an admin can see which corners are taken two ways.
-      $scope.slotLanes = function (slot) {
-        var names = [];
+      // How many other ways there are through a checkpoint - drawn beside the main
+      // gate in the route list, so an admin can see which corners are taken two ways.
+      $scope.slotBranchCount = function (slot) {
+        var n = 0;
         for (var i = 0; i < $scope.branches.length; i++) {
-          var gates = toArray($scope.branches[i].gates);
-          for (var j = 0; j < gates.length; j++) {
-            if (gates[j].slot === slot) { names.push($scope.branches[i].name || $scope.branches[i].id); }
-          }
+          if ($scope.branches[i].slot === slot) { n++; }
         }
-        return names;
+        return n;
       };
 
       // ------------------------------------------------------------------
@@ -1686,15 +1648,6 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         var r = $scope.laneRange;
         bngApi.engineLua('raceManager.flipStartPositions(' + (parseInt(r.from, 10) || 1) + ', '
           + (parseInt(r.to, 10) || $scope.startPositions.length) + ')');
-      };
-      $scope.stripeStartLanes = function () {
-        bngApi.engineLua('raceManager.stripeStartLanes()');
-      };
-      $scope.applyStartLane = function () {
-        var r = $scope.laneRange;
-        bngApi.engineLua('raceManager.setStartLane(' + (parseInt(r.from, 10) || 1) + ', '
-          + (parseInt(r.to, 10) || $scope.startPositions.length) + ', "'
-          + String(r.id || '').replace(/"/g, '') + '")');
       };
 
       // Adjust a placed gate: stand the car on it, or move it to the car.
@@ -2863,49 +2816,42 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         ctx.lineCap = 'round';
         ctx.stroke();
 
-        // Branching routes: one dashed line per lane, walking that lane's own
-        // gates slot by slot - its override where it has one, the main gate
-        // where it does not. On a head-on oval both lanes trace the same ring,
-        // which is exactly what the admin needs to see: same track, two ways
-        // round, and the arrowheads below saying which way each one goes.
-        var lanes = toArray(layout.branches);
-        lanes.forEach(function (b) {
-          var bySlot = {};
-          toArray(b.gates).forEach(function (g) {
-            var sx = Number(g.x), sy = Number(g.y), sl = Number(g.slot);
-            if (isFinite(sx) && isFinite(sy) && isFinite(sl)) {
-              bySlot[sl] = { x: sx, y: sy, hx: Number(g.hx) || 0, hy: Number(g.hy) || 0 };
-            }
-          });
-          var pts = cps.map(function (p, i) { return bySlot[i + 1] || p; });
-          if (pts.length < 2) { return; }
-          ctx.save();
-          ctx.setLineDash([5, 4]);
-          ctx.beginPath();
-          ctx.moveTo(px(pts[0]), py(pts[0]));
-          for (var k = 1; k < pts.length; k++) { ctx.lineTo(px(pts[k]), py(pts[k])); }
-          ctx.closePath();
-          ctx.strokeStyle = 'rgba(51, 217, 242, 0.85)';
-          ctx.lineWidth = 2;
-          ctx.stroke();
-          ctx.restore();
-          // Branch gates themselves, so a lane that only differs at two corners
-          // is still visibly a lane rather than a line on top of another.
-          Object.keys(bySlot).forEach(function (slot) {
-            var g = bySlot[slot];
+        // Branch gates: a dashed spur from each one to the checkpoint it is
+        // another way through, and a dot where it stands.
+        //
+        // NOT a second ring. The old preview traced one dashed lap per lane,
+        // which drew a whole extra circuit for what is often two corners, and on
+        // a head-on oval drew the same ring twice. A spur says the true thing
+        // instead: here is another way through THAT checkpoint.
+        var alts = toArray(layout.branches);
+        ctx.save();
+        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = 'rgba(51, 217, 242, 0.85)';
+        ctx.lineWidth = 2;
+        alts.forEach(function (g) {
+          var gx = Number(g.x), gy = Number(g.y), sl = Number(g.slot);
+          if (!isFinite(gx) || !isFinite(gy) || !isFinite(sl)) { return; }
+          var pt = { x: gx, y: gy };
+          var main = cps[sl - 1];
+          if (main) {
             ctx.beginPath();
-            ctx.arc(px(g), py(g), 3, 0, Math.PI * 2);
-            ctx.fillStyle = '#33d9f2';
-            ctx.fill();
-          });
+            ctx.moveTo(px(main), py(main));
+            ctx.lineTo(px(pt), py(pt));
+            ctx.stroke();
+          }
+          ctx.beginPath();
+          ctx.arc(px(pt), py(pt), 3, 0, Math.PI * 2);
+          ctx.fillStyle = '#33d9f2';
+          ctx.fill();
         });
+        ctx.restore();
 
         // Gate count caption in the corner.
         ctx.fillStyle = 'rgba(154, 160, 166, 0.8)';
         ctx.font = '10px "Noto Sans", sans-serif';
         ctx.textAlign = 'left';
         ctx.fillText(cps.length + ' gates'
-          + (lanes.length ? ' · ' + lanes.length + ' lane' + (lanes.length === 1 ? '' : 's') : '')
+          + (alts.length ? ' · ' + alts.length + ' branch' + (alts.length === 1 ? '' : 'es') : '')
           + ' · ' + (layout.map || ''), 6, H - 6);
       }
 

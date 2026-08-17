@@ -15,7 +15,8 @@ and can be prepped days before an event:
 
 - **Save As New** bundles the currently placed gates (positions, headings,
   gate dimensions) - including the **joker route**, the **pit lane**, the
-  **lanes** and the **starting grid**, if any are placed - under a typed name,
+  **branch gates** and the **starting grid**, if any are placed - under a typed
+  name,
   tagged with the level the server is hosting. A name that is already taken
   asks first.
 - **Overwrite** and **Delete** act on the layout selected in the **Track**
@@ -23,7 +24,7 @@ and can be prepped days before an event:
   they act.
 - A save can never quietly empty part of a stored layout. If the client sending
   it is not holding a section the saved copy has - its joker route, pit lane,
-  grid or lanes - the server **refuses the save** and reports exactly what
+  grid or branch gates - the server **refuses the save** and reports exactly what
   would have gone. The admin can still go ahead, but has to say so. This is
   what stops a load, an edit and a save coming back as a bare route.
 - The dropdown is **strictly filtered by map** - the server only lists
@@ -146,8 +147,8 @@ course you want to race:
 6. **Nudge** is the mouse pass. Turn it on and the cursor is released from the
    camera: click a gate to pick it, drag to move it along the ground, scroll to
    turn it, **ctrl+click** open ground to place a new one. It works on whichever
-   editor tab you are on, so checkpoints, joker gates, pit stalls, lane gates and
-   start positions are all movable.
+   editor tab you are on, so checkpoints, joker gates, pit stalls, branch gates
+   and start positions are all movable.
 
    A placed gate faces the way the route is already travelling, from the previous
    gate toward the point you clicked, so clicking along a road in order gives you
@@ -957,13 +958,19 @@ The label is drawn separately from the pole because BeamNG's gate markers render
 **no text at all** - a pole can say where the joker is and never what state it is
 in, which for the joker is the half that matters.
 
-### Branching routes (two ways round one track)
+### Branch gates (two ways through a checkpoint)
 
-A **lane** is another way round the same track. Its gates **replace** the main
-route's at the slots you give them - a lane never adds a checkpoint - so every
-lane has the same number of checkpoints, and **the whole field is scored
-together**: one clock, one running order, one results table. Which way a driver
-went is a record, never a place gained or lost.
+A **branch gate** is another way through a checkpoint that already exists. Drive
+through **either** gate and that checkpoint is cleared. That is the whole rule.
+
+A branch gate never adds a checkpoint, so a lap is the same number of them
+however you got round, and **the whole field is scored together**: one clock, one
+running order, one results table.
+
+Nothing records which gate you took, and nothing has to. There is no lane to be
+on, no direction to be assigned, and no way to end up on the wrong one. Each
+checkpoint is decided on its own, so a car that spins and turns round simply
+clears the next checkpoint by whichever of its gates it drives through.
 
 **The track follows the session, not the moment you loaded it.** A layout is
 re-sent to any client that joins afterwards and to the whole field again when a
@@ -972,20 +979,22 @@ pressing Load. If two admins load different layouts, the last one the server
 processes wins and is announced in chat - it is one server-side state, so
 everybody ends up on the same track either way.
 
-Build lanes in the editor's **Lanes** tab. Each lane gate is placed against a
-**slot**: "this is what CP 3 is, for this lane". Drivers are put on a lane by
-their **grid slot**, tagged in the **Start Grid** tab - that is the only place a
-direction is decided, and the server reads it as it hands the slot out, so a
-driver can never pick their own.
+Build them in the editor's **Branches** tab. Pick which checkpoint the next gate
+belongs to, drive to where the other way through it crosses, and place it. Both
+gates are drawn on track and both light up green together, so a driver can see
+the choice rather than having to know about it.
 
 **Gates score in both directions**, which is what makes shared corners work. A
-checkpoint both lanes pass - a back stretch, a start/finish line - is crossed one
-way by one lane and the other way by the other, and counts for both. This also
-fixes something older: a driver who **missed a checkpoint** and turned round used
-to have to drive through it, carry on past, turn round again and come back
+checkpoint everybody passes - a back stretch, a start/finish line - is crossed one
+way by half the field and the other way by the rest, and counts for both. This
+also fixes something older: a driver who **missed a checkpoint** and turned round
+used to have to drive through it, carry on past, turn round again and come back
 through. Now the way back through counts. Where direction really is the only
 thing separating two legs of a track - a hairpin, or a figure-8 crossover - mark
 that gate **one-way**.
+
+A checkpoint can hold **as many branch gates as you place**. Three ways through
+one corner is three gates on `CP 4`.
 
 #### A head-on "suicide" oval
 
@@ -994,17 +1003,22 @@ opposite directions.
 
 1. **Main route, clockwise.** `CP 1` at turn 1, `CP 2` on the back stretch,
    `CP 3` at turn 2, and the **start/finish** line.
-2. **Lanes → + Add Lane**, called *Counter-clockwise*.
-3. With that lane selected, set **Next gate replaces** to `CP 1`, drive to
-   **turn 2 facing anti-clockwise**, and place it. Then set it to `CP 3`, drive to
-   **turn 1 facing anti-clockwise**, and place that.
-4. Leave `CP 2` and the start/finish alone. Both lanes cross them, from opposite
-   sides, and both are credited.
-5. **Start Grid** - place the grid, then tag half the slots to the lane
-   (**Slots 7 to 12 → Counter-clockwise → Set Lane**).
+2. **Branches** tab. Set **Next gate is another** to `CP 1`, drive to **turn 2
+   facing anti-clockwise**, and place it. Then set it to `CP 3`, drive to **turn 1
+   facing anti-clockwise**, and place that.
+3. Leave `CP 2` and the start/finish alone. Both directions cross them, from
+   opposite sides, and both are credited.
+4. **Start Grid** - place the grid, then turn half of it round: set **Slots 7 to
+   12** and press **↻ Turn Around**.
 
-Both directions clear slot 1, then 2, then 3, then the line: same lap, same
-count, directly comparable on the leaderboard the whole way round.
+That last step is the only thing that splits the field, because the way a start
+position points is the only thing deciding which way a driver goes. A car facing
+anti-clockwise reaches the anti-clockwise gate for `CP 1` first and clears the
+checkpoint on it; a car facing clockwise reaches the other one. Neither is told
+anything.
+
+Both directions clear CP 1, then 2, then 3, then the line: same lap, same count,
+directly comparable on the leaderboard the whole way round.
 
 #### The out lap
 
@@ -1054,25 +1068,21 @@ shape. They only ever touch slots the generator laid out; anything placed by han
 is left where you put it, and moving or deleting a slot by hand hands the block
 back so the sliders stop claiming it.
 
-**Alternate Lanes** deals the lanes out one slot at a time instead of in blocks:
-P1 main, P2 the next lane, P3 back to main. On a grid as many cars abreast as
-there are lanes, that puts **each lane in its own column** - two abreast with two
-lanes is one car of each direction in every row, side by side, facing opposite
-ways, which is how a head-on grid actually lines up. It also splits the field
-evenly without you working out where the middle is, and stays even when the
-entry list changes size.
+**↻ Turn Around** turns a range of slots through 180°, and on a head-on layout it
+is the entire split: the way a slot points is the only thing deciding which
+direction that driver races.
 
-**Lane tags and headings survive a respace**, which is what makes the head-on
-flow work: **Generate** the block, **Turn Around** the back half, **Set Lane** on
-it, and *then* spread the grid out - the turned-around half stays turned around
-and keeps its lane. That holds when the **width** changes too: the tags follow the
-slot, not the row, so "slots 7 to 12 go the other way" stays true whether those
-twelve cars are in six rows of two or four rows of three.
+**Headings survive a respace**, which is what makes the head-on flow work:
+**Generate** the block, **Turn Around** the back half, and *then* spread the grid
+out - the turned-around half stays turned around. That holds when the **width**
+changes too: the heading follows the slot, not the row, so "slots 7 to 12 go the
+other way" stays true whether those twelve cars are in six rows of two or four
+rows of three.
 
 Every placed gate and grid slot also has **✕** (delete just this one),
 **+ Before** (insert at your car) and **▲ ▼** (reorder). Editing the main route
-renumbers the lanes with it; deleting a checkpoint drops the lane gates standing
-in for it, and says so.
+renumbers the branch gates with it; deleting a checkpoint drops the branch gates
+that belonged to it, and says so.
 
 ### Vehicle & setup locking (the Garage List)
 
