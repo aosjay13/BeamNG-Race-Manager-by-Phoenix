@@ -6,6 +6,52 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.8.2 - Branch gates: two ways through one checkpoint
+
+### Changed (branching)
+
+- **A branch gate is now another way through a checkpoint, and that is the whole
+  feature.** Drive through either gate and the checkpoint is cleared. Nothing
+  records which one you took, and each checkpoint is decided on its own.
+
+  What this replaces is the **lane** system: a named line, built in a Lanes tab,
+  whose gates *replaced* the main route's at the slots you gave them, and which
+  drivers were assigned to by a tag on their grid slot. It worked, and it was
+  more machinery than the job needed. The concept a race night actually wants is
+  "this is CP 1, and so is that one", and everything else was scaffolding around
+  saying it.
+
+  Gone with it: lane names and ids, the Lanes tab, **Set Lane** and **Alternate
+  Lanes** in Start Grid, the lane tag on a start position, the per-driver lane on
+  the wire, the **LINE** badge on the driver bar, and the **Line** column in the
+  leaderboard and the results file. A track with branch gates now exports exactly
+  the results table an ordinary race does.
+
+  **Splitting a head-on field is now just ↻ Turn Around.** The way a start
+  position points is the only thing deciding which direction a driver races,
+  because every gate for the next checkpoint is armed for everybody: a car facing
+  anti-clockwise reaches the anti-clockwise gate for CP 1 first and clears the
+  checkpoint on it. Nothing has to be told, so nothing can be told wrong.
+
+  **Both gates are drawn on track and light up green together.** The old drawing
+  showed a driver only their own lane's gate, which meant the choice was
+  something you had to know about rather than see.
+
+  Two things this can now express that lanes could not: **as many branch gates on
+  one checkpoint as you place** (three ways through a corner is three gates, where
+  a third route used to need a third lane), and a driver who spins and turns round
+  is no longer stuck on a line they can no longer reach.
+
+  **Saved layouts with lanes will not load their branch gates.** The stored shape
+  changed from a list of named lanes to a flat list of gates, each carrying its
+  checkpoint. Rebuild the branch gates on affected tracks; the main route, joker
+  route, pit stalls and grid are untouched.
+
+- **`tests/branch_test.lua` is rewritten** around the new rule, and in passing a
+  drift was fixed: its mirror of `checkGates` armed only the start/finish line on
+  the out lap, which the real code stopped doing some releases ago. It now arms
+  the checkpoints like any other lap, and the test says so.
+
 ## 0.8.1 - One switch for race entry, start lights and flags, joker and pit visuals
 
 ### Changed (race entry)

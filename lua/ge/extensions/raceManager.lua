@@ -162,7 +162,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.8.1'
+local RM_BUILD = '0.8.2'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -187,19 +187,23 @@ local route            = {}
 -- belongs to the TRACK, so it travels with the layout.
 local pointToPoint     = false
 
--- BRANCHING ROUTES (the other ways round this track).
+-- BRANCHING ROUTES (the other ways through a checkpoint).
 --
--- A branch is a sparse set of per-slot gate overrides on `route`. Read the main
--- route's indices as SLOTS: at slot i, a driver on a branch must cross that
--- branch's gate for slot i, or the main gate when the branch has none. Slots a
--- branch does not override are shared, and crossed by everybody.
+-- A checkpoint can have more than one gate. Slot i is cleared by crossing the
+-- main gate `route[i]` OR any branch gate authored against slot i, whichever the
+-- car actually drives through. NOTHING is remembered about which one it was: the
+-- next slot is decided from scratch the same way, so a driver is never on a
+-- "line" and there is no identity to assign, lock, carry or report.
 --
--- A branch therefore cannot add or remove slots, only substitute gates into the
--- ones that exist, and that is the whole design: every lane has the same number
--- of slots, so `armedWp` stays an integer index bounded by #route, the lap still
--- completes on armedWp >= #route whichever way round a driver went, and the
--- checkpoint count reported to the server means the same thing for all of them.
--- The running order needed no changes at all.
+-- A branch gate therefore cannot add or remove slots, only offer another way
+-- through one that exists, and that is the whole design: `armedWp` stays an
+-- integer index bounded by #route, the lap still completes on armedWp >= #route
+-- whichever gates a driver took, and the checkpoint count reported to the server
+-- means the same thing for all of them. The running order needed no changes.
+--
+-- Both gates are drawn, both are armed, and either one is the checkpoint. That
+-- covers a split lane and a head-on oval with the same rule, and the direction a
+-- driver goes is settled by which way their start position points them.
 --
 -- ONE TABLE, not eight locals. The top level of this file is a function and Lua
 -- allows it 200 of them; this chunk is close enough to that ceiling that the tail
@@ -207,23 +211,18 @@ local pointToPoint     = false
 -- (see the note above the server -> client handlers). `pit` is grouped the same
 -- way for the same reason.
 local branch = {
-  -- As authored: { { id, name, gates = { { slot, x, y, z, hx, hy, ... }, ... } } }
+  -- As authored, flat: { { slot, x, y, z, hx, hy, ... }, ... }
   list   = {},
-  -- Resolved once, when a layout is applied: id -> { [slot] = gate }. The
-  -- per-frame path is one table index into this and nothing else -- no search,
-  -- no allocation, and no work at all on a track with no branches.
+  -- Resolved once, when a layout is applied: slot -> array of gates for it. Nil
+  -- for a slot with no branch gate, which is every slot on every track that
+  -- existed before this -- so the per-frame path is one table index that comes
+  -- back nil, with no search and no allocation.
   bySlot = {},
-  -- Which lane THIS car is on: a branch id, or nil for the main route.
-  lane   = nil,
-  -- Was that lane assigned by the grid rather than chosen by driving? A head-on
-  -- race locks it for the session; a rally-style split leaves it free per lap.
-  lock   = false,
   -- Does this track grid its cars away from the start/finish line? Mirrored from
   -- the layout. Decides whether the first crossing is an out lap, and -- until it
   -- happens -- that the ONLY armed gate is the line itself (see armedGate).
   gridOffLine = false,
-  -- Editor: the branch being edited, and the slot the next placed gate overrides.
-  editId   = nil,
+  -- Editor: the checkpoint the next placed branch gate belongs to.
   editSlot = 1,
 }
 local checkpointWidth  = TUNE.DEFAULT_WIDTH
@@ -455,9 +454,9 @@ local resetMode      = 'inplace'
 local lastGate       = nil       -- last checkpoint the local car crossed (a wp table)
 -- Was that crossing made BACKWARDS through the gate?
 --
--- A gate shared between two lanes is stored with one heading and driven both
--- ways, so which way a car was actually going cannot be read off the gate
--- afterwards -- and relocateToGate stands the car facing the gate's heading. On a
+-- A gate driven both ways is stored with one heading, so which way a car went
+-- cannot be read off the gate afterwards -- and relocateToGate stands the car
+-- facing the gate's heading. On a
 -- head-on layout that would respawn half the field pointing into the oncoming
 -- one. Recorded per crossing rather than declared per gate, so it is right for
 -- shared gates, branch gates and ordinary gates alike.
@@ -781,20 +780,12 @@ local function reportStartCount()
   for i, sp in ipairs(startPositions) do
     positions[i] = { x = sp.x, y = sp.y, z = sp.z, hx = sp.hx, hy = sp.hy }
   end
-  -- The lane NAMES ride along, but never the branch gates: the server has no
-  -- physics and never tests a crossing, so the only thing it wants a lane for is
-  -- the name in the results file. Sending gates it would have to validate against
-  -- a route length it does not hold would be validation theatre.
-  local laneNames = nil
-  if #branch.list > 0 then
-    laneNames = {}
-    for i, b in ipairs(branch.list) do
-      laneNames[i] = { id = b.id, name = b.name or b.id }
-    end
-  end
+  -- Branch gates are NOT reported. The server has no physics and never tests a
+  -- crossing, and now that a branch gate carries no name and puts nobody on a
+  -- line, there is nothing about one the server could use. It counts checkpoints
+  -- cleared, and a branch gate clears the same checkpoint the main gate does.
   TriggerServerEvent('RM_StartPositionCount', jsonEncode({
     count = n, positions = positions,
-    laneNames = laneNames,
     gridOffLine = branch.gridIsOff(),
     -- The joker lap cannot be armed on a track with no joker route: the rule
     -- disqualifies anyone who did not complete it, and with no route that is
@@ -857,13 +848,9 @@ local function pushRouteState()
     driverFlag   = driverFlag(),
     nudgeOn      = nudge.on,
     nudgeSel     = nudge.sel,
-    -- Branching routes (the other ways round this track)
+    -- Branch gates (the other ways through a checkpoint)
     branches     = branch.list,
-    branchEdit   = branch.editId,
     branchSlot   = branch.editSlot,
-    lane         = branch.lane,
-    laneLocked   = branch.lock,
-    laneName     = branch.nameOf(branch.lane),
     gridOffLine  = branch.gridIsOff(),
     -- Is there a GENERATED grid the spacing sliders may move? They only ever
     -- touch slots the generator laid out; a grid placed by hand is left alone.
@@ -935,7 +922,7 @@ end
 -- separation: a hairpin or a figure-8 crossover.
 --
 -- Returns (crossed, backwards). The second matters because a gate shared between
--- two lanes is stored with one heading and driven both ways, so relocateToGate
+-- both ways is stored with one heading and driven from either side, so relocateToGate
 -- cannot read the car's direction off the gate afterwards.
 local function rectCrossesGate(wp, prev, cur, w, h, d)
   local fx, fy = wp.hx, wp.hy
@@ -1001,9 +988,6 @@ local function resetLapTracking()
   resetsUsed   = 0
   lastGate     = nil
   lastGateBack = false
-  -- A lane chosen by driving starts undecided; one that came from the grid slot
-  -- is set again below, once the slot for this session is known.
-  if not branch.lock then branch.lane = nil end
   blockNoticeLeft = 0   -- a fresh session may report its first blocked attempt at once
   -- Telemetry restarts with the session; report immediately on the next frame
   -- so the leaderboard has a distance for this driver from the first moments.
@@ -1061,14 +1045,11 @@ local function clearTrackState(reason)
   progressLeft = 0
   lastGate     = nil
   lastGateBack = false
-  -- The lanes go with the gates. A branch left standing after a purge would arm
-  -- gates from a track that is no longer loaded.
+  -- The branch gates go with the main ones. One left standing after a purge would
+  -- arm a gate from a track that is no longer loaded.
   branch.list   = {}
   branch.bySlot = {}
-  branch.lane   = nil
-  branch.lock   = false
   branch.gridOffLine = false
-  branch.editId      = nil
   branch.editSlot    = 1
   pushRouteState()
   log('I', 'raceManager', 'Track state cleared (' .. tostring(reason or 'local') .. ')')
@@ -1194,23 +1175,18 @@ local function checkJokerGates(prev, cur)
 end
 
 -- ---------------------------------------------------------------------------
--- Branching routes: which gate is slot i, for this car?
+-- Branching routes: did this movement clear slot i, by any of its gates?
 -- ---------------------------------------------------------------------------
--- The main gate, unless the lane this car is on overrides that slot. One table
--- index on the hot path, and the `lane` test short-circuits the whole thing on a
--- track with no branches -- which is every track that existed before this, and
--- most of the ones that come after.
+-- The main gate first, then any branch gate authored against the same slot.
+-- Returns the gate that was crossed and whether it was taken backwards, or nil.
+--
+-- On a track with no branch gates `bySlot[i]` is nil, so this costs one table
+-- index more than testing the main gate alone -- which is every track that
+-- existed before this, and most of the ones that come after. On a branched slot
+-- it is one segment test per gate, and a slot has two of them in practice.
 --
 -- Hung off the branch table rather than given a local of its own, for the
 -- register budget noted where that table is declared.
--- A lane's display name, falling back to its id so a lane is never blank.
-function branch.nameOf(id)
-  if not id then return nil end
-  for _, b in ipairs(branch.list) do
-    if b.id == id then return b.name or b.id end
-  end
-  return id
-end
 
 -- Does this track grid its cars somewhere other than the start/finish line?
 --
@@ -1237,13 +1213,54 @@ function branch.gridIsOff()
   return false
 end
 
-function branch.gateFor(i, lane)
-  if lane then
-    local bySlot = branch.bySlot[lane]
-    local g = bySlot and bySlot[i]
-    if g then return g end
+function branch.crossedAt(i, p0, p1)
+  local wp = route[i]
+  if wp then
+    local crossed, backwards = segmentCrossesGate(wp, p0, p1)
+    if crossed then return wp, backwards end
   end
-  return route[i]
+  local alts = branch.bySlot[i]
+  if alts then
+    for k = 1, #alts do
+      local crossed, backwards = segmentCrossesGate(alts[k], p0, p1)
+      if crossed then return alts[k], backwards end
+    end
+  end
+  return nil, false
+end
+
+-- The gate for slot i nearest this position, which on a checkpoint with branch
+-- gates is the one this car is actually driving towards. Ranking a head-on field
+-- by the distance to a gate half of them are driving AWAY from would put one
+-- whole direction last all race.
+function branch.nearestAt(i, pos)
+  local best = route[i]
+  local alts = branch.bySlot[i]
+  if not alts then return best end
+  local bd = math.huge
+  if best then
+    local dx, dy, dz = pos.x - best.x, pos.y - best.y, pos.z - best.z
+    bd = dx * dx + dy * dy + dz * dz
+  end
+  for k = 1, #alts do
+    local g = alts[k]
+    local dx, dy, dz = pos.x - g.x, pos.y - g.y, pos.z - g.z
+    local d = dx * dx + dy * dy + dz * dz
+    if d < bd then best, bd = g, d end
+  end
+  return best
+end
+
+-- Run `fn` over every gate that clears slot i: the main one, then its branch
+-- gates. Takes a callback rather than returning a list because the drawing pass
+-- calls it every frame and a list would be an allocation per gate per frame.
+function branch.eachAt(i, fn, arg)
+  local wp = route[i]
+  if wp then fn(wp, arg) end
+  local alts = branch.bySlot[i]
+  if alts then
+    for k = 1, #alts do fn(alts[k], arg) end
+  end
 end
 
 local function checkGates()
@@ -1253,9 +1270,10 @@ local function checkGates()
   local veh, pos = sampledVehicle()
   if not veh or not pos then return end
   if prevPos then
-    -- The gate this car must cross next. Still ONE gate, which is what keeps the
-    -- crossing test as cheap as it was: a lane is decided before the lap starts
-    -- (from the grid) or on the first branched slot, not re-evaluated per frame.
+    -- The checkpoint this car must clear next, by whichever of its gates the car
+    -- drives through. Nothing is carried between slots: the next one is decided
+    -- the same way from scratch, which is what a branch gate being another way
+    -- through CP i, rather than a lane the driver is on, actually means.
     --
     -- THE OUT LAP ARMS THE CHECKPOINTS LIKE ANY OTHER LAP. An earlier version
     -- armed only the start/finish line on the reasoning that a lap nobody is
@@ -1269,9 +1287,8 @@ local function checkGates()
     -- still end the out lap by reaching the line rather than being sent most of
     -- the way round backwards to arm a gate behind it.
     local onOut = onOutLap()
-    local wp = branch.gateFor(armedWp, branch.lane)
-    local crossed, backwards = false, false
-    if wp then crossed, backwards = segmentCrossesGate(wp, prevPos, pos) end
+    local wp, backwards = branch.crossedAt(armedWp, prevPos, pos)
+    local crossed = wp ~= nil
 
     -- On the out lap the LINE ends the lap from wherever the driver has got to,
     -- even with slots still uncleared. Nothing on this lap is scored, so there is
@@ -1285,30 +1302,9 @@ local function checkGates()
       end
     end
 
-    -- Undecided lane: the branch gates for this slot are armed alongside the main
-    -- one, and whichever the car actually drives through is the line it is on.
-    -- Only reached on a track that HAS branches, whose lane is not locked to the
-    -- grid, and only on a slot that is actually branched -- so a head-on race
-    -- (locked at the grid) never walks this, and nor does an ordinary circuit.
-    local took = nil
-    if not crossed and not onOut and not branch.lane and not branch.lock then
-      for _, b in ipairs(branch.list) do
-        local g = branch.bySlot[b.id] and branch.bySlot[b.id][armedWp]
-        if g then
-          crossed, backwards = segmentCrossesGate(g, prevPos, pos)
-          if crossed then wp, took = g, b end
-        end
-        if crossed then break end
-      end
-    end
-
     if crossed then
       lastGate     = wp   -- the "Last Checkpoint" reset mode respawns here
       lastGateBack = backwards
-      if took then
-        branch.lane = took.id
-        pushNotice('branch', 'You are on the ' .. (took.name or took.id) .. ' line')
-      end
       if lineEndedOutLap then
         -- Reached the line with slots still owing. The out lap is over; slot 1
         -- arms behind it with timing running. onLapCompleted reports the crossing
@@ -1319,9 +1315,6 @@ local function checkGates()
       elseif armedWp >= #route then
         onLapCompleted()
         armedWp = 1
-        -- A lane chosen by driving is chosen again next lap; one assigned by the
-        -- grid is the direction this car is racing in and does not change.
-        if not branch.lock then branch.lane = nil end
       else
         armedWp = armedWp + 1
       end
@@ -1390,12 +1383,7 @@ end
 -- payload below, so ~55 out of every 60 were thrown away unused.
 local function reportProgress(dt)
   if not sessionRunning() or spectatorLock then return end
-  -- The gate THIS car is driving towards, which on a branching track is not
-  -- necessarily the main route's. Reporting the distance to a gate on the other
-  -- lane would rank a head-on field by how close each car was to a gate it is
-  -- driving away from.
-  local wp = onOutLap() and route[#route] or branch.gateFor(armedWp, branch.lane)
-  if not wp then return end
+  if #route == 0 then return end
 
   progressLeft = progressLeft - dt
   if progressLeft > 0 then return end
@@ -1403,6 +1391,12 @@ local function reportProgress(dt)
   local veh, pos = sampledVehicle()
   if not veh or not pos then return end
   progressLeft = TUNE.PROGRESS_EVERY
+
+  -- The gate THIS car is driving towards. A checkpoint with a branch gate has
+  -- more than one, and which of them is nearest is the only honest answer to
+  -- that: it needs the car's position, so it is resolved here rather than above.
+  local wp = onOutLap() and route[#route] or branch.nearestAt(armedWp, pos)
+  if not wp then return end
 
   -- Distance from the car to the centre of the next checkpoint, in metres.
   local dx, dy, dz = pos.x - wp.x, pos.y - wp.y, pos.z - wp.z
@@ -2413,7 +2407,7 @@ local function relocateToGate(wp)
   if not veh or not wp then return false end
   -- Facing the way the car was GOING, not the way the gate points.
   --
-  -- A gate shared between two lanes carries one heading and is driven both ways.
+  -- A gate crossed from both sides carries one heading and is driven both ways.
   -- Standing a counter-clockwise driver on it facing the stored heading turns them
   -- to face the clockwise field -- on a layout built around head-on collisions,
   -- that is a respawn pointing into oncoming traffic. lastGateBack is recorded at
@@ -3236,38 +3230,13 @@ end
 -- the grid is complete.
 local function applyGridSlot(slot, order, count)
   gridSlot = slot
-  -- WHICH WAY ROUND THIS CAR IS GOING, taken from the slot it was just given.
+  -- WHICH WAY ROUND THIS CAR IS GOING IS NOT SET HERE, and is not set anywhere.
   --
-  -- The tag rides on the start position, so both halves of the mod work it out
-  -- from the same data without a message passing between them: the server sets
-  -- rec.lane when it hands out the slot, this sets the local one when the slot
-  -- arrives. Nothing is reported upstream, so a driver cannot ask for a lane.
-  --
-  -- Locked for the session. A head-on race is not a line a driver picks per lap,
-  -- it is the direction they were entered in -- and a car spun round by a
-  -- collision must still be scored on the lap it is actually running.
-  local sp = slot and startPositions[slot]
-  local lane = (type(sp) == 'table' and type(sp.branch) == 'string' and sp.branch ~= '')
-    and sp.branch or nil
-  branch.lane = lane
-  -- LOCKED FOR EVERYONE ON A GRID-ASSIGNED TRACK, including the drivers on the
-  -- main route.
-  --
-  -- Locking only the tagged half would leave a clockwise driver "undecided", and
-  -- an undecided car is moved onto whichever lane's gate it crosses first. Spin
-  -- one round on a head-on oval and it would pick up the oncoming lane and start
-  -- scoring laps the other way. If the track assigns lanes at the grid at all,
-  -- then no lane on it is a choice -- untagged means the main route, and that is
-  -- just as much an assignment as the tag is.
-  local assigned = false
-  for _, s in ipairs(startPositions) do
-    if type(s.branch) == 'string' and s.branch ~= '' then assigned = true; break end
-  end
-  branch.lock = assigned
-  if lane then
-    pushNotice('branch', 'You are racing the ' .. branch.nameOf(lane) .. ' line')
-    log('I', 'raceManager', 'Grid slot ' .. tostring(slot) .. ' puts this car on lane ' .. lane)
-  end
+  -- The slot itself points the car, and every gate for the next checkpoint is
+  -- armed for everybody, so a driver launched facing anti-clockwise reaches the
+  -- anti-clockwise gate for CP 1 first and clears the checkpoint on it. Nothing
+  -- has to be told which direction that was, which is the whole point: there is
+  -- no lane to assign, so there is none to get wrong, spin out of, or lock.
   if not slot then
     -- Standing down (withdrawn, or not entered): nothing to place, and nothing
     -- should still be holding this car.
@@ -4073,9 +4042,6 @@ local function palette()
     -- matters -- a branch gate substitutes for a main one and must never look
     -- like an extra checkpoint on the same lap.
     branch      = ColorF(0.2, 0.85, 0.95, 1),
-    -- A lane the editor is not currently pointed at, dimmed so the one being
-    -- worked on stands out of a track carrying several.
-    branchOther = ColorF(0.2, 0.6, 0.68, 0.55),
     text      = ColorF(1, 1, 1, 1),
     -- The editor gate's filled surface. Deliberately faint: it has to show the
     -- gate's extent without hiding the road it is judged against.
@@ -4475,7 +4441,6 @@ local function drawDriverGate(derbyLive)
   -- lights went out. The stock markers this replaced had no phase gate either.
   local p = palette()
   local n = #route
-  local lane = branch.lane
 
   -- NO TEXT ON A RACE CHECKPOINT. The poles say where the gate is and the colour
   -- says which one is next; a driver reading "CP 3" at speed learns nothing they
@@ -4485,17 +4450,20 @@ local function drawDriverGate(derbyLive)
   -- the only gate whose text changes what a driver should DO -- owed, taken, or
   -- forbidden on lap 1 -- and getting it wrong is a disqualification. The editor
   -- still numbers everything: that is where the numbers are worth reading.
+  --
+  -- ALL of a checkpoint's gates are drawn, not one of them. A branch gate is
+  -- another way through the same checkpoint, so a driver has to be able to see
+  -- both and pick; showing one would be choosing for them. On a head-on oval the
+  -- two sit at opposite ends of the circuit and only one is ever in view anyway.
+  local function poles(g, color) drawPoleGate(g, color, nil) end
   local a = armedWp
   if a < 1 or a > n then a = 1 end
-  local armed = branch.gateFor(a, lane)
-  if armed then drawPoleGate(armed, p.armed, nil) end
+  branch.eachAt(a, poles, p.armed)
 
-  -- The one after it, dimmed, so a corner reads before it arrives. Skipped on a
+  -- The ones after it, dimmed, so a corner reads before it arrives. Skipped on a
   -- one-gate route, where "the next one" is the one already drawn.
   if n > 1 then
-    local b = a % n + 1
-    local nxt = branch.gateFor(b, lane)
-    if nxt then drawPoleGate(nxt, p.routeNext or p.route, nil) end
+    branch.eachAt(a % n + 1, poles, p.routeNext or p.route)
   end
 
   -- The joker and the nearest pit stall, in the same style and the same colours
@@ -4571,35 +4539,28 @@ local function drawGates(derbyLive)
     else
       color = p.route
     end
-    -- A slot some lane overrides is labelled with the fact, so an admin can see
-    -- at a glance which corners are shared and which are taken two ways.
+    -- A checkpoint with branch gates is labelled with how many, so an admin can
+    -- see at a glance which corners are shared and which are taken two ways.
     local label = routeLabel(i, n)
-    local alts = 0
-    for _, b in ipairs(branch.list) do
-      if branch.bySlot[b.id] and branch.bySlot[b.id][i] then alts = alts + 1 end
-    end
-    if alts > 0 then label = label .. ' (+' .. alts .. ')' end
+    local alts = branch.bySlot[i]
+    if alts and #alts > 0 then label = label .. ' (+' .. #alts .. ')' end
     if nudgeSelected(route, i) then color = p.nudged end
     drawGate(wp, color, label, authoring)
   end
 
   -- Branch gates: cyan, so they never read as part of the main lap, and labelled
-  -- with the SLOT they override rather than their position in the branch's own
-  -- list -- a branch gate is not a checkpoint of its own, it is the other way of
-  -- taking one that already exists, and the number has to say so.
-  for _, b in ipairs(branch.list) do
-    local editing = (b.id == branch.editId)
-    for gi, g in ipairs(b.gates) do
-      local slot = tonumber(g.slot) or 0
-      local color = p.branch or p.joker
-      if active and branch.lane == b.id and slot == armedWp then
-        color = p.armed
-      elseif not editing then
-        color = p.branchOther or p.jokerUsed
-      end
-      if nudgeSelected(b.gates, gi) then color = p.nudged end
-      drawGate(g, color, 'CP ' .. slot .. ': ' .. (b.name or b.id), authoring)
-    end
+  -- with the CHECKPOINT they belong to rather than their position in this list --
+  -- a branch gate is not a checkpoint of its own, it is the other way of taking
+  -- one that already exists, and the number has to say so.
+  --
+  -- Armed green on the same terms as its checkpoint, because it genuinely is
+  -- armed: crossing it clears the slot exactly as the main gate would.
+  for gi, g in ipairs(branch.list) do
+    local slot = tonumber(g.slot) or 0
+    local color = p.branch or p.joker
+    if active and slot == armedWp then color = p.armed end
+    if nudgeSelected(branch.list, gi) then color = p.nudged end
+    drawGate(g, color, 'CP ' .. slot .. ' branch', authoring)
   end
 
   -- Pit stalls. Amber, and labelled as stalls rather than numbered gates: they
@@ -4816,23 +4777,11 @@ function M.setEditorTarget(target)
   log('I', 'raceManager', 'Editor target: ' .. editorTarget)
 end
 
--- The branch the editor is pointed at, or nil when there is none yet.
-function branch.editing()
-  if not branch.editId then return nil end
-  for _, b in ipairs(branch.list) do
-    if b.id == branch.editId then return b end
-  end
-  return nil
-end
-
 local function activeEditorRoute()
   if editorTarget == 'joker' then return jokerRoute end
   if editorTarget == 'pit'   then return pitRoute end
   if editorTarget == 'start' then return startPositions end
-  if editorTarget == 'branch' then
-    local b = branch.editing()
-    return b and b.gates or {}
-  end
+  if editorTarget == 'branch' then return branch.list end
   return route
 end
 
@@ -5184,81 +5133,37 @@ function nudge.update()
   end
 end
 
--- Rebuild the per-slot lookup from the authored gate lists. Called after every
+-- Rebuild the per-checkpoint lookup from the authored list. Called after every
 -- edit, so what the editor shows and what the crossing code arms are the same
 -- thing -- an admin standing on a branch gate sees it go green.
+--
+-- A slot with no branch gate gets no entry at all rather than an empty table,
+-- because the crossing path tests `bySlot[i]` for nil to skip the whole business
+-- on an ordinary track.
 function branch.rebuild()
   local bySlot = {}
-  for _, b in ipairs(branch.list) do
-    local slots = {}
-    for _, g in ipairs(b.gates) do
-      local slot = tonumber(g.slot)
-      if slot then slots[math.floor(slot)] = g end
+  for _, g in ipairs(branch.list) do
+    local slot = tonumber(g.slot)
+    if slot then
+      slot = math.floor(slot)
+      local at = bySlot[slot]
+      if not at then at = {}; bySlot[slot] = at end
+      at[#at + 1] = g
     end
-    bySlot[b.id] = slots
   end
   branch.bySlot = bySlot
 end
 
--- The lowest slot this branch has not overridden yet, so placing a full mirror
--- lap is drive-and-click without touching the slot picker once.
-function branch.nextFreeSlot(b)
-  if not b then return 1 end
-  local used = {}
-  for _, g in ipairs(b.gates) do
-    local s = tonumber(g.slot)
-    if s then used[math.floor(s)] = true end
-  end
+-- The lowest checkpoint with no branch gate yet, so placing a full mirror lap is
+-- drive-and-click without touching the checkpoint picker once.
+function branch.nextFreeSlot()
   for i = 1, math.max(#route, 1) do
-    if not used[i] then return i end
+    if not branch.bySlot[i] then return i end
   end
   return math.max(#route, 1)
 end
 
--- Create a lane. The id is derived from the name so an admin types one thing,
--- and collisions are settled with a suffix rather than a rejection -- naming two
--- lanes "Left" is a mistake worth absorbing, not one worth stopping on.
-function M.addBranch(name)
-  name = tostring(name or ''):gsub('^%s+', ''):gsub('%s+$', '')
-  if name == '' then name = 'Lane ' .. (#branch.list + 1) end
-  local base = name:lower():gsub('[^%w]+', ''):sub(1, 20)
-  if base == '' then base = 'lane' end
-  local id, n = base, 1
-  local function taken(x)
-    for _, b in ipairs(branch.list) do if b.id == x then return true end end
-    return false
-  end
-  while taken(id) do n = n + 1; id = base .. n end
-  branch.list[#branch.list + 1] = { id = id, name = name, gates = {} }
-  branch.editId   = id
-  branch.editSlot = 1
-  branch.rebuild()
-  pushRouteState()
-  log('I', 'raceManager', 'Branch added: ' .. name .. ' (' .. id .. ')')
-end
-
-function M.selectBranch(id)
-  id = tostring(id or '')
-  branch.editId = (id ~= '') and id or nil
-  branch.editSlot = branch.nextFreeSlot(branch.editing())
-  pushRouteState()
-end
-
-function M.removeBranch(id)
-  id = tostring(id or '')
-  for i, b in ipairs(branch.list) do
-    if b.id == id then
-      table.remove(branch.list, i)
-      if branch.editId == id then branch.editId = branch.list[1] and branch.list[1].id or nil end
-      branch.rebuild()
-      pushRouteState()
-      log('I', 'raceManager', 'Branch removed: ' .. id)
-      return
-    end
-  end
-end
-
--- Which slot the next placed branch gate overrides.
+-- Which checkpoint the next placed branch gate belongs to.
 function M.setBranchSlot(slot)
   slot = math.floor(tonumber(slot) or 1)
   if slot < 1 then slot = 1 end
@@ -5267,27 +5172,29 @@ function M.setBranchSlot(slot)
   pushRouteState()
 end
 
--- Re-point an already-placed branch gate at a different slot.
+-- Re-point an already-placed branch gate at a different checkpoint. Nothing is
+-- displaced: a checkpoint holding two branch gates is the feature, not a clash.
 function M.setBranchGateSlot(index, slot)
-  local b = branch.editing()
-  if not b then return end
   index = math.floor(tonumber(index) or 0)
-  local g = b.gates[index]
+  local g = branch.list[index]
   if not g then return end
   slot = math.floor(tonumber(slot) or 1)
   if slot < 1 then slot = 1 end
   if #route > 0 and slot > #route then slot = #route end
-  -- Two gates on one slot would make the lane ambiguous, so the slot is taken
-  -- from whichever gate held it: the admin asked for this one to have it.
-  for i, other in ipairs(b.gates) do
-    if i ~= index and tonumber(other.slot) == slot then
-      other.slot = tonumber(g.slot)
-      break
-    end
-  end
   g.slot = slot
   branch.rebuild()
   pushRouteState()
+end
+
+-- Drop one branch gate. The checkpoint it belonged to keeps its main gate and
+-- any other branch gates, so removing one is never removing a checkpoint.
+function M.removeBranchGate(index)
+  index = math.floor(tonumber(index) or 0)
+  if not branch.list[index] then return end
+  table.remove(branch.list, index)
+  branch.rebuild()
+  pushRouteState()
+  log('I', 'raceManager', 'Branch gate ' .. index .. ' removed')
 end
 
 -- Place a marker where the car is standing.
@@ -5316,15 +5223,15 @@ function M.editorAdd(place)
     place.height = clampHeight(prev and prev.height or checkpointHeight)
     place.depth  = clampDepth(prev and prev.depth  or checkpointDepth)
   end
-  -- A branch gate is placed AGAINST A SLOT: it is not a new checkpoint, it is the
-  -- other way of taking one that already exists. Placing it is what makes the
-  -- track a head-on layout rather than a longer lap.
+  -- A branch gate is placed AGAINST A CHECKPOINT: it is not a new checkpoint, it
+  -- is the other way of taking one that already exists. Placing it is what makes
+  -- the track a split lane or a head-on layout rather than a longer lap.
+  --
+  -- Placing a second one on a checkpoint that already has one ADDS it. That is
+  -- the difference from every other editor target: a checkpoint is allowed as
+  -- many ways through it as an admin cares to place, and "move the existing one"
+  -- would make three ways through a corner impossible. Move is Nudge, or Move Here.
   if editorTarget == 'branch' then
-    local b = branch.editing()
-    if not b then
-      guihooks.trigger('RaceManagerEditorMsg', { msg = 'Add a lane first' })
-      return
-    end
     if #route == 0 then
       guihooks.trigger('RaceManagerEditorMsg', { msg = 'Place the main route first' })
       return
@@ -5332,22 +5239,12 @@ function M.editorAdd(place)
     local slot = math.floor(branch.editSlot or 1)
     if slot < 1 then slot = 1 end
     if slot > #route then slot = #route end
-    -- One gate per slot per lane. Placing on a slot that already has one moves it
-    -- rather than quietly making the lane ambiguous.
-    for _, g in ipairs(b.gates) do
-      if tonumber(g.slot) == slot then
-        g.x, g.y, g.z, g.hx, g.hy = place.x, place.y, place.z, place.hx, place.hy
-        branch.rebuild()
-        pushRouteState()
-        log('I', 'raceManager', 'Branch ' .. b.id .. ' slot ' .. slot .. ' moved')
-        return
-      end
-    end
     place.slot = slot
-    b.gates[#b.gates + 1] = place
-    branch.editSlot = branch.nextFreeSlot(b)
+    branch.list[#branch.list + 1] = place
     branch.rebuild()
+    branch.editSlot = branch.nextFreeSlot()
     pushRouteState()
+    log('I', 'raceManager', 'Branch gate added for CP ' .. slot)
     return
   end
   target[#target + 1] = place
@@ -5366,8 +5263,8 @@ function M.editorUndo()
     elseif editorTarget == 'main' and armedWp > #route then
       armedWp = math.max(#route, 1)
     elseif editorTarget == 'branch' then
-      branch.editSlot = branch.nextFreeSlot(branch.editing())
       branch.rebuild()
+      branch.editSlot = branch.nextFreeSlot()
     end
     pushRouteState()
   end
@@ -5398,17 +5295,14 @@ function M.editorClear()
     log('I', 'raceManager', 'Start positions cleared')
     return
   end
-  -- Clears the LANE being edited, not every lane and certainly not the main
-  -- route: the other way round a track is a thing an admin iterates on.
+  -- Clears the branch gates, not the main route: the other way round a track is
+  -- a thing an admin iterates on, and the lap it branches off has to survive it.
   if editorTarget == 'branch' then
-    local b = branch.editing()
-    if b then
-      b.gates = {}
-      branch.editSlot = 1
-      branch.rebuild()
-      pushRouteState()
-      log('I', 'raceManager', 'Branch ' .. b.id .. ' gates cleared')
-    end
+    branch.list   = {}
+    branch.bySlot = {}
+    branch.editSlot = 1
+    pushRouteState()
+    log('I', 'raceManager', 'Branch gates cleared')
     return
   end
   clearTrackState('editor clear')
@@ -5503,29 +5397,25 @@ end
 -- pointed at, so one implementation serves the main route, the joker route and
 -- the pit stalls -- the same reasoning moveCheckpoint is written under.
 --
--- Every one of them has to renumber the BRANCHES in step. A branch addresses
--- slots by number, so inserting, deleting or moving a main gate changes what
--- those numbers mean; a lane left un-renumbered silently comes to describe a
--- different corner of the track.
+-- Every one of them has to renumber the BRANCH GATES in step. A branch gate
+-- addresses its checkpoint by number, so inserting, deleting or moving a main
+-- gate changes what those numbers mean; one left un-renumbered silently comes to
+-- describe a different corner of the track.
 function branch.shiftSlots(from, delta)
-  for _, b in ipairs(branch.list) do
-    for _, g in ipairs(b.gates) do
-      local s = tonumber(g.slot)
-      if s and s >= from then g.slot = s + delta end
-    end
+  for _, g in ipairs(branch.list) do
+    local s = tonumber(g.slot)
+    if s and s >= from then g.slot = s + delta end
   end
 end
 
--- Drop the overrides for a slot that is going away, and say so rather than
--- leaving a lane pointing at a gate that no longer exists.
+-- Drop the branch gates for a checkpoint that is going away, and say so rather
+-- than leaving one pointing at a checkpoint that no longer exists.
 function branch.dropSlot(slot)
   local dropped = 0
-  for _, b in ipairs(branch.list) do
-    for i = #b.gates, 1, -1 do
-      if tonumber(b.gates[i].slot) == slot then
-        table.remove(b.gates, i)
-        dropped = dropped + 1
-      end
+  for i = #branch.list, 1, -1 do
+    if tonumber(branch.list[i].slot) == slot then
+      table.remove(branch.list, i)
+      dropped = dropped + 1
     end
   end
   return dropped
@@ -5553,8 +5443,8 @@ function M.removeCheckpoint(index)
   elseif editorTarget == 'joker' then
     if jokerArmed > #jokerRoute then jokerArmed = math.max(#jokerRoute, 1) end
   elseif editorTarget == 'branch' then
-    branch.editSlot = branch.nextFreeSlot(branch.editing())
     branch.rebuild()
+    branch.editSlot = branch.nextFreeSlot()
   end
   pushRouteState()
   log('I', 'raceManager', string.format('%s %d removed', editorTarget, index))
@@ -5611,12 +5501,10 @@ function M.reorderCheckpoint(from, to)
     -- than re-derived: exactly one slot changed position, everything between
     -- `from` and `to` shifted one step the other way.
     local lo, hi, step = math.min(from, to), math.max(from, to), (from < to) and -1 or 1
-    for _, b in ipairs(branch.list) do
-      for _, g in ipairs(b.gates) do
-        local s = tonumber(g.slot)
-        if s == from then g.slot = to
-        elseif s and s >= lo and s <= hi then g.slot = s + step end
-      end
+    for _, g in ipairs(branch.list) do
+      local s = tonumber(g.slot)
+      if s == from then g.slot = to
+      elseif s and s >= lo and s <= hi then g.slot = s + step end
     end
     branch.rebuild()
   end
@@ -5757,34 +5645,32 @@ function M.respaceGrid(spacing, stagger, width)
   -- before the generate stays exactly where the creator put it.
   local keep = #startPositions - branch.gridTool.count
   if keep < 0 then keep = 0 end
-  -- LANE TAGS AND HEADINGS SURVIVE THE MOVE. Both belong to the slot, and
-  -- respacing moves slots rather than replacing them.
+  -- HEADINGS SURVIVE THE MOVE. A heading belongs to the slot, and respacing moves
+  -- slots rather than replacing them.
   --
-  -- The heading matters as much as the tag, and for the same layout: a head-on
-  -- grid is generated as one block, half of it turned around, and half of it
-  -- tagged. Re-laying it from the anchor alone would face every car the anchor's
-  -- way again, so nudging a slider would silently un-turn half the field and the
-  -- two directions would set off together.
+  -- This is what makes a head-on grid survive a slider. One is generated as a
+  -- single block with half of it turned around, and the way a car faces is now
+  -- the ONLY thing saying which direction that driver races. Re-laying from the
+  -- anchor alone would face every car the anchor's way again, so nudging a
+  -- slider would silently un-turn half the field and the two directions would
+  -- set off together.
   local held = {}
   for i = keep + 1, #startPositions do
     local sp = startPositions[i]
-    held[i - keep] = sp and { branch = sp.branch, hx = sp.hx, hy = sp.hy } or nil
+    held[i - keep] = sp and { hx = sp.hx, hy = sp.hy } or nil
   end
   for i = #startPositions, keep + 1, -1 do table.remove(startPositions, i) end
   branch.layOutGrid(branch.gridTool.anchor, branch.gridTool.count,
     spacing, stagger, width, false)
   for i = 1, branch.gridTool.count do
     local sp, was = startPositions[keep + i], held[i]
-    if sp and was then
-      sp.branch = was.branch
-      if was.hx and was.hy then sp.hx, sp.hy = was.hx, was.hy end
-    end
+    if sp and was and was.hx and was.hy then sp.hx, sp.hy = was.hx, was.hy end
   end
   -- Changing the width re-flows the SAME slots into different rows -- slot 5 of a
-  -- three-wide grid is row 2 where it was row 3 two-wide -- and the tag and
-  -- heading above follow the slot, not the row. That is the right way round: a
-  -- head-on grid is tagged "slots 7 to 12 go the other way", and it stays that
-  -- way whatever shape the rows are.
+  -- three-wide grid is row 2 where it was row 3 two-wide -- and the headings above
+  -- follow the slot, not the row. That is the right way round: a head-on grid is
+  -- turned round "from slot 7 on", and it stays that way whatever shape the rows
+  -- are.
   branch.gridTool.spacing = spacing
   branch.gridTool.stagger = stagger
   branch.gridTool.width   = width
@@ -5810,62 +5696,15 @@ function M.flipStartPositions(from, to)
   guihooks.trigger('RaceManagerEditorMsg', { msg = 'Turned ' .. n .. ' start position(s) around' })
 end
 
--- Put a range of grid slots on a lane. This is how a field is split in half --
--- tag slots 1-6 one way and 7-12 the other -- and it is the only place a
--- driver's direction is ever decided. An empty id puts them back on the main
--- route.
--- Deal the lanes out across the grid, one slot at a time, instead of in blocks.
+-- NOTHING TAGS A GRID SLOT WITH A DIRECTION any more, which is why there is no
+-- stripeStartLanes or setStartLane here.
 --
--- P1 main, P2 the next lane, P3 back to main, and so on. On a grid as many cars
--- abreast as there are lanes that puts each lane in its own COLUMN -- two abreast
--- with two lanes is one car of each direction in every row, side by side, facing
--- opposite ways, which is the head-on grid as it is actually lined up.
---
--- It also splits the field evenly without the admin working out where the middle
--- is, and stays even when the entry list changes size: tagging slots 1-6 and
--- 7-12 by hand is right for twelve drivers and wrong for the eleven who turn up.
---
--- The cycle is main first, then each branch in the order they were created, so
--- pole is always the main route.
-function M.stripeStartLanes()
-  local lanes = { false }        -- false = the main route, no tag
-  for _, b in ipairs(branch.list) do lanes[#lanes + 1] = b.id end
-  if #lanes < 2 then
-    guihooks.trigger('RaceManagerEditorMsg', {
-      msg = 'Add a lane first: there is nothing to alternate with',
-    })
-    return
-  end
-  for i, sp in ipairs(startPositions) do
-    local pick = lanes[((i - 1) % #lanes) + 1]
-    sp.branch = pick or nil
-  end
-  pushRouteState()
-  local names = {}
-  for _, l in ipairs(lanes) do names[#names + 1] = l and branch.nameOf(l) or 'Main' end
-  guihooks.trigger('RaceManagerEditorMsg', {
-    msg = 'Alternated ' .. #startPositions .. ' slots across: ' .. table.concat(names, ', '),
-  })
-  log('I', 'raceManager', 'Start positions striped across ' .. #lanes .. ' lanes')
-end
-
-function M.setStartLane(from, to, id)
-  from = math.floor(tonumber(from) or 1)
-  to   = math.floor(tonumber(to) or #startPositions)
-  id   = tostring(id or '')
-  if id == '' then id = nil end
-  if from < 1 then from = 1 end
-  if to > #startPositions then to = #startPositions end
-  local n = 0
-  for i = from, to do
-    local sp = startPositions[i]
-    if sp then sp.branch = id; n = n + 1 end
-  end
-  pushRouteState()
-  guihooks.trigger('RaceManagerEditorMsg', {
-    msg = n .. ' start position(s) set to ' .. (id and ('lane ' .. id) or 'the main route'),
-  })
-end
+-- Splitting a head-on field used to mean dealing lane tags across the grid so the
+-- server could tell each driver which way they were racing. A start position
+-- already points the car somewhere, and every gate for the next checkpoint is
+-- armed for everybody, so the direction a driver goes is settled by the slot they
+-- are standing on and nothing has to be told about it. Turn half the grid round
+-- with Flip and the field is split.
 
 function M.setCheckpointWidth(w)
   checkpointWidth = clampWidth(w)
@@ -6023,10 +5862,6 @@ function M.saveLayout(name, confirmDrop)
       if tonumber(wp.height) then out[i].height = clampHeight(wp.height) end
       if tonumber(wp.depth)  then out[i].depth  = clampDepth(wp.depth)   end
       if wp.oneWay == true   then out[i].oneWay = true end
-      -- Start positions only: the lane a car on this slot races. Dropping it here
-      -- would save a head-on grid as an ordinary one, and the field would all set
-      -- off the same way round.
-      if type(wp.branch) == 'string' and wp.branch ~= '' then out[i].branch = wp.branch end
     end
     return out
   end
@@ -6046,41 +5881,32 @@ function M.saveLayout(name, confirmDrop)
     starts = bundle(startPositions, 'start position')
     if not starts then return end
   end
-  -- The lanes travel with the layout, like the joker route and the grid: a
+  -- The branch gates travel with the layout, like the joker route and the grid: a
   -- head-on oval is one saved object, not a circuit an admin has to remember to
   -- rebuild the other half of. Bundled by hand rather than through `bundle`
-  -- because a branch gate carries the slot it overrides, which is the whole
-  -- point of it.
-  local lanes = nil
+  -- because a branch gate carries the checkpoint it belongs to, which is the
+  -- whole point of it.
+  local alts = nil
   if #branch.list > 0 then
-    lanes = {}
-    for _, b in ipairs(branch.list) do
-      local gates = {}
-      for _, g in ipairs(b.gates) do
-        local x, y, z, slot = tonumber(g.x), tonumber(g.y), tonumber(g.z), tonumber(g.slot)
-        if not (x and y and z and slot) then
-          log('E', 'raceManager', 'saveLayout: branch ' .. b.id .. ' has an invalid gate, aborting')
-          editorMsg('Save failed: lane "' .. (b.name or b.id) .. '" has an invalid gate')
-          return
-        end
-        local out = {
-          slot = math.floor(slot), x = x, y = y, z = z,
-          hx = tonumber(g.hx) or 0, hy = tonumber(g.hy) or 1,
-        }
-        if tonumber(g.width)  then out.width  = clampWidth(g.width)   end
-        if tonumber(g.height) then out.height = clampHeight(g.height) end
-        if tonumber(g.depth)  then out.depth  = clampDepth(g.depth)   end
-        if g.oneWay == true   then out.oneWay = true end
-        gates[#gates + 1] = out
+    alts = {}
+    for i, g in ipairs(branch.list) do
+      local x, y, z, slot = tonumber(g.x), tonumber(g.y), tonumber(g.z), tonumber(g.slot)
+      if not (x and y and z and slot) then
+        log('E', 'raceManager', 'saveLayout: branch gate ' .. i .. ' is invalid, aborting')
+        editorMsg('Save failed: branch gate ' .. i .. ' is invalid')
+        return
       end
-      -- A lane with no gates is the main route wearing a different name, and the
-      -- server rejects the whole save for one. Dropped here instead, so an admin
-      -- who added a lane and has not placed its gates yet can still save.
-      if #gates > 0 then
-        lanes[#lanes + 1] = { id = b.id, name = b.name or b.id, gates = gates }
-      end
+      local out = {
+        slot = math.floor(slot), x = x, y = y, z = z,
+        hx = tonumber(g.hx) or 0, hy = tonumber(g.hy) or 1,
+      }
+      if tonumber(g.width)  then out.width  = clampWidth(g.width)   end
+      if tonumber(g.height) then out.height = clampHeight(g.height) end
+      if tonumber(g.depth)  then out.depth  = clampDepth(g.depth)   end
+      if g.oneWay == true   then out.oneWay = true end
+      alts[#alts + 1] = out
     end
-    if #lanes == 0 then lanes = nil end
+    if #alts == 0 then alts = nil end
   end
   local payload = jsonEncode({
     name        = name,
@@ -6090,7 +5916,7 @@ function M.saveLayout(name, confirmDrop)
     checkpoints = cps,
     joker       = jokerCps,
     startPositions = starts,
-    branches       = lanes,
+    branches       = alts,
     -- Does this grid sit away from the start/finish line? Inferred rather than
     -- asked for: an admin who placed the grid somewhere else has already said so
     -- by placing it there, and a switch they have to remember is one they will
@@ -6517,35 +6343,34 @@ local function onApplyLayout(rawData)
   if type(data.pits) == 'table' and #data.pits > 0 then
     pits = unbundle(data.pits, 'pit stall') or {}
   end
-  -- Branching routes, resolved into the per-slot lookup the crossing code reads.
-  -- Done ONCE, here, rather than searched per frame: the gate for a slot has to
-  -- be found sixty times a second and this is what makes that one table index.
-  local lanes, bySlot = {}, {}
+  -- Branch gates, resolved into the per-checkpoint lookup the crossing code
+  -- reads. Done ONCE, here, rather than searched per frame: the gates for a
+  -- checkpoint have to be found sixty times a second and this is what makes that
+  -- one table index.
+  --
+  -- A gate whose checkpoint does not exist in this layout is DROPPED, not
+  -- clamped. Clamping would silently move it to another corner of the track and
+  -- arm it there.
+  local alts, bySlot = {}, {}
   if type(data.branches) == 'table' then
-    for _, b in ipairs(data.branches) do
-      local id = type(b.id) == 'string' and b.id or nil
-      if id and type(b.gates) == 'table' then
-        local slots = {}
-        for _, g in ipairs(b.gates) do
-          local slot = tonumber(g.slot)
-          local x, y, z = tonumber(g.x), tonumber(g.y), tonumber(g.z)
-          if slot and x and y and z and slot >= 1 and slot <= #cps then
-            local gate = {
-              x = x, y = y, z = z,
-              hx = tonumber(g.hx) or 0, hy = tonumber(g.hy) or 1,
-              width  = clampWidth(tonumber(g.width) or data.width or checkpointWidth),
-              height = clampHeight(tonumber(g.height) or data.height or checkpointHeight),
-              depth  = clampDepth(tonumber(g.depth) or data.depth
-                or ((tonumber(g.height) or data.height or 0) * 0.5)),
-            }
-            if g.oneWay == true then gate.oneWay = true end
-            slots[math.floor(slot)] = gate
-          end
-        end
-        if next(slots) then
-          lanes[#lanes + 1] = { id = id, name = tostring(b.name or id), gates = b.gates }
-          bySlot[id] = slots
-        end
+    for _, g in ipairs(data.branches) do
+      local slot = tonumber(g.slot)
+      local x, y, z = tonumber(g.x), tonumber(g.y), tonumber(g.z)
+      if slot and x and y and z and slot >= 1 and slot <= #cps then
+        slot = math.floor(slot)
+        local gate = {
+          slot = slot, x = x, y = y, z = z,
+          hx = tonumber(g.hx) or 0, hy = tonumber(g.hy) or 1,
+          width  = clampWidth(tonumber(g.width) or data.width or checkpointWidth),
+          height = clampHeight(tonumber(g.height) or data.height or checkpointHeight),
+          depth  = clampDepth(tonumber(g.depth) or data.depth
+            or ((tonumber(g.height) or data.height or 0) * 0.5)),
+        }
+        if g.oneWay == true then gate.oneWay = true end
+        alts[#alts + 1] = gate
+        local at = bySlot[slot]
+        if not at then at = {}; bySlot[slot] = at end
+        at[#at + 1] = gate
       end
     end
   end
@@ -6555,7 +6380,7 @@ local function onApplyLayout(rawData)
   jokerRoute = jokerCps
   pitRoute   = pits
   startPositions = starts
-  branch.list   = lanes
+  branch.list   = alts
   branch.bySlot = bySlot
   branch.gridOffLine = data.gridOffLine == true
   checkpointWidth  = clampWidth(data.width or checkpointWidth)
@@ -6589,7 +6414,7 @@ local function onSaveHeld(rawData)
   local lost = type(data.lost) == 'table' and data.lost or {}
   local label = {
     joker = 'joker gates', pits = 'pit stalls',
-    startPositions = 'start positions', branches = 'lanes',
+    startPositions = 'start positions', branches = 'branch gates',
   }
   local parts = {}
   for key, n in pairs(lost) do

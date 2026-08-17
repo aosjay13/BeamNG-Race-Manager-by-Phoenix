@@ -53,10 +53,6 @@ local MAX_RESET_LIMIT    = 99
 -- coordinates, and a second near-identical sanitizer would drift from the first.
 local sanitizeCheckpoints
 local sanitizeBranches
--- One table rather than two constants: the top level of this file is a function
--- and Lua allows it 200 locals, which this chunk is close enough to that every
--- new name has to earn its register (see docs/ARCHITECTURE.md).
-local BRANCH_LIMIT       = { id = 24, name = 40 }
 local HOLD_TOLERANCE     = 0.5   -- metres a held car may be off its slot
 local HOLD_CORRECT_EVERY = 0.5   -- seconds between corrections for one driver
 local GHOST_ON_RESET     = true
@@ -127,17 +123,15 @@ local race = {
   -- one-lap circuit everywhere, and this is the difference being made explicit.
   -- It belongs to the track, so it arrives with the layout.
   pointToPoint = false,
-  -- BRANCHING ROUTES. A branch is a sparse set of per-slot gate overrides on the
-  -- main route: at slot i a driver on that branch must cross the branch's gate
-  -- for slot i, or the main gate when it has none. Every lane therefore has the
-  -- SAME NUMBER OF SLOTS, which is the whole reason the running order below needs
-  -- no changes at all -- cpCleared means the same thing whichever way round a
-  -- driver is going.
+  -- BRANCH GATES. Another way through a checkpoint that already exists: slot i is
+  -- cleared by crossing the main gate OR any branch gate authored against slot i.
+  -- A branch gate never adds a slot, which is the whole reason the running order
+  -- below needs no changes at all -- cpCleared means the same thing whichever
+  -- gates a driver took, and nothing here has to know which.
   --
   -- Held here only to be validated, persisted and handed back out: the server has
   -- no physics and never tests a crossing. Shape:
-  --   { { id = 'ccw', name = 'Counter-clockwise',
-  --       gates = { { slot = 1, x, y, z, hx, hy, width?, height?, oneWay? }, ... } } }
+  --   { { slot = 1, x, y, z, hx, hy, width?, height?, oneWay? }, ... }
   branches     = {},
   -- THE LOADED LAYOUT ITSELF, kept so it can be sent again.
   --
@@ -155,11 +149,11 @@ local race = {
   -- then the run from the grid to the first crossing is a part lap that must not
   -- be timed. See outLapOwed.
   gridOffLine  = false,
-  -- WHERE those start positions are: { x, y, z, hx, hy, branch? } per slot, slot
-  -- 1 first. Reported by a client when a track is loaded or edited, and set
-  -- directly when a saved layout is loaded. The count above is enough to warn
-  -- that a field is bigger than its grid; policing the hold needs the
-  -- coordinates, and splitting the field needs the branch tag.
+  -- WHERE those start positions are: { x, y, z, hx, hy } per slot, slot 1 first.
+  -- Reported by a client when a track is loaded or edited, and set directly when
+  -- a saved layout is loaded. The count above is enough to warn that a field is
+  -- bigger than its grid; policing the hold needs the coordinates. The heading is
+  -- what splits a head-on field, and it is the client that reads it.
   startPositions = {},
   -- Qualifying session rules.
   ghostQuali     = false,    -- rivals are ghosts during qualifying
@@ -257,39 +251,13 @@ local function outLapOwed()
 end
 
 
--- Which lane a grid slot puts a driver in.
+-- NOTHING HERE KNOWS WHICH WAY ROUND A DRIVER IS GOING, and nothing needs to.
 --
--- The tag lives ON the start position rather than in a slot -> lane map beside
--- it, and that is deliberate: removing or reordering a slot uses table.remove,
--- which reindexes everything after it. A field on the record travels with it
--- through that; a parallel map silently comes to describe the wrong slots.
---
--- Splitting a field in half is therefore authoring, not code -- tag slots 1-6
--- one way and 7-12 the other -- and it keeps working under every grid mode,
--- because reverse/random/custom reorder DRIVERS ACROSS SLOTS while slot -> lane
--- belongs to the track and does not move.
--- One table rather than two functions, for the register budget noted beside
--- BRANCH_LIMIT above.
-local lanes = {}
-
-function lanes.forSlot(slot)
-  if not slot then return nil end
-  local sp = race.startPositions[slot]
-  if type(sp) ~= 'table' then return nil end
-  local id = sp.branch
-  if type(id) ~= 'string' or id == '' then return nil end
-  return id
-end
-
--- The display name of a lane, for chat and the results file. Falls back to the
--- id, so a branch saved without a name is still legible rather than blank.
-function lanes.name(id)
-  if not id then return nil end
-  for _, b in ipairs(race.branches) do
-    if b.id == id then return b.name or b.id end
-  end
-  return id
-end
+-- A branch gate is another way through a checkpoint rather than a line a driver
+-- is on, so clearing CP 3 means the same thing for the whole field however they
+-- reached it. The server counts checkpoints cleared, which is exactly what it
+-- counted before branch gates existed. There is no lane to assign at the grid,
+-- none to carry on a record, and none to name in the results.
 
 -- ---------------------------------------------------------------------------
 -- Admin authentication
@@ -365,12 +333,6 @@ local function newRecord(pid)
     holdCorrectedAt = nil,   -- race.time of the last correction (rate limiting)
     jokerTaken = 0,          -- completed runs of the joker route this race
     jokerLap   = nil,        -- lap the joker route was taken on
-    -- Which way round this driver is going: the id of the branch their start
-    -- position was tagged with, or nil for the main route. Decided by the SERVER
-    -- when it hands out grid slots and never reported by the client, so a driver
-    -- cannot pick their own line by asking for it. Display and results only --
-    -- the whole field is scored together, on one clock, into one classification.
-    lane       = nil,
     -- Connected while a session was already running: not a participant, and
     -- ghosted for everyone until the next grid forms. See RM_onPlayerJoin.
     bystander  = nil,
@@ -775,7 +737,7 @@ local DRIVER_WIRE_FIELDS = {
   'gridPos', 'customGrid', 'position',
   'qualiBest', 'qualiLaps', 'outLap', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
   'finishTime', 'resets', 'resetsBlocked',
-  'jokerTaken', 'jokerLap', 'outReason', 'dnfPos', 'heldPos', 'lane', 'bystander',
+  'jokerTaken', 'jokerLap', 'outReason', 'dnfPos', 'heldPos', 'bystander',
 }
 
 -- Projection buffers are kept ON the record and reused, so a broadcast costs no
@@ -867,7 +829,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.8.1'
+local RM_BUILD = '0.8.2'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -970,10 +932,10 @@ local function broadcastState(targetPid)
     gridMode     = race.gridMode,
     startSlots   = race.startSlots,
     pointToPoint = race.pointToPoint,
-    -- Branching routes: whether this track has other lanes at all, and whether
-    -- its grid gives an out lap away. The gates themselves ride with the layout
-    -- (RM_ApplyLayout) exactly as the joker route's do -- this is the part the UI
-    -- needs on every tick to know whether to show a lane column at all.
+    -- Branch gates: whether this track has any, and whether its grid gives an out
+    -- lap away. The gates themselves ride with the layout (RM_ApplyLayout) exactly
+    -- as the joker route's do -- this is the part the UI needs on every tick, to
+    -- label a track that has other ways through its checkpoints.
     hasBranches  = #race.branches > 0,
     gridOffLine  = race.gridOffLine,
     -- So the panel can grey the joker toggle out and say why, rather than
@@ -1353,13 +1315,11 @@ local function buildResultsText(cupRound)
   -- so a plain race exports exactly the same table it always did.
   local jokerCol  = race.jokerEnabled and string.format(' %-7s', 'Joker') or ''
   local resetCol  = race.maxResets >= 0 and string.format(' %-6s', 'Resets') or ''
-  -- Which way round each driver went. Present only on a track that has other
-  -- lanes, so an ordinary race exports exactly the table it always did. Purely a
-  -- record: the whole field is scored together, on one clock, and a lane has
-  -- never been worth a place either way.
-  local laneCol   = #race.branches > 0 and string.format(' %-14s', 'Line') or ''
-  add(string.format('%-5s %-6s %-22s %-10s %-9s %s%s%s%s',
-    'Pos', 'Start', 'Driver', 'Best Lap', 'Laps Led', 'Finish', laneCol, jokerCol, resetCol))
+  -- NO "Line" COLUMN. A branch gate is another way through a checkpoint rather
+  -- than a route a driver is on, so there is no lane to name -- and a track with
+  -- branch gates now exports exactly the table an ordinary race does.
+  add(string.format('%-5s %-6s %-22s %-10s %-9s %s%s%s',
+    'Pos', 'Start', 'Driver', 'Best Lap', 'Laps Led', 'Finish', jokerCol, resetCol))
   -- Fastest lap, half-way leader and Hard Charger, decided once for this
   -- session (see sessionAwards) rather than worked out again here.
   local awards = sessionAwards(final)
@@ -1395,12 +1355,10 @@ local function buildResultsText(cupRound)
     local resetVal = race.maxResets >= 0
       and string.format(' %-6s', string.format('%d/%d%s', rec.resets or 0, race.maxResets,
         (rec.resetsBlocked or 0) > 0 and ('+' .. rec.resetsBlocked) or '')) or ''
-    local laneVal = #race.branches > 0
-      and string.format(' %-14s', lanes.name(rec.lane) or 'Main') or ''
-    add(string.format('%-5s %-6s %-22s %-10s %-9d %-10s%s%s%s%s%s',
+    add(string.format('%-5s %-6s %-22s %-10s %-9d %-10s%s%s%s%s',
       pos, rec.gridPos and ('P' .. rec.gridPos) or '-',
       displayName(rec), fmtLap(rec.raceBest), rec.lapsLed or 0, finish,
-      laneVal, jokerVal, resetVal, aliasNote(rec), tag))
+      jokerVal, resetVal, aliasNote(rec), tag))
   end
   if #final == 0 then add('(no drivers)') end
   -- The two award lines. Both are omitted rather than guessed at when there is
@@ -2153,10 +2111,6 @@ formGrid = function (kind, byName)
     -- Gridded: no longer a bystander. A grid is where entry is decided, so this
     -- is exactly where a mid-session arrival stops being one.
     rec.bystander = nil
-    -- Which way this driver is going round, taken from the slot they were just
-    -- put on. The server hands out the slots, so it is the server that knows the
-    -- lane -- nothing is asked of the client and nothing has to be trusted.
-    rec.lane = lanes.forSlot(gridPos)
     clearProgress(rec)
     -- Put the car on its start position and hold it there until GO. The order
     -- and the field size travel with the slot so the client can stagger its
@@ -2293,10 +2247,10 @@ function RM_onStartPositionCount(pid, rawData)
         -- as it loads; this is the unsaved path.
         --
         -- The branch GATES deliberately do not come this way. The server never
-        -- tests a crossing, so the only thing it needs a lane for is the name in
-        -- the results file, and laneName already falls back to the id. Sending a
-        -- gate list the server would have to validate against a route length it
-        -- does not hold would be validation theatre.
+        -- tests a crossing, and a branch gate clears the same checkpoint the main
+        -- gate does, so there is nothing about one it could act on. Sending a gate
+        -- list it would have to validate against a route length it does not hold
+        -- would be validation theatre.
         -- ...but ONLY when no layout came through this server.
         --
         -- This report is sent by pushRouteState, which fires constantly and from
@@ -2338,19 +2292,6 @@ function RM_onStartPositionCount(pid, rawData)
             -- time something unrelated moves.
             broadcastState()
           end
-        end
-        if type(data.laneNames) == 'table' then
-          local named = {}
-          for _, b in ipairs(data.laneNames) do
-            if type(b) == 'table' and type(b.id) == 'string' and b.id ~= '' then
-              named[#named + 1] = {
-                id    = b.id:sub(1, BRANCH_LIMIT.id),
-                name  = type(b.name) == 'string' and b.name:sub(1, BRANCH_LIMIT.name) or b.id,
-                gates = {},
-              }
-            end
-          end
-          race.branches = named
         end
       elseif n ~= #race.startPositions then
         -- A count that no longer matches the coordinates we hold, from a report
@@ -2855,7 +2796,6 @@ function RM_CountdownTick()
         rec.qualiLaps = 0
       end
       rec.outLap     = outLapOwed()
-      rec.lane       = lanes.forSlot(rec.gridPos)
       clearProgress(rec)
     end
   end
@@ -2997,11 +2937,11 @@ function RM_onProgress(pid, rawData)
   local lap = tonumber(data.lap)
   if lap and math.floor(lap) ~= rec.currentLap then return end
 
-  -- Slots cleared on this lap. SLOTS, not gates: a branch substitutes a gate
-  -- into a slot that already exists rather than adding one, so every lane has the
-  -- same count and this number means the same thing whichever way round a driver
-  -- is going. That is the whole reason the running order needs no changes for
-  -- branching -- and the reason the clamp below is a slot count too.
+  -- CHECKPOINTS cleared on this lap, not gates crossed: a branch gate is another
+  -- way through a checkpoint that already exists rather than an extra one, so
+  -- this number means the same thing whichever gates a driver took. That is the
+  -- whole reason the running order needs no changes for branching -- and the
+  -- reason the clamp below is a checkpoint count too.
   local cp = tonumber(data.cp)
   if cp then
     cp = math.floor(cp)
@@ -3422,64 +3362,44 @@ sanitizeCheckpoints = function (raw)
     -- where direction is the only thing separating two legs of a track. Carried
     -- only when set, like the size overrides above.
     if cp.oneWay == true then out[i].oneWay = true end
-    -- START POSITIONS ONLY: which lane a car put on this slot is driving. Kept
-    -- here rather than in a map beside the array because table.remove reindexes
-    -- (see laneForSlot). A gate never carries one, and the derby -- which shares
-    -- this sanitizer -- never sets one.
-    if type(cp.branch) == 'string' and cp.branch ~= '' then
-      out[i].branch = cp.branch:sub(1, BRANCH_LIMIT.id)
-    end
   end
   if #out == 0 then return nil end
   return out
 end
 
--- Branching routes: a list of lanes, each a sparse set of per-slot gate
--- overrides on the main route. Rejects rather than repairs, like every other
--- sanitizer here -- a layout that half-loaded would put drivers on a track that
--- is not the one that was saved.
+-- Branch gates: a flat list, each carrying the checkpoint it is another way
+-- through. Rejects rather than repairs, like every other sanitizer here -- a
+-- layout that half-loaded would put drivers on a track that is not the one that
+-- was saved.
 --
 -- `slotCount` is the main route's length, and every slot number is checked
--- against it: an override for a slot that does not exist is a gate no driver can
--- ever be asked for, which on a fully branched layout means a lane that can
--- never complete a lap.
+-- against it: a branch gate for a checkpoint that does not exist is a gate no
+-- driver can ever be asked for, and clamping it into range would arm it at a
+-- different corner of the track instead.
+--
+-- SEVERAL GATES MAY SHARE A CHECKPOINT and that is the feature, so unlike the
+-- version this replaced there is no duplicate-slot rejection. Three ways through
+-- one corner is three branch gates on the same slot.
 sanitizeBranches = function (raw, slotCount)
   if raw == nil then return nil end
   if type(raw) ~= 'table' then return nil end
   local out = {}
-  local seenId = {}
-  for i, b in ipairs(raw) do
-    if type(b) ~= 'table' then return nil end
-    local id = type(b.id) == 'string' and b.id:gsub('^%s+', ''):gsub('%s+$', ''):sub(1, BRANCH_LIMIT.id) or ''
-    if id == '' or seenId[id:lower()] then return nil end
-    seenId[id:lower()] = true
-    if type(b.gates) ~= 'table' then return nil end
-    local gates, seenSlot = {}, {}
-    for j, g in ipairs(b.gates) do
-      if type(g) ~= 'table' then return nil end
-      local slot = tonumber(g.slot)
-      if not slot then return nil end
-      slot = math.floor(slot)
-      if slot < 1 or slot > slotCount or seenSlot[slot] then return nil end
-      seenSlot[slot] = true
-      local x, y, z = tonumber(g.x), tonumber(g.y), tonumber(g.z)
-      if not (x and y and z) then return nil end
-      gates[j] = {
-        slot = slot, x = x, y = y, z = z,
-        hx = tonumber(g.hx) or 0, hy = tonumber(g.hy) or 1,
-      }
-      if tonumber(g.width)  then gates[j].width  = tonumber(g.width)  end
-      if tonumber(g.height) then gates[j].height = tonumber(g.height) end
-      if g.oneWay == true   then gates[j].oneWay = true end
-    end
-    -- A lane with no overrides is the main route under another name, and one
-    -- saved by accident would put half the field on a line that does not exist.
-    if #gates == 0 then return nil end
+  for i, g in ipairs(raw) do
+    if type(g) ~= 'table' then return nil end
+    local slot = tonumber(g.slot)
+    if not slot then return nil end
+    slot = math.floor(slot)
+    if slot < 1 or slot > slotCount then return nil end
+    local x, y, z = tonumber(g.x), tonumber(g.y), tonumber(g.z)
+    if not (x and y and z) then return nil end
     out[i] = {
-      id    = id,
-      name  = type(b.name) == 'string' and b.name:sub(1, BRANCH_LIMIT.name) or id,
-      gates = gates,
+      slot = slot, x = x, y = y, z = z,
+      hx = tonumber(g.hx) or 0, hy = tonumber(g.hy) or 1,
     }
+    if tonumber(g.width)  then out[i].width  = tonumber(g.width)  end
+    if tonumber(g.height) then out[i].height = tonumber(g.height) end
+    if tonumber(g.depth)  then out[i].depth  = tonumber(g.depth)  end
+    if g.oneWay == true   then out[i].oneWay = true end
   end
   if #out == 0 then return nil end
   return out
@@ -3621,11 +3541,11 @@ function RM_onSaveLayout(pid, rawData)
     gridOffLine  = data.gridOffLine == true,
   }
   -- A branch array that was sent but did not survive validation is a rejected
-  -- save, not a track quietly saved without its other lane: half the field would
-  -- be gridded onto a line that is not there.
+  -- save, not a track quietly saved without its other way round: half the field
+  -- would be driving at a gate that is not there.
   if data.branches ~= nil and not entry.branches then
-    print('[RaceManager] Save rejected: branch list malformed '
-      .. '(bad slot number, duplicate slot, duplicate id or empty lane)')
+    print('[RaceManager] Save rejected: branch gates malformed '
+      .. '(bad or out-of-range checkpoint number, or bad coordinates)')
     return
   end
   -- ---------------------------------------------------------------------
@@ -3804,7 +3724,7 @@ function RM_onLoadLayout(pid, rawData)
       -- TELL EVERYONE, and not just about the gates.
       --
       -- Loading a layout sets the joker gate count, the grid size, whether the
-      -- grid is off the line, the lane list and point-to-point. All of that is
+      -- grid is off the line, the branch gates and point-to-point. All of that is
       -- session state the panel displays, and none of it went anywhere: this
       -- handler broadcast the LAYOUT and nothing else.
       --
@@ -3826,7 +3746,7 @@ function RM_onLoadLayout(pid, rawData)
 end
 
 -- ---------------------------------------------------------------------------
--- Module 4: "BeamJoy" vehicle & setup locking (the Garage List)
+-- Module 4: vehicle & setup locking (the Garage List)
 -- ---------------------------------------------------------------------------
 -- An admin drives the car they want to allow, presses "Whitelist Current
 -- Vehicle", and the client captures that vehicle's exact configuration (model

@@ -29,9 +29,8 @@ and took the failure as proof that no toggle existed anywhere.
 
 The toggle is **BeamNG's**, not BeamMP's: `obj:setGhostEnabled(bool)`, a
 vehicle-side call reached from GE through `queueLuaCommand` - the same bridge the
-grid freeze already used. It is per vehicle, it leaves world and terrain
-collision alone, and it is present in `libbeamng.x64.dll` with a matching
-`getGhostEnabled`. The engine drives it itself for instability recovery
+grid freeze already used. It is per vehicle, and it leaves world and terrain
+collision alone. The engine drives it itself for instability recovery
 (`lua/ge/main.lua`), and BeamNG's own multiplayer has `ghostOnReset` /
 `ghostOnTp` vehicle globals that are this exact feature.
 
