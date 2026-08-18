@@ -168,11 +168,24 @@ for pid = 0, 2 do
 end
 
 -- ===========================================================================
--- 5. A race has no out lap
+-- 5. A race gives no lap AWAY, but its first crossing is not timed
 -- ===========================================================================
--- Lap 1 of a race is a lap of the race, off the same standing start. Nothing is
--- given away because a race is not timing one lap at a time - the flag decides
--- it, and a lap thrown away would be a lap of the race distance thrown away.
+-- Lap 1 of a race is a lap of the race. Nothing is given away, because a race is
+-- not timing one lap at a time -- the flag decides it, and a lap thrown away
+-- would be a lap of the race distance thrown away. That is the difference from
+-- qualifying's out lap, which is added ON TOP of the allowance.
+--
+-- Its TIME is dropped, though, and that is not the same thing. Lap 1 is run off a
+-- STANDING START: it carries the launch, the run to the first corner and
+-- whatever the field did to each other getting there, so it is not the same
+-- measurement as a flying lap and does not belong in the same contest. Asked for
+-- from a live test.
+--
+-- A ONE-LAP race is exempt, because there the standing lap is the only lap there
+-- is and dropping its time would leave the results with no times at all.
+--
+-- This test used to assert the opposite while docs/REFERENCE.md described what
+-- is asserted here. The docs were right.
 RM_onSetTotalLaps(0, '{"laps":2}')
 RM_onGenerateGrid(0)
 RM_onStartCountdown(0)
@@ -182,13 +195,31 @@ check(lastState.qualiOutLap ~= true, 'a race broadcasts no out lap')
 for pid = 0, 2 do check(driver(pid).outLap == false, 'driver ' .. pid .. ' owes nothing') end
 
 lap(0, 99.0)
-check(driver(0).raceBest == 99.0, 'lap 1 of a race is timed')
-check(driver(0).lapsLed == 1, 'and the driver who led it is credited with leading it')
-check(lastState.bestLapTime == 99.0, 'and it can be the fastest lap of the race')
-check(driver(0).currentLap == 2, 'the driver is on lap 2')
+check(driver(0).raceBest == nil, 'lap 1 of a race sets no lap time')
+check(lastState.bestLapTime == nil, 'so it cannot take fastest lap of the race')
+check(driver(0).lapsLed == 1,
+  'but it COUNTS: the driver who led it is credited with leading it')
+check(driver(0).currentLap == 2, 'and the driver is on lap 2, not still on lap 1')
 lap(1, 99.5); lap(2, 99.9)
-for pid = 0, 2 do lap(pid, 98.0) end
+-- The second crossing is the first timed one.
+lap(0, 98.0)
+check(driver(0).raceBest == 98.0, 'the second crossing IS timed')
+check(lastState.bestLapTime == 98.0, 'and can take fastest lap')
+lap(1, 98.5); lap(2, 98.9)
+-- Past the hold at the flag: a race no longer closes on the tick the last car
+-- crosses, so the field stays ghosted for a moment (see race.endDelay).
+for _ = 1, 70 do RM_Tick() end
 check(lastState.phase == 'finished', 'and 2 laps means 2 laps, exactly as before')
+
+-- A ONE-LAP race keeps its time: there is no flying lap to compare against, and
+-- results with no times in them at all would be worse than a standing-start one.
+RM_onEndRace(0)
+RM_onSetTotalLaps(0, '{"laps":1}')
+RM_onGenerateGrid(0)
+RM_onStartCountdown(0)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+lap(0, 97.0)
+check(driver(0).raceBest == 97.0, 'a one-lap race DOES time its only lap')
 
 -- ===========================================================================
 -- 6. A sprint stage has no out lap either, and must not

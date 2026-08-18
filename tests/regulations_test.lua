@@ -220,6 +220,9 @@ RM_onLap(1, '{"lapTime":59}')   -- Alice finishes (3 laps)
 RM_onLap(2, '{"lapTime":60}')   -- Bob finishes
 RM_onLap(3, '{"lapTime":61}')   -- Cara finishes -> race closes, ruling applies
 
+-- Past the hold at the flag: a race no longer closes on the tick the last car
+-- crosses, so the field stays ghosted for a moment (see race.endDelay).
+for _ = 1, 70 do RM_Tick() end
 check(lastState.phase == 'finished', 'race finished after every driver crossed')
 check(driver('Alice').status == 'finished', 'Alice took the joker exactly once and is classified')
 check(driver('Cara').status == 'dsq'
@@ -257,6 +260,9 @@ lastChat = nil
 RM_onLap(1, '{"lapTime":60}'); RM_onLap(2, '{"lapTime":61}'); RM_onLap(3, '{"lapTime":62}')
 check(driver('Alice').status == 'finished' and driver('Cara').status == 'finished',
   'nobody is disqualified when the joker rule is off')
+-- Past the hold at the flag: a race no longer closes on the tick the last car
+-- crosses, so results are written a moment later (see race.endDelay).
+for _ = 1, 70 do RM_Tick() end
 local plain, plainPath = readResults()
 check(plain and not plain:find('Disqualified', 1, true),
   'a plain race exports no disqualifications')

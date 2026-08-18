@@ -843,5 +843,139 @@ rival.x, rival.y = 700, 0
 frames(0.5)
 check(own.ghosted == false, 'and answers it the same way')
 
+-- ===========================================================================
+-- THE FINISHED GHOST: taking the flag, in the car you finished in
+-- ===========================================================================
+-- Finishing used to delete the car and respawn it at the end of the race. It now
+-- ghosts it in place, which is a state change instead of two entity events per
+-- driver at the exact moment a whole field is coming home.
+--
+-- Its shape is different from every other reason in the file, and each of those
+-- differences is asserted below.
+-- A clean baseline first. The sections above leave ghosts of their own behind,
+-- and a finished-ghost assertion that passes because a quali ghost was still on
+-- would be worse than no assertion at all.
+rival.x, rival.y = 700, 0
+third.x, third.y = 800, 0
+own.x, own.y = 0, 0
+serverState({ phase = 'waiting', ghostQuali = false, maxResets = -1, totalLaps = 3,
+  drivers = {}, ghosts = {}, ghostFinished = {} })
+handlers['RM_ReleaseSpectate']({ source = 'race' })
+frames(3.0)
+serverState({ phase = 'racing', ghostQuali = false, maxResets = -1, totalLaps = 3,
+  drivers = {}, ghosts = {}, ghostFinished = {} })
+frames(1.0)
+own.alpha = 1
+check(own.ghosted ~= true and rival.ghosted ~= true,
+  'everything solid before the finished-ghost cases begin')
+
+handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race', place = 1 })
+frames(0.2)
+
+-- 1. COLLISION GOES OFF ON OUR OWN CLIENT TOO, which no other reason does.
+--    In BeamMP our car is simulated HERE, so leaving it collidable locally would
+--    let our own sim bounce us off a racer whose sim felt nothing -- and our
+--    position is what gets synced, so that phantom shove would travel. The race
+--    is only provably unaffected if the collision is off on this side as well.
+check(own.ghosted == true, 'a finisher s own car has its collisions dropped locally')
+
+-- 2. AND IT IS NOT FADED FOR US. Collision and alpha are separate calls and only
+--    one of them is the driver's business: their view of their own car does not
+--    change at all.
+check(own.alpha == 1, 'but it is NOT faded for its own driver: their view is unchanged')
+
+-- 3. NOTHING WAS CREATED OR DESTROYED. The acceptance criterion, asserted at the
+--    only moment it can be violated.
+check(world[OWN_ID] ~= nil, 'and the car still exists: nothing was despawned')
+
+-- 4. A STILL-RACING CAR CANNOT REACH IT. Driving a racer straight through the
+--    ghosted car changes nothing about either of them: the ghost stays a ghost,
+--    and the racer is never handed a collision to resolve.
+rival.x, rival.y = 0, 0            -- driven directly into the finished car
+frames(1.0)
+check(own.ghosted == true,
+  'a racer driven straight into a finished car does not make it solid again')
+check(rival.ghosted ~= true,
+  'and the racer is untouched: no ghost is imposed on a car still in the race')
+
+-- 5. THE FLAG HANDS IT BACK. Once the race concludes the reason comes off and
+--    the car is solid again, in both senses.
+rival.x, rival.y = 700, 0
+serverState({ phase = 'finished', maxResets = -1, totalLaps = 3, drivers = {} })
+handlers['RM_ReleaseSpectate']({ source = 'race' })
+frames(1.0)
+check(own.ghosted == false, 'the flag hands the collisions back')
+check(own.alpha == 1, 'and the car is solid in both senses')
+
+-- 6. RESETTING WHILE GHOSTED KEEPS THE GHOST. A finished driver whose car lands
+--    in the water can recover it, and must not come back solid in the middle of
+--    a race still running. The reset reloads the vehicle Lua VM, which is where
+--    setGhostEnabled lives, so the toggle has to be re-applied to the car that
+--    came back.
+serverState({ phase = 'racing', maxResets = -1, totalLaps = 3, drivers = {} })
+handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race', place = 2 })
+frames(0.2)
+check(own.ghosted == true, 'ghosted on finishing')
+own.ghosted = false                 -- what a reset does to the vehicle VM
+RM.onVehicleResetted(OWN_ID)
+frames(0.5)
+check(own.ghosted == true, 'and still ghosted after a reset put the car back solid')
+check(own.alpha == 1, 'still unfaded for its own driver')
+
+-- 7. GHOST-TO-GHOST IS PASS-THROUGH, and it is free: setGhostEnabled is per
+--    vehicle, so two finished cars are both intangible and neither can shunt the
+--    other into the racing line.
+handlers['RM_Update']({
+  rmProtocol = 2, phase = 'racing', maxResets = -1, totalLaps = 3, drivers = {},
+  ghostFinished = { RIVAL_PID },
+})
+frames(0.5)
+check(rival.ghosted == true, 'another finished driver is ghosted from the roster')
+rival.x, rival.y = 0, 0             -- parked inside our own finished car
+frames(1.0)
+check(own.ghosted == true and rival.ghosted == true,
+  'two finished cars pass through each other rather than colliding')
+
+-- 8. A DISCONNECT WHILE GHOSTED LEAVES NOTHING BEHIND. The roster is
+--    authoritative, so a pid that stops appearing in it has its ghost dropped --
+--    which is what stops a departed driver leaving a permanently intangible car.
+rival.x, rival.y = 700, 0
+handlers['RM_Update']({
+  rmProtocol = 2, phase = 'racing', maxResets = -1, totalLaps = 3, drivers = {},
+  ghostFinished = {},
+})
+frames(1.0)
+check(rival.ghosted == false,
+  'a pid dropping out of the roster drops its ghost with it')
+
+serverState({ phase = 'finished', maxResets = -1, totalLaps = 3, drivers = {} })
+handlers['RM_ReleaseSpectate']({ source = 'race' })
+frames(1.0)
+
+-- ===========================================================================
+-- ORDINAL SUFFIXES on the placement message
+-- ===========================================================================
+-- 1st, 2nd, 3rd, 4th. The teens are the trap: 11th, 12th and 13th take "th"
+-- while 21st, 22nd and 23rd do not, so this cannot be a lookup on the last digit.
+do
+  local ord = RM.ordinalForTest
+  check(type(ord) == 'function', 'the ordinal formatter is reachable for testing')
+  if type(ord) == 'function' then
+    local cases = {
+      [1] = '1st',  [2] = '2nd',  [3] = '3rd',  [4] = '4th',
+      [11] = '11th', [12] = '12th', [13] = '13th', [14] = '14th',
+      [21] = '21st', [22] = '22nd', [23] = '23rd', [24] = '24th',
+      [101] = '101st', [111] = '111th', [112] = '112th', [113] = '113th',
+    }
+    local keys = {}
+    for k in pairs(cases) do keys[#keys + 1] = k end
+    table.sort(keys)
+    for _, n in ipairs(keys) do
+      check(ord(n) == cases[n],
+        'ordinal ' .. n .. ' is ' .. cases[n] .. ' (got ' .. tostring(ord(n)) .. ')')
+    end
+  end
+end
+
 print(string.format('ghost_test: %d checks, %d failures', checks, fails))
 if fails > 0 then os.exit(1) end

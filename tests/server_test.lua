@@ -171,6 +171,7 @@ end
 -- the two Lua halves and most would be wrong by default for a new one, so a
 -- caution rides alongside `racing` rather than replacing it. These checks are
 -- what keep it that way.
+
 removeTree('Resources')
 
 dofile('server/RaceManager/main.lua')
@@ -180,6 +181,14 @@ local function check(cond, msg)
   checks = checks + 1
   if not cond then fails = fails + 1; print('FAIL: ' .. msg) end
 end
+-- PAST THE HOLD AT THE FLAG. A race no longer closes on the tick the last car
+-- crosses: it holds for race.endDelay seconds first, so finished drivers stay
+-- ghosted long enough to see the finish. Anything that reads the results file
+-- has to let that expire.
+local function settleRace()
+  for _ = 1, 70 do RM_Tick() end
+end
+
 local function driver(name)
   for _, d in ipairs(lastState.drivers) do
     if d.name == name then return d end
@@ -653,6 +662,7 @@ RM_onPlayerDisconnect(3)                -- Cara drops mid-race -> DNF
 lastChat = nil
 RM_onLap(1, '{"lapTime":90}')
 RM_onLap(2, '{"lapTime":91}')
+settleRace()
 check(lastState.phase == 'finished', 'ghost setup: race 1 finished')
 check(driver('Cara') ~= nil and driver('Cara').status == 'dnf',
   'ghost setup: Cara kept as DNF for the race 1 results')
@@ -666,6 +676,7 @@ RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
 lastChat = nil
 RM_onLap(1, '{"lapTime":90}')
 RM_onLap(2, '{"lapTime":91}')
+settleRace()
 check(lastState.phase == 'finished', 'race 2 auto-finishes without the ghost')
 connected[3] = 'Cara'
 
@@ -698,8 +709,13 @@ RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
 RM_onRequestState(1)
 check(lastState.bestLapPid == nil, 'no fastest lap before anyone has set one')
 
+-- The first crossing of a race is never timed (a grid sits just before the line,
+-- so it is a few metres, not a lap), so it takes two crossings to put a time on
+-- the board at all.
 RM_onLap(1, '{"lapTime":95.5}')
-check(lastState.bestLapPid == 1, 'the first lap set is the fastest lap')
+check(lastState.bestLapPid == nil, 'the first crossing sets no fastest lap')
+RM_onLap(1, '{"lapTime":95.5}')
+check(lastState.bestLapPid == 1, 'the first TIMED lap is the fastest lap')
 check(math.abs(lastState.bestLapTime - 95.5) < 1e-6, 'and its time is broadcast')
 
 RM_onLap(2, '{"lapTime":97.0}')
@@ -742,6 +758,8 @@ lastChat = nil
 RM_onLap(3, '{"lapTime":90.0}')
 RM_onLap(1, '{"lapTime":91.0}')
 RM_onLap(2, '{"lapTime":92.0}')
+lastChat = nil
+settleRace()
 
 local hcPath = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
 local hcFile = hcPath and io.open(hcPath, 'r')
@@ -789,6 +807,8 @@ RM_onLap(2, '{"lapTime":90.0}'); RM_Tick()    -- Bob   P3 -> P1  (+2)
 RM_onLap(4, '{"lapTime":91.0}'); RM_Tick()    -- Dan   P4 -> P2  (+2)
 RM_onLap(3, '{"lapTime":92.0}'); RM_Tick()    -- Cara  P1 -> P3
 RM_onLap(1, '{"lapTime":93.0}')               -- Alice P2 -> P4
+lastChat = nil
+settleRace()
 
 local tiePath = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
 local tieFile = tiePath and io.open(tiePath, 'r')
@@ -832,6 +852,8 @@ for _ = 3, 5 do
   RM_onLap(2, '{"lapTime":92.0}'); RM_Tick()
   RM_onLap(4, '{"lapTime":93.0}'); RM_Tick()
 end
+lastChat = nil
+settleRace()
 
 local hwPath = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
 local hwFile = hwPath and io.open(hwPath, 'r')
@@ -859,6 +881,8 @@ RM_onLap(1, '{"lapTime":90.0}'); RM_Tick()
 RM_onLap(2, '{"lapTime":91.0}'); RM_Tick()
 RM_onLap(3, '{"lapTime":92.0}'); RM_Tick()
 RM_onLap(4, '{"lapTime":93.0}')
+lastChat = nil
+settleRace()
 local shortPath = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
 local shortFile = shortPath and io.open(shortPath, 'r')
 local shortText = shortFile and shortFile:read('*a') or ''
@@ -1445,6 +1469,72 @@ for _ = 1, 4 do RM_CountdownTick() end
 check(lastState.flag == 'green',
   'the next session starts green: a caution carried into the next race is the '
     .. 'kind of state nobody thinks to check')
+
+-- ---------------------------------------------------------------------------
+-- THE HOLD AT THE FLAG: a race does not close on the tick the last car crosses
+-- ---------------------------------------------------------------------------
+-- Finishing ghosts a driver's car in place rather than removing it, and the
+-- ghosts lift when the SESSION ends. Closing the session on the same tick the
+-- last car crossed meant nobody ever saw the finish they had just driven to.
+-- The derby has held for five seconds since it was built; a race now does too.
+do
+  RM_onEndRace(1)
+  RM_onResetLeaderboard(1)
+  for _, pid in ipairs({ 1, 2, 3, 4 }) do RM_onSetSpectating(pid, '{"spectating":false}') end
+  RM_onSetTotalLaps(1, '{"laps":1}')
+  RM_onGenerateGrid(1)
+  RM_onStartCountdown(1)
+  RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+
+  lastChat = nil
+  RM_onLap(1, '{"lapTime":40.0}')      -- Alice is home
+  check(driver('Alice').status == 'finished', 'the first driver takes the flag')
+  check(lastState and lastState.phase == 'racing',
+    'and the session is still running, because somebody is still out')
+
+  RM_onLap(2, '{"lapTime":41.0}')
+  RM_onLap(3, '{"lapTime":42.0}')
+  RM_onLap(4, '{"lapTime":43.0}')      -- and now the whole field is home
+  check(lastState and lastState.phase == 'racing',
+    'the last car crossing does NOT close the session on that tick')
+  check(type(lastChat) == 'string' and lastChat:find('results in', 1, true),
+    'the hold is announced instead (chat: ' .. tostring(lastChat) .. ')')
+
+  -- Four seconds in, still held. The ghosts are still on, because they are
+  -- derived from the phase and the phase is still 'racing'.
+  for _ = 1, 40 do RM_Tick() end
+  check(lastState and lastState.phase == 'racing', 'four seconds later it is still held')
+  check(lastState and type(lastState.ghostFinished) == 'table'
+    and #lastState.ghostFinished == 4,
+    'and every finished driver is still ghosted during the hold')
+
+  -- Past five, it closes and writes the results.
+  lastChat = nil
+  for _ = 1, 20 do RM_Tick() end
+  check(lastState and lastState.phase == 'finished', 'past the hold, the session closes')
+  check(#(lastState.ghostFinished or {}) == 0,
+    'and the ghost list empties, which is what hands every car back its collisions')
+
+  -- A SECOND driver finishing inside the window must not push the end away, or a
+  -- bunched finish could extend a race indefinitely. The derby's arm is
+  -- idempotent for the same reason.
+  RM_onEndRace(1)
+  RM_onResetLeaderboard(1)
+  for _, pid in ipairs({ 1, 2, 3, 4 }) do RM_onSetSpectating(pid, '{"spectating":false}') end
+  RM_onSetTotalLaps(1, '{"laps":1}')
+  RM_onGenerateGrid(1)
+  RM_onStartCountdown(1)
+  RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+  RM_onLap(1, '{"lapTime":40.0}')
+  RM_onLap(2, '{"lapTime":41.0}')
+  RM_onLap(3, '{"lapTime":42.0}')
+  RM_onLap(4, '{"lapTime":43.0}')
+  for _ = 1, 20 do RM_Tick() end       -- two seconds into the hold
+  RM_onLap(1, '{"lapTime":39.0}')      -- a stray report from a finished driver
+  for _ = 1, 40 do RM_Tick() end       -- would take us past five in total
+  check(lastState and lastState.phase == 'finished',
+    'a late report inside the window does not push the end further away')
+end
 
 removeTree('Resources')
 

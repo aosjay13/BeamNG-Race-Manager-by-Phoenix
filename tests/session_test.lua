@@ -262,6 +262,9 @@ clearSignals()
 for lap = 1, 2 do
   for pid = 0, 4 do RM_onLap(pid, '{"lapTime":' .. (95 + pid) .. '}') end
 end
+-- Past the hold at the flag: a race no longer closes on the tick the last car
+-- crosses, so the field stays ghosted for a moment (see race.endDelay).
+for _ = 1, 70 do RM_Tick() end
 check(lastState.phase == 'finished', 'the race ends when every driver has finished')
 
 -- Every participant, not just the last one to cross the line. The release is

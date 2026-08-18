@@ -46,8 +46,12 @@ local function makeVehicle(id, speed)
   function v:setPositionRotation(x, y, z)
     placements[#placements + 1] = { x = x, y = y, z = z }
   end
-  function v:queueLuaCommand(cmd) vehCommands[#vehCommands + 1] = tostring(cmd) end
-  function v:setMeshAlpha() end
+  function v:queueLuaCommand(cmd)
+    vehCommands[#vehCommands + 1] = tostring(cmd)
+    if cmd == 'obj:setGhostEnabled(true)'  then self.ghosted = true  end
+    if cmd == 'obj:setGhostEnabled(false)' then self.ghosted = false end
+  end
+  function v:setMeshAlpha(a) self.alpha = a end
   function v:delete() world[self.id] = nil end
   return v
 end
@@ -127,22 +131,44 @@ world[C] = makeVehicle(C, 20)
 attached = world[OWN_ID]
 
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
-handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race' })
-check(world[OWN_ID] == nil, 'a race finisher is taken off the track')
-check(attached ~= nil and attached:getID() == A,
-  'and lands on the fastest car still running, not on their own parked one')
+handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race', place = 3 })
 
--- THE BACK-TO-BACK CASE. That car finishes and is removed under them.
+-- TAKING THE FLAG CREATES AND DESTROYS NOTHING. The car stays exactly where it
+-- is, with its collisions off, and the driver stays in it. It used to be deleted
+-- here and respawned at the end of the race -- an entity destroy and an entity
+-- create per driver, at the one moment a whole field is finishing together.
+check(world[OWN_ID] ~= nil, 'a race finisher KEEPS their car: nothing is despawned')
+check(world[OWN_ID].ghosted == true, 'it is ghosted instead, so nobody racing can touch it')
+check(attached ~= nil and attached:getID() == OWN_ID,
+  'and the driver stays in it rather than being thrown at somebody else s car')
+
+-- THE OWNER'S OWN VIEW DOES NOT CHANGE. Collision and alpha are separate calls,
+-- and only one of them is the driver's business: their car goes intangible and
+-- stays opaque. Everyone else sees it faded, which is asserted in ghost_test
+-- where there are remote cars to fade.
+check(world[OWN_ID].alpha == nil or world[OWN_ID].alpha == 1,
+  'a finisher s own car is never faded for them')
+
+-- DRIVING IS KEPT. A finished driver spectates BY driving: they are already
+-- unscoreable and untouchable, so a free car cannot affect the race.
+check(blockedGroups['raceManagerSpectate'] ~= true,
+  'and they can still drive it, which is how they spectate')
+
+-- THE CAR YOU ARE WATCHING CAN STILL VANISH -- not from a finish any more, but
+-- from a disconnect, which deletes the car for everyone. The view has to move on
+-- rather than sit on a hole.
+attached = world[A]
+frames(0.2)
 world[A] = nil
 frames(0.6)
 check(attached ~= nil and attached:getID() == B,
-  'when the car being watched goes, the view moves on to the next one moving')
+  'a watched car that disconnects hands the view to the next one moving')
 
--- And again, a moment later, which is what a bunched finish actually looks like.
+-- And again, immediately after, which is what a mass disconnect looks like.
 world[B] = nil
 frames(0.6)
 check(attached ~= nil and attached:getID() == C,
-  'and again when the next one finishes right behind it')
+  'and again when the next one goes right behind it')
 
 -- GONE IS NOT THE SAME AS STOPPED. A car that parks is still a car; if a driver
 -- wants to watch it park, that is their business.
@@ -291,16 +317,27 @@ check(#placements == 0,
   'a derby release places the car nowhere: it is left where the derby left it '
     .. '(got ' .. #placements .. ' placement(s))')
 
--- The race path is untouched by that. A finishing field still gets stood up on
--- slots, which is what stops it respawning into itself.
+-- A RACE RELEASE PLACES NOTHING EITHER, now that nothing was removed.
+--
+-- It used to stand the whole field back on the grid, which was necessary while
+-- finishing deleted the car: something had to put it back, and putting a whole
+-- field back at once needed slots to stop them respawning into each other.
+-- Nothing is removed now, so there is nothing to put back -- and a driver who
+-- spent the last two laps spectating from wherever they drove to is released
+-- exactly there. Teleporting the field at the flag would be the same entity
+-- churn this change exists to remove, wearing a different hat.
 placements = {}
 handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race' })
 frames(0.2)
+check(world[OWN_ID] ~= nil and world[OWN_ID].ghosted == true,
+  'the finisher is ghosted in place')
 handlers['RM_ReleaseSpectate']({ source = 'race', order = 1, count = 1 })
 frames(3.0)
-check(#placements > 0,
-  'a RACE release still stands the car on a start position (got '
+check(#placements == 0,
+  'a RACE release places the car nowhere either: it was never taken away (got '
     .. #placements .. ')')
+check(world[OWN_ID] ~= nil and world[OWN_ID].ghosted == false,
+  'and the flag hands its collisions back')
 
 if fails == 0 then
   print('spectate_test: ' .. checks .. ' checks, 0 failures')

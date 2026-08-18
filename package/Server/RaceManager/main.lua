@@ -149,6 +149,22 @@ local race = {
   -- then the run from the grid to the first crossing is a part lap that must not
   -- be timed. See outLapOwed.
   gridOffLine  = false,
+  -- THE HOLD AT THE FLAG. `endsAt` is the race.time the session actually closes
+  -- at, or nil when nothing has armed it; `endDelay` is how long that hold is.
+  --
+  -- The derby has had one of these since it was built (derby.endDelay). A race
+  -- ended on the spot, which meant the tick the last car crossed the line was
+  -- the tick every ghost lifted and every finished driver got their collisions
+  -- back, with nobody given a moment to see any of it.
+  --
+  -- ON THE TABLE RATHER THAN AS A CONSTANT, and that is not a style choice: the
+  -- top level of this file is a function and Lua allows it 200 locals, which
+  -- this chunk is close enough to that adding two named ones pushed it over and
+  -- the file silently failed to compile. Same reason the derby keeps its own
+  -- here. Set endDelay to 0 to close the session the instant the field is home.
+  endsAt       = nil,
+  endReason    = nil,
+  endDelay     = 5,
   -- WHERE those start positions are: { x, y, z, hx, hy } per slot, slot 1 first.
   -- Reported by a client when a track is loaded or edited, and set directly when
   -- a saved layout is loaded. The count above is enough to warn that a field is
@@ -829,7 +845,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.8.2'
+local RM_BUILD = '0.8.3'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -839,6 +855,37 @@ local function ghostRoster()
   local list = {}
   for pid, g in pairs(ghosts) do
     list[#list + 1] = { pid = pid, endsAt = g.startedAt + g.duration }
+  end
+  return list
+end
+
+-- WHO IS OUT OF THIS RACE BUT STILL ON THE MAP: the finished-driver ghost list.
+--
+-- Taking the flag no longer deletes the car. It stays where it is with its
+-- collisions off, so a driver can go on driving it and watch the rest of the
+-- race without being able to touch anyone still in it. This is the list every
+-- client ghosts, and it carries player ids for the same reason the reset roster
+-- does: a vehicle id is a local scene-object id and means nothing anywhere else.
+--
+-- AUTHORITATIVE, not an event. A pid absent from this list has no finished
+-- ghost, which is what makes a missed packet, a late join and a disconnect all
+-- self-correct: the client walks what it applied and drops anything no longer
+-- named here.
+--
+-- DNF and DSQ are in it too. They are as out of the race as a finisher is, and
+-- leaving a retired car solid on the racing line would put back the obstacle
+-- this whole change removes.
+--
+-- Only while a race is actually running. Once the race is over the list empties
+-- and every client hands the collisions back, which is the un-ghost at the flag.
+local function finishedRoster()
+  local list = {}
+  if race.phase ~= 'racing' and race.phase ~= 'countdown' then return list end
+  for _, rec in pairs(players) do
+    local st = rec.status
+    if st == 'finished' or st == 'dnf' or st == 'dsq' then
+      list[#list + 1] = rec.id
+    end
   end
   return list
 end
@@ -954,6 +1001,7 @@ local function broadcastState(targetPid)
     ghostMinSec  = GHOST_MIN_SECONDS,
     ghostMaxSec  = GHOST_MAX_SECONDS,
     ghosts       = ghostRoster(),
+    ghostFinished = finishedRoster(),
     -- Qualifying rules and clock.
     ghostQuali     = race.ghostQuali,
     -- Whether this session opens with an out lap, so a client can say so before
@@ -997,10 +1045,15 @@ end
 -- their camera pinned to freecam until the session ends. `source` scopes the
 -- lock so the racing state machine and the isolated derby module can never
 -- release each other's spectators.
-local function forceSpectate(pid, reason, source)
+local function forceSpectate(pid, reason, source, place)
   MP.TriggerClientEvent(pid, 'RM_ForceSpectate', Util.JsonEncode({
     reason = reason or 'You are out of this session',
     source = source or 'race',
+    -- Where they finished, for the driver's own "you placed Nth". Sent only on
+    -- the finish path and LOCKED HERE, at the crossing: it is the count of
+    -- drivers already home, so it cannot be revised by anything that happens to
+    -- the field afterwards.
+    place  = place,
   }))
 end
 
@@ -1512,12 +1565,22 @@ local function retireDriver(rec, reason)
   if not onTrack(rec) then return false end
   rec.status = 'finished'
   rec.finishTime = race.time
-  -- Taking the flag ends the ghost with it. The car is about to be removed and
-  -- the driver put in freecam, so there is nothing left to be intangible -- and
-  -- a ghost left standing against a deleted car would be broadcast to everyone
-  -- for the rest of the session.
+  -- The RESET ghost ends here, and only that one. It is a timed thing that
+  -- exists to cover a car materialising in the pack, and a driver who has just
+  -- taken the flag is not doing that.
+  --
+  -- What replaces it is the FINISHED ghost, which this does not touch: that one
+  -- is not a per-driver event at all, it is derived from `status` by
+  -- finishedRoster() and applied by every client off the state broadcast. Firing
+  -- an event here as well would be two sources of truth for one fact.
   clearGhost(rec.id, 'driver finished')
-  forceSpectate(rec.id, reason, 'race')
+  -- Their place, counted at the crossing. rec.status is already 'finished'
+  -- above, so this driver is included and the count IS their position.
+  local place = 0
+  for _, r in pairs(players) do
+    if r.status == 'finished' then place = place + 1 end
+  end
+  forceSpectate(rec.id, reason, 'race', place)
   return true
 end
 
@@ -1716,6 +1779,8 @@ function RM_onStartQualifying(pid)
   lapFirsts = {}
   race.bestLapTime, race.bestLapPid = nil, nil
   race.time = 0.0
+  -- The hold goes with the clock it was measured against.
+  race.endsAt, race.endReason = nil, nil
   race.qualiTime = 0.0
   if not formGrid('quali', MP.GetPlayerName(pid) or pid) then return end
   print(string.format('[RaceManager] Qualifying grid formed by %s (%d entrant(s), entry: %s%s%s)',
@@ -2003,6 +2068,8 @@ end
 formGrid = function (kind, byName)
   race.sessionKind = (kind == 'quali') and 'quali' or 'race'
   race.time = 0.0
+  -- The hold goes with the clock it was measured against.
+  race.endsAt, race.endReason = nil, nil
   race.finalLap     = false
   race.finalLapLeft = 0
   lapFirsts = {}
@@ -2773,6 +2840,8 @@ function RM_CountdownTick()
   -- to check.
   race.flag = 'green'
   race.time = 0.0
+  -- The hold goes with the clock it was measured against.
+  race.endsAt, race.endReason = nil, nil
   race.qualiTime = 0.0
   race.finalLap     = false
   race.finalLapLeft = 0
@@ -2892,6 +2961,8 @@ function RM_onResetLeaderboard(pid)
   race.phase = 'waiting'
   race.sessionKind = 'race'
   race.time = 0.0
+  -- The hold goes with the clock it was measured against.
+  race.endsAt, race.endReason = nil, nil
   race.qualiTime = 0.0
   race.qualiOutLapRun = false
   race.finalLap     = false
@@ -2985,8 +3056,24 @@ function RM_onLap(pid, rawData)
   -- driver on their out lap would otherwise be stood down with no time at all,
   -- eliminated by the one lap the session promised not to score. The crossing
   -- still counts as a crossing: lap counter advances, telemetry cleared.
+  --
+  -- A RACE'S FIRST LAP SETS NO TIME. It is a lap off a STANDING START, and a lap
+  -- that begins at a standstill is not the same measurement as a flying one: it
+  -- carries the launch, the run to the first corner and whatever the field did
+  -- to each other on the way there. Leaving it in the fastest-lap contest scores
+  -- a driver against a lap nobody else was driving either.
+  --
+  -- This used to be gated on rec.outLap, which is only set when the grid sits
+  -- AWAY from the start/finish line -- so on an ordinary circuit the standing
+  -- lap went on the board like any other.
+  --
+  -- The crossing still COUNTS. It is one of the laps the race promised: the
+  -- counter advances, laps led is credited, telemetry clears. Only the time goes.
+  --
+  -- NOT ON A ONE-LAP RACE, because there the standing lap is the only lap there
+  -- is and dropping its time leaves the results with no times in them at all.
   local untimedFirstLap = false
-  if rec.outLap and not quali then
+  if not quali and (rec.currentLap or 0) <= 1 and (race.totalLaps or 0) > 1 then
     rec.outLap = false
     untimedFirstLap = true
     MP.SendChatMessage(rec.id,
@@ -3093,8 +3180,40 @@ function RM_onLap(pid, rawData)
       broadcastState()
       return
     end
-    finishSession(race.finalLap and 'every driver took the flag'
-      or (quali and 'every driver used their lap allowance' or 'all drivers finished'))
+    -- ARM THE HOLD rather than closing on the spot. Idempotent, for the same
+    -- reason the derby's is: two drivers taking the flag in the same tick must
+    -- not push the end further away, or a bunched finish extends the session.
+    --
+    -- Only the AUTOMATIC ending is held. An admin pressing End Session means
+    -- now and gets now, which is why this is here rather than in finishSession.
+    --
+    -- What the hold buys happens because the phase is still 'racing' underneath
+    -- it: finished drivers stay ghosted, the chequered flag stays out, and the
+    -- field gets a moment to look at the finish.
+    local why = race.finalLap and 'every driver took the flag'
+      or (quali and 'every driver used their lap allowance' or 'all drivers finished')
+    -- RACES ONLY. A qualifying session ending is not a finish anybody watches:
+    -- there is no flag, no placement and nothing ghosted to look at, and holding
+    -- it just delays the grid the admin is waiting to generate.
+    if quali then
+      finishSession(why)
+      return
+    end
+    if race.endsAt then
+      broadcastState()
+      return
+    end
+    if race.endDelay <= 0 then
+      finishSession(why)
+      return
+    end
+    race.endsAt    = race.time + race.endDelay
+    race.endReason = why
+    MP.SendChatMessage(-1, string.format(
+      '[RaceManager] %s: results in %d seconds.', why, race.endDelay))
+    print('[RaceManager] Race decided (' .. why .. '), closing in '
+      .. race.endDelay .. 's')
+    broadcastState()
     return
   end
   rec.currentLap = completed + 1
@@ -6889,6 +7008,14 @@ function RM_Tick()
   -- time is stamped from; qualifying additionally runs its own wall clock,
   -- which is what closes the session when the admin set a time limit.
   race.time = race.time + TICK_MS / 1000.0
+  -- The hold at the flag. Checked before anything else in the tick: once it
+  -- expires there is no session left for the rest of this function to run.
+  if race.endsAt and race.time >= race.endsAt then
+    local reason = race.endReason or 'race over'
+    race.endsAt, race.endReason = nil, nil
+    finishSession(reason)
+    return
+  end
   if race.phase == 'qualifying' then
     if race.finalLap then
       -- The clock has already expired and the field is on its last lap. What is

@@ -6,6 +6,99 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.8.3 - Finishing without despawning, and placement that stays above ground
+
+### Fixed (placement on uneven terrain)
+
+- **A generated grid now follows the ground.** Every slot used to be handed the
+  height of wherever the car generating it was standing, which is a flat plane
+  laid through a hill: rows behind a car on a crest ended up inside the slope and
+  rows behind one in a dip floated above it. Each slot now finds the terrain
+  under itself. What is preserved is the anchor's height *above ground*, so a
+  grid laid out on a bridge stays on the bridge.
+- **Ctrl+click no longer places gates in the dirt.** A gate placed by driving
+  takes the car's origin, about half a metre up; a clicked one took the raycast
+  hit, which is the terrain surface itself. Clicked gates therefore sat lower
+  than driven ones on the same road, far enough to disappear into a slope.
+- **Shift+scroll raises and lowers the selected gate in nudge mode.** There was
+  no control that moved a gate vertically at all: the Gate size sliders set
+  height and depth, which is a gate's *extent*, not its position, so a buried
+  gate was permanent. It clamps at ground clearance, so the control that digs a
+  gate out cannot be used to bury one.
+- **A Last Checkpoint reset no longer spawns the car underground**, which was the
+  same bug seen from the other end: the respawn put the car's origin exactly at
+  the gate's height, so a gate sitting on the surface left the car half buried.
+  Respawns are now clamped above the ground whatever the gate claims, which also
+  rescues layouts saved before this.
+- **A gate inserted mid-route no longer faces the wrong way.** The heading for a
+  clicked gate is taken from the gate before it, but with a gate selected the
+  click is an *insert* and the code read the last gate on the route instead. A
+  gate inserted into the middle of a lap was therefore aimed at wherever the lap
+  finished, which is what stood a car sideways across the track on a reset.
+
+### Fixed (from live testing)
+
+- **A race's first lap no longer sets a lap time.** It is run off a standing
+  start, so it carries the launch and the scramble to the first corner and is not
+  the same measurement as a flying lap. The rule existed and was gated on the
+  grid sitting *away* from the start/finish line, so on an ordinary circuit the
+  standing lap went on the board like any other and could take fastest lap. The
+  crossing still counts in every other way; only the time is dropped. A **one-lap
+  race is exempt**, because there the standing lap is the only lap there is.
+
+  `docs/REFERENCE.md` already described the corrected behaviour, so the code and
+  the docs had been disagreeing.
+
+- **The last lap no longer lights CP 1 ahead of the finish.** The look-ahead gate
+  wraps -- the gate after the start/finish is CP 1 -- so on the final lap it drew
+  a gate for a lap nobody was going to drive. Only the wrap is suppressed: the
+  second gate is still shown everywhere else on the last lap.
+
+- **A five second hold at the flag.** A race no longer closes on the tick the
+  last car crosses. It announces the hold in chat, waits (`race.endDelay`), then
+  writes results and releases the field -- so finished drivers stay ghosted long
+  enough to actually see the finish. Races only; qualifying closes immediately,
+  because there is no flag, no placement and nothing ghosted to look at. The
+  derby has had the same hold since it was built.
+
+### Changed (finishing)
+
+- **Taking the flag no longer despawns your car.** It is ghosted in place
+  instead, and you go on driving it to watch the rest of the race.
+
+  The old behaviour deleted the finisher's vehicle and respawned the whole field
+  on the grid when the race ended. That is an entity destroy and an entity create
+  per driver, plus the network sync churn each drags behind it, all landing at
+  the one moment a field is coming home together and hitting hardest on the
+  machines least able to absorb it. Finishing is now a state change and nothing
+  else: no entity is created, no entity is destroyed, and no reset routine runs.
+
+  **The ghost is asymmetric on purpose.** You see your own car exactly as before;
+  everyone else sees it translucent. Collision is dropped on *every* client
+  including your own, which is what makes the race provably unaffected: in BeamMP
+  your car is simulated on your machine, so leaving it collidable locally would
+  bounce you off a racer whose own simulation felt nothing, and your position is
+  what gets synced.
+
+  **Finished cars pass through each other too**, so spectating drivers cannot
+  shunt one another into the racing line. World and terrain collision are
+  untouched, so nobody falls through the map.
+
+  A finisher gets a **chequered flag** for the rest of the session, a count of
+  the drivers they are still waiting on, and a one-off "you placed 3rd" message.
+  Their place is locked at the crossing. Resets still work, still cost nothing,
+  and the car comes back still ghosted -- a reset reloads the vehicle's Lua VM,
+  which is where the collision toggle lives, so it is re-asserted on the way out.
+
+  DNF and DSQ drivers get the same treatment. At the flag every ghost is lifted
+  together and nothing is teleported: drivers are released wherever they drove
+  to.
+
+- **`spectate.attachToRunner` no longer runs on finishing.** It existed because
+  deleting the car left BeamNG to hand the view to whatever vehicle was nearest,
+  which with a field finishing together put every client on the same arbitrary
+  driver. It still covers a car that **disconnects** out from under the view.
+
 ## 0.8.2 - Branch gates: two ways through one checkpoint
 
 ### Changed (branching)
