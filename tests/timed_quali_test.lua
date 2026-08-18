@@ -288,6 +288,9 @@ check(lastState.finalLap ~= true, 'a race never arms the final lap')
 for lap = 1, 2 do
   for pid = 0, 2 do RM_onLap(pid, '{"lapTime":' .. (95 + pid) .. '}') end
 end
+-- Past the hold at the flag: a race no longer closes on the tick the last car
+-- crosses, so the field stays ghosted for a moment (see race.endDelay).
+for _ = 1, 70 do RM_Tick() end
 check(lastState.phase == 'finished', 'the race finishes on its lap count as before')
 
 if fails == 0 then

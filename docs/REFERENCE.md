@@ -73,7 +73,7 @@ live timing is already there.
 
 **Retiring** is how you leave a session you are already in. **⚑ Retire** in the
 Race Entry row asks first, then treats it exactly like taking the flag: the car
-comes off the track and you go to spectate. It is a **classified** retirement,
+is ghosted where it stands and you go to spectate in it. It is a **classified** retirement,
 not a disappearance. You hold a position, you are in the results file, and you
 score cup points like any other DNF.
 
@@ -149,6 +149,12 @@ course you want to race:
    turn it, **ctrl+click** open ground to place a new one. It works on whichever
    editor tab you are on, so checkpoints, joker gates, pit stalls, branch gates
    and start positions are all movable.
+
+   **Shift+scroll raises and lowers** the selected gate. This is the only control
+   that moves a gate vertically: the **Gate size** sliders set how far it extends
+   *up and down from where it sits*, which is a different thing, so a gate that
+   ended up in the terrain could not be recovered with them. It will not let you
+   push a gate below the ground under it.
 
    A placed gate faces the way the route is already travelling, from the previous
    gate toward the point you clicked, so clicking along a road in order gives you
@@ -393,8 +399,8 @@ that matters. Instead:
   badge;
 - every driver stays controllable and on track;
 - each driver's session ends **as they cross the start/finish line** - their
-  car is taken off the track exactly as it is when a lap allowance runs out;
-- when the last one is home, everybody respawns together.
+  car is ghosted in place exactly as it is when a lap allowance runs out;
+- when the last one is home, everybody's collisions come back together.
 
 That last lap still **counts**: a time set on it goes into your Best Lap and
 can move you up the order. The grid is not frozen at expiry, it settles when
@@ -866,15 +872,33 @@ next grid clears it and puts them in the race properly.
 Two things happen automatically so the track only ever holds cars that are
 still racing:
 
-- **A driver who takes the flag is removed from the track.** A finished car has
-  nothing left to gain and is an obstacle for everyone still running. The camera
-  is put on a car that is **still moving** - not on their own parked one, and not
-  into freecam - and from there **tab cycles targets** exactly as it normally
-  does. The mod never changes your camera *mode*: whatever view you were driving
-  in is the view you spectate in.
-  If the car you are watching **finishes too**, the view moves on to the next one
-  still moving - once, and only because that car is gone. A car that merely
-  parks is left alone, and a car you tabbed to yourself is never taken off you.
+- **A driver who takes the flag keeps their car, and it becomes a ghost.** You
+  stay exactly where you are, in the car you finished in, and you can drive it
+  anywhere on the map to watch the rest of the race.
+
+  **You still see your own car normally.** Everyone else sees it translucent.
+  Its collisions are off in both directions: nobody still racing can hit, block,
+  push, ram or draft off you, and you cannot touch their physics at all. Finished
+  cars also pass through **each other**, so nobody can shunt a fellow spectator
+  into the racing line. World and terrain collision are untouched, so you sit on
+  the map as normal.
+
+  **Nothing is created or destroyed at the flag.** Your car used to be deleted
+  and respawned at the end of the race, which is an entity destroy and an entity
+  create per driver at the one moment a whole field is coming home. That was the
+  worst of it on a low-end machine, and it is gone: finishing is now a change of
+  state and nothing else.
+
+  You get a **chequered flag** for the rest of the session, with a count of how
+  many drivers you are still waiting on, and a one-off message telling you where
+  you placed. Resets still work if you land in the water, they cost you nothing,
+  and the car comes back still ghosted.
+
+  The mod never changes your camera *mode*: whatever view you were driving in is
+  the view you spectate in, and **tab cycles targets** as it normally does. If a
+  car you were watching **disconnects**, the view moves on to the next one still
+  moving. A car that merely parks is left alone, and a car you tabbed to yourself
+  is never taken off you.
 - **The node grabber is switched off for the whole of a derby** - form-up,
   countdown and running. Dragging physics nodes is a debug tool everywhere else
   and a winning move in a demolition derby: it will right your own wreck, or put
@@ -1029,9 +1053,10 @@ is a fraction of a lap, and timed it would take fastest lap off every driver who
 ever set an honest one. It is detected from the track and travels with the
 layout, so there is nothing to remember on the night.
 
-**A race's first lap counts - it just is not timed.** A field launching from a
-standing grid, or from slots spread round a circuit, would otherwise hand fastest
-lap to whoever started nearest the line. So a 10-lap race is **10 crossings**, and
+**A race's first lap counts - it just is not timed.** It is run off a standing
+start, so it carries the launch and the scramble to the first corner and is not
+the same measurement as a flying lap. A **one-lap** race is the exception: there
+the standing lap is the only lap there is, so it keeps its time. So a 10-lap race is **10 crossings**, and
 the first of them sets no lap time. That is the difference from **qualifying's out
 lap**, which is a lap given *away*: not timed *and* not one of the laps you were
 promised, so it is added on top of the allowance.

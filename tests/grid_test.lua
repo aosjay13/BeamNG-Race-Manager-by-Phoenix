@@ -8,8 +8,8 @@
 --   * grid assignment: every gridded driver is told which start position to
 --     stand on, and drivers who withdraw are told to stand down
 --   * qualifying limits: a per-driver lap allowance and a wall-clock limit
---   * a finished driver is taken off the track and given their car back at
---     the flag
+--   * a finished driver stops being scored and is released at the flag (their
+--     car is ghosted in place rather than removed -- see ghost_test)
 
 local connected = { [1] = 'Alice', [2] = 'Bob', [3] = 'Cara', [4] = 'Dan' }
 local lastState  = nil
@@ -225,6 +225,9 @@ check(lastState.phase == 'racing', 'the race continues for the others')
 
 RM_onLap(1, '{"lapTime":91}')
 RM_onLap(3, '{"lapTime":92}')
+-- Past the hold at the flag: a race no longer closes on the tick the last car
+-- crosses, so the field stays ghosted for a moment (see race.endDelay).
+for _ = 1, 70 do RM_Tick() end
 check(lastState.phase == 'finished', 'race over once everyone has finished')
 check(#released > 0 and released[#released].source == 'race',
   'the flag gives every removed car back')

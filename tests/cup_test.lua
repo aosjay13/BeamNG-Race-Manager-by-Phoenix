@@ -222,6 +222,9 @@ local function runRace(laps, order)
       RM_onLap(pid, '{"lapTime":' .. (60 + pid) .. '}')
     end
   end
+  -- Past the hold at the flag. A race no longer closes on the tick the last car
+  -- crosses, and a cup round is only banked when the session actually closes.
+  for _ = 1, 70 do RM_Tick() end
 end
 
 local function runQuali(laps, times)
@@ -351,6 +354,8 @@ for _ = 1, 2 do
   RM_Tick(); RM_onLap(1, '{"lapTime":71.0}')
   RM_Tick(); RM_onLap(2, '{"lapTime":72.0}')
 end
+-- Past the hold at the flag: the round is banked when the session closes.
+for _ = 1, 70 do RM_Tick() end
 
 local falconRound = cupEntry('Falcon').rounds[#cupEntry('Falcon').rounds]
 check(falconRound.bonus.fastestLap == 5, 'the fastest lap bonus is awarded')
@@ -494,6 +499,8 @@ for lap = 1, 3 do
   end
   local _ = lap
 end
+-- Past the hold at the flag: the standings are published when the session closes.
+for _ = 1, 70 do RM_Tick() end
 check(cupPushes > pushesBefore, 'scoring a round publishes the new standings')
 check(lastCup.standings[1] ~= nil and lastCup.standings[1].pos == 1,
   'the standings arrive ranked, with a position stamped on each row')
@@ -668,6 +675,8 @@ local function raceWithRetirement()
     RM_Tick(); RM_onLap(2, '{"lapTime":62.0}')
     RM_Tick(); RM_onLap(3, '{"lapTime":63.0}')
   end
+  -- Past the hold at the flag: the round is banked when the session closes.
+  for _ = 1, 70 do RM_Tick() end
   -- Back for the next one. The guest name is unchanged, so the roster
   -- recognises him and hands his display name (and his entry) straight back.
   RM_onPlayerJoin(1)

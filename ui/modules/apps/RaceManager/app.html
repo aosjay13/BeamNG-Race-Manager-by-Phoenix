@@ -70,9 +70,15 @@
       RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
     </span>
     <!-- THE FLAG ENDS THE STATUS RUN, in both panels. Green racing, yellow
-         caution, white last lap, red held or stopped. -->
+         caution, white last lap, red held or stopped, chequered your race is
+         over. The chequered one is a STATE and persists until the session ends;
+         the placement itself is a moment and goes out as a toast instead. -->
     <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
           title="{{ flagTitle() }}">&#x2691;&#xFE0E;</span>
+    <span class="rm-waiting" ng-if="driverFlag === 'checkered' && stillRacing() > 0"
+          title="You are waiting on the drivers still out on track">
+      WAITING ON <b>{{ stillRacing() }}</b>
+    </span>
 
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
       START P{{ gridSlot }}<b ng-if="gridFrozen"> HOLD</b>
@@ -1894,6 +1900,10 @@
     </span>
     <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
           title="{{ flagTitle() }}">&#x2691;&#xFE0E;</span>
+    <span class="rm-waiting" ng-if="driverFlag === 'checkered' && stillRacing() > 0"
+          title="You are waiting on the drivers still out on track">
+      WAITING ON <b>{{ stillRacing() }}</b>
+    </span>
     <span class="rm-driverbar-label rm-entry-out" ng-if="spectating">👁 SPECTATING</span>
     <!-- THEIR OWN PARTICIPATION, reachable from the only thing they can see.
          Both of these used to live in the Race Entry row, which is hidden for a
@@ -2875,6 +2885,16 @@
   .rm-flag-yellow { color: #fdd663; }
   .rm-flag-white  { color: #ffffff; }
   .rm-flag-red    { color: #ff5252; }
+  /* Chequered: the flag glyph is monochrome, so it takes the plain foreground
+     rather than a colour of its own. It is the one flag that is about THIS
+     driver rather than the session, which is why it outranks the rest. */
+  .rm-flag-checkered { color: #e8eaed; }
+  .rm-waiting {
+    font-size: 10px;
+    color: #9aa0a6;
+    white-space: nowrap;
+  }
+  .rm-waiting b { color: #e8eaed; }
   /* The phase pill in the driver bar: same colours as the header's, smaller,
      so both panels open their status run the same way. */
   .rm-driverbar-phase { font-size: 9px; padding: 1px 5px; }

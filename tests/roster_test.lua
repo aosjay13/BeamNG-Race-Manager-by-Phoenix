@@ -294,6 +294,9 @@ RM_Tick(); RM_onLap(1, '{"lapTime":60.0}')
 RM_Tick(); RM_onLap(0, '{"lapTime":61.0}')
 RM_Tick(); RM_onLap(2, '{"lapTime":62.0}')
 
+-- Past the hold at the flag: a race no longer closes on the tick the last car
+-- crosses, so results are written a moment later (see race.endDelay).
+for _ = 1, 70 do RM_Tick() end
 local placeholder = nil
 for _, e in ipairs(readRoster().entries) do
   if e.name == 'Guest_LATE' then placeholder = e end
@@ -364,6 +367,9 @@ RM_onSetTotalLaps(9, '{"laps":1}')
 RM_onGenerateGrid(9)
 RM_onStartCountdown(9)
 for _ = 1, 4 do RM_CountdownTick() end
+-- Two crossings: a race's first one is never timed, so the second is what puts
+-- a lap on the board.
+RM_onLap(2, '{"lapTime":61.5}')
 RM_onLap(2, '{"lapTime":61.5}')
 check(driver(2).raceBest == 61.5, 'lap data still lands on the driver by session id')
 RM_onEndRace(9)
@@ -389,6 +395,9 @@ RM_Tick(); RM_onLap(1, '{"lapTime":60.0}')
 RM_Tick(); RM_onLap(0, '{"lapTime":61.0}')
 RM_Tick(); RM_onLap(2, '{"lapTime":62.0}')
 
+-- Past the hold at the flag, as above: the roster entry is written when the
+-- session closes, not when the last car crosses.
+for _ = 1, 70 do RM_Tick() end
 local ph = nil
 for _, e in ipairs(readRoster().entries) do
   if e.name == 'Guest_UNNAMED' then ph = e end

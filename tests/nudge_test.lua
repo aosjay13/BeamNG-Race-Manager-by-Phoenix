@@ -34,14 +34,14 @@ local VEH_ID = 7
 
 -- The mouse, as ui_imgui reports it.
 local mouse = { clicked = false, down = false, released = false, wheel = 0,
-                wantUi = false, ctrl = false }
+                wantUi = false, ctrl = false, shift = false }
 ui_imgui = {
   IsMouseClicked  = function () return mouse.clicked end,
   IsMouseDown     = function () return mouse.down end,
   IsMouseReleased = function () return mouse.released end,
   GetIO = function ()
     return { WantCaptureMouse = mouse.wantUi, MouseWheel = mouse.wheel,
-             KeyCtrl = mouse.ctrl }
+             KeyCtrl = mouse.ctrl, KeyShift = mouse.shift }
   end,
 }
 
@@ -52,8 +52,20 @@ local ray = { pos = { x = 0, y = 0, z = 50 }, dir = { x = 0, y = 1, z = 0 } }
 local rayHit = { pos = { x = 0, y = 0, z = 0 }, normal = { x = 0, y = 0, z = 1 } }
 getCameraMouseRay = function () return ray end
 cameraMouseRayCast = function () return rayHit end
--- Flat ground at z = 0: the ray starts 50 above and travels 50 to reach it.
-castRayStatic = function (origin, dir, maxDist) return 50 end
+-- REAL TERRAIN, not a constant. The old stub returned 50 whatever it was asked,
+-- which with a probe that starts above the query point reports the ground as
+-- being exactly where you asked about -- so every height test would pass against
+-- a world with no shape at all.
+--
+-- `terrainAt` is the map: flat at z = 0 by default, and tests set it to a
+-- function to build a slope or a ledge.
+local terrainAt = function (x, y) return 0 end
+castRayStatic = function (origin, dir, maxDist)
+  local g = terrainAt(origin.x, origin.y)
+  local dist = origin.z - g
+  if dist < 0 or dist > (maxDist or math.huge) then return maxDist or 1e9 end
+  return dist
+end
 
 -- THE CURSOR, REACHED THE WAY THE GAME REACHES IT.
 --
@@ -441,6 +453,162 @@ check(#gates() == n + 1, 'driving to a spot and placing a gate is untouched')
 local last = gates()[#gates()]
 check(math.abs(last.x - 12) < 1e-6 and math.abs(last.y - 34) < 1e-6,
   'and it still lands exactly where the car is standing')
+
+-- ===========================================================================
+-- GATES MUST CLEAR THE GROUND, AND MUST BE RECOVERABLE WHEN THEY DO NOT
+-- ===========================================================================
+-- Reported from a live night on uneven terrain: ctrl+clicked checkpoints ended
+-- up under the map, no control in the editor could raise them, and a Last
+-- Checkpoint reset onto one spawned the car half buried and sometimes sideways.
+-- Three separate faults, one symptom.
+
+-- --- 1. A CLICKED GATE SITS AT DRIVING HEIGHT, NOT ON THE DIRT ---------------
+-- The raycast lands ON the terrain. A gate placed by DRIVING takes the car's
+-- origin, which is about half a metre up, so a clicked gate used to sit lower
+-- than a driven one on the same piece of road.
+RM.setEditorTarget('main')
+RM.editorClear()
+RM.setNudgeMode(true)
+frame()
+check(routeState and routeState.nudgeOn == true, 'nudge mode is on for these cases')
+terrainAt = function (x, y) return 0 end
+veh.x, veh.y, veh.z = 0, 0, 0
+RM.editorAdd()                       -- a driven gate, to anchor the route
+ctrlClickAt(0, 100)
+local g = gates()
+check(#g == 2, 'the clicked gate is placed')
+check(g[2] and g[2].z >= 0.49,
+  'a clicked gate clears the ground rather than sitting on it (z='
+    .. tostring(g[2] and g[2].z) .. ')')
+
+-- On a SLOPE, where the bug actually bit: the ground under the click is not the
+-- ground the ray started from.
+terrainAt = function (x, y) return y * 0.1 end     -- rises 1 in 10 along +Y
+rayHit.pos = { x = 0, y = 200, z = 20 }
+ctrlClickAt(0, 200)
+g = gates()
+check(#g == 3, 'a gate is placed on the slope')
+check(g[3] and g[3].z >= 20.49,
+  'and it clears the sloping ground under it, not the flat it was aimed from (z='
+    .. tostring(g[3] and g[3].z) .. ')')
+
+-- --- 2. SHIFT+SCROLL RAISES AND LOWERS A SELECTED GATE ----------------------
+-- The Gate size sliders set HEIGHT and DEPTH, which is how far a gate extends up
+-- and down from where it sits. Neither moves it. Before this there was no
+-- control at all that changed a gate's z, so a buried gate was permanent.
+terrainAt = function (x, y) return 0 end
+RM.editorClear()
+veh.x, veh.y, veh.z = 0, 0, 0
+RM.editorAdd()
+clickAt(0, 0)                         -- select it
+local before = gates()[1] and gates()[1].z
+mouse.shift, mouse.wheel = true, 4
+frame()
+mouse.wheel = 0
+local after = gates()[1] and gates()[1].z
+check(before ~= nil and after ~= nil and after > before,
+  'shift+scroll up raises the selected gate (' .. tostring(before)
+    .. ' -> ' .. tostring(after) .. ')')
+
+mouse.wheel = -2
+frame()
+mouse.wheel = 0
+local lowered = gates()[1] and gates()[1].z
+check(lowered ~= nil and lowered < after, 'and shift+scroll down lowers it again')
+
+-- It cannot be used to bury one: the floor is the same ground clearance every
+-- placement path uses.
+mouse.wheel = -100
+frame()
+mouse.wheel = 0
+mouse.shift = false
+local floored = gates()[1] and gates()[1].z
+check(floored ~= nil and floored >= 0.49,
+  'and it stops at ground clearance rather than digging the gate in (z='
+    .. tostring(floored) .. ')')
+
+-- Plain scroll still turns rather than lifts, which is the control it shares.
+local turnedFrom = gates()[1] and gates()[1].hy
+mouse.wheel = 3
+frame()
+mouse.wheel = 0
+check(gates()[1] and gates()[1].z == floored,
+  'plain scroll does NOT move the gate vertically')
+check(gates()[1] and gates()[1].hy ~= turnedFrom, 'it still turns it')
+
+-- --- 3. AN INSERTED GATE FACES THE WAY THE ROUTE GOES THERE ------------------
+-- A clicked gate takes its heading from the gate BEFORE it. With a gate selected
+-- the click is an INSERT, and the heading used to be read off the last gate on
+-- the route instead -- so a gate inserted into the middle of a lap was aimed at
+-- wherever the lap happened to finish. That is the car standing sideways across
+-- the track on a reset.
+RM.editorClear()
+for i = 1, 3 do
+  veh.x, veh.y, veh.z = 0, i * 100, 0
+  veh.hx, veh.hy = 0, 1
+  RM.editorAdd()
+end
+-- Gate 3 is the last one. Select gate 1 and insert after it, far off to the
+-- side: reading gate 3 would aim the new gate back down the route.
+clickAt(0, 100)
+ctrlClickAt(0, 150)
+g = gates()
+check(#g == 4, 'the gate is inserted rather than appended')
+check(g[2] ~= nil and g[2].hy > 0.9,
+  'and faces the way the route travels THERE (+Y), not back toward the end of '
+    .. 'the lap (hy=' .. tostring(g[2] and g[2].hy) .. ')')
+
+-- ===========================================================================
+-- A GENERATED GRID FOLLOWS THE TERRAIN
+-- ===========================================================================
+-- Reported alongside the checkpoint case: slots generated on uneven ground ended
+-- up under the map. Every slot used to be handed the ANCHOR's z -- the height of
+-- wherever the car generating the grid was standing -- which is a horizontal
+-- plane laid through the hill. On a crest the rows behind the anchor are inside
+-- the slope; in a dip they float above it.
+RM.setNudgeMode(false)
+RM.setEditorTarget('start')
+RM.editorClear()
+
+-- Ground that falls away behind the anchor: 1 in 10 down the -Y axis, which is
+-- the direction a grid is laid back along.
+terrainAt = function (x, y) return y * 0.1 end
+veh.x, veh.y, veh.z = 0, 0, 0.5     -- anchor half a metre up, as a car sits
+veh.hx, veh.hy = 0, 1               -- facing +Y, so the grid runs back down -Y
+RM.generateStartPositions(6, 10, 4, 0, 2)
+frame()
+
+local slots = (routeState or {}).startPositions or {}
+check(#slots == 6, 'six slots are generated (got ' .. #slots .. ')')
+
+-- Row 0 is at the anchor, row 1 ten metres back, row 2 twenty. The ground there
+-- is -1 and -2 metres, so a grid that ignored terrain would leave those rows one
+-- and two metres in the air -- or buried, on ground that rises.
+local ok = true
+for i, sp in ipairs(slots) do
+  local g = terrainAt(sp.x, sp.y)
+  local clear = sp.z - g
+  if clear < 0.4 or clear > 0.7 then
+    ok = false
+    print(string.format('    slot %d: z=%.2f ground=%.2f clearance=%.2f',
+      i, sp.z, g, clear))
+  end
+end
+check(ok, 'every slot sits the same half metre above the ground UNDER IT, '
+  .. 'rather than all sharing the anchor height')
+
+-- The anchor's height above ground is what is preserved, not its absolute z. A
+-- grid generated from a car up on a bridge stays on the bridge.
+RM.editorClear()
+terrainAt = function (x, y) return 0 end
+veh.x, veh.y, veh.z = 0, 0, 20      -- twenty metres up, on a flyover
+RM.generateStartPositions(3, 10, 4, 0, 1)
+frame()
+slots = (routeState or {}).startPositions or {}
+check(#slots == 3, 'three slots on the flyover')
+check(slots[3] ~= nil and slots[3].z > 15,
+  'a grid generated up on a bridge is not dropped to the ground below it (z='
+    .. tostring(slots[3] and slots[3].z) .. ')')
 
 if fails == 0 then
   print('nudge_test: ' .. checks .. ' checks, 0 failures')

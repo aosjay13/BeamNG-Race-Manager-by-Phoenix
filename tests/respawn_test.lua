@@ -176,7 +176,7 @@ handlers['RM_ApplyLayout']({
 })
 handlers['RM_GridAssign']({ slot = 2, order = 1, count = 1 })
 frames(2.0)
-deleted, spawns, spawnedAt = {}, 0, nil
+deleted, spawns, spawnedAt, placedAt = {}, 0, nil, nil
 attached = world[OWN_ID]
 blockedGroups = {}
 
@@ -185,13 +185,22 @@ handlers['RM_ForceSpectate']({
   reason = 'You finished the race - spectating until the flag', source = 'race',
 })
 
-check(deleted[OWN_ID] == true, 'a race finisher IS taken off the track')
+-- ZERO ENTITY EVENTS AT THE FLAG. This is the acceptance criterion the whole
+-- change exists for: taking the flag creates nothing and destroys nothing, so a
+-- field finishing together costs no deletions, no spawns and none of the network
+-- sync churn either of those drags behind it.
+check(deleted[OWN_ID] ~= true, 'a race finisher KEEPS their car: nothing is despawned')
+check(spawns == 0, 'and nothing is spawned either')
 check(deleted[RIVAL_ID] ~= true, "and no other car is touched")
+check(ghosts[OWN_ID] == true,
+  'what happens instead is a STATE change: the car is ghosted where it stands')
 check(freeCam == false,
-  'but the camera MODE is left alone -- the driver keeps whatever view they had')
-check(drivingBlocked() == true, 'and driving is filtered off')
-check(attached ~= nil and attached:getID() == RIVAL_ID,
-  'they are put on a car that is still MOVING, so there is a race to watch')
+  'the camera MODE is left alone -- the driver keeps whatever view they had')
+check(drivingBlocked() == false,
+  'and they keep driving: a finisher spectates BY driving, and is already '
+    .. 'unscoreable and untouchable, so a free car cannot affect the race')
+check(attached ~= nil and attached:getID() == OWN_ID,
+  'they stay in their OWN car rather than being thrown at somebody else s')
 
 -- The mod must not "helpfully" delete that rival's car when it hears about a
 -- spawn or a reset while spectating.
@@ -201,57 +210,57 @@ RM.onVehicleResetted(RIVAL_ID)
 check(deleted[RIVAL_ID] ~= true, 'a rival resetting does not get their car deleted')
 
 -- ===========================================================================
--- The flag: the field comes back ON ITS GRID SLOTS, not on the finish line
+-- The flag: nothing comes back, because nothing went away
 -- ===========================================================================
+-- The field used to be respawned onto its grid slots here, which was necessary
+-- while finishing deleted the car. Now the release is a state change too: the
+-- collisions come back and the driver is left exactly where they drove to.
 serverState({ phase = 'finished', totalLaps = 3, maxResets = -1, drivers = {} })
 handlers['RM_ReleaseSpectate']({ source = 'race', order = 1, count = 5 })
-check(ghosts[RIVAL_ID] == true, 'cars are ghosted while the field respawns')
-check(spawns == 0, 'and nothing has spawned yet -- the placement is queued')
 
 frames(0.3)
-check(spawns == 1, 'our car comes back')
+check(spawns == 0, 'the flag spawns nothing: the car was never taken away')
+check(deleted[OWN_ID] ~= true, 'and deletes nothing')
 check(drivingBlocked() == false, 'and it can be driven again')
-check(attached ~= nil and attached:getID() == RESPAWNED_ID,
-  'with this client attached to OUR car, not whatever the game picked')
+check(attached ~= nil and attached:getID() == OWN_ID,
+  'with this client still in its OWN car, which it never left')
 check(freeCam == false, 'still without the mod ever touching the camera mode')
 
--- THE WELD FIX. A race removes cars as they take the flag, so every snapshot is
--- within a few metres of the start/finish line -- and respawning each car at its
--- own snapshot put the whole field back into that same few metres, inside each
--- other. The grid is spaced by construction, and this driver owns slot 2 of it.
-check(spawnedAt ~= nil, 'the respawn was given an explicit position')
--- ...and then actually STOOD on the slot. Spawning near it is not the same as
--- being placed on it: the spawn cannot set the heading (BeamNG spawns
--- asynchronously, so nothing exists to turn yet), which is why the placement
--- scheduler has a step that runs after the spawn grace. If that step does not
--- run, a car comes back roughly where it was removed -- the start/finish line,
--- because that is where a race removes finishers -- and pointing whichever way
--- the spawn left it.
-check(placedAt ~= nil, 'and the car is then PLACED, not just spawned near the slot')
-check(placedAt ~= nil and math.abs(placedAt.x - 20) < 0.01
-  and math.abs(placedAt.y - 0) < 0.01,
-  'on the grid slot it owns')
-check(placedAt ~= nil and placedAt.rw ~= nil,
-  'with a heading, so it is not left pointing whichever way it spawned')
-check(spawnedAt ~= nil and math.abs(spawnedAt.x - 20) < 0.01
-  and math.abs(spawnedAt.y - 0) < 0.01,
-  "and it is this drivers GRID SLOT, not the finish line they were removed at")
+-- THE WELD FIX IS NOW MOOT, and that is worth recording rather than deleting.
+--
+-- A race used to remove cars as they took the flag, so every snapshot sat within
+-- a few metres of the start/finish line -- and respawning each car at its own
+-- snapshot put the whole field back into that same few metres, inside each
+-- other. The grid slots existed to spread them out again. Nothing is removed and
+-- nothing is respawned now, so there is no pile to avoid and no slot to stand
+-- anyone on: every car is already where its driver left it, spaced by having
+-- been driven there.
+check(spawnedAt == nil, 'no respawn was queued, so nothing was given a position')
+check(placedAt == nil, 'and no car was teleported onto a grid slot at the flag')
 
+-- Collisions come back for everyone once the cars are clear of each other. The
+-- gate is the same one every ghost passes through: no car is handed its
+-- collisions back while another car is inside it.
 world[RIVAL_ID].x = 40
 if world[RESPAWNED_ID] then world[RESPAWNED_ID].x = 80 end
 frames(3.0)
-check(ghosts[RIVAL_ID] == nil, 'collisions come back once the field is placed and settled')
+check(ghosts[RIVAL_ID] == nil, 'collisions come back once the field is clear')
+check(ghosts[OWN_ID] == nil, 'including our own, whose finished ghost is now off')
 
 -- ===========================================================================
--- NO SLOT OF THEIR OWN: any start position beats the finish line
+-- NO SLOT OF THEIR OWN: still nothing to put back
 -- ===========================================================================
--- The slot a driver owned is the right answer and is not always available. The
--- phase change to 'finished' clears gridSlot, a driver who joined mid-session
--- never had one, and a slot can outnumber a grid that was edited since.
+-- This used to be the awkward case. A driver with no grid slot -- the phase
+-- change to 'finished' clears it, a mid-session arrival never had one, and a
+-- grid can be edited smaller since -- had nothing to be respawned onto, so the
+-- fallback chain mattered: their own slot, then any start position, then the
+-- snapshot. Falling to the snapshot put the car exactly where it was REMOVED,
+-- which for a race is the start/finish line, facing however they crossed it.
+-- That was the "respawned near the start/finish, sideways" report.
 --
--- Falling straight back to the snapshot puts the car exactly where it was
--- REMOVED -- and a race removes finishers at the start/finish line, facing
--- however they crossed it. That is "respawned near the start/finish, sideways".
+-- The whole chain is moot now. A driver with no slot is in the same position as
+-- a driver with one: still in their car, still where they left it. There is
+-- nothing to choose a destination for.
 do
   -- A clean world. The car respawned by the block above is still one of OURS, so
   -- leaving it here makes the "do I already have a car?" guard answer yes and the
@@ -275,11 +284,11 @@ do
   handlers['RM_ReleaseSpectate']({ source = 'race', order = 1, count = 1 })
   frames(3.0)
 
-  check(spawns == 1, 'the car comes back')
-  check(spawnedAt ~= nil and math.abs(spawnedAt.x - 10) < 0.01,
-    'on a placed start position, not where it was removed')
-  check(placedAt ~= nil and math.abs(placedAt.x - 10) < 0.01,
-    'and is stood on it properly, facing down the slot')
+  check(spawns == 0, 'a driver with no grid slot has nothing spawned for them')
+  check(deleted[OWN_ID] ~= true, 'because nothing was taken away in the first place')
+  check(spawnedAt == nil and placedAt == nil,
+    'and no fallback destination is chosen, because none is needed')
+  check(world[OWN_ID] ~= nil, 'they simply still have the car they finished in')
 end
 
 -- ===========================================================================

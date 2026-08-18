@@ -64,6 +64,23 @@ local TUNE = {
   -- at 0.35 read as a pair of pillars rather than a gate.
   POLE_RADIUS = 0.18,
   GHOST_ALPHA = 0.35,  -- mesh alpha applied to a ghosted car
+  -- HOW HIGH A PLACED THING SITS ABOVE THE GROUND UNDER IT.
+  --
+  -- A gate placed by DRIVING takes the car's origin, which is roughly this far
+  -- up; one placed by ctrl+click takes a raycast hit, which is the terrain
+  -- surface itself. That difference is why clicked gates ended up buried and why
+  -- a Last Checkpoint reset onto one spawned the car half in the dirt. Both
+  -- paths now clear the ground by this much.
+  GROUND_CLEAR = 0.5,
+  -- Metres a shift+scroll step raises or lowers a selected gate. Small enough to
+  -- fine-tune a gate on a crest, big enough to dig one out of the terrain
+  -- without spinning the wheel for a minute.
+  NUDGE_LIFT_PER_STEP = 0.25,
+  -- How far up a ground probe starts and how far down it looks. The start has to
+  -- clear anything a gate might legitimately be standing on (a bridge deck, a
+  -- ramp) and the range has to reach the bottom of a ravine.
+  GROUND_PROBE_UP   = 50,
+  GROUND_PROBE_DOWN = 200,
   -- Reset ghosting. The DURATIONS are not here: they are a league rule, so the
   -- server owns them and broadcasts them (see ghost.rules). What is left is
   -- local presentation and local geometry, which no other client has an opinion
@@ -162,7 +179,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.8.2'
+local RM_BUILD = '0.8.3'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -307,6 +324,16 @@ local ghost = {
   -- global flag, because two drivers resetting a second apart are two
   -- independent ghosts and neither may end the other's.
   veh     = {},
+  -- OUR OWN car's id while we are a finished driver, or nil. Read by alphaFor,
+  -- which is the one place that keeps a finished driver's own car unfaded, and
+  -- held as an id rather than derived from ownVehicle() so the reason comes off
+  -- the car that was ghosted even if the driver has since reset into another.
+  finishedOwn = nil,
+  -- Everyone ELSE's finished cars: [tostring(pid)] = gameVehId (or true while
+  -- their car has not appeared in our world yet). Walked to notice a pid that
+  -- has dropped out of the authoritative list, which is how a disconnect
+  -- mid-ghost stops leaving a ghost behind.
+  finishedRemote = {},
   applied = {},   -- [gameVehId] = true while the ghost is actually applied
   -- Cars whose reasons have all gone but which still had another car inside
   -- them when the moment came. They stay ghosts and are retried until the space
@@ -801,7 +828,15 @@ end
 -- decided server-side for everybody at once. A sprint stage never shows one,
 -- having only the one lap there ever was.
 local function driverFlag()
-  -- RED FIRST. Held on the grid is a red flag, and so is an admin calling one:
+  -- CHECKERED FIRST, because it outranks every condition below it. Once a driver
+  -- has taken the flag their race is over and stays over: a caution called for
+  -- somebody still running, or a red thrown to stop the field, says nothing to
+  -- them and showing it would read as their race resuming. It is held until the
+  -- session actually ends, which is the moment the lock is released.
+  --
+  -- Race only. A derby elimination is not a finish and has its own overlay.
+  if spectatorLock and spectatorLock ~= 'derby' then return 'checkered' end
+  -- RED NEXT. Held on the grid is a red flag, and so is an admin calling one:
   -- both mean the same thing to a driver, which is that nobody is racing right
   -- now. It is a CONDITION rather than a state change, and the session is still
   -- running underneath it: red goes to yellow, then back to green.
@@ -1643,6 +1678,21 @@ end
 -- furniture and the other drivers are still fighting around it, and deleting it
 -- in BeamMP deletes it for every client in the server, which is how eliminated
 -- drivers vanished from everybody's screen.
+-- DELIBERATELY UNREACHABLE, AND DELIBERATELY KEPT.
+--
+-- Nothing calls this any more. Finishing a race ghosts the car in place instead
+-- of deleting it, which is the whole point of that change, so the only thing
+-- that ever set `removedVehicle` is gone -- and with it, in practice,
+-- respawnRemovedVehicle, captureVehicleSnapshot and the `respawn` branch of the
+-- placement scheduler. releaseSpectator guards that branch on `removedVehicle`
+-- being set, so the entire subsystem is inert rather than merely unused.
+--
+-- It stays as the way back if ghosting ever has to be abandoned: the engine call
+-- underneath it (obj:setGhostEnabled) is BeamNG's own, so the risk is not that
+-- the approach is wrong but that a future build moves the call. Deleting the
+-- fallback would mean rebuilding it under time pressure on a race night.
+--
+-- Do not "tidy" this away. It is not an oversight.
 local function removeLocalVehicle()
   local veh = ownVehicle()
   if not veh then return end
@@ -1906,8 +1956,20 @@ end
 local function enterSpectator(reason, source)
   spectatorLock   = source or 'race'
   spectatorReason = reason or 'You are out of this session'
-  -- Driving goes either way, and it is the ONLY thing that goes for a derby.
-  spectate.setInputsBlocked(true)
+  -- DRIVING IS BLOCKED FOR A DERBY AND KEPT FOR A RACE, and that split is the
+  -- point of the two branches below.
+  --
+  -- A derby elimination is a wreck: the car is meant to sit there. A race
+  -- finisher is a spectator in their own ghosted car, and driving it is how they
+  -- watch the rest of the race. There is nothing left to police -- the moment
+  -- they took the flag they stopped being scored (checkGates and reportProgress
+  -- both return on spectatorLock) and stopped being able to touch anyone
+  -- (ghost.setFinished), so a free car cannot affect the race it is watching.
+  --
+  -- It CAN be driven back onto the racing line and seen there. That is a
+  -- deliberate trade: the physics are provably unaffected and the alternative is
+  -- taking a driver's car away for the last two laps.
+  spectate.setInputsBlocked(spectatorLock == 'derby')
   if spectatorLock == 'derby' then
     -- ELIMINATED IN A DERBY: the car stays exactly where it is, as a visible,
     -- physical wreck, and the driver stays in it. The arena is the show and they
@@ -1915,17 +1977,24 @@ local function enterSpectator(reason, source)
     -- out reads as the bug this replaced. Tab takes them anywhere they like.
     log('I', 'raceManager', 'Derby elimination: the wreck stays in the arena')
   else
-    -- FINISHED OR OUT OF A RACE: the car comes off the track. It has nothing
-    -- left to gain and a parked one on the racing line is an obstacle for
-    -- everyone still running.
+    -- FINISHED OR OUT OF A RACE: the car STAYS, and is ghosted.
     --
-    -- Which is exactly why the camera has to be given somewhere to go in the
-    -- same breath: with the car gone BeamNG hands the view to whatever vehicle
-    -- is nearest, and with a field finishing together its pick is arbitrary --
-    -- which is how every client ended up watching the same driver. Put them on
-    -- something that is actually MOVING, once, and let tab do the rest.
-    removeLocalVehicle()
-    spectate.attachToRunner()
+    -- It used to be deleted here and respawned when the race ended. That is an
+    -- entity destroy and an entity create per driver, at the one moment a field
+    -- is finishing together -- a burst of deletion, spawn and network-sync
+    -- events, worst on the machines least able to absorb it. Nothing is created
+    -- or destroyed now; the car changes state and stays where it is.
+    --
+    -- A parked car on the racing line was the reason for deleting it, and the
+    -- ghost is what answers that: collision is off in both directions, so a
+    -- finished car cannot be hit, blocked, pushed, rammed or drafted off, and
+    -- cannot touch a racer's physics at all. See ghost.setFinished.
+    --
+    -- The camera stays where it is too, because there is still a car to be in.
+    -- attachToRunner existed because deleting the car left BeamNG to hand the
+    -- view to whatever vehicle was nearest, which with a field finishing
+    -- together put every client on the same arbitrary driver.
+    ghost.setFinished(true)
   end
   guihooks.trigger('RaceManagerSpectator', {
     spectating = true, reason = spectatorReason, source = spectatorLock,
@@ -1960,38 +2029,31 @@ local function releaseSpectator(source, order, count)
   -- Driving comes back first, so a driver is never released into a car they
   -- cannot move.
   spectate.setInputsBlocked(false)
-  -- And they go back to their OWN car, wherever they left it. Nothing is
-  -- respawned: the car was never removed, so there is nothing to put back and
-  -- nothing to interpenetrate. respawnRemovedVehicle stays in the placement path
-  -- as a safety net for a snapshot taken by an older build -- with nothing
-  -- removed it is a no-op.
-  -- The slot this driver owned, taken from the snapshot rather than gridSlot:
-  -- the phase change to 'finished' clears gridSlot and lands BEFORE this. The
-  -- scheduler places the car on it after the spawn grace, which is the only
-  -- moment the vehicle actually exists to be placed.
-  -- ...and if neither is available, slot 1, so long as a grid exists at all.
-  -- The placement step is gated on field.slot, so leaving it nil means the car
-  -- is spawned and never stood up -- it keeps whatever heading the spawn gave it,
-  -- which is the "sideways" half of the report. Any placed slot is a spaced,
-  -- road-level, correctly-facing piece of track.
-  -- A DERBY RELEASE NEVER PLACES THE CAR.
+  -- The finished ghost comes off: collision back, alpha back, on our own car
+  -- here and on everyone else's as the authoritative list empties.
+  ghost.setFinished(false)
+  -- NOTHING IS RESPAWNED AND NOTHING IS PLACED.
   --
-  -- A derby leaves the wreck in the arena on purpose, so nothing was removed and
-  -- there is nothing to put back. The fallback below is the RACE's grid, which
-  -- is how ending a derby put everybody on the start line of whatever race ran
-  -- last: no removedVehicle, no race gridSlot, so it fell through to race slot 1.
+  -- The car was never removed, so there is nothing to put back -- and a driver
+  -- who spent the last two laps spectating from wherever they drove to should be
+  -- released exactly there. Teleporting the field onto the old grid at the flag
+  -- would be the entity churn this change exists to remove, wearing a different
+  -- hat.
   --
-  -- Released where they sit, and they reset themselves if they want to move.
-  local slot = nil
-  if source ~= 'derby' then
-    slot = (removedVehicle and removedVehicle.slot) or gridSlot
-      or (startPositions[1] and 1 or nil)
-  end
-  if queueFieldPlacement then
-    queueFieldPlacement({ respawn = true, slot = slot, order = order, count = count })
-  else
-    respawnRemovedVehicle()
-    bindCameraToOwnVehicle()
+  -- respawnRemovedVehicle stays as a safety net for a snapshot left by an older
+  -- build (or by anything else that removed the car out from under us). With
+  -- nothing removed, `removedVehicle` is nil and this whole branch is skipped.
+  if removedVehicle then
+    local slot = nil
+    if source ~= 'derby' then
+      slot = removedVehicle.slot or gridSlot or (startPositions[1] and 1 or nil)
+    end
+    if queueFieldPlacement then
+      queueFieldPlacement({ respawn = true, slot = slot, order = order, count = count })
+    else
+      respawnRemovedVehicle()
+      bindCameraToOwnVehicle()
+    end
   end
   guihooks.trigger('RaceManagerSpectator', { spectating = false })
   pushRouteState()
@@ -2398,6 +2460,38 @@ headingRot = function (hx, hy)
   return quat(0, 0, math.sin(half), math.cos(half))
 end
 
+-- THE GROUND UNDER A POINT, or nil when nothing is there to stand on.
+--
+-- One probe, shared by everything that needs to know where the map is: grid
+-- generation, click placement, the drag path and the reset relocation all used
+-- to answer this differently or not at all, which is how a grid generated on a
+-- slope ended up with its back rows inside the hill.
+--
+-- Starts ABOVE the point rather than at it, so a gate already buried still finds
+-- the surface above itself and can be dug out. Returns nil rather than a guess
+-- when the ray finds nothing: a caller that cannot locate the ground should
+-- leave the height alone, not slam it to zero.
+local function groundAt(x, y, z)
+  if type(castRayStatic) ~= 'function' then return nil end
+  local from = (tonumber(z) or 0) + TUNE.GROUND_PROBE_UP
+  local ok, dist = pcall(castRayStatic, vec3(x, y, from), vec3(0, 0, -1),
+    TUNE.GROUND_PROBE_DOWN)
+  if not ok or type(dist) ~= 'number' or dist >= TUNE.GROUND_PROBE_DOWN then
+    return nil
+  end
+  return from - dist
+end
+
+-- Lift a point so it clears the ground under it by at least `clear` metres.
+-- Points already higher than that are left exactly where they are: this rescues
+-- a buried thing without flattening a gate deliberately placed up on a bridge.
+local function liftAboveGround(x, y, z, clear)
+  local g = groundAt(x, y, z)
+  if not g then return z end
+  local floor = g + (clear or TUNE.GROUND_CLEAR)
+  return (z < floor) and floor or z
+end
+
 -- "Last Checkpoint" reset mode: stand the car on a gate's centre, facing the
 -- gate's direction of travel. The teleport is flagged as our own so the
 -- vehicle-reset echo it provokes is never miscounted, and the gate becomes the
@@ -2416,12 +2510,20 @@ local function relocateToGate(wp)
   local hx, hy = wp.hx, wp.hy
   if lastGateBack and wp == lastGate then hx, hy = -hx, -hy end
   local rot = headingRot(hx, hy)
-  noteSelfTeleport(wp.x, wp.y, wp.z)
+  -- CLAMPED ABOVE THE GROUND, defensively.
+  --
+  -- Placement puts gates clear of the terrain now, but a layout saved before
+  -- that still holds gates sitting exactly on the surface -- and a car dropped
+  -- at a gate's z has its ORIGIN there, which is half a car underground. Rather
+  -- than ask every admin to re-place their tracks, the respawn refuses to put a
+  -- car below the ground under it whatever the gate claims.
+  local z = liftAboveGround(wp.x, wp.y, wp.z, TUNE.GROUND_CLEAR)
+  noteSelfTeleport(wp.x, wp.y, z)
   local ok = pcall(function ()
-    veh:setPositionRotation(wp.x, wp.y, wp.z, rot.x, rot.y, rot.z, rot.w)
+    veh:setPositionRotation(wp.x, wp.y, z, rot.x, rot.y, rot.z, rot.w)
   end)
   if ok then
-    lastGoodPos = vec3(wp.x, wp.y, wp.z)
+    lastGoodPos = vec3(wp.x, wp.y, z)
     lastGoodRot = rot
   else
     selfTeleport.left = 0
@@ -2473,16 +2575,24 @@ function M.onVehicleResetted(vehId)
     return
   end
   if spectatorLock then
-    -- Out of the session: a reset must never put a spectator back on track.
-    -- It cannot. The driving inputs are filtered off for as long as the lock is
-    -- held, so a reset car is a car that still will not move -- and re-asserting
-    -- the filter here covers the one thing a reset does that could undo it,
-    -- which is reload the vehicle's Lua VM out from under the block.
+    -- Out of the session. A reset here is a driver recovering a car they are
+    -- only spectating in -- flipped, in the water, or dropped off the map -- and
+    -- it is allowed. It costs them nothing: the reset allowance is only counted
+    -- while a driver is being scored, and they stopped being scored the moment
+    -- the lock went on.
     --
-    -- This used to DELETE the car instead, which in BeamMP deleted it for every
-    -- client in the session.
+    -- THE FINISHED GHOST HAS TO SURVIVE IT. A reset reloads the vehicle's Lua VM,
+    -- which is where setGhostEnabled lives, so the collision toggle is undone by
+    -- the reset itself and has to be re-applied to the car that came back. The
+    -- reason set is per vehicle and independent, so re-asserting here cannot
+    -- disturb a reset ghost or a quali ghost sharing the same car.
+    --
+    -- A derby elimination keeps its input block; a race finisher keeps driving.
+    -- Re-applied the same way it is set, because the reset may have re-registered
+    -- the action set out from under the filter.
     spectate.setInputsBlocked(false)   -- force the next call to re-apply
-    spectate.setInputsBlocked(true)
+    spectate.setInputsBlocked(spectatorLock == 'derby')
+    if spectatorLock ~= 'derby' then ghost.setFinished(true) end
     return
   end
 
@@ -2666,17 +2776,28 @@ function M.onVehicleSpawned(vehId)
   end
   if not spectatorLock then return end
   if not isOwnVehicle(vehId) then return end
-  -- A spectator spawned themselves a fresh car to get back on track. The block
-  -- is an INPUT filter rather than a property of the old vehicle, so the new one
-  -- is just as undriveable -- but the spawn may have re-registered the action
-  -- set, so it is re-applied here.
+  -- A spectator spawned themselves a fresh car. For a derby elimination the
+  -- block is an INPUT filter rather than a property of the old vehicle, so the
+  -- new one is just as undriveable -- but the spawn may have re-registered the
+  -- action set, so it is re-applied here.
   --
   -- Deleting the car was the old answer, and it is what made an eliminated
   -- driver vanish from everybody's screen.
+  --
+  -- A RACE FINISHER GETS THE GHOST PUT BACK ON THE NEW CAR. It is a different
+  -- vehicle with a different id and a fresh Lua VM, so it starts solid: without
+  -- this, a finished driver could spawn themselves a car and drive it into the
+  -- race with full collision.
   spectate.setInputsBlocked(false)
-  spectate.setInputsBlocked(true)
-  pushNotice('spectate', 'You are spectating until the session ends')
-  log('W', 'raceManager', 'Vehicle spawned in spectator mode: driving stays blocked')
+  spectate.setInputsBlocked(spectatorLock == 'derby')
+  if spectatorLock ~= 'derby' then
+    ghost.setFinished(true)
+    pushNotice('spectate', 'Your car is a ghost: nobody still racing can touch it')
+  else
+    pushNotice('spectate', 'You are spectating until the session ends')
+  end
+  log('W', 'raceManager', 'Vehicle spawned in spectator mode ('
+    .. tostring(spectatorLock) .. ')')
 end
 
 -- BeamNG hook: a vehicle is being removed. Ghost bookkeeping is keyed by vehicle
@@ -3444,6 +3565,15 @@ end
 -- resume. The occupancy block deliberately does NOT fade: a car that is stuck
 -- inside another stays visibly a ghost for as long as that lasts.
 function ghost.alphaFor(vehId)
+  -- OUR OWN FINISHED CAR IS NEVER FADED, and this is the one place that is
+  -- decided, so every path into apply() gets it right: the transition, the
+  -- refresh sweep and the per-frame fade all read alpha from here.
+  --
+  -- A driver who takes the flag keeps seeing their own car exactly as it was.
+  -- Its COLLISION is off -- see ghost.setFinished for why that has to include
+  -- our own client -- but collision and alpha are separate calls, and only one
+  -- of them is any of the driver's business.
+  if vehId ~= nil and vehId == ghost.finishedOwn then return 1 end
   local left = ghost.left[vehId]
   local fade = TUNE.GHOST_FADE_OUT_SEC
   if not left or fade <= 0 or left >= fade then return TUNE.GHOST_ALPHA end
@@ -3648,6 +3778,8 @@ local function clearGhostReasons()
   ghost.blockReason = nil
   ghost.own = { settling = false, left = 0, total = 0, blocked = 0, warned = false }
   ghost.veh = {}
+  ghost.finishedOwn = nil
+  ghost.finishedRemote = {}
   -- Swept over EVERY car in the world, not just the ones this client believes
   -- it ghosted. A session ending has to leave nothing ghosted whatever the
   -- bookkeeping thinks -- an entry lost to a vehicle id being reused, or a ghost
@@ -3778,6 +3910,107 @@ function ghost.applyRemote(pid, endsAt)
   else
     ghost.left[vehId] = nil
     ghost.reason(vehId, 'reset', false)
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- The FINISHED ghost: a driver who has taken the flag, still in their own car
+-- ---------------------------------------------------------------------------
+-- Taking the flag used to DELETE the car and respawn it at the end of the race.
+-- That is two entity events per driver at the exact moment a field is finishing
+-- together, plus the network churn of a despawn and a spawn, and it landed
+-- hardest on the machines least able to absorb it. Nothing is created or
+-- destroyed now: the car stays where it is and changes state.
+--
+-- THIS REASON IS APPLIED TO OUR OWN CAR TOO, which is what makes it different
+-- from every other reason in this file. The field-wide ones mean "rivals are
+-- ghosts" and deliberately skip our own; this one means "I am out of the race",
+-- and in BeamMP our car is simulated HERE. Leaving it collidable locally would
+-- let our own sim bounce us off a racer whose sim felt nothing -- and since our
+-- position is what gets synced, that phantom shove would travel to everyone.
+-- The race outcome is only provably unaffected if the collision is off on the
+-- finisher's own client as well.
+--
+-- What the driver keeps is the LOOK of their car: alpha stays 1 for them and
+-- drops to GHOST_ALPHA for everybody else. ghost.alphaFor is where that is
+-- decided, off `finishedOwn`, so no call site has to remember it.
+--
+-- GHOST-TO-GHOST IS PASS-THROUGH, deliberately. Because setGhostEnabled is per
+-- vehicle and every finished car carries this reason on every client, finished
+-- drivers already drive through each other and it would be work to stop them.
+-- It is also what we want: spectating drivers cannot shunt each other into the
+-- racing line.
+--
+-- World and terrain collision are untouched by setGhostEnabled, so a ghosted
+-- car still sits on the map rather than falling through it.
+--
+-- FINISHING MID-CONTACT CANNOT TELEPORT ANYONE. Nothing on this path writes a
+-- position: it is setGhostEnabled plus a mesh alpha, and that is all. A racer
+-- who was leaning on the finisher at the moment they crossed simply stops having
+-- something to lean on, and their soft body rebounds to its own shape exactly as
+-- it would if the other car had driven away. Removing a constraint cannot inject
+-- energy; it is the other direction that is dangerous, which is why ghost.reason
+-- puts the wouldWeld gate on the way BACK to solid and not on the way here.
+function ghost.setFinished(on)
+  local veh = ownVehicle()
+  local vehId = veh and vehicleId(veh) or nil
+  if on then
+    if not vehId then return end
+    ghost.finishedOwn = vehId
+    -- RE-ASSERTED, not just recorded. ghost.reason returns early when what it
+    -- wants already matches what it believes it applied -- which is right for
+    -- every other caller and wrong here, because the two ways back into this
+    -- function are a reset and a respawn, and both of them reload the vehicle's
+    -- Lua VM. setGhostEnabled lives in that VM, so the car comes back SOLID with
+    -- the bookkeeping still saying "ghosted". Dropping the applied flag first
+    -- makes the reason path re-issue the command; the engine call is idempotent,
+    -- so a redundant one costs nothing.
+    ghost.applied[vehId] = nil
+    ghost.reason(vehId, 'finished', true, veh)
+  else
+    -- Cleared off the RECORDED id, not off ownVehicle(): by the time a race
+    -- ends the driver may be sitting in a different car (they reset, or
+    -- respawned while spectating), and the one that must be handed its
+    -- collisions back is the one that was ghosted.
+    local id = ghost.finishedOwn
+    ghost.finishedOwn = nil
+    if id then
+      local got, found = pcall(getObjectByID, id)
+      ghost.reason(id, 'finished', false, got and found or nil)
+    end
+    if vehId and vehId ~= id then ghost.reason(vehId, 'finished', false, veh) end
+  end
+end
+
+-- Everyone else's finished cars, from the authoritative list on the state
+-- broadcast. A list rather than an event for the same reason the reset roster is
+-- one: a client that missed the moment (joined late, dropped a packet) still
+-- converges, because a pid absent from the list has no ghost.
+function ghost.applyFinishedRoster(list)
+  local mine = localServerId()
+  local seen = {}
+  for _, pid in ipairs(list or {}) do
+    if pid ~= nil and tostring(pid) ~= tostring(mine) then
+      seen[tostring(pid)] = true
+      local veh, vehId = ghost.vehicleForPid(pid)
+      ghost.remoteVeh[pid] = vehId
+      if vehId and not (ghost.finishedRemote[tostring(pid)]) then
+        ghost.reason(vehId, 'finished', true, veh)
+      end
+      ghost.finishedRemote[tostring(pid)] = vehId or true
+    end
+  end
+  -- Anyone no longer in the list is racing again (or has left), so the reason
+  -- comes off. Walking what we applied rather than the roster is what makes a
+  -- disconnect safe: the pid vanishes from the list and this is what notices.
+  for pid, vehId in pairs(ghost.finishedRemote) do
+    if not seen[pid] then
+      ghost.finishedRemote[pid] = nil
+      if type(vehId) == 'number' then
+        local got, found = pcall(getObjectByID, vehId)
+        ghost.reason(vehId, 'finished', false, got and found or nil)
+      end
+    end
   end
 end
 
@@ -4462,7 +4695,19 @@ local function drawDriverGate(derbyLive)
 
   -- The ones after it, dimmed, so a corner reads before it arrives. Skipped on a
   -- one-gate route, where "the next one" is the one already drawn.
-  if n > 1 then
+  --
+  -- AND SKIPPED ON THE LAST LAP ONCE THE LINE IS THE ARMED GATE. The look-ahead
+  -- wraps -- the gate after the start/finish is CP 1 -- and on the final lap
+  -- that is CP 1 of a lap nobody is going to drive: crossing the line ends this
+  -- driver's race. Drawing it lights a gate on track that means nothing, at the
+  -- exact moment a driver is racing hardest and least wants to be asked to work
+  -- out which of two lit gates is the one that matters.
+  --
+  -- Only the wrap is suppressed. Everywhere else on the last lap the look-ahead
+  -- is as useful as it is on any other, so `a == n` is the whole condition.
+  local lastLap = phase == 'racing' and not pointToPoint
+    and totalLaps > 0 and localLap >= totalLaps
+  if n > 1 and not (lastLap and a == n) then
     branch.eachAt(a % n + 1, poles, p.routeNext or p.route)
   end
 
@@ -4976,8 +5221,8 @@ end
 -- The first gate on an empty route has no previous, so it falls back to the way
 -- the camera is looking, flattened. That is a guess, and the scroll wheel is
 -- right there to fix it.
-function nudge.headingFor(list, x, y, ray)
-  local prev = list[#list]
+function nudge.headingFor(list, x, y, ray, after)
+  local prev = after or list[#list]
   if prev then
     local dx, dy = x - prev.x, y - prev.y
     local len = math.sqrt(dx * dx + dy * dy)
@@ -5000,8 +5245,22 @@ end
 -- the place that already knew how.
 function nudge.place(list, hit, ray)
   if not (hit and hit.pos) then return end
-  local x, y, z = hit.pos.x, hit.pos.y, hit.pos.z
-  local hx, hy = nudge.headingFor(list, x, y, ray)
+  local x, y = hit.pos.x, hit.pos.y
+  -- THE RAY LANDS ON THE GROUND, AND A GATE MUST NOT.
+  --
+  -- A gate placed by DRIVING takes the car's origin, which is about half a metre
+  -- up. A click takes the raycast hit, which is the terrain surface itself, so
+  -- clicked gates sat lower than driven ones on the same track -- far enough
+  -- that a Last Checkpoint reset onto one put the car half in the dirt, and on a
+  -- steep face far enough to bury the gate outright.
+  local z = liftAboveGround(x, y, hit.pos.z, TUNE.GROUND_CLEAR)
+  -- Derived from the gate this one is going in AFTER, which is not always the
+  -- last gate on the route: with a gate selected, this is an INSERT. Reading the
+  -- end of the route while inserting into the middle of it aimed the new gate at
+  -- wherever the lap happened to finish, which is what stood a car sideways
+  -- across the track on a reset.
+  local after = (nudge.sel and editorTarget ~= 'branch') and list[nudge.sel] or list[#list]
+  local hx, hy = nudge.headingFor(list, x, y, ray, after)
   local place = { x = x, y = y, z = z, hx = hx, hy = hy }
   -- A branch gate belongs to a slot rather than a position in an order, so it is
   -- always an add: insertCheckpoint refuses them for the same reason.
@@ -5111,12 +5370,11 @@ function nudge.update()
   if nudge.dragging and held and hit and hit.pos then
     -- The ground under the gate NOW, so the lift it was authored with survives
     -- being dragged across a crest or into a dip.
-    local under = wp.z
-    if type(castRayStatic) == 'function' then
-      local okR, d = pcall(castRayStatic, vec3(wp.x, wp.y, wp.z + 50), vec3(0, 0, -1), 100)
-      if okR and type(d) == 'number' and d < 100 then under = wp.z + 50 - d end
-    end
+    local under = groundAt(wp.x, wp.y, wp.z) or wp.z
     nudge.moveTo(wp, hit.pos, under)
+    -- Dragged onto rising ground, the preserved lift can still put a gate inside
+    -- the hill. The floor is the same one every other placement path uses.
+    wp.z = liftAboveGround(wp.x, wp.y, wp.z, TUNE.GROUND_CLEAR)
     if editorTarget == 'branch' then branch.rebuild() end
     if editorTarget == 'start' then branch.gridTool.generated = false end
     pushRouteState()
@@ -5124,10 +5382,29 @@ function nudge.update()
 
   -- Scroll turns the selected gate. The tedious half of a fine adjustment is the
   -- heading, because re-driving a corner is the only other way to change it.
-  local wheel = 0
-  pcall(function () wheel = im.GetIO().MouseWheel or 0 end)
+  --
+  -- SHIFT+SCROLL RAISES AND LOWERS IT INSTEAD, and that is the only control that
+  -- moves a gate vertically. The Gate size sliders look like they should and do
+  -- not: those set a gate's HEIGHT and DEPTH, which is how far it extends up and
+  -- down from where it sits, not where it sits. A gate that ended up under the
+  -- map was therefore unrecoverable by any control in the editor -- the sliders
+  -- would grow it until its top poked through the ground, which is not the same
+  -- as digging it out.
+  local wheel, shift = 0, false
+  pcall(function ()
+    local io_ = im.GetIO()
+    wheel = io_.MouseWheel or 0
+    shift = io_.KeyShift == true
+  end)
   if wheel ~= 0 and not wantsUi then
-    nudge.turn(wp, wheel * nudge.TURN_PER_STEP)
+    if shift then
+      -- Floored at ground clearance, so the control that exists to dig a gate
+      -- out cannot be used to bury one.
+      local want = wp.z + wheel * TUNE.NUDGE_LIFT_PER_STEP
+      wp.z = liftAboveGround(wp.x, wp.y, want, TUNE.GROUND_CLEAR)
+    else
+      nudge.turn(wp, wheel * nudge.TURN_PER_STEP)
+    end
     if editorTarget == 'branch' then branch.rebuild() end
     pushRouteState()
   end
@@ -5551,15 +5828,35 @@ function branch.layOutGrid(anchor, count, spacing, stagger, width, replace)
   if width > TUNE.GRID_MAX_WIDTH then width = TUNE.GRID_MAX_WIDTH end
   if replace then startPositions = {} end
   local mid = (width - 1) * 0.5
+  -- EVERY SLOT FINDS ITS OWN GROUND.
+  --
+  -- This used to hand every slot `anchor.z` -- the height of wherever the car
+  -- generating the grid happened to be standing. On flat ground that is right by
+  -- accident. On anything else the grid is a horizontal plane laid through a
+  -- hill: the rows behind a car parked on a crest end up inside the slope, and
+  -- the rows behind one parked in a dip float above it.
+  --
+  -- What is preserved is the anchor's height ABOVE THE GROUND, not its absolute
+  -- z, so a grid generated from a car sitting on a bridge still sits on the
+  -- bridge rather than being dropped into the river.
+  local anchorGround = groundAt(anchor.x, anchor.y, anchor.z)
+  local lift = anchorGround and (anchor.z - anchorGround) or TUNE.GROUND_CLEAR
+  if lift < TUNE.GROUND_CLEAR then lift = TUNE.GROUND_CLEAR end
   for i = 0, count - 1 do
     local row  = math.floor(i / width)
     local col  = i % width
     local back = row * spacing
     local side = (col - mid) * stagger
+    local x = anchor.x - fx * back + rx * side
+    local y = anchor.y - fy * back + ry * side
+    -- Probed from the ANCHOR's height rather than the slot's, because the slot
+    -- has no height yet. A probe that starts fifty metres above the anchor still
+    -- clears anything the grid is being laid across.
+    local g = groundAt(x, y, anchor.z)
     startPositions[#startPositions + 1] = {
-      x  = anchor.x - fx * back + rx * side,
-      y  = anchor.y - fy * back + ry * side,
-      z  = anchor.z,
+      x  = x,
+      y  = y,
+      z  = g and (g + lift) or anchor.z,
       hx = fx, hy = fy,
     }
   end
@@ -6047,6 +6344,12 @@ local function onServerUpdate(rawData)
   -- reconnected) DURING a ghost see it, instead of only clients that happened to
   -- be listening when the one-shot event went out.
   if type(data.ghosts) == 'table' then ghost.applyRoster(data.ghosts) end
+  -- The finished-driver ghosts. Applied unconditionally when the key is present,
+  -- INCLUDING when it is empty: an empty list is the un-ghost at the flag, and
+  -- skipping it would leave the field intangible for the rest of the session.
+  if type(data.ghostFinished) == 'table' then
+    ghost.applyFinishedRoster(data.ghostFinished)
+  end
   -- Whether we turned up in the middle of somebody else's session, read off our
   -- own driver row. ghostUpdate acts on this: a car that is not in the race is a
   -- ghost to the cars that are.
@@ -6176,11 +6479,38 @@ local function onHoldCorrect(rawData)
 end
 
 -- --- Module 1: forced spectator mode (server -> client) --------------------
+-- 1st, 2nd, 3rd, 4th. The teens are the trap and they are why this is a function
+-- rather than a lookup on the last digit: 11th, 12th and 13th take "th" while 21st,
+-- 22nd and 23rd do not.
+local function ordinal(n)
+  n = math.floor(tonumber(n) or 0)
+  if n <= 0 then return tostring(n) end
+  local suffix = 'th'
+  local last, teen = n % 10, n % 100
+  if teen < 11 or teen > 13 then
+    if last == 1 then suffix = 'st'
+    elseif last == 2 then suffix = 'nd'
+    elseif last == 3 then suffix = 'rd' end
+  end
+  return tostring(n) .. suffix
+end
+
+-- Exposed for tests/ghost_test.lua. The teens rule is easy to get wrong and easy
+-- to regress, and it is not reachable through any other entry point.
+M.ordinalForTest = ordinal
+
 local function onForceSpectate(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then data = {} end
-  enterSpectator(data.reason and tostring(data.reason) or nil,
-    data.source and tostring(data.source) or 'race')
+  local source = data.source and tostring(data.source) or 'race'
+  enterSpectator(data.reason and tostring(data.reason) or nil, source)
+  -- The placement toast. A MOMENT, so it is a transient notice: the standing
+  -- itself is on the leaderboard and the checkered flag is the persistent half
+  -- of saying the race is over for this driver.
+  local place = tonumber(data.place)
+  if place and place > 0 and source ~= 'derby' then
+    pushNotice('finish', 'Race over: you placed ' .. ordinal(place))
+  end
 end
 
 local function onReleaseSpectate(rawData)

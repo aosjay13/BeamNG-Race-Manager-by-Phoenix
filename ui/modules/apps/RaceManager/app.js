@@ -1029,7 +1029,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.8.2';
+      var APP_BUILD = '0.8.3';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -2247,10 +2247,26 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           || $scope.phase === 'grid';
       };
       $scope.flagTitle = function () {
+        if ($scope.driverFlag === 'checkered') {
+          return 'Chequered flag: your race is over. Your car is a ghost, so you can '
+            + 'drive anywhere and nobody still racing can touch you.';
+        }
         if ($scope.driverFlag === 'red') { return 'Red flag: stop where you are and wait'; }
         if ($scope.driverFlag === 'yellow') { return 'Yellow flag: caution, race back to the line'; }
         if ($scope.driverFlag === 'white') { return 'White flag: last lap'; }
         return 'Green flag: racing';
+      };
+
+      // How many drivers are still out there, for the driver who has finished and
+      // is waiting on them. Counted off the same driver table the leaderboard
+      // renders, so it cannot disagree with the rows above it.
+      $scope.stillRacing = function () {
+        var n = 0;
+        for (var i = 0; i < $scope.drivers.length; i++) {
+          var st = $scope.drivers[i].status;
+          if (st === 'racing' || st === 'qualifying') { n++; }
+        }
+        return n;
       };
 
       // Retiring cannot be undone, so the button asks first.
