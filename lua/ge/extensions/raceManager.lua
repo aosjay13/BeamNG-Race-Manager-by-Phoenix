@@ -75,11 +75,32 @@ local TUNE = {
   -- Metres a shift+scroll step raises or lowers a selected gate. Small enough to
   -- fine-tune a gate on a crest, big enough to dig one out of the terrain
   -- without spinning the wheel for a minute.
-  NUDGE_LIFT_PER_STEP = 0.25,
+  NUDGE_LIFT_PER_STEP = 0.75,
+  -- One press of Raise/Lower. Bigger than a scroll click on purpose: the wheel
+  -- is for settling a gate, the buttons are for getting one out of a hillside.
+  NUDGE_LIFT_PER_PRESS = 2.0,
+  -- Furthest one drag or ctrl+click may move a gate, in metres.
+  --
+  -- The cursor ray is cast at the world and lands on whatever it hits. Aimed
+  -- near the horizon that is terrain kilometres away, so a drag that clipped the
+  -- skyline flung the gate somewhere the admin cannot see it, let alone drag it
+  -- back. Generous enough to cross any sane arena or straight in one motion.
+  NUDGE_MAX_REACH = 500,
+  -- Metres the cursor must travel before a drag starts moving anything. A hand
+  -- resting on a mouse is never perfectly still, and the raycast jitters over
+  -- uneven ground even when it is.
+  NUDGE_DRAG_MIN = 0.15,
+  -- Frames a panel press suppresses world picking and dragging for. Enough to
+  -- cover the button's Lua running a frame or two after the click was seen here,
+  -- and far too short for a human to notice: at sixty frames a second this is
+  -- gone before the mouse has finished moving off the button.
+  NUDGE_UI_GRACE = 3,
   -- How far up a ground probe starts and how far down it looks. The start has to
   -- clear anything a gate might legitimately be standing on (a bridge deck, a
   -- ramp) and the range has to reach the bottom of a ravine.
-  GROUND_PROBE_UP   = 50,
+  -- Heights to look for a BURIED point's surface at, shortest first, so the
+  -- lowest surface above it wins and overhead geometry is never reached.
+  GROUND_RESCUE_STEPS = { 2, 5, 12, 30, 60, 150 },
   GROUND_PROBE_DOWN = 200,
   -- Reset ghosting. The DURATIONS are not here: they are a league rule, so the
   -- server owns them and broadcasts them (see ghost.rules). What is left is
@@ -179,7 +200,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.8.3'
+local RM_BUILD = '0.8.4'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -708,6 +729,20 @@ local nudge = {
   -- drawing asks about it and the drawing runs above activeEditorRoute.
   list     = nil,
   dragging = false,
+  -- WHERE THE CURSOR RAY LANDED when the gate was grabbed, and nil when nothing
+  -- is grabbed. A drag moves the gate BY the distance the cursor has travelled
+  -- since here, never TO where the ray currently lands: the ray goes through a
+  -- gate (no collision on a debug drawing) to the ground behind it, so "to"
+  -- teleported gates the instant they were picked.
+  grabX    = nil,
+  grabY    = nil,
+  -- Frames left in which a click is assumed to have come from the PANEL.
+  --
+  -- The HUD app is a CEF overlay, and ImGui's WantCaptureMouse knows nothing
+  -- about it -- so pressing Up, Down or a turn button registers here as a click
+  -- on the world as well. Every M.nudge* entry point is only ever reached from
+  -- that panel, so one being called is the signal.
+  uiGrace  = 0,
   -- Engine bits, resolved once and remembered as false when a build has none.
   -- Everything here is optional: a build without them leaves the mode simply
   -- unavailable rather than erroring in the frame loop.
@@ -2473,13 +2508,51 @@ end
 -- leave the height alone, not slam it to zero.
 local function groundAt(x, y, z)
   if type(castRayStatic) ~= 'function' then return nil end
-  local from = (tonumber(z) or 0) + TUNE.GROUND_PROBE_UP
-  local ok, dist = pcall(castRayStatic, vec3(x, y, from), vec3(0, 0, -1),
+  z = tonumber(z) or 0
+  -- STRAIGHT DOWN FROM THE POINT ITSELF, first. Whatever this finds is the
+  -- ground UNDER the gate, which is the only surface that has any claim to be
+  -- called its ground.
+  --
+  -- The first version of this started fifty metres ABOVE the gate and took the
+  -- first thing it hit on the way down, which is not the ground: it is whatever
+  -- is HIGHEST in that column. A gate under a bridge got the bridge deck, a gate
+  -- beside a building got the roof, a gate under trees got the canopy -- and
+  -- liftAboveGround duly teleported it up onto them. Worse, because that
+  -- function only ever raises, the bogus surface then became the floor that
+  -- shift+scroll clamped against, so the gate could not be brought back down.
+  -- That is the "my checkpoints fly into the sky and I cannot retrieve them"
+  -- report, and it was entirely this.
+  --
+  -- The small epsilon starts the ray just clear of the point so a gate resting
+  -- exactly on the surface still registers a hit rather than starting inside it.
+  local ok, dist = pcall(castRayStatic, vec3(x, y, z + 0.05), vec3(0, 0, -1),
     TUNE.GROUND_PROBE_DOWN)
-  if not ok or type(dist) ~= 'number' or dist >= TUNE.GROUND_PROBE_DOWN then
-    return nil
+  if ok and type(dist) == 'number' and dist < TUNE.GROUND_PROBE_DOWN then
+    return z + 0.05 - dist
   end
-  return from - dist
+  -- Nothing below it at all: the point is inside the terrain, or under it. NOW
+  -- the probe from above is the right question, because the surface it finds is
+  -- the one this gate is buried in and needs rescuing to. This is the only case
+  -- that branch was ever meant to serve.
+  --
+  -- AND IT LOOKS FOR THE LOWEST SURFACE ABOVE THE POINT, not the first one a
+  -- long ray happens to meet. A single probe from high up has exactly the same
+  -- weakness as the version this replaced: it returns whatever is highest in the
+  -- column, so a gate buried in a hillside under a bridge gets the bridge.
+  --
+  -- So the probe walks UP in steps, and each ray is only long enough to reach
+  -- back down to the point. The first step that hits anything has found the
+  -- lowest surface the gate is under, which is the one it is buried in. A roof
+  -- forty metres overhead is never even reached, because the ray that could see
+  -- it is not cast until the shorter ones have already answered.
+  for _, up in ipairs(TUNE.GROUND_RESCUE_STEPS) do
+    local from = z + up
+    ok, dist = pcall(castRayStatic, vec3(x, y, from), vec3(0, 0, -1), up + 0.1)
+    if ok and type(dist) == 'number' and dist <= up then
+      return from - dist
+    end
+  end
+  return nil
 end
 
 -- Lift a point so it clears the ground under it by at least `clear` metres.
@@ -2490,6 +2563,25 @@ local function liftAboveGround(x, y, z, clear)
   if not g then return z end
   local floor = g + (clear or TUNE.GROUND_CLEAR)
   return (z < floor) and floor or z
+end
+
+-- Lower a gate by `step`, but never past the ground and never into ground we
+-- cannot see.
+--
+-- liftAboveGround alone is not enough for a DOWNWARD move: when the probe finds
+-- nothing it returns the height unchanged, which for a lift is the safe answer
+-- (leave it alone) and for a drop is the dangerous one (the requested drop has
+-- already been applied to the value handed in, so it sinks with no floor under
+-- it). Every press would take it further down with nothing able to stop it.
+--
+-- So the probe happens BEFORE the move: no ground, no drop.
+local function lowerToGround(x, y, z, step, clear)
+  clear = clear or TUNE.GROUND_CLEAR
+  local g = groundAt(x, y, z)
+  if not g then return z end
+  local floor = g + clear
+  local want = z - math.abs(step)
+  return (want < floor) and floor or want
 end
 
 -- "Last Checkpoint" reset mode: stand the car on a gate's centre, facing the
@@ -4444,10 +4536,27 @@ local function drawStartPosition(sp, index, mine)
   for i = 1, 4 do
     debugDrawer:drawCylinder(c[i], c[i % 4 + 1], 0.08, color)
   end
-  -- Direction arrow down the middle of the slot.
+  -- WHICH WAY THE CAR WILL FACE, and it needs a head to say so.
+  --
+  -- This was a bare cylinder down the middle of the slot, which draws the AXIS
+  -- and not the direction: a line from tail to head looks identical to one from
+  -- head to tail, so an admin laying out a grid could not tell a slot facing
+  -- down the track from one facing back up it until they drove onto it. Two
+  -- barbs off the head fix it, the same shape paint.glyph draws for the joker's
+  -- "take it" arrow.
   local tail = vec3(sp.x - fx * hl * 0.6, sp.y - fy * hl * 0.6, sp.z + 0.06)
   local head = vec3(sp.x + fx * hl * 0.9, sp.y + fy * hl * 0.9, sp.z + 0.06)
   debugDrawer:drawCylinder(tail, head, 0.06, color)
+  -- Barbs swept back from the head, across the slot rather than along it, so the
+  -- arrow reads from above (which is where an admin building a grid is looking)
+  -- and from inside a car on the slot.
+  local barb = hl * 0.42
+  for _, sr in ipairs({ -1, 1 }) do
+    debugDrawer:drawCylinder(head,
+      vec3(head.x - fx * barb + rx * sr * barb * 0.8,
+           head.y - fy * barb + ry * sr * barb * 0.8,
+           head.z), 0.06, color)
+  end
 
   debugDrawer:drawTextAdvanced(vec3(sp.x, sp.y, sp.z + 1.4),
     String('P' .. index .. (mine and ' (YOU)' or '')),
@@ -5203,11 +5312,47 @@ end
 -- The raycast lands ON the terrain, and a gate dropped to ground level is a gate
 -- whose lower half is buried: what matters is the height of its CENTRE above the
 -- road, which is what the original placement captured from the car.
-function nudge.moveTo(wp, hit, ground)
+-- `newGround` is the ground at the DESTINATION, and passing it is what stops a
+-- gate climbing a tree.
+--
+-- This used to take its new height from `hit.z`, the cursor raycast. That ray
+-- stops at the first thing it meets, which over woodland is the CANOPY: hover a
+-- drag across a group of trees and the gate was lifted to treetop height and
+-- left there. Reported from a live session, and it is the same class of mistake
+-- the ground probe made -- trusting whatever a downward ray met first to be the
+-- ground.
+--
+-- The caller probes for `newGround` starting from the gate's OWN height, which
+-- is below the canopy, so the trees are never in the ray at all.
+-- Where the cursor ray crosses a horizontal plane at height `z`.
+--
+-- THIS IS WHAT A DRAG FOLLOWS, instead of the raycast against the world. A
+-- raycast hit jumps: drag across a treeline and it flips between the ground and
+-- the canopy twenty metres higher, so a centimetre of mouse movement reads as
+-- metres of travel, in a direction nobody asked for. Dragging over woodland was
+-- unusable for exactly that reason.
+--
+-- A plane at the gate's own height has none of that. It is continuous, it
+-- ignores trees, roofs and terrain completely, and it makes a drag mean the one
+-- thing it should mean: move this gate around at the height it is already at.
+-- Height is the wheel's job and the Up/Down buttons', not the drag's.
+--
+-- Returns nil when the ray is too close to horizontal to meet the plane at all,
+-- which is the admin looking at the skyline rather than at the track.
+function nudge.planeAt(ray, z)
+  if not (ray and ray.pos and ray.dir) then return nil end
+  local dz = ray.dir.z
+  if not dz or math.abs(dz) < 1e-4 then return nil end
+  local t = (z - ray.pos.z) / dz
+  if t <= 0 or t > TUNE.NUDGE_MAX_REACH * 4 then return nil end
+  return ray.pos.x + ray.dir.x * t, ray.pos.y + ray.dir.y * t
+end
+
+function nudge.moveTo(wp, hit, ground, newGround)
   if not (wp and hit) then return end
   local lift = wp.z - (ground or wp.z)
   wp.x, wp.y = hit.x, hit.y
-  wp.z = hit.z + lift
+  wp.z = (newGround or hit.z) + lift
 end
 
 -- Which way should a gate placed by clicking face?
@@ -5279,6 +5424,9 @@ end
 -- Turn the picked gate from the panel. The scroll wheel is the fast way and not
 -- everybody has one, so the same step is on a pair of buttons. `dir` is -1 or 1.
 function M.nudgeTurn(dir)
+  -- Reached only from the panel, so this IS the signal that a CEF click just
+  -- happened and the world click it also produced must be ignored.
+  nudge.uiGrace = TUNE.NUDGE_UI_GRACE
   if not (nudge.on and nudge.sel and nudge.list) then return end
   local wp = nudge.list[nudge.sel]
   if not wp then return end
@@ -5290,7 +5438,32 @@ end
 -- Delete the picked gate, from the panel rather than a key. Guessing a keybind
 -- for a destructive action on a build that cannot be tested here is how the node
 -- grabber block shipped listening for names nothing answered to.
+-- Raise or lower the picked gate, for a mouse with no wheel and for the times
+-- the wheel is too slow: a gate deep in a hillside takes a lot of clicks.
+--
+-- Floored the same way shift+scroll is, so the control that digs a gate out can
+-- never be used to bury one.
+function M.nudgeLift(dir)
+  -- Reached only from the panel, so this IS the signal that a CEF click just
+  -- happened and the world click it also produced must be ignored.
+  nudge.uiGrace = TUNE.NUDGE_UI_GRACE
+  if not (nudge.on and nudge.sel and nudge.list) then return end
+  local wp = nudge.list[nudge.sel]
+  if not wp then return end
+  if (tonumber(dir) or 1) >= 0 then
+    wp.z = liftAboveGround(wp.x, wp.y, wp.z + TUNE.NUDGE_LIFT_PER_PRESS,
+      TUNE.GROUND_CLEAR)
+  else
+    wp.z = lowerToGround(wp.x, wp.y, wp.z, TUNE.NUDGE_LIFT_PER_PRESS,
+      TUNE.GROUND_CLEAR)
+  end
+  if editorTarget == 'branch' then branch.rebuild() end
+  pushRouteState()
+end
+
 function M.nudgeDelete()
+  -- Reached only from the panel: see the note on nudgeTurn.
+  nudge.uiGrace = TUNE.NUDGE_UI_GRACE
   if not (nudge.on and nudge.sel) then return end
   local i = nudge.sel
   nudge.sel, nudge.dragging = nil, false
@@ -5319,6 +5492,15 @@ function nudge.update()
   -- the world and the admin is clicking its buttons with this same cursor.
   local wantsUi = false
   pcall(function () wantsUi = im.GetIO().WantCaptureMouse end)
+  -- A panel press cannot become a drag. The grace is set when the button's Lua
+  -- runs, which may be a frame after the click itself was seen here -- cancelling
+  -- `dragging` covers that, because a drag needs several frames of held movement
+  -- before it shifts anything.
+  if nudge.uiGrace > 0 then
+    nudge.uiGrace = nudge.uiGrace - 1
+    nudge.dragging = false
+    nudge.grabX, nudge.grabY = nil, nil
+  end
 
   local list = activeEditorRoute()
   nudge.list = list
@@ -5344,18 +5526,48 @@ function nudge.update()
     return
   end
 
-  if down and not wantsUi then
+  -- A CLICK THAT PICKS NOTHING LEAVES THE SELECTION ALONE.
+  --
+  -- It used to clear it, and that is what greyed the movement buttons out the
+  -- instant one was pressed: the panel is a CEF overlay, so the press arrives
+  -- here as a world click too, the ray behind the panel hits no gate, and the
+  -- gate being worked on was dropped. Pressing Up therefore disabled Up.
+  --
+  -- Keeping it is the better behaviour on its own terms too. A miss is ambiguous
+  -- -- the panel, a mis-aim, a gate hidden behind another -- and none of those
+  -- are a request to forget what is being edited. Picking a different gate still
+  -- switches, and leaving the mode still clears.
+  if down and not wantsUi and nudge.uiGrace <= 0 then
     local picked = nudge.pick(list, ray)
-    -- Tell the panel whenever the selection CHANGES, including to nothing.
-    -- Pushing only on a drag left the UI showing a gate the mouse had already
-    -- let go of.
-    if picked ~= nudge.sel then
+    if picked and picked ~= nudge.sel then
       nudge.sel = picked
       pushRouteState()
     end
     nudge.dragging = picked ~= nil
+    -- WHERE THE CURSOR WAS WHEN THE GATE WAS GRABBED.
+    --
+    -- A drag moves the gate BY how far the cursor has travelled since this
+    -- point, never TO where the cursor ray happens to land. Those are only the
+    -- same thing when the ray lands exactly on the gate, and it never does: a
+    -- gate is a debug drawing with no collision, so the ray goes straight
+    -- through it to the ground behind, which from any raised camera is metres
+    -- away and at whatever height is under THERE.
+    --
+    -- Moving TO the landing point is what teleported a gate under the map the
+    -- instant it was picked. Skipping the down-frame did not fix that, because
+    -- the frame after it -- button still held, cursor not yet moved -- did
+    -- exactly the same thing. A click is several frames long.
+    local wpSel = picked and list[picked]
+    if wpSel then
+      nudge.grabX, nudge.grabY = nudge.planeAt(ray, wpSel.z)
+    else
+      nudge.grabX, nudge.grabY = nil, nil
+    end
   end
-  if up then nudge.dragging = false end
+  if up then
+    nudge.dragging = false
+    nudge.grabX, nudge.grabY = nil, nil
+  end
 
   local wp = nudge.sel and list[nudge.sel]
   if not wp then
@@ -5367,17 +5579,37 @@ function nudge.update()
     return
   end
 
-  if nudge.dragging and held and hit and hit.pos then
-    -- The ground under the gate NOW, so the lift it was authored with survives
-    -- being dragged across a crest or into a dip.
-    local under = groundAt(wp.x, wp.y, wp.z) or wp.z
-    nudge.moveTo(wp, hit.pos, under)
-    -- Dragged onto rising ground, the preserved lift can still put a gate inside
-    -- the hill. The floor is the same one every other placement path uses.
-    wp.z = liftAboveGround(wp.x, wp.y, wp.z, TUNE.GROUND_CLEAR)
-    if editorTarget == 'branch' then branch.rebuild() end
-    if editorTarget == 'start' then branch.gridTool.generated = false end
-    pushRouteState()
+  -- NO EARLY RETURNS IN HERE. The scroll handling below shares this frame, and
+  -- a drag that declines to move must not take the wheel with it: bailing out of
+  -- the whole update was how shift+scroll stopped working while the button was
+  -- held, which is exactly when an admin uses it.
+  --
+  -- A DRAG IS PURELY HORIZONTAL. It follows the cursor across a plane at the
+  -- gate's own height and never touches z, so whatever height the wheel or the
+  -- Up/Down buttons put a gate at is the height it keeps while you slide it
+  -- around. The only thing that may change z here is the floor at the end, and
+  -- that can only ever raise a gate out of a hillside it was dragged into.
+  if nudge.dragging and held and nudge.grabX then
+    local cx, cy = nudge.planeAt(ray, wp.z)
+    if cx then
+      local dx, dy = cx - nudge.grabX, cy - nudge.grabY
+      local d2 = dx * dx + dy * dy
+      if d2 > TUNE.NUDGE_MAX_REACH * TUNE.NUDGE_MAX_REACH then
+        -- The cursor swung past the horizon and the plane crossing shot off with
+        -- it. Re-anchor rather than apply it, so it does not come back later as
+        -- one enormous accumulated leap.
+        nudge.grabX, nudge.grabY = cx, cy
+      elseif d2 >= TUNE.NUDGE_DRAG_MIN * TUNE.NUDGE_DRAG_MIN then
+        nudge.grabX, nudge.grabY = cx, cy
+        wp.x, wp.y = wp.x + dx, wp.y + dy
+        -- Dragged into rising ground, a gate would end up inside the hill. This
+        -- is the only height change a drag can make, and it only ever lifts.
+        wp.z = liftAboveGround(wp.x, wp.y, wp.z, TUNE.GROUND_CLEAR)
+        if editorTarget == 'branch' then branch.rebuild() end
+        if editorTarget == 'start' then branch.gridTool.generated = false end
+        pushRouteState()
+      end
+    end
   end
 
   -- Scroll turns the selected gate. The tedious half of a fine adjustment is the
@@ -5399,9 +5631,16 @@ function nudge.update()
   if wheel ~= 0 and not wantsUi then
     if shift then
       -- Floored at ground clearance, so the control that exists to dig a gate
-      -- out cannot be used to bury one.
-      local want = wp.z + wheel * TUNE.NUDGE_LIFT_PER_STEP
-      wp.z = liftAboveGround(wp.x, wp.y, want, TUNE.GROUND_CLEAR)
+      -- out cannot be used to bury one. Up and down go through different helpers
+      -- for the reason spelled out on lowerToGround: a failed probe must leave a
+      -- lift alone and must refuse a drop outright.
+      if wheel > 0 then
+        wp.z = liftAboveGround(wp.x, wp.y,
+          wp.z + wheel * TUNE.NUDGE_LIFT_PER_STEP, TUNE.GROUND_CLEAR)
+      else
+        wp.z = lowerToGround(wp.x, wp.y, wp.z,
+          -wheel * TUNE.NUDGE_LIFT_PER_STEP, TUNE.GROUND_CLEAR)
+      end
     else
       nudge.turn(wp, wheel * nudge.TURN_PER_STEP)
     end
@@ -7248,6 +7487,7 @@ local DISPATCH = {
   RM_DerbyUpdate     = derby.onDerbyUpdate,
   RM_DerbyLayouts    = derby.onDerbyLayoutList,
   RM_DerbyGridAssign = derby.onDerbyGridAssign,
+  RM_DerbyLifeLost   = derby.onDerbyLifeLost,
   RM_DerbyCountdown  = derby.onDerbyCountdown,
 }
 

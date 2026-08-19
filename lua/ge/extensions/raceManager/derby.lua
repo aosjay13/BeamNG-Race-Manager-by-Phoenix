@@ -569,11 +569,14 @@ end
 -- The parameter is `resetLimit`, not `maxResets`: the latter is also the name of
 -- the RACE allowance this file holds, and a parameter quietly shadowing it is
 -- the kind of thing that reads correctly and means something else.
-function D.derbySetConfig(oobLimit, demoLimit, resetLimit)
+-- `lives` is optional so an older UI, which sends three arguments, still sets
+-- the two timers and the reset allowance instead of failing on arity.
+function D.derbySetConfig(oobLimit, demoLimit, resetLimit, lives)
   if host.inMultiplayer() then
     TriggerServerEvent('RM_DerbySetConfig', jsonEncode({
       oobLimit = tonumber(oobLimit), demoLimit = tonumber(demoLimit),
       maxResets = tonumber(resetLimit),
+      lives = tonumber(lives),
     }))
   end
 end
@@ -921,6 +924,50 @@ end
 -- Start Derby handed this client a start slot: stand the car on it, facing
 -- the placed heading. No freeze/hold - the derby's start grace period covers
 -- the line-up, and the teleport is flagged so it never counts as a reset.
+-- A LIFE SPENT, NOT A DERBY LOST. The stopped timer expired, the server took a
+-- life off this driver and sent them back to the slot they started from.
+--
+-- Everything physical about it is the form-up path: the same placement queue,
+-- which ghosts the car on the way in and hands its collisions back only once it
+-- has settled AND the space around it is provably clear. That is what stops a
+-- driver being dropped into the middle of a scrum and welded to whatever was
+-- standing on their slot.
+--
+-- NOT held. A form-up holds cars for the countdown; this driver is rejoining a
+-- derby that is already running, and holding them would be a second penalty on
+-- top of the life they just lost.
+D.onDerbyLifeLost = function (rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local lives = tonumber(data.lives) or 0
+  local slot  = tonumber(data.slot)
+
+  -- The countdown that just expired has to go before the car moves, or the
+  -- driver lands on their slot with the overlay still counting and loses the
+  -- next life to the timer they already paid for.
+  D.derbyState.demoLeft = nil
+  D.derbyState.oobLeft  = nil
+  D.derbyClearWarnings()
+  D.derbyState.runTime  = 0     -- re-arms the start grace, so a car put down
+                                -- stationary is not immediately on the clock
+
+  if slot then
+    D.derbyState.slot = math.floor(slot)
+    host.queueFieldPlacement({
+      slot  = D.derbyState.slot,
+      slots = D.derbyState.starts,
+      hold  = false,
+      holdSource = 'derby',
+      order = 1, count = 1,      -- one car, not a field: no stagger to wait out
+    })
+  end
+  host.pushNotice('derby', lives == 1
+    and 'Counted out: 1 life left'
+    or  ('Counted out: ' .. lives .. ' lives left'))
+  log('I', 'raceManager', 'Derby: life lost, ' .. lives .. ' left, back to slot '
+    .. tostring(slot))
+end
+
 D.onDerbyGridAssign = function (rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end

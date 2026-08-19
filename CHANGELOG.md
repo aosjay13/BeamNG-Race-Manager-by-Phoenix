@@ -6,6 +6,112 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.8.4 - Derby lives, and an editor that keeps hold of your gates
+
+### Added
+
+- **Derby lives.** A driver counted out by the stopped timer now spends a life
+  and goes back to the slot they started from, instead of being out of the derby
+  on the first mistake. Set **Lives** in the derby rules; 1 is exactly the
+  behaviour that existed before.
+
+  The respawn goes through the same placement queue the form-up uses, so the car
+  is ghosted on the way in and gets its collisions back only once it has settled
+  and the space around it is provably clear -- a driver cannot be dropped into
+  the middle of a scrum and welded to it. The stopped countdown is cleared and
+  the start grace re-armed before the car moves, so nobody lands already counting
+  down toward the next life.
+
+  Lives are snapshotted at form-up, so an admin raising the setting mid-derby
+  cannot hand the survivors more chances than the drivers already knocked out
+  got. Remaining lives show on the derby board when the rule is in use.
+
+  **Out of bounds still eliminates outright.** Leaving the arena is a choice in a
+  way that being wrecked is not, and a driver with lives in hand could otherwise
+  use the boundary as a free teleport back into the middle of the fight.
+
+### Fixed
+
+- **Checkpoints no longer fly into the sky, and can be brought back if they
+  have.** The ground probe added in 0.8.3 started fifty metres *above* a gate and
+  took the first surface on the way down. That is not the ground: it is whatever
+  is highest in that column, so a gate under a bridge got the bridge deck, one
+  beside a building got the roof, one under trees got the canopy -- and the gate
+  was duly teleported up onto it. Because the lift only ever raises, that bogus
+  surface then became the floor shift+scroll clamped against, so the gate could
+  not be brought back down either.
+
+  The probe now looks *down from the gate itself* first, which is the only
+  surface that has any claim to be its ground. A genuinely buried gate is still
+  rescued, by walking upward in short steps so the lowest surface above it wins
+  and overhead geometry is never reached.
+
+- **Clicking a gate no longer moves it.** Dragging moved the gate *to* wherever
+  the cursor ray landed, and the ray does not stop on a gate -- a debug drawing
+  has no collision -- so it carried on to the ground behind, which from any
+  raised camera is metres away and at whatever height was under *there*. Picking
+  a gate therefore teleported it, reported as "I clicked it and it went all the
+  way under the map".
+
+  A drag now moves the gate **by** how far the cursor has travelled since it was
+  grabbed, never to where the ray currently lands. A click that does not move the
+  mouse is a zero delta and moves nothing, so "click picks, drag moves" is
+  finally true rather than merely written on the panel.
+
+- **Nothing moves a gate DOWN into ground it cannot see.** A failed ground probe
+  used to leave the requested drop already applied, so every press of Down or
+  click of the wheel sank the gate further with no floor under it. Downward moves
+  now probe first and refuse outright when there is no answer.
+
+- **Pressing a movement button no longer deselects the gate.** The HUD app is a
+  CEF overlay and ImGui's mouse-capture flag knows nothing about it, so pressing
+  Up, Down or a turn button also registered as a click on the world. The ray
+  behind the panel hit no gate, the miss cleared the selection, and the buttons
+  greyed out -- pressing Up disabled Up.
+
+  A click that picks nothing now leaves the selection alone, which is the better
+  rule anyway: a miss is ambiguous (the panel, a mis-aim, a gate hidden behind
+  another) and none of those mean "forget what I was editing". A panel press also
+  suppresses world picking and dragging for a few frames, so a button whose ray
+  happens to land on another gate cannot steal the selection or start dragging it.
+
+- **A drag is now purely horizontal, and follows the cursor across a plane at the
+  gate's own height.** It used to follow the raycast against the world, which
+  jumps: drag across a treeline and the hit flips between the ground and a canopy
+  twenty metres up, so a centimetre of mouse movement reads as metres of travel
+  in a direction nobody asked for, and the height came out wrong at the end --
+  first climbing the trees, then dropping to the floor. A plane has none of that.
+  It ignores trees, roofs and terrain completely, and it makes a drag mean the
+  one thing it should: move this gate around at the height it is already at.
+
+  Height belongs to the wheel and the Up/Down buttons now. The only height change
+  a drag can make is the floor at the end, which can only ever lift a gate out of
+  a hillside it was dragged into.
+
+- **Dragging a gate across trees no longer climbs them.** The cursor raycast
+  stops at the first thing it meets, which over woodland is the canopy, and the
+  gate took its new height from that hit -- so hovering a drag over a group of
+  trees lifted it to treetop level. The destination ground is now probed from the
+  gate's own height, which is already under the canopy, so the trees are never in
+  the ray at all. Same class of mistake as the sky bug above: trusting whatever a
+  ray met first to be the ground.
+
+- **Raising and lowering is faster, and has buttons.** Shift+scroll moves in
+  bigger steps, and **▲ Up** / **▼ Down** sit beside the turn controls for a
+  mouse with no wheel, or for digging a gate out of a hillside without spinning
+  the wheel. Both floor at ground clearance, so neither can bury a gate.
+
+- **A drag that catches the horizon no longer flings a gate out of sight.** The
+  cursor ray lands on whatever it hits, and aimed near the skyline that is
+  terrain kilometres away. A drag beyond reach is now ignored rather than
+  followed, so the gate stays where you last had control of it.
+
+- **Start position markers now say which way they face.** The direction line
+  down the middle of a slot was a plain cylinder, which draws the axis and not
+  the direction: tail-to-head looked identical to head-to-tail, so a slot facing
+  down the track was indistinguishable from one facing back up it until you drove
+  onto it. It has an arrowhead now, the same shape the joker gate's arrow uses.
+
 ## 0.8.3 - Finishing without despawning, and placement that stays above ground
 
 ### Fixed (placement on uneven terrain)

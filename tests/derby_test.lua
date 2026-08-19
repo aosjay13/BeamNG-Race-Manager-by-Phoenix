@@ -9,6 +9,7 @@
 local connected = { [1] = 'Alice', [2] = 'Bob', [3] = 'Cara' }
 local lastState = nil   -- last RM_Update payload (circuit racing)
 local lastDerby = nil   -- last RM_DerbyUpdate payload
+local lifeLost  = {}    -- [pid] = last RM_DerbyLifeLost payload
 local lastArenas = nil  -- last RM_DerbyLayouts payload (saved arena list)
 local lastChat = nil
 local derbyGrid = {}    -- [pid] = start slot handed out at form-up
@@ -35,6 +36,7 @@ MP = {
       if payload.hold then derbyHeld[target] = true end
     end
     if event == 'RM_DerbyCountdown' then lastCountdown = payload.count end
+    if event == 'RM_DerbyLifeLost' then lifeLost[target] = payload end
     if event == 'RM_ReleaseSpectate' then derbyReleased[target] = payload end
   end,
   RegisterEvent = function () end,
@@ -784,6 +786,61 @@ check(lastDerby.winner == nil, 'an aborted start records no winner')
 -- Admin-only, like everything else in the derby.
 RM_onDerbyFormUp(3)
 check(lastDerby.derbyPhase == 'idle', 'a non-admin cannot form up the field')
+
+-- ===========================================================================
+-- LIVES: being counted out puts a driver back on the grid, not out of the derby
+-- ===========================================================================
+-- The stopped timer expiring used to be the end of somebody's derby full stop.
+-- With lives set above 1 it spends one and sends them back to the slot they
+-- started from instead, so a derby is a scrap you can come back from.
+--
+-- Out of bounds is deliberately NOT covered by lives: leaving the arena is a
+-- choice in a way that being wrecked is not, and a driver with lives in hand
+-- could otherwise use the boundary as a free teleport back into the fight.
+do
+  RM_onDerbyEnd(1)
+  RM_onDerbySetConfig(1, '{"oobLimit":3,"demoLimit":8,"lives":3}')
+  check(lastDerby.lives == 3, 'lives are configurable and broadcast')
+  RM_onDerbySetConfig(1, '{"lives":0}')
+  check(lastDerby.lives == 1, 'nought lives is floored to 1: it would empty the field')
+  RM_onDerbySetConfig(1, '{"lives":99}')
+  check(lastDerby.lives == 9, 'and a silly number is capped')
+
+  RM_onDerbySetConfig(1, '{"oobLimit":3,"demoLimit":8,"lives":3}')
+  lifeLost = {}
+  RM_onDerbyFormUp(1)
+  RM_onDerbyStart(1)
+  for _ = 1, 4 do RM_DerbyCountdownTick() end
+  check(lastDerby.derbyPhase == 'running', 'the derby is running')
+  check(derbyPlayer('Alice').lives == 3, 'every driver starts on the full allowance')
+
+  -- First time counted out: a life goes, and the driver does not.
+  RM_onDerbyDemolished(2)
+  check(derbyPlayer('Bob').status == 'alive', 'a driver with lives left is NOT eliminated')
+  check(derbyPlayer('Bob').lives == 2, 'a life is spent')
+  check(lifeLost[2] ~= nil, 'and they are told')
+  check(lifeLost[2] and lifeLost[2].lives == 2, 'with how many are left')
+  check(lifeLost[2] and lifeLost[2].slot == derbyGrid[2],
+    'and sent back to the slot they STARTED from, not a recomputed one')
+
+  RM_onDerbyDemolished(2)
+  check(derbyPlayer('Bob').lives == 1, 'a second one goes the same way')
+  check(derbyPlayer('Bob').status == 'alive', 'still in')
+
+  -- The last one is the end of it.
+  lifeLost = {}
+  RM_onDerbyDemolished(2)
+  check(derbyPlayer('Bob').status == 'eliminated', 'out of lives is out of the derby')
+  check(derbyPlayer('Bob').reason == 'Demolished', 'and the reason is recorded')
+  check(lifeLost[2] == nil, 'with no respawn offered')
+
+  -- OUT OF BOUNDS IGNORES LIVES ENTIRELY.
+  check(derbyPlayer('Cara').lives == 3, 'Cara still has her full allowance')
+  RM_onDerbyDisqualified(3)
+  check(derbyPlayer('Cara').status == 'eliminated',
+    'leaving the arena eliminates outright, whatever lives are in hand')
+  check(derbyPlayer('Cara').lives == 3, 'and spends none of them')
+end
 
 print(string.format('derby_test: %d checks, %d failures', checks, fails))
 os.exit(fails == 0 and 0 or 1)

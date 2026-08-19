@@ -60,11 +60,23 @@ cameraMouseRayCast = function () return rayHit end
 -- `terrainAt` is the map: flat at z = 0 by default, and tests set it to a
 -- function to build a slope or a ledge.
 local terrainAt = function (x, y) return 0 end
+-- OVERHEAD GEOMETRY: a roof, a bridge deck, a tree canopy. Returns nil where
+-- there is nothing above. The world needs this to have a shape a ground probe
+-- can get WRONG -- with ground alone, a probe that starts high and takes the
+-- first hit looks identical to one that starts at the point, which is exactly
+-- why the sky bug got through.
+local ceilingAt = function (x, y) return nil end
 castRayStatic = function (origin, dir, maxDist)
+  maxDist = maxDist or math.huge
+  local best = nil
+  local ceil = ceilingAt(origin.x, origin.y)
+  -- A downward ray hits the ceiling only if it STARTS above it.
+  if ceil and origin.z > ceil then best = origin.z - ceil end
   local g = terrainAt(origin.x, origin.y)
-  local dist = origin.z - g
-  if dist < 0 or dist > (maxDist or math.huge) then return maxDist or 1e9 end
-  return dist
+  local toGround = origin.z - g
+  if toGround >= 0 and (best == nil or toGround < best) then best = toGround end
+  if best == nil or best > maxDist then return maxDist end
+  return best
 end
 
 -- THE CURSOR, REACHED THE WAY THE GAME REACHES IT.
@@ -315,8 +327,17 @@ check(math.abs(gates()[2].x - 40) < 0.01,
 -- A click on empty ground drops the selection rather than grabbing whatever was
 -- nearest. Clicking away from everything means "nothing", not "the far end".
 clickAt(900, 900)
-check(routeState and routeState.nudgeSel == nil,
-  'clicking well away from every gate clears the selection')
+-- A CLICK THAT PICKS NOTHING NOW KEEPS THE SELECTION.
+--
+-- It used to clear it, and that greyed the panel's movement buttons out the
+-- moment one was pressed: the HUD app is a CEF overlay, so a button press
+-- arrives here as a world click too, the ray behind the panel hits no gate, and
+-- the gate being worked on was dropped. Pressing Up disabled Up.
+--
+-- A miss is ambiguous anyway -- the panel, a mis-aim, a gate behind another --
+-- and none of them are a request to forget what is being edited.
+check(routeState and routeState.nudgeSel ~= nil,
+  'clicking well away from every gate KEEPS the selection')
 
 -- ===========================================================================
 -- The scroll wheel turns the gate it has hold of
@@ -403,10 +424,12 @@ check(routeState.nudgeSel == 2, 'the new gate is the picked one, ready to turn')
 -- ===========================================================================
 local n = #gates()
 RM.nudgeDelete()
+for _ = 1, 5 do frame() end   -- past the panel-click grace
 check(#gates() == n - 1, 'delete removes the picked gate')
 check(math.abs(gates()[2].y - 240) < 0.01, 'and the one after it closes up')
 check(routeState.nudgeSel == nil, 'nothing is picked afterwards')
 RM.nudgeDelete()
+for _ = 1, 5 do frame() end   -- past the panel-click grace
 check(#gates() == n - 1, 'delete with nothing picked does nothing')
 
 -- ===========================================================================
@@ -484,8 +507,17 @@ check(g[2] and g[2].z >= 0.49,
 -- On a SLOPE, where the bug actually bit: the ground under the click is not the
 -- ground the ray started from.
 terrainAt = function (x, y) return y * 0.1 end     -- rises 1 in 10 along +Y
-rayHit.pos = { x = 0, y = 200, z = 20 }
-ctrlClickAt(0, 200)
+-- The cursor raycast lands ON the terrain, so the hit carries the terrain height
+-- at that spot. aimAt writes a flat z, which no real hit ever would.
+local realHit = function (x, y)
+  aimAt(x, y)
+  rayHit.pos = { x = x, y = y, z = terrainAt(x, y) }
+end
+realHit(0, 200)
+mouse.ctrl = true
+mouse.clicked, mouse.down, mouse.released = true, true, false
+frame()
+mouse.clicked, mouse.down, mouse.ctrl = false, false, false
 g = gates()
 check(#g == 3, 'a gate is placed on the slope')
 check(g[3] and g[3].z >= 20.49,
@@ -557,6 +589,211 @@ check(#g == 4, 'the gate is inserted rather than appended')
 check(g[2] ~= nil and g[2].hy > 0.9,
   'and faces the way the route travels THERE (+Y), not back toward the end of '
     .. 'the lap (hy=' .. tostring(g[2] and g[2].hy) .. ')')
+
+-- ===========================================================================
+-- THE GROUND UNDER A GATE IS UNDER IT, NOT ABOVE IT
+-- ===========================================================================
+-- Reported from a live session with a screenshot of a checkpoint hanging in the
+-- sky: "my checkpoints sometimes fly into the sky and I can't retrieve them".
+--
+-- The first ground probe started fifty metres ABOVE the gate and took the first
+-- surface on the way down. That is not the ground, it is whatever is HIGHEST in
+-- the column: a bridge deck, a roof, a tree canopy. liftAboveGround then
+-- teleported the gate up onto it -- and because that function only ever raises,
+-- the bogus surface became the floor shift+scroll clamped against, so the gate
+-- could not be brought back down either.
+RM.setEditorTarget('main')
+RM.editorClear()
+RM.setNudgeMode(true)
+frame()
+terrainAt = function (x, y) return 0 end
+ceilingAt = function (x, y) return 40 end     -- a roof forty metres up, everywhere
+
+veh.x, veh.y, veh.z = 0, 0, 0.5
+RM.editorAdd()
+frame()
+local g = gates()
+check(#g == 1, 'a gate is placed under the roof')
+check(g[1] and g[1].z < 5,
+  'and stays down where it was put, not lifted onto the roof above it (z='
+    .. tostring(g[1] and g[1].z) .. ')')
+
+-- Nudging it must not send it up there either.
+clickAt(0, 0)
+mouse.shift, mouse.wheel = true, -4
+frame()
+mouse.wheel, mouse.shift = 0, false
+check(gates()[1] and gates()[1].z < 5,
+  'and shift+scroll DOWN lowers it rather than clamping to the roof (z='
+    .. tostring(gates()[1] and gates()[1].z) .. ')')
+check(gates()[1] and gates()[1].z >= 0.49, 'while still clearing the actual ground')
+letGo()   -- clickAt leaves the button held; the drag path is live until this
+
+-- A genuinely BURIED gate is still rescued, which is the case the probe from
+-- above was written for in the first place.
+RM.editorClear()
+ceilingAt = function (x, y) return nil end
+terrainAt = function (x, y) return 0 end
+-- Clicked, not driven: driving places a gate exactly where the car is, and a car
+-- cannot be underground. Clicking can put one there, and that is the case the
+-- rescue probe exists for.
+rayHit.pos = { x = 0, y = 0, z = -8 }
+aimAt(0, 0)
+rayHit.pos = { x = 0, y = 0, z = -8 }   -- aimAt flattens it; a real hit would not
+mouse.ctrl = true
+mouse.clicked, mouse.down, mouse.released = true, true, false
+frame()
+mouse.clicked, mouse.down, mouse.ctrl = false, false, false
+check(gates()[1] and gates()[1].z >= 0.49,
+  'a gate clicked below the surface is lifted out of it (z='
+    .. tostring(gates()[1] and gates()[1].z) .. ')')
+
+-- A gate legitimately up ON the roof keeps its height: the probe finds the roof
+-- BELOW it and leaves it alone.
+RM.editorClear()
+ceilingAt = function (x, y) return 40 end
+veh.x, veh.y, veh.z = 0, 0, 40.5
+RM.editorAdd()
+frame()
+check(gates()[1] and gates()[1].z > 39,
+  'a gate up on a bridge or roof is not dropped to the ground below it (z='
+    .. tostring(gates()[1] and gates()[1].z) .. ')')
+
+-- A DRAG THAT CATCHES THE HORIZON IS IGNORED, not followed. The cursor ray
+-- lands on whatever it hits, and near the skyline that is terrain kilometres
+-- away -- somewhere an admin cannot see the gate, let alone drag it back.
+RM.editorClear()
+ceilingAt = function (x, y) return nil end
+veh.x, veh.y, veh.z = 0, 0, 0.5
+RM.editorAdd()
+frame()
+clickAt(0, 0)
+local before = gates()[1] and gates()[1].x
+dragTo(9000, 9000)
+check(gates()[1] and gates()[1].x == before,
+  'a drag beyond reach leaves the gate where it was')
+-- The excursion re-anchors the grab, so the drag resumes from where the cursor
+-- actually is rather than coming back as one enormous accumulated jump.
+dragTo(9020, 9000)
+check(gates()[1] and math.abs(gates()[1].x - (before + 20)) < 1,
+  'and normal dragging resumes from there (x='
+    .. tostring(gates()[1] and gates()[1].x) .. ')')
+letGo()
+
+-- A DRAG ACROSS TREES MUST NOT CLIMB THEM.
+--
+-- The cursor raycast stops at the first thing it meets, which over woodland is
+-- the CANOPY. Taking the gate's new height from that hit lifted it to treetop
+-- level and left it there -- reported from a live session, and the same class of
+-- mistake the ground probe made. The destination ground is probed from the
+-- gate's own height instead, which is already under the canopy.
+RM.editorClear()
+terrainAt = function (x, y) return 0 end
+ceilingAt = function (x, y) return (y > 50) and 25 or nil end   -- a wood beyond y=50
+veh.x, veh.y, veh.z = 0, 0, 0.5
+RM.editorAdd()
+frame()
+-- Raise it first, so the test can tell "kept its height" from "happened to be
+-- near the ground anyway".
+clickAt(0, 0)
+RM.nudgeLift(1)
+RM.nudgeLift(1)
+local raised = gates()[1] and gates()[1].z
+check(raised and raised > 3, 'the gate is lifted well clear of the ground')
+-- A panel press cancels any drag in flight and suppresses world clicks briefly,
+-- so let that pass before dragging. Re-grab afterwards.
+for _ = 1, 5 do frame() end
+clickAt(0, 0)
+-- Drag it into the wood. The raycast would land on the canopy at z=25; the drag
+-- never asks it.
+rayHit.pos = { x = 0, y = 100, z = 25 }
+aimAt(0, 100)
+rayHit.pos = { x = 0, y = 100, z = 25 }
+mouse.clicked, mouse.down, mouse.released = false, true, false
+frame()
+-- Well into the wood. Not asserted to the metre: the grab plane was taken at the
+-- gate's height before it was lifted, so the travel carries a small constant
+-- offset. What this case is about is the HEIGHT below, not the landing spot.
+check(gates()[1] and gates()[1].y > 50, 'the drag moves it into the wood (y='
+  .. tostring(gates()[1] and gates()[1].y) .. ')')
+check(gates()[1] and math.abs(gates()[1].z - raised) < 0.01,
+  'and it KEEPS the height it was dragged at: neither climbing the trees nor '
+    .. 'dropping to the floor (z=' .. tostring(gates()[1] and gates()[1].z) .. ')')
+letGo()
+
+-- THE BUTTONS do what shift+scroll does, in bigger steps, and floor the same way.
+ceilingAt = function (x, y) return nil end
+clickAt(0, 100)
+local before = gates()[1] and gates()[1].z
+RM.nudgeLift(1)
+check(gates()[1] and gates()[1].z > before + 1,
+  'Up raises the picked gate by a useful amount')
+RM.nudgeLift(-1)
+RM.nudgeLift(-1)
+RM.nudgeLift(-1)
+check(gates()[1] and gates()[1].z >= 0.49,
+  'and Down stops at ground clearance rather than burying it (z='
+    .. tostring(gates()[1] and gates()[1].z) .. ')')
+letGo()
+
+-- A CLICK PICKS. IT DOES NOT MOVE.
+--
+-- `dragging` is set on the frame the button goes down, and the move used to run
+-- on that same frame with that same cursor hit -- so picking a gate teleported
+-- it to wherever the ray landed. The ray does not stop on the gate (a debug
+-- drawing has no collision), it carries on to the ground behind it, which from
+-- any raised camera is metres away. Reported as "I clicked it and it went all
+-- the way under the map".
+RM.editorClear()
+terrainAt = function (x, y) return 0 end
+ceilingAt = function (x, y) return nil end
+veh.x, veh.y, veh.z = 0, 0, 0.5
+RM.editorAdd()
+frame()
+local atX, atY = gates()[1].x, gates()[1].y
+-- The raycast is deliberately pointed somewhere useless: a drag follows the ray
+-- across a plane at the gate's own height and never consults the raycast at all,
+-- which is what makes woodland harmless.
+aimAt(0, 0)
+rayHit.pos = { x = 0, y = 120, z = 25 }   -- as if the ray had hit a treetop
+mouse.clicked, mouse.down, mouse.released = true, true, false
+frame()
+mouse.clicked = false
+check(gates()[1] and gates()[1].x == atX and gates()[1].y == atY,
+  'a click leaves the gate exactly where it was')
+check(routeState and routeState.nudgeSel ~= nil, 'but it IS picked')
+-- Still held, and NOW the cursor has moved: that is a drag, and it moves BY the
+-- travel rather than TO any hit point.
+aimAt(0, 30)
+frame()
+check(gates()[1] and math.abs(gates()[1].y - (atY + 30)) < 1,
+  'and the drag that follows moves it BY the cursor travel (y='
+    .. tostring(gates()[1] and gates()[1].y) .. ')')
+check(gates()[1] and gates()[1].z >= 0.49 and gates()[1].z < 5,
+  'and does not take its height from the treetop the raycast hit (z='
+    .. tostring(gates()[1] and gates()[1].z) .. ')')
+letGo()
+
+-- DOWN REFUSES GROUND IT CANNOT SEE. With no world under the gate at all, the
+-- probe finds nothing -- and a drop with no floor under it is how a gate ends up
+-- somewhere no control can reach.
+RM.editorClear()
+veh.x, veh.y, veh.z = 0, 0, 0.5
+RM.editorAdd()
+frame()
+clickAt(0, 0)
+frame()
+terrainAt = function (x, y) return -1e9 end   -- effectively no ground in range
+local held = gates()[1] and gates()[1].z
+RM.nudgeLift(-1)
+RM.nudgeLift(-1)
+check(gates()[1] and gates()[1].z == held,
+  'Down does nothing when the ground cannot be found, rather than sinking (z='
+    .. tostring(gates()[1] and gates()[1].z) .. ')')
+terrainAt = function (x, y) return 0 end
+RM.nudgeLift(-1)
+check(gates()[1] and gates()[1].z >= 0.49, 'and works again once there is ground')
+letGo()
 
 -- ===========================================================================
 -- A GENERATED GRID FOLLOWS THE TERRAIN

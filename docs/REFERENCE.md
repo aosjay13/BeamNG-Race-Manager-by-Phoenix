@@ -150,7 +150,13 @@ course you want to race:
    editor tab you are on, so checkpoints, joker gates, pit stalls, branch gates
    and start positions are all movable.
 
-   **Shift+scroll raises and lowers** the selected gate. This is the only control
+   **Dragging is horizontal only.** A gate keeps whatever height it has while
+   you slide it around, including over trees and buildings, and the only thing
+   that can change that is being dragged into rising ground, which lifts it
+   clear rather than burying it.
+
+   **Shift+scroll raises and lowers** the selected gate, and **▲ Up** / **▼ Down**
+   do the same in bigger steps for a mouse with no wheel. This is the only control
    that moves a gate vertically: the **Gate size** sliders set how far it extends
    *up and down from where it sits*, which is a different thing, so a gate that
    ended up in the terrain could not be recovered with them. It will not let you

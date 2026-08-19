@@ -889,6 +889,9 @@ angular.module('beamng.apps')
       $scope.derby = {
         phase: 'idle',        // idle | running | finished (server authoritative)
         time: 0,
+        // The lives RULE in force this derby, mirrored from the server. 1 is the
+        // behaviour that has always existed: counted out once and you are out.
+        lives: 1,
         // The arena itself, mirrored from the server so the setup panel can
         // list and edit it entry by entry. The counts are kept alongside
         // because the header and the disabled rules read them everywhere.
@@ -913,7 +916,7 @@ angular.module('beamng.apps')
         players: []           // { id, name, status, reason, elimTime, resets }
       };
       // Dot rule again: these inputs live inside the ng-if derby panel.
-      $scope.derbyUi = { oob: 5, demo: 10, resets: -1, name: '', selected: '' };
+      $scope.derbyUi = { oob: 5, demo: 10, lives: 1, resets: -1, name: '', selected: '' };
       // The rectangle sliders. Width and length are the FULL span in metres,
       // which is what an admin measures an arena in - the server stores half
       // extents and the conversion happens in the Lua command. `square` links
@@ -926,7 +929,7 @@ angular.module('beamng.apps')
       // Last config values mirrored from the server. Broadcasts only overwrite
       // an input while it still shows the previous server value; an edit in
       // progress (field differs) survives marker drops and other rebroadcasts.
-      var derbyCfgSeen = { oob: null, demo: null, resets: null };
+      var derbyCfgSeen = { oob: null, demo: null, lives: null, resets: null };
       // The rectangle sliders follow the same rule, and are declared up here
       // beside it for the same reason: the broadcast handler reads this, and a
       // `var` further down the controller is only assigned when execution
@@ -1029,7 +1032,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.8.3';
+      var APP_BUILD = '0.8.4';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -1879,11 +1882,21 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           // a derby going live closes them: the arena is locked from form-up on.
           syncDerbySelection();
           if (typeof data.maxResets === 'number') { $scope.derby.maxResets = data.maxResets; }
+          // The RULE in force, which is what decides whether the Lives column is
+          // worth a place on the board. Distinct from derbyUi.lives, which is
+          // what the admin is typing and may not have applied yet.
+          if (typeof data.lives === 'number') { $scope.derby.lives = data.lives; }
           if (typeof data.oobLimit === 'number' && $scope.derby.phase !== 'running') {
             if (derbyCfgSeen.oob === null || Number($scope.derbyUi.oob) === derbyCfgSeen.oob) {
               $scope.derbyUi.oob = data.oobLimit;
             }
             derbyCfgSeen.oob = data.oobLimit;
+          }
+          if (typeof data.lives === 'number' && $scope.derby.phase !== 'running') {
+            if (derbyCfgSeen.lives === null || Number($scope.derbyUi.lives) === derbyCfgSeen.lives) {
+              $scope.derbyUi.lives = data.lives;
+            }
+            derbyCfgSeen.lives = data.lives;
           }
           if (typeof data.demoLimit === 'number' && $scope.derby.phase !== 'running') {
             if (derbyCfgSeen.demo === null || Number($scope.derbyUi.demo) === derbyCfgSeen.demo) {
@@ -1935,6 +1948,12 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         return m + ':' + pad2(s);
       };
 
+      // Only worth a column when the derby is actually running lives. At 1 the
+      // column would read "1" for everyone alive and tell nobody anything.
+      $scope.derbyLivesOn = function () {
+        return Number($scope.derby.lives) > 1;
+      };
+
       $scope.derbyApplyConfig = function () {
         var oob = parseFloat($scope.derbyUi.oob);
         var demo = parseFloat($scope.derbyUi.demo);
@@ -1942,7 +1961,12 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         // Resets mirror the race rule: blank or negative = unlimited, 0 = none.
         var resets = parseInt($scope.derbyUi.resets, 10);
         if (isNaN(resets) || resets < 0) { resets = -1; }
-        bngApi.engineLua('raceManager.derbySetConfig(' + oob + ', ' + demo + ', ' + resets + ')');
+        // Lives floor at 1: nought lives would knock the whole field out on the
+        // first stopped timer, which is not a derby.
+        var lives = parseInt($scope.derbyUi.lives, 10);
+        if (isNaN(lives) || lives < 1) { lives = 1; }
+        bngApi.engineLua('raceManager.derbySetConfig(' + oob + ', ' + demo + ', '
+          + resets + ', ' + lives + ')');
       };
       $scope.derbyAddMarker = function () {
         bngApi.engineLua('raceManager.derbyAddMarker()');
@@ -2529,6 +2553,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         bngApi.engineLua('raceManager.nudgeTurn(' + (dir < 0 ? -1 : 1) + ')');
       };
 
+      $scope.nudgeLift = function (dir) {
+        bngApi.engineLua('raceManager.nudgeLift(' + (dir >= 0 ? 1 : -1) + ')');
+      };
       $scope.nudgeDelete = function () {
         if (!$scope.nudgeSel) { return; }
         bngApi.engineLua('raceManager.nudgeDelete()');

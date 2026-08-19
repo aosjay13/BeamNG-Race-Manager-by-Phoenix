@@ -1070,14 +1070,21 @@
     </div>
     <div class="rm-nudge-hint" ng-if="nudgeOn">
       <div><b>Click</b> a gate to pick it, <b>drag</b> to move it, <b>scroll</b> to
-      turn it, or use ↺ ↻ below if your mouse has no wheel. <b>Ctrl+click</b> open
-      ground to place a new one, which lands after the picked gate if there is
-      one. Works on whichever tab you are editing.</div>
+      turn it, <b>shift+scroll</b> to raise and lower it, or use the buttons below
+      if your mouse has no wheel. <b>Ctrl+click</b> open ground to place a new
+      one, which lands after the picked gate if there is one. Works on whichever
+      tab you are editing.</div>
       <div class="rm-nudge-row">
         <button class="rm-btn rm-btn-mini" ng-click="nudgeTurn(-1)"
                 ng-disabled="!nudgeSel" title="Turn the picked gate anticlockwise">↺</button>
         <button class="rm-btn rm-btn-mini" ng-click="nudgeTurn(1)"
                 ng-disabled="!nudgeSel" title="Turn the picked gate clockwise">↻</button>
+        <button class="rm-btn rm-btn-mini" ng-click="nudgeLift(1)"
+                ng-disabled="!nudgeSel"
+                title="Raise the picked gate. Bigger steps than the wheel, for digging one out of a hillside.">▲ Up</button>
+        <button class="rm-btn rm-btn-mini" ng-click="nudgeLift(-1)"
+                ng-disabled="!nudgeSel"
+                title="Lower the picked gate. It stops at ground level rather than burying it.">▼ Down</button>
         <button class="rm-btn rm-btn-end rm-btn-mini" ng-click="nudgeDelete()"
                 ng-disabled="!nudgeSel" title="Delete the picked gate">
           ✕ Delete picked
@@ -1416,6 +1423,11 @@
         <input type="number" min="1" max="120" step="0.5" ng-model="derbyUi.demo"
                ng-disabled="derbyActive()">
         <span class="rm-setting-val">s</span>
+      </span>
+      <span class="rm-setting" title="How many times a driver may be counted out before they are out for good. 1 is knocked out on the first stopped timer. Higher puts them back on their start slot instead, ghosted while they land. Leaving the arena is still an outright elimination.">
+        <label>Lives</label>
+        <input type="number" class="rm-width-num" min="1" max="9" step="1" ng-model="derbyUi.lives"
+               ng-disabled="derbyActive()">
       </span>
       <span class="rm-setting" title="Resets per driver this derby. 0 = none, -1 or blank = unlimited. Past the allowance the reset keys are blocked.">
         <label>Max resets</label>
@@ -1954,6 +1966,7 @@
           <th class="rm-col-grid">Pos</th>
           <th class="rm-col-name">Driver</th>
           <th class="rm-col-status">Status</th>
+          <th class="rm-col-reset" ng-if="derbyLivesOn()" title="Lives left. A driver counted out with lives in hand goes back to their start slot instead of out of the derby.">Lives</th>
           <th class="rm-col-reset" ng-if="derbyResetsLimited()" title="Vehicle resets used / allowed this derby">Rst</th>
           <th class="rm-col-time">Out At</th>
         </tr>
@@ -1967,6 +1980,7 @@
             <span class="rm-light" ng-class="{'rm-light-racing': p.status === 'alive', 'rm-light-dnf': p.status === 'eliminated', 'rm-light-finished': p.status === 'winner'}"></span>
             <span class="rm-status-text">{{ derbyStatusLabel(p) }}</span>
           </td>
+          <td class="rm-col-reset" ng-if="derbyLivesOn()">{{ p.status === 'eliminated' ? '-' : (p.lives == null ? '-' : p.lives) }}</td>
           <td class="rm-col-reset" ng-if="derbyResetsLimited()">{{ derbyResetLabel(p) }}</td>
           <td class="rm-col-time">{{ p.status === 'eliminated' ? formatDerbyTime(p.elimTime) : '-' }}</td>
         </tr>

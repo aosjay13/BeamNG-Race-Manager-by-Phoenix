@@ -54,7 +54,7 @@ def client_files():
                     out.append(os.path.join(root, n).replace(os.sep, '/'))
     return sorted(out)
 SERVER_PLUGIN = 'server/RaceManager/main.lua'
-RELEASE_NAME = 'RaceManager-v0.8.3.zip'
+RELEASE_NAME = 'RaceManager-v0.8.4.zip'
 
 # Loose Race Manager files that collect in a server root from hand-installs.
 # Other mods' files are never in this list: tidying somebody else's install is

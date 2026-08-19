@@ -845,7 +845,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.8.3'
+local RM_BUILD = '0.8.4'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -4232,6 +4232,18 @@ local derby = {
   -- derby still never mutates racing state.
   oobLimit  = DERBY_DEFAULT_OOB_LIMIT,
   demoLimit = DERBY_DEFAULT_DEMO_LIMIT,
+  -- HOW MANY TIMES A DRIVER MAY BE COUNTED OUT BEFORE THEY ARE OUT FOR GOOD.
+  --
+  -- 1 is exactly the behaviour that existed before this: the first time the
+  -- stopped timer expires, you are eliminated. Set it higher and the timer
+  -- expiring spends a life and puts the driver back on their start slot instead,
+  -- so a derby becomes a scrap you can come back from rather than one mistake.
+  --
+  -- Only the STOPPED timer spends a life. Out of bounds is still an outright
+  -- elimination: leaving the arena is a choice in a way that being wrecked is
+  -- not, and a driver with lives in hand could otherwise use the boundary as a
+  -- free teleport back into the middle of the fight.
+  lives     = 1,
   maxResets = DERBY_UNLIMITED_RESETS,  -- vehicle resets per driver per derby
   time      = 0,        -- seconds since Start Derby (advanced by RM_DerbyTick)
   -- A COOL-DOWN between the win condition and the derby actually ending.
@@ -4275,6 +4287,8 @@ local derbyPlayers = {} -- [pid] = { id, name, status, reason, elimTime, resets 
 -- Derby countdown. Its own value and its own client event, deliberately not
 -- shared with the racing countdown: the two start procedures are independent
 -- and neither may release the other's held cars.
+-- A derby of more than this many lives is a derby nobody is ever knocked out of.
+local DERBY_MAX_LIVES      = 9
 local DERBY_COUNTDOWN_FROM = 3
 local derbyCountdownValue  = nil
 
@@ -4465,6 +4479,7 @@ local function broadcastDerbyState(targetPid)
     entrants   = derbyEligibleCount(),
     oobLimit   = derby.oobLimit,
     demoLimit  = derby.demoLimit,
+    lives      = derby.lives,
     maxResets  = derby.maxResets,
     derbyTime  = derby.time,
     -- The derby is DECIDED and running out its cool-down. Clients stand their
@@ -4673,6 +4688,15 @@ function RM_onDerbySetConfig(pid, rawData)
   if not ok or type(data) ~= 'table' then return end
   derby.oobLimit  = derbyClampLimit(data.oobLimit,  derby.oobLimit)
   derby.demoLimit = derbyClampLimit(data.demoLimit, derby.demoLimit)
+  -- Lives. Floored at 1, because zero would eliminate the whole field on the
+  -- first stopped timer and there is no sensible reading of "nought lives".
+  local lives = tonumber(data.lives)
+  if lives then
+    lives = math.floor(lives)
+    if lives < 1 then lives = 1 end
+    if lives > DERBY_MAX_LIVES then lives = DERBY_MAX_LIVES end
+    derby.lives = lives
+  end
   -- Reset allowance, mirroring the race rule: negative = unlimited, 0 = none.
   local resets = tonumber(data.maxResets)
   if resets then
@@ -5196,6 +5220,10 @@ function RM_onDerbyFormUp(pid)
         reason   = nil,
         elimTime = nil,
         resets   = 0,
+        -- Snapshotted at form-up rather than read live, so an admin changing the
+        -- setting mid-derby cannot hand the survivors more chances than the
+        -- drivers already knocked out got.
+        lives    = derby.lives,
       }
     end
   end
@@ -5226,6 +5254,12 @@ function RM_onDerbyFormUp(pid)
   table.sort(ordered)
   for slot, id in ipairs(ordered) do
     local placed = (slot <= #derby.startPositions) and slot or nil
+    -- REMEMBERED on the record, not recomputed later. Losing a life sends a
+    -- driver back to the slot they started from, and rebuilding the order at
+    -- that moment would hand them somebody else's slot the first time anybody
+    -- disconnected: the list is keyed by pid and shrinks when one leaves.
+    local rec = derbyPlayers[id]
+    if rec then rec.slot = placed end
     MP.TriggerClientEvent(id, 'RM_DerbyGridAssign', Util.JsonEncode({
       slot = placed,
       hold = true,
@@ -5334,8 +5368,37 @@ function RM_onDerbyDisqualified(pid)
 end
 
 -- Client self-reports: stopped-vehicle timer expired.
+-- THE STOPPED TIMER EXPIRED. Spend a life if there is one, and only eliminate
+-- when there is not.
+--
+-- Deliberately not folded into derbyEliminate: that function is the one way a
+-- driver leaves a derby and is called from the boundary, the admin and the
+-- disconnect paths too. A life belongs to this route alone, so it is spent here.
 function RM_onDerbyDemolished(pid)
-  derbyEliminate(pid, 'Demolished')
+  if derby.phase ~= 'running' then return end
+  local rec = derbyPlayers[pid]
+  if not rec or rec.status ~= 'alive' then return end
+  local left = (rec.lives or 1) - 1
+  if left <= 0 then
+    rec.lives = 0
+    derbyEliminate(pid, 'Demolished')
+    return
+  end
+  rec.lives = left
+  -- Back on the slot they started from. The client puts the car there through
+  -- the same placement queue the form-up uses, which ghosts it on the way in and
+  -- hands its collisions back once it has settled and the space is clear -- so a
+  -- driver cannot be dropped into the middle of a scrum and welded to it.
+  MP.TriggerClientEvent(pid, 'RM_DerbyLifeLost', Util.JsonEncode({
+    lives = left,
+    slot  = rec.slot,
+  }))
+  MP.SendChatMessage(-1, string.format(
+    '[RaceManager] %s was counted out and is back on the grid (%d life%s left).',
+    displayName(rec), left, left == 1 and '' or 's'))
+  print(string.format('[RaceManager] Derby: %s spent a life (%d left) at %s',
+    rec.name, left, derbyFmtTime(derby.time)))
+  broadcastDerbyState()
 end
 
 function RM_onDerbyRequestState(pid)
