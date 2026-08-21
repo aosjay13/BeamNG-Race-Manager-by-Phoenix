@@ -1762,13 +1762,28 @@ do
   -- COLLAPSING STANDS THE BREAK DOWN. Collapsing exists to leave one line
   -- carrying the phase, the clock and the way back; a forced second row there
   -- defeats the control that got them there.
-  -- Collapsed, BOTH stand down. The break would force a second row onto a
-  -- control whose whole purpose is to leave one line; the push would strand the
-  -- corner pair against the far edge of a bar with nothing left to fill it.
-  local down = html:match('([^}]*){ display: none; }%s*\n%s*/%* The dragged HEIGHT')
-    or html:match('%.rm%-collapsed %.rm%-bar%-break,%s*\n%s*%.rm%-collapsed %.rm%-bar%-push')
-  expect(down ~= nil,
-    'a collapsed HUD does not stand its row break and its push down together')
+  -- COLLAPSED CHANGES NOTHING ABOUT THE BAR. This used to assert the opposite --
+  -- that the break and the push both stood down while folded -- on the reasoning
+  -- that collapsing exists to leave one line. It does not produce one line: the
+  -- header keeps its badges and its admin controls either way, so all that
+  -- happened was the run stopped breaking and the corner pair fell back into the
+  -- middle of it. That is the exact wandering the pair exists to stop, and it was
+  -- reported from a live session.
+  expect(html:find('.rm-collapsed .rm-bar-push', 1, true) == nil
+    and html:find('.rm-collapsed .rm-bar-break', 1, true) == nil,
+    'collapsing must not stand the row break or the right-hand push down: the '
+      .. 'corner pair belongs in the corner in every state, folded or not')
+  -- ...and the pair stays a PAIR in every state. Hiding the size reset while
+  -- folded left the corner holding two buttons expanded and one collapsed, so
+  -- the collapse toggle shifted sideways at the moment it was pressed.
+  for _, fn in ipairs({ 'resetHudSize', 'resetLeaderboardSize', 'resetBroadcastSize' }) do
+    local tag = html:match('<button[^>]-' .. fn .. '%(%)[^>]->')
+    expect(tag ~= nil, 'found the ' .. fn .. ' button')
+    expect(tag ~= nil and tag:find('hudCollapsed', 1, true) == nil,
+      fn .. ' is hidden while collapsed, so its corner holds two buttons when '
+        .. 'expanded and one when folded, and the collapse toggle moves sideways '
+        .. 'as you press it')
+  end
   -- ...and the break only means anything on a bar that wraps.
   for _, sel in ipairs({ 'rm%-header', 'rm%-driverbar', 'rm%-bc%-bar' }) do
     local rule = html:match(NL .. '  %.' .. sel .. ' {(.-)}')

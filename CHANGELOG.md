@@ -54,9 +54,17 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   `.rm-btn-tab` carried a `margin-left: auto`, so the first button in the row
   went hard right and dragged everything after it along.
 
-  **Collapsing stands the whole arrangement down.** That control exists to leave
-  one line carrying the phase, the clock and the way back, so neither the row
-  break nor the right-hand push applies while it is folded.
+  **Collapsing does not rearrange the bar.** It removes the panels below the
+  header; the header itself is laid out the same way folded or not, so the corner
+  pair is in the corner in every state. An earlier pass stood the break and the
+  push down while collapsed, on the reasoning that collapsing exists to leave one
+  line -- but the header carries its badges and its admin controls either way, so
+  that did not produce one line. It produced one long wrapping run with the
+  corner buttons adrift in the middle of it.
+
+  The size reset lost its `!hudCollapsed` guard for the same reason: with it, the
+  corner held two buttons expanded and one folded, so the collapse toggle moved
+  sideways at the moment it was pressed.
 
 - **Time behind the leader, on every board.** A **Gap** column on the race
   table, the qualifying table and the broadcast board, plus an **Int** column on

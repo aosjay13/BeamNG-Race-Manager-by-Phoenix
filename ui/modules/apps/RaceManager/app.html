@@ -68,7 +68,11 @@
     <span class="rm-bar-push"></span>
     <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
           title="{{ flagTitle() }}">&#x2691;&#xFE0E;</span>
-    <button class="rm-btn rm-btn-mini" ng-click="resetHudSize()" ng-if="!hudCollapsed"
+    <!-- NO `!hudCollapsed` GUARD. Hidden while folded, this left the corner
+         holding two buttons expanded and one collapsed, so the collapse
+         toggle moved sideways at the moment it was pressed. The pair is a
+         pair in every state. -->
+    <button class="rm-btn rm-btn-mini" ng-click="resetHudSize()"
             title="Reset the HUD size">⤢</button>
     <!-- Collapse. Stays in the header when collapsed -- it is the way back, and
          a control that could hide itself would leave the app unrecoverable
@@ -1953,7 +1957,9 @@
     <span class="rm-bar-push"></span>
     <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
           title="{{ flagTitle() }}">&#x2691;&#xFE0E;</span>
-    <button class="rm-driverbar-btn" ng-click="resetLeaderboardSize()" ng-if="!hudCollapsed"
+    <!-- Paired with the collapse in every state, for the reason the header
+         copy of this button spells out. -->
+    <button class="rm-driverbar-btn" ng-click="resetLeaderboardSize()"
             title="Reset the leaderboard size">⤢</button>
     <!-- In minimal mode THIS bar is the whole HUD, so collapsing drops the
          leaderboard and leaves the driver their own lap clock. The button stays
@@ -3899,12 +3905,17 @@
      an auto margin on an element that comes and goes takes the alignment with
      it. This one is always there. */
   .rm-bar-push { flex: 1 1 auto; min-width: 8px; }
-  /* BOTH STAND DOWN WHEN COLLAPSED. That control exists to leave one line
-     carrying the phase, the clock and the way back: a forced second row defeats
-     it, and a push would strand the two buttons against the far edge of a bar
-     that no longer has anything to fill it. */
-  .rm-collapsed .rm-bar-break,
-  .rm-collapsed .rm-bar-push { display: none; }
+  /* NEITHER STANDS DOWN WHEN COLLAPSED, and that is a correction.
+     They did, on the reasoning that collapsing exists to leave one line and a
+     push would strand the buttons against the edge of a bar with nothing to
+     fill it. Both halves of that were wrong. The header carries its badges and
+     its admin controls whether or not the app is folded, so standing the break
+     down did not produce one line -- it produced one long wrapping run. And
+     with the push gone the corner pair fell back into the middle of that run,
+     which is precisely the wandering this pair exists to stop.
+
+     The bar is laid out the same way in every state now. Collapsing removes the
+     panels BELOW the header; it does not rearrange the header itself. */
   .rm-driverbar-label { letter-spacing: 0.5px; }
   .rm-driverbar-label b { color: #e8eaed; }
   .rm-driverbar-op { display: flex; align-items: center; gap: 4px; }

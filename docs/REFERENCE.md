@@ -1358,8 +1358,9 @@ instead - visible, and a shade under the gate actually being aimed at.
   The split is not cosmetic. Every readout on the run changes width as it changes
   value, so with the controls immediately after them the buttons moved while you
   were reaching for one, and the wide text decided where the row broke.
-  Collapsing stands the whole arrangement down, so a collapsed HUD is still one
-  line.
+  Collapsing does not rearrange it: that removes the panels *below* the header,
+  and the header keeps the same layout folded or not, so the corner pair is in
+  the corner in every view.
 - **One slider fades every surface.** The ◑ control drives the panel fill, the
   header's tint and its bottom rule together. It used to drive the fill alone, so
   a HUD faded to nothing still had a solid orange band across it.
