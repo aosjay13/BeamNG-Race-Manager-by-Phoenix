@@ -1875,8 +1875,12 @@ and derby controls are not shown while you are in Race - see
      not leave the engine screaming at a throttle nobody can lift. The **parking
      brake is released, not applied**: a wreck is meant to be an obstacle the
      survivors can shove and pile into, and one bolted to the floor is a wall.
-     It stays solid and free to roll; the only thing taken away is the driver's
-     own ability to move it.
+     **The engine is switched off** - a car disqualified for leaving the arena
+     was driving a second ago, and zeroed pedals still leave an engine that
+     idles an automatic forward - so it coasts to a halt and stays where it
+     stops. It is started again when the derby releases everyone. The car stays
+     solid and free to roll; the only thing taken away is the driver's own
+     ability to move it.
      The driver stays **in** it, and the camera is not touched - tab moves them
      around the arena like any other spectator. Nothing is removed and nothing is
      respawned: an elimination is a change of state, not an entity destroyed and

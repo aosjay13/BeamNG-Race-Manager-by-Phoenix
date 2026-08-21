@@ -197,11 +197,21 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   Every input the filter covers is now zeroed once, after it arms. Once is
   enough: with the action filtered nothing can move it again.
 
+  **The ignition goes with them**, and the out-of-bounds case is why rather than
+  the stopped one. A car counted out by the idle timer is by definition sitting
+  still; one disqualified for leaving the arena was driving a second ago, and
+  zeroed pedals leave an engine that still idles, still walks an automatic
+  forward and still lets the car be nudged along under its own power. It is put
+  back when the derby releases them, so nobody is handed a car that will not
+  start for the next session.
+
   **The parking brake is released, not applied**, which is the deliberate
   difference from the end-of-derby stand-down. A wreck is meant to be an obstacle
   the survivors can shove, pile into and use -- one bolted to the floor by its
-  handbrake is a wall instead. It stays solid and unfrozen for the same reason.
-  The only thing taken away is the driver's own ability to move it.
+  handbrake is a wall instead. It stays solid and unfrozen for the same reason,
+  and a car disqualified at speed therefore coasts to a halt rather than
+  anchoring itself mid-arena. The only thing taken away is the driver's own
+  ability to move it.
 
 - **A derby driver who lost a life stopped being policed for the rest of it.**
   After one life was spent the idle timer and the out-of-bounds timer both went

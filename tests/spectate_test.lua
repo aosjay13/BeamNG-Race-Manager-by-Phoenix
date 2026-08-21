@@ -284,7 +284,41 @@ do
   check(blockedGroups['raceManagerSpectate'] == true,
     'the driving inputs are filtered, so the driver cannot move it themselves')
 
+  -- THE IGNITION GOES TOO, and the out-of-bounds case is why. A car eliminated
+  -- by the stopped timer is by definition sitting still; one disqualified for
+  -- leaving the arena was driving a second ago, and zeroed pedals leave an
+  -- engine that still idles and still walks an automatic forward.
+  local cut, restored = false, false
+  for _, c in ipairs(vehCommands) do
+    if c:find('setEngineIgnition(false)', 1, true) then cut = true end
+  end
+  check(cut, 'the engine is cut, so a car disqualified at speed coasts to a '
+    .. 'stop instead of idling away under its own power')
+
+  -- ...and comes back at the release, or the driver is handed a car that will
+  -- not start for the next session.
+  vehCommands = {}
   handlers['RM_ReleaseSpectate']({ source = 'derby' })
+  frames(0.2)
+  for _, c in ipairs(vehCommands) do
+    if c:find('setEngineIgnition(true)', 1, true) then restored = true end
+  end
+  check(restored, 'and is restored when the derby releases them')
+
+  -- Only ours to put back. A race finisher never had theirs cut -- they keep
+  -- their car and drive it -- so the release must not switch anything on.
+  vehCommands = {}
+  handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race' })
+  frames(0.2)
+  handlers['RM_ReleaseSpectate']({ source = 'race' })
+  frames(0.2)
+  local touched = false
+  for _, c in ipairs(vehCommands) do
+    if c:find('setEngineIgnition', 1, true) then touched = true end
+  end
+  check(not touched,
+    'a race finisher s ignition is never touched, in either direction')
+
   derbyPhase('idle')
   frames(0.2)
 end

@@ -2024,6 +2024,16 @@ local spectate = {
     'throttle', 'brake', 'steering', 'clutch', 'parkingbrake',
     'nitrousOxideActive',
   },
+  -- Guarded on the function existing, which is how the BeamMP mods that do this
+  -- in production write it: a vehicle with no main controller -- a trailer,
+  -- anything unpowered -- has no such call, and an unguarded one would throw
+  -- inside the vehicle's own Lua where nothing here can see it.
+  IGNITION_OFF = 'if controller.mainController.setEngineIgnition then '
+    .. 'controller.mainController.setEngineIgnition(false) end',
+  IGNITION_ON  = 'if controller.mainController.setEngineIgnition then '
+    .. 'controller.mainController.setEngineIgnition(true) end',
+  -- Did WE cut it? Only then is it ours to put back.
+  engineCut = false,
   -- BeamNG's node grabber: click a car and drag its physics nodes around. In a
   -- demolition derby that is not a debug tool, it is a winning move -- drag your
   -- own wreck back onto its wheels, or drag somebody else's into the wall
@@ -2111,9 +2121,21 @@ end
 -- instead. It is left free to roll, and it is left SOLID: no ghost, no freeze.
 -- The only thing taken away is the driver's ability to move it themselves.
 --
--- Not the ignition. A dead engine would settle the question of an automatic
--- creeping forward at idle, and it is a bigger change than the report asked for
--- -- the complaint was a screaming engine, which the throttle line answers.
+-- THE IGNITION GOES WITH THEM, and the reason is the out-of-bounds case rather
+-- than the stopped one. A car eliminated by the stopped timer is by definition
+-- sitting still; one disqualified for leaving the arena was driving a second
+-- ago, and zeroing its pedals leaves an engine that still idles, still drives an
+-- automatic forward, and still lets the car be nudged along under its own power.
+-- Cutting it makes the thing genuinely a chassis: it coasts to a stop and stays
+-- where it stops.
+--
+-- Coasting, note, not stopping dead -- the brakes are deliberately off, so a car
+-- disqualified at speed rolls to a halt rather than anchoring in the middle of
+-- the arena. That is the same obstacle argument as the parking brake.
+--
+-- `controller.mainController.setEngineIgnition` guarded on existing: it is the
+-- call the BeamMP mods that do this in production use, and a vehicle without a
+-- main controller (a trailer, anything unpowered) simply has no such function.
 function spectate.releaseControls()
   -- ownVehicle(), not playerVehicle(): the camera may already have been tabbed
   -- onto somebody else's car, and this is about the eliminated driver's own.
@@ -2123,11 +2145,30 @@ function spectate.releaseControls()
     for _, input in ipairs(spectate.NEUTRAL) do
       veh:queueLuaCommand(('input.event("%s", 0, 1)'):format(input))
     end
+    veh:queueLuaCommand(spectate.IGNITION_OFF)
   end)
+  -- Remembered so the release can undo it, and ONLY then: a driver handed back a
+  -- car that will not start is worse off than one handed back a running wreck.
+  spectate.engineCut = ok or spectate.engineCut
   log('I', 'raceManager', ok
-    and 'Derby elimination: controls neutralised, car left free to roll'
+    and 'Derby elimination: controls neutralised, ignition off, free to roll'
     or  'Derby elimination: could not neutralise controls')
   return ok
+end
+
+-- The other half. Called from the release, which is the moment a derby ends and
+-- every eliminated driver gets their car back for whatever comes next.
+--
+-- Only if we cut it. Turning the ignition on under a driver who never lost it
+-- would be a surprise, and this runs on the race release path too -- where
+-- nothing was ever cut, because a race finisher keeps their car and drives it.
+function spectate.restoreEngine()
+  if not spectate.engineCut then return end
+  spectate.engineCut = false
+  local veh = ownVehicle()
+  if not veh then return end
+  pcall(function () veh:queueLuaCommand(spectate.IGNITION_ON) end)
+  log('I', 'raceManager', 'Spectator released: ignition restored')
 end
 
 -- Put the camera on somebody still racing.
@@ -2246,8 +2287,10 @@ local function releaseSpectator(source, order, count)
   spectatorLock   = nil
   spectatorReason = nil
   -- Driving comes back first, so a driver is never released into a car they
-  -- cannot move.
+  -- cannot move -- and the ignition with it, or "cannot move" outlives the
+  -- session that meant it.
   spectate.setInputsBlocked(false)
+  spectate.restoreEngine()
   -- The finished ghost comes off: collision back, alpha back, on our own car
   -- here and on everyone else's as the authoritative list empties.
   ghost.setFinished(false)
