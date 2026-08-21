@@ -6,7 +6,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
-## 0.8.5 - A board for the person holding the camera, and how far back everyone is
+## 0.9.0 - A board for the person holding the camera, and how far back everyone is
 
 ### Added
 
