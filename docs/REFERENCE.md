@@ -565,6 +565,73 @@ bottom. The leaderboard flashes a green ▲ or red ▼ next to a driver who has
 just gained or lost a place, and your own distance to the next checkpoint is
 shown in the app header while you race.
 
+## Time behind
+
+Every board carries a **Gap** column: how far behind this driver is. The
+broadcast board adds **Int**, the gap to the car directly ahead rather than to
+the leader.
+
+**It is measured, not estimated.** A gap here is the subtraction of two readings
+off one clock - the server's `race.time`, which every finish and every lap is
+already stamped from - taken at the **last checkpoint both cars have actually
+reached**. Nothing is interpolated from speed or distance, so there is no figure
+on screen that the mod cannot point at two timestamps for.
+
+That has one consequence worth knowing before you commentate off it: **the gap
+refreshes when the follower reaches a checkpoint, not continuously.** On a
+twelve-gate circuit at ninety seconds a lap that is roughly every seven seconds.
+It is finer than the sector timing a televised race shows, but it is not a
+ticking number, and a leader pulling away mid-sector will not move it until the
+car behind reaches the same gate.
+
+**It works on branch layouts**, which is the reason it is built this way rather
+than from track position. A [branch gate](#branch-gates-two-ways-through-a-checkpoint)
+is another way through a checkpoint that already exists, so two cars at opposite
+ends of a head-on oval have cleared the same checkpoints and their splits
+subtract correctly. A gap built from distance would have them minutes apart.
+
+### What each session measures
+
+- **A race** is scored on the clock, so the gap is the split difference above.
+  A finisher's gap is their finish time behind the winner's - the flag is
+  stamped as a checkpoint like any other, so the same subtraction produces it.
+- **Qualifying** is scored on the best *lap*. Two drivers who set identical
+  times ten minutes apart are level, so a clock delta would rank them by when
+  they went out; the qualifying gap is the difference between best laps, and the
+  server deliberately sends no clock gap for a qualifying session at all.
+- **A driver who is lapped** reads `+1 LAP`, not a number of seconds. The split
+  subtraction across a lap boundary is a real figure that means nothing, and it
+  is the one reading on these boards that would actively mislead.
+- **A retirement or a disqualification** has no gap. They are classified by a
+  ruling rather than by where they got to.
+
+### Accuracy
+
+Displayed to a tenth, and that is the honest limit rather than a display choice.
+The server stamps a checkpoint when the client's report **arrives**, so a driver
+on a 120 ms connection reads about a tenth behind one on 20 ms. Real clock sync
+between clients would be a much larger change than this feature is worth, and
+the plugin already settles finish order the same way - by arrival, deliberately,
+so that the same input always produces the same result.
+
+A gap is never shown as negative. If the order has changed since a driver's last
+checkpoint - they were ahead when they passed it and have been overtaken between
+there and here - it reads `+0.0`, which is what "too close to call" looks like.
+
+### What it costs
+
+Nothing that shows up on a race night, and it was built to that constraint:
+
+- **No new network traffic in either direction.** The client already fires a
+  checkpoint report on the frame after every crossing, because the running order
+  needs it; the server simply notes what the clock read when one arrives. The
+  broadcast grows by two numbers per driver.
+- **No new work per frame or per tick.** The two subtractions happen inside the
+  loop that was already stamping positions on the sorted field.
+- Measured on a 20-driver, 20-lap, 12-gate race: **3.4 microseconds per
+  broadcast**, three broadcasts a second - about a hundred-thousandth of one
+  core - and **150 KB** of split times held for the whole race.
+
 ## Display names
 
 BeamMP calls a guest something like `Guest_4471`, which makes for an
@@ -609,6 +676,45 @@ puts them back. Two ways, both admin actions:
 
 The Drivers panel also warns how many connections are **not yet identified**, so
 a full grid does not quietly race an entire round as strangers.
+
+### Display names on the BeamMP nametag
+
+**Show display names on nametags**, in the Display Names panel, appends a
+driver's display name to the tag floating over their car:
+
+    guest5961302 (Kestrel)
+
+It is **appended, not substituted**, and that is a limit rather than a choice.
+BeamMP has no server-side way to rename anybody - the guest identity comes from
+their auth, and the plugin cannot reach it - so what this switches on is BeamMP's
+own `setPlayerNickSuffix`, which adds text to a nametag and does nothing else to
+it.
+
+**Nothing but the text changes.** Distance fade, hide-behind-objects, colour,
+alpha, the spectator list, role tags: all of it is still BeamMP's, rendered by
+BeamMP, obeying whatever each player has set. There is a way to take the whole
+nametag over - hide BeamMP's and draw your own, which is what some mods do - and
+it is deliberately not taken here. Owning the render means owning every one of
+those settings, and getting any of them slightly wrong is worse for a player than
+a guest number is.
+
+The switch is **server-owned and off by default**, so every client agrees on it
+and a league that has assigned no names gets nothing it did not ask for. Turning
+it off takes every suffix back off, and so does leaving the server.
+
+**Only players running Race Manager see it.** A nametag is drawn on each machine
+from that machine's own player list, so this is a client-side presentation rule.
+Everyone connected to a server running the mod has it - BeamMP pushes the client
+zip on join - but nothing outside the session is affected.
+
+**Chat, the player list and the server console still show the guest name.** Only
+the floating tag changes. That is the same trade the leaderboard already makes:
+an admin sees the real name beside the alias precisely so a tag can be tied back
+to the guest session that set the lap times.
+
+**If your server already runs a nametag mod** (BeamJoy, CEI), leave this off. The
+suffix is filed under its own tag source so it will not overwrite theirs, but a
+mod that replaces BeamMP's rendering entirely will not show it at all.
 
 ### Placeholders
 
@@ -957,15 +1063,21 @@ one is next; "CP 3" read at racing speed tells a driver nothing they can act on,
 and it is one more thing painted across the racing line. Pit stalls are the same:
 amber, unlabelled, drawn as the box they test.
 
-**The joker is the only gate that carries text**, because it is the only one
-whose state changes what you should *do* (owed, taken, or forbidden on lap 1)
-and getting it wrong is a disqualification either way. It is drawn to be read at
-speed: a faint violet fill between its poles with the label **on the gate face**
-rather than floating above it, plus a symbol for the state that matters most.
-A translucent red **cross** while the joker is shut, a green **tick** once it has
-been taken. A sentence read at racing speed is a sentence a driver has no
-attention for; a cross is not. The editor
-still numbers everything; that is where the numbers are worth reading. Just those two - a whole lap's worth of numbered rectangles
+**The joker is marked out, but not with words either.** It is the one gate whose
+state changes what you should *do* - owed, taken, or forbidden on lap 1 - and
+getting it wrong is a disqualification, so it gets a faint violet fill between
+its poles and a **symbol** on the gate face: a translucent red **cross** while it
+is shut, a green **tick** once it has been taken, a faded **arrow** while it is
+open. A sentence read at racing speed is a sentence a driver has no attention
+for; a cross is not.
+
+It used to carry the wording as well, and that came off once the symbols were
+doing the work - `JOKER 1/2 (lap 1: closed)` is a second copy of what the cross
+had already said, in the form nobody can read at speed. **The editor still
+numbers and labels everything, joker included**: that is where the words are
+worth reading, and where there is time to read them.
+
+Two gates ahead and nothing else - a whole lap's worth of numbered rectangles
 across the racing line is clutter, but a checkpoint nobody can see is worse.
 
 The poles cannot simply be made wider to fix visibility: **their spacing is the
@@ -974,19 +1086,16 @@ does not score, and the first thing a driver would do is aim between them and be
 told they missed. If a gate is genuinely too narrow to see, widen the **gate**
 click it in the editor and raise its Width - and the poles follow.
 
-**On track, the joker stays violet and keeps its wording.** Drivers get a gate
-pole on the joker like any other checkpoint, painted the same violet the editor
-uses rather than BeamNG's stock alternate-route orange - which sits close enough
-to the main route's colour that the joker read as more of the same lap, and this
-is the one route where that mistake is a disqualification. Above it sits the
-label the editor shows, in the same words: `JOKER 2/3`, `JOKER EXIT`,
-`(lap 1: closed)` while the opening lap forbids it, and `(used)` once it has been
-taken. The pole stays up after the joker has been taken, dimmed - *"you have
-taken it"* is as much a thing a driver needs to know as *"you still owe it"*.
+**On track the joker stays violet**, painted the same violet the editor uses
+rather than BeamNG's stock alternate-route orange - which sits close enough to
+the main route's colour that the joker read as more of the same lap, and this is
+the one route where that mistake is a disqualification. The pole stays up after
+the joker has been taken, dimmed and wearing its tick - *"you have taken it"* is
+as much a thing a driver needs to know as *"you still owe it"*.
 
-The label is drawn separately from the pole because BeamNG's gate markers render
-**no text at all** - a pole can say where the joker is and never what state it is
-in, which for the joker is the half that matters.
+The symbol is drawn by the mod rather than by BeamNG's own gate markers, which
+render **no text or shapes at all** - a stock marker can say where the joker is
+and never what state it is in, which for the joker is the half that matters.
 
 ### Branch gates (two ways through a checkpoint)
 
@@ -1238,6 +1347,85 @@ instead - visible, and a shade under the gate actually being aimed at.
 
   The driver bar also shows live joker/reset status and keeps a 🔒 button so
   the login prompt is always reachable.
+- **The status bars are two rows: what the session is, then what you can press.**
+  The header, the driver bar and the broadcast bar all break after the **flag**,
+  which is where the status run ends. Every readout on that run changes width as
+  it changes value, and with the controls immediately after them the buttons used
+  to move while you were reaching for one. They are in a fixed place now.
+  Collapsing stands the break down, so a collapsed HUD is still one line.
+- **One slider fades every surface.** The ◑ control drives the panel fill, the
+  header's tint and its bottom rule together. It used to drive the fill alone, so
+  a HUD faded to nothing still had a solid orange band across it.
+
+### Broadcast board (spectators)
+
+A board for someone **watching rather than driving**: the whole field at once,
+who is out and why, the championship, and a camera you steer by clicking a name.
+It is not another view of the leaderboard - the questions are different. A
+driver's HUD answers *where am I, what lap, how many resets left*; a
+broadcaster has none of those.
+
+**Getting to it.** Sit the session out with **👁 Spectate** (or finish the race
+- a driver whose car has been taken is a spectator too), then press **📺
+Broadcast**. The button is in the header between sessions and on the driver bar
+during one, and it is offered to **admins as well**: the person running the race
+night is usually the person streaming it, and spectating is an entry decision
+that has nothing to do with rights.
+
+**It is the whole app while it is on.** The header, the session controls, both
+editors, the derby panel, the login bar, the leaderboard and every alert overlay
+come off the screen - a broadcaster is not in the session, so a pit readout or
+an out-of-bounds timer belongs to somebody else and would go out over the
+stream. Everything worth keeping is on the board's own strip: phase, race clock
+or qualifying clock, the lap the leader is on, the session flag, and who holds
+the fastest lap. **✕** on that strip is the way back.
+
+The board **drops itself when you rejoin the field**, because you cannot
+broadcast from a car you are racing. The preference is remembered, so sitting
+out the next session brings it straight back.
+
+**Click a name, get the camera.** Clicking any driver switches to their car and
+puts you in **orbit**. That is the one place in the mod that sets a camera
+*mode* - everywhere else the view is the driver's own business and is left
+alone - and it is deliberate here, because a chase camera on that car is exactly
+what the click was asking for. The row you are actually watching is marked with
+a 👁 and a highlight; that comes back from the game rather than from the click,
+so a name whose car is not loaded on your machine yet leaves the marker where it
+was rather than claiming a camera it never got.
+
+Drivers who are **out** get their own block under the field, with the ruling
+that put them there - the same text the results file records - and the place
+they were running in when they stopped. Their names are clickable too: the car
+is still where it stopped, and the wreck is often the shot. Drivers who are
+merely **sitting the session out** are counted at the foot of the board rather
+than listed, because a board that puts them among the runners is claiming a
+bigger field than the one on track.
+
+**Gap and interval.** `Gap` is seconds behind the leader, `Int` seconds behind
+the car directly ahead. Both are read at *this driver's own last checkpoint* -
+see [Time behind](#time-behind) for what that means and what it costs. Beside
+the position you also get **places gained or lost since the grid** - a green
+`+2` or a red `-1` - which answers a different question: not how far away the
+car ahead is, but how the race has moved since the lights.
+
+**Derbies get their own table.** A [Demo Derby](#demo-derby-parallel-game-mode)
+is a parallel game mode with its own field, its own clock and its own way of
+going out, and the racing field is untouched by one - so while an arena is
+running the board shows the derby and not the race that happened before it.
+Names click through the same way; the wreck is usually the shot.
+
+**Points.** With a [cup](#cup-points) running, a **Race / Points** pair appears
+on the strip. The points view is the championship as the server ranks it -
+position, driver, rounds scored, wins and total - and it computes nothing
+itself, which is the same split the admin cup panel keeps. A standings row is a
+*roster* identity rather than a connection, so it is clickable only while the
+driver it is bound to is on the server. Opening the board (or switching to
+points) pulls the standings, so a board opened halfway through a race night
+shows the real table rather than an empty one.
+
+The board is resizable and fades with the ◑ slider like every other panel, and
+it keeps **its own stored size**: a stream graphic and a driver's leaderboard
+are not the same thing to measure.
 
 ## Cup points
 

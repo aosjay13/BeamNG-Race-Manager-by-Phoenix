@@ -71,6 +71,11 @@ local race = {
   -- used to sit outside the state machine with lap detection of its own, which
   -- is why a 3-lap qualifying session took five or six laps to finish.
   sessionKind  = 'race',     -- race | quali
+  -- Put a driver's display name on their BeamMP nametag as well as on the
+  -- board. Off by default: it is cosmetic, it only reaches clients running
+  -- this mod, and a league that has not assigned any names gains nothing
+  -- from it. See RM_onSetNametags.
+  nametags     = false,
   time         = 0.0,        -- seconds since GO (advanced by RM_Tick while a session runs)
   totalLaps    = DEFAULT_TOTAL_LAPS,
   maxResets    = UNLIMITED_RESETS,  -- vehicle resets allowed per driver per session
@@ -367,15 +372,94 @@ local function newRecord(pid)
     position   = nil,        -- current place in the running order (1 = leader)
     cpCleared  = 0,          -- checkpoints passed on the current lap
     distNext   = nil,        -- metres from the car to the next checkpoint centre
+    -- Split timing: [lap][checkpoint] = race.time when this driver reached it,
+    -- and the last point stamped. What the gap and interval are subtracted from.
+    splits     = nil,        -- built lazily by progress.record
+    splitLap   = nil,
+    splitCp    = nil,
+    -- Seconds behind the leader, and behind the car directly ahead, both
+    -- measured at THIS driver's last checkpoint. Recomputed per broadcast in
+    -- assignPositions; nil whenever there is nothing honest to say.
+    gap        = nil,
+    intv       = nil,
   }
 end
+
+-- ---------------------------------------------------------------------------
+-- Live progress: the checkpoint telemetry, and the splits built out of it
+-- ---------------------------------------------------------------------------
+-- ONE TABLE HOLDING TWO FUNCTIONS, and that is not stylistic. This chunk sits on
+-- Lua's 200-active-locals ceiling -- see the note in ARCHITECTURE.md about why
+-- the roster and the cup live inside an installer function -- and going over it
+-- does not warn: the file simply stops compiling and the whole plugin is gone.
+-- Adding the split recorder below as a local of its own was the name that went
+-- over. One table replacing the one local that was already here costs no new
+-- slot at all, and the two functions belong together anyway: both are about
+-- where a driver has got to.
+local progress = {}
 
 -- Telemetry reported by a client is only meaningful while that driver is
 -- circulating; wipe it whenever their lap state restarts so a stale distance
 -- can never decide a position.
-local function clearProgress(rec)
+--
+-- THE SPLITS ARE NOT WIPED HERE. This runs on every lap crossing, and a split
+-- table emptied once a lap is a gap column that blanks itself every time
+-- anybody crosses the line. Splits belong to the SESSION and are cleared where
+-- the session is: the grid, and GO.
+function progress.clear(rec)
   rec.cpCleared = 0
   rec.distNext  = nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Split timing: when each driver reached each checkpoint
+-- ---------------------------------------------------------------------------
+-- What a gap to the leader is made of, and the only honest way to build one
+-- here. The running order is ranked on laps, then checkpoints cleared, then
+-- metres to the next gate, and not one of those converts into seconds behind --
+-- but "you reached checkpoint 7 of lap 3 at 214.6s, the leader reached it at
+-- 212.1s" is a subtraction with nothing estimated in it.
+--
+-- ONE CLOCK MAKES IT WORK. race.time is the server's and everybody is scored on
+-- it already, so two drivers' stamps are directly comparable without any clock
+-- sync between clients.
+--
+-- IT IS ALSO IMMUNE TO BRANCH GATES, which a distance-based gap would not be. A
+-- branch gate is another way through a checkpoint that already exists, so two
+-- cars at opposite ends of a head-on oval have cleared the same checkpoints and
+-- their splits compare exactly. Nothing here knows or cares which gate anybody
+-- took -- the same property that lets the leaderboard rank them at all.
+--
+-- Nested per lap rather than flattened into one key, so the structure needs no
+-- knowledge of how many checkpoints a lap has. The server does not always have
+-- that: race.slotCount is 0 for a route built in the editor and never saved as
+-- a layout, and a stride guessed from a scalar would silently collide.
+--
+-- BACKFILLED ON A JUMP, which is the part that is not obvious. The arithmetic
+-- looks the LEADER up at the FOLLOWER's last checkpoint, so a single hole in the
+-- leader's table blanks the gap column for everyone behind them. Reports do go
+-- missing: the client fires one on the frame after every crossing (checkGates
+-- sets progressLeft = 0 for exactly that reason), but a dropped packet leaves a
+-- gap in the sequence. A driver reporting checkpoint 4 when we last saw 2
+-- provably passed 3 no later than now, so 3 is stamped with the same time
+-- instead of being left as a hole.
+function progress.record(rec, lap, cp)
+  if not rec.splits then rec.splits = {} end
+  local onLap = rec.splits[lap]
+  if not onLap then onLap = {}; rec.splits[lap] = onLap end
+  onLap[cp] = race.time
+  -- Where this driver has got to, kept explicitly rather than read back off
+  -- currentLap/cpCleared. Those two disagree with it exactly once, and it is the
+  -- case that matters most: a finisher's currentLap is left where it was while
+  -- their last split is the flag.
+  rec.splitLap, rec.splitCp = lap, cp
+  -- Backwards from here and no further than the start of this lap. An earlier
+  -- lap is complete by definition, and a hole in one is not this crossing's
+  -- business to invent a time for.
+  for k = cp - 1, 0, -1 do
+    if onLap[k] then break end
+    onLap[k] = race.time
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -726,8 +810,61 @@ end
 -- Stamp each driver with their place in the order the list is already in.
 -- Called on every broadcast, so `position` is always in sync with the array
 -- the clients receive.
+-- Positions, and the two time deltas that hang off them.
+--
+-- GAP is seconds behind the leader; INTERVAL is seconds behind the car directly
+-- ahead. Both are measured at THIS driver's own last checkpoint -- the last
+-- point on track that they and the car they are being compared against have
+-- both actually reached -- which is what makes them a subtraction of two
+-- readings off one clock rather than an estimate.
+--
+-- IT COSTS THE WALK IT WAS ALREADY MAKING. Two table lookups and two
+-- subtractions per driver, inside the loop that stamps `position`, on an array
+-- that has just been sorted anyway. Nothing scans the field, nothing allocates,
+-- and the wire grows by two numbers per row.
+--
+-- NOT IN QUALIFYING. There the classification is the best LAP, not time on
+-- track, so a delta off the session clock says nothing about who is quicker --
+-- two drivers who set identical laps ten minutes apart are level. The panel
+-- computes the qualifying gap from the best laps it is already sent.
+-- On the `progress` table for the reason everything else here is: a local of
+-- its own is a slot this chunk does not have.
+function progress.delta(other, lap, cp, mine)
+  if not other or other.splits == nil then return nil end
+  local theirs = other.splits[lap]
+  theirs = theirs and theirs[cp]
+  if not theirs then return nil end
+  local d = mine - theirs
+  -- NEGATIVE IS CLAMPED, not sent. It means the order has changed since this
+  -- driver's last checkpoint: they were ahead when they passed it and have been
+  -- overtaken between there and here. Real timing has the same artefact between
+  -- splits, and "0.0" reads as too close to call, which is exactly what it is.
+  -- A minus sign in a column headed "behind" reads as a bug.
+  if d < 0 then d = 0 end
+  -- Three decimals is past what this method can resolve (the stamp carries the
+  -- reporting client's ping), and it keeps a full field's worth of floats out of
+  -- a payload that goes out three times a second.
+  return math.floor(d * 1000 + 0.5) / 1000
+end
+
 local function assignPositions(list)
-  for i, rec in ipairs(list) do rec.position = i end
+  local leader = list[1]
+  local quali  = race.sessionKind == 'quali'
+  for i, rec in ipairs(list) do
+    rec.position = i
+    rec.gap, rec.intv = nil, nil
+    -- A retirement or a disqualification has no meaningful distance to anybody:
+    -- they are classified by ruling rather than by where they got to.
+    if not quali and rec.status ~= 'dnf' and rec.status ~= 'dsq' and rec.splitLap then
+      local lap, cp = rec.splitLap, rec.splitCp
+      local onLap = rec.splits and rec.splits[lap]
+      local mine  = onLap and onLap[cp]
+      if mine then
+        rec.gap  = progress.delta(leader, lap, cp, mine)
+        rec.intv = progress.delta(list[i - 1], lap, cp, mine)
+      end
+    end
+  end
   return list
 end
 
@@ -754,6 +891,9 @@ local DRIVER_WIRE_FIELDS = {
   'qualiBest', 'qualiLaps', 'outLap', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
   'finishTime', 'resets', 'resetsBlocked',
   'jokerTaken', 'jokerLap', 'outReason', 'dnfPos', 'heldPos', 'bystander',
+  -- Seconds behind the leader and behind the car ahead. Two numbers, and the
+  -- panel does no arithmetic on them beyond formatting.
+  'gap', 'intv',
 }
 
 -- Projection buffers are kept ON the record and reused, so a broadcast costs no
@@ -845,7 +985,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.8.4'
+local RM_BUILD = '0.8.5'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -1029,6 +1169,11 @@ local function broadcastState(targetPid)
     -- Approved vehicle/setup list (Module 4).
     garage        = garageInfo.list,
     garageEnforce = garageInfo.enforce,
+    -- Whether clients should hang display names off BeamMP's nametags.
+    -- Purely a client-side presentation rule; the server neither renders
+    -- nor enforces anything about it, it just holds the switch so every
+    -- client agrees.
+    nametags      = race.nametags,
     -- True when at least one session is currently logged in as an admin. Lets
     -- non-admin clients auto-spectate (skip the login prompt) when someone is
     -- already running the session, while still exposing a way back to login.
@@ -1907,6 +2052,26 @@ end
 -- ---------------------------------------------------------------------------
 -- Ghost mode is enforced client-side (only the client owns collisions); the
 -- server just holds the switch and ships it with every broadcast.
+-- Display names on the BeamMP nametag.
+--
+-- The server owns the SWITCH and nothing else. It cannot rename anybody: BeamMP
+-- has no server-side setter for a player name, and the guest identity comes from
+-- their auth rather than from anything this plugin can reach. What the clients do
+-- with the switch is add a suffix to the nametag through BeamMP's own
+-- setPlayerNickSuffix, which is text and nothing else -- see the note on
+-- nametag.apply in the client bridge for why that is the only acceptable way in.
+function RM_onSetNametags(pid, rawData)
+  if not requireAuth(pid) then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  race.nametags = data.enabled == true or data.enabled == 1
+  broadcastState()
+  print('[RaceManager] Display names on nametags '
+    .. (race.nametags and 'ENABLED' or 'disabled')
+    .. ' by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
 function RM_onSetGhostQuali(pid, rawData)
   if not requireAuth(pid) then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
@@ -2162,6 +2327,13 @@ formGrid = function (kind, byName)
     -- back, because Reset Session drops the records entirely.
     rec.holdCorrectedAt = nil
     rec.holdCorrections = 0
+    -- ...and the splits, for the same reason: they are stamps off a clock that
+    -- is about to go back to zero, so keeping them would have the new session's
+    -- first checkpoint reading as several minutes behind the old one's.
+    rec.splits   = nil
+    rec.splitLap = nil
+    rec.splitCp  = nil
+    rec.gap, rec.intv = nil, nil
     -- Counters the record describes as "this session", so they have to mean it.
     rec.pitStops   = 0
     rec.ghosts     = 0
@@ -2178,7 +2350,7 @@ formGrid = function (kind, byName)
     -- Gridded: no longer a bystander. A grid is where entry is decided, so this
     -- is exactly where a mid-session arrival stops being one.
     rec.bystander = nil
-    clearProgress(rec)
+    progress.clear(rec)
     -- Put the car on its start position and hold it there until GO. The order
     -- and the field size travel with the slot so the client can stagger its
     -- placement instead of every car being teleported in the same instant.
@@ -2865,7 +3037,12 @@ function RM_CountdownTick()
         rec.qualiLaps = 0
       end
       rec.outLap     = outLapOwed()
-      clearProgress(rec)
+      -- GO: the clock is zero and nobody has reached anything yet.
+      rec.splits   = nil
+      rec.splitLap = nil
+      rec.splitCp  = nil
+      rec.gap, rec.intv = nil, nil
+      progress.clear(rec)
     end
   end
   -- What this session is about to run under, kept for the results file that is
@@ -3022,6 +3199,14 @@ function RM_onProgress(pid, rawData)
     -- as the fallback for a route placed in the editor that the server never saw.
     local ceiling = race.slotCount > 0 and race.slotCount or MAX_CHECKPOINTS
     if cp < 0 then cp = 0 elseif cp > ceiling then cp = ceiling end
+    -- A count that went UP is a crossing, not a routine sample. The client
+    -- forces a report on the frame after every crossing (checkGates sets
+    -- progressLeft = 0 so a position can change hands promptly), so this is
+    -- within a frame of the car actually clearing the gate rather than up to a
+    -- throttle window late -- which is what makes the split worth stamping at
+    -- all. A count that went DOWN is a stale or reordered packet and is left to
+    -- the assignment below, exactly as before.
+    if cp > (rec.cpCleared or 0) then progress.record(rec, rec.currentLap, cp) end
     rec.cpCleared = cp
   end
 
@@ -3072,6 +3257,14 @@ function RM_onLap(pid, rawData)
   --
   -- NOT ON A ONE-LAP RACE, because there the standing lap is the only lap there
   -- is and dropping its time leaves the results with no times in them at all.
+  -- THE LINE IS CHECKPOINT 0 OF THE LAP THAT IS STARTING, and it is stamped
+  -- here -- above every early return below, so a qualifying out lap leaves a
+  -- split like any other crossing rather than a hole the backfill has to guess
+  -- at. On the terminal crossing this is the flag itself: currentLap is left
+  -- where it was for a finisher, so the stamp is the one thing that says where
+  -- they got to, and it carries exactly the value finishTime does.
+  progress.record(rec, (rec.currentLap or 0) + 1, 0)
+
   local untimedFirstLap = false
   if not quali and (rec.currentLap or 0) <= 1 and (race.totalLaps or 0) > 1 then
     rec.outLap = false
@@ -3081,7 +3274,7 @@ function RM_onLap(pid, rawData)
   end
   if rec.outLap and quali then
     rec.outLap = false
-    clearProgress(rec)
+    progress.clear(rec)
     rec.currentLap = rec.currentLap + 1
     broadcastState()
     -- Told to that driver alone. The out lap is a per-driver event twenty
@@ -3125,7 +3318,7 @@ function RM_onLap(pid, rawData)
   end
   -- New lap (or the flag): the checkpoint/distance telemetry from the lap just
   -- completed must not linger and rank this driver against the next one.
-  clearProgress(rec)
+  progress.clear(rec)
 
   -- Two ways a crossing can be a driver's last, and they are checked together so
   -- the removal below is reached by one route rather than two.
@@ -7226,6 +7419,7 @@ function onInit()
   MP.RegisterEvent('RM_GenerateGrid',     'RM_onGenerateGrid')
   MP.RegisterEvent('RM_SetTotalLaps',     'RM_onSetTotalLaps')
   MP.RegisterEvent('RM_SetAlias',         'RM_onSetAlias')
+  MP.RegisterEvent('RM_SetNametags',      'RM_onSetNametags')
   -- Race entry (opt-in) + starting grid
   MP.RegisterEvent('RM_SetGridMode',        'RM_onSetGridMode')
   MP.RegisterEvent('RM_SetDriverGrid',      'RM_onSetDriverGrid')

@@ -200,7 +200,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.8.4'
+local RM_BUILD = '0.8.5'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -411,6 +411,130 @@ local ghost = {
   hudLeft  = 0,       -- seconds until the next HUD push is due
   hudShown = false,   -- a HUD push has been sent that the UI is still showing
 }
+
+-- ---------------------------------------------------------------------------
+-- Display names on the BeamMP nametag
+-- ---------------------------------------------------------------------------
+-- A driver called `guest5961302` has a readable name on the leaderboard and
+-- their guest number floating over the car. This puts the readable one up there
+-- too.
+--
+-- IT ADDS A SUFFIX AND DOES NOTHING ELSE, and that constraint is the whole
+-- design. BeamMP renders nametags itself in MPVehicleGE.onPreRender, and that
+-- rendering carries a lot that players are attached to: distance fade,
+-- hide-behind-objects, the spectator list, role tags, colour, alpha. There IS a
+-- way to take the whole thing over -- MPVehicleGE.hideNicknames(true) and draw
+-- your own, which is what BeamJoy does -- and it is rejected here on purpose.
+-- Owning the render means owning the fade, the occlusion and every setting a
+-- player has already chosen, and getting any of it slightly wrong is worse for
+-- them than a guest number.
+--
+-- So this goes through BeamMP's own API instead:
+--
+--   MPVehicleGE.setPlayerNickSuffix(guestName, tagSource, text)
+--
+-- which files the text under `player.nickSuffixes[tagSource]` and lets BeamMP's
+-- renderer concatenate it. Text in, nothing else touched.
+--
+-- THE `tagSource` KEY IS WHY THIS IS SAFE ALONGSIDE OTHER MODS. Suffixes are a
+-- map keyed by source, not a single string, so BeamJoy or CEI can hold their own
+-- tag on the same driver and neither of us overwrites the other. Ours is
+-- namespaced under RM_TAG_SOURCE below.
+--
+-- WHAT IS DELIBERATELY NOT DONE: writing `MPVehicleGE.getPlayers()[pid].name`.
+-- That getter hands back the live table rather than a copy, and the renderer
+-- looks players up by ID, so assigning to it really would replace the guest
+-- number outright rather than appending to it. It is still wrong. `name` is
+-- BeamMP's own lookup key in five places, and one of them is onPlayerLeft --
+-- which matches `player.name == name` to remove somebody who has disconnected.
+-- Rename them and they are never cleaned up, on every client on the server. We
+-- would be leaking entries inside BeamMP's bookkeeping to save four characters.
+local nametag = {
+  -- Namespaced so BeamMP files our suffix separately from every other mod's.
+  SOURCE  = 'raceManager',
+  -- [guest name] = the suffix we last set on it, so the sweep below knows what
+  -- it has to undo. Keyed by NAME because that is what the API takes.
+  applied = {},
+  on      = false,     -- mirrored from the server broadcast
+  sig     = nil,       -- last applied alias set, to skip unchanged broadcasts
+}
+
+-- CLEARING PASSES AN EMPTY STRING, NEVER nil, and this is a live trap rather
+-- than a style preference. BeamMP's setter opens with
+--
+--   if text == nil then text = tagSource; tagSource = 'default' end
+--
+-- so calling it with a nil text does not clear anything: it shifts the arguments
+-- and writes the literal word `raceManager` onto that driver's nametag, under
+-- the 'default' source where we can no longer even find it to remove it.
+function nametag.set(guestName, text)
+  if type(guestName) ~= 'string' or guestName == '' then return end
+  if not (MPVehicleGE and type(MPVehicleGE.setPlayerNickSuffix) == 'function') then
+    return
+  end
+  pcall(MPVehicleGE.setPlayerNickSuffix, guestName, nametag.SOURCE, text or '')
+end
+
+-- Take every suffix back off. Called when the rule is switched off, when the
+-- session ends and when the extension unloads -- a tag left behind by a mod that
+-- is no longer running is somebody else's bug report.
+function nametag.clearAll()
+  for guestName in pairs(nametag.applied) do nametag.set(guestName, '') end
+  nametag.applied = {}
+  nametag.sig = nil
+end
+
+-- Apply the alias set from the latest broadcast.
+--
+-- `drivers` carries both halves already: `name` is the BeamMP guest name, which
+-- is exactly the key setPlayerNickSuffix matches on, and `alias` is what an
+-- admin typed. No lookup, no mapping table, nothing to keep in step.
+--
+-- SKIPPED WHEN NOTHING CHANGED. The state broadcast lands three times a second
+-- and the setter is a linear search through BeamMP's player list per call, so
+-- re-applying an unchanged set would be a scan per driver per broadcast for the
+-- length of a race. Aliases change a handful of times an evening.
+function nametag.apply(drivers)
+  if not nametag.on then
+    if next(nametag.applied) ~= nil then nametag.clearAll() end
+    return
+  end
+  if type(drivers) ~= 'table' then return end
+
+  local parts = {}
+  for i = 1, #drivers do
+    local row = drivers[i]
+    if type(row) == 'table' and type(row.name) == 'string' and row.alias then
+      parts[#parts + 1] = row.name .. '=' .. tostring(row.alias)
+    end
+  end
+  table.sort(parts)
+  local sig = table.concat(parts, '\1')
+  if sig == nametag.sig then return end
+  nametag.sig = sig
+
+  local wanted = {}
+  for i = 1, #drivers do
+    local row = drivers[i]
+    if type(row) == 'table' and type(row.name) == 'string' and row.alias then
+      wanted[row.name] = ' (' .. tostring(row.alias) .. ')'
+    end
+  end
+  -- Off first: a driver whose alias was removed, or who was renamed, must lose
+  -- the old suffix even if nothing is going back on.
+  for guestName in pairs(nametag.applied) do
+    if not wanted[guestName] then
+      nametag.set(guestName, '')
+      nametag.applied[guestName] = nil
+    end
+  end
+  for guestName, text in pairs(wanted) do
+    if nametag.applied[guestName] ~= text then
+      nametag.set(guestName, text)
+      nametag.applied[guestName] = text
+    end
+  end
+end
 
 -- Rallycross joker route (Module 2): a second, completely separate gate set
 -- describing the alternate route. Same checkpoint format as `route`; it travels
@@ -4784,14 +4908,21 @@ local function drawDriverGate(derbyLive)
   local p = palette()
   local n = #route
 
-  -- NO TEXT ON A RACE CHECKPOINT. The poles say where the gate is and the colour
-  -- says which one is next; a driver reading "CP 3" at speed learns nothing they
-  -- can act on, and it is one more thing painted across the racing line.
+  -- NO TEXT ON ANY GATE, INCLUDING THE JOKER. The poles say where a gate is and
+  -- the colour says which one is next; a driver reading "CP 3" at speed learns
+  -- nothing they can act on, and it is one more thing painted across the racing
+  -- line.
   --
-  -- The JOKER keeps its label, and it is the only one that does, because it is
-  -- the only gate whose text changes what a driver should DO -- owed, taken, or
-  -- forbidden on lap 1 -- and getting it wrong is a disqualification. The editor
-  -- still numbers everything: that is where the numbers are worth reading.
+  -- The joker was the last exception, on the grounds that its STATE changes what
+  -- a driver must do -- owed, taken, or forbidden on lap 1 -- and getting it
+  -- wrong is a disqualification. That reasoning still holds; the words were just
+  -- the wrong way to carry it. The glyph says the same thing (a cross for shut, a
+  -- tick for done, an arrow for open) and says it at a glance, where
+  -- "JOKER 1/2 (lap 1: closed)" is a sentence to read at racing speed. The fill
+  -- and the symbol stay, the sentence goes.
+  --
+  -- The editor still numbers and labels everything, joker included: that is where
+  -- the words are worth reading, and where there is time to read them.
   --
   -- ALL of a checkpoint's gates are drawn, not one of them. A branch gate is
   -- another way through the same checkpoint, so a driver has to be able to see
@@ -4832,13 +4963,14 @@ local function drawDriverGate(derbyLive)
       local state = jokerTaken and 'used'
         or ((sessionRunning() and localLap <= 1) and 'closed' or 'open')
       -- The joker is the one gate whose STATE changes what a driver must do, so
-      -- it is the one gate that earns a fill, a label on its face and a symbol.
-      -- Getting it wrong is a disqualification either way round.
+      -- it is the one gate that earns a fill and a symbol. NO LABEL: the glyph
+      -- carries the state on its own and carries it faster (see the note above),
+      -- so the text was a sentence competing with the picture that had already
+      -- said it. `jokerLabel` is still what the editor draws.
       local glyph = (state == 'used' and 'done')
         or (state == 'closed' and 'shut')
         or 'open'
-      drawPoleGate(wp, jokerTaken and p.jokerUsed or p.joker,
-        jokerLabel(j, #jokerRoute, state),
+      drawPoleGate(wp, jokerTaken and p.jokerUsed or p.joker, nil,
         jokerTaken and p.jokerUsedFill or p.jokerFill, glyph)
     end
   end
@@ -6332,6 +6464,68 @@ function M.setSpectating(on)
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- Broadcast camera: put the view on a named driver
+-- ---------------------------------------------------------------------------
+-- The spectator board sends a BeamMP PLAYER id, not a vehicle id, and that is
+-- the whole reason this function exists on the client at all. A vehicle id is a
+-- local scene-object id: it means a different car on every machine, so nothing
+-- that travels between clients can carry one. A pid is the key the server files
+-- everyone under and the key RM_Ghost already crosses the wire with, and
+-- resolving it to a car is a question only the local client can answer.
+--
+-- IT SETS THE CAMERA MODE, which is the one place in this file that does.
+-- Everywhere else the rule is the opposite and bindCameraToOwnVehicle spells it
+-- out: which car you are attached to is the mod's business, how you look at it
+-- is the driver's. This is the exception because here the view IS the request. A
+-- broadcaster clicking a name is asking to be put on that car in a chase
+-- camera; landing them in whatever seat they last used -- a cockpit, or a bumper
+-- cam pointing at somebody else's boot -- is not what they clicked.
+--
+-- Not gated on being a spectator. It moves a camera and touches no session
+-- state, and the board that calls it only renders for somebody watching; a rule
+-- here would be a second opinion about a question the server already owns.
+function M.spectateDriver(pid)
+  pid = tonumber(pid)
+  if pid == nil then return false end
+  -- Our own row goes through ownVehicle(), not the pid lookup. vehicleForPid
+  -- walks MPVehicleGE's list, which is about OTHER people's cars -- and
+  -- ownVehicle is the answer this file already trusts for "which one is mine",
+  -- including offline, where there is no MPVehicleGE to ask.
+  local veh = nil
+  if pid == localServerId() then veh = ownVehicle() end
+  if not veh then veh = ghost.vehicleForPid(pid) end
+  if not veh then
+    -- A car not loaded here yet is the ordinary case for a driver who has only
+    -- just joined, and saying nothing about it reads as a dead row.
+    pushNotice('spectate', 'No car on this client for that driver yet')
+    guihooks.trigger('RaceManagerWatch', { pid = pid, ok = false })
+    return false
+  end
+  -- FREE CAM FIRST. enterVehicle attaches the player to a car; free cam is a
+  -- camera that does not care which car that is, so from inside it the click
+  -- would appear to do nothing at all.
+  if commands and commands.isFreeCamera and commands.setGameCamera then
+    local inFree = false
+    pcall(function () inFree = commands.isFreeCamera() == true end)
+    if inFree then pcall(commands.setGameCamera) end
+  end
+  local switched = false
+  if be and be.enterVehicle then
+    switched = pcall(function () be:enterVehicle(0, veh) end)
+  end
+  if switched and core_camera and core_camera.setByName then
+    pcall(core_camera.setByName, 0, 'orbit')
+  end
+  -- Reported either way, so the board marks the row the camera actually landed
+  -- on rather than the row that was clicked. Those differ whenever the switch
+  -- fails, and a board marking the wrong car is worse than one marking none.
+  guihooks.trigger('RaceManagerWatch', { pid = pid, ok = switched })
+  log('I', 'raceManager', 'Broadcast camera -> pid ' .. tostring(pid)
+    .. (switched and '' or ' FAILED (enterVehicle unavailable)'))
+  return switched
+end
+
 function M.setFlag(f)
   f = tostring(f or '')
   if f ~= 'green' and f ~= 'yellow' and f ~= 'red' then return end
@@ -6601,6 +6795,15 @@ local function onServerUpdate(rawData)
       end
     end
   end
+
+  -- Display names on BeamMP's nametags. The switch is the server's so every
+  -- client agrees; the suffix itself is applied locally, because a nametag is
+  -- drawn on each machine out of that machine's own player list.
+  if type(data.nametags) == 'boolean' and data.nametags ~= nametag.on then
+    nametag.on = data.nametags
+    if not nametag.on then nametag.clearAll() end
+  end
+  if type(data.drivers) == 'table' then nametag.apply(data.drivers) end
 
   -- Fastest lap of the session. The leaderboard paints that driver's time gold
   -- for everyone; the driver who set it is told, once, on the notice channel the
@@ -7170,6 +7373,16 @@ end
 
 -- --- Qualifying rules ------------------------------------------------------
 -- Ghost mode: rivals stop being obstacles during qualifying.
+-- Display names on BeamMP nametags. A thin relay like every other setting: the
+-- server holds the switch so all clients agree, and each client does the local
+-- half when the broadcast comes back.
+function M.setNametags(enabled)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetNametags',
+      jsonEncode({ enabled = enabled and true or false }))
+  end
+end
+
 function M.setGhostQuali(enabled)
   enabled = enabled and true or false
   if inMultiplayer() then
@@ -7610,6 +7823,7 @@ end
 -- would be harmless anyway.
 local function onSessionLeave()
   log('I', 'raceManager', 'BeamMP session ended: clearing local race state')
+  nametag.clearAll()
   resetToIdle('BeamMP session ended')
 end
 

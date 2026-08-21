@@ -125,6 +125,10 @@ angular.module('beamng.apps')
       $scope.gridUi = { slot: {} };
       // Qualifying rules.
       $scope.ghostQuali = false;
+      // Put display names on BeamMP's nametags as well as on the board.
+      // Server-owned so every client agrees; each client applies it locally,
+      // because a nametag is drawn from that machine's own player list.
+      $scope.nametags = false;
       $scope.qualiLapLimit = 0;
       $scope.qualiTimeLimit = 0;
       $scope.qualiLeft = null;        // seconds remaining, null = no limit
@@ -327,7 +331,12 @@ angular.module('beamng.apps')
       // The two are pushed together and are mutually exclusive by construction:
       // one Editor sub-tab exists per mode, and only one mode is ever open.
       function pushEditorOpen() {
-        var editing = $scope.isAdmin && $scope.adminTab === 'editor';
+        // BROADCAST MODE COUNTS AS CLOSED. The panel is gone from the DOM there,
+        // but the drawing it gates lives in the world and Lua only hears about
+        // the panel -- so an admin broadcasting from the Editor tab would stream
+        // gate rectangles and start-slot outlines over the race.
+        var editing = $scope.isAdmin && $scope.adminTab === 'editor'
+          && !$scope.broadcastMode();
         var race  = editing && $scope.mode === 'race';
         var derby = editing && $scope.mode === 'derby';
         bngApi.engineLua('raceManager.setEditorOpen(' + (!!race) + ')');
@@ -1032,7 +1041,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.8.4';
+      var APP_BUILD = '0.8.5';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -1272,6 +1281,250 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       };
 
       // ------------------------------------------------------------------
+      // Module 5: the broadcast board
+      // ------------------------------------------------------------------
+      // A board for somebody WATCHING rather than driving. Minimal mode above is
+      // still a driver's HUD - it answers "where am I, what lap, how many resets
+      // left" - and none of that is a question a broadcaster has. Theirs is the
+      // opposite: the whole field at once, who is out and why, and a way to put
+      // the camera on whoever the story is about.
+      //
+      // WHO GETS IT. Anyone not in the field, which is two different states that
+      // mean the same thing here: the entry decision (pressed Spectate) and a car
+      // taken away (finished, or serving a penalty). They are deliberately
+      // separate variables everywhere else in this file - conflating them is what
+      // once made Rejoin look broken - so this reads both rather than picking one.
+      $scope.spectatorView = function () {
+        return $scope.spectating === true || $scope.carTaken === true;
+      };
+      // Dot rule: the board's controls live inside its own ng-if, whose child
+      // scope would shadow a bare primitive.
+      $scope.broadcast = {
+        on: loadPref('broadcast', false) === true,
+        // race | points. Separate from the cup panel's own `view`, which is an
+        // admin editing standings; this one is a stream graphic.
+        view: loadPref('broadcastView', 'race') === 'points' ? 'points' : 'race',
+        // Whose car the camera is actually on, reported back by the client Lua
+        // rather than assumed from the click. A click that could not resolve a
+        // car must not leave the board marking a row it never reached.
+        watching: null
+      };
+      // ON is not enough: the board is only ever shown to somebody out of the
+      // field, so rejoining drops it without touching the stored preference. A
+      // broadcaster who takes a race and then sits the next one out gets their
+      // board back on its own.
+      $scope.broadcastMode = function () {
+        return $scope.broadcast.on && $scope.spectatorView();
+      };
+      $scope.broadcastView = function (v) { return $scope.broadcast.view === v; };
+      // The cup is pushed only when it CHANGES, so a board opened an hour into a
+      // race night would render an empty standings table until the next race
+      // finished. Same pull the admin's cup tab does as it comes on screen.
+      function pullCupState() {
+        bngApi.engineLua('raceManager.cupRequestState()');
+      }
+      $scope.toggleBroadcast = function () {
+        $scope.broadcast.on = !$scope.broadcast.on;
+        savePref('broadcast', $scope.broadcast.on);
+        // The editor is a render gate in Lua, and it draws gate rectangles and
+        // start-slot outlines into the WORLD. An admin who is also the
+        // broadcaster would otherwise stream authoring furniture over the race:
+        // the panel is gone, the drawing is not, because Lua is told about the
+        // panel and knows nothing about this mode.
+        pushEditorOpen();
+        if ($scope.broadcast.on) { pullCupState(); }
+      };
+      $scope.setBroadcastView = function (v) {
+        $scope.broadcast.view = (v === 'points') ? 'points' : 'race';
+        savePref('broadcastView', $scope.broadcast.view);
+        if ($scope.broadcast.view === 'points') { pullCupState(); }
+      };
+
+      // Put the camera on a driver. The row's `id` is the BeamMP player id, and
+      // it is the only handle that means the same thing on every client - so it
+      // is what goes to Lua, which resolves it to a local car.
+      $scope.watchDriver = function (row) {
+        if (!row || row.id === null || row.id === undefined) { return; }
+        var pid = Number(row.id);
+        if (!isFinite(pid)) { return; }
+        bngApi.engineLua('raceManager.spectateDriver(' + pid + ')');
+      };
+      // Same, from a standings row. A cup entry is a ROSTER identity, not a
+      // connection, so it only has a car while whoever it is bound to is on the
+      // server; the map below is empty for everyone else and the row is simply
+      // not clickable.
+      $scope.watchEntry = function (row) {
+        if (!row) { return; }
+        var pid = $scope.cupPidOf[row.entryId];
+        if (pid === undefined || pid === null) { return; }
+        $scope.watchDriver({ id: pid });
+      };
+      $scope.canWatchEntry = function (row) {
+        return !!row && $scope.cupPidOf[row.entryId] !== undefined;
+      };
+      $scope.isWatching = function (row) {
+        return !!row && $scope.broadcast.watching !== null
+          && String($scope.broadcast.watching) === String(row.id);
+      };
+      $scope.$on('RaceManagerWatch', function (event, data) {
+        $scope.$evalAsync(function () {
+          $scope.broadcast.watching = (data && data.ok) ? data.pid : null;
+        });
+      });
+
+      // Places gained or lost since the lights. It sits alongside the gap rather
+      // than in place of it: one says how the race has moved, the other how far
+      // away it is.
+      $scope.gridDelta = function (row) {
+        if (!row || !row.gridPos || !row.position) { return ''; }
+        if (row.status === 'dnf' || row.status === 'dsq') { return ''; }
+        var d = row.gridPos - row.position;
+        if (d === 0) { return ''; }
+        return (d > 0 ? '+' : '') + d;
+      };
+      $scope.gridDeltaClass = function (row) {
+        var d = $scope.gridDelta(row);
+        if (!d) { return ''; }
+        return d.charAt(0) === '+' ? 'rm-bc-gain' : 'rm-bc-loss';
+      };
+      // The lap the RACE is on, which is the leader's - the number a commentator
+      // says out loud. Blank in qualifying, where there is no single lap count
+      // the field shares.
+      $scope.broadcastLap = function () {
+        if ($scope.derbyActive()) { return ''; }
+        if ($scope.sessionKind === 'quali' || !$scope.bcRunning.length) { return ''; }
+        var leader = $scope.bcRunning[0];
+        if (!leader || !leader.currentLap) { return ''; }
+        var total = $scope.totalLaps || 0;
+        return total > 0 ? (leader.currentLap + '/' + total) : String(leader.currentLap);
+      };
+
+      // ------------------------------------------------------------------
+      // Time behind
+      // ------------------------------------------------------------------
+      // TWO SOURCES, because the two sessions are scored on different things and
+      // a gap has to mean the same thing as the classification above it.
+      //
+      //   * A RACE is scored on the clock, so the gap is a subtraction of two
+      //     split stamps taken at the last checkpoint both cars reached. The
+      //     server does that arithmetic (assignPositions) and sends `gap` and
+      //     `intv` already rounded; nothing here recomputes either.
+      //   * QUALIFYING is scored on the best LAP. Two drivers who set identical
+      //     laps ten minutes apart are level, so a clock delta says nothing --
+      //     the server deliberately sends none and the gap is the difference
+      //     between best laps, which is already on every row.
+      //
+      // A gap is only a TIME while both cars are on the same lap. Once a driver
+      // is lapped the honest answer is how many laps, and a number of seconds
+      // that happens to exceed a lap time is the one reading that would mislead
+      // a commentator.
+      $scope.lapsDown = function (row) {
+        if (!row) { return 0; }
+        // The classification leader, which is drivers[0] on every board: the
+        // server sorts the array leader-first and every table renders it as it
+        // arrived.
+        var leader = $scope.drivers[0];
+        if (!leader || !leader.currentLap || !row.currentLap) { return 0; }
+        if (row.status === 'dnf' || row.status === 'dsq') { return 0; }
+        // A finisher is not lapped, whatever the leader's counter reads: they
+        // completed the distance and their gap is a real time.
+        if (row.status === 'finished') { return 0; }
+        var d = leader.currentLap - row.currentLap;
+        return d > 0 ? d : 0;
+      };
+      // Seconds, to a tenth. Deliberately coarser than the three decimals on the
+      // wire: the stamp carries the reporting client's ping, so a thousandths
+      // digit here would be precision this cannot actually deliver.
+      function formatBehind(t) {
+        if (t === null || t === undefined) { return ''; }
+        if (t < 60) { return '+' + t.toFixed(1); }
+        var m = Math.floor(t / 60);
+        var s = t - m * 60;
+        return '+' + m + ':' + (s < 10 ? '0' : '') + s.toFixed(1);
+      }
+      // Gap to the leader, for whichever board is asking.
+      $scope.gapLabel = function (row) {
+        if (!row || row.status === 'dnf' || row.status === 'dsq') { return ''; }
+        if (row.position === 1) { return ''; }
+        var down = $scope.lapsDown(row);
+        if (down > 0) { return '+' + down + ' LAP' + (down > 1 ? 'S' : ''); }
+        return formatBehind(row.gap);
+      };
+      // ...and to the car directly ahead. Same data, one row up - including the
+      // lap rule, which bites harder here than it does for the gap. A driver a
+      // lap down is usually directly behind somebody on the lead lap, and their
+      // split delta at a checkpoint a lap apart is a real number that means
+      // nothing: it would put "+48.6" between two cars that are not racing each
+      // other at all.
+      $scope.intervalLabel = function (row) {
+        if (!row || row.status === 'dnf' || row.status === 'dsq') { return ''; }
+        if (row.position === 1) { return ''; }
+        // drivers[position - 1] is this row, so the car ahead is one before it.
+        var ahead = $scope.drivers[row.position - 2];
+        if (ahead && ahead.currentLap && row.currentLap
+            && row.status !== 'finished' && ahead.status !== 'finished') {
+          var d = ahead.currentLap - row.currentLap;
+          if (d > 0) { return '+' + d + ' LAP' + (d > 1 ? 'S' : ''); }
+        }
+        return formatBehind(row.intv);
+      };
+      // QUALIFYING: the difference between best laps, worked out here because
+      // the server has no business ranking a lap time twice. A driver with no
+      // time yet has no gap - not a gap to nothing.
+      $scope.qualiGapLabel = function (row, index) {
+        if (!row || !row.qualiBest) { return ''; }
+        if (index === 0) { return ''; }
+        var leader = $scope.drivers[0];
+        if (!leader || !leader.qualiBest) { return ''; }
+        return formatBehind(row.qualiBest - leader.qualiBest);
+      };
+
+      // The one thing worth saying about a row beyond its numbers. Blank while a
+      // driver is simply circulating: a column reading "Racing" on every line is
+      // a column of noise, and a stream graphic has no room for one.
+      $scope.bcNote = function (row) {
+        if (!row) { return ''; }
+        if (row.status === 'finished') { return $scope.formatLap(row.finishTime); }
+        if ($scope.showOutLap(row)) { return 'OUT LAP'; }
+        if (row.status === 'racing' || row.status === 'qualifying') { return ''; }
+        return $scope.statusLabel(row.status);
+      };
+
+      // The field, split the way a board reads it. Done ONCE PER BROADCAST
+      // rather than once per digest, which is the same reason the race table
+      // renders the server's order instead of re-sorting it: this runs three
+      // times a second for the length of a race, on every machine connected.
+      //
+      //   running    - everyone still in the session, in the server's order
+      //   out        - retired and disqualified, with the ruling that put them there
+      //   spectating - not in the field at all, counted rather than listed
+      //
+      // A driver sitting the session out is not a racer, and a board listing them
+      // among the runners claims a field bigger than the one on track.
+      $scope.bcRunning  = [];
+      $scope.bcOut      = [];
+      $scope.bcWatchers = 0;
+      $scope.bcFastest  = null;   // { name, time } of the session best, or null
+      $scope.cupPidOf   = {};     // entryId -> pid, for click-to-watch in points view
+      function splitField(list) {
+        var running = [], out = [], watchers = 0, fastest = null;
+        for (var i = 0; i < list.length; i++) {
+          var row = list[i];
+          if (row.id === $scope.bestLapPid) {
+            var t = row.raceBest || row.qualiBest;
+            if (t) { fastest = { name: $scope.driverName(row), time: t }; }
+          }
+          if (row.status === 'dnf' || row.status === 'dsq') { out.push(row); }
+          else if (row.spectating) { watchers = watchers + 1; }
+          else { running.push(row); }
+        }
+        $scope.bcRunning  = running;
+        $scope.bcOut      = out;
+        $scope.bcWatchers = watchers;
+        $scope.bcFastest  = fastest;
+      }
+
+      // ------------------------------------------------------------------
       // Formatting helpers
       // ------------------------------------------------------------------
       function pad2(n) { return (n < 10 ? '0' : '') + n; }
@@ -1334,6 +1587,12 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.bestLapPid = (data.bestLapPid === undefined) ? null : data.bestLapPid;
           if (typeof data.pointToPoint === 'boolean') { $scope.pointToPoint = data.pointToPoint; }
           $scope.drivers = data.drivers || [];
+          // The broadcast board's three buckets, cut from the array that just
+          // landed. Here rather than in a template expression for the same
+          // reason the race table renders the server's order untouched: a
+          // template function is re-run on every digest, and this one only has
+          // new work to do when a broadcast arrives.
+          splitField($scope.drivers);
           // Note gains/losses before the table re-renders, so the arrows in the
           // position column reflect this very update.
           trackPositionChanges($scope.drivers);
@@ -1380,6 +1639,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           // and resets fields are: only when the server's value actually moved,
           // so an edit in progress is never yanked out from under the admin.
           $scope.ghostQuali = !!data.ghostQuali;
+          $scope.nametags = !!data.nametags;
           $scope.qualiOutLap = !!data.qualiOutLap;
           // A limit becoming non-zero is also what picks the Laps/Timed toggle,
           // so an admin opening the app onto a session somebody else set up
@@ -1844,6 +2104,19 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.cup.standings = toArray(data.standings);
           $scope.cup.roster = toArray(data.roster);
           $scope.cup.connected = toArray(data.connected);
+          // entryId -> the pid that entry is bound to right now, so a standings
+          // row on the broadcast board can hand the camera a car. Built here
+          // rather than scanned per row per digest; an entry whose driver is not
+          // on the server has no pid and its row is simply not clickable.
+          var pidOf = {};
+          for (var ci = 0; ci < $scope.cup.connected.length; ci++) {
+            var conn = $scope.cup.connected[ci];
+            if (conn && conn.entryId !== undefined && conn.entryId !== null
+                && conn.pid !== undefined && conn.pid !== null) {
+              pidOf[conn.entryId] = conn.pid;
+            }
+          }
+          $scope.cupPidOf = pidOf;
           $scope.cup.pendingQuali = data.pendingQuali || 0;
           $scope.cup.fastestLapRequiresFinish = data.fastestLapRequiresFinish !== false;
           $scope.cup.dnfScoring = data.dnfScoring || 'none';
@@ -2431,6 +2704,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         return $scope.isAdmin && $scope.gridMode === 'custom'
           && $scope.phase !== 'countdown' && $scope.phase !== 'racing';
       };
+      $scope.toggleNametags = function () {
+        bngApi.engineLua('raceManager.setNametags(' + (!$scope.nametags) + ')');
+      };
       $scope.toggleGhostQuali = function () {
         bngApi.engineLua('raceManager.setGhostQuali(' + (!$scope.ghostQuali) + ')');
       };
@@ -2967,12 +3243,22 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         hud: {
           el: function () { return $element[0]; },
           wKey: 'hudWidth', hKey: 'hudHeight', minW: 240, minH: 100
+        },
+        // A THIRD SET OF KEYS, for the same reason there is a second: the same
+        // number of pixels means a different size on each of these, so a shared
+        // pair yanks whichever panel was not dragged the moment the mode flips.
+        // A broadcast board is a stream graphic sized to a stream, and a
+        // driver's leaderboard is sized to fit around a windscreen.
+        broadcast: {
+          el: function () { return $element[0].querySelector('.rm-broadcast-board'); },
+          wKey: 'bcWidth',  hKey: 'bcHeight',  minW: 260, minH: 90
         }
       };
       // px, null = follow the app window.
       var panelSize = {
         leaderboard: { w: loadPref('width', null),    h: loadPref('height', null) },
-        hud:         { w: loadPref('hudWidth', null), h: loadPref('hudHeight', null) }
+        hud:         { w: loadPref('hudWidth', null), h: loadPref('hudHeight', null) },
+        broadcast:   { w: loadPref('bcWidth', null),  h: loadPref('bcHeight', null) }
       };
 
       function panelStyle(name) {
@@ -2990,6 +3276,8 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // Applied to the app root everywhere else - admins on any tab, and
       // drivers outside a live session.
       $scope.hudStyle = function () { return panelStyle('hud'); };
+      // ...and to the broadcast board, which is the whole app while it is on.
+      $scope.bcStyle = function () { return panelStyle('broadcast'); };
 
       $scope.applyOpacity = function () { savePref('opacity', Number($scope.lbUi.opacity)); };
 
@@ -3000,8 +3288,21 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // .css() camel-cases the name it is given, so a `--custom-prop` set
       // through ng-style is silently dropped. (`replace: true` makes
       // $element[0] the .rm-root div itself.)
+      //
+      // THREE PROPERTIES, ONE SLIDER. The panel fill was the only one for a
+      // while, which meant the header's orange band and its border kept their
+      // own fixed alpha: fade the HUD all the way out and a solid orange stripe
+      // stayed painted across the middle of the view. Anything with a background
+      // of its own has to be driven from here, or "opacity" means "opacity,
+      // except that bit".
       $scope.$watch('lbUi.opacity', function (op) {
-        $element[0].style.setProperty('--rm-panel-bg', 'rgba(15, 17, 22, ' + Number(op) + ')');
+        var o = Number(op);
+        var css = $element[0].style;
+        css.setProperty('--rm-panel-bg', 'rgba(15, 17, 22, ' + o + ')');
+        // The header's tint and rule. Their alphas are the ones the stylesheet
+        // used to hardcode, scaled by the slider so they fade in step.
+        css.setProperty('--rm-accent-bg', 'rgba(255, 102, 0, ' + (o * 0.15) + ')');
+        css.setProperty('--rm-accent-line', 'rgba(255, 102, 0, ' + (o * 0.5) + ')');
       });
 
       // THE BOARD'S MEASURED WIDTH, for the driver bar to match and wrap inside.
@@ -3100,6 +3401,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       }
       $scope.startLeaderboardResize = function (ev) { startResize('leaderboard', ev); };
       $scope.startHudResize         = function (ev) { startResize('hud', ev); };
+      $scope.startBroadcastResize   = function (ev) { startResize('broadcast', ev); };
 
       function resetSize(name) {
         panelSize[name].w = null;
@@ -3109,6 +3411,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       }
       $scope.resetLeaderboardSize = function () { resetSize('leaderboard'); };
       $scope.resetHudSize         = function () { resetSize('hud'); };
+      $scope.resetBroadcastSize   = function () { resetSize('broadcast'); };
 
       // The HUD app slot broadcasts this whenever the layout editor resizes
       // our window. A size stored from a bigger window would now hang past the
@@ -3128,6 +3431,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         if (!size) { return; }
         clampStored('hud', size.width, size.height);
         clampStored('leaderboard', size.width, size.height);
+        clampStored('broadcast', size.width, size.height);
       });
 
       $scope.$on('$destroy', function () {

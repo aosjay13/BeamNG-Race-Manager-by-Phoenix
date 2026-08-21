@@ -6,6 +6,195 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.8.5 - A board for the person holding the camera, and how far back everyone is
+
+### Added
+
+- **Display names can go on the BeamMP nametag.** A switch in the Display Names
+  panel appends a driver's display name to the tag over their car, so
+  `guest5961302` reads `guest5961302 (Kestrel)`.
+
+  **Appended, not substituted**, which is a limit and not a preference: BeamMP
+  has no server-side way to rename anyone -- the guest identity comes from their
+  auth and the plugin cannot reach it.
+
+  **Nothing but the text changes.** It goes through BeamMP's own
+  `setPlayerNickSuffix`, so distance fade, hide-behind-objects, colour, alpha,
+  the spectator list and role tags are all still BeamMP's, obeying whatever each
+  player has set. Hiding BeamMP's nametags and drawing our own would have allowed
+  a full replacement, and was rejected: owning the render means owning every
+  setting a player has already chosen, and getting one of them slightly wrong is
+  worse for them than a guest number.
+
+  The suffix is filed under its own tag source, so a server also running BeamJoy
+  or CEI keeps both tags rather than one clobbering the other. The switch is
+  server-owned and **off by default**; turning it off removes every suffix, and
+  so does leaving the server.
+
+- **The status bars are two rows now, and the flag ends the first one.** Every
+  readout on the run changes width as it changes value -- a lap clock crossing
+  0:09.9 to 0:10.0, a checkpoint counter reaching double figures, a fastest-lap
+  holder called `guest5961302` replacing one called `Ana` -- and the controls sat
+  immediately after them. So the buttons moved while you were reaching for one,
+  and how many of them ended up on a second row depended on the width of a
+  number.
+
+  The break is deliberate now, and it goes after the **flag** in all three bars,
+  which is where the status run was already written to end. Information above it,
+  anything you press below it. The header, the driver bar and the broadcast bar
+  all follow the same rule, so a control is in the same place whichever one you
+  are looking at.
+
+  **Collapsing stands the break down.** That control exists to leave one line
+  carrying the phase, the clock and the way back; forcing a second row there
+  would defeat the thing you just pressed.
+
+- **Time behind the leader, on every board.** A **Gap** column on the race
+  table, the qualifying table and the broadcast board, plus an **Int** column on
+  the broadcast board for the gap to the car directly ahead.
+
+  **It is measured rather than estimated.** The server now stamps `race.time`
+  when each driver reaches each checkpoint, and a gap is the subtraction of two
+  of those stamps at the last checkpoint both cars have actually reached. No
+  speed, no track-distance model, nothing interpolated: every figure on screen
+  has two timestamps behind it.
+
+  **Which means it works on branch layouts**, and that is why it is built from
+  splits rather than from track position. A branch gate is another way through a
+  checkpoint that already exists, so two cars at opposite ends of a head-on oval
+  have cleared the same checkpoints and their splits subtract correctly. A gap
+  built from distance would put them minutes apart.
+
+  **The trade is that it refreshes per checkpoint, not continuously** - about
+  every seven seconds on a twelve-gate, ninety-second lap. Finer than the sector
+  timing a televised race shows, but a leader pulling away mid-sector does not
+  move it until the car behind reaches the same gate.
+
+  **Qualifying gets a different gap on purpose.** That session is scored on the
+  best *lap*, so two drivers who set identical times ten minutes apart are level
+  and a clock delta would rank them by when they went out. The qualifying gap is
+  the difference between best laps, and the server sends no clock gap for a
+  qualifying session at all.
+
+  **A lapped driver reads `+1 LAP`**, never a number of seconds - the split
+  subtraction across a lap boundary is a real figure that means nothing, and it
+  is the one reading here that would actively mislead. A retirement has no gap:
+  it is classified by a ruling rather than by where it got to. And a gap is
+  never negative - if the order has changed since a driver's last checkpoint it
+  reads `+0.0`, which is what too close to call looks like.
+
+  **It costs nothing on a race night, and was built to that constraint.** No new
+  network traffic in either direction: the client already fires a checkpoint
+  report on the frame after every crossing because the running order needs one,
+  and the server just notes what the clock read when it arrives. No new work per
+  frame or per tick - the two subtractions happen inside the loop already
+  stamping positions on the sorted field. Measured on a 20-driver, 20-lap,
+  12-gate race: 3.4 microseconds per broadcast at three broadcasts a second, and
+  150 KB of split times held for the whole race.
+
+- **A broadcast board for spectators.** Sit a session out with **👁 Spectate**
+  (or finish the race - a driver whose car has been taken is a spectator too) and
+  a **📺 Broadcast** button appears, in the header between sessions and on the
+  driver bar during one. It is offered to **admins as well**: the person running
+  the race night is usually the person streaming it, and spectating is an entry
+  decision that has nothing to do with rights.
+
+  It is not another view of the leaderboard. A driver's HUD answers *where am I,
+  what lap, how many resets left*, and a broadcaster has none of those questions.
+  Theirs is the whole field at once, who is out and why, the championship, and a
+  camera they can steer.
+
+  **Click a name and the camera goes to that car, in orbit.** That is the one
+  place in the mod that sets a camera *mode* - everywhere else the view is the
+  driver's own business and is deliberately left alone - and it is the exception
+  because here the view *is* the request: a chase camera on that car is exactly
+  what the click asked for. The row actually being watched is marked, and the
+  mark comes back from the game rather than from the click, so a name whose car
+  is not loaded on this machine yet leaves the marker where it was instead of
+  claiming a camera it never got.
+
+  **Drivers who are out get their own block**, with the ruling that put them
+  there - the same text the results file records - and the place they were
+  running in when they stopped. Their names are clickable too: the car is still
+  where it stopped, and the wreck is often the shot. Drivers merely sitting the
+  session out are counted at the foot of the board rather than listed, because a
+  board that puts them among the runners claims a bigger field than the one on
+  track.
+
+  It carries the **Gap** and **Int** columns described above, and keeps the
+  places-gained-since-the-grid marker beside the position: one says how far away
+  the car ahead is, the other how the race has moved since the lights.
+
+  **A derby gets its own table.** It is a parallel game mode with its own field
+  and its own clock, and the racing field is untouched by one - so a board that
+  simply kept rendering `drivers` while an arena was running would be showing the
+  race that happened before it. Names click through the same way.
+
+  **With a cup running, a Race / Points pair appears.** The points view is the
+  championship as the server ranks it - position, driver, rounds, wins, total -
+  and computes nothing itself, the same split the admin cup panel keeps. Opening
+  the board pulls the standings, so a board opened halfway through a race night
+  shows the real table instead of an empty one; a standings row is a roster
+  identity rather than a connection, so it is clickable only while the driver it
+  is bound to is on the server.
+
+  **The board is the whole app while it is on.** Header, session controls, both
+  editors, the derby panel, the login bar, the leaderboard and every alert
+  overlay come off the screen - a broadcaster is not in the session, so a pit
+  readout or somebody else's out-of-bounds timer would simply go out over the
+  stream. Everything worth keeping is on the board's own strip: phase, clock, the
+  lap the leader is on, the session flag and the fastest lap. It drops itself the
+  moment you rejoin the field, because you cannot broadcast from a car you are
+  racing, and it remembers the preference for the next session you sit out.
+
+### Fixed
+
+- **The joker gate no longer carries its wording on track.** `JOKER 1/2
+  (lap 1: closed)` was a sentence to read at racing speed, and the glyph beside
+  it had already said the same thing: a red cross while the joker is shut, a
+  green tick once taken, a faded arrow while it is open. The fill and the symbol
+  stay, the words go.
+
+  **The editor still numbers and labels everything, joker included.** That is
+  where the words are worth reading, and where there is time to read them.
+
+- **The opacity slider now fades everything with a background.** It drove the
+  panel fill and nothing else, so the header's orange band and its bottom rule
+  kept their own fixed alpha: fade the HUD all the way out and a solid orange
+  stripe stayed painted across the middle of the view. Both are driven from the
+  same watcher now.
+
+  The driver bar was mixing its own fill at 0.8x the slider as well, so it sat
+  visibly lighter than the board directly beneath it at every setting but zero.
+  One slider, one value, every surface.
+
+- **The leaderboard stopped clipping its last column.** The panel scrolled
+  vertically only, so a wide row -- the race table runs to ten columns with the
+  joker and reset ones armed -- had its right-hand end cut off at the panel edge
+  with no way to reach it. It scrolls horizontally too now. There is a lot in
+  those rows and a narrow HUD window cannot show all of it at once, but reaching
+  it beats not having it.
+
+- **A quarter of `ui_bindings_test` was running after its own summary.** The
+  pass/fail block sat a hundred lines from the end of the file, so twenty-eight
+  checks below it ran, printed their FAIL lines into the middle of a run that had
+  already reported "0 failures", and exited 0. A build could go out red. The
+  summary is last now and those checks are counted; the suite goes from 511 to
+  539.
+
+  One of its checks was also matching `===`. `$scope.spectating` may only ever be
+  assigned twice -- the initialiser and the server's own `youSpectating` -- and
+  the counter looked for `$scope.spectating` followed by an `=`, which a
+  comparison begins with too. The first predicate to *read* the flag made the
+  count say three.
+
+- **The driver bar's Race / Spectate buttons never showed which one was on.**
+  The "this one is active" style was written as `.rm-btn.rm-flag-on`, and the
+  driver bar's buttons are `.rm-driverbar-btn` -- a different class that does not
+  contain the other -- so the pair wore a state class nothing answered to. Both
+  classes carry the style now, which is also what makes the board's Race /
+  Points toggle readable.
+
 ## 0.8.4 - Derby lives, and an editor that keeps hold of your gates
 
 ### Added

@@ -25,6 +25,13 @@ local function expect(cond, msg)
   end
 end
 
+-- A CSS rule at the top level of the sheet starts on its own line with two
+-- spaces. Anchoring on that matters: `%.rm%-driverbar {` also matches the tail
+-- of `.rm-minimal .rm-driverbar {`, which appears FIRST in the stylesheet -- so
+-- an unanchored pattern silently reads the mode override instead of the base
+-- rule, and a check on the base rule passes or fails for the wrong reason.
+local NL = string.char(10)
+
 local function readFile(path)
   local f = assert(io.open(path, 'r'), 'cannot open ' .. path)
   local s = f:read('*a')
@@ -811,12 +818,38 @@ for _, fn in ipairs({ 'derbyBoardOnly', 'sessionLive' }) do
       .. 'countdown; use derbyActive()')
 end
 
--- One copy of the derby standings, not two. The bottom board is the derby board
--- in derby mode, so repeating the table inside the Derby panel put the field on
--- screen twice on one tab and nowhere at all on the Derby Editor tab.
-local _, boards = html:gsub('ng%-repeat="p in derby%.players', '')
-expect(boards == 1,
-  'expected exactly one derby standings table in the app, found ' .. boards)
+-- The derby field is never on screen twice. It used to be repeated inside the
+-- Derby panel as well as on the board below it, which put the standings up twice
+-- on one tab and nowhere at all on the Derby Editor tab.
+--
+-- COUNTING COPIES IS NOT THE RULE, though it was while there was only ever one.
+-- The broadcast board has a derby table of its own, and it has to: `drivers` is
+-- the racing field and holds the LAST RACE while an arena is running. What
+-- matters is that the two can never render together, so the test is on their
+-- conditions rather than on the total.
+do
+  local boardAt = html:find('<div class="rm%-broadcast%-board"')
+  local boardEnd = html:find('<!%-%- =+ Derby standings')
+  expect(boardAt ~= nil and boardEnd ~= nil and boardAt < boardEnd,
+    'located the broadcast board ahead of the leaderboards')
+  local inBoard, outside = 0, 0
+  for at in html:gmatch('()ng%-repeat="p in derby%.players') do
+    if boardAt and boardEnd and at > boardAt and at < boardEnd then
+      inBoard = inBoard + 1
+    else
+      outside = outside + 1
+    end
+  end
+  expect(inBoard == 1, 'the broadcast board has one derby table (found '
+    .. inBoard .. ')')
+  expect(outside == 1, 'and the leaderboard has the only other one (found '
+    .. outside .. ')')
+  -- ...and they are exact complements, so no tab can show both.
+  expect(html:find('ng-if="derbyBoardOnly() && !broadcastMode()"', 1, true) ~= nil,
+    'the leaderboard derby board stands down for the broadcast board')
+  expect(html:find("ng-if=\"broadcastView('race') && derbyActive()\"", 1, true) ~= nil,
+    'and the broadcast one only renders while an arena is actually running')
+end
 
 -- ---------------------------------------------------------------------------
 -- 5. Editor tabs: Main Route / Joker Route / Start Grid
@@ -1311,14 +1344,144 @@ expect(html:find("ng%-class=\"{'rm%-btn%-nudge%-on': nudgeOn}\"") ~= nil,
 local _, pickers = html:gsub('ng%-click="toggleLayoutDropdown%(%)"', '')
 expect(pickers == 1, 'exactly one layout dropdown in the template (found ' .. pickers .. ')')
 
-if fails == 0 then
-  print('ui_bindings_test: ' .. checks .. ' checks, 0 failures ('
-    .. #models .. ' ng-model bindings)')
-else
-  print('ui_bindings_test: ' .. fails .. ' FAILURES of ' .. checks .. ' checks')
-  os.exit(1)
-end
+-- ---------------------------------------------------------------------------
+-- The broadcast board
+-- ---------------------------------------------------------------------------
+-- A board that hides every other panel in the app has exactly one way to go
+-- wrong, and it is unrecoverable: hide the control that leaves it. Everything
+-- below is about that, plus the wiring that a stale file would break silently.
+do
+  local client = readFile('lua/ge/extensions/raceManager.lua')
 
+  -- IT IS A DIRECT CHILD OF .rm-root. The sweep that folds the app away is
+  -- `.rm-broadcast > *`, a CHILD combinator, so a board nested inside anything
+  -- else would be hidden by its own rule with nothing left on screen.
+  local depth, found = 0, false
+  for line in html:gmatch('[^\n]+') do
+    local indent = #(line:match('^(%s*)') or '')
+    if line:find('rm%-broadcast%-board') and line:find('<div') then
+      found = true
+      depth = indent
+    end
+  end
+  expect(found, 'the broadcast board exists in the template')
+  expect(depth == 2, 'and it is a direct child of .rm-root (indent ' .. depth
+    .. '), or the .rm-broadcast sweep hides the board along with everything else')
+
+  -- The sweep itself, and what survives it: only the board.
+  local sweep = html:match('%.rm%-broadcast%s*>%s*%*([^{]*){')
+  expect(sweep ~= nil, 'found the .rm-broadcast sweep')
+  expect(sweep ~= nil and sweep:find(':not(.rm-broadcast-board)', 1, true) ~= nil,
+    'the sweep keeps the board, or turning broadcast mode on empties the app')
+
+  -- ...and the OTHER sweep must keep it too. Collapsing hides everything but a
+  -- keep-list, and in broadcast mode the board is the only chrome there is: two
+  -- sweeps each hiding what the other kept leaves nothing on screen and no way
+  -- back but the game's app editor.
+  local collapse = html:match('%.rm%-collapsed%s*>%s*%*([^{]*){')
+  expect(collapse ~= nil and collapse:find(':not(.rm-broadcast-board)', 1, true) ~= nil,
+    'collapsing must not hide the broadcast board: it carries the only control '
+      .. 'that leaves the mode')
+
+  -- THE WAY OUT IS ON THE BOARD. Not on the header or the driver bar, both of
+  -- which the sweep above has just removed from the screen.
+  local board = html:match('(<div class="rm%-broadcast%-board".-)<!%-%- =+ Derby standings')
+  expect(board ~= nil, 'isolated the board markup')
+  expect(board ~= nil and board:find('ng-click="toggleBroadcast()"', 1, true) ~= nil,
+    'the board carries its own exit control')
+
+  -- The mode is never shown to somebody who is IN the field. A driver cannot
+  -- broadcast from a car they are racing, and the board replaces the HUD that
+  -- tells them what their car is doing.
+  expect(js:find('$scope.broadcast.on && $scope.spectatorView()', 1, true) ~= nil,
+    'broadcastMode() requires the entry decision as well as the preference')
+  expect(js:find('$scope.spectating === true || $scope.carTaken === true', 1, true) ~= nil,
+    'spectatorView() reads BOTH spectator states: the entry decision and a car '
+      .. 'taken away are different variables on purpose, and a finisher is as '
+      .. 'much a spectator as somebody who sat the session out')
+  for _, place in ipairs({ 'rm%-header', 'rm%-driverbar' }) do
+    local bar = html:match('<div class="' .. place .. '"(.-)</div>%s*\n%s*\n')
+    local _ = bar
+  end
+  local toggles = 0
+  for _ in html:gmatch('ng%-click="toggleBroadcast%(%)"') do toggles = toggles + 1 end
+  expect(toggles == 3,
+    'the toggle sits in the header, on the driver bar and on the board itself '
+      .. '(found ' .. toggles .. '): exactly one of the first two renders at a '
+      .. 'time, so a mode reachable from only one of them is unreachable half '
+      .. 'the time')
+
+  -- The boards it replaces are ng-if'd off rather than left to the sweep. CSS
+  -- hides an ng-repeat; it does not stop it digesting the whole field three
+  -- times a second on a machine that is also encoding a stream.
+  local wraps = 0
+  for attrs in html:gmatch('<div class="rm%-table%-wrap"([^>]*)>') do
+    wraps = wraps + 1
+    expect(attrs:find('!broadcastMode()', 1, true) ~= nil,
+      'a leaderboard renders under the broadcast board: ' .. attrs)
+  end
+  expect(wraps == 3, 'checked all three leaderboards (found ' .. wraps .. ')')
+  expect(html:find('class="rm-admin-body" ng-if="isAdmin && !broadcastMode()"', 1, true) ~= nil,
+    'the admin panels come out of the DOM too: an admin is often the broadcaster')
+
+  -- The editor draws into the WORLD, and Lua only ever hears about the panel.
+  -- An admin broadcasting from the Editor tab would stream gate rectangles and
+  -- start-slot outlines over the race.
+  local gate = js:match('function pushEditorOpen%(%)(.-)\n      }')
+  expect(gate ~= nil, 'found pushEditorOpen')
+  expect(gate ~= nil and gate:find('broadcastMode()', 1, true) ~= nil,
+    'pushEditorOpen treats broadcast mode as closed, or the editor keeps drawing '
+      .. 'its authoring furniture into a stream')
+  expect(js:match('%$scope%.toggleBroadcast = function.-pushEditorOpen%(%)') ~= nil,
+    'and the toggle re-pushes it, so the drawing stops as the panel goes')
+
+  -- CLICK A NAME, GET A CAMERA: the one thing this board does that no other
+  -- panel does. Three layers have to agree, and a stale one of them is silent.
+  expect(html:find('ng-click="watchDriver(row)"', 1, true) ~= nil,
+    'a driver row is clickable')
+  expect(js:find("raceManager.spectateDriver(' + pid + ')", 1, true) ~= nil,
+    'and the handler calls raceManager.spectateDriver')
+  expect(client:find('function M.spectateDriver(pid)', 1, true) ~= nil,
+    'which the client bridge defines')
+  -- The id crosses a bngApi.engineLua STRING boundary, so it is coerced to a
+  -- number on the way out rather than trusted because it came from our own row.
+  expect(js:match('%$scope%.watchDriver = function.-Number%(row%.id%)') ~= nil,
+    'the pid is coerced to a number before it is pasted into a Lua string')
+
+  -- The board marks the row the camera actually reached, which is reported back
+  -- rather than assumed: a click that could not resolve a car must not leave a
+  -- board claiming a camera it never got.
+  expect(client:find("guihooks.trigger('RaceManagerWatch'", 1, true) ~= nil,
+    'the client bridge reports which car the camera landed on')
+  expect(js:find("$scope.$on('RaceManagerWatch'", 1, true) ~= nil,
+    'and the app listens for it, or the marker would never move')
+
+  -- A DERBY IS NOT A RACE, and `drivers` proves it: the racing state machine's
+  -- field is untouched by a derby, so what it holds while an arena is running is
+  -- the LAST RACE. The admin's board fell into exactly this once and showed a
+  -- finished race's results under the derby panel.
+  expect(board ~= nil and board:find("broadcastView('race') && !derbyActive()", 1, true) ~= nil,
+    'the race table stands down for a derby, or the board shows the previous '
+      .. 'race while an arena is running')
+  expect(board ~= nil and board:find("broadcastView('race') && derbyActive()", 1, true) ~= nil,
+    'and a derby gets a table of its own')
+  expect(board ~= nil and board:find('ng-click="watchDriver(p)"', 1, true) ~= nil,
+    'a derby row is clickable too: the wreck is most of the show')
+
+  -- Points view. It renders standings and computes nothing, the same split the
+  -- admin cup panel keeps: two places deciding who is leading is two places
+  -- that can disagree.
+  expect(board ~= nil and board:find('setBroadcastView(\'points\')', 1, true) ~= nil,
+    'the board offers a points view')
+  expect(board ~= nil and board:find('ng-if="cup.enabled"', 1, true) ~= nil,
+    'and only when a cup is actually running: a toggle to an empty standings '
+      .. 'table is a control that looks broken')
+  expect(js:match('%$scope%.setBroadcastView = function.-pullCupState%(%)') ~= nil,
+    'switching to points pulls the standings: the cup is pushed only when it '
+      .. 'changes, so a board opened mid-evening would otherwise render empty')
+  expect(board ~= nil and board:find('s.total', 1, true) ~= nil,
+    'the points column is the server total, not a sum worked out here')
+end
 
 -- ---------------------------------------------------------------------------
 -- Race entry is ONE switch
@@ -1356,8 +1519,12 @@ expect(entryRow and entryRow:find('ng%-disabled="sessionUnderWay%(%)"') ~= nil,
 --
 -- `spectating` is the ENTRY decision and may only ever be written from the
 -- server's own youSpectating. `carTaken` is the camera.
+--
+-- `[^=]` on the end, or a COMPARISON counts as a write: `$scope.spectating ===`
+-- begins with exactly the characters this is looking for, so the first predicate
+-- that reads the flag made the count say three.
 local writes = 0
-for _ in js:gmatch('%$scope%.spectating%s*=') do writes = writes + 1 end
+for _ in js:gmatch('%$scope%.spectating%s*=[^=]') do writes = writes + 1 end
 expect(writes == 2, 'only the initialiser and one server-owned write set $scope.spectating')
 expect(js:find('$scope.spectating = data.youSpectating', 1, true) ~= nil,
   'and that write is youSpectating, the entry decision')
@@ -1424,3 +1591,197 @@ end
 -- the out-of-bounds warning.
 expect(animated == 2, 'both infinite animations were found and checked, got '
   .. animated)
+
+-- ---------------------------------------------------------------------------
+-- Time behind: the gap columns, and the column counts they change
+-- ---------------------------------------------------------------------------
+-- Adding a column to a table means adding it in two places -- the header and the
+-- body row -- and updating a third, the colspan on the empty-state row. Miss the
+-- colspan and the "no drivers yet" message stops spanning the table, which is
+-- invisible until a board renders empty in front of a room.
+do
+  local client = readFile('lua/ge/extensions/raceManager.lua')
+  local server = readFile('server/RaceManager/main.lua')
+  local _ = client
+
+  -- Header count vs the empty row's colspan, per table. The tables are isolated
+  -- by the marker comment that introduces each, so a fourth one added later has
+  -- to be listed here rather than quietly skipped.
+  -- Anchored on each table's WRAPPER rather than on its first header. A header
+  -- class is shared between tables and a title attribute is not the start of the
+  -- tag, so an anchor inside one silently drops a column from the count -- which
+  -- is how the first version of this check reported a table one short.
+  local tables = {
+    { name = 'quali',     from = 'ng%-if="isQualiView%(%) && !derbyBoardOnly' },
+    { name = 'race',      from = 'ng%-if="!isQualiView%(%) && !derbyBoardOnly' },
+    { name = 'broadcast', from = '<div class="rm%-broadcast%-board"' },
+    { name = 'board derby',  from = "broadcastView%('race'%) && derbyActive%(%)" },
+    { name = 'board points', from = [[<div ng%-if="broadcastView%('points'%)"]] },
+  }
+  for _, t in ipairs(tables) do
+    local at = html:find(t.from)
+    expect(at ~= nil, 'located the ' .. t.name .. ' table')
+    if at then
+      local body = html:sub(at, (html:find('</table>', at, true) or #html))
+      local ths = 0
+      for _ in body:gmatch('<th[%s>]') do ths = ths + 1 end
+      local span = tonumber(body:match('colspan="(%d+)"%s+class="rm%-empty"'))
+      expect(ths > 0, t.name .. ' table has headers')
+      expect(span ~= nil, t.name .. ' table has an empty-state row')
+      expect(span == ths,
+        t.name .. ' table has ' .. tostring(ths) .. ' columns but its empty row '
+          .. 'spans ' .. tostring(span) .. ': the "nothing here yet" message '
+          .. 'stops covering the table the moment a column is added')
+    end
+  end
+
+  -- A GAP ON EVERY BOARD, which is what was asked for. Three tables, three
+  -- cells, and the qualifying one comes from a different place on purpose.
+  expect(html:find('gapLabel(row)', 1, true) ~= nil,
+    'the race table shows a gap to the leader')
+  expect(html:find('qualiGapLabel(row, $index)', 1, true) ~= nil,
+    'the qualifying table shows a gap too')
+  expect(html:find('intervalLabel(row)', 1, true) ~= nil,
+    'and the broadcast board adds the interval to the car ahead')
+
+  -- QUALIFYING'S GAP IS NOT THE RACE'S, and the split is the whole point. A
+  -- qualifying session is scored on the best LAP -- two drivers who set
+  -- identical times ten minutes apart are level -- so a delta off the session
+  -- clock would rank them by when they went out.
+  local qgap = js:match('%$scope%.qualiGapLabel = function %(row, index%)(.-)\n      };')
+  expect(qgap ~= nil, 'found qualiGapLabel')
+  expect(qgap ~= nil and qgap:find('qualiBest', 1, true) ~= nil,
+    'the qualifying gap is worked out from the best laps')
+  expect(qgap ~= nil and qgap:find('row.gap', 1, true) == nil,
+    'and never from the clock delta, which qualifying has no meaning for')
+  expect(server:find("local quali  = race.sessionKind == 'quali'", 1, true) ~= nil,
+    'the server declines to compute one for a qualifying session at all')
+
+  -- LAPPED IS NOT A NUMBER OF SECONDS. It is the one reading here that would
+  -- actively mislead: a split delta across a lap boundary is a real figure and
+  -- says nothing about a race those two cars are not having.
+  local gapFn = js:match('%$scope%.gapLabel = function %(row%)(.-)\n      };')
+  expect(gapFn ~= nil, 'found gapLabel')
+  expect(gapFn ~= nil and gapFn:find('lapsDown(row)', 1, true) ~= nil,
+    'the gap reads as laps once a driver is lapped')
+  local intFn = js:match('%$scope%.intervalLabel = function %(row%)(.-)\n      };')
+  expect(intFn ~= nil and intFn:find('currentLap', 1, true) ~= nil,
+    'and so does the interval, against the car directly ahead rather than the '
+      .. 'leader: a lapped driver is usually running right behind somebody on '
+      .. 'the lead lap, which is where a raw delta looks most like a real gap')
+
+  -- The panel formats and never computes. Both numbers arrive ready.
+  for _, field in ipairs({ 'gap', 'intv' }) do
+    expect(server:find("'" .. field .. "'", 1, true) ~= nil,
+      'the server puts ' .. field .. ' on the wire')
+  end
+  expect(js:find('row.gap - ', 1, true) == nil and js:find('- leader.gap', 1, true) == nil,
+    'the panel does no arithmetic on the race gap: the server measured it off '
+      .. 'the one clock both drivers are scored on, and a second opinion here '
+      .. 'is a second answer')
+end
+
+-- ---------------------------------------------------------------------------
+-- The status bars are two rows, and the flag ends the first one
+-- ---------------------------------------------------------------------------
+-- All three bars wrap. What they did not do was wrap in the SAME PLACE twice
+-- running: every readout on the run changes width as it changes value -- a lap
+-- clock crossing 0:09.9 to 0:10.0, a fastest-lap holder called `guest5961302`
+-- replacing one called `Ana` -- so the controls after them moved while you were
+-- reaching for one, and how many ended up on the second row depended on the
+-- width of a number.
+--
+-- The break is placed after the FLAG in all three, which is not a new rule: the
+-- flag was already written as the end of the status run and this file already
+-- pins that ("the flag ends the run in both"). Information above, anything you
+-- press below.
+do
+  local bars = {
+    { name = 'admin header', chunk = headerChunk },
+    { name = 'driver bar',   chunk = barChunk },
+  }
+  for _, b in ipairs(bars) do
+    expect(b.chunk ~= nil, 'isolated the ' .. b.name)
+    if b.chunk then
+      local after = b.chunk:match('rm%-flag rm%-flag%-{{ driverFlag }}(.*)$')
+      expect(after ~= nil, b.name .. ' still shows the driver flag')
+      expect(after ~= nil and after:find('rm-bar-break', 1, true) ~= nil,
+        b.name .. ' has no row break after its flag, so its controls wrap '
+          .. 'wherever the numbers above them happen to end')
+      -- Nothing that is pressed may sit ABOVE the break, or it lands back in
+      -- the run it was moved out of.
+      local before = b.chunk:match('^(.-)rm%-bar%-break')
+      expect(before ~= nil and before:find('<button', 1, true) == nil,
+        b.name .. ' has a button above the row break: the first row is the '
+          .. 'status run and nothing else')
+    end
+  end
+
+  -- The broadcast bar keeps the same rule with its own flag, which is a session
+  -- flag rather than a driver one.
+  local bc = html:match('<div class="rm%-bc%-bar">(.-)</div>')
+  expect(bc ~= nil, 'isolated the broadcast bar')
+  if bc then
+    local after = bc:match('rm%-flag rm%-flag%-{{ flag }}(.*)$')
+    expect(after ~= nil and after:find('rm-bar-break', 1, true) ~= nil,
+      'the broadcast bar breaks after its flag too')
+    -- The fastest-lap holder is a name of any length, so it must sit BEFORE the
+    -- flag: leaving it after would put a variable-width field last and hand the
+    -- jitter straight back.
+    local flagAt, flAt = bc:find('rm%-flag rm%-flag%-{{ flag }}'), bc:find('rm%-bc%-fastest')
+    expect(flAt ~= nil and flagAt ~= nil and flAt < flagAt,
+      'the fastest lap sits before the flag, so the widest, most variable field '
+        .. 'is not the one deciding where the row ends')
+  end
+
+  -- COLLAPSING STANDS THE BREAK DOWN. Collapsing exists to leave one line
+  -- carrying the phase, the clock and the way back; a forced second row there
+  -- defeats the control that got them there.
+  expect(html:find('.rm-collapsed .rm-bar-break { display: none; }', 1, true) ~= nil,
+    'a collapsed HUD does not force its controls onto a second row')
+  -- ...and the break only means anything on a bar that wraps.
+  for _, sel in ipairs({ 'rm%-header', 'rm%-driverbar', 'rm%-bc%-bar' }) do
+    local rule = html:match(NL .. '  %.' .. sel .. ' {(.-)}')
+    expect(rule ~= nil and rule:find('flex-wrap: wrap', 1, true) ~= nil,
+      '.' .. sel:gsub('%%', '') .. ' does not wrap, so the row break above it is '
+        .. 'an invisible no-op that silently puts the controls back on the info row')
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- One slider fades everything with a background
+-- ---------------------------------------------------------------------------
+-- The panel fill was the only thing driven by it for a while, so the header's
+-- orange band and its rule kept their own fixed alpha: fade the HUD all the way
+-- out and a solid orange stripe stayed painted across the middle of the view.
+-- Anything with a background of its own is driven from the one watcher, or
+-- "opacity" means "opacity, except that bit".
+do
+  local watcher = js:match("%$scope%.%$watch%('lbUi%.opacity'.-\n      }%);")
+  expect(watcher ~= nil, 'found the opacity watcher')
+  for _, prop in ipairs({ '--rm-panel-bg', '--rm-accent-bg', '--rm-accent-line' }) do
+    expect(watcher ~= nil and watcher:find(prop, 1, true) ~= nil,
+      'the opacity slider does not drive ' .. prop)
+  end
+  -- The header is what those two exist for.
+  local head = html:match(NL .. '  %.rm%-header {(.-)}')
+  expect(head ~= nil and head:find('var(--rm-accent-bg', 1, true) ~= nil,
+    'the header tint is hardcoded again, so it survives a fade to nothing')
+  expect(head ~= nil and head:find('var(--rm-accent-line', 1, true) ~= nil,
+    'and so does its bottom rule')
+  -- The driver bar mixed its own fill at 0.8x the slider, so it sat visibly
+  -- lighter than the board directly beneath it at every setting but zero.
+  expect(html:find('lbUi.opacity * 0.8', 1, true) == nil,
+    'the driver bar no longer mixes its own opacity: one slider, one value')
+  local dbar = html:match(NL .. '  %.rm%-driverbar {(.-)}')
+  expect(dbar ~= nil and dbar:find('var(--rm-panel-bg', 1, true) ~= nil,
+    'it takes the same fill every other surface here does')
+end
+
+if fails == 0 then
+  print('ui_bindings_test: ' .. checks .. ' checks, 0 failures ('
+    .. #models .. ' ng-model bindings)')
+else
+  print('ui_bindings_test: ' .. fails .. ' FAILURES of ' .. checks .. ' checks')
+  os.exit(1)
+end

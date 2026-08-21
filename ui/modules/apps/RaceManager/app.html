@@ -1,5 +1,5 @@
-<div class="rm-root" ng-class="{'rm-minimal': minimalMode(), 'rm-admin': isAdmin, 'rm-collapsed': hudCollapsed}"
-     ng-style="!minimalMode() && hudStyle()">
+<div class="rm-root" ng-class="{'rm-minimal': minimalMode(), 'rm-admin': isAdmin, 'rm-collapsed': hudCollapsed, 'rm-broadcast': broadcastMode()}"
+     ng-style="!minimalMode() && !broadcastMode() && hudStyle()">
   <!-- NOTHING may sit outside this root div - not even a comment. The directive
        is `replace: true`, and the Angular 1.5.8 the game ships counts a sibling
        comment node as a second root, so the whole template dies with
@@ -9,7 +9,10 @@
 
        Outside minimal mode this root is the panel that gets sized and faded; in
        minimal mode the leaderboard is the HUD and carries those styles itself
-       (see .rm-table-wrap below), so the root stays out of the way. -->
+       (see .rm-table-wrap below), so the root stays out of the way. Broadcast
+       mode is the same arrangement with a different board: an admin's stored HUD
+       size has nothing to do with how big a stream graphic should be, and it
+       would squeeze the board inside a box it never asked for. -->
   <!-- ================= Header (hidden in minimal driver mode) ============= -->
   <div class="rm-header" ng-if="!minimalMode()">
     <span class="rm-title">RACE MANAGER</span>
@@ -79,6 +82,15 @@
           title="You are waiting on the drivers still out on track">
       WAITING ON <b>{{ stillRacing() }}</b>
     </span>
+    <!-- ROW BREAK: THE FLAG ENDS THE FIRST ROW. That is not a new rule --
+         the status run above was written to it, and the flag's own note a
+         few lines up says so in as many words. Everything after this point
+         is something you press.
+
+         WAITING ON n STAYS WITH THE FLAG. It is the chequered flag's own
+         caption rather than a field of its own, and splitting the two
+         across rows strands half a sentence next to a button. -->
+    <span class="rm-bar-break"></span>
 
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
       START P{{ gridSlot }}<b ng-if="gridFrozen"> HOLD</b>
@@ -91,6 +103,11 @@
          tab bar is directly below, shows which panel is active and carries the
          checkpoint count, so a second control for the same action only cost
          width in a header that is short of it. -->
+    <!-- BROADCAST. Offered to anyone out of the field, admin or not: the
+         person running the race night is often the person streaming it, and
+         spectating is an entry decision that has nothing to do with rights. -->
+    <button class="rm-btn rm-btn-tab" ng-if="spectatorView()" ng-click="toggleBroadcast()"
+            title="Switch to the broadcast board: the whole field, the drivers who are out, and click a name to put the camera on them">&#x1F4FA; Broadcast</button>
     <button class="rm-btn rm-btn-tab" ng-if="isAdmin" ng-click="logout()" title="Log out and return to spectator view">Log out</button>
     <!-- Spectators: a way back to the login screen at any time -->
     <button class="rm-btn rm-btn-tab rm-btn-login-tab" ng-if="!isAdmin && !showLogin" ng-click="openLogin()" title="Log in as an admin">🔒 Login</button>
@@ -403,7 +420,7 @@
   </div>
 
   <!-- ================= Admin tab body (scrolls) ========================== -->
-  <div class="rm-admin-body" ng-if="isAdmin">
+  <div class="rm-admin-body" ng-if="isAdmin && !broadcastMode()">
 
   <!-- ================= Race settings ================= -->
   <div class="rm-settings" ng-if="isMode('race') && isAdminTab('race')">
@@ -1776,6 +1793,19 @@
          and scoring systems never see these. -->
     <div class="rm-alias">
       <div class="rm-layouts-title">Display Names</div>
+      <!-- SUFFIX, NOT REPLACEMENT, and the label says so rather than promising a
+           rename this cannot do. BeamMP has no server-side way to rename anyone
+           -- the guest identity comes from their auth -- so what this switches on
+           is its own setPlayerNickSuffix, which appends text to the tag and
+           touches nothing else about it: no fade, no colour, no occlusion. -->
+      <div class="rm-alias-row rm-alias-tagrow">
+        <button class="rm-btn rm-btn-mini rm-btn-toggle"
+                ng-class="{'rm-btn-toggle-on': nametags}"
+                ng-click="toggleNametags()"
+                title="Append each driver's display name to their BeamMP nametag. It is added after their guest name, not instead of it: BeamMP owns the nametag and this only adds text to it, leaving fade, colour and everything else alone. Only players running Race Manager see it.">{{ nametags ? 'On' : 'Off' }}</button>
+        <span class="rm-alias-real">Show display names on nametags</span>
+        <span class="rm-alias-current" ng-if="nametags">guest1234 <b>(Name)</b></span>
+      </div>
       <div class="rm-alias-row" ng-repeat="row in drivers track by row.id">
         <span class="rm-alias-real" title="Real BeamMP name for this session">{{ row.name }}</span>
         <input type="text" class="rm-alias-input" maxlength="20"
@@ -1863,7 +1893,10 @@
   <!-- ================= Driver bar (minimal mode only) ===================== -->
   <!-- The only chrome a non-admin keeps during a live session: leaderboard
        opacity, a size reset, and a way back to the login prompt. -->
-  <div class="rm-driverbar" ng-if="minimalMode()" ng-style="{'background-color': 'rgba(15, 17, 22, ' + (lbUi.opacity * 0.8) + ')'}">
+  <!-- Fill comes from --rm-panel-bg like every other surface here. It used to
+       be mixed inline at 0.8x the slider, so the bar sat visibly lighter than
+       the board directly beneath it at every setting but zero. -->
+  <div class="rm-driverbar" ng-if="minimalMode()">
     <!-- THE SAME STATUS RUN AS THE ADMIN HEADER, IN THE SAME ORDER:
          phase, CP, next, race clock, lap, line, joker, resets, flag.
 
@@ -1916,6 +1949,15 @@
           title="You are waiting on the drivers still out on track">
       WAITING ON <b>{{ stillRacing() }}</b>
     </span>
+    <!-- ROW BREAK: THE FLAG ENDS THE FIRST ROW. That is not a new rule --
+         the status run above was written to it, and the flag's own note a
+         few lines up says so in as many words. Everything after this point
+         is something you press.
+
+         WAITING ON n STAYS WITH THE FLAG. It is the chequered flag's own
+         caption rather than a field of its own, and splitting the two
+         across rows strands half a sentence next to a button. -->
+    <span class="rm-bar-break"></span>
     <span class="rm-driverbar-label rm-entry-out" ng-if="spectating">👁 SPECTATING</span>
     <!-- THEIR OWN PARTICIPATION, reachable from the only thing they can see.
          Both of these used to live in the Race Entry row, which is hidden for a
@@ -1946,6 +1988,9 @@
     </label>
     <button class="rm-driverbar-btn" ng-click="resetLeaderboardSize()" ng-if="!hudCollapsed"
             title="Reset the leaderboard size">⤢</button>
+    <button class="rm-driverbar-btn" ng-if="spectatorView() && !hudCollapsed"
+            ng-click="toggleBroadcast()"
+            title="Switch to the broadcast board: the whole field, the drivers who are out, and click a name to put the camera on them">&#x1F4FA;</button>
     <button class="rm-driverbar-btn" ng-click="openLogin()" ng-if="!hudCollapsed"
             title="Admin login">🔒</button>
     <!-- In minimal mode THIS bar is the whole HUD, so collapsing drops the
@@ -1955,11 +2000,262 @@
             title="{{ hudCollapsed ? 'Show the leaderboard' : 'Hide the leaderboard' }}">{{ hudCollapsed ? '▼' : '▲' }}</button>
   </div>
 
+  <!-- ================= Broadcast board (spectators) ======================
+       The whole app for somebody watching rather than driving. It is a SIBLING
+       of the three boards below and not a fourth view of them, because it
+       answers different questions: the field at once, who is out and why, the
+       championship, and a camera you steer by clicking a name.
+
+       It renders only while this client is out of the field, and it renders
+       ALONE - see the .rm-broadcast sweep in the stylesheet, which folds every
+       other panel away in one rule rather than a `&& !broadcastMode()` bolted
+       onto forty ng-ifs.
+
+       It is NOT a .rm-table-wrap, deliberately. Borrowing that class would have
+       given it the resize grip and the opacity for free, but it would also have
+       given it the LEADERBOARD's stored size -- and a stream graphic and a
+       driver's leaderboard are not the same thing to measure. It has its own
+       entry in PANELS and its own pair of keys. -->
+  <div class="rm-broadcast-board" ng-if="broadcastMode()" ng-style="bcStyle()">
+    <!-- The status strip. Everything the collapsed header and the driver bar
+         would have carried, minus everything that is about ONE driver: a
+         broadcaster has no lap clock, no joker and no reset allowance. -->
+    <div class="rm-bc-bar">
+      <span class="rm-phase rm-bc-phase" ng-class="'rm-phase-' + phase"
+            ng-if="!derbyActive()">{{ phaseLabel() }}</span>
+      <span class="rm-phase rm-bc-phase rm-phase-racing" ng-if="derbyActive()">{{ derbyPhaseLabel() }}</span>
+      <span class="rm-bc-stat" ng-if="broadcastLap()">LAP <b>{{ broadcastLap() }}</b></span>
+      <span class="rm-bc-stat" ng-if="!derbyActive() && (phase === 'racing' || phase === 'finished')">
+        <b>{{ formatRaceTime(raceTime) }}</b>
+      </span>
+      <!-- A DERBY OWNS THE STRIP WHILE ONE IS ON, and every readout above and
+           below honours that. Nothing stops an admin forming a derby up with a
+           qualifying session still open (RM_onDerbyFormUp does not refuse one),
+           so the two clocks really can be live at the same moment -- and the one
+           the board is showing a field for is the one worth reading. -->
+      <span class="rm-bc-stat rm-bc-derby" ng-if="derbyActive()">
+        DERBY <b>{{ formatDerbyTime(derby.time) }}</b>
+      </span>
+      <!-- Qualifying runs to a clock rather than a distance, so it gets the
+           clock the field is actually racing, and FINAL LAP when it expires -
+           the session is still running under it and the board must not read as
+           a session that has ended. -->
+      <span class="rm-bc-stat" ng-if="!derbyActive() && phase === 'qualifying' && qualiLeft !== null && !finalLap">
+        Q <b>{{ qualiClock() }}</b>
+      </span>
+      <span class="rm-bc-stat rm-bc-final" ng-if="!derbyActive() && phase === 'qualifying' && finalLap">FINAL LAP</span>
+      <!-- THE SESSION's flag, not this client's. driverFlag is a fact about one
+           driver's own lap (a white flag is theirs alone) and a spectator has no
+           lap for it to be about; what a broadcaster needs is the condition the
+           field is running under. -->
+      <span class="rm-bc-stat rm-bc-fastest" ng-if="bcFastest"
+            title="Fastest lap of the session">
+        FL <b>{{ bcFastest.name }}</b> {{ formatLap(bcFastest.time) }}
+      </span>
+      <span class="rm-flag rm-flag-{{ flag }}" ng-if="flag !== 'green'"
+            title="{{ flag === 'red' ? 'Red flag: the session is stopped' : 'Yellow flag: caution' }}">&#x2691;&#xFE0E;</span>
+      <!-- ROW BREAK: the flag ends the first row here too. It sat mid-run
+           until the other two bars settled on this rule; the fastest-lap
+           holder is a name of any length and had been pushing it around. -->
+      <span class="rm-bar-break"></span>
+      <span class="rm-bc-spacer"></span>
+      <!-- Race / Points. Only offered when there is a cup running: a toggle to
+           an empty standings table is a control that looks broken. -->
+      <span class="rm-bc-views" ng-if="cup.enabled">
+        <button class="rm-driverbar-btn" ng-class="{'rm-flag-on': broadcastView('race')}"
+                ng-click="setBroadcastView('race')" title="Live race order">Race</button>
+        <button class="rm-driverbar-btn" ng-class="{'rm-flag-on': broadcastView('points')}"
+                ng-click="setBroadcastView('points')" title="Cup standings">Points</button>
+      </span>
+      <label class="rm-driverbar-op" title="Board background opacity">
+        <span>&#x25D1;</span>
+        <input type="range" min="0" max="1" step="0.05" ng-model="lbUi.opacity" ng-change="applyOpacity()">
+      </label>
+      <button class="rm-driverbar-btn" ng-click="resetBroadcastSize()"
+              title="Reset the board size">&#x2922;</button>
+      <!-- The way out. The board hides every other panel, so a control that
+           brings them back has to live on it - the same rule the collapse
+           toggle follows in the header and the driver bar. -->
+      <button class="rm-driverbar-btn" ng-click="toggleBroadcast()"
+              title="Leave the broadcast board">&#x2715;</button>
+    </div>
+
+    <!-- ---------------- Race view ----------------
+         NOT DURING A DERBY. `drivers` is the racing state machine's field and a
+         derby never touches it, so what it holds while an arena is running is
+         the LAST RACE - the same trap the admin's board fell into once, showing
+         a finished race's results under the derby panel. -->
+    <table class="rm-table rm-bc-table" ng-if="broadcastView('race') && !derbyActive()">
+      <thead>
+        <tr>
+          <th class="rm-bc-col-pos" title="Live position, and places gained or lost since the grid">Pos</th>
+          <th class="rm-bc-col-name">Driver</th>
+          <th class="rm-bc-col-lap">Lap</th>
+          <!-- The two a commentator actually says out loud. Both are measured at
+               the driver's own last checkpoint, which is the last point they and
+               the car they are being compared against have both reached. -->
+          <th class="rm-bc-col-time" title="Time behind the leader at this driver's last checkpoint">Gap</th>
+          <th class="rm-bc-col-time" title="Time behind the car directly ahead">Int</th>
+          <th class="rm-bc-col-time">Best</th>
+          <th class="rm-bc-col-note"></th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- The server's order, rendered as it arrived: assignPositions stamps
+             `position` while walking the sorted array, so the array IS the
+             running order and re-sorting it here would reproduce work already
+             done, three times a second, on a machine that is also encoding a
+             stream. `track by row.id` moves rows on an overtake instead of
+             rebuilding them. -->
+        <tr ng-repeat="row in bcRunning track by row.id"
+            ng-class="{'rm-row-finished': row.status === 'finished', 'rm-bc-watched': isWatching(row)}">
+          <td class="rm-bc-col-pos">
+            <span class="rm-pos" ng-class="{'rm-pos-leader': row.position === 1 && row.status === 'racing'}">{{ positionLabel(row) }}</span>
+            <span class="rm-bc-delta" ng-class="gridDeltaClass(row)"
+                  ng-if="gridDelta(row)" title="Places gained or lost since the grid">{{ gridDelta(row) }}</span>
+          </td>
+          <!-- CLICK A NAME, GET THE CAMERA. The row id is the BeamMP player id,
+               which is the only handle for a driver that means the same thing on
+               every client; the client Lua turns it into a local car. -->
+          <td class="rm-bc-col-name rm-bc-pick" ng-click="watchDriver(row)"
+              title="Watch {{ driverName(row) }}">
+            <span class="rm-bc-eye" ng-if="isWatching(row)">&#x1F441;</span>{{ driverName(row) }}
+          </td>
+          <td class="rm-bc-col-lap">{{ lapLabel(row) }}</td>
+          <td class="rm-bc-col-time rm-bc-gap" ng-class="{'rm-bc-lapped': lapsDown(row)}">{{ gapLabel(row) }}</td>
+          <td class="rm-bc-col-time rm-bc-int" ng-class="{'rm-bc-lapped': lapsDown(row)}">{{ intervalLabel(row) }}</td>
+          <td class="rm-bc-col-time" ng-class="{'rm-best-lap': row.id === bestLapPid}">{{ formatLap(row.raceBest || row.qualiBest) }}</td>
+          <td class="rm-bc-col-note">
+            <span class="rm-finished-flag" ng-if="row.status === 'finished'">&#x1F3C1;</span>{{ bcNote(row) }}
+          </td>
+        </tr>
+        <tr ng-if="!bcRunning.length">
+          <td colspan="7" class="rm-empty">Nobody in the field yet.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- ---------------- Out of the race ----------------
+         Its own block below the field rather than grey rows at the bottom of
+         it. A retirement is a story of its own on a broadcast, and the ruling
+         that caused it is the part worth reading - which is why this shows the
+         server's own reason text, the same string the results file records. -->
+    <div class="rm-bc-out" ng-if="broadcastView('race') && !derbyActive() && bcOut.length">
+      <div class="rm-bc-out-head">Out &middot; {{ bcOut.length }}</div>
+      <table class="rm-table rm-bc-table">
+        <tbody>
+          <tr ng-repeat="row in bcOut track by row.id"
+              ng-class="{'rm-row-dsq': row.status === 'dsq', 'rm-bc-watched': isWatching(row)}">
+            <td class="rm-bc-col-pos">
+              <span class="rm-bc-outtag" ng-class="{'rm-bc-dsq': row.status === 'dsq'}">{{ row.status === 'dsq' ? 'DSQ' : 'DNF' }}</span>
+            </td>
+            <!-- Still clickable: the car is where it stopped, ghosted, and the
+                 wreck is often the shot. -->
+            <td class="rm-bc-col-name rm-bc-pick" ng-click="watchDriver(row)"
+                title="Watch {{ driverName(row) }}">
+              <span class="rm-bc-eye" ng-if="isWatching(row)">&#x1F441;</span>{{ driverName(row) }}
+            </td>
+            <!-- The place they were RUNNING IN when they stopped, which the live
+                 order does not keep: a car that retires is sorted to the bottom
+                 on the very next broadcast. -->
+            <td class="rm-bc-col-lap" title="The place they were running in when they stopped">{{ row.heldPos ? 'P' + row.heldPos : '-' }}</td>
+            <td class="rm-bc-col-note" colspan="4">{{ outcomeLabel(row) }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Sitting the session out is not the same as being out of it, so they are
+         counted rather than listed: a board that put them among the runners
+         would be claiming a bigger field than the one on track. -->
+    <div class="rm-bc-foot" ng-if="broadcastView('race') && !derbyActive() && bcWatchers">
+      {{ bcWatchers }} spectating
+    </div>
+
+    <!-- ---------------- Derby view ----------------
+         A derby is a parallel game mode with its own field, its own clock and
+         its own way of going out, so it gets its own table rather than being
+         squeezed into the race one. Names click through exactly the same way:
+         a derby player row carries the same BeamMP id a driver row does, and
+         the wreck is most of the show. -->
+    <table class="rm-table rm-bc-table" ng-if="broadcastView('race') && derbyActive()">
+      <thead>
+        <tr>
+          <th class="rm-bc-col-pos">#</th>
+          <th class="rm-bc-col-name">Driver</th>
+          <th class="rm-bc-col-lap" ng-if="derbyLivesOn()" title="Lives left">Liv</th>
+          <th class="rm-bc-col-time">Out At</th>
+          <th class="rm-bc-col-note">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr ng-repeat="p in derby.players track by p.id"
+            ng-class="{'rm-derby-row-out': p.status === 'eliminated', 'rm-derby-row-winner': p.status === 'winner', 'rm-bc-watched': isWatching(p)}">
+          <td class="rm-bc-col-pos"><span class="rm-pos" ng-class="{'rm-pos-leader': p.status === 'winner'}">{{ $index + 1 }}</span></td>
+          <td class="rm-bc-col-name rm-bc-pick" ng-click="watchDriver(p)"
+              title="Watch {{ driverName(p) }}">
+            <span class="rm-bc-eye" ng-if="isWatching(p)">&#x1F441;</span>{{ driverName(p) }}
+          </td>
+          <td class="rm-bc-col-lap" ng-if="derbyLivesOn()">{{ p.status === 'eliminated' ? '-' : (p.lives == null ? '-' : p.lives) }}</td>
+          <td class="rm-bc-col-time">{{ p.status === 'eliminated' ? formatDerbyTime(p.elimTime) : '-' }}</td>
+          <td class="rm-bc-col-note">{{ derbyStatusLabel(p) }}</td>
+        </tr>
+        <tr ng-if="!derby.players.length">
+          <td colspan="5" class="rm-empty">No participants recorded.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- ---------------- Points view ----------------
+         Read-only, and it computes nothing: the server ranks the standings and
+         this renders the order it is sent. The same rule the admin's cup panel
+         follows, for the same reason - two places deciding who is leading is
+         two places that can disagree. -->
+    <div ng-if="broadcastView('points')">
+      <div class="rm-bc-cupname">
+        {{ cup.name || 'Cup' }}<span class="rm-bc-round" ng-if="cup.round"> &middot; after round {{ cup.round }}</span>
+      </div>
+      <table class="rm-table rm-bc-table">
+        <thead>
+          <tr>
+            <th class="rm-bc-col-pos">Pos</th>
+            <th class="rm-bc-col-name">Driver</th>
+            <th class="rm-bc-col-lap" title="Rounds scored">Rnd</th>
+            <th class="rm-bc-col-lap" title="Wins">Win</th>
+            <th class="rm-bc-col-time">Points</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr ng-repeat="s in cup.standings track by s.entryId">
+            <td class="rm-bc-col-pos">
+              <span class="rm-pos" ng-class="{'rm-pos-leader': s.pos === 1}">P{{ s.pos }}</span>
+            </td>
+            <!-- A standings row is a ROSTER identity, so it only has a car while
+                 the driver it is bound to is connected. Unbound entries are
+                 plain text rather than a click that would do nothing. -->
+            <td class="rm-bc-col-name" ng-class="{'rm-bc-pick': canWatchEntry(s)}"
+                ng-click="watchEntry(s)"
+                title="{{ canWatchEntry(s) ? 'Watch ' + s.name : s.name + ' is not on the server' }}">{{ s.name }}</td>
+            <td class="rm-bc-col-lap">{{ s.rounds || 0 }}</td>
+            <td class="rm-bc-col-lap">{{ s.wins || 0 }}</td>
+            <td class="rm-bc-col-time rm-bc-points">{{ s.total }}</td>
+          </tr>
+          <tr ng-if="!cup.standings.length">
+            <td colspan="5" class="rm-empty">No rounds scored yet.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="rm-lb-grip" ng-mousedown="startBroadcastResize($event)"
+         title="Drag to resize the board"></div>
+  </div>
+
   <!-- ================= Derby standings ===================================
        Shown to a driver from form-up onward, and to an admin for as long as
        they are in Derby mode - so it is the board behind the Derby Editor as
        well, and there is exactly one copy of it in the app. -->
-  <div class="rm-table-wrap" ng-if="derbyBoardOnly()" ng-style="minimalMode() && lbStyle()">
+  <div class="rm-table-wrap" ng-if="derbyBoardOnly() && !broadcastMode()" ng-style="minimalMode() && lbStyle()">
     <table class="rm-table" ng-if="derby.players.length">
       <thead>
         <tr>
@@ -2000,7 +2296,7 @@
   </div>
 
   <!-- ================= Qualifying table ================= -->
-  <div class="rm-table-wrap" ng-if="isQualiView() && !derbyBoardOnly()" ng-style="minimalMode() && lbStyle()">
+  <div class="rm-table-wrap" ng-if="isQualiView() && !derbyBoardOnly() && !broadcastMode()" ng-style="minimalMode() && lbStyle()">
     <table class="rm-table">
       <thead>
         <tr>
@@ -2012,6 +2308,11 @@
               title="{{ qualiOrderIsGrid() ? 'Provisional grid: what Generate Grid will use' : 'Qualifying position. The grid is filled by ' + gridModeLabel() + ', so it will differ.' }}">{{ qualiOrderIsGrid() ? 'Grid' : 'Pos' }}</th>
           <th class="rm-col-name">Driver</th>
           <th class="rm-col-time">Best Lap</th>
+          <!-- QUALIFYING'S GAP IS A LAP, NOT A CLOCK. The session is scored on
+               the best lap, so two drivers who set identical times ten minutes
+               apart are level; the server sends no clock delta for a qualifying
+               session at all and this is worked out from the two best laps. -->
+          <th class="rm-col-time" title="Behind the fastest lap of the session">Gap</th>
           <th class="rm-col-led" title="Timed qualifying laps completed. The out lap is not one of them.">Laps</th>
           <th class="rm-col-status">Status</th>
         </tr>
@@ -2033,6 +2334,7 @@
           <td class="rm-col-time" ng-if="!showOutLap(row)"
               ng-class="{'rm-best-lap': row.id === bestLapPid && row.qualiBest}"
               title="{{ row.id === bestLapPid && row.qualiBest ? 'Fastest lap of the session' : '' }}">{{ formatLap(row.qualiBest) }}</td>
+          <td class="rm-col-time rm-bc-gap">{{ qualiGapLabel(row, $index) }}</td>
           <td class="rm-col-led">{{ row.qualiLaps || 0 }}{{ qualiLapLimit > 0 ? '/' + qualiLapLimit : '' }}</td>
           <td class="rm-col-status">
             <span class="rm-light" ng-class="'rm-light-' + row.status"></span>
@@ -2040,7 +2342,7 @@
           </td>
         </tr>
         <tr ng-if="!drivers.length">
-          <td colspan="5" class="rm-empty">
+          <td colspan="6" class="rm-empty">
             No drivers on track yet: lap times appear on the <b>second</b> crossing of the
             start/finish gate. The first is the out lap: it starts from a standing grid, so
             it is not timed and does not count.
@@ -2053,7 +2355,7 @@
   </div>
 
   <!-- ================= Race table ================= -->
-  <div class="rm-table-wrap" ng-if="!isQualiView() && !derbyBoardOnly()" ng-style="minimalMode() && lbStyle()">
+  <div class="rm-table-wrap" ng-if="!isQualiView() && !derbyBoardOnly() && !broadcastMode()" ng-style="minimalMode() && lbStyle()">
     <table class="rm-table">
       <thead>
         <tr>
@@ -2062,6 +2364,12 @@
           <th class="rm-col-name">Driver</th>
           <th class="rm-col-lap">Lap</th>
           <th class="rm-col-time">Best Lap</th>
+          <!-- Time behind the leader, measured at this driver's last checkpoint
+               -- the last point the two of them have both actually reached. It
+               reads "+1 LAP" rather than a number of seconds once a driver is
+               lapped, because seconds that exceed a lap time are the one figure
+               here that would mislead. -->
+          <th class="rm-col-time" title="Time behind the leader at this driver's last checkpoint">Gap</th>
           <th class="rm-col-led">Led</th>
           <th class="rm-col-joker" ng-if="jokerEnabled" title="Joker route: the lap it was taken on">Joker</th>
           <th class="rm-col-reset" ng-if="resetsLimited()" title="Vehicle resets used / allowed, plus any attempts blocked after the allowance ran out">Rst</th>
@@ -2100,6 +2408,7 @@
                row, evaluated by the same digest that already renders the cell. -->
           <td class="rm-col-time" ng-class="{'rm-best-lap': row.id === bestLapPid && row.raceBest}"
               title="{{ row.id === bestLapPid && row.raceBest ? 'Fastest lap of the session' : '' }}">{{ formatLap(row.raceBest) }}</td>
+          <td class="rm-col-time rm-bc-gap" ng-class="{'rm-bc-lapped': lapsDown(row)}">{{ gapLabel(row) }}</td>
           <td class="rm-col-led">{{ row.lapsLed || 0 }}</td>
           <!-- NO "Line" COLUMN. A branch gate is another way through a checkpoint
                rather than a route a driver is on, so there is nothing to report:
@@ -2119,7 +2428,7 @@
           </td>
         </tr>
         <tr ng-if="!drivers.length">
-          <td colspan="9" class="rm-empty">
+          <td colspan="10" class="rm-empty">
             No drivers yet: join a BeamMP server running the RaceManager plugin, then press
             <b>Start Quali</b> (or <b>Generate Grid</b> to go straight to a race),
             followed by <b>Start Countdown</b>.
@@ -2164,8 +2473,11 @@
     align-items: center;
     gap: 10px;
     padding: 6px 10px;
-    background: rgba(255, 102, 0, 0.15);
-    border-bottom: 1px solid rgba(255, 102, 0, 0.5);
+    /* Both driven by the opacity slider (the controller writes these onto the
+       root). Hardcoded, they were the one piece of chrome that ignored it: a HUD
+       faded to nothing still had a solid orange band across it. */
+    background: var(--rm-accent-bg, rgba(255, 102, 0, 0.15));
+    border-bottom: 1px solid var(--rm-accent-line, rgba(255, 102, 0, 0.5));
     /* The row carries badges, tab shortcuts and the HUD size/fade controls;
        once the panel is dragged narrow they wrap instead of pushing the last
        ones out of reach past the edge. */
@@ -2407,6 +2719,13 @@
 
   /* Display names (aliases) */
   .rm-alias { padding: 7px 10px; border-top: 1px dashed rgba(255, 255, 255, 0.12); }
+  /* The nametag switch is a rule about the whole list rather than one row,
+     so it is separated from the per-driver rows under it. */
+  .rm-alias-tagrow {
+    padding-bottom: 6px;
+    margin-bottom: 4px;
+    border-bottom: 1px dashed rgba(255, 255, 255, 0.12);
+  }
   .rm-alias-row {
     display: flex;
     align-items: center;
@@ -2922,10 +3241,20 @@
   .rm-btn-green   { border-color: rgba(52, 168, 83, 0.85); color: #7ee2a8; }
   /* The flag currently out. Marked rather than hidden, so the sequence is
      always visible and the current state is never a guess. */
-  .rm-btn.rm-flag-on { background: rgba(255, 255, 255, 0.16); font-weight: 700; }
+  /* BOTH BUTTON CLASSES. This was `.rm-btn.rm-flag-on` alone, and the driver
+     bar's buttons are `.rm-driverbar-btn` -- a different class that does not
+     contain the other -- so its Race / Spectate pair wore a state class nothing
+     answered to and showed no sign of which one was on. The board's Race /
+     Points toggle is the same pair of controls and would have inherited it. */
+  .rm-btn.rm-flag-on,
+  .rm-driverbar-btn.rm-flag-on { background: rgba(255, 255, 255, 0.16); font-weight: 700; }
 
   /* Tables */
-  .rm-table-wrap { flex: 1; overflow-y: auto; }
+  /* overflow-x TOO. It was overflow-y alone, so a wide row -- the race table
+     runs to ten columns with the joker and reset ones armed -- had its last
+     column clipped at the panel edge with no way to reach it. Scrolling to it
+     beats not having it. */
+  .rm-table-wrap { flex: 1; overflow: auto; }
   .rm-table { width: 100%; border-collapse: collapse; }
   .rm-table th {
     text-align: left;
@@ -3046,12 +3375,18 @@
      the button that brings the app back; a HUD that could hide its own restore
      control is not collapsed, it is gone.
 
+     THE BROADCAST BOARD IS ON THAT LIST FOR THE SAME REASON. In broadcast mode
+     it is the only chrome there is -- the sweep further down folds the header
+     and the driver bar away -- and the button that leaves the mode sits on it.
+     Two sweeps that each hide what the other kept leaves an app with nothing on
+     screen and no way back but the game's app editor.
+
      So do the ALERTS. A countdown, an out-of-bounds timer, a rejected vehicle, a
      regulation notice, a pit or ghost readout -- none of those are panels a
      driver went looking for, they are the app telling them something is
      happening to them right now. Collapsing hides what you browse, never what
      finds you. */
-  .rm-collapsed > *:not(.rm-header):not(.rm-driverbar):not(.rm-countdown):not(.rm-derby-warning):not(.rm-vehicle-error):not(.rm-notice):not(.rm-spectator-bar):not(.rm-pit):not(.rm-ghost) {
+  .rm-collapsed > *:not(.rm-header):not(.rm-driverbar):not(.rm-broadcast-board):not(.rm-countdown):not(.rm-derby-warning):not(.rm-vehicle-error):not(.rm-notice):not(.rm-spectator-bar):not(.rm-pit):not(.rm-ghost) {
     display: none !important;
   }
   /* The dragged HEIGHT belongs to the expanded panel: collapsed, the root is
@@ -3485,8 +3820,14 @@
   /* The one strip of chrome a driver keeps: opacity, size reset, login.
      .rm-driverbar-op is shared with the header copy of the same control. */
   .rm-driverbar {
+    background: var(--rm-panel-bg, rgba(15, 17, 22, 0.85));
     display: flex;
     align-items: center;
+    /* Stated here rather than only in .rm-minimal below: the row break above is
+       a flex-basis trick, and without wrapping it is an invisible no-op that
+       silently puts the controls back on the info row. */
+    flex-wrap: wrap;
+    row-gap: 2px;
     gap: 8px;
     align-self: flex-start;
     padding: 2px 6px;
@@ -3495,6 +3836,34 @@
     font-size: 10px;
     color: #bdc1c6;
   }
+  /* ---------------------------------------------------------------------
+     THE STATUS BARS ARE TWO ROWS ON PURPOSE
+     ---------------------------------------------------------------------
+     A zero-height item that fills the line, so everything after it lands on the
+     next one. All three bars already wrap; what they did not do is wrap in the
+     SAME PLACE twice running.
+
+     Every readout on the first row changes width as it changes value -- a lap
+     clock going from 0:09.9 to 0:10.0, a checkpoint counter reaching double
+     figures, a fastest-lap holder called `guest5961302` replacing one called
+     `Ana` -- and the controls sat immediately after them. So the buttons moved
+     while you were reaching for them, and how many of them ended up on the
+     second row depended on the width of a number. Splitting it deliberately
+     costs one row of height and puts every control in the same place forever.
+
+     Information above the break, anything you press below it. That is the whole
+     rule, and it is why the break sits where it does in each of the three bars.
+
+     NOT WHEN COLLAPSED. Collapsing exists to leave a driver ONE line carrying
+     the phase, the clock and the way back; a forced second row there would
+     defeat the point of the control that got them there. */
+  .rm-bar-break {
+    flex-basis: 100%;
+    width: 100%;
+    height: 0;
+    margin: 0;
+  }
+  .rm-collapsed .rm-bar-break { display: none; }
   .rm-driverbar-label { letter-spacing: 0.5px; }
   .rm-driverbar-label b { color: #e8eaed; }
   .rm-driverbar-spacer { flex: 1; min-width: 10px; }
@@ -3513,6 +3882,158 @@
     cursor: pointer;
   }
   .rm-driverbar-btn:hover { background: rgba(255, 255, 255, 0.15); }
+
+  /* ============ Module 5: the broadcast board ============================
+     ONE RULE FOLDS THE APP AWAY, exactly like the collapse above and for the
+     same reason: every panel here is a direct child of .rm-root, so a
+     `&& !broadcastMode()` bolted onto forty ng-ifs is the version that goes
+     wrong - the fortieth gets missed, or the forty-first is added next year,
+     and one panel hangs on screen over a live stream.
+
+     NOTHING SURVIVES IT, and that is the difference from a collapse. A collapse
+     keeps the alerts because they are the app telling a DRIVER something is
+     happening to them - a countdown, an out-of-bounds timer, a rejected
+     vehicle. A broadcaster is not in the session, so every one of those belongs
+     to somebody else and would go out over the stream. The board carries the
+     phase, the clock, the flag and the fastest lap itself, which is the whole
+     of what is left worth keeping. */
+  .rm-broadcast > *:not(.rm-broadcast-board) { display: none !important; }
+  /* Same as minimal mode: the root stops painting itself so only the board's
+     own opacity-controlled panel sits over the picture. */
+  .rm-broadcast {
+    background: transparent !important;
+    overflow: visible;
+  }
+  .rm-broadcast-board {
+    font-size: 11px;
+    /* The board is the app here, so it takes its own size rather than the
+       leftover height a leaderboard gets under a stack of panels. */
+    flex: none;
+    align-self: flex-start;
+    position: relative;
+    /* Wide enough for the status bar to land in two lines rather than three.
+       Undragged, the board is as wide as its widest child, and the points table
+       is narrow enough to fold the bar into a stack of one control per row. */
+    min-width: 280px;
+    max-width: 100%;
+    overflow: auto;
+    box-sizing: border-box;
+    /* Clear space under the last row for the resize grip. Without it the grip
+       is drawn straight over the bottom-right cell, which in the points view is
+       the championship leader's points total. */
+    padding-bottom: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 4px;
+    resize: both;
+  }
+  .rm-bc-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    row-gap: 2px;
+    padding: 3px 8px;
+    font-size: 10px;
+    color: #bdc1c6;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+    /* Follows the opacity slider, like the sticky table header: a fixed fill
+       would stay as a solid strip across an otherwise faded-out board. */
+    background: var(--rm-panel-bg, rgba(15, 17, 22, 0.95));
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+  .rm-bc-phase { font-size: 9px; }
+  .rm-bc-stat { letter-spacing: 0.5px; font-variant-numeric: tabular-nums; }
+  .rm-bc-stat b { color: #e8eaed; }
+  .rm-bc-final { color: #fdd663; font-weight: 700; }
+  /* Derby red, the same shade the header badge uses, so a glance at the strip
+     says which mode the board is reading without reading the words. */
+  .rm-bc-derby, .rm-bc-derby b { color: #f28b82; }
+  .rm-bc-fastest b { color: #fdd663; }
+  .rm-bc-spacer { flex: 1; min-width: 8px; }
+  .rm-bc-views { display: flex; gap: 3px; }
+  /* Shorter than the header and driver-bar copies of the same control: this bar
+     carries more than either of them and is the width of a board rather than a
+     windscreen. */
+  .rm-bc-bar .rm-driverbar-op input[type="range"] { width: 46px; }
+  /* NOT sticky, unlike every other table here. The status bar above is, and two
+     strips both pinned to top: 0 land on top of each other -- so the one that
+     must stay readable keeps the position and the column headers scroll with the
+     field they label. */
+  .rm-bc-table th {
+    position: static;
+    background: transparent;
+    font-size: 9px;
+    padding: 3px 8px;
+  }
+  .rm-bc-table td {
+    padding: 3px 8px;
+    border-bottom-color: rgba(255, 255, 255, 0.08);
+  }
+  .rm-bc-col-pos  { width: 62px; text-align: left; white-space: nowrap; }
+  .rm-bc-col-name { max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
+  .rm-bc-col-lap  { width: 46px; text-align: center; }
+  .rm-bc-col-time { width: 76px; text-align: right; }
+  .rm-bc-col-note { width: 96px; text-align: right; color: #9aa0a6; font-size: 10px; }
+  /* A name is a control here, so it has to look like one. Pointer and underline
+     on hover only: a permanently underlined column of names reads as a page of
+     links rather than a leaderboard. */
+  .rm-bc-pick { cursor: pointer; }
+  .rm-bc-pick:hover { color: #ffb380; text-decoration: underline; }
+  .rm-bc-eye { margin-right: 4px; font-size: 9px; vertical-align: middle; }
+  /* Which car the camera is actually on. Set from the client Lua's answer, not
+     from the click, so a row can never claim a camera that never got there. */
+  .rm-bc-watched td { background: rgba(255, 102, 0, 0.14); }
+  .rm-bc-delta {
+    font-size: 9px;
+    margin-left: 3px;
+    font-variant-numeric: tabular-nums;
+  }
+  /* The gap and the interval read as measurements rather than headlines: the
+     position and the driver are what the eye should land on first. */
+  .rm-bc-gap, .rm-bc-int {
+    font-variant-numeric: tabular-nums;
+    color: #bdc1c6;
+  }
+  .rm-bc-int { color: #9aa0a6; }
+  /* A lapped driver's "gap" is a count of laps, not a time. Coloured apart so it
+     is never read as a very large number of seconds. */
+  .rm-bc-lapped { color: #fdd663; font-weight: 600; }
+  .rm-bc-gain { color: #7ee2a8; }
+  .rm-bc-loss { color: #f28b82; }
+  .rm-bc-out { border-top: 1px solid rgba(255, 255, 255, 0.15); }
+  .rm-bc-out-head {
+    padding: 3px 8px;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: #f28b82;
+  }
+  .rm-bc-out .rm-bc-table td { opacity: 0.75; }
+  .rm-bc-outtag {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: #f28b82;
+  }
+  .rm-bc-dsq { color: #fdd663; }
+  .rm-bc-foot {
+    padding: 3px 8px;
+    font-size: 9px;
+    color: #9aa0a6;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .rm-bc-cupname {
+    padding: 4px 8px 2px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    color: #e8eaed;
+  }
+  .rm-bc-round { color: #9aa0a6; font-weight: 400; }
+  .rm-bc-points { font-weight: 700; color: #e8eaed; }
 
   /* ===================== DEMO DERBY (isolated module) ===================== */
   .rm-btn-tab-derby { margin-left: auto; }

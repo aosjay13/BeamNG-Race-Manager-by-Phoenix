@@ -81,7 +81,10 @@ commands = {
   isFreeCamera  = function () return freeCam end,
   setGameCamera = function () freeCam = false end,
 }
-core_camera = { setByName = function () end }
+-- Recorded rather than discarded: the broadcast camera is the one place the mod
+-- sets a camera MODE, so which mode it asked for is a fact worth asserting.
+local cameraModes = {}
+core_camera = { setByName = function (_, name) cameraModes[#cameraModes + 1] = name end }
 core_input_actionFilter = {
   setGroup  = function () end,
   addAction = function (_, name, blocked) blockedGroups[name] = blocked end,
@@ -95,7 +98,12 @@ core_vehicleBridge = {
 vec3 = function (x, y, z) return { x = x, y = y, z = z } end
 quat = function (x, y, z, w) return { x = x, y = y, z = z, w = w } end
 log  = function () end
-guihooks = { trigger = function () end }
+-- The broadcast camera reports back on RaceManagerWatch, which is how the board
+-- knows which row to mark. Everything else on this channel is still discarded.
+local watchPushes = {}
+guihooks = { trigger = function (name, data)
+  if name == 'RaceManagerWatch' then watchPushes[#watchPushes + 1] = data end
+end }
 MPGameNetwork      = {}
 MPConfig           = { getPlayerServerID = function () return 1 end }
 TriggerServerEvent = function () end
@@ -338,6 +346,73 @@ check(#placements == 0,
     .. #placements .. ')')
 check(world[OWN_ID] ~= nil and world[OWN_ID].ghosted == false,
   'and the flag hands its collisions back')
+
+-- ---------------------------------------------------------------------------
+-- THE BROADCAST CAMERA: click a name, land on that car
+-- ---------------------------------------------------------------------------
+-- The board sends a BeamMP PLAYER id, never a vehicle id, because a vehicle id
+-- is a local scene-object id and means a different car on every machine. So the
+-- one thing worth pinning here is the resolution: pid in, the right local car
+-- out, and the camera actually moved to it.
+--
+-- IT IS ALSO THE ONE PLACE THE MOD SETS A CAMERA MODE. Everywhere else that is
+-- the driver's business and the tests above assert it is left alone. Here the
+-- view IS the request -- a broadcaster clicking a name is asking for a chase
+-- camera on that car, not for whatever seat they were last in -- so orbit is
+-- asserted rather than merely permitted.
+do
+  world[OWN_ID] = world[OWN_ID] or makeVehicle(OWN_ID)
+  world[A] = makeVehicle(A, 12)
+  world[B] = makeVehicle(B, 8)
+  -- MPVehicleGE's list is how a pid becomes a local car, and it is the reason
+  -- the board can name a driver at all. OWN_ID is deliberately NOT in it: a
+  -- build that only tracks remote vehicles is the case ownVehicle() exists for.
+  MPVehicleGE.getVehicles = function ()
+    return {
+      { ownerID = 21, gameVehicleID = A },
+      { ownerID = 22, gameVehicleID = B },
+    }
+  end
+
+  attached = world[OWN_ID]
+  cameraModes = {}
+  watchPushes = {}
+  check(RM.spectateDriver(21) == true, 'clicking a name switches to that driver s car')
+  check(attached ~= nil and attached:getID() == A,
+    'and it is the car that pid owns, not whichever one was nearest')
+  check(cameraModes[#cameraModes] == 'orbit',
+    'the camera goes to orbit: a broadcaster asked for a view, not a seat')
+  check(#watchPushes == 1 and watchPushes[1].pid == 21 and watchPushes[1].ok == true,
+    'and the board is told which car the camera actually landed on')
+
+  -- A second click moves it again. Nothing latches: the board is a camera
+  -- control, and a control that only works once is a bug report.
+  check(RM.spectateDriver(22) == true, 'a second click moves the camera again')
+  check(attached ~= nil and attached:getID() == B, 'to the second driver s car')
+
+  -- OUR OWN ROW GOES THROUGH ownVehicle(), not the pid list. A finisher
+  -- watching the race is a spectator with a car, and it is in the field like
+  -- anyone else's -- so their own name has to be clickable too.
+  check(RM.spectateDriver(1) == true, 'our own row resolves through ownVehicle')
+  check(attached ~= nil and attached:getID() == OWN_ID, 'and lands on our own car')
+
+  -- A pid with no car HERE is the ordinary case for somebody who has only just
+  -- joined. It must fail loudly enough for the board to un-mark the row, and
+  -- quietly enough to leave the camera where it was.
+  watchPushes = {}
+  local wasOn = attached
+  check(RM.spectateDriver(99) == false, 'a driver with no local car cannot be watched')
+  check(attached == wasOn, 'and the camera is left exactly where it was')
+  check(#watchPushes == 1 and watchPushes[1].ok == false,
+    'the board is told the switch failed, so it does not mark a row it never reached')
+
+  -- Garbage in changes nothing at all. The id crosses a bngApi.engineLua string
+  -- boundary to get here, so "it came from our own template" is not a guarantee.
+  watchPushes = {}
+  check(RM.spectateDriver(nil) == false, 'a nil pid is refused')
+  check(RM.spectateDriver('nonsense') == false, 'and so is a non-numeric one')
+  check(#watchPushes == 0, 'neither of which tells the board anything')
+end
 
 if fails == 0 then
   print('spectate_test: ' .. checks .. ' checks, 0 failures')

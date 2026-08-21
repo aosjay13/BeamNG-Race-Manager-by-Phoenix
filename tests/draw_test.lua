@@ -186,8 +186,8 @@ check(#quads == 0,
 check(#texts == 0,
   'and NO text on them: the poles say where the gate is and the colour says which '
     .. 'one is next, so "CP 3" at racing speed is one more thing painted across '
-    .. 'the racing line for nothing. Only the joker is labelled, because only its '
-    .. 'text changes what a driver should do')
+    .. 'the racing line for nothing. Not even the joker is labelled now -- its '
+    .. 'glyph carries the state faster than the sentence did')
 check(#cylinders == 4,
   'drawn as TWO POLES each and nothing else -- no top bar, because the thing '
     .. 'being marked is the line BETWEEN them at any height, and a bar reads as '
@@ -559,18 +559,22 @@ serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {},
 cylinders, texts, quads = {}, {}, {}
 frame()
 
--- The joker: a fill behind it so the words have something to sit on, and the
--- label ON the gate rather than floating over its top edge where it can end up
--- against the sky with nothing behind it.
+-- The joker: a fill behind it and a symbol on it, and NO WORDS. The label came
+-- off once the glyphs were doing the work -- "JOKER 1/2 (lap 1: closed)" is a
+-- sentence to read at racing speed, and the cross had already said it. Everything
+-- the label used to carry is asserted below, on the strokes instead.
 local jokerText
 for _, t in ipairs(texts) do
   if t.text:find('JOKER', 1, true) then jokerText = t end
 end
-check(jokerText ~= nil, 'the joker still says which gate it is and what state it is in')
-check(near(jokerText.at.z, 5),
-  'and the label sits at the middle of the gate face, not above its top edge '
-    .. '(got z=' .. tostring(jokerText.at.z) .. ')')
-check(#quads > 0, 'the joker gate is filled, faintly, so the text reads against it')
+check(jokerText == nil,
+  'a driver gets NO joker label: the glyph says shut, done or open at a glance, '
+    .. 'and the words were a second copy of that in a form nobody can read at '
+    .. 'speed (got "' .. tostring(jokerText and jokerText.text) .. '")')
+check(#texts == 0, 'and no gate text of any kind in the driver view')
+check(#quads > 0,
+  'the joker gate is still filled, faintly -- that is what the glyph reads '
+    .. 'against, and what marks this gate out from an ordinary checkpoint')
 
 -- Lap 1 with the joker enabled is the forbidden state, and a cross says so
 -- faster than a sentence read at racing speed.
@@ -614,14 +618,24 @@ check(openStrokes >= 3,
 check(faintest < 0.35,
   'and it is drawn faint enough to see the road through (alpha ' .. faintest .. ')')
 
+-- ...and NOT labelled at all, which is what this check has become.
+--
+-- It was `== 1`, and it was worth having: drawJokerLabel and drawPoleGate both
+-- drew the label at the same point, so the duplication was invisible until the
+-- driver label moved onto the gate face and the two separated. The label has now
+-- come off the driver view entirely -- the glyph asserted just above says shut,
+-- done or open faster than a sentence can be read at speed -- so there is one
+-- call site left that draws joker text at all, and it is the editor's.
+--
+-- Kept rather than deleted because the number is the point: 0 says the words are
+-- gone, 1 says they came back, 2 says they came back twice.
 local jokerLabels = 0
 for _, t in ipairs(texts) do
   if t.text:find('JOKER', 1, true) then jokerLabels = jokerLabels + 1 end
 end
-check(jokerLabels == 1,
-  'and it is labelled ONCE. drawJokerLabel and drawPoleGate both drew it, at '
-    .. 'the same point, so the duplication was invisible until the driver label '
-    .. 'moved onto the gate face and the two separated')
+check(jokerLabels == 0,
+  'a driver gets no joker label at all, from any draw path (got '
+    .. jokerLabels .. ')')
 
 -- The pit box: the footprint pit.inside actually tests, which is the gate's
 -- width across and PIT_DEPTH either way ALONG. Two poles used to show a plane

@@ -76,7 +76,10 @@ the editor and race controls stay hidden until you type the master password into
 the **Admin Login** bar; anyone who just wants to watch closes it with **✕**.
 To sit a session out entirely, press **👁 Spectate** in the Race Entry row: the
 field runs without you, your car stays put as a ghost, and you watch with
-BeamNG's own camera controls.
+BeamNG's own camera controls. Streaming the night? **📺 Broadcast** then swaps
+the app for a [spectator's board](docs/REFERENCE.md#broadcast-board-spectators):
+the whole field, who is out and why, cup standings, and click a name to put the
+camera on that car.
 
 **2. Build a track.** Press **Editor**, then drive the course. At each timing
 gate, drive through it *in the direction of travel* and press **+ Checkpoint
@@ -153,9 +156,12 @@ expect without touching any of it.
 | **[Rallycross joker laps](docs/REFERENCE.md#rallycross-joker-laps)** | A second gate route that must be taken exactly once per race. Lap 1 is closed, and the server disqualifies anyone who missed it or took it twice. |
 | **[Garage List](docs/REFERENCE.md#vehicle--setup-locking-the-garage-list)** | Lock the session to exact cars *and* exact tunes. Anything else is deleted on spawn and the driver is told why. |
 | **[Cup points](docs/REFERENCE.md#cup-points)** | Championship points across several events: races, derbies or both. Scoring presets, qualifying points and bonuses, and standings that survive a server restart. |
+| **[Nametag display names](docs/REFERENCE.md#display-names-on-the-beammp-nametag)** | Optionally append a driver's display name to the tag over their car. Uses BeamMP's own suffix API, so only the text changes -- fade, colour and occlusion stay BeamMP's. |
 | **[Display names](docs/REFERENCE.md#display-names)** | Give `Guest_4471` a readable name for the leaderboard and the results file. Saved on the server. |
+| **[Time behind](docs/REFERENCE.md#time-behind)** | Gap to the leader and interval to the car ahead on every board, measured off the shared clock at the last checkpoint both cars reached - not estimated from speed or distance. Reads `+1 LAP` once a driver is lapped. |
 | **[Live position tracking](docs/REFERENCE.md#live-position-tracking)** | True running order from laps, checkpoints cleared and distance to the next gate, not just the grid order. |
 | **[Demo Derby](docs/REFERENCE.md#demo-derby-parallel-game-mode)** | A separate last-man-standing mode with its own arena, timers and results, fully isolated from the racing. |
+| **[Broadcast board](docs/REFERENCE.md#broadcast-board-spectators)** | A spectator's board for streaming: the whole field, the drivers who are out and why, cup standings, and click a name to put the camera on that car in orbit. |
 | **[Driver UI](docs/REFERENCE.md#driver-ui-non-admins)** | Non-admins see just the leaderboard. Resizable, fades so it doesn't block the view, and collapses to a single status line. Alerts still get through. |
 
 ## Troubleshooting
