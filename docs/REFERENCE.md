@@ -1388,9 +1388,16 @@ stream. Everything worth keeping is on the board's own strip: phase, race clock
 or qualifying clock, the lap the leader is on, the session flag, and who holds
 the fastest lap. **✕** on that strip is the way back.
 
-The board **drops itself when you rejoin the field**, because you cannot
-broadcast from a car you are racing. The preference is remembered, so sitting
-out the next session brings it straight back.
+**The board does not outlive the spell that showed it.** Being out of the field
+is two things wearing one name: pressing **Spectate** is a decision that lasts,
+while taking the chequered flag makes you a spectator for the few seconds
+between your finish and the results. So the switch is cleared when you rejoin
+the field - press **📺** once per session you sit out, and merely finishing a
+race never puts you in the board.
+
+It *is* remembered while a spell lasts, which is why the setting is stored at
+all: BeamNG rebuilds this app whenever the HUD layer goes (opening the pause
+menu does it), and without that the board would vanish every time you paused.
 
 **Click a name, get the camera.** Clicking any driver switches to their car and
 puts you in **orbit**. That is the one place in the mod that sets a camera

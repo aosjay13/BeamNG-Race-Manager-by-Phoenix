@@ -1486,6 +1486,30 @@ do
   expect(board ~= nil and board:find('ng-click="watchDriver(p)"', 1, true) ~= nil,
     'a derby row is clickable too: the wreck is most of the show')
 
+  -- THE BOARD DOES NOT OUTLIVE THE SPELL THAT SHOWED IT.
+  --
+  -- Being out of the field is two different things wearing one name: pressing
+  -- Spectate is a decision that lasts, while taking the chequered flag makes you
+  -- a spectator for the few seconds between the finish and the results. The
+  -- preference is remembered across a teardown (it has to be -- BeamNG rebuilds
+  -- this directive whenever the HUD layer goes, and the pause menu does that),
+  -- and with both states feeding broadcastMode() that memory meant crossing the
+  -- line threw an admin into a stream graphic and back out again mid race night.
+  -- Reported from a live session.
+  -- Anchored on the tail of the watch expression rather than the whole of it:
+  -- the prefix is a function literal and easy to get subtly wrong in a pattern.
+  local spell = js:match('spectatorView%(%); },(.-)' .. NL .. '        }%);')
+  expect(spell ~= nil,
+    'nothing watches the spectator spell, so the board outlives it and a driver '
+      .. 'who merely finished is thrown into it for the results hold')
+  expect(spell ~= nil and spell:find("savePref('broadcast', false)", 1, true) ~= nil,
+    'the end of a spell must CLEAR the stored preference, not just hide the '
+      .. 'board: otherwise the next finish brings it straight back')
+  expect(spell ~= nil and spell:find('pushEditorOpen()', 1, true) ~= nil,
+    'broadcastMode() changes here without anybody pressing anything, and the '
+      .. "editor's world drawing is gated on it in Lua -- which only hears about "
+      .. 'it when something says so')
+
   -- Points view. It renders standings and computes nothing, the same split the
   -- admin cup panel keeps: two places deciding who is leading is two places
   -- that can disagree.

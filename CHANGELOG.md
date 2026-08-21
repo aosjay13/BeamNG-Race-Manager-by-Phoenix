@@ -167,6 +167,15 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   identity rather than a connection, so it is clickable only while the driver it
   is bound to is on the server.
 
+  **The board does not outlive the spell that showed it.** Being out of the field
+  is two things wearing one name: pressing Spectate is a decision that lasts,
+  while taking the chequered flag makes you a spectator for the few seconds
+  between your finish and the results. The switch is cleared when you rejoin the
+  field, so a driver who merely finished is never thrown into a stream graphic
+  and back out again -- press it once per session you sit out. It is still
+  remembered *within* a spell, which is the reason it is stored at all: BeamNG
+  rebuilds the app whenever the HUD layer goes, and the pause menu does that.
+
   **The board is the whole app while it is on.** Header, session controls, both
   editors, the derby panel, the login bar, the leaderboard and every alert
   overlay come off the screen - a broadcaster is not in the session, so a pit

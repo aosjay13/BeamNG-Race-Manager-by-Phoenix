@@ -1310,9 +1310,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         watching: null
       };
       // ON is not enough: the board is only ever shown to somebody out of the
-      // field, so rejoining drops it without touching the stored preference. A
-      // broadcaster who takes a race and then sits the next one out gets their
-      // board back on its own.
+      // field. It is also not STICKY across spells -- see the watcher below.
       $scope.broadcastMode = function () {
         return $scope.broadcast.on && $scope.spectatorView();
       };
@@ -1366,6 +1364,39 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         return !!row && $scope.broadcast.watching !== null
           && String($scope.broadcast.watching) === String(row.id);
       };
+      // THE BOARD DOES NOT OUTLIVE THE SPELL THAT SHOWED IT.
+      //
+      // Being out of the field is two different things wearing one name. Pressing
+      // Spectate is a decision that lasts; taking the chequered flag makes you a
+      // spectator for the few seconds between your finish and the results, by
+      // accident of timing rather than by choice. `broadcast.on` is remembered
+      // across a teardown, and with both states feeding broadcastMode() that
+      // memory meant crossing the line silently threw an admin into a stream
+      // graphic and back out again, mid race night, having asked for none of it.
+      // Reported from a live session as "the leaderboard switches to non admin
+      // for the five second wait".
+      //
+      // So the preference is cleared when the spell ENDS. Somebody who sits a
+      // session out presses the button once and keeps the board for as long as
+      // they are out -- including across the finish of the race they are
+      // watching, because their own entry decision has not changed. Somebody who
+      // merely finished gets their own panel back and stays there.
+      //
+      // IT IS STILL REMEMBERED WITHIN A SPELL, which is the reason the preference
+      // exists at all: BeamNG tears this directive down whenever the HUD layer
+      // goes (opening the pause menu does it), and without the stored value the
+      // board would vanish on every pause.
+      $scope.$watch(function () { return $scope.spectatorView(); },
+        function (out, wasOut) {
+          if (!wasOut || out || !$scope.broadcast.on) { return; }
+          $scope.broadcast.on = false;
+          savePref('broadcast', false);
+          // broadcastMode() has just changed without anybody pressing anything,
+          // and the editor's world drawing is gated on it in Lua -- which only
+          // hears about it when something says so.
+          pushEditorOpen();
+        });
+
       $scope.$on('RaceManagerWatch', function (event, data) {
         $scope.$evalAsync(function () {
           $scope.broadcast.watching = (data && data.ok) ? data.pid : null;
