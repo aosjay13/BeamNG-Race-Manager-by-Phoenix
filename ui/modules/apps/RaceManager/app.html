@@ -52,10 +52,41 @@
          they are on, and their session ends as they cross the line. -->
     <span class="rm-clock rm-final-lap" ng-if="phase === 'qualifying' && finalLap"
           title="The qualifying clock has expired: the lap you are on is your last">FINAL LAP</span>
+    <!-- ================= End of the first row =============================
+         Everything after this push is shoved to the RIGHT-HAND END of row one:
+         the flag, then the two window controls. The status run above reads left
+         to right and stops; these sit in the corner a window's controls live in,
+         at the same place whatever the panel width and whatever the numbers to
+         the left are currently doing.
+
+         THE FLAG IS THE LAST STATUS THING, which is where it always was -- it
+         just used to be last in the run rather than last in the row. Green
+         racing, yellow caution, white last lap, red held or stopped, chequered
+         your race is over. The chequered one is a STATE and persists until the
+         session ends; the placement itself is a moment and goes out as a toast
+         instead. -->
+    <span class="rm-bar-push"></span>
+    <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
+          title="{{ flagTitle() }}">&#x2691;&#xFE0E;</span>
+    <button class="rm-btn rm-btn-mini" ng-click="resetHudSize()" ng-if="!hudCollapsed"
+            title="Reset the HUD size">⤢</button>
+    <!-- Collapse. Stays in the header when collapsed -- it is the way back, and
+         a control that could hide itself would leave the app unrecoverable
+         without the game's app editor. -->
+    <button class="rm-btn rm-btn-mini rm-btn-collapse" ng-click="toggleCollapsed()"
+            title="{{ hudCollapsed ? 'Expand Race Manager' : 'Collapse Race Manager to this bar' }}">{{ hudCollapsed ? '▼' : '▲' }}</button>
+
+    <!-- ================= Second row onward ================================
+         LEFT ALIGNED, and it flows: these wrap onto a third row only when they
+         will not fit on the second. What lives here is everything that is not a
+         live number -- the rules in force, the states, and the controls.
+
+         THE WIDE TEXT IS DOWN HERE FOR A REASON. JOKER PENDING, RESETS 0/3, an
+         out-lap notice and WAITING ON n are the widest things on the bar and
+         they come and go mid-session, so with them in the run above they were
+         what moved the corner controls around while you were reaching for one. -->
+    <span class="rm-bar-break"></span>
     <span class="rm-ghost-badge" ng-if="phase === 'qualifying' && ghostQuali" title="Rival cars are ghosted this session">GHOST</span>
-    <!-- Session rule, not this driver's state: it stands for the whole session
-         so a spectator or an admin can see which rules are in force. Whether the
-         driver is on their own out lap right now is the readout above. -->
     <!-- Only while THIS driver still owes theirs. It used to stand for the whole
          session, announcing a rule about a lap that was long gone -- which on a
          race reads as qualifying leaking into it, because the out lap used to be
@@ -63,7 +94,6 @@
          it goes out on the crossing rather than a broadcast later. -->
     <span class="rm-out-badge" ng-if="sessionUnderWay() && qualiOutLap && onOutLap()"
           title="{{ sessionKind === 'quali' ? 'Out lap: not timed, not scored, not counted.' : 'Counts toward the distance, but sets no lap time.' }}">{{ sessionKind === 'quali' ? 'OUT LAP' : 'LAP 1: NOT TIMED' }}</span>
-    <!-- Your own grid slot, and the hold before the lights go out -->
     <!-- SAME THREE READOUTS THE DRIVER BAR CARRIES, in the same order, because
          an admin running the session is usually driving it as well. -->
     <span class="rm-driverbar-label" ng-if="jokerEnabled">
@@ -72,26 +102,15 @@
     <span class="rm-driverbar-label" ng-if="resetsLimited()">
       RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
     </span>
-    <!-- THE FLAG ENDS THE STATUS RUN, in both panels. Green racing, yellow
-         caution, white last lap, red held or stopped, chequered your race is
-         over. The chequered one is a STATE and persists until the session ends;
-         the placement itself is a moment and goes out as a toast instead. -->
-    <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
-          title="{{ flagTitle() }}">&#x2691;&#xFE0E;</span>
+    <!-- The chequered flag's caption. It used to sit beside the flag, and it
+         followed the flag to the corner when the flag moved -- where a sentence
+         is exactly the wrong shape. It is a readout, so it lives with the
+         readouts. -->
     <span class="rm-waiting" ng-if="driverFlag === 'checkered' && stillRacing() > 0"
           title="You are waiting on the drivers still out on track">
       WAITING ON <b>{{ stillRacing() }}</b>
     </span>
-    <!-- ROW BREAK: THE FLAG ENDS THE FIRST ROW. That is not a new rule --
-         the status run above was written to it, and the flag's own note a
-         few lines up says so in as many words. Everything after this point
-         is something you press.
-
-         WAITING ON n STAYS WITH THE FLAG. It is the chequered flag's own
-         caption rather than a field of its own, and splitting the two
-         across rows strands half a sentence next to a button. -->
-    <span class="rm-bar-break"></span>
-
+    <!-- Your own grid slot, and the hold before the lights go out -->
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
       START P{{ gridSlot }}<b ng-if="gridFrozen"> HOLD</b>
     </span>
@@ -111,21 +130,13 @@
     <button class="rm-btn rm-btn-tab" ng-if="isAdmin" ng-click="logout()" title="Log out and return to spectator view">Log out</button>
     <!-- Spectators: a way back to the login screen at any time -->
     <button class="rm-btn rm-btn-tab rm-btn-login-tab" ng-if="!isAdmin && !showLogin" ng-click="openLogin()" title="Log in as an admin">🔒 Login</button>
-    <!-- Panel ergonomics, same pair the driver bar carries in minimal mode:
-         fade the HUD out of the way and undo a corner drag. The header renders
-         in every non-minimal view, so these are reachable from any tab, for
-         admins and for drivers between sessions alike. -->
+    <!-- Fade the HUD out of the way. Its pair, the size reset, is up in the
+         corner with the collapse: those two are about the WINDOW, this is about
+         what is in it, and it sits with the rest of the admin row. -->
     <label class="rm-driverbar-op rm-hud-op" title="HUD background opacity" ng-if="!hudCollapsed">
       <span>◑</span>
       <input type="range" min="0" max="1" step="0.05" ng-model="lbUi.opacity" ng-change="applyOpacity()">
     </label>
-    <button class="rm-btn rm-btn-mini" ng-click="resetHudSize()" ng-if="!hudCollapsed"
-            title="Reset the HUD size">⤢</button>
-    <!-- Collapse. Stays in the header when collapsed -- it is the way back, and
-         a control that could hide itself would leave the app unrecoverable
-         without the game's app editor. -->
-    <button class="rm-btn rm-btn-mini rm-btn-collapse" ng-click="toggleCollapsed()"
-            title="{{ hudCollapsed ? 'Expand Race Manager' : 'Collapse Race Manager to this bar' }}">{{ hudCollapsed ? '▼' : '▲' }}</button>
   </div>
 
   <!-- ================= Admin login (dismissable - spectators bypass it) ==== -->
@@ -1935,6 +1946,32 @@
         LAP {{ formatLapLive(lapElapsed()) }}
       </span>
     </span>
+    <!-- ================= End of the first row =========================
+         The same layout the header uses, for the same reason: the flag and the
+         window controls sit hard right in the corner, at the same place
+         whatever the numbers to their left are currently doing. -->
+    <span class="rm-bar-push"></span>
+    <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
+          title="{{ flagTitle() }}">&#x2691;&#xFE0E;</span>
+    <button class="rm-driverbar-btn" ng-click="resetLeaderboardSize()" ng-if="!hudCollapsed"
+            title="Reset the leaderboard size">⤢</button>
+    <!-- In minimal mode THIS bar is the whole HUD, so collapsing drops the
+         leaderboard and leaves the driver their own lap clock. The button stays
+         for the same reason it does in the header. -->
+    <button class="rm-driverbar-btn" ng-click="toggleCollapsed()"
+            title="{{ hudCollapsed ? 'Show the leaderboard' : 'Hide the leaderboard' }}">{{ hudCollapsed ? '▼' : '▲' }}</button>
+
+    <!-- ================= Second row onward ============================
+         LEFT ALIGNED and flowing. The rules in force, the states, and the
+         controls. The wide text is down here because JOKER PENDING, RESETS and
+         WAITING ON n come and go mid-session, and up in the run they were what
+         moved the corner controls while a driver was reaching for one.
+
+         NO SPACER. One used to sit in this row and shove everything after it to
+         the right-hand edge, which is what made the second row read as a right
+         aligned strip of its own. The two controls that belong in the corner
+         are in the corner now; the rest line up under the readouts. -->
+    <span class="rm-bar-break"></span>
     <!-- Which way round this driver is going. On a head-on layout it is the one
          thing they most need to be sure of. -->
     <span class="rm-driverbar-label" ng-if="jokerEnabled">
@@ -1943,21 +1980,10 @@
     <span class="rm-driverbar-label" ng-if="resetsLimited()">
       RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
     </span>
-    <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
-          title="{{ flagTitle() }}">&#x2691;&#xFE0E;</span>
     <span class="rm-waiting" ng-if="driverFlag === 'checkered' && stillRacing() > 0"
           title="You are waiting on the drivers still out on track">
       WAITING ON <b>{{ stillRacing() }}</b>
     </span>
-    <!-- ROW BREAK: THE FLAG ENDS THE FIRST ROW. That is not a new rule --
-         the status run above was written to it, and the flag's own note a
-         few lines up says so in as many words. Everything after this point
-         is something you press.
-
-         WAITING ON n STAYS WITH THE FLAG. It is the chequered flag's own
-         caption rather than a field of its own, and splitting the two
-         across rows strands half a sentence next to a button. -->
-    <span class="rm-bar-break"></span>
     <span class="rm-driverbar-label rm-entry-out" ng-if="spectating">👁 SPECTATING</span>
     <!-- THEIR OWN PARTICIPATION, reachable from the only thing they can see.
          Both of these used to live in the Race Entry row, which is hidden for a
@@ -1981,23 +2007,15 @@
               ng-click="setSpectating(true)"
               title="Sit the next session out. Your car stays where it is as a ghost.">👁 Spectate</button>
     </span>
-    <span class="rm-driverbar-spacer"></span>
-    <label class="rm-driverbar-op" title="Leaderboard background opacity" ng-if="!hudCollapsed">
-      <span>◑</span>
-      <input type="range" min="0" max="1" step="0.05" ng-model="lbUi.opacity" ng-change="applyOpacity()">
-    </label>
-    <button class="rm-driverbar-btn" ng-click="resetLeaderboardSize()" ng-if="!hudCollapsed"
-            title="Reset the leaderboard size">⤢</button>
     <button class="rm-driverbar-btn" ng-if="spectatorView() && !hudCollapsed"
             ng-click="toggleBroadcast()"
             title="Switch to the broadcast board: the whole field, the drivers who are out, and click a name to put the camera on them">&#x1F4FA;</button>
     <button class="rm-driverbar-btn" ng-click="openLogin()" ng-if="!hudCollapsed"
             title="Admin login">🔒</button>
-    <!-- In minimal mode THIS bar is the whole HUD, so collapsing drops the
-         leaderboard and leaves the driver their own lap clock. The button stays
-         for the same reason it does in the header. -->
-    <button class="rm-driverbar-btn" ng-click="toggleCollapsed()"
-            title="{{ hudCollapsed ? 'Show the leaderboard' : 'Hide the leaderboard' }}">{{ hudCollapsed ? '▼' : '▲' }}</button>
+    <label class="rm-driverbar-op" title="Leaderboard background opacity" ng-if="!hudCollapsed">
+      <span>◑</span>
+      <input type="range" min="0" max="1" step="0.05" ng-model="lbUi.opacity" ng-change="applyOpacity()">
+    </label>
   </div>
 
   <!-- ================= Broadcast board (spectators) ======================
@@ -2052,13 +2070,23 @@
             title="Fastest lap of the session">
         FL <b>{{ bcFastest.name }}</b> {{ formatLap(bcFastest.time) }}
       </span>
+      <!-- End of the first row, the same as the other two bars: the flag and
+           the corner controls, hard right. The fastest-lap holder above is a
+           name of any length, which is exactly why nothing after it may depend
+           on where it happens to end. -->
+      <span class="rm-bar-push"></span>
       <span class="rm-flag rm-flag-{{ flag }}" ng-if="flag !== 'green'"
             title="{{ flag === 'red' ? 'Red flag: the session is stopped' : 'Yellow flag: caution' }}">&#x2691;&#xFE0E;</span>
-      <!-- ROW BREAK: the flag ends the first row here too. It sat mid-run
-           until the other two bars settled on this rule; the fastest-lap
-           holder is a name of any length and had been pushing it around. -->
+      <button class="rm-driverbar-btn" ng-click="resetBroadcastSize()"
+              title="Reset the board size">&#x2922;</button>
+      <!-- The way out. The board hides every other panel, so a control that
+           brings them back has to live on it - the same rule the collapse
+           toggle follows in the header and the driver bar. -->
+      <button class="rm-driverbar-btn" ng-click="toggleBroadcast()"
+              title="Leave the broadcast board">&#x2715;</button>
+    
+      <!-- Second row: left aligned, the view switch and the fade. -->
       <span class="rm-bar-break"></span>
-      <span class="rm-bc-spacer"></span>
       <!-- Race / Points. Only offered when there is a cup running: a toggle to
            an empty standings table is a control that looks broken. -->
       <span class="rm-bc-views" ng-if="cup.enabled">
@@ -2071,14 +2099,7 @@
         <span>&#x25D1;</span>
         <input type="range" min="0" max="1" step="0.05" ng-model="lbUi.opacity" ng-change="applyOpacity()">
       </label>
-      <button class="rm-driverbar-btn" ng-click="resetBroadcastSize()"
-              title="Reset the board size">&#x2922;</button>
-      <!-- The way out. The board hides every other panel, so a control that
-           brings them back has to live on it - the same rule the collapse
-           toggle follows in the header and the driver bar. -->
-      <button class="rm-driverbar-btn" ng-click="toggleBroadcast()"
-              title="Leave the broadcast board">&#x2715;</button>
-    </div>
+</div>
 
     <!-- ---------------- Race view ----------------
          NOT DURING A DERBY. `drivers` is the racing state machine's field and a
@@ -2569,7 +2590,12 @@
     0%   { transform: scale(1.12); opacity: 0.6; }
     100% { transform: scale(1);    opacity: 1; }
   }
-  .rm-btn-tab { margin-left: auto; }
+  /* NO `margin-left: auto` HERE ANY MORE. It put the first of these buttons
+     hard right and dragged the rest of the row along behind it, which is
+     what made the second row a right aligned strip. The right-hand end of
+     the first row is .rm-bar-push's job now; these are left aligned with
+     the readouts above them. */
+  .rm-btn-tab { margin-left: 0; }
   .rm-btn-tab-active { background: rgba(255, 102, 0, 0.3); border-color: #ff6600; color: #ffb380; }
   .rm-admin-tag {
     margin-left: auto;
@@ -3863,10 +3889,24 @@
     height: 0;
     margin: 0;
   }
-  .rm-collapsed .rm-bar-break { display: none; }
+  /* The other half of the pair: everything after this is shoved to the
+     right-hand end of the FIRST row, which is where the flag and the window
+     controls live. The status run reads left to right and stops; the corner is
+     the corner at every panel width and whatever the numbers are doing.
+
+     A greedy flex item rather than `margin-left: auto` on the flag itself,
+     because the flag is conditional -- it is not drawn between sessions -- and
+     an auto margin on an element that comes and goes takes the alignment with
+     it. This one is always there. */
+  .rm-bar-push { flex: 1 1 auto; min-width: 8px; }
+  /* BOTH STAND DOWN WHEN COLLAPSED. That control exists to leave one line
+     carrying the phase, the clock and the way back: a forced second row defeats
+     it, and a push would strand the two buttons against the far edge of a bar
+     that no longer has anything to fill it. */
+  .rm-collapsed .rm-bar-break,
+  .rm-collapsed .rm-bar-push { display: none; }
   .rm-driverbar-label { letter-spacing: 0.5px; }
   .rm-driverbar-label b { color: #e8eaed; }
-  .rm-driverbar-spacer { flex: 1; min-width: 10px; }
   .rm-driverbar-op { display: flex; align-items: center; gap: 4px; }
   .rm-driverbar-op input[type="range"] { width: 70px; accent-color: #ff6600; }
   /* Header copy: same control, sized to sit among the header badges. */
@@ -3951,7 +3991,6 @@
      says which mode the board is reading without reading the words. */
   .rm-bc-derby, .rm-bc-derby b { color: #f28b82; }
   .rm-bc-fastest b { color: #fdd663; }
-  .rm-bc-spacer { flex: 1; min-width: 8px; }
   .rm-bc-views { display: flex; gap: 3px; }
   /* Shorter than the header and driver-bar copies of the same control: this bar
      carries more than either of them and is the width of a board rather than a

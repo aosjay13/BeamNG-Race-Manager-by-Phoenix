@@ -31,23 +31,32 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   server-owned and **off by default**; turning it off removes every suffix, and
   so does leaving the server.
 
-- **The status bars are two rows now, and the flag ends the first one.** Every
-  readout on the run changes width as it changes value -- a lap clock crossing
-  0:09.9 to 0:10.0, a checkpoint counter reaching double figures, a fastest-lap
-  holder called `guest5961302` replacing one called `Ana` -- and the controls sat
+- **The status bars have a deliberate layout now, in all three panels.** Every
+  readout changes width as it changes value -- a lap clock crossing 0:09.9 to
+  0:10.0, a checkpoint counter reaching double figures, a fastest-lap holder
+  called `guest5961302` replacing one called `Ana` -- and the controls sat
   immediately after them. So the buttons moved while you were reaching for one,
-  and how many of them ended up on a second row depended on the width of a
-  number.
+  and how many ended up on a second row depended on the width of a number.
 
-  The break is deliberate now, and it goes after the **flag** in all three bars,
-  which is where the status run was already written to end. Information above it,
-  anything you press below it. The header, the driver bar and the broadcast bar
-  all follow the same rule, so a control is in the same place whichever one you
-  are looking at.
+  **The first row is the live status run, and it ends hard right with the flag
+  and the two window controls** -- the size reset and the collapse, in the corner
+  where a window's controls belong. Those three are in the same place at every
+  panel width and whatever the numbers to their left are doing.
 
-  **Collapsing stands the break down.** That control exists to leave one line
-  carrying the phase, the clock and the way back; forcing a second row there
-  would defeat the thing you just pressed.
+  **Everything else is below, left aligned**, and flows: it takes a third row
+  only when it will not fit on the second. That is where the wide, wordy things
+  live now -- `JOKER PENDING`, `RESETS 0/3`, the out-lap notice, `WAITING ON n`,
+  the grid slot, the badges, and the admin controls with the fade slider. They
+  come and go mid-session and they are the widest things on the bar, which is
+  exactly what was shoving the corner controls around.
+
+  The second row **used to be right aligned**, which was not deliberate either:
+  `.rm-btn-tab` carried a `margin-left: auto`, so the first button in the row
+  went hard right and dragged everything after it along.
+
+  **Collapsing stands the whole arrangement down.** That control exists to leave
+  one line carrying the phase, the clock and the way back, so neither the row
+  break nor the right-hand push applies while it is folded.
 
 - **Time behind the leader, on every board.** A **Gap** column on the race
   table, the qualifying table and the broadcast board, plus an **Int** column on

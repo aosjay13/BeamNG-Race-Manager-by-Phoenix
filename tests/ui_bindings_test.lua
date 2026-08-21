@@ -1210,8 +1210,26 @@ local barOrder    = fieldOrder(barChunk or '')
 expect(headerOrder == barOrder,
   'the two panels list their status fields in the same order.\n    admin: '
     .. headerOrder .. '\n    driver: ' .. barOrder)
-expect(headerOrder:find('flag') ~= nil and headerOrder:match('([%w]+)$') == 'flag',
-  'and the flag ends the run in both, so it is always in the same place')
+-- THE FLAG ENDS THE FIRST ROW, which is not the same claim as "ends the run"
+-- and replaces it. The wide, wordy readouts -- JOKER PENDING, RESETS n/m, the
+-- out-lap notice -- moved below the break, so they now come AFTER the flag in
+-- document order while appearing under it on screen. What still has to hold is
+-- that the flag is the last thing on row one: it sits between the push that
+-- shoves it to the right-hand end and the break that starts row two, with no
+-- other status field in that span.
+for _, panel in ipairs({ { 'admin header', headerChunk }, { 'driver bar', barChunk } }) do
+  local row1 = (panel[2] or ''):match('rm%-bar%-push(.-)rm%-bar%-break')
+  expect(row1 ~= nil,
+    panel[1] .. ' has no push/break pair, so its first row has no defined end')
+  expect(row1 ~= nil and row1:find('rm%-flag rm%-flag%-') ~= nil,
+    panel[1] .. ': the flag is not in the corner group at the end of row one')
+  for _, field in ipairs({ 'JOKER <b', 'RESETS <b', 'rm%-waiting' }) do
+    expect(row1 ~= nil and row1:find(field) == nil,
+      panel[1] .. ': ' .. field:gsub('%%', '') .. ' is back on the first row. '
+        .. 'It comes and goes mid-session and it is wide, which is exactly what '
+        .. 'was moving the corner controls while somebody reached for one')
+  end
+end
 
 -- SPECTATING IS A THING YOU DO, not a way to close a dialog.
 --
@@ -1708,12 +1726,19 @@ do
       expect(after ~= nil and after:find('rm-bar-break', 1, true) ~= nil,
         b.name .. ' has no row break after its flag, so its controls wrap '
           .. 'wherever the numbers above them happen to end')
-      -- Nothing that is pressed may sit ABOVE the break, or it lands back in
-      -- the run it was moved out of.
-      local before = b.chunk:match('^(.-)rm%-bar%-break')
-      expect(before ~= nil and before:find('<button', 1, true) == nil,
-        b.name .. ' has a button above the row break: the first row is the '
-          .. 'status run and nothing else')
+      -- The only things pressed on the first row are the two corner controls,
+      -- and they must be AFTER the push -- otherwise they sit in the middle of
+      -- the status run, which is where they were being shoved about.
+      local run = b.chunk:match('^(.-)rm%-bar%-push')
+      expect(run ~= nil and run:find('<button', 1, true) == nil,
+        b.name .. ' has a button in its status run: the only controls on the '
+          .. 'first row are the corner pair, and they live after the push')
+      local corner = b.chunk:match('rm%-bar%-push(.-)rm%-bar%-break')
+      local buttons = 0
+      for _ in (corner or ''):gmatch('<button') do buttons = buttons + 1 end
+      expect(buttons == 2,
+        b.name .. ' should carry exactly the size reset and the collapse in its '
+          .. 'corner (found ' .. buttons .. ')')
     end
   end
 
@@ -1737,8 +1762,13 @@ do
   -- COLLAPSING STANDS THE BREAK DOWN. Collapsing exists to leave one line
   -- carrying the phase, the clock and the way back; a forced second row there
   -- defeats the control that got them there.
-  expect(html:find('.rm-collapsed .rm-bar-break { display: none; }', 1, true) ~= nil,
-    'a collapsed HUD does not force its controls onto a second row')
+  -- Collapsed, BOTH stand down. The break would force a second row onto a
+  -- control whose whole purpose is to leave one line; the push would strand the
+  -- corner pair against the far edge of a bar with nothing left to fill it.
+  local down = html:match('([^}]*){ display: none; }%s*\n%s*/%* The dragged HEIGHT')
+    or html:match('%.rm%-collapsed %.rm%-bar%-break,%s*\n%s*%.rm%-collapsed %.rm%-bar%-push')
+  expect(down ~= nil,
+    'a collapsed HUD does not stand its row break and its push down together')
   -- ...and the break only means anything on a bar that wraps.
   for _, sel in ipairs({ 'rm%-header', 'rm%-driverbar', 'rm%-bc%-bar' }) do
     local rule = html:match(NL .. '  %.' .. sel .. ' {(.-)}')

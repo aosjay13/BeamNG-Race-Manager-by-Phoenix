@@ -1347,12 +1347,19 @@ instead - visible, and a shade under the gate actually being aimed at.
 
   The driver bar also shows live joker/reset status and keeps a 🔒 button so
   the login prompt is always reachable.
-- **The status bars are two rows: what the session is, then what you can press.**
-  The header, the driver bar and the broadcast bar all break after the **flag**,
-  which is where the status run ends. Every readout on that run changes width as
-  it changes value, and with the controls immediately after them the buttons used
-  to move while you were reaching for one. They are in a fixed place now.
-  Collapsing stands the break down, so a collapsed HUD is still one line.
+- **The status bars have a fixed layout in all three panels.** The first row is
+  the live status run - phase, checkpoint, distance, clocks - and it ends at the
+  **right-hand corner** with the flag and the two window controls, the size reset
+  and the collapse. Everything else sits **below it, left aligned**, and takes a
+  third row only when it will not fit on the second: the rules in force
+  (`JOKER`, `RESETS`, the out-lap notice), the states, the badges, and the admin
+  controls with the fade slider.
+
+  The split is not cosmetic. Every readout on the run changes width as it changes
+  value, so with the controls immediately after them the buttons moved while you
+  were reaching for one, and the wide text decided where the row broke.
+  Collapsing stands the whole arrangement down, so a collapsed HUD is still one
+  line.
 - **One slider fades every surface.** The ◑ control drives the panel fill, the
   header's tint and its bottom rule together. It used to drive the fill alone, so
   a HUD faded to nothing still had a solid orange band across it.
