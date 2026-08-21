@@ -38,10 +38,20 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   immediately after them. So the buttons moved while you were reaching for one,
   and how many ended up on a second row depended on the width of a number.
 
-  **The first row is the live status run, and it ends hard right with the flag
-  and the two window controls** -- the size reset and the collapse, in the corner
-  where a window's controls belong. Those three are in the same place at every
-  panel width and whatever the numbers to their left are doing.
+  **The first row is the live status run, and the flag and the two window
+  controls are PINNED to its right-hand corner** -- out of the flex flow
+  entirely, so they are in the same place at every panel width, in every state,
+  and wrapping cannot reach them.
+
+  They were pushed there first, with a greedy flex item, and that turned out to
+  be a bug waiting for a busy bar. A push distributes space only *after* the
+  browser has decided where the lines break, so a bar that is marginally too wide
+  wraps its last button onto row two and only then inflates the push on row one:
+  one control stranded on its own line, and a lake of empty space after the lap
+  clock, from the same cause -- and it shows up exactly when a race is running and
+  the bar is fullest. The space the pinned group needs is reserved in each bar's
+  own padding shorthand, because as a separate `padding-right` rule it lost to
+  whichever `padding:` came later in the stylesheet.
 
   **Everything else is below, left aligned**, and flows: it takes a third row
   only when it will not fit on the second. That is where the wide, wordy things
@@ -50,9 +60,11 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   come and go mid-session and they are the widest things on the bar, which is
   exactly what was shoving the corner controls around.
 
-  The second row **used to be right aligned**, which was not deliberate either:
-  `.rm-btn-tab` carried a `margin-left: auto`, so the first button in the row
-  went hard right and dragged everything after it along.
+  The rows below **used to be right aligned**, which was not deliberate either:
+  `.rm-btn-tab` and `.rm-admin-tag` each carried a `margin-left: auto`, so the
+  first of them in a row went hard right and dragged everything after it along --
+  the buttons on one row, and `ADMIN`, `Log out` and the fade slider on the
+  next.
 
   **Collapsing does not rearrange the bar.** It removes the panels below the
   header; the header itself is laid out the same way folded or not, so the corner

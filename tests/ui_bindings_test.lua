@@ -1218,9 +1218,9 @@ expect(headerOrder == barOrder,
 -- shoves it to the right-hand end and the break that starts row two, with no
 -- other status field in that span.
 for _, panel in ipairs({ { 'admin header', headerChunk }, { 'driver bar', barChunk } }) do
-  local row1 = (panel[2] or ''):match('rm%-bar%-push(.-)rm%-bar%-break')
+  local row1 = (panel[2] or ''):match('rm%-bar%-corner(.-)rm%-bar%-break')
   expect(row1 ~= nil,
-    panel[1] .. ' has no push/break pair, so its first row has no defined end')
+    panel[1] .. ' has no corner group, so its first row has no defined end')
   expect(row1 ~= nil and row1:find('rm%-flag rm%-flag%-') ~= nil,
     panel[1] .. ': the flag is not in the corner group at the end of row one')
   for _, field in ipairs({ 'JOKER <b', 'RESETS <b', 'rm%-waiting' }) do
@@ -1729,16 +1729,28 @@ do
       -- The only things pressed on the first row are the two corner controls,
       -- and they must be AFTER the push -- otherwise they sit in the middle of
       -- the status run, which is where they were being shoved about.
-      local run = b.chunk:match('^(.-)rm%-bar%-push')
+      local run = b.chunk:match('^(.-)rm%-bar%-corner')
       expect(run ~= nil and run:find('<button', 1, true) == nil,
         b.name .. ' has a button in its status run: the only controls on the '
-          .. 'first row are the corner pair, and they live after the push')
-      local corner = b.chunk:match('rm%-bar%-push(.-)rm%-bar%-break')
+          .. 'first row are the corner pair, and they live inside the corner group')
+      local corner = b.chunk:match('rm%-bar%-corner(.-)rm%-bar%-break')
       local buttons = 0
       for _ in (corner or ''):gmatch('<button') do buttons = buttons + 1 end
       expect(buttons == 2,
         b.name .. ' should carry exactly the size reset and the collapse in its '
           .. 'corner (found ' .. buttons .. ')')
+      -- OUT OF FLOW, and that is the point rather than a detail. A flex push
+      -- distributes space only AFTER the browser has decided where lines break,
+      -- so a bar that is marginally too wide wraps its last button onto row two
+      -- and only then inflates the push on row one -- a stranded control and a
+      -- lake of space after the lap clock, from one cause, exactly when a race
+      -- is running and the bar is fullest.
+      expect(html:find('.rm-bar-corner {', 1, true) ~= nil,
+        'the corner group has no rule of its own')
+      local rule = html:match(NL .. '  %.rm%-bar%-corner {(.-)}')
+      expect(rule ~= nil and rule:find('position: absolute', 1, true) ~= nil,
+        b.name .. ': the corner group is back in the flex flow, where wrapping '
+          .. 'can strand it on the second row')
     end
   end
 
@@ -1769,10 +1781,10 @@ do
   -- happened was the run stopped breaking and the corner pair fell back into the
   -- middle of it. That is the exact wandering the pair exists to stop, and it was
   -- reported from a live session.
-  expect(html:find('.rm-collapsed .rm-bar-push', 1, true) == nil
+  expect(html:find('.rm-collapsed .rm-bar-corner', 1, true) == nil
     and html:find('.rm-collapsed .rm-bar-break', 1, true) == nil,
-    'collapsing must not stand the row break or the right-hand push down: the '
-      .. 'corner pair belongs in the corner in every state, folded or not')
+    'collapsing must not stand the row break or the pinned corner down: the '
+      .. 'corner group belongs in the corner in every state, folded or not')
   -- ...and the pair stays a PAIR in every state. Hiding the size reset while
   -- folded left the corner holding two buttons expanded and one collapsed, so
   -- the collapse toggle shifted sideways at the moment it was pressed.
@@ -1784,6 +1796,29 @@ do
         .. 'expanded and one when folded, and the collapse toggle moves sideways '
         .. 'as you press it')
   end
+  -- Each bar is its own positioning context. Without that the corner pins itself
+  -- to .rm-root and the driver bar's lands up beside the header's.
+  for _, sel in ipairs({ 'rm%-header', 'rm%-driverbar', 'rm%-bc%-bar' }) do
+    local rule = html:match(NL .. '  %.' .. sel .. ' {(.-)}')
+    expect(rule ~= nil and rule:find('position: relative', 1, true) ~= nil,
+      '.' .. sel:gsub('%%', '') .. ' is not a positioning context, so its pinned '
+        .. 'corner anchors to the app root instead of to the bar')
+  end
+  -- No auto margins left anywhere in the bars: each one right-aligns whatever
+  -- follows it, which is how both the button row and the admin row ended up as
+  -- right aligned strips nobody asked for.
+  for _, sel in ipairs({ 'rm%-btn%-tab', 'rm%-admin%-tag' }) do
+    local rule = html:match(NL .. '  %.' .. sel .. ' {(.-)}')
+    -- Comments stripped first. Both of these rules now carry a note explaining
+    -- why the auto margin is gone, and the note contains the words -- so a
+    -- search over the raw rule finds the explanation and reports the bug it is
+    -- explaining the absence of.
+    rule = rule and rule:gsub('/%*.-%*/', '')
+    expect(rule ~= nil and rule:find('margin%-left: auto') == nil,
+      '.' .. sel:gsub('%%', '') .. ' carries margin-left: auto again, which drags '
+        .. 'everything after it to the right-hand edge of its row')
+  end
+
   -- ...and the break only means anything on a bar that wraps.
   for _, sel in ipairs({ 'rm%-header', 'rm%-driverbar', 'rm%-bc%-bar' }) do
     local rule = html:match(NL .. '  %.' .. sel .. ' {(.-)}')

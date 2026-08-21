@@ -65,7 +65,7 @@
          your race is over. The chequered one is a STATE and persists until the
          session ends; the placement itself is a moment and goes out as a toast
          instead. -->
-    <span class="rm-bar-push"></span>
+    <span class="rm-bar-corner">
     <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
           title="{{ flagTitle() }}">&#x2691;&#xFE0E;</span>
     <!-- NO `!hudCollapsed` GUARD. Hidden while folded, this left the corner
@@ -79,6 +79,7 @@
          without the game's app editor. -->
     <button class="rm-btn rm-btn-mini rm-btn-collapse" ng-click="toggleCollapsed()"
             title="{{ hudCollapsed ? 'Expand Race Manager' : 'Collapse Race Manager to this bar' }}">{{ hudCollapsed ? '▼' : '▲' }}</button>
+    </span>
 
     <!-- ================= Second row onward ================================
          LEFT ALIGNED, and it flows: these wrap onto a third row only when they
@@ -1954,7 +1955,7 @@
          The same layout the header uses, for the same reason: the flag and the
          window controls sit hard right in the corner, at the same place
          whatever the numbers to their left are currently doing. -->
-    <span class="rm-bar-push"></span>
+    <span class="rm-bar-corner">
     <span class="rm-flag rm-flag-{{ driverFlag }}" ng-if="flagShowing()"
           title="{{ flagTitle() }}">&#x2691;&#xFE0E;</span>
     <!-- Paired with the collapse in every state, for the reason the header
@@ -1966,6 +1967,7 @@
          for the same reason it does in the header. -->
     <button class="rm-driverbar-btn" ng-click="toggleCollapsed()"
             title="{{ hudCollapsed ? 'Show the leaderboard' : 'Hide the leaderboard' }}">{{ hudCollapsed ? '▼' : '▲' }}</button>
+    </span>
 
     <!-- ================= Second row onward ============================
          LEFT ALIGNED and flowing. The rules in force, the states, and the
@@ -2080,7 +2082,7 @@
            the corner controls, hard right. The fastest-lap holder above is a
            name of any length, which is exactly why nothing after it may depend
            on where it happens to end. -->
-      <span class="rm-bar-push"></span>
+      <span class="rm-bar-corner">
       <span class="rm-flag rm-flag-{{ flag }}" ng-if="flag !== 'green'"
             title="{{ flag === 'red' ? 'Red flag: the session is stopped' : 'Yellow flag: caution' }}">&#x2691;&#xFE0E;</span>
       <button class="rm-driverbar-btn" ng-click="resetBroadcastSize()"
@@ -2090,6 +2092,7 @@
            toggle follows in the header and the driver bar. -->
       <button class="rm-driverbar-btn" ng-click="toggleBroadcast()"
               title="Leave the broadcast board">&#x2715;</button>
+      </span>
     
       <!-- Second row: left aligned, the view switch and the fade. -->
       <span class="rm-bar-break"></span>
@@ -2497,9 +2500,18 @@
   /* Header */
   .rm-header {
     display: flex;
+    /* Positioning context for .rm-bar-corner. Without it the group pins
+       itself to .rm-root and the lower bars put it in the wrong place. */
+    position: relative;
     align-items: center;
     gap: 10px;
-    padding: 6px 10px;
+    /* The right-hand figure is the PINNED CORNER'S RESERVED SPACE, not a
+       margin: it keeps the status run from sliding underneath the group.
+       It lives in the shorthand deliberately. As its own `padding-right`
+       rule it lost to whichever `padding:` came later in the sheet, which
+       is what silently reset the board's to 8px and put the fastest-lap
+       name under the close button. Measured (the group is 90px wide), plus clearance. */
+    padding: 6px 96px 6px 10px;
     /* Both driven by the opacity slider (the controller writes these onto the
        root). Hardcoded, they were the one piece of chrome that ignored it: a HUD
        faded to nothing still had a solid orange band across it. */
@@ -2599,12 +2611,16 @@
   /* NO `margin-left: auto` HERE ANY MORE. It put the first of these buttons
      hard right and dragged the rest of the row along behind it, which is
      what made the second row a right aligned strip. The right-hand end of
-     the first row is .rm-bar-push's job now; these are left aligned with
+     the first row belongs to the pinned .rm-bar-corner; these are left aligned with
      the readouts above them. */
   .rm-btn-tab { margin-left: 0; }
   .rm-btn-tab-active { background: rgba(255, 102, 0, 0.3); border-color: #ff6600; color: #ffb380; }
   .rm-admin-tag {
-    margin-left: auto;
+    /* NOT `margin-left: auto`. That put this badge hard right and dragged Log
+       out, Broadcast and the fade slider along behind it, so the admin row read
+       as a right aligned strip -- the same fault .rm-btn-tab had, one row
+       down. */
+    margin-left: 0;
     padding: 1px 7px;
     border-radius: 8px;
     font-size: 9px;
@@ -3852,6 +3868,9 @@
   /* The one strip of chrome a driver keeps: opacity, size reset, login.
      .rm-driverbar-op is shared with the header copy of the same control. */
   .rm-driverbar {
+    /* Positioning context for .rm-bar-corner. Without it the group pins
+       itself to .rm-root and the lower bars put it in the wrong place. */
+    position: relative;
     background: var(--rm-panel-bg, rgba(15, 17, 22, 0.85));
     display: flex;
     align-items: center;
@@ -3862,7 +3881,13 @@
     row-gap: 2px;
     gap: 8px;
     align-self: flex-start;
-    padding: 2px 6px;
+    /* The right-hand figure is the PINNED CORNER'S RESERVED SPACE, not a
+       margin: it keeps the status run from sliding underneath the group.
+       It lives in the shorthand deliberately. As its own `padding-right`
+       rule it lost to whichever `padding:` came later in the sheet, which
+       is what silently reset the board's to 8px and put the fastest-lap
+       name under the close button. Measured (the group is 74px wide), plus clearance. */
+    padding: 2px 78px 2px 6px;
     margin-bottom: 3px;
     border-radius: 4px;
     font-size: 10px;
@@ -3895,16 +3920,33 @@
     height: 0;
     margin: 0;
   }
-  /* The other half of the pair: everything after this is shoved to the
-     right-hand end of the FIRST row, which is where the flag and the window
-     controls live. The status run reads left to right and stops; the corner is
-     the corner at every panel width and whatever the numbers are doing.
+  /* THE CORNER IS PINNED, NOT PUSHED, and the difference is the whole of a
+     reported bug. A flex push only distributes space AFTER the browser has
+     decided where the lines break, so a bar that is marginally too wide wraps
+     its LAST item onto row two and then inflates the push on row one. That is
+     one control stranded on its own line and a lake of empty space after the
+     lap clock, from the same cause -- and it happens exactly when the panel is
+     busiest, which is when a race is running.
 
-     A greedy flex item rather than `margin-left: auto` on the flag itself,
-     because the flag is conditional -- it is not drawn between sessions -- and
-     an auto margin on an element that comes and goes takes the alignment with
-     it. This one is always there. */
-  .rm-bar-push { flex: 1 1 auto; min-width: 8px; }
+     Out of flow, none of that can happen: the group is where it is put, at
+     every width, in every state, and wrapping cannot reach it. `padding:
+     inherit` is deliberately NOT used to inset it -- the bars reserve their
+     space with padding-right, and inheriting that would shove the group back
+     inward by the width of its own reservation. */
+  .rm-bar-corner {
+    position: absolute;
+    top: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  /* The corner's own inset matches each bar's padding, so the group sits where
+     the bar's content would have. The SPACE it needs is reserved in the bar's
+     own `padding:` shorthand rather than here -- see the note on each. */
+  .rm-header    .rm-bar-corner { padding: 6px 10px; }
+  .rm-driverbar .rm-bar-corner { padding: 2px 6px; }
+  .rm-bc-bar    .rm-bar-corner { padding: 3px 8px; }
   /* NEITHER STANDS DOWN WHEN COLLAPSED, and that is a correction.
      They did, on the reasoning that collapsing exists to leave one line and a
      push would strand the buttons against the edge of a bar with nothing to
@@ -3978,12 +4020,21 @@
     resize: both;
   }
   .rm-bc-bar {
+    /* Positioning context for .rm-bar-corner. Without it the group pins
+       itself to .rm-root and the lower bars put it in the wrong place. */
+    position: relative;
     display: flex;
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
     row-gap: 2px;
-    padding: 3px 8px;
+    /* The right-hand figure is the PINNED CORNER'S RESERVED SPACE, not a
+       margin: it keeps the status run from sliding underneath the group.
+       It lives in the shorthand deliberately. As its own `padding-right`
+       rule it lost to whichever `padding:` came later in the sheet, which
+       is what silently reset the board's to 8px and put the fastest-lap
+       name under the close button. Measured (the group is 76px wide), plus clearance. */
+    padding: 3px 82px 3px 8px;
     font-size: 10px;
     color: #bdc1c6;
     border-bottom: 1px solid rgba(255, 255, 255, 0.15);

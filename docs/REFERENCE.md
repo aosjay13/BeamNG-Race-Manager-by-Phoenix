@@ -1348,9 +1348,9 @@ instead - visible, and a shade under the gate actually being aimed at.
   The driver bar also shows live joker/reset status and keeps a 🔒 button so
   the login prompt is always reachable.
 - **The status bars have a fixed layout in all three panels.** The first row is
-  the live status run - phase, checkpoint, distance, clocks - and it ends at the
-  **right-hand corner** with the flag and the two window controls, the size reset
-  and the collapse. Everything else sits **below it, left aligned**, and takes a
+  the live status run - phase, checkpoint, distance, clocks - and the flag and the
+  two window controls (the size reset and the collapse) are **pinned to its
+  right-hand corner**, in the same place at every panel width and in every state. Everything else sits **below it, left aligned**, and takes a
   third row only when it will not fit on the second: the rules in force
   (`JOKER`, `RESETS`, the out-lap notice), the states, the badges, and the admin
   controls with the fade slider.
