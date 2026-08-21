@@ -2011,6 +2011,19 @@ local spectate = {
     'nitrousOxideActive', 'toggleWalkingMode',
   },
   blocked = false,
+  -- WHAT A WRECK IS SET TO when a derby eliminates its driver. Every one of
+  -- these is an input the DRIVE filter above covers, and therefore one that can
+  -- be left latched at whatever it was when the filter armed -- see
+  -- spectate.releaseControls.
+  --
+  -- Zero across the board, parking brake included: the car is meant to be an
+  -- obstacle the survivors can shove around, not one bolted to the arena floor.
+  -- `steering` is here for the same reason as the pedals; a wreck left on full
+  -- lock is a wreck that will not push straight.
+  NEUTRAL = {
+    'throttle', 'brake', 'steering', 'clutch', 'parkingbrake',
+    'nitrousOxideActive',
+  },
   -- BeamNG's node grabber: click a car and drag its physics nodes around. In a
   -- demolition derby that is not a debug tool, it is a winning move -- drag your
   -- own wreck back onto its wheels, or drag somebody else's into the wall
@@ -2080,6 +2093,43 @@ function spectate.setInputsBlocked(blocked)
   end
 end
 
+-- HAND THE CAR BACK AS A ROLLING CHASSIS.
+--
+-- Filtering the inputs stops new ones arriving and does nothing at all about the
+-- ones already there: BeamNG's action filter suppresses an action's onChange, so
+-- the value standing at the instant the filter armed is the value it keeps.
+-- Eliminate a driver mid-corner and the throttle stays where their foot left it,
+-- the engine screams, and neither they nor anybody else can do a thing about it.
+--
+-- So every input the filter covers is set to zero, ONCE, after it arms. Once is
+-- enough: with the action filtered nothing can move it again.
+--
+-- THE PARKING BRAKE IS RELEASED, NOT APPLIED, and that is a deliberate
+-- difference from the end-of-derby stand-down above it. A car eliminated from a
+-- derby is meant to be an obstacle -- something the survivors can shove, pile
+-- into and use -- and a wreck bolted to the floor by its handbrake is a wall
+-- instead. It is left free to roll, and it is left SOLID: no ghost, no freeze.
+-- The only thing taken away is the driver's ability to move it themselves.
+--
+-- Not the ignition. A dead engine would settle the question of an automatic
+-- creeping forward at idle, and it is a bigger change than the report asked for
+-- -- the complaint was a screaming engine, which the throttle line answers.
+function spectate.releaseControls()
+  -- ownVehicle(), not playerVehicle(): the camera may already have been tabbed
+  -- onto somebody else's car, and this is about the eliminated driver's own.
+  local veh = ownVehicle()
+  if not veh then return false end
+  local ok = pcall(function ()
+    for _, input in ipairs(spectate.NEUTRAL) do
+      veh:queueLuaCommand(('input.event("%s", 0, 1)'):format(input))
+    end
+  end)
+  log('I', 'raceManager', ok
+    and 'Derby elimination: controls neutralised, car left free to roll'
+    or  'Derby elimination: could not neutralise controls')
+  return ok
+end
+
 -- Put the camera on somebody still racing.
 --
 -- A driver who has just taken the flag is parked, and leaving them looking at
@@ -2139,6 +2189,11 @@ local function enterSpectator(reason, source)
     -- physical wreck, and the driver stays in it. The arena is the show and they
     -- are sitting in it; being moved somewhere else the instant you are knocked
     -- out reads as the bug this replaced. Tab takes them anywhere they like.
+    --
+    -- AFTER the filter above, never before. Zeroing first would leave a window
+    -- -- however short -- in which a pedal still being held could put the value
+    -- straight back; once the action is filtered, nothing can move it again.
+    spectate.releaseControls()
     log('I', 'raceManager', 'Derby elimination: the wreck stays in the arena')
   else
     -- FINISHED OR OUT OF A RACE: the car STAYS, and is ghosted.

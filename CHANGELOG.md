@@ -187,6 +187,22 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 ### Fixed
 
+- **An eliminated derby car sat there revving at full throttle.** Blocking a
+  driver's inputs stops new ones arriving; it does nothing about the ones already
+  there. BeamNG's action filter suppresses an action's `onChange`, so whatever
+  the value was at the instant the filter armed is the value it keeps -- knock
+  somebody out mid-corner and the throttle stays exactly where their foot left
+  it, with neither them nor anyone else able to do a thing about it.
+
+  Every input the filter covers is now zeroed once, after it arms. Once is
+  enough: with the action filtered nothing can move it again.
+
+  **The parking brake is released, not applied**, which is the deliberate
+  difference from the end-of-derby stand-down. A wreck is meant to be an obstacle
+  the survivors can shove, pile into and use -- one bolted to the floor by its
+  handbrake is a wall instead. It stays solid and unfrozen for the same reason.
+  The only thing taken away is the driver's own ability to move it.
+
 - **A derby driver who lost a life stopped being policed for the rest of it.**
   After one life was spent the idle timer and the out-of-bounds timer both went
   dead for that driver, and the derby then ran on with no winner until an admin

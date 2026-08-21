@@ -223,6 +223,73 @@ frames(0.2)
 check(grabberBlocked() == false, 'and comes back once the derby is over')
 
 -- ---------------------------------------------------------------------------
+-- AN ELIMINATED DERBY CAR IS A ROLLING CHASSIS, NOT A REVVING ONE
+-- ---------------------------------------------------------------------------
+-- Reported from a live session: a driver knocked out of a derby sat there with
+-- the engine screaming at full throttle.
+--
+-- Blocking the inputs stops new ones arriving and does nothing about the ones
+-- already there -- BeamNG's action filter suppresses an action's onChange, so
+-- whatever the value was when the filter armed is the value it keeps. Eliminate
+-- somebody mid-corner and the throttle stays exactly where their foot left it.
+--
+-- What the wreck has to be: no throttle, no brake, no steering, and NO PARKING
+-- BRAKE -- it is meant to be an obstacle the survivors can shove around, not one
+-- bolted to the arena floor. Solid, too: no ghost and no freeze. The only thing
+-- taken away is the driver's own ability to move it.
+do
+  handlers['RM_ReleaseSpectate']({ source = 'derby' })
+  handlers['RM_ReleaseSpectate']({ source = 'race' })
+  world[OWN_ID] = world[OWN_ID] or makeVehicle(OWN_ID)
+  attached = world[OWN_ID]
+  vehCommands = {}
+
+  derbyPhase('running')
+  handlers['RM_ForceSpectate']({ reason = 'Demolished', source = 'derby' })
+  frames(0.2)
+
+  local function sentTo(input)
+    for _, c in ipairs(vehCommands) do
+      if c == ('input.event("%s", 0, 1)'):format(input) then return true end
+    end
+    return false
+  end
+  for _, input in ipairs({ 'throttle', 'brake', 'steering', 'clutch' }) do
+    check(sentTo(input),
+      'an eliminated derby car has its ' .. input .. ' zeroed: the filter stops '
+        .. 'new input and leaves the last value standing')
+  end
+  check(sentTo('parkingbrake'),
+    'and the parking brake is RELEASED rather than left where it was')
+
+  -- Released, never applied. The end-of-derby stand-down sets it deliberately
+  -- to hold the field for the cool-down; an elimination must not, or the wreck
+  -- stops being something the survivors can push.
+  local applied = false
+  for _, c in ipairs(vehCommands) do
+    if c:find('parkingbrake", 1', 1, true) then applied = true end
+  end
+  check(not applied,
+    'the parking brake is never SET on an elimination: a wreck bolted to the '
+      .. 'floor is a wall, not an obstacle')
+
+  -- Still solid, and still there. A ghost cannot be shoved and a deleted car is
+  -- not an obstacle at all.
+  check(world[OWN_ID] ~= nil, 'the wreck stays in the arena')
+  check(world[OWN_ID].ghosted ~= true,
+    'and stays SOLID -- it is an obstacle, which a ghost is not')
+  check(frozen ~= true, 'and is not frozen: it has to be free to roll')
+
+  -- ...and the driver cannot drive it.
+  check(blockedGroups['raceManagerSpectate'] == true,
+    'the driving inputs are filtered, so the driver cannot move it themselves')
+
+  handlers['RM_ReleaseSpectate']({ source = 'derby' })
+  derbyPhase('idle')
+  frames(0.2)
+end
+
+-- ---------------------------------------------------------------------------
 -- The blocked action NAMES have to be the game's, not ours
 -- ---------------------------------------------------------------------------
 -- A filter group made of names nothing answers to fails completely silently: no

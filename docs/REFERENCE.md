@@ -1869,12 +1869,20 @@ and derby controls are not shown while you are in Race - see
      else's wreck parked on it by now. It waits longer if it has to: a car with
      another inside it does not get its collisions back until the space is
      clear.
-   - An eliminated driver's vehicle is removed and their camera is forced into
-     **freecam** until the derby ends; they cannot spawn a replacement car.
-     When the derby finishes, their car is **put back** automatically
-     ghosted and staggered like every other mass respawn, and this is the
-     biggest one in the mod, since a derby ends with nearly the whole field
-     removed. Each driver's camera goes back on their own car.
+   - An eliminated driver's car **stays in the arena as a rolling chassis**.
+     Their driving inputs are filtered and every one of them is zeroed -
+     throttle, brake, steering, clutch - so a driver knocked out mid-corner does
+     not leave the engine screaming at a throttle nobody can lift. The **parking
+     brake is released, not applied**: a wreck is meant to be an obstacle the
+     survivors can shove and pile into, and one bolted to the floor is a wall.
+     It stays solid and free to roll; the only thing taken away is the driver's
+     own ability to move it.
+     The driver stays **in** it, and the camera is not touched - tab moves them
+     around the arena like any other spectator. Nothing is removed and nothing is
+     respawned: an elimination is a change of state, not an entity destroyed and
+     rebuilt. (It used to delete the car and force freecam, which in BeamMP
+     deleted it for *everyone* and re-asserted the camera once a second, so
+     watching anybody was undone within the second.)
 6. The driver table shows who's still in, who's out (with reason and
    elimination time) and the winner - under their **display name** if an admin
    set one (see *Display names* above), in both the standings and the exported
