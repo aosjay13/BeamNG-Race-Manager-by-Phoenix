@@ -1859,6 +1859,16 @@ and derby controls are not shown while you are in Race - see
      time or you're **Disqualified**.
    - Sitting still flashes **VEHICLE STOPPED! DEMOLISHED IN X.Xs** - get
      moving or you're **Demolished**. Disconnecting counts as Disqualified.
+   - **With Lives set above 1**, the stopped timer spends a life instead of
+     ending your derby: you go back to the slot you started from and keep
+     playing, and both timers arm again as you land. Only the stopped timer
+     spends a life - out of bounds is still an outright elimination.
+
+     The returning car is **ghosted on every client** for four seconds, long
+     enough to land, settle and drive off a slot that may well have somebody
+     else's wreck parked on it by now. It waits longer if it has to: a car with
+     another inside it does not get its collisions back until the space is
+     clear.
    - An eliminated driver's vehicle is removed and their camera is forced into
      **freecam** until the derby ends; they cannot spawn a replacement car.
      When the derby finishes, their car is **put back** automatically

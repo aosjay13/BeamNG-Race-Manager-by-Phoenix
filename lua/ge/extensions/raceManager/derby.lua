@@ -114,9 +114,21 @@ D.derbyState = {
   visualize = true,     -- Hide/Show toggle for the boundary + grid visuals
   oobLeft   = nil,      -- active out-of-bounds countdown, nil = inside
   demoLeft  = nil,      -- active stopped countdown, nil = moving
-  -- true once we reported our own elimination (or we're a spectator, not a
-  -- participant)
+  -- THE SERVER SAYS WE ARE NOT IN THIS DERBY: eliminated, or never a
+  -- participant (joined after Start Derby). Authoritative, and only the server
+  -- broadcast sets it.
   out       = false,
+  -- WE HAVE REPORTED SOMETHING AND ARE WAITING FOR THE RULING. Stops the same
+  -- timer firing twice into the round trip, and nothing more.
+  --
+  -- These were ONE FLAG, and lives are what broke that. `out` was set the
+  -- moment a timer expired, on the reasoning that a timer expiring meant
+  -- elimination -- true until a driver could be sent back with a life instead.
+  -- Nothing cleared it for that case, so a driver who lost one life stopped
+  -- policing for the rest of the derby: no stopped timer, no out-of-bounds
+  -- timer, no further reports. And since a field that cannot report cannot be
+  -- eliminated, the derby then ran until an admin pressed End Derby.
+  pending   = false,
   runTime   = 0,        -- local seconds since this derby went running
   warnShown = false,    -- whether the UI currently shows a warning
 }
@@ -205,7 +217,7 @@ end
 local function derbyLocalServerId() return host.localServerId() end
 
 D.derbyUpdate = function (dt)
-  if D.derbyState.phase ~= 'running' or D.derbyState.out then
+  if D.derbyState.phase ~= 'running' or D.derbyState.out or D.derbyState.pending then
     D.derbyClearWarnings()
     return
   end
@@ -230,7 +242,7 @@ D.derbyUpdate = function (dt)
       end
       changed = true
       if D.derbyState.oobLeft <= 0 then
-        D.derbyState.out = true
+        D.derbyState.pending = true
         D.derbyClearWarnings()
         if host.inMultiplayer() then TriggerServerEvent('RM_DerbyDisqualified', '') end
         log('I', 'raceManager', 'Derby: out-of-bounds timer expired, reported disqualification')
@@ -254,7 +266,7 @@ D.derbyUpdate = function (dt)
     end
     changed = true
     if D.derbyState.demoLeft <= 0 then
-      D.derbyState.out = true
+      D.derbyState.pending = true
       D.derbyClearWarnings()
       if host.inMultiplayer() then TriggerServerEvent('RM_DerbyDemolished', '') end
       log('I', 'raceManager', 'Derby: stopped timer expired, reported demolition')
@@ -822,6 +834,7 @@ D.onDerbyUpdate = function (rawData)
     -- Fresh derby: re-arm local detection from a clean slate. The derby reset
     -- allowance is per-derby, so it starts over too.
     D.derbyState.out = false
+    D.derbyState.pending = false
     D.derbyState.runTime = 0
     host.resets.used = 0
     D.derbyClearWarnings()
@@ -912,7 +925,24 @@ D.onDerbyUpdate = function (rawData)
       if tonumber(p.id) == myId then mine = p; break end
     end
     if mine then
-      if mine.status ~= 'alive' then D.derbyState.out = true end
+      if mine.status ~= 'alive' then
+        -- The ruling came back as an elimination.
+        D.derbyState.out     = true
+        D.derbyState.pending = false
+      elseif D.derbyState.pending or D.derbyState.out then
+        -- ...and this is the other answer: still alive, so whatever we reported
+        -- was met with a life rather than an elimination. Policing resumes.
+        --
+        -- THE GRACE IS RE-ARMED HERE TOO, not only in onDerbyLifeLost. The two
+        -- messages are sent one after the other and nothing guarantees which
+        -- lands first; if this one wins the race, the car has not been moved
+        -- yet and is still sitting stopped exactly where the timer expired.
+        -- Resuming without re-arming would spend the next life within a frame.
+        D.derbyState.out     = false
+        D.derbyState.pending = false
+        D.derbyState.runTime = 0
+        D.derbyClearWarnings()
+      end
     elseif D.derbyState.phase == 'running' then
       D.derbyState.out = true
     end
@@ -947,6 +977,11 @@ D.onDerbyLifeLost = function (rawData)
   -- next life to the timer they already paid for.
   D.derbyState.demoLeft = nil
   D.derbyState.oobLeft  = nil
+  -- Back in, and policing again. This is the flag that used to be left set: the
+  -- timer that expired reported an elimination and got a life, and the client
+  -- went on believing it was out for the rest of the derby.
+  D.derbyState.pending  = false
+  D.derbyState.out      = false
   D.derbyClearWarnings()
   D.derbyState.runTime  = 0     -- re-arms the start grace, so a car put down
                                 -- stationary is not immediately on the clock

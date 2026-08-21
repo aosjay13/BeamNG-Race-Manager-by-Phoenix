@@ -4437,6 +4437,15 @@ local derby = {
   -- not, and a driver with lives in hand could otherwise use the boundary as a
   -- free teleport back into the middle of the fight.
   lives     = 1,
+  -- How long a car coming back on a life is intangible for. Long enough to
+  -- land, settle and drive off its own start slot -- which may well have
+  -- somebody else's wreck parked on it by the time a life is spent.
+  --
+  -- A CONSTANT living on the config table, not a setting. It is here rather
+  -- than in a local of its own because this chunk sits on Lua's
+  -- 200-active-locals ceiling, and one more name does not compile -- the same
+  -- reason `progress` is a table. Nothing writes it.
+  respawnGhost = 4.0,
   maxResets = DERBY_UNLIMITED_RESETS,  -- vehicle resets per driver per derby
   time      = 0,        -- seconds since Start Derby (advanced by RM_DerbyTick)
   -- A COOL-DOWN between the win condition and the derby actually ending.
@@ -5585,6 +5594,14 @@ function RM_onDerbyDemolished(pid)
   MP.TriggerClientEvent(pid, 'RM_DerbyLifeLost', Util.JsonEncode({
     lives = left,
     slot  = rec.slot,
+  }))
+  -- ...and EVERY client ghosts that car while it lands. The placement queue on
+  -- the driver's own machine ghosts their rivals, which keeps them from welding
+  -- INTO anybody -- but on every other machine the returning car appears solid,
+  -- and that is the side the weld comes from. Broadcast, so both halves hold.
+  MP.TriggerClientEvent(-1, 'RM_DerbyGhost', Util.JsonEncode({
+    pid     = pid,
+    seconds = derby.respawnGhost,
   }))
   MP.SendChatMessage(-1, string.format(
     '[RaceManager] %s was counted out and is back on the grid (%d life%s left).',

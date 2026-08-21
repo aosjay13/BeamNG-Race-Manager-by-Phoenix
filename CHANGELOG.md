@@ -187,6 +187,42 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 ### Fixed
 
+- **A derby driver who lost a life stopped being policed for the rest of it.**
+  After one life was spent the idle timer and the out-of-bounds timer both went
+  dead for that driver, and the derby then ran on with no winner until an admin
+  pressed **End Derby**.
+
+  Both symptoms are one cause. The client's `out` flag meant two things at once
+  -- *the server says I am not in this derby* and *I have reported something, do
+  not report it twice* -- and the timer-expiry path set it. That was true while a
+  stopped timer meant elimination. Lives made it false: the server can now answer
+  with a life and put the car back, and nothing cleared the latch. And a field
+  that cannot report cannot be eliminated, which is where the derby that never
+  ends comes from.
+
+  The two meanings are separate flags now. `out` is the server's ruling and only
+  a broadcast sets it; `pending` is the hold-off while a report is in flight, and
+  it is cleared by the ruling whichever way that goes. The grace period is
+  re-armed on both paths, because the life message and the broadcast are sent one
+  after the other and nothing guarantees which lands first -- if the broadcast
+  wins, the car has not been moved yet and is still sitting exactly where the
+  timer expired.
+
+- **A car coming back on a life is now ghosted on every client, not just its
+  own.** The placement queue ghosts the *rivals* on the respawning driver's
+  machine, which is right for a form-up where everyone is landing at once. A
+  single respawn is one-sided: the returning car passes through everybody on its
+  own screen and lands solid on everyone else's, which is the side the weld comes
+  from. The server broadcasts, each client ghosts that one car for four seconds,
+  and going solid still passes through the weld gate -- so the four seconds are a
+  floor, not a promise: a car with somebody inside it at the end of them waits
+  until the space is actually clear.
+
+  Timed locally rather than on the shared race clock, which does not run during a
+  derby -- an end time computed from it would never arrive and the car would stay
+  a ghost for the rest of the arena.
+
+
 - **The joker gate no longer carries its wording on track.** `JOKER 1/2
   (lap 1: closed)` was a sentence to read at racing speed, and the glyph beside
   it had already said the same thing: a red cross while the joker is shut, a

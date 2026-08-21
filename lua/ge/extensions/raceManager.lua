@@ -410,6 +410,11 @@ local ghost = {
   remoteVeh = {},
   hudLeft  = 0,       -- seconds until the next HUD push is due
   hudShown = false,   -- a HUD push has been sent that the UI is still showing
+  -- [vehId] = seconds left of a derby respawn ghost. Counted down locally
+  -- because a derby has no shared clock to hang an end time on: race.time is
+  -- frozen for the length of one (RM_Tick returns early with no racing session),
+  -- so an end time computed from it would never arrive.
+  respawn  = {},
 }
 
 -- ---------------------------------------------------------------------------
@@ -5178,6 +5183,7 @@ function M.onUpdate(dt)
   spectate.setGrabberBlocked(derby.derbyState.phase == 'forming'
     or derby.derbyState.phase == 'countdown' or derby.derbyState.phase == 'running')
   ghostUpdate(dt)           -- ghost mode qualifying
+  ghost.respawnUpdate(dt)   -- derby respawn ghosts, on the local clock
   vehicleConfigUpdate(dt)   -- Module 4: declare setup changes to the server
   derby.derbyUpdate(dt)
   derby.derbyDrawBoundary()
@@ -6882,6 +6888,53 @@ end
 -- Our own ghost is ignored here. We applied it locally the instant the reset
 -- fired, without waiting for this round trip, and only we can decide when it
 -- ends.
+-- A car is coming back on a derby life: make it intangible for a few seconds on
+-- THIS client, whoever's car it is -- our own included, which is the difference
+-- between this and the field-wide reasons. Those mean "everyone else is a
+-- ghost"; this one means "that car is", and the driver it belongs to needs it
+-- most of all.
+--
+-- Going solid again still goes through ghost.reason's weld gate, so the few
+-- seconds are a floor rather than a promise: a car with somebody inside it at
+-- the end of them waits, and is retried, until the space is actually clear.
+function ghost.onDerbyRespawn(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local pid = data.pid
+  if pid == nil then return end
+  local seconds = tonumber(data.seconds) or 0
+  if seconds <= 0 then return end
+  local veh, vehId
+  if tostring(pid) == tostring(localServerId()) then
+    veh = ownVehicle()
+    vehId = veh and vehicleId(veh) or nil
+  else
+    veh, vehId = ghost.vehicleForPid(pid)
+  end
+  if not vehId then return end
+  ghost.respawn[vehId] = seconds
+  ghost.reason(vehId, 'derbyRespawn', true, veh)
+  log('I', 'raceManager', ('Derby respawn ghost: vehicle %s for %.1fs')
+    :format(tostring(vehId), seconds))
+end
+
+-- Tick those countdowns. Its own pass rather than a branch inside the ghost
+-- sweep: this is the only ghost in the mod measured on the local clock, and
+-- folding it into machinery that reasons about the server's would invite
+-- somebody to "tidy" it onto the wrong one.
+function ghost.respawnUpdate(dt)
+  if next(ghost.respawn) == nil then return end
+  for vehId, left in pairs(ghost.respawn) do
+    left = left - dt
+    if left <= 0 then
+      ghost.respawn[vehId] = nil
+      ghost.reason(vehId, 'derbyRespawn', false)
+    else
+      ghost.respawn[vehId] = left
+    end
+  end
+end
+
 local function onGhost(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
@@ -7692,6 +7745,8 @@ local DISPATCH = {
   RM_GridAssign      = onGridAssign,
   -- Reset ghosting: someone's car went intangible (or came back).
   RM_Ghost           = onGhost,
+  -- A derby car coming back on a life: everyone ghosts it while it lands.
+  RM_DerbyGhost      = ghost.onDerbyRespawn,
   -- Grid hold: the server pulling a car back onto its slot.
   RM_HoldCorrect     = onHoldCorrect,
   -- Cup / series points
