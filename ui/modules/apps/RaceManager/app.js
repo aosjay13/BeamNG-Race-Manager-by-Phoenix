@@ -1987,6 +1987,78 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       };
 
       // ------------------------------------------------------------------
+      // Dragging a gate to reorder the route
+      // ------------------------------------------------------------------
+      // Replaces the up/down button pair, which cost two buttons on EVERY gate
+      // row to move one gate one place. Reordering a route of twenty gates by a
+      // few positions was a lot of clicking for something the hand already knows
+      // how to do.
+      //
+      // DELEGATED on the list rather than bound per row, and that is not a
+      // preference: ng-repeat destroys and rebuilds these rows on every change,
+      // so a listener attached to a row is attached to an element that will not
+      // exist after the first drop. One listener on the container outlives all
+      // of them.
+      //
+      // Nothing new crosses to Lua. reorderCheckpoint(from, to) already existed
+      // behind the arrows, including the branch-slot fixups that keep a branch
+      // gate pointing at the checkpoint it was authored against when the
+      // checkpoints move underneath it. This is a new gesture onto the same
+      // call, which is why it is small.
+      var dragFrom = null;
+
+      function rowIndexOf(node) {
+        while (node && node !== $element[0]) {
+          if (node.hasAttribute && node.hasAttribute('data-wp-index')) {
+            var n = parseInt(node.getAttribute('data-wp-index'), 10);
+            return isNaN(n) ? null : n;
+          }
+          node = node.parentNode;
+        }
+        return null;
+      }
+
+      function onDragStart(ev) {
+        dragFrom = rowIndexOf(ev.target);
+        if (dragFrom === null) { return; }
+        // Firefox and CEF both refuse to start a drag without payload set.
+        if (ev.dataTransfer) {
+          ev.dataTransfer.effectAllowed = 'move';
+          try { ev.dataTransfer.setData('text/plain', String(dragFrom)); } catch (e) {}
+        }
+      }
+      function onDragOver(ev) {
+        if (dragFrom === null) { return; }
+        // preventDefault is what MAKES an element a drop target. Without it the
+        // drop event never fires and the whole gesture silently does nothing.
+        ev.preventDefault();
+        if (ev.dataTransfer) { ev.dataTransfer.dropEffect = 'move'; }
+        var over = rowIndexOf(ev.target);
+        $scope.$evalAsync(function () { $scope.dragOverIndex = over; });
+      }
+      function onDrop(ev) {
+        ev.preventDefault();
+        var to = rowIndexOf(ev.target);
+        var from = dragFrom;
+        dragFrom = null;
+        $scope.$evalAsync(function () { $scope.dragOverIndex = null; });
+        if (from === null || to === null || from === to) { return; }
+        // reorderCheckpoint is 1-based and moves the item AT `from` to position
+        // `to`, which is exactly "dropped on that row".
+        $scope.reorderCheckpoint(from + 1, to + 1);
+      }
+      function onDragEnd() {
+        dragFrom = null;
+        $scope.$evalAsync(function () { $scope.dragOverIndex = null; });
+      }
+
+      $scope.dragOverIndex = null;
+      $element[0].addEventListener('dragstart', onDragStart);
+      $element[0].addEventListener('dragover', onDragOver);
+      $element[0].addEventListener('drop', onDrop);
+      $element[0].addEventListener('dragend', onDragEnd);
+
+      // ------------------------------------------------------------------
       // Branch gates (editor)
       // ------------------------------------------------------------------
       // Only one picker menu is ever open, so one key identifies it. Same custom
@@ -3755,6 +3827,13 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         // came back, timestamped to a session that has since ended.
         if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
         noticeQueue.length = 0;
+        // The drag listeners are on the root element, not on a row, so they
+        // outlive every ng-repeat rebuild -- which is the point of delegating
+        // them, and also why they have to be taken off by hand here.
+        $element[0].removeEventListener('dragstart', onDragStart);
+        $element[0].removeEventListener('dragover', onDragOver);
+        $element[0].removeEventListener('drop', onDrop);
+        $element[0].removeEventListener('dragend', onDragEnd);
         if (vehErrTimer) { clearTimeout(vehErrTimer); }
         if (goTimer) { clearTimeout(goTimer); }
         stopLapTicker();
