@@ -1599,6 +1599,90 @@ do
     'a late report inside the window does not push the end further away')
 end
 
+-- ===========================================================================
+-- LIFECYCLE: three races back to back leave the server in the same place
+-- ===========================================================================
+-- The client half of this lives in lifecycle_test.lua; this is the durable
+-- half, where the driver records, the flag, the fastest lap and the whole race
+-- table live. State that accumulates here is the kind that makes the third race
+-- of an evening score differently from the first for no visible reason.
+--
+-- A DIFF, not a checklist: the same complete race run three times, with every
+-- field the state broadcast carries compared afterwards. A checklist only ever
+-- covers the fields somebody thought of.
+do
+  local function fieldsOf(st)
+    local out = {}
+    for _, k in ipairs({ 'phase', 'flag', 'totalLaps', 'maxResets', 'jokerEnabled',
+        'jokerGates', 'startSlots', 'gridOffLine', 'pointToPoint', 'finalLap',
+        'bestLapTime', 'bestLapPid', 'resetMode', 'ghostQuali', 'qualiLapLimit',
+        'qualiTimeLimit' }) do
+      out[k] = tostring(st[k])
+    end
+    out['#drivers'] = tostring(#(st.drivers or {}))
+    local resets, laps = 0, 0
+    for _, d in ipairs(st.drivers or {}) do
+      resets = resets + (tonumber(d.resets) or 0)
+      laps   = laps   + (tonumber(d.lap) or 0)
+    end
+    out['sum(resets)'] = tostring(resets)
+    out['sum(laps)']   = tostring(laps)
+    return out
+  end
+
+  local auditCps = '[{"x":0,"y":100,"z":0,"hx":0,"hy":1},{"x":0,"y":200,"z":0,"hx":0,"hy":1}]'
+  adminLogin(1)
+  RM_onSaveLayout(1, '{"name":"Audit","width":20,"checkpoints":' .. auditCps
+    .. ',"startPositions":' .. auditCps .. '}')
+
+  local function runRace(n)
+    RM_onLoadLayout(1, '{"name":"Audit"}')
+    RM_onSetTotalLaps(1, '{"laps":1}')
+    RM_onSetMaxResets(1, '{"maxResets":3}')
+    RM_onGenerateGrid(1)
+    RM_onStartCountdown(1)
+    for _ = 1, 8 do RM_CountdownTick() end
+    -- Something worth leaving behind: a caution, a reset spent, a fastest lap.
+    RM_onSetFlag(1, '{"flag":"yellow"}')
+    RM_onVehicleReset(1)
+    RM_onSetFlag(1, '{"flag":"green"}')
+    -- EVERY entrant takes the flag. One left out there and the race never
+    -- closes, the next Generate Grid is refused, and the audit silently reports
+    -- one long race as three identical ones. That is exactly what the first
+    -- version of this did, until the assertion below was added.
+    for pid in pairs(connected) do
+      RM_onLap(pid, '{"lapTime":' .. (39 + pid) .. '.0}')
+    end
+    settleRace()
+    check(lastState.phase == 'finished' or lastState.phase == 'waiting',
+      'audit race ' .. n .. ' actually finished (phase ' .. tostring(lastState.phase) .. ')')
+    return fieldsOf(lastState)
+  end
+
+  local r1, r2, r3 = runRace(1), runRace(2), runRace(3)
+  local function diffFields(a, b)
+    local out = {}
+    for k, v in pairs(a) do
+      if b[k] ~= v then out[#out + 1] = k .. ': ' .. tostring(v) .. ' -> ' .. tostring(b[k]) end
+    end
+    table.sort(out)
+    return out
+  end
+  local d12, d23 = diffFields(r1, r2), diffFields(r2, r3)
+  for _, l in ipairs(d12) do print('  server drift 1->2: ' .. l) end
+  for _, l in ipairs(d23) do print('  server drift 2->3: ' .. l) end
+  check(#d12 == 0, 'the second race leaves the server exactly where the first did')
+  check(#d23 == 0, 'and so does the third: nothing accumulates across races')
+
+  -- The reset allowance in particular, because it is per RACE and is the most
+  -- obvious thing to get wrong: one spent in every race, rather than a tally
+  -- climbing 1, 2, 3 across the evening.
+  check(r1['sum(resets)'] == '1' and r3['sum(resets)'] == '1',
+    'the reset allowance starts over every race rather than carrying forward')
+
+  RM_onDeleteLayout(1, '{"name":"Audit"}')
+end
+
 removeTree('Resources')
 
 if fails == 0 then
