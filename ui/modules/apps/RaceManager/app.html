@@ -348,7 +348,7 @@
       </div>
     </div>
     <button class="rm-btn rm-btn-grid" ng-click="loadLayout()"
-            ng-disabled="!layoutUi.selected || !canEdit()"
+            ng-disabled="!layoutUi.selected || !canSetRules()"
             title="Put the whole server on this track: every connected player gets its checkpoints. To work on a layout without moving anyone, use Open in Editor.">
       Load Layout
     </button>
@@ -424,11 +424,19 @@
          grey - which reads as the app having broken rather than as a rule. It
          sits first in the tab row because that is where the eye lands before it
          reaches the control that is not responding. -->
-    <span class="rm-mode-badge" ng-class="sessionRunning() ? 'rm-mode-running' : 'rm-mode-config'"
-          title="{{ sessionRunning()
-            ? 'A session is running. Track and rule changes are locked until it ends.'
-            : 'No session running. The track and the rules can be changed.' }}">
-      {{ sessionRunning() ? 'RUNNING' : 'CONFIG' }}
+    <!-- Three states, because the grid is genuinely its own: the field is
+         placed and frozen, so the TRACK is locked, but the rules are not and
+         the server has never thought they were. A badge that said everything
+         was locked there would be describing controls that plainly still
+         work. -->
+    <span class="rm-mode-badge"
+          ng-class="sessionRunning() ? (canSetRules() ? 'rm-mode-grid' : 'rm-mode-running') : 'rm-mode-config'"
+          title="{{ !sessionRunning()
+            ? 'No session running. The track and the rules can both be changed.'
+            : (canSetRules()
+               ? 'On the grid. The track is locked because cars are standing on it, but laps, resets, the joker and the qualifying rules can still be changed.'
+               : 'A session is running. Track and rule changes are locked until it ends.') }}">
+      {{ !sessionRunning() ? 'CONFIG' : (canSetRules() ? 'ON GRID' : 'RUNNING') }}
     </span>
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('race')}"
             ng-click="selectAdminTab('race')"
@@ -474,7 +482,7 @@
       <input type="number" min="1" max="500" ng-model="settingsUi.laps"
              ng-model-options="{ debounce: { default: 500, blur: 0 } }"
              ng-change="applyTotalLaps()"
-             ng-disabled="pointToPoint || !canEdit()">
+             ng-disabled="pointToPoint || !canSetRules()">
       <span class="rm-setting-val" ng-if="!pointToPoint">race: {{ totalLaps }}</span>
       <span class="rm-setting-val rm-p2p-note" ng-if="pointToPoint">point to point: driven once</span>
     </span>
@@ -484,17 +492,17 @@
       <input type="number" class="rm-width-num" min="-1" max="99" step="1" ng-model="settingsUi.resets"
              ng-model-options="{ debounce: { default: 500, blur: 0 } }"
              ng-change="applyMaxResets()"
-             ng-disabled="!canEdit()">
+             ng-disabled="!canSetRules()">
       <span class="rm-setting-val">{{ resetRuleLabel() }}</span>
     </span>
     <span class="rm-setting" title="Repair in place, or respawn at the last checkpoint crossed.">
       <label>Reset mode</label>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': resetMode === 'inplace'}"
               ng-click="setResetMode('inplace')"
-              ng-disabled="!canEdit()">In place</button>
+              ng-disabled="!canSetRules()">In place</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': resetMode === 'checkpoint'}"
               ng-click="setResetMode('checkpoint')"
-              ng-disabled="!canEdit()">Last checkpoint</button>
+              ng-disabled="!canSetRules()">Last checkpoint</button>
     </span>
     <!-- Module 2: rallycross joker lap -->
     <span class="rm-setting" title="Every finisher must take the Joker Route once, never on lap 1, or they are disqualified.">
@@ -506,7 +514,7 @@
            look available in the first place. -->
       <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': jokerEnabled}"
               ng-click="toggleJoker()"
-              ng-disabled="!canEdit() || !jokerGates">
+              ng-disabled="!canSetRules() || !jokerGates">
         {{ jokerEnabled ? '✓ Enabled' : 'Disabled' }}
       </button>
       <span class="rm-setting-val" ng-if="jokerEnabled">{{ jokerGates }} gates</span>
@@ -560,19 +568,19 @@
       <label>Grid order</label>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'quali'}"
               ng-click="setGridMode('quali')"
-              ng-disabled="!canEdit()"
+              ng-disabled="!canSetRules()"
               title="Fastest qualifier on pole. Drivers with no time line up at the back.">Quali</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'reverse'}"
               ng-click="setGridMode('reverse')"
-              ng-disabled="!canEdit()"
+              ng-disabled="!canSetRules()"
               title="Slowest qualifier on pole, fastest at the back. Drivers with no time still start last.">Reverse</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'random'}"
               ng-click="setGridMode('random')"
-              ng-disabled="!canEdit()"
+              ng-disabled="!canSetRules()"
               title="A random draw, for a race with no qualifying behind it.">Random</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'custom'}"
               ng-click="setGridMode('custom')"
-              ng-disabled="!canEdit()"
+              ng-disabled="!canSetRules()"
               title="Type a slot number in the Start column. Everyone else falls in behind by quali time.">Custom</button>
       <span class="rm-setting-val">{{ startSlots }} start position{{ startSlots === 1 ? '' : 's' }}</span>
     </span>
@@ -2875,6 +2883,12 @@
     background: rgba(52, 168, 83, 0.18);
     color: #6ddc8b;
     border: 1px solid rgba(52, 168, 83, 0.45);
+  }
+  /* The grid sits between the two: locked track, live rules. */
+  .rm-mode-grid {
+    background: rgba(251, 188, 5, 0.18);
+    color: #fdd663;
+    border: 1px solid rgba(251, 188, 5, 0.5);
   }
   .rm-mode-running {
     background: rgba(234, 67, 53, 0.18);

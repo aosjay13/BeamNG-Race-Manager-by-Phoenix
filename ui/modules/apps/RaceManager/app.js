@@ -346,8 +346,33 @@ angular.module('beamng.apps')
         return $scope.phase === 'grid' || $scope.phase === 'countdown'
             || $scope.phase === 'racing' || $scope.phase === 'qualifying';
       };
+      // TWO GATES, because they are protecting two different things.
+      //
+      // canEdit is about GEOMETRY: placing, moving, resizing and reordering
+      // gates. It includes 'grid', where the field is already placed and frozen
+      // on its slots -- a gate moving under a parked car is the same mistake as
+      // one moving under a car at speed.
+      //
+      // canSetRules is about the RULES: laps, the reset allowance and mode, the
+      // joker, the qualifying limits, the grid mode, and which track is loaded.
+      // Those are fine to change while a grid is formed and nobody has moved,
+      // and the SERVER has always agreed -- every one of those handlers is gated
+      // on sessionUnderWay(), which is countdown, racing and qualifying and has
+      // never included 'grid'.
+      //
+      // Folding them into one predicate disabled a row of controls the server
+      // would happily have accepted, which took away adjusting the rules on the
+      // grid without leaving the race. The bug that was actually worth fixing is
+      // still fixed: both of these name QUALIFYING, which every one of the
+      // fourteen hand-written guards had missed.
       $scope.canEdit = function () {
         return $scope.isAdmin && !$scope.sessionRunning();
+      };
+      $scope.canSetRules = function () {
+        return $scope.isAdmin
+          && $scope.phase !== 'countdown'
+          && $scope.phase !== 'racing'
+          && $scope.phase !== 'qualifying';
       };
       // Both editors are render gates in Lua, which has no idea whether its panel
       // is on screen. Tell it, so authoring furniture - start-slot outlines, gate
