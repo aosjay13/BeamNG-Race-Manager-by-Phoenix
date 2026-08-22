@@ -246,6 +246,13 @@ check(near(cylinders[1].a.x, -10) and near(cylinders[1].a.z, 0),
 -- The global default no longer reaches a gate that has already been placed.
 -- It used to, and nudging that slider resized a whole circuit retroactively
 -- with nothing to undo it; a placed gate now owns its size.
+-- BACK TO CONFIGURING FIRST. The editor refuses to touch the route buffer while
+-- a session is running, and the cases below resize gates -- an admin action, in
+-- the mode an admin does it in. Left in 'racing' from the section above, every
+-- editor call here would be swallowed and the assertions would pass for the
+-- wrong reason: a gate that never changed looks exactly like a gate that was
+-- correctly left alone.
+serverState({ phase = 'waiting', totalLaps = 3, maxResets = -1, drivers = {} })
 local wasX = cylinders[1].a.x
 RM.setCheckpointWidth(40)
 frame()
@@ -523,7 +530,15 @@ check(near(cylinders[8].a.x, -22), 'the gate placed after it inherited that size
 check(near(cylinders[15].a.x, -22), 'and so did the one after that')
 
 -- Changing one gate now moves ONLY that gate.
+--
+-- The resize happens in the configuring mode the editor is gated to, then the
+-- session is put back so the DRAW still runs in race mode: what is under test
+-- here is which gates move, not when an admin is allowed to move them.
+serverState({ phase = 'waiting', totalLaps = 3, maxResets = -1, drivers = {},
+  youAreAdmin = true })
 RM.setCheckpointOverride(2, 10, 4)
+serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {},
+  youAreAdmin = true })
 frame()
 check(near(cylinders[8].a.x, -5), 'resizing a gate changes that gate')
 check(near(cylinders[1].a.x, -22), 'and leaves the one before it alone')

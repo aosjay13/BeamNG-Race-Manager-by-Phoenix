@@ -149,7 +149,9 @@ angular.module('beamng.apps')
       $scope.carTaken = false;
       $scope.spectatorReason = null;
       // Transient banners: regulation notices and vehicle rejections.
-      $scope.notice = null;           // { kind, msg }
+      // { kind, msg, sub, rank, flash, ms } or null. Set only by noticeAdvance;
+      // everything else goes through noticePush and waits its turn.
+      $scope.notice = null;
       $scope.vehicleError = null;     // { message, detail }
 
       // Live position telemetry for THIS client (pushed by the client Lua at
@@ -323,6 +325,55 @@ angular.module('beamng.apps')
         loadPref('adminTab.' + $scope.mode, DEFAULT_TAB[$scope.mode]));
       $scope.isMode = function (mode) { return $scope.mode === mode; };
       $scope.isAdminTab = function (tab) { return $scope.adminTab === tab; };
+
+      // RUNNING A RACE, OR CONFIGURING ONE.
+      //
+      // These two replace fourteen copies of "phase === 'countdown' || phase
+      // === 'racing'" spread through the markup, and the copies were wrong the
+      // same way fourteen times: every one of them missed QUALIFYING, so the
+      // whole editor stayed live for the length of a qualifying session. 'grid'
+      // was missed too, where the field is already placed and frozen on its
+      // slots and a gate moving under a parked car is the same mistake as one
+      // moving under a car at speed.
+      //
+      // canEdit is the CAPABILITY, and it is the seam a permissions system
+      // plugs into later: the markup asks whether this thing may be done, not
+      // who is doing it or what the phase happens to be called. The matching
+      // gate in Lua (edit.canConfigure) is what actually enforces it -- this
+      // half only decides what the panel offers, and a disabled button has
+      // never stopped anybody who can reach the console.
+      $scope.sessionRunning = function () {
+        return $scope.phase === 'grid' || $scope.phase === 'countdown'
+            || $scope.phase === 'racing' || $scope.phase === 'qualifying';
+      };
+      // TWO GATES, because they are protecting two different things.
+      //
+      // canEdit is about GEOMETRY: placing, moving, resizing and reordering
+      // gates. It includes 'grid', where the field is already placed and frozen
+      // on its slots -- a gate moving under a parked car is the same mistake as
+      // one moving under a car at speed.
+      //
+      // canSetRules is about the RULES: laps, the reset allowance and mode, the
+      // joker, the qualifying limits, the grid mode, and which track is loaded.
+      // Those are fine to change while a grid is formed and nobody has moved,
+      // and the SERVER has always agreed -- every one of those handlers is gated
+      // on sessionUnderWay(), which is countdown, racing and qualifying and has
+      // never included 'grid'.
+      //
+      // Folding them into one predicate disabled a row of controls the server
+      // would happily have accepted, which took away adjusting the rules on the
+      // grid without leaving the race. The bug that was actually worth fixing is
+      // still fixed: both of these name QUALIFYING, which every one of the
+      // fourteen hand-written guards had missed.
+      $scope.canEdit = function () {
+        return $scope.isAdmin && !$scope.sessionRunning();
+      };
+      $scope.canSetRules = function () {
+        return $scope.isAdmin
+          && $scope.phase !== 'countdown'
+          && $scope.phase !== 'racing'
+          && $scope.phase !== 'qualifying';
+      };
       // Both editors are render gates in Lua, which has no idea whether its panel
       // is on screen. Tell it, so authoring furniture - start-slot outlines, gate
       // rectangles, arena corner labels - stays in the editor instead of being
@@ -442,6 +493,9 @@ angular.module('beamng.apps')
       // must not wipe a table being typed.
       $scope.cupUi = {
         name: '',
+        // Name typed into "Save as". Initialised here so the object owns it
+        // before any child scope can shadow it.
+        saveName: '',
         preset: '',
         derbyPreset: '',
         points: [],
@@ -552,13 +606,25 @@ angular.module('beamng.apps')
         var sig;
 
         sig = cupSig($scope.cup.racePoints);
-        if (cupSeen.race !== sig) { cupFill($scope.cupUi.points, $scope.cup.racePoints); cupSeen.race = sig; }
+        if (cupSeen.race !== sig) {
+          cupFill($scope.cupUi.points, $scope.cup.racePoints); cupSeen.race = sig;
+          // The typed line follows the buffer whenever the SERVER reseeds it,
+          // or a preset load would fill the boxes and leave the line showing
+          // the table before it.
+          $scope.cupSyncLine('race');
+        }
 
         sig = cupSig($scope.cup.derbyPoints);
-        if (cupSeen.derby !== sig) { cupFill($scope.cupUi.derby, $scope.cup.derbyPoints); cupSeen.derby = sig; }
+        if (cupSeen.derby !== sig) {
+          cupFill($scope.cupUi.derby, $scope.cup.derbyPoints); cupSeen.derby = sig;
+          $scope.cupSyncLine('derby');
+        }
 
         sig = cupSig($scope.cup.qualiPoints);
-        if (cupSeen.quali !== sig) { cupFill($scope.cupUi.quali, $scope.cup.qualiPoints); cupSeen.quali = sig; }
+        if (cupSeen.quali !== sig) {
+          cupFill($scope.cupUi.quali, $scope.cup.qualiPoints); cupSeen.quali = sig;
+          $scope.cupSyncLine('quali');
+        }
 
         sig = cupBonusSig($scope.cup.bonuses);
         if (cupSeen.bonus !== sig) {
@@ -729,6 +795,38 @@ angular.module('beamng.apps')
         cupExpectReseed('derby');
         bngApi.engineLua('raceManager.cupSetPreset("' + $scope.cupUi.derbyPreset + '", "derby")');
       };
+      // Saving the current race table as a named system.
+      //
+      // A saved system joins the SAME picker the built-ins are in, rather than
+      // getting a list of its own: from the admin's side "load 25P Moderate" and
+      // "load the table we agreed last month" are the same action, and the
+      // server marks which ones it made so only those offer Delete.
+      // ON cupUi, NOT a bare scope property. Every control here sits inside
+      // ng-if="cup.enabled && cupUi.showScoring", which makes a CHILD scope: a
+      // bare ng-model would write the typed name onto that child, leaving the
+      // controller's copy empty and Save sending nothing. Going through the
+      // object resolves it on the controller and mutates it in place.
+      $scope.cupSavePreset = function () {
+        var name = ($scope.cupUi.saveName || '').trim();
+        if (!name) { return; }
+        cupExpectReseed('race');
+        bngApi.engineLua('raceManager.cupSavePreset(' + luaStr(name) + ')');
+        $scope.cupUi.saveName = '';
+      };
+      // Only the saved ones can go. The picker carries the flag from the server
+      // so the button is absent on a built-in rather than refused after a click.
+      $scope.cupSelectedIsSaved = function () {
+        var list = $scope.cup.presets || [];
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].key === $scope.cupUi.preset) { return list[i].saved === true; }
+        }
+        return false;
+      };
+      $scope.cupDeletePreset = function () {
+        if (!$scope.cupSelectedIsSaved()) { return; }
+        bngApi.engineLua('raceManager.cupDeletePreset(' + luaStr($scope.cupUi.preset) + ')');
+      };
+
       $scope.cupToggleScoring = function () {
         $scope.cupUi.showScoring = !$scope.cupUi.showScoring;
       };
@@ -751,6 +849,73 @@ angular.module('beamng.apps')
         while (out.length > 0 && out[out.length - 1] === 0) { out.pop(); }
         return out.join(',');
       }
+      // ------------------------------------------------------------------
+      // Typing a table instead of nudging twenty-four spinners
+      // ------------------------------------------------------------------
+      // The spinner grid is fine for changing ONE position and miserable for
+      // entering a system: twenty-four boxes, each a click-click-click, and no
+      // way to see the shape of what you have typed. A points table is a list of
+      // numbers and reads perfectly well as one.
+      //
+      // The line and the boxes are the SAME buffer, in both directions. Typing
+      // in the line fills the boxes, nudging a box rewrites the line, and Apply
+      // sends whatever is in the buffer either way -- so neither is a second
+      // source of truth and there is no "which one wins" to get wrong.
+      //
+      // Nothing new crosses to Lua: cupCsv already built exactly this string for
+      // the Apply path, and the bridge already parses it back. This is the same
+      // format, shown to the admin instead of hidden from them.
+      function cupParseCsv(text, buffer) {
+        var parts = String(text || '').split(/[^0-9]+/);
+        var n = 0;
+        for (var i = 0; i < parts.length && n < CUP_EDIT_POSITIONS; i++) {
+          if (parts[i] !== '') { buffer[n++] = Math.min(9999, Math.floor(Number(parts[i]))); }
+        }
+        // Anything the typed line did not reach scores nothing. Without this a
+        // shorter line would leave the tail of a longer previous table standing
+        // underneath it, which is the one way this could silently pay points
+        // nobody entered.
+        while (n < CUP_EDIT_POSITIONS) { buffer[n++] = 0; }
+      }
+
+      // Split out so the three tables share one implementation rather than
+      // three that drift. `which` names the buffer and the label only.
+      var CUP_TABLES = { race: 'points', derby: 'derby', quali: 'quali' };
+      $scope.cupLine = { race: '', derby: '', quali: '' };
+
+      // Rebuild the visible line from the buffer. Called whenever a spinner
+      // moves and whenever the server reseeds a table.
+      $scope.cupSyncLine = function (which) {
+        var buf = $scope.cupUi[CUP_TABLES[which]];
+        $scope.cupLine[which] = cupCsv(buf);
+      };
+      $scope.cupLineChanged = function (which) {
+        cupParseCsv($scope.cupLine[which], $scope.cupUi[CUP_TABLES[which]]);
+      };
+      // Every position to zero, in one press. The Apply button next to it is
+      // what commits it, so a mis-click costs nothing until it is confirmed.
+      $scope.cupClearTable = function (which) {
+        var buf = $scope.cupUi[CUP_TABLES[which]];
+        for (var i = 0; i < CUP_EDIT_POSITIONS; i++) { buf[i] = 0; }
+        $scope.cupSyncLine(which);
+      };
+      // Qualifying and the derby, filled from the race table. A cup that pays
+      // the same for a derby as for a race is a normal thing to want and was
+      // twenty-four boxes of retyping.
+      $scope.cupCopyFromRace = function (which) {
+        if (which === 'race') { return; }
+        var src = $scope.cupUi.points, dst = $scope.cupUi[CUP_TABLES[which]];
+        for (var i = 0; i < CUP_EDIT_POSITIONS; i++) { dst[i] = Math.floor(Number(src[i]) || 0); }
+        $scope.cupSyncLine(which);
+      };
+      $scope.cupTableEmpty = function (which) {
+        var buf = $scope.cupUi[CUP_TABLES[which]];
+        for (var i = 0; i < CUP_EDIT_POSITIONS; i++) {
+          if (Math.floor(Number(buf[i]) || 0) > 0) { return false; }
+        }
+        return true;
+      };
+
       $scope.cupApplyPoints = function () {
         bngApi.engineLua('raceManager.cupSetRacePoints("' + cupCsv($scope.cupUi.points) + '")');
       };
@@ -1847,6 +2012,100 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       };
 
       // ------------------------------------------------------------------
+      // ------------------------------------------------------------------
+      // Dragging a gate to reorder the route
+      // ------------------------------------------------------------------
+      // Replaces the up/down button pair, which cost two buttons on EVERY gate
+      // row to move one gate one place.
+      //
+      // MOUSE EVENTS, NOT HTML5 DRAG-AND-DROP. The first version used
+      // draggable="true" with dragstart/dragover/drop, which is the obvious way
+      // to do this and does not work here: the grip took the grab cursor (that
+      // is only CSS) and nothing ever moved, because BeamNG's CEF host does not
+      // deliver the drag events to the page. Nothing errors, the gesture simply
+      // does nothing -- so it looked like a bug in the drop logic rather than
+      // the whole mechanism being absent.
+      //
+      // mousedown/mousemove/mouseup are plain DOM and always arrive. The move
+      // and up listeners go on the DOCUMENT rather than the row, so a pointer
+      // that leaves the list mid-drag is still tracked and the drag still ends
+      // when the button comes up somewhere else.
+      //
+      // Delegated for the down event, because ng-repeat rebuilds these rows on
+      // every change and a listener bound to a row is bound to an element that
+      // will not exist after the first drop.
+      //
+      // Nothing new crosses to Lua: reorderCheckpoint(from, to) already existed
+      // behind the arrows, branch-slot fixups included.
+      var dragFrom = null;
+
+      function rowIndexOf(node) {
+        while (node && node !== $element[0]) {
+          if (node.hasAttribute && node.hasAttribute('data-wp-index')) {
+            var n = parseInt(node.getAttribute('data-wp-index'), 10);
+            return isNaN(n) ? null : n;
+          }
+          node = node.parentNode;
+        }
+        return null;
+      }
+
+      // The row under the pointer right now. elementFromPoint rather than
+      // ev.target: the pointer is over whatever is being dragged past, and
+      // during a drag the target is wherever the mouse went down.
+      function rowIndexAt(x, y) {
+        return rowIndexOf(document.elementFromPoint(x, y));
+      }
+
+      function onDragMove(ev) {
+        if (dragFrom === null) { return; }
+        // Stops the gesture selecting the row text as the pointer sweeps down
+        // the list, which otherwise highlights half the editor blue.
+        ev.preventDefault();
+        var over = rowIndexAt(ev.clientX, ev.clientY);
+        $scope.$evalAsync(function () { $scope.dragOverIndex = over; });
+      }
+
+      function onDragUp(ev) {
+        if (dragFrom === null) { return; }
+        var to = rowIndexAt(ev.clientX, ev.clientY);
+        var from = dragFrom;
+        dragFrom = null;
+        document.removeEventListener('mousemove', onDragMove, true);
+        document.removeEventListener('mouseup', onDragUp, true);
+        $scope.$evalAsync(function () {
+          $scope.dragOverIndex = null;
+          // reorderCheckpoint is 1-based and moves the item AT `from` to
+          // position `to`, which is exactly "dropped on that row".
+          if (from !== null && to !== null && from !== to) {
+            $scope.reorderCheckpoint(from + 1, to + 1);
+          }
+        });
+      }
+
+      function onDragDown(ev) {
+        // The GRIP starts a drag, not the whole row: the row already has a click
+        // that opens its size controls, and a row-wide drag would make opening
+        // one a coin toss between the two.
+        var onGrip = ev.target && ev.target.classList
+          && ev.target.classList.contains('rm-editor-grip');
+        if (!onGrip || ev.button !== 0) { return; }
+        var idx = rowIndexOf(ev.target);
+        if (idx === null) { return; }
+        dragFrom = idx;
+        ev.preventDefault();
+        ev.stopPropagation();
+        // Capture phase, so the drag owns the pointer even over controls inside
+        // the rows it is passing across.
+        document.addEventListener('mousemove', onDragMove, true);
+        document.addEventListener('mouseup', onDragUp, true);
+        $scope.$evalAsync(function () { $scope.dragOverIndex = idx; });
+      }
+
+      $scope.dragOverIndex = null;
+      $element[0].addEventListener('mousedown', onDragDown);
+
+      // ------------------------------------------------------------------
       // Branch gates (editor)
       // ------------------------------------------------------------------
       // Only one picker menu is ever open, so one key identifies it. Same custom
@@ -1959,15 +2218,141 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // ------------------------------------------------------------------
       // Regulation notices, forced spectating and vehicle rejections
       // ------------------------------------------------------------------
+      // ONE QUEUE, and everything transient goes through it.
+      //
+      // What was here before was a single slot: each notice overwrote whatever
+      // was showing AND restarted the one shared six-second timer, so a reset
+      // notice arriving behind a caution replaced the caution and then hid
+      // itself at a time that belonged to neither. Two things arriving together
+      // meant one of them was never seen at all, and there was no way to say
+      // that a flag matters more than a lap time.
+      //
+      // Notices now RANK. A higher-ranked one preempts what is showing and the
+      // displaced notice is not lost, it waits. Equal ranks queue in arrival
+      // order. Anything outranked by what is already up waits its turn rather
+      // than clobbering it.
+      //
+      // Presentation is decided per kind, in NOTICE_STYLE below, so that adding
+      // a notification later is one row there rather than another timer and
+      // another slot in this controller.
+      var NOTICE_DEFAULT = { rank: 0, flash: false, ms: 6000, colour: 'grey' };
+      var NOTICE_STYLE = {
+        // Flags outrank everything: a caution is a fact about the session and
+        // has to reach a driver whose eyes are on the road, ahead of any
+        // informational message competing for the same strip.
+        // The flash, and the colour comes from the notice rather than from
+        // here: green, yellow, red, white and chequered are all kind 'flag'
+        // and each waves in its own colour.
+        flag:     { rank: 40, flash: true,  ms: 2600 },
+        // Being removed from the session, or having a car refused, is the other
+        // class a driver cannot afford to miss.
+        spectate: { rank: 30, flash: false, ms: 6000 },
+        vehicle:  { rank: 30, flash: false, ms: 6000 },
+        session:  { rank: 20, flash: false, ms: 6000 },
+        // Running out of resets changes what this driver is allowed to do for
+        // the rest of the session, so it flashes rather than scrolling past in
+        // the strip. Amber, not the flag yellow: a caution is about the
+        // session and this is about one car.
+        resetsout: { rank: 25, flash: true, ms: 2600, colour: 'amber' },
+        // Gold, and a flash rather than the strip. On a driver's panel the
+        // strip painted 16% gold over a transparent root, which is to say over
+        // the road going past: legible on an admin's dark panel and very nearly
+        // invisible on everybody else's, which is how it went unnoticed.
+        fastest:  { rank: 10, flash: true,  ms: 2600, colour: 'gold' },
+        // Everything else (grid, joker, pit, reset, ghost, finish, server)
+        // takes NOTICE_DEFAULT. They are the running commentary.
+      };
+      function noticeStyle(kind) {
+        var s = NOTICE_STYLE[kind] || NOTICE_DEFAULT;
+        return {
+          rank:   s.rank   !== undefined ? s.rank   : NOTICE_DEFAULT.rank,
+          flash:  s.flash  !== undefined ? s.flash  : NOTICE_DEFAULT.flash,
+          ms:     s.ms     !== undefined ? s.ms     : NOTICE_DEFAULT.ms,
+          colour: s.colour !== undefined ? s.colour : NOTICE_DEFAULT.colour
+        };
+      }
+
+      // How long a notice has to have been up before being preempted counts as
+      // having been read. Under this it is requeued, over it is dropped.
+      var NOTICE_MIN_SEEN = 700;
       var noticeTimer = null;
+      var noticeQueue = [];
+
+      function noticeClear() {
+        if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+      }
+
+      // Show the highest-ranked thing waiting, if anything is.
+      function noticeAdvance() {
+        noticeClear();
+        if (!noticeQueue.length) { $scope.notice = null; return; }
+        var best = 0;
+        for (var i = 1; i < noticeQueue.length; i++) {
+          if (noticeQueue[i].rank > noticeQueue[best].rank) { best = i; }
+        }
+        var next = noticeQueue.splice(best, 1)[0];
+        next.shownAt = Date.now();
+        $scope.notice = next;
+        noticeTimer = setTimeout(function () {
+          $scope.$evalAsync(noticeAdvance);
+        }, next.ms);
+      }
+
+      // A cap, because a queue with no bound is a way to make the panel
+      // unusable: a driver spinning in a barrier can generate reset notices
+      // faster than they drain. The OLDEST LOW-RANKED one goes, never the
+      // highest, so a caution is never the thing dropped to make room.
+      var NOTICE_QUEUE_MAX = 8;
+      function noticeTrim() {
+        while (noticeQueue.length > NOTICE_QUEUE_MAX) {
+          var worst = 0;
+          for (var i = 1; i < noticeQueue.length; i++) {
+            if (noticeQueue[i].rank < noticeQueue[worst].rank) { worst = i; }
+          }
+          noticeQueue.splice(worst, 1);
+        }
+      }
+
+      function noticePush(kind, msg, sub) {
+        var st = noticeStyle(kind);
+        var item = { kind: kind, msg: msg, sub: sub || null, rank: st.rank,
+                     flash: st.flash, ms: st.ms, colour: st.colour };
+        // Nothing showing: straight up.
+        if (!$scope.notice) {
+          noticeQueue.push(item);
+          noticeAdvance();
+          return;
+        }
+        // Outranks what is up: preempt it.
+        //
+        // The displaced notice goes back in the queue ONLY if it has not really
+        // been seen yet. Requeueing unconditionally is what made a fastest lap
+        // replay itself a few seconds after the race ended: the chequered flag
+        // preempted it, the fastest lap went back in the queue, and it came
+        // round again when the flag expired. From the driver's seat that reads
+        // as the notification firing twice.
+        //
+        // A notice that has held the panel for MIN_SEEN has done its job and is
+        // superseded. One that was pushed a moment before something outranked
+        // it never reached anybody and is worth keeping.
+        if (item.rank > $scope.notice.rank) {
+          var seen = Date.now() - ($scope.notice.shownAt || 0);
+          if (seen < NOTICE_MIN_SEEN) { noticeQueue.push($scope.notice); }
+          noticeQueue.push(item);
+          noticeTrim();
+          noticeAdvance();
+          return;
+        }
+        noticeQueue.push(item);
+        noticeTrim();
+      }
+      // Reachable from the rest of the controller, and the only way in.
+      $scope.pushNotice = noticePush;
+
       $scope.$on('RaceManagerNotice', function (event, data) {
         if (!data || !data.msg) { return; }
         $scope.$evalAsync(function () {
-          $scope.notice = { kind: data.kind || 'info', msg: data.msg };
-          if (noticeTimer) { clearTimeout(noticeTimer); }
-          noticeTimer = setTimeout(function () {
-            $scope.$evalAsync(function () { $scope.notice = null; });
-          }, 6000);
+          noticePush(data.kind || 'info', data.msg, data.sub);
         });
       });
 
@@ -3014,6 +3399,37 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         bngApi.engineLua('raceManager.loadLayout(' + luaStr($scope.layoutUi.selected) + ')');
       };
 
+      // NOTHING LOADED: no race track, no derby arena, one press.
+      //
+      // Confirmed first, because it is the one editor action that throws away
+      // what everybody on the server can see rather than only what this admin
+      // is working on. The confirmation reuses the layout panel's own inline
+      // prompt: the game's CEF layer cannot draw a browser dialog over the
+      // world, which is the same reason the layout picker is not a <select>.
+      // askLayout is declared further down and is reached here by hoisting,
+      // which JS does for function declarations and Lua does not do for locals.
+      // The equivalent line in the extension would be a nil global.
+      $scope.clearEverything = function () {
+        askLayout(
+          'Clear the race track AND the derby arena for everyone? '
+            + 'Saved layouts and arenas are not deleted.',
+          'Clear everything',
+          function () { bngApi.engineLua('raceManager.clearEverything()'); });
+      };
+
+      // OPEN IN THE EDITOR: the same layout, to this admin only.
+      //
+      // The distinction is the one thing separating two admins working at once
+      // from two admins overwriting each other. Load Layout moves the whole
+      // server onto a track; this pulls a copy down to edit and leaves the
+      // server's own track, grid and joker count exactly where they are.
+      $scope.editLayout = function () {
+        if (!$scope.layoutUi.selected) { return; }
+        console.log('[RaceManager] Edit Layout "' + $scope.layoutUi.selected + '" requested (private)');
+        bngApi.engineLua('raceManager.loadLayout('
+          + luaStr($scope.layoutUi.selected) + ', true)');
+      };
+
       // The layout and arena pickers are absolutely positioned menus, and the
       // admin tab body is a scroll container - a menu opened near its bottom
       // edge would hang below the visible area. Scroll it into the scroller
@@ -3468,7 +3884,17 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.$on('$destroy', function () {
         document.removeEventListener('mousemove', onResizeMove);
         document.removeEventListener('mouseup', onResizeEnd);
-        if (noticeTimer) { clearTimeout(noticeTimer); }
+        // The queue goes with the timer. A teardown that stopped the clock but
+        // left eight notices waiting would show all of them the moment the app
+        // came back, timestamped to a session that has since ended.
+        if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+        noticeQueue.length = 0;
+        // The drag listeners are on the root element, not on a row, so they
+        // outlive every ng-repeat rebuild -- which is the point of delegating
+        // them, and also why they have to be taken off by hand here.
+        $element[0].removeEventListener('mousedown', onDragDown);
+        document.removeEventListener('mousemove', onDragMove, true);
+        document.removeEventListener('mouseup', onDragUp, true);
         if (vehErrTimer) { clearTimeout(vehErrTimer); }
         if (goTimer) { clearTimeout(goTimer); }
         stopLapTicker();

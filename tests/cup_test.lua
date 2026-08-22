@@ -464,7 +464,28 @@ RM_onCupStart(ADMIN, '{"name":"Broadcast Cup"}')
 check(lastCup ~= nil, 'starting a cup pushes the cup state to clients')
 check(lastCup.cupEnabled == true and lastCup.cupName == 'Broadcast Cup',
   'the payload carries the cup itself')
-check(#lastCup.presets == 5, 'and the list of scoring presets the server supports')
+-- Not a hardcoded count. This asserted `== 5` and broke the moment a preset was
+-- added, which tells you nothing except that somebody added one: the thing worth
+-- protecting is that every entry is USABLE by the dropdown, not how many there
+-- are. A preset missing its key cannot be picked and a preset missing its label
+-- shows as a blank row, and neither fails anywhere else.
+check(#lastCup.presets >= 5, 'and the list of scoring presets the server supports')
+local presetsOk, byKey = true, {}
+for _, p in ipairs(lastCup.presets) do
+  if type(p.key) ~= 'string' or p.key == ''
+     or type(p.label) ~= 'string' or p.label == '' then presetsOk = false end
+  byKey[p.key] = p
+end
+check(presetsOk, 'every preset carries the key the dropdown sends and a label to show')
+
+-- Collision Course: podium only, and nothing for turning up. Three deep rather
+-- than three followed by twenty-one zeroes, because a position past the end of
+-- the table already scores nothing.
+RM_onCupSetPreset(ADMIN, '{"preset":"collision-course","target":"race"}')
+check(byKey['collision-course'] ~= nil, 'Collision Course is offered as a preset')
+check(#lastCup.racePoints == 3 and lastCup.racePoints[1] == 3
+  and lastCup.racePoints[2] == 2 and lastCup.racePoints[3] == 1,
+  'and pays 3, 2, 1 with nothing behind it')
 check(#lastCup.bonuses == 4, 'and the bonus registry, so the panel renders itself from it')
 check(lastCup.bonuses[1].key ~= nil and lastCup.bonuses[1].label ~= nil,
   'each bonus arrives with a key and a label')
@@ -908,6 +929,101 @@ connected[1] = 'Guest_B'
 RM_onCupReset(ADMIN)
 
 removeTree('Resources')
+
+
+-- ---------------------------------------------------------------------------
+-- Saving a scoring system
+-- ---------------------------------------------------------------------------
+-- A league spends an evening agreeing a points structure and it used to live
+-- only inside the running cup. Saved systems sit in the same picker as the
+-- built-ins and, crucially, survive End Cup -- which clears the standings and
+-- deliberately leaves cup.scoring alone.
+RM_onCupSetScoring(ADMIN, '{"race":[12,9,7,5,3,1]}')
+RM_onCupSavePreset(ADMIN, '{"name":"Thursday League"}')
+
+local function presetByKey(key)
+  for _, p in ipairs(lastCup.presets or {}) do if p.key == key then return p end end
+end
+check(presetByKey('saved:thursday league') ~= nil, 'a saved system joins the preset list')
+check(presetByKey('saved:thursday league').label == 'Thursday League',
+  'under the name it was given')
+check(presetByKey('saved:thursday league').saved == true,
+  'and is flagged as saved, so the panel can offer Delete on it and not on a built-in')
+check(presetByKey('25p-moderate') ~= nil and presetByKey('25p-moderate').saved ~= true,
+  'while a built-in is not flagged')
+
+-- Load it back over a different table.
+RM_onCupSetPreset(ADMIN, '{"preset":"30p-aggressive","target":"race"}')
+check(lastCup.racePoints[1] == 30, 'a built-in loads over it')
+RM_onCupSetPreset(ADMIN, '{"preset":"saved:thursday league","target":"race"}')
+check(#lastCup.racePoints == 6 and lastCup.racePoints[1] == 12
+  and lastCup.racePoints[6] == 1, 'and the saved system loads back exactly as saved')
+
+-- Saving the same name again REPLACES rather than duplicating, the way a layout
+-- of the same name does.
+RM_onCupSetScoring(ADMIN, '{"race":[50,40]}')
+RM_onCupSavePreset(ADMIN, '{"name":"Thursday League"}')
+local n = 0
+for _, p in ipairs(lastCup.presets or {}) do
+  if p.key == 'saved:thursday league' then n = n + 1 end
+end
+check(n == 1, 'saving over a name replaces it rather than adding a second')
+RM_onCupSetPreset(ADMIN, '{"preset":"saved:thursday league","target":"race"}')
+check(#lastCup.racePoints == 2 and lastCup.racePoints[1] == 50,
+  'and it is the new table that comes back')
+
+-- THE POINT OF SAVING ONE, part one: ending the cup must not take it with the
+-- standings.
+RM_onCupReset(ADMIN)
+check(presetByKey('saved:thursday league') ~= nil,
+  'a saved system survives End Cup, which is the whole reason to save one')
+
+-- ...and part two, which is the half that actually needed asserting: it has to
+-- be ON DISK. Every other assertion in this section reads the broadcast, and a
+-- broadcast is happy to report a system that was never written down -- dropping
+-- savedPresets from saveCupToDisk left all of them passing while the systems
+-- evaporated on the next restart, which is exactly when somebody would reach
+-- for one.
+local savedOnDisk = readCup()
+local onDisk = nil
+for _, sp in ipairs(savedOnDisk and savedOnDisk.savedPresets or {}) do
+  if sp.key == 'saved:thursday league' then onDisk = sp end
+end
+check(onDisk ~= nil, 'a saved system is written to cup.json')
+check(onDisk and #onDisk.race == 2 and onDisk.race[1] == 50,
+  'with its points table intact')
+
+bootPlugin()
+-- ASK FOR A FRESH BROADCAST FIRST. lastCup is whatever was last pushed, and a
+-- reboot pushes nothing on its own -- so reading it straight after a restart
+-- reads the payload from BEFORE the restart and reports the old list as
+-- surviving. Both of these passed that way until this line was added.
+lastCup = nil
+RM_onCupRequestState(ADMIN)
+check(lastCup ~= nil, 'the rebooted server answers a cup state request')
+check(presetByKey('saved:thursday league') ~= nil,
+  'and is still offered after a server restart')
+RM_onCupSetPreset(ADMIN, '{"preset":"saved:thursday league","target":"race"}')
+check(#lastCup.racePoints == 2 and lastCup.racePoints[1] == 50,
+  'and still loads the table it was saved with')
+
+-- An empty race table has nothing to save.
+RM_onCupStart(ADMIN, '{"name":"Empty Save"}')
+RM_onCupSetScoring(ADMIN, '{"race":[]}')
+RM_onCupSavePreset(ADMIN, '{"name":"Nothing At All"}')
+check(presetByKey('saved:nothing at all') == nil,
+  'an empty points table is not saveable: there is nothing in it to save')
+
+-- Built-ins cannot be deleted, saved ones can.
+RM_onCupDeletePreset(ADMIN, '{"preset":"25p-moderate"}')
+check(presetByKey('25p-moderate') ~= nil, 'a built-in preset cannot be deleted')
+RM_onCupDeletePreset(ADMIN, '{"preset":"saved:thursday league"}')
+check(presetByKey('saved:thursday league') == nil, 'a saved system can be')
+
+-- A non-admin can neither save nor delete one.
+RM_onCupSetScoring(ADMIN, '{"race":[9,6,3]}')
+RM_onCupSavePreset(77, '{"name":"Not Mine"}')
+check(presetByKey('saved:not mine') == nil, 'a non-admin cannot save a scoring system')
 
 if fails == 0 then
   print('cup_test: ' .. checks .. ' checks, 0 failures')

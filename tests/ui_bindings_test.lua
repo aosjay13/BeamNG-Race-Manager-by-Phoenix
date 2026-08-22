@@ -1144,17 +1144,57 @@ expect(clearLine and clearLine:find('countdown !== 0', 1, true) ~= nil,
 --
 -- This asserts the LIST is complete rather than that one entry exists: patching
 -- them one at a time is exactly what let the second one through.
+-- GROUPED SELECTORS COUNT TOO, and reading only the line with the brace on it
+-- is how one goes missing. `.rm-flash` and `.rm-derby-warning` share a rule now:
+--
+--     .rm-flash,
+--     .rm-derby-warning {
+--       position: absolute;
+--       inset: 0;
+--
+-- A pattern anchored on "  .name {" sees the second of those and never the
+-- first, so the shared primitive would sit outside this guard while the count
+-- below stayed reassuringly unchanged. The whole selector list is walked back
+-- from the declaration instead.
 local overlays = {}
-for cls in html:gmatch('\n  %.([%w%-]+) {\n    position: absolute;\n    inset: 0;') do
-  overlays[#overlays + 1] = cls
+do
+  local lines = {}
+  for line in (html .. NL):gmatch('([^' .. NL .. ']*)' .. NL) do lines[#lines + 1] = line end
+  for i = 2, #lines - 1 do
+    if lines[i]:match('^    position: absolute;$')
+       and lines[i + 1]:match('^    inset: 0;$') then
+      -- The line directly above the declarations carries the brace, and every
+      -- line above THAT which ends in a comma is another selector in the same
+      -- group. Walking stops at the first line that is not one.
+      local j = i - 1
+      local sel = lines[j]:match('^  %.([%w%-]+)%s*{%s*$')
+      if sel then
+        overlays[#overlays + 1] = sel
+        j = j - 1
+        while j >= 1 do
+          local grouped = lines[j]:match('^  %.([%w%-]+),%s*$')
+          if not grouped then break end
+          overlays[#overlays + 1] = grouped
+          j = j - 1
+        end
+      end
+    end
+  end
 end
-expect(#overlays > 0, 'found the full-window overlays (got ' .. #overlays .. ')')
+expect(#overlays >= 3, 'found the full-window overlays, grouped selectors '
+  .. 'included (got ' .. #overlays .. ': ' .. table.concat(overlays, ', ') .. ')')
 
 for _, cls in ipairs(overlays) do
   -- Escaped: `-` is a quantifier in a Lua pattern, so a bare class name here
   -- silently matches nothing and the guard passes by never looking.
   local safe = cls:gsub('%-', '%%-')
-  expect(html:find('%.rm%-minimal %.' .. safe) ~= nil,
+  -- BOUNDED, or a longer class name satisfies the guard for a shorter one.
+  -- `.rm-minimal .rm-flash-title` contains `.rm-minimal .rm-flash`, so an
+  -- unbounded find reported the flash overlay as confined on the strength of a
+  -- font-size rule for its caption, while the overlay itself was not in the
+  -- list at all. The class has to be followed by something that cannot continue
+  -- it: a comma, a brace, or whitespace.
+  expect(html:find('%.rm%-minimal %.' .. safe .. '[^%w%-]') ~= nil,
     'the ' .. cls .. ' overlay is confined to the panel in minimal mode. Any '
       .. 'new overlay that covers the window belongs in that selector list too')
 end
@@ -1622,16 +1662,32 @@ for attr in html:gmatch('class="([^"]*)"') do
 end
 for attr in html:gmatch("'(rm%-[%w%-]+)'%s*:") do worn[attr] = true end   -- ng-class keys
 for attr in html:gmatch("'(rm%-[%w%-]+)'") do worn[attr] = true end       -- ng-class values
+-- CLASSES BUILT AT RUNTIME. ng-class="'rm-flash-' + notice.colour" wears a
+-- class whose name exists nowhere in this file, so a purely literal search
+-- reports it as dead weight and fails on a rule that is very much in use. Any
+-- prefix the markup concatenates onto marks everything sharing it as worn --
+-- which is as precise as a static check can be about a name assembled at
+-- runtime, and still catches a whole prefix nobody references.
+local prefixes = {}
+for pre in html:gmatch("'(rm%-[%w%-]-%-)'%s*%+") do prefixes[#prefixes + 1] = pre end
+local function isWorn(cls)
+  if worn[cls] then return true end
+  for _, pre in ipairs(prefixes) do
+    if cls:sub(1, #pre) == pre then return true end
+  end
+  return false
+end
 local animated = 0
 for cls in html:gmatch('%.(rm%-[%w%-]+)%s*{[^}]-animation:[^}]-infinite') do
   animated = animated + 1
-  expect(worn[cls] == true,
+  expect(isWorn(cls),
     'the infinitely animated class ' .. cls .. ' is worn by an element')
 end
 -- A loop over nothing passes silently, which for a guard is the same as not
--- having one. Two forever-animations exist by design: the derby-live badge and
--- the out-of-bounds warning.
-expect(animated == 2, 'both infinite animations were found and checked, got '
+-- having one. Three forever-animations exist by design: the derby-live badge,
+-- the out-of-bounds warning, and the checkered flash -- whose squares SWAP
+-- rather than fading, because the shared fade takes black and white to grey.
+expect(animated == 3, 'every infinite animation was found and checked, got '
   .. animated)
 
 -- ---------------------------------------------------------------------------

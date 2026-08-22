@@ -1016,11 +1016,23 @@ end
 -- leaving a retired car solid on the racing line would put back the obstacle
 -- this whole change removes.
 --
--- Only while a race is actually running. Once the race is over the list empties
--- and every client hands the collisions back, which is the un-ghost at the flag.
+-- Only while a session is actually running. Once it is over the list empties and
+-- every client hands the collisions back, which is the un-ghost at the flag.
+--
+-- QUALIFYING COUNTS, and leaving it out was a hole rather than a decision. A
+-- driver who has used their lap allowance is retired exactly the way a finisher
+-- is -- status 'finished', spectator lock, car kept -- but this list was empty
+-- outside a race, so their car stayed SOLID while everybody else was still on a
+-- hot lap. A parked or cruising car on the racing line is worse in qualifying
+-- than in a race: there is no pack to hide in and the whole session is single
+-- laps that a single contact ruins.
+--
+-- 'countdown' is in the list for the race's sake and does no harm here;
+-- qualifying reaches 'qualifying' directly from the grid.
 local function finishedRoster()
   local list = {}
-  if race.phase ~= 'racing' and race.phase ~= 'countdown' then return list end
+  if race.phase ~= 'racing' and race.phase ~= 'countdown'
+     and race.phase ~= 'qualifying' then return list end
   for _, rec in pairs(players) do
     local st = rec.status
     if st == 'finished' or st == 'dnf' or st == 'dsq' then
@@ -3786,6 +3798,50 @@ function RM_onClearTrackState(pid)
   sendLayoutList(-1)
 end
 
+-- NOTHING LOADED: no race track, no derby arena, one press.
+--
+-- The two live in separate modules with separate state, separate broadcasts and
+-- separate clears, so "put the server back to nothing" was two commands on two
+-- different tabs and the second was easy to forget. What that leaves behind is
+-- not obvious either: an arena with no race track still draws its walls, and a
+-- track with no arena still arms its gates.
+--
+-- Forwarded through the derby's OWN handlers rather than reaching into its
+-- state. Two reasons, and the second is the one that would have bitten:
+--
+-- The derby is a module with its own state and its own broadcast, and going
+-- through its public entry points is the boundary the file was split along.
+-- It also has to be done this way round: `derby` is a local declared some six
+-- hundred lines BELOW this, so naming it here would compile fine and resolve to
+-- a nil global the first time an admin pressed the button. The RM_* handlers
+-- are globals and resolve at call time, which is exactly what is needed.
+--
+-- Refused mid-session for the same reason a load is: this pulls the track out
+-- from under whoever is driving on it.
+function RM_onClearEverything(pid)
+  if not requireAuth(pid) then return end
+  if sessionUnderWay() then
+    MP.SendChatMessage(pid, '[RaceManager] Not while a session is running: end it first.')
+    return
+  end
+  local who = MP.GetPlayerName(pid) or pid
+  clearTrackState('cleared by ' .. who)
+  sendLayoutList(-1)
+  -- "No arena loaded" is an empty boundary and an empty start grid. The rules
+  -- (wall height, the out-of-bounds and demolished timers, the reset allowance)
+  -- are settings rather than an arena and are deliberately left alone: an admin
+  -- clearing the map is not asking for their timers to be reset too.
+  --
+  -- Each of these refuses on its own while a derby is running, so a running
+  -- derby is safe without a check here.
+  RM_onDerbyClearBoundary(pid)
+  RM_onDerbyClearStarts(pid)
+  local msg = '[RaceManager] Everything cleared by ' .. who
+    .. ': no race track and no derby arena are loaded.'
+  MP.SendChatMessage(-1, msg)
+  print(msg)
+end
+
 -- Save the checkpoints the client bundled up as a named layout for the current
 -- map. Same name on the same map overwrites (that's the edit workflow); the
 -- refreshed list goes to every client so all open UIs stay in sync.
@@ -3991,9 +4047,24 @@ function RM_onDeleteLayout(pid, rawData)
   print(string.format('[RaceManager] Delete failed: no layout "%s" for map %s', data.name, map))
 end
 
--- Load a saved layout: look it up under the current map only and broadcast the
--- checkpoint set to every connected client, which instantly rebuilds its gates.
--- Locked once a countdown/race is under way - nobody swaps the track mid-race.
+-- Load a saved layout, in one of TWO senses, and the difference is the whole
+-- point of this handler.
+--
+--   forEditing = true   Private. The layout goes to the ONE admin who asked and
+--                       nowhere else, and no server state moves. This is an
+--                       admin opening a track to work on it.
+--
+--   forEditing = false  Public. The layout becomes the track the server is
+--                       racing: broadcast to everybody, race.* updated, chat
+--                       told. This is what Load Layout has always done.
+--
+-- Both were the second one, which is why two admins could not build anything at
+-- the same time. Opening a track to edit it moved the whole server onto it and
+-- overwrote whatever the other admin had in progress. The client-side buffer
+-- guard stops the damage; this is what stops the collision happening at all.
+--
+-- Locked once a countdown/race is under way in both senses - nobody swaps the
+-- track mid-race, and nobody edits during one either.
 function RM_onLoadLayout(pid, rawData)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
@@ -4004,6 +4075,30 @@ function RM_onLoadLayout(pid, rawData)
   local list, map = layoutsForCurrentMap()
   for _, l in ipairs(list) do
     if l.name:lower() == data.name:lower() then
+      -- PRIVATE LOAD: this admin's editor, and nothing else.
+      --
+      -- Targeted rather than broadcast, and it returns before a single race.*
+      -- field is touched. That is what makes two admins on one map independent:
+      -- neither the gates nor the grid nor the joker count leave this client, so
+      -- there is nothing for the other admin's session to notice.
+      --
+      -- The purge is targeted for the same reason, and it has to be sent: the
+      -- client drops its old gates on RM_ClearTrack, and an apply without one
+      -- would leave the previous track's checkpoints standing underneath.
+      if data.forEditing == true then
+        MP.TriggerClientEvent(pid, 'RM_ClearTrack', Util.JsonEncode({
+          reason = 'opening "' .. l.name .. '" in the editor',
+        }))
+        MP.TriggerClientEvent(pid, 'RM_ApplyLayout', Util.JsonEncode(l))
+        MP.SendChatMessage(pid, string.format(
+          '[RaceManager] "%s" is open in your editor only. Nobody else has it: '
+          .. 'press Load Layout when you want the server on it.', l.name))
+        print(string.format(
+          '[RaceManager] Layout "%s" opened for editing by %s (private, %d gates)',
+          l.name, MP.GetPlayerName(pid) or pid, #l.checkpoints))
+        return
+      end
+
       -- Purge first: every client must drop its existing gates before the new
       -- set arrives, so no checkpoint from a previous layout can survive.
       clearTrackState('loading layout "' .. l.name .. '"')
@@ -6059,6 +6154,15 @@ local CUP_PRESETS = {
   { key = '35p-folk',       label = '35P Folk Race',
     race = { 35, 30, 25, 20, 18, 16, 15, 14, 13, 12, 11,
              10,  9,  8,  7,  6,  5,  4,  3,  2,  1 } },
+  -- Podium only. Three deep and nothing behind it, which is a whole different
+  -- kind of championship: there is no points to be had for turning up and
+  -- circulating, so a driver either races the front three or scores nothing.
+  --
+  -- The table stops at three rather than carrying twenty-one zeroes, because
+  -- cupPointsFor returns 0 for any position past the end. "3,2,1" and the same
+  -- followed by zeroes are the same scoring system, and this is the short form.
+  { key = 'collision-course', label = 'Collision Course',
+    race = { 3, 2, 1 } },
 }
 
 -- Bonus achievements, as DATA. Each entry names a configurable pot of points,
@@ -6103,6 +6207,9 @@ local function cupDefaultBonus()
   return t
 end
 
+-- BUILT-INS ONLY, and it has to stay that way: the cup table below is seeded by
+-- calling this, so this runs before `cup` exists and cannot look inside it.
+-- Saved systems are found by cupAnyPresetByKey, further down.
 local function cupPresetByKey(key)
   for _, p in ipairs(CUP_PRESETS) do
     if p.key == key then return p end
@@ -6163,6 +6270,17 @@ local cup = {
   -- Qualifying is scored when it ends, but it belongs to the round the race
   -- that follows will be -- so it is held here until that race banks it.
   pendingQuali = {},  -- { { entryId, pos, pts } }
+  -- SCORING SYSTEMS AN ADMIN HAS SAVED, alongside the built-in presets.
+  --
+  -- Kept here rather than in a file of their own because a saved system is not
+  -- a championship: End Cup clears the standings and deliberately leaves
+  -- cup.scoring alone, so anything filed beside it outlives the cup it was
+  -- written during. A league that spends an evening agreeing a points table
+  -- should not lose it by ending the season.
+  --
+  -- Same shape as a built-in preset ({ key, label, race }), so the picker, the
+  -- lookup and the load path all take one without knowing which kind it is.
+  savedPresets = {},
 }
 local cupLoaded = false
 -- Assigned further down, once the standings it has to serialise exist. Declared
@@ -6202,6 +6320,25 @@ local function loadCupFromDisk()
   cup.enabled = data.enabled == true
   cup.name    = type(data.name) == 'string' and data.name:sub(1, MAX_CUP_NAME) or ''
   cup.round   = math.max(math.floor(tonumber(data.round) or 0), 0)
+
+  -- Saved scoring systems. Sanitised the same way a live table is, so a
+  -- hand-edited file cannot put a string or a negative into a points table, and
+  -- an entry missing its name or its numbers is dropped rather than loaded as a
+  -- blank row in the picker.
+  cup.savedPresets = {}
+  if type(data.savedPresets) == 'table' then
+    for _, p in ipairs(data.savedPresets) do
+      local label = type(p.label) == 'string' and p.label or nil
+      local tbl   = cupSanitizeTable(p.race)
+      if label and label ~= '' and #tbl > 0 then
+        cup.savedPresets[#cup.savedPresets + 1] = {
+          key   = type(p.key) == 'string' and p.key or ('saved:' .. label:lower()),
+          label = label,
+          race  = tbl,
+        }
+      end
+    end
+  end
 
   -- Only replaced when the file actually carries a scoring block. A cup.json
   -- written by something else, or truncated, must not silently leave the cup
@@ -6302,6 +6439,7 @@ local function saveCupToDisk()
     scoring      = cup.scoring,
     entries      = cup.entries,
     pendingQuali = cup.pendingQuali,
+    savedPresets = cup.savedPresets,
   }))
   f:close()
   return true
@@ -6426,10 +6564,27 @@ end
 -- the server actually supports, rather than from a copy of the list kept in the
 -- UI that has to be edited in step. Adding a bonus later is then a row in
 -- CUP_BONUSES and nothing else.
+-- Built-ins, then whatever the admin has saved. Everything that LOADS a preset
+-- goes through this rather than cupPresetByKey, which cannot see saved ones.
+local function cupAnyPresetByKey(key)
+  local builtin = cupPresetByKey(key)
+  if builtin then return builtin end
+  for _, p in ipairs(cup.savedPresets or {}) do
+    if p.key == key then return p end
+  end
+  return nil
+end
+
+-- The picker's list: built-ins first, saved systems after, each flagged so the
+-- panel can offer Delete on the ones an admin made and not on the ones it
+-- ships with.
 local function cupPresetList()
   local out = {}
-  for i, p in ipairs(CUP_PRESETS) do
-    out[i] = { key = p.key, label = p.label }
+  for _, p in ipairs(CUP_PRESETS) do
+    out[#out + 1] = { key = p.key, label = p.label }
+  end
+  for _, p in ipairs(cup.savedPresets or {}) do
+    out[#out + 1] = { key = p.key, label = p.label, saved = true }
   end
   return out
 end
@@ -6960,7 +7115,7 @@ end
 function RM_onCupSetPreset(pid, rawData)
   if not requireAuth(pid) then return end
   local key = decodeString(rawData, 'preset')
-  local preset = key and cupPresetByKey(key)
+  local preset = key and cupAnyPresetByKey(key)
   if not preset then
     print('[RaceManager] Unknown cup scoring preset: ' .. tostring(key))
     return
@@ -6977,6 +7132,74 @@ function RM_onCupSetPreset(pid, rawData)
   saveCupToDisk()
   print('[RaceManager] Cup ' .. target .. ' scoring preset "' .. preset.label
     .. '" applied by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- Save the race table as a named system, so an evening spent agreeing a points
+-- structure survives the cup it was agreed during.
+--
+-- The RACE table specifically, and only that one. A "system" here is one table:
+-- quali and derby have Same as race for the case where a league wants them
+-- alike, and their own line for when it does not. Saving all three as a bundle
+-- would need a bundle format, a merge rule, and an answer for what happens when
+-- you load one over a cup that only uses two of them.
+local MAX_SAVED_PRESETS = 30
+local MAX_PRESET_NAME   = 28
+
+function RM_onCupSavePreset(pid, rawData)
+  if not requireAuth(pid) then return end
+  local name = decodeString(rawData, 'name')
+  if type(name) ~= 'string' then return end
+  name = name:gsub('^%s+', ''):gsub('%s+$', '')
+  if name == '' then
+    MP.SendChatMessage(pid, '[RaceManager] A saved scoring system needs a name.')
+    return
+  end
+  if #name > MAX_PRESET_NAME then name = name:sub(1, MAX_PRESET_NAME) end
+  getCup()
+  if #cup.scoring.race == 0 then
+    MP.SendChatMessage(pid, '[RaceManager] There is nothing to save: the race points table is empty.')
+    return
+  end
+  -- Namespaced, so a saved system can never collide with a built-in key and an
+  -- admin cannot shadow "25P Moderate" with something that is not it.
+  local key = 'saved:' .. name:lower()
+  local entry = { key = key, label = name, race = cupCopyTable(cup.scoring.race) }
+  local replaced = false
+  for i, existing in ipairs(cup.savedPresets) do
+    if existing.key == key then cup.savedPresets[i] = entry; replaced = true; break end
+  end
+  if not replaced then
+    if #cup.savedPresets >= MAX_SAVED_PRESETS then
+      MP.SendChatMessage(pid, '[RaceManager] Too many saved scoring systems; delete one first.')
+      return
+    end
+    cup.savedPresets[#cup.savedPresets + 1] = entry
+  end
+  saveCupToDisk()
+  local msg = string.format('[RaceManager] Scoring system "%s" %s by %s (%d position%s deep)',
+    name, replaced and 'updated' or 'saved', MP.GetPlayerName(pid) or pid,
+    #entry.race, #entry.race == 1 and '' or 's')
+  MP.SendChatMessage(-1, msg)
+  print(msg)
+end
+
+-- Delete a saved system. Built-ins are not deletable and saying so beats
+-- silently doing nothing.
+function RM_onCupDeletePreset(pid, rawData)
+  if not requireAuth(pid) then return end
+  local key = decodeString(rawData, 'preset')
+  if type(key) ~= 'string' or key == '' then return end
+  getCup()
+  for i, p in ipairs(cup.savedPresets) do
+    if p.key == key then
+      table.remove(cup.savedPresets, i)
+      saveCupToDisk()
+      print('[RaceManager] Saved scoring system "' .. p.label .. '" deleted by '
+        .. (MP.GetPlayerName(pid) or pid))
+      return
+    end
+  end
+  MP.SendChatMessage(pid, '[RaceManager] That scoring system is built in and cannot be deleted.')
 end
 
 -- Custom scoring. Every field is optional, so the UI can send just the part the
@@ -7482,6 +7705,7 @@ function onInit()
   MP.RegisterEvent('RM_SetSpectating',    'RM_onSetSpectating')
   MP.RegisterEvent('RM_Retire',           'RM_onRetire')
   MP.RegisterEvent('RM_ClearTrackState',  'RM_onClearTrackState')
+  MP.RegisterEvent('RM_ClearEverything',  'RM_onClearEverything')
   -- Demo Derby module (isolated event namespace; see the DEMO DERBY section).
   MP.RegisterEvent('RM_DerbySetConfig',     'RM_onDerbySetConfig')
   MP.RegisterEvent('RM_DerbyAddMarker',     'RM_onDerbyAddMarker')
@@ -7521,6 +7745,8 @@ function onInit()
   MP.RegisterEvent('RM_CupStart',         'RM_onCupStart')
   MP.RegisterEvent('RM_CupReset',         'RM_onCupReset')
   MP.RegisterEvent('RM_CupSetPreset',     'RM_onCupSetPreset')
+  MP.RegisterEvent('RM_CupSavePreset',    'RM_onCupSavePreset')
+  MP.RegisterEvent('RM_CupDeletePreset',  'RM_onCupDeletePreset')
   MP.RegisterEvent('RM_CupSetScoring',    'RM_onCupSetScoring')
   MP.RegisterEvent('RM_CupRequestState',  'RM_onCupRequestState')
   MP.RegisterEvent('RM_CupAdjust',        'RM_onCupAdjust')

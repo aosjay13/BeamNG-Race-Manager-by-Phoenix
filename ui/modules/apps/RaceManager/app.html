@@ -61,8 +61,8 @@
 
          THE FLAG IS THE LAST STATUS THING, which is where it always was -- it
          just used to be last in the run rather than last in the row. Green
-         racing, yellow caution, white last lap, red held or stopped, chequered
-         your race is over. The chequered one is a STATE and persists until the
+         racing, yellow caution, white last lap, red held or stopped, checkered
+         your race is over. The checkered one is a STATE and persists until the
          session ends; the placement itself is a moment and goes out as a toast
          instead. -->
     <span class="rm-bar-corner">
@@ -106,8 +106,16 @@
     </span>
     <span class="rm-driverbar-label" ng-if="resetsLimited()">
       RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
+      <!-- OUT, said in words and kept on screen.
+           The flash cannot be driven off the key press: once the allowance is
+           spent the reset actions are filtered out in C++ and the press never
+           reaches Lua at all, so nothing in the mod ever learns it happened.
+           A driver pressing a dead key needs the answer to be ALREADY THERE
+           rather than to arrive, so this stays up for the rest of the
+           session instead of appearing for two seconds and going. -->
+      <span class="rm-reset-out" ng-if="myResetsLow()">OUT</span>
     </span>
-    <!-- The chequered flag's caption. It used to sit beside the flag, and it
+    <!-- The checkered flag's caption. It used to sit beside the flag, and it
          followed the flag to the corner when the flag moved -- where a sentence
          is exactly the wrong shape. It is a readout, so it lives with the
          readouts. -->
@@ -340,8 +348,8 @@
       </div>
     </div>
     <button class="rm-btn rm-btn-grid" ng-click="loadLayout()"
-            ng-disabled="!layoutUi.selected || phase === 'countdown' || phase === 'racing'"
-            title="Broadcast this layout's checkpoints to every connected player. No need to open the editor.">
+            ng-disabled="!layoutUi.selected || !canSetRules()"
+            title="Put the whole server on this track: every connected player gets its checkpoints. To work on a layout without moving anyone, use Open in Editor.">
       Load Layout
     </button>
   </div>
@@ -410,6 +418,26 @@
        body below scrolls as a safety net for the tall ones.
        The set shown depends on the mode picked above. -->
   <div class="rm-admin-tabs" ng-if="isAdmin && isMode('race')">
+    <!-- WHICH MODE THE PANEL IS IN, said out loud.
+         Half the editor controls below grey out while a session is running, and
+         without this the only thing telling an admin why is the controls being
+         grey - which reads as the app having broken rather than as a rule. It
+         sits first in the tab row because that is where the eye lands before it
+         reaches the control that is not responding. -->
+    <!-- Three states, because the grid is genuinely its own: the field is
+         placed and frozen, so the TRACK is locked, but the rules are not and
+         the server has never thought they were. A badge that said everything
+         was locked there would be describing controls that plainly still
+         work. -->
+    <span class="rm-mode-badge"
+          ng-class="sessionRunning() ? (canSetRules() ? 'rm-mode-grid' : 'rm-mode-running') : 'rm-mode-config'"
+          title="{{ !sessionRunning()
+            ? 'No session running. The track and the rules can both be changed.'
+            : (canSetRules()
+               ? 'On the grid. The track is locked because cars are standing on it, but laps, resets, the joker and the qualifying rules can still be changed.'
+               : 'A session is running. Track and rule changes are locked until it ends.') }}">
+      {{ !sessionRunning() ? 'CONFIG' : (canSetRules() ? 'ON GRID' : 'RUNNING') }}
+    </span>
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('race')}"
             ng-click="selectAdminTab('race')"
             title="Race distance, reset ruleset and the joker lap">Race</button>
@@ -454,7 +482,7 @@
       <input type="number" min="1" max="500" ng-model="settingsUi.laps"
              ng-model-options="{ debounce: { default: 500, blur: 0 } }"
              ng-change="applyTotalLaps()"
-             ng-disabled="pointToPoint || phase === 'countdown' || phase === 'racing'">
+             ng-disabled="pointToPoint || !canSetRules()">
       <span class="rm-setting-val" ng-if="!pointToPoint">race: {{ totalLaps }}</span>
       <span class="rm-setting-val rm-p2p-note" ng-if="pointToPoint">point to point: driven once</span>
     </span>
@@ -464,17 +492,17 @@
       <input type="number" class="rm-width-num" min="-1" max="99" step="1" ng-model="settingsUi.resets"
              ng-model-options="{ debounce: { default: 500, blur: 0 } }"
              ng-change="applyMaxResets()"
-             ng-disabled="phase === 'countdown' || phase === 'racing'">
+             ng-disabled="!canSetRules()">
       <span class="rm-setting-val">{{ resetRuleLabel() }}</span>
     </span>
     <span class="rm-setting" title="Repair in place, or respawn at the last checkpoint crossed.">
       <label>Reset mode</label>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': resetMode === 'inplace'}"
               ng-click="setResetMode('inplace')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'">In place</button>
+              ng-disabled="!canSetRules()">In place</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': resetMode === 'checkpoint'}"
               ng-click="setResetMode('checkpoint')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'">Last checkpoint</button>
+              ng-disabled="!canSetRules()">Last checkpoint</button>
     </span>
     <!-- Module 2: rallycross joker lap -->
     <span class="rm-setting" title="Every finisher must take the Joker Route once, never on lap 1, or they are disqualified.">
@@ -486,7 +514,7 @@
            look available in the first place. -->
       <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': jokerEnabled}"
               ng-click="toggleJoker()"
-              ng-disabled="phase === 'countdown' || phase === 'racing' || !jokerGates">
+              ng-disabled="!canSetRules() || !jokerGates">
         {{ jokerEnabled ? '✓ Enabled' : 'Disabled' }}
       </button>
       <span class="rm-setting-val" ng-if="jokerEnabled">{{ jokerGates }} gates</span>
@@ -540,19 +568,19 @@
       <label>Grid order</label>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'quali'}"
               ng-click="setGridMode('quali')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              ng-disabled="!canSetRules()"
               title="Fastest qualifier on pole. Drivers with no time line up at the back.">Quali</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'reverse'}"
               ng-click="setGridMode('reverse')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              ng-disabled="!canSetRules()"
               title="Slowest qualifier on pole, fastest at the back. Drivers with no time still start last.">Reverse</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'random'}"
               ng-click="setGridMode('random')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              ng-disabled="!canSetRules()"
               title="A random draw, for a race with no qualifying behind it.">Random</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'custom'}"
               ng-click="setGridMode('custom')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              ng-disabled="!canSetRules()"
               title="Type a slot number in the Start column. Everyone else falls in behind by quali time.">Custom</button>
       <span class="rm-setting-val">{{ startSlots }} start position{{ startSlots === 1 ? '' : 's' }}</span>
     </span>
@@ -719,15 +747,49 @@
         </div>
         <button class="rm-btn rm-btn-mini" ng-click="cupApplyPreset()"
                 ng-disabled="!cupUi.preset">Load</button>
+        <!-- Only offered on a system the admin saved. A built-in has no Delete
+             rather than a Delete that refuses. -->
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="cupDeletePreset()"
+                ng-if="cupSelectedIsSaved()"
+                title="Delete this saved scoring system. The built-in presets cannot be deleted.">Delete</button>
         <span class="rm-cup-hint">Loading a preset fills the table below: edit it afterwards if you like.</span>
       </div>
 
-      <div class="rm-cup-row rm-cup-table-row">
+      <!-- SAVE THE TABLE YOU AGREED ON.
+           A league spends an evening settling a points structure and it used to
+           live only in the running cup. Saved systems sit in the same picker as
+           the built-ins, and End Cup does not clear them. -->
+      <div class="rm-cup-row">
+        <label>Save as</label>
+        <input type="text" class="rm-cup-line" ng-model="cupUi.saveName"
+               placeholder="name this scoring system"
+               ng-keydown="$event.keyCode === 13 &amp;&amp; cupSavePreset()">
+        <button class="rm-btn rm-btn-mini" ng-click="cupSavePreset()"
+                ng-disabled="!cupUi.saveName || cupTableEmpty('race')"
+                title="Save the race points table above under this name. Saving over a name you already used replaces it.">Save system</button>
+      </div>
+
+      <!-- TYPE THE TABLE, or nudge the boxes below: same buffer, both ways.
+           Twenty-four spinners are fine for changing one position and
+           miserable for entering a system, and they show you nothing about
+           the SHAPE of what you have typed. A points table is a list of
+           numbers and reads perfectly well as one. -->
+      <div class="rm-cup-row">
         <label>Race points</label>
+        <input type="text" class="rm-cup-line" ng-model="cupLine.race"
+               ng-change="cupLineChanged('race')"
+               placeholder="25,18,15,12,10,8,6,4,2,1"
+               title="Points for P1 downward, separated by commas. A position past the end of the list scores nothing.">
+        <button class="rm-btn rm-btn-mini" ng-click="cupClearTable('race')"
+                ng-disabled="cupTableEmpty('race')"
+                title="Set every position to zero. Nothing is sent until you press Apply.">Clear</button>
+      </div>
+      <div class="rm-cup-row rm-cup-table-row">
+        <label>Per position</label>
         <span class="rm-cup-cell" ng-repeat="p in cupPositions track by $index">
           <span class="rm-cup-pos">P{{ p }}</span>
           <input type="number" class="rm-cup-num" min="0" max="9999" step="1"
-                 ng-model="cupUi.points[$index]">
+                 ng-model="cupUi.points[$index]" ng-change="cupSyncLine('race')">
         </span>
       </div>
       <div class="rm-cup-row">
@@ -798,12 +860,29 @@
                 ng-disabled="!cupUi.derbyPreset">Load</button>
         <span class="rm-cup-hint">Derby position is survival order: the winner, then whoever lasted longest.</span>
       </div>
-      <div class="rm-cup-row rm-cup-table-row">
+      <!-- TYPE THE TABLE, or nudge the boxes below: same buffer, both ways.
+           Twenty-four spinners are fine for changing one position and
+           miserable for entering a system, and they show you nothing about
+           the SHAPE of what you have typed. A points table is a list of
+           numbers and reads perfectly well as one. -->
+      <div class="rm-cup-row">
         <label>Derby points</label>
+        <input type="text" class="rm-cup-line" ng-model="cupLine.derby"
+               ng-change="cupLineChanged('derby')"
+               placeholder="25,18,15,12,10,8,6,4,2,1"
+               title="Points for P1 downward, separated by commas. A position past the end of the list scores nothing.">
+        <button class="rm-btn rm-btn-mini" ng-click="cupClearTable('derby')"
+                ng-disabled="cupTableEmpty('derby')"
+                title="Set every position to zero. Nothing is sent until you press Apply.">Clear</button>
+        <button class="rm-btn rm-btn-mini" ng-click="cupCopyFromRace('derby')"
+                title="Copy the race table into this one.">Same as race</button>
+      </div>
+      <div class="rm-cup-row rm-cup-table-row">
+        <label>Per position</label>
         <span class="rm-cup-cell" ng-repeat="p in cupPositions track by $index">
           <span class="rm-cup-pos">P{{ p }}</span>
           <input type="number" class="rm-cup-num" min="0" max="9999" step="1"
-                 ng-model="cupUi.derby[$index]">
+                 ng-model="cupUi.derby[$index]" ng-change="cupSyncLine('derby')">
         </span>
       </div>
       <div class="rm-cup-row">
@@ -827,12 +906,29 @@
 
       <div class="rm-cup-sep">Qualifying</div>
 
-      <div class="rm-cup-row rm-cup-table-row">
+      <!-- TYPE THE TABLE, or nudge the boxes below: same buffer, both ways.
+           Twenty-four spinners are fine for changing one position and
+           miserable for entering a system, and they show you nothing about
+           the SHAPE of what you have typed. A points table is a list of
+           numbers and reads perfectly well as one. -->
+      <div class="rm-cup-row">
         <label>Quali points</label>
+        <input type="text" class="rm-cup-line" ng-model="cupLine.quali"
+               ng-change="cupLineChanged('quali')"
+               placeholder="3,2,1"
+               title="Points for P1 downward, separated by commas. A position past the end of the list scores nothing.">
+        <button class="rm-btn rm-btn-mini" ng-click="cupClearTable('quali')"
+                ng-disabled="cupTableEmpty('quali')"
+                title="Set every position to zero. Nothing is sent until you press Apply.">Clear</button>
+        <button class="rm-btn rm-btn-mini" ng-click="cupCopyFromRace('quali')"
+                title="Copy the race table into this one.">Same as race</button>
+      </div>
+      <div class="rm-cup-row rm-cup-table-row">
+        <label>Per position</label>
         <span class="rm-cup-cell" ng-repeat="p in cupPositions track by $index">
           <span class="rm-cup-pos">P{{ p }}</span>
           <input type="number" class="rm-cup-num" min="0" max="9999" step="1"
-                 ng-model="cupUi.quali[$index]">
+                 ng-model="cupUi.quali[$index]" ng-change="cupSyncLine('quali')">
         </span>
       </div>
       <div class="rm-cup-row">
@@ -1039,30 +1135,30 @@
     <!-- Which route is being built: the main lap or the rallycross joker -->
     <div class="rm-route-tabs">
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-route-tab-active': editorTarget === 'main'}"
-              ng-click="setEditorTarget('main')">Main Route ({{ routeWaypoints.length }})</button>
+              ng-click="setEditorTarget('main')">Main ({{ routeWaypoints.length }})</button>
       <button class="rm-btn rm-btn-mini rm-route-tab-joker"
               ng-class="{'rm-route-tab-joker-active': editorTarget === 'joker'}"
               ng-click="setEditorTarget('joker')"
               title="The alternate rallycross route. Saved with the layout, driven once per race.">
-        Joker Route ({{ jokerRoute.length }})
+        Joker ({{ jokerRoute.length }})
       </button>
       <button class="rm-btn rm-btn-mini rm-route-tab-pit"
               ng-class="{'rm-route-tab-pit-active': editorTarget === 'pit'}"
               ng-click="setEditorTarget('pit')"
               title="Drive into a stall and press the button. A stall stops, repairs and releases the car. Not a checkpoint.">
-        Pit Stalls ({{ pitRoute.length }})
+        Pit ({{ pitRoute.length }})
       </button>
       <button class="rm-btn rm-btn-mini rm-route-tab-branch"
               ng-class="{'rm-route-tab-branch-active': editorTarget === 'branch'}"
               ng-click="setEditorTarget('branch')"
               title="Another way through a checkpoint that already exists. Drive through either gate and it counts, so the whole field scores together.">
-        Branches ({{ branches.length }})
+        Branch ({{ branches.length }})
       </button>
       <button class="rm-btn rm-btn-mini rm-route-tab-start"
               ng-class="{'rm-route-tab-start-active': editorTarget === 'start'}"
               ng-click="setEditorTarget('start')"
               title="Drive to each slot and press the button. Slot 1 is pole.">
-        Start Grid ({{ startPositions.length }})
+        Grid ({{ startPositions.length }})
       </button>
       <!-- Circuit or sprint. Setting a circuit to one lap times the same thing,
            which is why that was the workaround - but it reads as a one-lap
@@ -1071,9 +1167,9 @@
       <button class="rm-btn rm-btn-mini rm-p2p-toggle" ng-if="editorTarget === 'main'"
               ng-class="{'rm-p2p-on': pointToPoint}"
               ng-click="togglePointToPoint()"
-              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              ng-disabled="!canEdit()"
               title="Circuit: laps a start/finish line. Point to point: driven once, first gate to last.">
-        {{ pointToPoint ? '⇥ Point to Point' : '⟳ Circuit' }}
+        {{ pointToPoint ? '⇥ P2P' : '⟳ Circuit' }}
       </button>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'joker'">
         Joker gates are drawn violet. Enable the joker lap in Race settings to enforce it.
@@ -1097,8 +1193,8 @@
       <button class="rm-btn rm-btn-end"   ng-click="editorClear()" ng-disabled="!editorWaypoints().length">Clear</button>
       <button class="rm-btn" ng-click="editorToggleVisualize()">{{ visualize ? 'Hide' : 'Show' }} Gates</button>
       <button class="rm-btn" ng-class="{'rm-btn-nudge-on': nudgeOn}" ng-click="toggleNudge()"
-              title="Move and turn placed gates with the mouse. Releases the cursor from the camera.">
-        {{ nudgeOn ? '✋ Nudge: ON' : '✋ Nudge' }}
+              title="Place, move and turn gates with the mouse. Releases the cursor from the camera.">
+        {{ nudgeOn ? '✋ Place: ON' : '✋ Place' }}
       </button>
     </div>
     <div class="rm-nudge-hint" ng-if="nudgeOn">
@@ -1256,9 +1352,19 @@
     <!-- Gate list (main lap / joker route) -->
     <div class="rm-editor-list" ng-if="editorWaypoints().length && !editingGrid()">
       <div class="rm-editor-wp-wrap" ng-repeat="wp in editorWaypoints() track by $index">
-        <div class="rm-editor-wp" ng-class="{'rm-editor-wp-sel': selectedCp === $index + 1}"
+        <div class="rm-editor-wp"
+             ng-class="{'rm-editor-wp-sel': selectedCp === $index + 1,
+                        'rm-editor-wp-over': dragOverIndex === $index}"
              ng-click="selectCheckpoint($index + 1)"
-             title="Click to change this gate's width, and how far it rises above and drops below where it was placed">
+             data-wp-index="{{ $index }}"
+             title="Click to open this gate's size controls. Drag the grip to move it in the running order.">
+          <!-- The grip is the affordance, not the mechanism: the whole row is
+               draggable, because a 4px target is not something you hit while
+               also driving. Branch gates are not draggable at all - they are
+               addressed by the checkpoint they belong to, not by a position in
+               this list, so there is no order here to change. -->
+          <span class="rm-editor-grip" ng-if="editorTarget !== 'branch'"
+                title="Drag to reorder">⠿</span>
           <!-- A branch gate is numbered by the CHECKPOINT it belongs to, not by
                its place in this list: it is not a checkpoint of its own, it is
                the other way of taking one that already exists. -->
@@ -1296,22 +1402,21 @@
                that landed a metre wide meant deleting and re-driving the route.
                ng-click stopPropagation so they do not also toggle the row's
                width/height editor open and shut. -->
-          <button class="rm-btn rm-btn-mini" title="Put your car on this gate, facing the way through it"
+          <!-- OPEN ROW ONLY. These three used to sit on every gate in the
+               route, so a twenty-gate track carried sixty buttons the admin was
+               not using and each row ran past the edge of the panel and wrapped.
+               The gate being worked on is the one that needs them. -->
+          <button class="rm-btn rm-btn-mini" ng-if="selectedCp === $index + 1"
+                  title="Put your car on this gate, facing the way through it"
                   ng-click="$event.stopPropagation(); previewCheckpoint($index + 1)">Go</button>
-          <button class="rm-btn rm-btn-mini rm-btn-grid" title="Move this gate to where your car is standing now"
+          <button class="rm-btn rm-btn-mini rm-btn-grid" ng-if="selectedCp === $index + 1"
+                  title="Move this gate to where your car is standing now"
                   ng-click="$event.stopPropagation(); moveCheckpoint($index + 1)">Move Here</button>
           <!-- Taking things back. Undo only ever removed the LAST gate, so a gate
                placed out of order, or one missing from the middle, meant undoing
                back to it and re-driving everything after. -->
-          <button class="rm-btn rm-btn-mini" ng-if="editorTarget !== 'branch'"
-                  title="Move this gate one place earlier in the order"
-                  ng-disabled="$first"
-                  ng-click="$event.stopPropagation(); reorderCheckpoint($index + 1, $index)">▲</button>
-          <button class="rm-btn rm-btn-mini" ng-if="editorTarget !== 'branch'"
-                  title="Move this gate one place later in the order"
-                  ng-disabled="$last"
-                  ng-click="$event.stopPropagation(); reorderCheckpoint($index + 1, $index + 2)">▼</button>
-          <button class="rm-btn rm-btn-mini" ng-if="editorTarget !== 'branch'"
+          <button class="rm-btn rm-btn-mini"
+                  ng-if="editorTarget !== 'branch' && selectedCp === $index + 1"
                   title="Place a new gate at your car, BEFORE this one"
                   ng-click="$event.stopPropagation(); insertCheckpoint($index + 1)">+ Before</button>
           <button class="rm-btn rm-btn-mini rm-btn-end"
@@ -1403,16 +1508,38 @@
           <span class="rm-layouts-target" ng-class="{'rm-layouts-target-empty': !layoutUi.selected}">
             {{ layoutUi.selected || 'no layout selected' }}
           </span>
+          <!-- PRIVATE. The counterpart to Load Layout up in the race controls:
+               that one moves the whole server onto a track, this pulls a copy
+               down to work on and leaves everyone else where they are. It is
+               what lets two admins build on one map at the same time. -->
+          <button class="rm-btn rm-btn-grid" ng-click="editLayout()"
+                  ng-disabled="!layoutUi.selected || !canEdit()"
+                  title="Open the selected layout in YOUR editor only. Nobody else's track changes.">
+            Open in Editor
+          </button>
           <button class="rm-btn rm-btn-grid" ng-click="overwriteLayout()"
-                  ng-disabled="!routeWaypoints.length || !layoutUi.selected || phase === 'countdown' || phase === 'racing'"
+                  ng-disabled="!routeWaypoints.length || !layoutUi.selected || !canEdit()"
                   title="Replace the selected layout with what is placed right now">
             Overwrite
           </button>
           <button class="rm-btn rm-btn-end" ng-click="deleteLayout()"
-                  ng-disabled="!layoutUi.selected || phase === 'countdown' || phase === 'racing'"
+                  ng-disabled="!layoutUi.selected || !canEdit()"
                   title="Delete the selected layout from the server">
             Delete
           </button>
+        </div>
+        <!-- ITS OWN ROW, because it is not a per-layout action. Open, Overwrite
+             and Delete all act on the layout selected above; this one acts on
+             the whole server and is the only thing here that changes what
+             everybody else can see. Sitting it beside them was what pushed that
+             row past the column width in the first place. -->
+        <div class="rm-layouts-row">
+          <button class="rm-btn rm-btn-end" ng-click="clearEverything()"
+                  ng-disabled="!canEdit()"
+                  title="Unload the race track AND the derby arena for everyone. Saved layouts and arenas are kept.">
+            Clear Everything
+          </button>
+          <span class="rm-layouts-target rm-layouts-target-empty">unloads for everyone</span>
         </div>
         <!-- Confirmations live here rather than in a browser dialog: the game's
              CEF layer cannot draw one over the world (the same reason the layout
@@ -1884,8 +2011,20 @@
     <span class="rm-vehicle-error-title">{{ vehicleError.message }}</span>
     <span class="rm-vehicle-error-detail" ng-if="vehicleError.detail">{{ vehicleError.detail }}</span>
   </div>
-  <!-- Transient regulation notices (reset used/denied, joker rulings). -->
-  <div class="rm-notice" ng-class="'rm-notice-' + notice.kind" ng-if="notice">{{ notice.msg }}</div>
+  <!-- Transient regulation notices (reset used/denied, joker rulings).
+       The strip is what a notice gets unless its kind asks for the flash. -->
+  <div class="rm-notice" ng-class="'rm-notice-' + notice.kind"
+       ng-if="notice && !notice.flash">{{ notice.msg }}</div>
+
+  <!-- ...and the full-panel flash for the ones that cannot be missed. Same
+       queue, same timer, same ranking: only the presentation differs, decided
+       per kind in NOTICE_STYLE. Nothing opts in yet, so this draws nothing
+       until a later change flips a kind over. -->
+  <div class="rm-flash" ng-class="'rm-flash-' + (notice.colour || 'grey')"
+       ng-if="notice && notice.flash">
+    <div class="rm-flash-title">{{ notice.msg }}</div>
+    <div class="rm-flash-sub" ng-if="notice.sub">{{ notice.sub }}</div>
+  </div>
 
   <!-- Pit stop: this driver is held in a stall while the car is repaired. -->
   <div class="rm-pit" ng-if="pitActive">
@@ -1987,6 +2126,14 @@
     </span>
     <span class="rm-driverbar-label" ng-if="resetsLimited()">
       RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
+      <!-- OUT, said in words and kept on screen.
+           The flash cannot be driven off the key press: once the allowance is
+           spent the reset actions are filtered out in C++ and the press never
+           reaches Lua at all, so nothing in the mod ever learns it happened.
+           A driver pressing a dead key needs the answer to be ALREADY THERE
+           rather than to arrive, so this stays up for the rest of the
+           session instead of appearing for two seconds and going. -->
+      <span class="rm-reset-out" ng-if="myResetsLow()">OUT</span>
     </span>
     <span class="rm-waiting" ng-if="driverFlag === 'checkered' && stillRacing() > 0"
           title="You are waiting on the drivers still out on track">
@@ -2718,6 +2865,36 @@
     border-color: #ff6600;
     color: #ffb380;
   }
+  /* Running or configuring, in the admin tab row. Deliberately not colour
+     alone: the word is the signal and the colour only agrees with it, because
+     the two states have to be told apart at a glance by somebody who is also
+     driving. */
+  .rm-mode-badge {
+    align-self: center;
+    margin-right: 6px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    white-space: nowrap;
+  }
+  .rm-mode-config {
+    background: rgba(52, 168, 83, 0.18);
+    color: #6ddc8b;
+    border: 1px solid rgba(52, 168, 83, 0.45);
+  }
+  /* The grid sits between the two: locked track, live rules. */
+  .rm-mode-grid {
+    background: rgba(251, 188, 5, 0.18);
+    color: #fdd663;
+    border: 1px solid rgba(251, 188, 5, 0.5);
+  }
+  .rm-mode-running {
+    background: rgba(234, 67, 53, 0.18);
+    color: #f28b82;
+    border: 1px solid rgba(234, 67, 53, 0.5);
+  }
   .rm-tab-count {
     margin-left: 4px;
     padding: 0 4px;
@@ -2850,6 +3027,22 @@
   }
   .rm-editor-wp:hover { background: rgba(255, 255, 255, 0.06); }
   .rm-editor-wp-sel { background: rgba(255, 102, 0, 0.15); }
+  /* The drag grip. Dim until the row is hovered, because twenty of them at
+     full strength is a column of noise down the side of the list. */
+  .rm-editor-grip {
+    cursor: grab;
+    color: #6b7078;
+    font-size: 12px;
+    line-height: 1;
+    padding: 0 1px;
+    user-select: none;
+  }
+  .rm-editor-wp:hover .rm-editor-grip { color: #bdc1c6; }
+  .rm-editor-grip:active { cursor: grabbing; }
+  /* Where the dragged gate would land. A line above the row rather than a fill:
+     the question is "between which two" and a filled row answers a different
+     one. */
+  .rm-editor-wp-over { box-shadow: inset 0 2px 0 0 #ff8c1a; }
   .rm-editor-idx { width: 22px; text-align: right; color: #ff6600; font-weight: 700; }
   .rm-editor-finish { color: #e8eaed; }
   .rm-editor-coords { color: #bdc1c6; flex: 1; }
@@ -2886,10 +3079,26 @@
     font-weight: 700;
   }
   .rm-layouts-map { color: #9aa0a6; font-weight: 400; text-transform: none; }
-  .rm-layouts-row { display: flex; gap: 5px; align-items: center; }
+  /* WRAPS RATHER THAN SQUEEZES.
+     This column is about 300px wide (the rest goes to the route preview), and
+     without wrapping the flex children just compress: the name field collapsed
+     to a sliver and the buttons folded their OWN text onto two and three lines,
+     which is the worst of both -- unreadable labels and a taller row than
+     wrapping would have cost anyway. Wrap the row, never the words. */
+  .rm-layouts-row {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .rm-layouts-row .rm-btn { white-space: nowrap; }
   .rm-layout-name {
     flex: 1;
-    min-width: 0;
+    /* Enough to read a name in. At min-width 0 this collapsed to a few pixels
+       the moment the button beside it needed room, so the field you type the
+       name into was the first thing to disappear. */
+    min-width: 120px;
     background: rgba(255, 255, 255, 0.08);
     border: 1px solid rgba(255, 255, 255, 0.2);
     color: #e8eaed;
@@ -3266,7 +3475,7 @@
   .rm-flag-yellow { color: #fdd663; }
   .rm-flag-white  { color: #ffffff; }
   .rm-flag-red    { color: #ff5252; }
-  /* Chequered: the flag glyph is monochrome, so it takes the plain foreground
+  /* Checkered: the flag glyph is monochrome, so it takes the plain foreground
      rather than a colour of its own. It is the one flag that is about THIS
      driver rather than the session, which is why it outranks the rest. */
   .rm-flag-checkered { color: #e8eaed; }
@@ -3434,7 +3643,7 @@
      driver went looking for, they are the app telling them something is
      happening to them right now. Collapsing hides what you browse, never what
      finds you. */
-  .rm-collapsed > *:not(.rm-header):not(.rm-driverbar):not(.rm-broadcast-board):not(.rm-countdown):not(.rm-derby-warning):not(.rm-vehicle-error):not(.rm-notice):not(.rm-spectator-bar):not(.rm-pit):not(.rm-ghost) {
+  .rm-collapsed > *:not(.rm-header):not(.rm-driverbar):not(.rm-broadcast-board):not(.rm-countdown):not(.rm-flash):not(.rm-derby-warning):not(.rm-vehicle-error):not(.rm-notice):not(.rm-spectator-bar):not(.rm-pit):not(.rm-ghost) {
     display: none !important;
   }
   /* The dragged HEIGHT belongs to the expanded panel: collapsed, the root is
@@ -3548,6 +3757,20 @@
   .rm-cup-table-row { gap: 3px; }
   .rm-cup-cell { display: inline-flex; align-items: center; gap: 2px; }
   .rm-cup-pos { font-size: 9px; color: #5f6368; width: 20px; text-align: right; }
+  /* The typed points line. Wide, monospaced digits, and it grows with the
+     row rather than sitting at a fixed width: a 24-deep table is a long line
+     and a box that truncated it would defeat the point of showing it. */
+  .rm-cup-line {
+    flex: 1;
+    min-width: 0;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 3px;
+    color: #e8eaed;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    padding: 3px 6px;
+  }
   .rm-cup-num {
     width: 38px;
     background: rgba(0, 0, 0, 0.35);
@@ -3758,6 +3981,19 @@
   .rm-joker-done    { color: #7ee2a8; }
   .rm-joker-missing { color: #fdd663; }
   .rm-reset-low     { color: #f28b82; font-weight: 700; }
+  /* Reads at a glance from a moving car, which the number beside it does not:
+     2/2 and 1/2 are one character apart. */
+  .rm-reset-out {
+    margin-left: 4px;
+    padding: 0 5px;
+    border-radius: 3px;
+    background: rgba(234, 67, 53, 0.28);
+    border: 1px solid rgba(234, 67, 53, 0.65);
+    color: #ffb3ac;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 1px;
+  }
   .rm-row-dsq td { opacity: 0.6; background: rgba(234, 67, 53, 0.06); }
   .rm-light-dsq { background: #fbbc05; box-shadow: 0 0 5px rgba(251, 188, 5, 0.7); }
 
@@ -3817,6 +4053,7 @@
      that covers the window belongs in this selector list, not in a rule of its
      own. */
   .rm-minimal .rm-countdown,
+  .rm-minimal .rm-flash,
   .rm-minimal .rm-derby-warning {
     right: auto;
     bottom: auto;
@@ -4212,6 +4449,24 @@
   .rm-derby-row-winner td { background: rgba(251, 188, 5, 0.08); }
 
   /* Full-window flashing warning overlays (hidden unless a countdown runs) */
+  /* THE FULL-PANEL FLASH, as one thing.
+
+     The derby's OUT OF BOUNDS warning was the only overlay shaped like this and
+     everything else that wanted one grew its own. It is the right presentation
+     for anything a driver has to register without reading: it covers the panel,
+     it blinks, and the word is large enough to catch peripherally.
+
+     Two consumers now, and .rm-derby-warning stays a NAME rather than becoming
+     .rm-flash in the markup: it carries a live countdown that updates every
+     frame and is not a queued notification at all. Sharing the look is right;
+     sharing the plumbing would be wrong.
+
+     ANY NEW OVERLAY BELONGS IN THE .rm-minimal LIST TOO. These are inset:0
+     against the root, and on a driver's panel the root is the whole HUD app
+     window - so an overlay that skips that rule flashes across the entire
+     windscreen instead of across the leaderboard. That is exactly how the derby
+     warning shipped broken for non-admins once already. */
+  .rm-flash,
   .rm-derby-warning {
     position: absolute;
     inset: 0;
@@ -4227,6 +4482,86 @@
   }
   .rm-derby-warning-oob  { background: rgba(180, 15, 15, 0.55); }
   .rm-derby-warning-stop { background: rgba(190, 110, 0, 0.55); }
+
+  /* Flash colours. Opaque enough to read against a bright sky and a dark tunnel
+     alike, which the 16%-alpha notice strip never was on a driver's panel: the
+     root goes transparent in minimal mode, so a wash that faint had nothing
+     behind it but the road going past. */
+  .rm-flash-red    { background: rgba(180, 15, 15, 0.55); }
+  .rm-flash-yellow { background: rgba(190, 150, 0, 0.55); }
+  .rm-flash-green  { background: rgba(20, 130, 55, 0.55); }
+  .rm-flash-white  { background: rgba(235, 235, 235, 0.5); }
+  .rm-flash-gold   { background: rgba(150, 110, 0, 0.6); }
+  .rm-flash-amber  { background: rgba(175, 85, 0, 0.6); }
+  .rm-flash-grey   { background: rgba(40, 44, 52, 0.72); }
+  /* An actual checkered flag rather than a word on a grey wash. Two offset
+     gradients make the squares; the dark base underneath keeps the text legible
+     where a square happens to be white. 18px reads as a flag at a glance and
+     does not turn into grey mush on a driver's narrow panel. */
+  /* A REAL CHECKERBOARD, and it stays black and white.
+     Two things were wrong with the first attempt. The 45deg two-gradient recipe
+     draws DIAMONDS rather than squares -- it is the standard trick and it is the
+     standard trick for a diagonal check. And the base .rm-flash animation fades
+     opacity to 0.35 every half second, which over a dark panel is precisely how
+     black and white average out to the grey that was reported.
+     One conic gradient gives four true squares per tile, and the animation is
+     overridden below so the flag waves instead of fading. */
+  .rm-flash-checkered {
+    background-color: #f2f2f2;
+    background-image: conic-gradient(
+      #14161a 0deg 90deg, #f2f2f2 90deg 180deg,
+      #14161a 180deg 270deg, #f2f2f2 270deg 360deg);
+    background-size: 44px 44px;
+    /* Squares SWAP rather than the whole panel dimming. Reads as a flag being
+       waved, and never spends half its life grey. steps(1) keeps the edges hard;
+       a smooth slide would smear into grey again on a moving panel. */
+    animation: rm-checker-wave 0.45s steps(1) infinite;
+  }
+  @keyframes rm-checker-wave {
+    0%, 100% { background-position: 0 0; }
+    50%      { background-position: 22px 0; }
+  }
+  /* The text sits over both black and white squares, so it carries its own
+     plate rather than relying on a shadow that only works over one of them. */
+  .rm-flash-checkered .rm-flash-title,
+  .rm-flash-checkered .rm-flash-sub {
+    background: rgba(12, 14, 18, 0.88);
+    border-radius: 3px;
+    padding: 3px 14px;
+  }
+  .rm-flash-checkered .rm-flash-title { color: #ffffff; text-shadow: none; }
+  .rm-flash-checkered .rm-flash-sub   { color: #ffe082; text-shadow: none; }
+  /* A driver's panel is narrower, so the squares come down with it: 44px checks
+     on a 300px panel are three squares across and read as stripes. */
+  .rm-minimal .rm-flash-checkered {
+    background-size: 28px 28px;
+    animation-name: rm-checker-wave-sm;
+  }
+  @keyframes rm-checker-wave-sm {
+    0%, 100% { background-position: 0 0; }
+    50%      { background-position: 14px 0; }
+  }
+  .rm-flash-title {
+    font-size: 30px;
+    font-weight: 800;
+    letter-spacing: 2px;
+    color: #ffffff;
+    text-shadow: 0 0 16px rgba(0, 0, 0, 0.85);
+    padding: 0 8px;
+  }
+  /* The white flag is the one that cannot take white text. */
+  .rm-flash-white .rm-flash-title { color: #14161a; text-shadow: none; }
+  .rm-flash-white .rm-flash-sub   { color: #2b2f36; text-shadow: none; }
+  .rm-flash-sub {
+    font-size: 15px;
+    font-weight: 700;
+    color: #ffe082;
+    text-shadow: 0 0 12px rgba(0, 0, 0, 0.8);
+    padding: 0 8px;
+  }
+  /* A narrow driver's panel gets the same words at a size that fits it. */
+  .rm-minimal .rm-flash-title { font-size: 22px; letter-spacing: 1px; }
+  .rm-minimal .rm-flash-sub   { font-size: 12px; }
   .rm-derby-warning-title {
     font-size: 30px;
     font-weight: 800;

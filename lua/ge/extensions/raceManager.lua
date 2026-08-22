@@ -134,6 +134,14 @@ local TUNE = {
   -- recover/load-home drops it at a spawn point that is never this close.
   RECOVER_SNAP_RANGE = 25,
   PROGRESS_EVERY = 0.3,   -- seconds between live-position reports
+  -- Metres before the start/finish line that the white flag is shown.
+  --
+  -- A marshal waves it AT you on the approach, not once you have gone past, so
+  -- the driver meets the flag before the line rather than reading about it
+  -- afterwards. Not measured off the live-position report either: that is
+  -- throttled to PROGRESS_EVERY, which at 90 mph is twelve metres between
+  -- samples and would show the flag anywhere from here to the line itself.
+  WHITE_FLAG_AT = 50,
   -- Live lap clock for the driver's own HUD. Pushed on a slow cadence and
   -- INTERPOLATED in the UI between pushes, which keeps the readout smooth
   -- without a guihook every frame. ~3.3 Hz: responsive enough to resolve a
@@ -164,7 +172,13 @@ local TUNE = {
   -- punishment. The repair lands part-way through so the car is whole before
   -- the driver gets it back.
   PIT_HOLD_SEC   = 5.0,
-  PIT_REPAIR_AT  = 2.0,   -- seconds remaining when the repair is issued
+  -- Seconds spent re-asserting the freeze and the ghost after a stop is
+  -- serviced. recoverInPlace reloads the vehicle's Lua VM to do its work and
+  -- both of those are vehicle-side calls, so both quietly go with it; this is
+  -- how long the mod keeps putting them back. Generous on purpose -- it costs
+  -- two calls a frame on one car, and the alternative is a car that is briefly
+  -- solid and free to drive in the middle of its own pit stop.
+  PIT_SETTLE_SEC = 1.5,
   PIT_COOLDOWN   = 8.0,   -- before the same stall can trigger again
   PIT_DEPTH      = 3.0,   -- metres along the stall a car counts as being in it
   -- m/s below which the car counts as stopped IN the stall. A pit stop is
@@ -224,6 +238,31 @@ local route            = {}
 -- driver on a sprint stage wants to be told they are on a sprint stage. It
 -- belongs to the TRACK, so it travels with the layout.
 local pointToPoint     = false
+
+-- WHO OWNS THE ROUTE BUFFER RIGHT NOW.
+--
+-- route, jokerRoute, pitRoute, startPositions and branch.list are two things at
+-- once: the track this client races against, and the working copy the editor
+-- appends to. Nothing separated them, so an incoming layout overwrote whatever
+-- an admin had half-built.
+--
+-- That is the cross-admin bug, and the controller back button was a symptom
+-- rather than the cause. The app asks the server for state on every mount, the
+-- server answers with whichever layout is globally loaded, and the reply landed
+-- here as an unconditional overwrite. A rejoin, a HUD apps toggle or a UI scale
+-- change did it just as well as the back button did.
+--
+-- ONE TABLE, not three locals: the top level of this file is a function, Lua
+-- allows it 200 locals, and 196 are spoken for. There are four left.
+local edit = {
+  -- Fingerprint of the buffer as the server last handed it over. nil until a
+  -- layout has been applied, which is what keeps a fresh client, a late joiner
+  -- and every non-admin driver on the unconditional path.
+  stamp   = nil,
+  -- Name of a layout whose apply was refused, held so the panel can say which
+  -- one is waiting rather than only that something was.
+  refused = nil,
+}
 
 -- BRANCHING ROUTES (the other ways through a checkpoint).
 --
@@ -557,7 +596,11 @@ local pitRoute     = {}
 local pit = {
   active   = false,  -- a stop is running
   left     = 0,      -- seconds until release
-  repaired = false,  -- the repair has been issued for this stop
+  -- Seconds left of re-asserting the freeze and the ghost after servicing. The
+  -- repair reloads the vehicle's Lua VM asynchronously and takes both with it,
+  -- so they are kept re-applied until the car has settled rather than put back
+  -- once at a moment guessed in advance.
+  settleLeft = 0,
   cooldown = 0,      -- a short delay before the same stall is live again
   -- The car has to LEAVE a stall before it can serve another stop in one.
   --
@@ -1013,6 +1056,83 @@ local function driverFlag()
   return 'green'
 end
 
+-- Cheap fingerprint of everything an admin can author, used to tell an editor
+-- buffer that has DRIFTED from the one the server handed over from one that is
+-- still exactly as it arrived.
+--
+-- Counts alone would miss a nudge, and a nudge is the edit somebody is most
+-- likely to be part-way through when another admin presses Load. Positions fold
+-- in at centimetre resolution deliberately: a fingerprint carrying raw floats
+-- would change on physics noise alone and report every buffer as dirty, which
+-- would refuse every layout on the server and look exactly like the bug it is
+-- meant to fix.
+function edit.fingerprint()
+  local n = 0
+  local function fold(list)
+    n = (n * 31 + #list) % 2147483647
+    for i = 1, #list do
+      local w = list[i]
+      n = (n * 31
+        + math.floor((w.x or 0) * 100)
+        + math.floor((w.y or 0) * 100)
+        + math.floor((w.z or 0) * 100)) % 2147483647
+    end
+  end
+  fold(route)
+  fold(jokerRoute)
+  fold(pitRoute)
+  fold(startPositions)
+  fold(branch.list)
+  return n
+end
+
+-- Is the local editor holding work that an incoming layout would destroy?
+--
+-- All three have to be true. The editor is OPEN, so a driver never holds the
+-- buffer and never has a layout refused. The buffer has DRIFTED, so an admin
+-- sitting in a clean editor still gets layouts normally. And no session is
+-- under way, because a layout pushed for a race outranks anything unsaved: the
+-- alternative is a driver racing a track nobody else is on.
+-- RUNNING A RACE OR CONFIGURING ONE. The line between the two modes, in one
+-- place, phrased as the question every caller actually has.
+--
+-- 'grid' counts as running even though the lights have not gone out: the field
+-- is placed and frozen on its slots, and moving a gate under a car already
+-- standing on the grid is the same mistake as moving one under a car at speed.
+-- Qualifying counts for the obvious reason and used to be missed everywhere --
+-- the panel's own guards tested for countdown and racing only, so every editor
+-- control in the app was live for the whole of a qualifying session.
+-- The DERBY is deliberately not consulted here. It is a separate editor with a
+-- separate gate of its own (derbyMarkersEditable, server side), and reaching for
+-- it from this far up the file would resolve `derby` as a global: the module is
+-- required several thousand lines below this, so the upvalue does not exist yet
+-- and the mistake costs a nil index at runtime rather than a compile error.
+function edit.running()
+  return phase == 'grid' or phase == 'countdown'
+      or phase == 'racing' or phase == 'qualifying'
+end
+
+-- The capability the editor is gated on. ONE function, so a permissions system
+-- has one place to plug into rather than a boolean spread through the UI.
+--
+-- MODE, not identity, and the distinction is load-bearing. Admin is the
+-- server's question and it already answers it where it counts: save, load and
+-- delete all go through requireAuth, and the panel that reaches them is drawn
+-- only for an admin. Asking it again here would break the case with no admin in
+-- it at all -- building a track offline, and the headless tests that do the
+-- same thing -- for no gain, since a local placement is invisible to everyone
+-- else and is overwritten by the server's own layout the moment a grid forms.
+function edit.canConfigure()
+  return not edit.running()
+end
+
+function edit.holdsBuffer()
+  if not editorOpen then return false end
+  if edit.stamp == nil then return false end
+  if edit.running() then return false end
+  return edit.fingerprint() ~= edit.stamp
+end
+
 local function pushRouteState()
   reportStartCount()
   guihooks.trigger('RaceManagerRoute', {
@@ -1073,9 +1193,37 @@ end
 -- Dedicated, dismissable notice channel for regulation events (reset denied,
 -- joker invalidated, vehicle rejected) so they don't get lost among the
 -- editor's transient messages.
-local function pushNotice(kind, msg)
-  guihooks.trigger('RaceManagerNotice', { kind = kind, msg = msg })
+-- `extra` carries the two things a full-panel flash needs that a strip never
+-- did: a second line, and which colour the flash is. Optional, so every one of
+-- the thirty-odd existing callers keeps working untouched.
+local function pushNotice(kind, msg, extra)
+  local payload = { kind = kind, msg = msg }
+  if type(extra) == 'table' then
+    payload.sub    = extra.sub
+    payload.colour = extra.colour
+  end
+  guihooks.trigger('RaceManagerNotice', payload)
 end
+
+-- FLAG TRANSITIONS, which are not the same thing as flag STATE.
+--
+-- driverFlag() answers "what is this driver's flag right now" and the header
+-- glyph asks it every frame. Nothing in a query can tell "still white" from
+-- "just went white", and a flash needs the second one. These are the latches
+-- that turn the standing state into an event exactly once.
+local flags = {
+  -- Lap this client has already been shown each approach flag for. An approach
+  -- lasts several seconds and is sampled every frame, so without these the
+  -- flash would re-arm continuously for the whole run down to the line.
+  whiteLap     = nil,
+  checkeredLap = nil,
+  -- The approach flash already happened, so taking the flag a moment later says
+  -- the placing rather than the flag again.
+  checkeredSeen = false,
+  -- The flag has been shown for this session by whichever of the two paths got
+  -- there first.
+  checkered = false,
+}
 
 -- Every state broadcast from the current server plugin carries this stamp. A
 -- broadcast without it comes from an OUTDATED copy of the server plugin still
@@ -1179,6 +1327,13 @@ local function resetLapTracking()
   lapStart     = localTime
   localLap     = 1
   prevPos      = nil
+  -- The flags go with the session. A white flag latched on lap 4 of the last
+  -- race would suppress it on lap 4 of the next one, and a checkered left set
+  -- would suppress it entirely.
+  flags.whiteLap      = nil
+  flags.checkeredLap  = nil
+  flags.checkeredSeen = false
+  flags.checkered     = false
   -- Joker credit and the reset allowance are per-session too: a new phase means
   -- a clean sheet on both.
   jokerArmed   = 1
@@ -1259,6 +1414,25 @@ end
 function M.clearTrackState()
   clearTrackState('ui request')
   if inMultiplayer() then TriggerServerEvent('RM_ClearTrackState', '') end
+end
+
+-- Nothing loaded: no race track, no derby arena, one press.
+--
+-- The local purge runs either way so the button does something offline too, but
+-- on a server the SERVER is what makes it stick: it clears its own copy, tells
+-- every other client, and refuses the whole thing if a session or a derby is
+-- running. Purging here first would otherwise leave this one admin looking at an
+-- empty map that nobody else agrees with.
+function M.clearEverything()
+  clearTrackState('clear everything')
+  if inMultiplayer() then
+    TriggerServerEvent('RM_ClearEverything', '')
+  else
+    -- pushNotice, not editorMsg. editorMsg is declared five thousand lines
+    -- below this and would resolve to a nil global here: it compiles clean and
+    -- throws the first time somebody presses the button offline.
+    pushNotice('session', 'Cleared: nothing is loaded')
+  end
 end
 
 -- Is the lap this driver is on the out lap -- the one that is given away?
@@ -1580,6 +1754,73 @@ end
 -- The DISTANCE is throttled with it. It used to be recomputed every frame -- a
 -- vehicle query and a square root -- for a value that is only ever read by the
 -- payload below, so ~55 out of every 60 were thrown away unused.
+-- THE WHITE FLAG, WAVED AT THIS DRIVER, on the run down to the line that starts
+-- their last lap.
+--
+-- Per driver, and it has to be: the field is spread around the circuit and the
+-- leader takes the flag a lap before the backmarkers do. It follows the local
+-- lap counter for the same reason everything else about this driver's lap does.
+--
+-- Runs every frame rather than off the throttled position report, because that
+-- report fires every 0.3 s and a car at 90 mph covers twelve metres between two
+-- of them: the flag would appear anywhere between here and the line. The cost of
+-- that is paid back in the early-outs, which are ordered cheapest first and
+-- reject on a single integer compare for every driver who is not on the
+-- second-to-last lap. Nothing is allocated and the vehicle is not touched until
+-- everything else has already passed.
+local function whiteFlagWatch()
+  if phase ~= 'racing' or spectatorLock then return end
+  -- Driving at the start/finish line specifically. The last checkpoint IS the
+  -- line, so any other armed gate means this driver is still out on the lap.
+  if armedWp ~= #route or #route == 0 then return end
+
+  -- WHICH FLAG IS ON THIS APPROACH, if either.
+  --
+  -- The last lap is announced on the run down to the line that STARTS it, and
+  -- the finish on the run down to the line that ends it. Same fifty metres,
+  -- same per-driver lap counter, one lap apart -- so they are one watcher
+  -- rather than two that could disagree about where the line is.
+  --
+  -- A sprint stage has no white flag (there is no earlier lap to be waved at
+  -- on) but very much has a finish, so point-to-point only rules out the first.
+  local which, latch
+  if pointToPoint then
+    -- A SPRINT IS DRIVEN ONCE. Its last gate is a finish rather than a line you
+    -- come back round to, so the only approach there is is the one to it -- and
+    -- the lap counter never reaches a lap TARGET to compare against, which is
+    -- why this cannot be folded into the test below.
+    which, latch = 'checkered', 'checkeredLap'
+  elseif totalLaps > 0 and localLap >= totalLaps then
+    which, latch = 'checkered', 'checkeredLap'
+  elseif totalLaps > 1 and localLap == totalLaps - 1 then
+    which, latch = 'white', 'whiteLap'
+  else
+    return
+  end
+  if flags[latch] == localLap then return end
+
+  local _, pos = sampledVehicle()
+  if not pos then return end
+  local wp = route[#route]
+  if not wp then return end
+  local dx, dy, dz = pos.x - wp.x, pos.y - wp.y, pos.z - wp.z
+  -- Squared, so the per-frame path never takes a square root.
+  local limit = TUNE.WHITE_FLAG_AT * TUNE.WHITE_FLAG_AT
+  if (dx * dx + dy * dy + dz * dz) > limit then return end
+
+  flags[latch] = localLap
+  if which == 'checkered' then
+    -- The APPROACH flash. Taking the flag pushes one of its own off the
+    -- spectator lock a moment later, carrying the placing; this one is the
+    -- marshal leaning out as the driver comes down the straight, and it is
+    -- latched separately so the two cannot collapse into one.
+    flags.checkeredSeen = true
+    pushNotice('flag', 'CHECKERED FLAG', { sub = 'Finish line', colour = 'checkered' })
+  else
+    pushNotice('flag', 'WHITE FLAG', { sub = 'Last lap', colour = 'white' })
+  end
+end
+
 local function reportProgress(dt)
   if not sessionRunning() or spectatorLock then return end
   if #route == 0 then return end
@@ -2582,7 +2823,7 @@ function pit.release(reason)
   if not pit.active then return end
   pit.active   = false
   pit.left     = 0
-  pit.repaired = false
+  pit.settleLeft = 0
   pit.cooldown = TUNE.PIT_COOLDOWN
   -- The car is standing in the box it just used. It does not get another stop
   -- out of that box until it has driven out of it.
@@ -2610,29 +2851,31 @@ function pit.update(dt)
 
   if pit.active then
     pit.left = pit.left - dt
-    if not pit.repaired and pit.left <= TUNE.PIT_REPAIR_AT then
-      pit.repaired = true
+    -- THE HOLD IS JUST A HOLD. Everything the stop DOES to the car happened the
+    -- moment it stopped: repaired, stood straight, frozen, ghosted, in that
+    -- order and in one place.
+    --
+    -- What is left here is settling. recoverInPlace is queued into the vehicle's
+    -- own Lua VM and that VM RELOADS to service it, silently taking the freeze
+    -- and the ghost with it -- both are vehicle-side calls. So they are
+    -- re-asserted for a short window afterwards rather than once at a moment
+    -- picked in advance: a fixed re-apply is a guess about how long a reload
+    -- takes, and this simply keeps saying it until the car has settled.
+    if pit.settleLeft > 0 then
+      pit.settleLeft = pit.settleLeft - dt
       local veh = ownVehicle()
       if veh then
-        -- The repair is a vehicle reset as far as BeamNG is concerned, and the
-        -- reset hook must recognise it as ours: a pit stop is not a driver
-        -- reset and must never spend a reset allowance or be reported as one.
-        local ok, p = pcall(function () return veh:getPosition() end)
-        if ok and p then noteSelfTeleport(p.x, p.y, p.z) end
-        pcall(function () veh:queueLuaCommand('recovery.recoverInPlace()') end)
-        -- The reset reloads the vehicle VM and takes the freeze with it, so it
-        -- goes straight back on -- the car must not be free to leave early.
         setLocalVehicleFrozen(true, 'pit')
-        -- The VM reload takes the GHOST with it too, for the same reason and
-        -- just as silently: setGhostEnabled is a vehicle-side call, so the
-        -- repair would quietly hand collision back with seconds of the stop
-        -- still to run. Re-assert it against the id we ghosted, not a fresh
-        -- lookup, so this is the same car either way.
-        if pit.ghostVeh then
-          ghost.apply(pit.ghostVeh, veh, true, TUNE.GHOST_ALPHA)
-        end
+        if pit.ghostVeh then ghost.apply(pit.ghostVeh, veh, true, TUNE.GHOST_ALPHA) end
+        -- AND THE ECHO WINDOW WITH THEM. recoverInPlace is queued into the
+        -- vehicle VM, so the vehicle-reset hook it provokes lands whenever that
+        -- VM gets to it -- a frame later on a quiet map, several under load.
+        -- Arming the window once at entry means a slow reload comes back after
+        -- it has closed and is read as a DRIVER reset: reported to the server
+        -- and charged against the allowance, for a repair the mod asked for.
+        local ok, p2 = pcall(function () return veh:getPosition() end)
+        if ok and p2 then noteSelfTeleport(p2.x, p2.y, p2.z) end
       end
-      pushNotice('pit', 'Repaired, hold for the release')
     end
     if pit.left <= 0 then
       pit.release('complete')
@@ -2690,9 +2933,60 @@ function pit.update(dt)
   end
   pit.active   = true
   pit.left     = TUNE.PIT_HOLD_SEC
-  pit.repaired = false
   pit.stops    = pit.stops + 1
   pit.promptLeft = 0
+  pit.settleLeft = TUNE.PIT_SETTLE_SEC
+  -- SERVICE THE CAR, ONCE, HERE.
+  --
+  -- Stopped in the box is the whole entry condition; what follows is the stop
+  -- itself and it is four things in a fixed order: stand it straight on the
+  -- stall, repair it, freeze it, ghost it. The hold that follows is only a
+  -- clock.
+  --
+  -- The repair used to happen part way through the hold, which meant the car
+  -- was mutated twice at two different moments and each one needed the freeze
+  -- and the ghost putting back separately. One service is easier to reason
+  -- about and easier to watch.
+  --
+  -- STRAIGHT BEFORE REPAIRED, deliberately: recoverInPlace recovers where the
+  -- car IS, so placing it first is what makes "in place" mean the stall.
+  --
+  -- A stall is driven into, and cars arrive in it sideways, backwards, or half
+  -- off the side of it -- a spin into the pit lane is exactly when somebody
+  -- needs a stop. Freezing them in whatever attitude they landed in meant the
+  -- release handed back a car pointing at the wall, which costs more time than
+  -- the stop did.
+  --
+  -- Done on ENTRY rather than at the release: the driver watches the hold count
+  -- down, so the car being straightened is visible and reads as being serviced,
+  -- where a snap at the moment of release reads as the mod grabbing the car.
+  -- The position comes from the stall rather than from where they stopped, so a
+  -- car half out of the box is pulled into it.
+  --
+  -- Noted as our own teleport first. Without that the reset hook this provokes
+  -- is read as a driver reset and spends an allowance nobody used, which is the
+  -- bug the grid placement already had once.
+  local stallWp = pitRoute[inStall]
+  if stallWp then
+    local wp = stallWp
+    -- The car's OWN height, not a ground probe. It is stopped in the stall, so
+    -- it is already standing on whatever surface the stall is on -- and groundAt
+    -- is declared below this point anyway, so naming it here would resolve to a
+    -- nil global and throw on the first pit stop of the session.
+    local okPlace = pcall(function ()
+      noteSelfTeleport(wp.x, wp.y, pos.z)
+      local r = headingRot(wp.hx or 0, wp.hy or 1)
+      veh:setPositionRotation(wp.x, wp.y, pos.z, r.x, r.y, r.z, r.w)
+    end)
+    if not okPlace then
+      log('W', 'raceManager', 'Pit stall: could not straighten the car, leaving it as it landed')
+    end
+  end
+  -- The repair is a vehicle reset as far as BeamNG is concerned, and the reset
+  -- hook must recognise it as ours: a pit stop is not a driver reset and must
+  -- never spend a reset allowance or be reported as one. noteSelfTeleport above
+  -- is what covers it.
+  pcall(function () veh:queueLuaCommand('recovery.recoverInPlace()') end)
   setLocalVehicleFrozen(true, 'pit')
   -- Ghost before the notice, so a car that is about to sit frozen in the lane
   -- stops being solid on the same frame it stops being able to move.
@@ -2957,9 +3251,26 @@ function M.onVehicleResetted(vehId)
     if blockNoticeLeft <= 0 then
       blockNoticeLeft = BLOCK_NOTICE_EVERY
       if inMultiplayer() then TriggerServerEvent('RM_ResetDenied', '') end
-      pushNotice('reset', maxResets == 0
-        and 'RESET BLOCKED: no resets allowed in this session'
-        or  ('RESET BLOCKED: all ' .. maxResets .. ' resets used'))
+      -- THE MOMENT IT MATTERS: the driver reached for a reset and it did not
+      -- come. Said here rather than when the last one was spent, because
+      -- spending the last one still gave them a reset -- being refused one is
+      -- the thing that changes what they can do about the wall they are in.
+      --
+      -- Every refused attempt says it again, not just the first: a driver who
+      -- has forgotten and presses reset three corners later needs the same
+      -- answer, and silence reads as the key having broken. Still throttled by
+      -- blockNoticeLeft above, which is about a HELD key rather than about
+      -- repeat attempts.
+      --
+      -- A session with no resets at all is a different sentence. Those drivers
+      -- never had one to run out of.
+      if maxResets == 0 then
+        pushNotice('resetsout', 'No resets in this session',
+          { sub = 'You are on your own out there', colour = 'amber' })
+      else
+        pushNotice('resetsout', "Uh oh! You're out of resets",
+          { sub = 'All ' .. maxResets .. ' used', colour = 'amber' })
+      end
       log('W', 'raceManager', 'Reset blocked: allowance of ' .. maxResets
         .. ' exhausted (position ' .. (restored and 'restored' or 'NOT restored') .. ')')
     end
@@ -3039,6 +3350,9 @@ function M.onVehicleResetted(vehId)
     resetsUsed = resetsUsed + 1
     if inMultiplayer() then TriggerServerEvent('RM_VehicleReset', '') end
     local left = maxResets - resetsUsed
+    -- Spending the last one is still just the tally reaching zero. The driver is
+    -- told they are OUT when they next reach for a reset and it does not come,
+    -- which is the moment it actually matters to them -- see the blocked path.
     pushNotice('reset', string.format('Reset %d/%d used: %d left', resetsUsed, maxResets, left))
     pushRouteState()
     return
@@ -4609,8 +4923,14 @@ local function palette()
     -- it at speed and wants to see the road.
     jokerFill    = ColorF(0.72, 0.35, 1, 0.13),
     jokerUsedFill = ColorF(0.62, 0.62, 0.7, 0.10),
-    pitFill      = ColorF(1, 0.72, 0.1, 0.11),
-    pitWall      = ColorF(1, 0.72, 0.1, 0.07),
+    -- The FOOTPRINT is the rule, so it is the part that has to read. At 0.11
+    -- over pale ground it was invisible and a stall showed as an outline the
+    -- size of the track with nothing inside it.
+    pitFill      = ColorF(1, 0.72, 0.1, 0.24),
+    pitWall      = ColorF(1, 0.72, 0.1, 0.14),
+    -- The chevron on the floor: which way the stall faces, and therefore which
+    -- way the car is stood when it stops.
+    pitArrow     = ColorF(1, 0.88, 0.35, 0.85),
     -- The state glyph drawn across a joker gate: a cross while it is shut, a
     -- tick once it is spent. Both semi-transparent, because they are drawn over
     -- the piece of track the driver is about to aim at.
@@ -4977,6 +5297,24 @@ function paint.pitBox(wp, color)
   local ml = vec3(wp.x + rx * hw, wp.y + ry * hw, z + 0.05)
   local mr = vec3(wp.x - rx * hw, wp.y - ry * hw, z + 0.05)
   debugDrawer:drawCylinder(ml, mr, r * 0.6, color)
+  -- A CHEVRON POINTING THE WAY THE STALL FACES.
+  --
+  -- The box alone is symmetrical, so it says where to stop and nothing about
+  -- which way round. That matters now that stopping in one stands the car on
+  -- the stall's heading: without this the car turning as it is serviced looks
+  -- arbitrary rather than like being pointed back down the lane.
+  --
+  -- Sized off the stall's DEPTH rather than its width, so it stays car-sized on
+  -- a stall that inherited a wide checkpoint's span.
+  local p2 = palette()
+  local tip  = vec3(wp.x + fx * d * 0.55, wp.y + fy * d * 0.55, z + 0.06)
+  local tail = vec3(wp.x - fx * d * 0.35, wp.y - fy * d * 0.35, z + 0.06)
+  local barb = math.min(hw, d * 0.5)
+  local bl2  = vec3(tip.x - fx * d * 0.4 + rx * barb, tip.y - fy * d * 0.4 + ry * barb, z + 0.06)
+  local br2  = vec3(tip.x - fx * d * 0.4 - rx * barb, tip.y - fy * d * 0.4 - ry * barb, z + 0.06)
+  debugDrawer:drawCylinder(tail, tip, r * 0.5, p2.pitArrow)
+  debugDrawer:drawCylinder(bl2, tip, r * 0.5, p2.pitArrow)
+  debugDrawer:drawCylinder(br2, tip, r * 0.5, p2.pitArrow)
 end
 
 -- `fill` and `glyph` are for the joker and nothing else. An ordinary checkpoint
@@ -5157,11 +5495,21 @@ local function drawGates(derbyLive)
   -- are. Editor only -- a driver gets a pole on the nearest one instead.
   for i, wp in ipairs(pitRoute) do
     local col = nudgeSelected(pitRoute, i) and p.nudged or p.pit
-    -- The footprint too, in the editor: a stall is placed as a box and judged
-    -- against the lane it sits in, and the rectangle alone says nothing about
-    -- how far along the stall a car still counts as being in it.
+    -- THE BOX, AND ONLY THE BOX.
+    --
+    -- This used to draw the footprint and then a full-height gate on top of it,
+    -- which is two shapes for one rule and the taller one won: a stall read as a
+    -- pair of tall amber poles, exactly like a checkpoint it is not, while the
+    -- rectangle on the ground that actually decides the stop was lost underneath
+    -- them.
+    --
+    -- A stall is a footprint. It is drawn as one, with its corner posts for
+    -- distance, and the label floats over the middle where the car is meant to
+    -- end up rather than being pinned to a gate that is no longer there.
     paint.pitBox(wp, col)
-    drawGate(wp, col, 'PIT ' .. i, authoring)
+    debugDrawer:drawTextAdvanced(
+      vec3(wp.x, wp.y, wp.z + TUNE.PIT_WALL_H + 0.9),
+      String('PIT ' .. i), p.text, true, false, p.textBg)
   end
 
   -- Joker route: violet, so it never reads as part of the main lap. The next
@@ -5264,6 +5612,7 @@ function M.onUpdate(dt)
   joinRequestUpdate(dt)     -- deferred state request after joining a server
   checkGates()
   lapTimerUpdate(dt)        -- live lap clock for this driver's own HUD
+  whiteFlagWatch()          -- the last-lap flag, waved on the approach
   reportProgress(dt)        -- live position telemetry (distance to next gate)
   drawGates(derby.derbyState.phase == 'running')
   drawStartPositions()      -- starting grid slots
@@ -5495,7 +5844,7 @@ function nudge.set(on)
   if not on then nudge.release(); pushRouteState(); return end
   if not nudge.available() then
     guihooks.trigger('RaceManagerEditorMsg', {
-      msg = 'Nudge mode cannot start, missing: ' .. table.concat(nudge.missing(), ', ') })
+      msg = 'Place mode cannot start, missing: ' .. table.concat(nudge.missing(), ', ') })
     return
   end
   nudge.on, nudge.sel, nudge.dragging = true, nil, false
@@ -6772,14 +7121,35 @@ function M.requestLayouts()
   if inMultiplayer() then TriggerServerEvent('RM_RequestLayouts', '') end
 end
 
-function M.loadLayout(name)
+function M.loadLayout(name, forEditing)
   name = tostring(name or '')
   if name == '' then return end
   if not inMultiplayer() then
     editorMsg('Layouts need a BeamMP server')
     return
   end
-  TriggerServerEvent('RM_LoadLayout', jsonEncode({ name = name }))
+  -- PRESSING LOAD IS THE ADMIN SAYING YES.
+  --
+  -- The buffer guard exists to stop somebody ELSE's layout landing on unsaved
+  -- work; it must never stop the admin loading one deliberately. Standing it
+  -- down here rather than special-casing the reply keeps the guard itself with
+  -- no notion of who asked, which is the only reason it stays this small.
+  --
+  -- It clears whether or not the load succeeds. A refused or missing layout
+  -- leaves the buffer exactly as it was, and the next apply re-stamps it.
+  edit.stamp   = nil
+  edit.refused = nil
+  -- `forEditing` asks for the PRIVATE load: the server sends the layout back to
+  -- this client alone and leaves the raced track, the grid and the joker count
+  -- where they are. Without it this is the public load it has always been, and
+  -- the whole server moves onto the track.
+  --
+  -- Sent as nil rather than false when unset, so an older server that has never
+  -- heard of the flag sees exactly the payload it used to get.
+  TriggerServerEvent('RM_LoadLayout', jsonEncode({
+    name       = name,
+    forEditing = forEditing and true or nil,
+  }))
 end
 
 function M.deleteLayout(name)
@@ -6800,6 +7170,55 @@ function M.setFinishLine(x, y, z, hx, hy)
   route = { { x = x, y = y, z = z, hx = hx, hy = hy } }
   armedWp = 1
   pushRouteState()
+end
+
+-- ---------------------------------------------------------------------------
+-- The editor is closed while a session is running
+-- ---------------------------------------------------------------------------
+-- ENFORCED, not asked for. Every function below mutates the route buffer, and
+-- until now not one of them checked anything: the only thing standing between a
+-- driver at speed and a gate moving under them was an ng-disabled attribute in
+-- the panel. Those attributes tested for 'countdown' and 'racing' and missed
+-- QUALIFYING in all fourteen places, so the entire editor was live for the whole
+-- of every qualifying session.
+--
+-- Wrapped in one pass over a list rather than a guard pasted into twenty-two
+-- functions, because the guard pasted into twenty-two functions is how the
+-- fourteenth one gets forgotten. A new editor action is covered by adding its
+-- name here, and an action that is NOT in this list is one that does not touch
+-- the buffer -- the previews, the visualisation toggle and the panel's own
+-- open/closed state are all deliberately absent, since blocking those would
+-- stop an admin looking at a track they are not allowed to change.
+--
+-- saveLayout, loadLayout and deleteLayout are absent too, and that is not an
+-- oversight: the SERVER refuses those mid-session on its own terms, and its
+-- terms are not quite these (it permits a load while a grid is formed). Copying
+-- the rule here would silently change which of them work.
+for _, name in ipairs({
+  'editorAdd', 'editorUndo', 'editorClear', 'setFinishLine',
+  'moveCheckpoint', 'removeCheckpoint', 'insertCheckpoint', 'reorderCheckpoint',
+  'setCheckpointWidth', 'setCheckpointHeight', 'setCheckpointDepth',
+  'setCheckpointOverride', 'setPointToPoint',
+  'moveStartPosition', 'removeStartPosition',
+  'generateStartPositions', 'respaceGrid', 'flipStartPositions',
+  'setBranchSlot', 'setBranchGateSlot', 'removeBranchGate',
+  'nudgeTurn', 'nudgeLift', 'nudgeDelete',
+}) do
+  local inner = M[name]
+  -- A name that is not there is a typo in the list above, and a silent one:
+  -- wrapping nil would replace the function with a guard that returns nothing
+  -- and the action would simply stop working. Say so at load instead.
+  if type(inner) ~= 'function' then
+    log('E', 'raceManager', 'editor guard: no such action "' .. name .. '"')
+  else
+    M[name] = function (...)
+      if not edit.canConfigure() then
+        editorMsg('Not while a session is running: end it first.')
+        return
+      end
+      return inner(...)
+    end
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -6837,12 +7256,17 @@ local function onServerUpdate(rawData)
     raceFlag = data.flag
   end
   if raceFlag ~= wasFlag and sessionRunning() then
+    -- The instruction moves to the second line and the flag itself becomes the
+    -- headline. On a full-panel flash the first line is what gets read at
+    -- speed, and "RED FLAG" is the part that has to survive a glance.
     if raceFlag == 'red' then
-      pushNotice('flag', 'RED FLAG: stop where you are and wait')
+      pushNotice('flag', 'RED FLAG',
+        { sub = 'Stop where you are and wait', colour = 'red' })
     elseif raceFlag == 'yellow' then
-      pushNotice('flag', 'YELLOW FLAG: caution called, race back to the line')
+      pushNotice('flag', 'YELLOW FLAG',
+        { sub = 'Caution: race back to the line', colour = 'yellow' })
     else
-      pushNotice('flag', 'GREEN FLAG: racing')
+      pushNotice('flag', 'GREEN FLAG', { sub = 'Racing', colour = 'green' })
     end
   end
   -- Per-player admin status. Present only on a targeted reply (RM_RequestState),
@@ -6924,8 +7348,9 @@ local function onServerUpdate(rawData)
   if bestPid ~= lastBestLapPid or bestTime ~= lastBestLapTime then
     if bestPid and myId and bestPid == myId and bestTime then
       local mins = math.floor(bestTime / 60)
-      pushNotice('fastest',
-        string.format('FASTEST LAP: %d:%06.3f', mins, bestTime - mins * 60))
+      pushNotice('fastest', 'FASTEST LAP', {
+        sub = string.format('%d:%06.3f', mins, bestTime - mins * 60),
+      })
     end
     lastBestLapPid  = bestPid
     lastBestLapTime = bestTime
@@ -7100,9 +7525,34 @@ local function onForceSpectate(rawData)
   -- The placement toast. A MOMENT, so it is a transient notice: the standing
   -- itself is on the leaderboard and the checkered flag is the persistent half
   -- of saying the race is over for this driver.
-  local place = tonumber(data.place)
-  if place and place > 0 and source ~= 'derby' then
-    pushNotice('finish', 'Race over: you placed ' .. ordinal(place))
+  -- THE CHECKERED FLAG, for this driver, once.
+  --
+  -- Every driver gets one as they finish, including a backmarker taking it long
+  -- after the leader: this fires off that driver's own removal from the session,
+  -- not off the race being decided. A derby elimination is not a finish and has
+  -- an overlay of its own, so it is left out here exactly as it is in
+  -- driverFlag().
+  --
+  -- The placing rides along as the second line rather than as a notice of its
+  -- own. Two arriving together would rank the flag first and hold the placing
+  -- behind it for six seconds, which is a strange way to tell somebody they won.
+  if source ~= 'derby' and not flags.checkered then
+    flags.checkered = true
+    local place = tonumber(data.place)
+    local placed = (place and place > 0) and ('You placed ' .. ordinal(place)) or nil
+    if flags.checkeredSeen then
+      -- The flag was already waved on the approach, seconds ago. Saying it again
+      -- the instant they cross is the same news twice; what they do not know yet
+      -- is where they came.
+      if placed then
+        pushNotice('finish', placed)
+      end
+    else
+      -- No approach flash happened: the driver was retired by something other
+      -- than crossing the line (time expired, a DNF, an admin ending it), so
+      -- this is the first and only time they see it.
+      pushNotice('flag', 'CHECKERED FLAG', { sub = placed, colour = 'checkered' })
+    end
   end
 end
 
@@ -7298,6 +7748,26 @@ local function onApplyLayout(rawData)
     end
   end
 
+  -- REFUSED WHILE THE LOCAL EDITOR HOLDS THE BUFFER. See edit.holdsBuffer.
+  --
+  -- Checked here rather than at the top of the handler on purpose: the payload
+  -- is validated first, so a malformed broadcast is still rejected as malformed
+  -- and never reads as somebody else's layout arriving.
+  --
+  -- Nothing is queued. The admin either saves what they have and presses Load,
+  -- or presses Load to take the server's copy; both go through M.loadLayout,
+  -- which stands the guard down for the reply it is expecting. Holding the
+  -- payload to apply later would mean applying a layout that may since have
+  -- been deleted or overwritten.
+  if edit.holdsBuffer() then
+    edit.refused = tostring(data.name or '')
+    editorMsg('"' .. edit.refused .. '" was loaded on the server. Your unsaved '
+      .. 'editor work has been kept: Save it, or press Load to take the server\'s.')
+    log('W', 'raceManager', 'RM_ApplyLayout("' .. edit.refused
+      .. '") refused: the local editor buffer has unsaved changes')
+    return
+  end
+
   clearTrackState('applying layout "' .. tostring(data.name) .. '"')
   route      = cps
   jokerRoute = jokerCps
@@ -7320,6 +7790,12 @@ local function onApplyLayout(rawData)
   end
   pointToPoint     = data.pointToPoint == true
   resetLapTracking()
+  -- The buffer now matches what the server handed over, so this is the baseline
+  -- every later drift is measured against. Stamped AFTER the whole apply, not
+  -- beside the route assignment above: branch.list lands further up and a stamp
+  -- taken before it would read as dirty from the moment it was written.
+  edit.stamp   = edit.fingerprint()
+  edit.refused = nil
   editorMsg('Loaded layout "' .. tostring(data.name) .. '" ('
     .. (pointToPoint and 'point to point, ' or '') .. #route .. ' gates'
     .. (#jokerRoute > 0 and (' + ' .. #jokerRoute .. ' joker') or '')
@@ -7359,7 +7835,25 @@ local function onClearTrack(rawData)
   local reason = 'server'
   local ok, data = pcall(jsonDecode, rawData)
   if ok and type(data) == 'table' and data.reason then reason = tostring(data.reason) end
+  -- THE OTHER DOOR INTO THE SAME BUG, and the more destructive of the two.
+  --
+  -- A server-side layout load purges every client BEFORE it broadcasts the new
+  -- gates, so an admin editing elsewhere took the wipe here and the refusal in
+  -- onApplyLayout, and was left holding an EMPTY editor. Guarding the apply
+  -- alone would have turned "your work was replaced" into "your work is gone",
+  -- which is worse than the bug being fixed.
+  if edit.holdsBuffer() then
+    log('W', 'raceManager', 'RM_ClearTrack (' .. reason
+      .. ') refused: the local editor buffer has unsaved changes')
+    return
+  end
   clearTrackState('server: ' .. reason)
+  -- The buffer belongs to the server again, so the stamp it was measured
+  -- against is meaningless. Dropping it is what stops the APPLY that follows a
+  -- load-purge being refused against a fingerprint this purge just invalidated:
+  -- an open but CLEAN editor would otherwise be wiped by the clear, read as
+  -- dirty a moment later, and refuse the very layout it was waiting for.
+  edit.stamp = nil
 end
 
 -- Server replied to a login attempt: forward the success flag to the UI, which
@@ -7649,6 +8143,21 @@ function M.cupSetPreset(preset, target)
   end
 end
 
+-- Save the race table as a named scoring system, and delete one again. The
+-- server holds them beside the live scoring in cup.json, which is deliberately
+-- what End Cup does not clear.
+function M.cupSavePreset(name)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSavePreset', jsonEncode({ name = tostring(name or '') }))
+  end
+end
+
+function M.cupDeletePreset(key)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupDeletePreset', jsonEncode({ preset = tostring(key or '') }))
+  end
+end
+
 -- A points table arrives from the app as "30,27,25,..." and goes up as an
 -- array. A comma-separated string rather than a structure because every other
 -- command in this bridge takes numbers and strings, and the app would otherwise
@@ -7872,6 +8381,60 @@ local function bindServerHandlers()
   return true
 end
 
+-- A RESET THE INPUT FILTER SWALLOWED.
+--
+-- Once the allowance is spent the reset actions are filtered out in C++, so the
+-- key press never becomes a vehicle reset and onVehicleResetted never fires.
+-- That is deliberate -- a reset REPAIRS the car, and letting it through and
+-- teleporting the car back afterwards would hand out free repairs -- but it
+-- also meant the driver pressed reset and got nothing at all: no movement, no
+-- message, no way to tell the rule from a broken key.
+--
+-- INERT ON THE CURRENT BUILD, and kept anyway.
+--
+-- This was the one place a swallowed press looked like it might still be
+-- visible, and a live session settled it: BeamNG does NOT deliver filtered
+-- actions here. The filtering happens in C++ inside ActionMap, and a blocked
+-- action is dropped before any Lua hook runs -- onFilteredInputChanged means
+-- "input that got through the filter", not "input the filter stopped".
+--
+-- Not deleted, because it costs one boolean test per input event and it is the
+-- exact shape the answer would take if a future build ever did route blocked
+-- actions through a hook. The panel carries a standing OUT marker instead,
+-- which needs nothing from the engine.
+--
+-- Guarded on resetInputsBlocked first, which is false for almost the whole of
+-- every session: an analog axis fires this hook constantly and nothing below
+-- the guard should run for steering.
+function M.onFilteredInputChanged(devName, action, value)
+  if not resetInputsBlocked then return end
+  -- Presses only. Releases come through as 0 and are not a second attempt.
+  if not value or value <= 0 then return end
+  if type(action) ~= 'string' then return end
+  local wanted = false
+  for i = 1, #RESET_ACTIONS do
+    if RESET_ACTIONS[i] == action then wanted = true; break end
+  end
+  if not wanted then return end
+  if blockNoticeLeft > 0 then return end
+  blockNoticeLeft = BLOCK_NOTICE_EVERY
+  -- Recorded on the server as well, so a driver leaning on the key still shows
+  -- up in the live table and the results the same way a reset the filter could
+  -- not see already does.
+  if inMultiplayer() then TriggerServerEvent('RM_ResetDenied', '') end
+  if derbyResetsEnforced() then
+    pushNotice('resetsout', "Uh oh! You're out of resets",
+      { sub = 'All ' .. derbyResets.max .. ' derby resets used', colour = 'amber' })
+  elseif maxResets == 0 then
+    pushNotice('resetsout', 'No resets in this session',
+      { sub = 'You are on your own out there', colour = 'amber' })
+  else
+    pushNotice('resetsout', "Uh oh! You're out of resets",
+      { sub = 'All ' .. maxResets .. ' used', colour = 'amber' })
+  end
+  log('W', 'raceManager', 'Reset key pressed with no allowance left (input filtered)')
+end
+
 function M.onExtensionLoaded()
   bindServerHandlers()
   log('I', 'raceManager', 'Race Manager client bridge loaded (build ' .. RM_BUILD
@@ -7914,7 +8477,7 @@ local function resetToIdle(reason)
   pitRoute        = {}
   pit.active      = false
   pit.left        = 0
-  pit.repaired    = false
+  pit.settleLeft  = 0
   pit.cooldown    = 0
   pit.promptLeft  = 0
   -- clearGhostReasons above has already swept every car in the world clean, so

@@ -24,6 +24,10 @@ end
 local sent, hooks, handlers = {}, {}, {}
 local frozen = nil          -- last setFreeze value that reached the vehicle
 local repairs = 0           -- recovery.recoverInPlace() calls
+-- Mirrors TUNE.PIT_HOLD_SEC in the extension, which the harness cannot read.
+-- Kept in step by hand; a stale value here shows up as a stop that has not
+-- finished when a later section expects the stall free.
+local TUNE_PIT_HOLD = 5.0
 local VEH_ID = 7
 
 local ghosted = nil         -- last obj:setGhostEnabled value reaching the vehicle
@@ -150,7 +154,19 @@ frames(0.2)
 check(frozen == true, 'driving into a stall holds the car')
 check(lastRoute().pitActive == true, 'and the driver is told they are in the pits')
 check(countSent('RM_PitStop') == 1, 'and the stop is reported to the server once')
-check(repairs == 0, 'the repair has not happened yet -- the stop has to cost time')
+-- THE STOP IS SERVICED THE MOMENT THE CAR STOPS: stood straight on the stall,
+-- repaired, frozen, ghosted, in that order and in one place. The hold that
+-- follows is only a clock.
+--
+-- The repair used to be delayed to part way through the hold so that a stop
+-- "cost time". It still does: the car is frozen for the whole of PIT_HOLD_SEC
+-- either way, so the time is charged by the freeze rather than by when the
+-- repair lands. What the delay actually bought was that a stop whose freeze got
+-- LOST released an unrepaired car -- which is a smaller thing than it sounds,
+-- since the hold is verified and corrected, and a driver watching their car sit
+-- visibly wrecked until the instant they are released reads as nothing having
+-- happened at all.
+check(repairs == 1, 'the car is repaired as it stops, not part way through the hold')
 
 -- The repair lands part-way through, so the car is whole before it is released.
 frames(3.5)
@@ -173,15 +189,24 @@ serverState({ phase = 'racing', maxResets = 2, totalLaps = 3, drivers = {} })
 veh.x, veh.y = 0, 0
 frames(9.0)                          -- clear the stall cooldown
 veh.x, veh.y = 50, 0
-frames(3.2)                          -- into the stall, up to the repair
+frames(0.2)                          -- into the stall: the stop is serviced here
 check(repairs > 0, 'the repair has been issued')
--- queueLuaCommand is asynchronous: the reset it provokes arrives a frame or
--- two later, which is well inside the echo window the mod arms for it.
+-- queueLuaCommand is asynchronous: the reset it provokes arrives a frame or two
+-- later, which is well inside the echo window. That window is armed at entry
+-- and held open for TUNE.PIT_SETTLE_SEC afterwards, because how long the vehicle
+-- VM takes to reload is not something the mod gets to know -- a frame on a quiet
+-- map, several under load. This used to wait 3.2s because the repair itself used
+-- to be delayed that long; now it waits the couple of frames a real echo takes.
 RM.onVehicleResetted(VEH_ID)
 check(countSent('RM_VehicleReset') == 0, 'a pit repair is not reported as a driver reset')
 local st = lastRoute()
 check(st and (st.resetsUsed or 0) == 0, 'and spends no reset allowance')
-frames(3.0)
+-- Let this stop actually FINISH before the next section starts one of its own.
+-- It used to be most of the way through by the time the echo was checked; now
+-- the echo is checked two frames in, so the hold still has its whole length to
+-- run and the section below would otherwise be testing arrival into a stall
+-- that was still busy.
+frames(TUNE_PIT_HOLD + 1.0)
 
 -- ===========================================================================
 -- A car has to LEAVE a stall before it can serve another stop in it
@@ -326,7 +351,7 @@ check(ghosted == true, 'a car serving a pit stop is ghosted')
 local repairsBefore = repairs
 ghosted = nil                        -- forget it, so only a re-assert can set it
 frames(3.5)
-check(repairs == repairsBefore + 1, 'the repair is issued during the stop')
+check(repairs == repairsBefore, 'the repair is not issued a second time during the hold')
 check(ghosted == true, 'and the ghost survives the repair reloading the vehicle')
 
 frames(2.5)

@@ -491,6 +491,69 @@ lastApplied = nil
 RM_onLoadLayout(2, '{"name":"Coast Run"}')
 check(lastApplied == nil, 'layout from another map cannot be loaded')
 
+-- ---------------------------------------------------------------------------
+-- PRIVATE LOAD: one admin opening a layout in their own editor
+-- ---------------------------------------------------------------------------
+-- Two admins on one map have to be able to build at the same time. Loading a
+-- layout used to move the WHOLE SERVER onto it, so an admin opening a track to
+-- work on it dragged everyone else onto it too and overwrote the other admin's
+-- work in progress. `forEditing` is the private sense of the same request: the
+-- layout goes to the one client that asked and no server state moves.
+--
+-- A second layout on this map, so "the server is on A" and "an admin opened B"
+-- are distinguishable states rather than the same one.
+local cpAlt = '[{"x":900,"y":10,"z":5,"hx":0,"hy":1},'
+  .. '{"x":940,"y":80,"z":5,"hx":1,"hy":0},'
+  .. '{"x":880,"y":140,"z":5,"hx":0,"hy":-1}]'
+RM_onSaveLayout(1, '{"name":"Club Circuit","width":12,"checkpoints":' .. cpAlt .. '}')
+
+-- The server is publicly on GP Circuit.
+RM_onLoadLayout(2, '{"name":"GP Circuit"}')
+check(appliedLayouts[-1] ~= nil and appliedLayouts[-1].width == 30,
+  'public load broadcasts to every client')
+
+-- Admin 1 opens the OTHER layout privately.
+appliedLayouts = {}
+lastCleared = nil
+eventSeq = {}
+RM_onLoadLayout(1, '{"name":"Club Circuit","forEditing":true}')
+check(appliedLayouts[1] ~= nil and appliedLayouts[1].width == 12,
+  'private load sends the layout to the admin who asked')
+check(appliedLayouts[-1] == nil,
+  'private load does NOT broadcast the layout to everyone')
+check(lastCleared ~= nil, 'private load still purges the asking client first')
+
+-- Nothing global moved. This is the assertion that matters: another client
+-- asking the server what track it is on must still be told GP Circuit, because
+-- race.layout was never touched.
+appliedLayouts = {}
+RM_onRequestState(2)
+check(appliedLayouts[2] ~= nil and appliedLayouts[2].width == 30,
+  'the server is still on the publicly loaded track after a private load')
+check(appliedLayouts[2].name ~= 'Club Circuit',
+  'a private load never becomes the raced track')
+
+-- ...and the public path still works afterwards, so the two senses do not
+-- interfere. An admin who opened a track to edit it can still put the server on
+-- it when they are ready.
+appliedLayouts = {}
+RM_onLoadLayout(1, '{"name":"Club Circuit"}')
+check(appliedLayouts[-1] ~= nil and appliedLayouts[-1].width == 12,
+  'a layout opened privately can still be loaded publicly afterwards')
+
+-- Private load obeys the same admin gate as the public one.
+appliedLayouts = {}
+RM_onLoadLayout(3, '{"name":"GP Circuit","forEditing":true}')
+check(appliedLayouts[3] == nil, 'a non-admin cannot open a layout in the editor')
+
+-- Put the map back the way this block found it: one layout, and the server on
+-- it. The persistence and clear-state assertions below count what is on disk,
+-- so a scratch layout left behind here fails them somewhere else entirely.
+RM_onDeleteLayout(1, '{"name":"Club Circuit"}')
+RM_onLoadLayout(1, '{"name":"GP Circuit"}')
+check(lastLayouts ~= nil and #lastLayouts.layouts == 1,
+  'the private-load block leaves the layout list as it found it')
+
 -- Explicit clear-state command: purges clients and re-reads layouts from disk
 lastCleared = nil
 lastLayouts = nil
@@ -1534,6 +1597,142 @@ do
   for _ = 1, 40 do RM_Tick() end       -- would take us past five in total
   check(lastState and lastState.phase == 'finished',
     'a late report inside the window does not push the end further away')
+end
+
+-- ===========================================================================
+-- A driver done with qualifying is a ghost, not an obstacle
+-- ===========================================================================
+-- Retiring from qualifying goes through the same path a race finish does:
+-- status 'finished', the spectator lock, and the CAR IS KEPT -- a finisher
+-- watches the rest of the session from their own car rather than having it
+-- taken away.
+--
+-- What was missing is the half that makes keeping it safe. ghostFinished, the
+-- list every client ghosts, was built only while the phase was 'racing' or
+-- 'countdown', so a driver who had used their qualifying laps sat on the
+-- circuit fully SOLID while everybody else was still on a hot lap. That is
+-- worse in qualifying than in a race: there is no pack to hide in, and a single
+-- contact ruins a single-lap session.
+do
+  local qCps = '[{"x":0,"y":100,"z":0,"hx":0,"hy":1},{"x":0,"y":200,"z":0,"hx":0,"hy":1}]'
+  adminLogin(1)
+  RM_onSaveLayout(1, '{"name":"Quali","width":20,"checkpoints":' .. qCps
+    .. ',"startPositions":' .. qCps .. '}')
+  RM_onLoadLayout(1, '{"name":"Quali"}')
+  RM_onSetQualiLimits(1, '{"laps":1,"seconds":0}')
+  RM_onStartQualifying(1)
+  RM_onStartCountdown(1)
+  for _ = 1, 8 do RM_CountdownTick() end
+  check(lastState.phase == 'qualifying', 'qualifying is running')
+
+  local function ghostedIds()
+    local t = {}
+    for _, id in ipairs(lastState.ghostFinished or {}) do t[tonumber(id)] = true end
+    return t
+  end
+  check(next(ghostedIds()) == nil, 'nobody is a finished-ghost while everyone is still out')
+
+  -- Alice uses her allowance. A one-lap limit is more than one CROSSING when an
+  -- out lap is owed, so she is driven round until the server retires her; the
+  -- assertion below is on the outcome rather than on the crossing count.
+  for _ = 1, 4 do RM_onLap(1, '{"lapTime":40.0}') end
+  local done = ghostedIds()
+  check(done[1] == true,
+    'a driver who has used their qualifying laps is ghosted for everyone else')
+  check(done[2] ~= true, 'and a driver still on a hot lap is not')
+
+  -- The handoff at the end of the session: the list empties, so every client
+  -- hands the collisions back rather than leaving a field of ghosts behind.
+  RM_onEndRace(1)
+  settleRace()
+  check(next(ghostedIds()) == nil,
+    'the finished-ghost list empties when qualifying ends, so collisions come back')
+
+  RM_onDeleteLayout(1, '{"name":"Quali"}')
+end
+
+-- ===========================================================================
+-- LIFECYCLE: three races back to back leave the server in the same place
+-- ===========================================================================
+-- The client half of this lives in lifecycle_test.lua; this is the durable
+-- half, where the driver records, the flag, the fastest lap and the whole race
+-- table live. State that accumulates here is the kind that makes the third race
+-- of an evening score differently from the first for no visible reason.
+--
+-- A DIFF, not a checklist: the same complete race run three times, with every
+-- field the state broadcast carries compared afterwards. A checklist only ever
+-- covers the fields somebody thought of.
+do
+  local function fieldsOf(st)
+    local out = {}
+    for _, k in ipairs({ 'phase', 'flag', 'totalLaps', 'maxResets', 'jokerEnabled',
+        'jokerGates', 'startSlots', 'gridOffLine', 'pointToPoint', 'finalLap',
+        'bestLapTime', 'bestLapPid', 'resetMode', 'ghostQuali', 'qualiLapLimit',
+        'qualiTimeLimit' }) do
+      out[k] = tostring(st[k])
+    end
+    out['#drivers'] = tostring(#(st.drivers or {}))
+    local resets, laps = 0, 0
+    for _, d in ipairs(st.drivers or {}) do
+      resets = resets + (tonumber(d.resets) or 0)
+      laps   = laps   + (tonumber(d.lap) or 0)
+    end
+    out['sum(resets)'] = tostring(resets)
+    out['sum(laps)']   = tostring(laps)
+    return out
+  end
+
+  local auditCps = '[{"x":0,"y":100,"z":0,"hx":0,"hy":1},{"x":0,"y":200,"z":0,"hx":0,"hy":1}]'
+  adminLogin(1)
+  RM_onSaveLayout(1, '{"name":"Audit","width":20,"checkpoints":' .. auditCps
+    .. ',"startPositions":' .. auditCps .. '}')
+
+  local function runRace(n)
+    RM_onLoadLayout(1, '{"name":"Audit"}')
+    RM_onSetTotalLaps(1, '{"laps":1}')
+    RM_onSetMaxResets(1, '{"maxResets":3}')
+    RM_onGenerateGrid(1)
+    RM_onStartCountdown(1)
+    for _ = 1, 8 do RM_CountdownTick() end
+    -- Something worth leaving behind: a caution, a reset spent, a fastest lap.
+    RM_onSetFlag(1, '{"flag":"yellow"}')
+    RM_onVehicleReset(1)
+    RM_onSetFlag(1, '{"flag":"green"}')
+    -- EVERY entrant takes the flag. One left out there and the race never
+    -- closes, the next Generate Grid is refused, and the audit silently reports
+    -- one long race as three identical ones. That is exactly what the first
+    -- version of this did, until the assertion below was added.
+    for pid in pairs(connected) do
+      RM_onLap(pid, '{"lapTime":' .. (39 + pid) .. '.0}')
+    end
+    settleRace()
+    check(lastState.phase == 'finished' or lastState.phase == 'waiting',
+      'audit race ' .. n .. ' actually finished (phase ' .. tostring(lastState.phase) .. ')')
+    return fieldsOf(lastState)
+  end
+
+  local r1, r2, r3 = runRace(1), runRace(2), runRace(3)
+  local function diffFields(a, b)
+    local out = {}
+    for k, v in pairs(a) do
+      if b[k] ~= v then out[#out + 1] = k .. ': ' .. tostring(v) .. ' -> ' .. tostring(b[k]) end
+    end
+    table.sort(out)
+    return out
+  end
+  local d12, d23 = diffFields(r1, r2), diffFields(r2, r3)
+  for _, l in ipairs(d12) do print('  server drift 1->2: ' .. l) end
+  for _, l in ipairs(d23) do print('  server drift 2->3: ' .. l) end
+  check(#d12 == 0, 'the second race leaves the server exactly where the first did')
+  check(#d23 == 0, 'and so does the third: nothing accumulates across races')
+
+  -- The reset allowance in particular, because it is per RACE and is the most
+  -- obvious thing to get wrong: one spent in every race, rather than a tally
+  -- climbing 1, 2, 3 across the evening.
+  check(r1['sum(resets)'] == '1' and r3['sum(resets)'] == '1',
+    'the reset allowance starts over every race rather than carrying forward')
+
+  RM_onDeleteLayout(1, '{"name":"Audit"}')
 end
 
 removeTree('Resources')
