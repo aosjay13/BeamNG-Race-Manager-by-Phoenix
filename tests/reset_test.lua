@@ -152,10 +152,14 @@ local function countSent(event)
   for _, e in ipairs(sent) do if e.event == event then n = n + 1 end end
   return n
 end
+-- REFUSALS, which is what most of this file counts. A refused reset speaks on
+-- its own channel now: spending your last one and being told there are none
+-- left are different events, and the second is the one that changes what the
+-- driver can do about the wall they are in.
 local function countNotices()
   local n = 0
   for _, h in ipairs(hooks) do
-    if h.event == 'RaceManagerNotice' and h.payload.kind == 'reset' then n = n + 1 end
+    if h.event == 'RaceManagerNotice' and h.payload.kind == 'resetsout' then n = n + 1 end
   end
   return n
 end
@@ -545,18 +549,22 @@ for _, hook in ipairs({ 'onBeamMPPostJoin', 'runPostJoin' }) do
 end
 
 -- ===========================================================================
--- Running out of resets is its own event
+-- Being refused a reset is the event, not spending the last one
 -- ===========================================================================
--- The way a driver used to find out their allowance was gone was by pressing
--- reset in a wall and nothing happening. The last one spent is the moment the
--- rule changes for them, so it is said then rather than buried as "0 left" on
--- the end of a running tally.
+-- The first version of this announced it when the allowance hit zero, and the
+-- test session said that was the wrong moment: spending your last reset still
+-- GAVE you a reset, so nothing about the car had changed. The thing worth
+-- interrupting a driver for is reaching for one and not getting it, which is
+-- when they are sat in a wall deciding what to do.
 --
--- PRIVATE by construction, and worth stating because the brief asked for it
--- explicitly: this is a guihook into one client's panel. It never reaches the
--- server, so there is no lobby announcement to suppress -- the only thing sent
--- on this path is the RM_VehicleReset that spends the allowance, exactly as
--- before.
+-- And every refusal, not just the first: a driver who has forgotten and presses
+-- reset three corners later needs the same answer. Silence there reads as the
+-- key having broken.
+--
+-- PRIVATE by construction, which is what the brief asked for: pushNotice is a
+-- guihook into one client's panel and never reaches the server, so there is no
+-- lobby announcement to suppress. The only thing that leaves this client on
+-- this path is the RM_ResetDenied that records the attempt.
 local function noticesOfKind(kind)
   local out = {}
   for _, h in ipairs(hooks) do
@@ -566,11 +574,9 @@ local function noticesOfKind(kind)
   end
   return out
 end
--- The RUNNING TALLY specifically ("Reset 1/2 used: 1 left"), which is the thing
--- the out-of-resets announcement replaces. Not every kind='reset' notice: a
--- reset also explains what it just did to the car ("Recovered in place"), and
--- that one is not a tally and keeps arriving either way. Counting the kind
--- alone made this section pass on the wrong message.
+-- The running tally ("Reset 1/2 used: 1 left"), which is a different channel
+-- from the refusal. Not every kind='reset' notice: a reset also explains what it
+-- did to the car ("Recovered in place"), and that is not a tally.
 local function tallyNotices()
   local out = {}
   for _, n in ipairs(noticesOfKind('reset')) do
@@ -585,52 +591,68 @@ veh.x, veh.y, veh.z = 300, 0, 0
 frames(0.6)
 clearLog()
 
--- One of two. Still inside the allowance, so it is the ordinary tally.
+-- One of two: the ordinary tally.
 driverPressedReset(301, 1, 0)
 resetHook()
 check(#noticesOfKind('resetsout') == 0, 'spending a reset that is not the last says nothing special')
 check(#tallyNotices() == 1, 'it is the ordinary running tally')
 
--- Two of two: the last one.
+-- TWO OF TWO. Still a reset they were entitled to, so still just the tally --
+-- this is the moment the old version announced, and the one the test session
+-- said was wrong.
 veh.x, veh.y, veh.z = 400, 0, 0
 frames(0.6)
 clearLog()
 driverPressedReset(401, 1, 0)
 resetHook()
-local out = noticesOfKind('resetsout')
-check(#out == 1, 'spending the last reset is announced')
-check(out[1] and out[1].msg == "Uh oh! You're out of resets", 'in the words the brief asked for')
-check(#tallyNotices() == 0, 'and replaces the tally rather than arriving beside it')
-check(countSent('RM_VehicleReset') == 1, 'the last reset is still spent and still reported')
+check(#noticesOfKind('resetsout') == 0,
+  'spending the LAST reset is still just a reset: they got what they asked for')
+check(#tallyNotices() == 1, 'and it is reported as the tally reaching zero')
+check(countSent('RM_VehicleReset') == 1, 'and it is spent and reported like any other')
 
--- Pressing reset again is BLOCKED, not a second announcement. Firing once on
--- the transition is the whole requirement: a driver leaning on the key in a
--- barrier would otherwise get one of these per attempt.
+-- THE NEXT ONE IS REFUSED, and that is the event.
 veh.x, veh.y, veh.z = 500, 0, 0
 frames(0.6)
 clearLog()
 driverPressedReset(5, 5, 0)
 resetHook()
-check(#noticesOfKind('resetsout') == 0, 'a blocked attempt does not announce it again')
-local blocked = noticesOfKind('reset')
-check(#blocked == 1 and tostring(blocked[1].msg):find('BLOCKED', 1, true) ~= nil,
-  'it is the blocked-reset notice instead')
-check(countSent('RM_ResetDenied') == 1, 'and the attempt is reported as denied')
+local out = noticesOfKind('resetsout')
+check(#out == 1, 'being refused a reset is announced')
+check(out[1] and out[1].msg == "Uh oh! You're out of resets", 'in the words the brief asked for')
+check(out[1] and out[1].sub and out[1].sub:find('All 2', 1, true) ~= nil,
+  'and says how many they had')
+check(countSent('RM_ResetDenied') == 1, 'and the attempt is recorded on the server')
+check(#tallyNotices() == 0, 'a refused attempt spends nothing, so there is no tally line')
 
--- A zero allowance never runs OUT of anything: there was nothing to spend, and
--- every attempt is blocked from the first one.
-serverState({ phase = 'waiting', maxResets = 0, totalLaps = 3, drivers = {} })
-serverState({ phase = 'racing',  maxResets = 0, totalLaps = 3, drivers = {} })
+-- AND AGAIN, three corners later. The throttle below is about a HELD key, not
+-- about repeat attempts, so a genuinely separate press says it again.
+frames(1.5)
 veh.x, veh.y, veh.z = 600, 0, 0
 frames(0.6)
 clearLog()
-driverPressedReset(601, 1, 0)
+driverPressedReset(6, 6, 0)
 resetHook()
+check(#noticesOfKind('resetsout') == 1, 'and again on the next attempt, not only the first')
+
+-- ...but a HELD key is one attempt, not forty. This is the flood guard, and the
+-- reason it is a throttle rather than a once-only latch.
+clearLog()
+for _ = 1, 20 do driverPressedReset(7, 7, 0); resetHook() end
 check(#noticesOfKind('resetsout') == 0,
-  'a session with no resets at all never says you have run out of them')
-local none = noticesOfKind('reset')
-check(#none == 1 and tostring(none[1].msg):find('BLOCKED', 1, true) ~= nil,
-  'it says resets are not allowed, which is a different thing')
+  'a held reset key inside the throttle window does not repeat it')
+
+-- A session with no resets AT ALL is a different sentence: those drivers never
+-- had one to run out of.
+serverState({ phase = 'waiting', maxResets = 0, totalLaps = 3, drivers = {} })
+serverState({ phase = 'racing',  maxResets = 0, totalLaps = 3, drivers = {} })
+veh.x, veh.y, veh.z = 700, 0, 0
+frames(1.5)
+clearLog()
+driverPressedReset(701, 1, 0)
+resetHook()
+local none = noticesOfKind('resetsout')
+check(#none == 1 and none[1].msg == 'No resets in this session',
+  'a session with no resets says so, rather than that you have run out of them')
 
 if fails == 0 then
   print('reset_test: ' .. checks .. ' checks, 0 failures')

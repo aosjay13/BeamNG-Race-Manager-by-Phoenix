@@ -1987,24 +1987,31 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       };
 
       // ------------------------------------------------------------------
+      // ------------------------------------------------------------------
       // Dragging a gate to reorder the route
       // ------------------------------------------------------------------
       // Replaces the up/down button pair, which cost two buttons on EVERY gate
-      // row to move one gate one place. Reordering a route of twenty gates by a
-      // few positions was a lot of clicking for something the hand already knows
-      // how to do.
+      // row to move one gate one place.
       //
-      // DELEGATED on the list rather than bound per row, and that is not a
-      // preference: ng-repeat destroys and rebuilds these rows on every change,
-      // so a listener attached to a row is attached to an element that will not
-      // exist after the first drop. One listener on the container outlives all
-      // of them.
+      // MOUSE EVENTS, NOT HTML5 DRAG-AND-DROP. The first version used
+      // draggable="true" with dragstart/dragover/drop, which is the obvious way
+      // to do this and does not work here: the grip took the grab cursor (that
+      // is only CSS) and nothing ever moved, because BeamNG's CEF host does not
+      // deliver the drag events to the page. Nothing errors, the gesture simply
+      // does nothing -- so it looked like a bug in the drop logic rather than
+      // the whole mechanism being absent.
       //
-      // Nothing new crosses to Lua. reorderCheckpoint(from, to) already existed
-      // behind the arrows, including the branch-slot fixups that keep a branch
-      // gate pointing at the checkpoint it was authored against when the
-      // checkpoints move underneath it. This is a new gesture onto the same
-      // call, which is why it is small.
+      // mousedown/mousemove/mouseup are plain DOM and always arrive. The move
+      // and up listeners go on the DOCUMENT rather than the row, so a pointer
+      // that leaves the list mid-drag is still tracked and the drag still ends
+      // when the button comes up somewhere else.
+      //
+      // Delegated for the down event, because ng-repeat rebuilds these rows on
+      // every change and a listener bound to a row is bound to an element that
+      // will not exist after the first drop.
+      //
+      // Nothing new crosses to Lua: reorderCheckpoint(from, to) already existed
+      // behind the arrows, branch-slot fixups included.
       var dragFrom = null;
 
       function rowIndexOf(node) {
@@ -2018,45 +2025,60 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         return null;
       }
 
-      function onDragStart(ev) {
-        dragFrom = rowIndexOf(ev.target);
-        if (dragFrom === null) { return; }
-        // Firefox and CEF both refuse to start a drag without payload set.
-        if (ev.dataTransfer) {
-          ev.dataTransfer.effectAllowed = 'move';
-          try { ev.dataTransfer.setData('text/plain', String(dragFrom)); } catch (e) {}
-        }
+      // The row under the pointer right now. elementFromPoint rather than
+      // ev.target: the pointer is over whatever is being dragged past, and
+      // during a drag the target is wherever the mouse went down.
+      function rowIndexAt(x, y) {
+        return rowIndexOf(document.elementFromPoint(x, y));
       }
-      function onDragOver(ev) {
+
+      function onDragMove(ev) {
         if (dragFrom === null) { return; }
-        // preventDefault is what MAKES an element a drop target. Without it the
-        // drop event never fires and the whole gesture silently does nothing.
+        // Stops the gesture selecting the row text as the pointer sweeps down
+        // the list, which otherwise highlights half the editor blue.
         ev.preventDefault();
-        if (ev.dataTransfer) { ev.dataTransfer.dropEffect = 'move'; }
-        var over = rowIndexOf(ev.target);
+        var over = rowIndexAt(ev.clientX, ev.clientY);
         $scope.$evalAsync(function () { $scope.dragOverIndex = over; });
       }
-      function onDrop(ev) {
-        ev.preventDefault();
-        var to = rowIndexOf(ev.target);
+
+      function onDragUp(ev) {
+        if (dragFrom === null) { return; }
+        var to = rowIndexAt(ev.clientX, ev.clientY);
         var from = dragFrom;
         dragFrom = null;
-        $scope.$evalAsync(function () { $scope.dragOverIndex = null; });
-        if (from === null || to === null || from === to) { return; }
-        // reorderCheckpoint is 1-based and moves the item AT `from` to position
-        // `to`, which is exactly "dropped on that row".
-        $scope.reorderCheckpoint(from + 1, to + 1);
+        document.removeEventListener('mousemove', onDragMove, true);
+        document.removeEventListener('mouseup', onDragUp, true);
+        $scope.$evalAsync(function () {
+          $scope.dragOverIndex = null;
+          // reorderCheckpoint is 1-based and moves the item AT `from` to
+          // position `to`, which is exactly "dropped on that row".
+          if (from !== null && to !== null && from !== to) {
+            $scope.reorderCheckpoint(from + 1, to + 1);
+          }
+        });
       }
-      function onDragEnd() {
-        dragFrom = null;
-        $scope.$evalAsync(function () { $scope.dragOverIndex = null; });
+
+      function onDragDown(ev) {
+        // The GRIP starts a drag, not the whole row: the row already has a click
+        // that opens its size controls, and a row-wide drag would make opening
+        // one a coin toss between the two.
+        var onGrip = ev.target && ev.target.classList
+          && ev.target.classList.contains('rm-editor-grip');
+        if (!onGrip || ev.button !== 0) { return; }
+        var idx = rowIndexOf(ev.target);
+        if (idx === null) { return; }
+        dragFrom = idx;
+        ev.preventDefault();
+        ev.stopPropagation();
+        // Capture phase, so the drag owns the pointer even over controls inside
+        // the rows it is passing across.
+        document.addEventListener('mousemove', onDragMove, true);
+        document.addEventListener('mouseup', onDragUp, true);
+        $scope.$evalAsync(function () { $scope.dragOverIndex = idx; });
       }
 
       $scope.dragOverIndex = null;
-      $element[0].addEventListener('dragstart', onDragStart);
-      $element[0].addEventListener('dragover', onDragOver);
-      $element[0].addEventListener('drop', onDrop);
-      $element[0].addEventListener('dragend', onDragEnd);
+      $element[0].addEventListener('mousedown', onDragDown);
 
       // ------------------------------------------------------------------
       // Branch gates (editor)
@@ -2225,6 +2247,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         };
       }
 
+      // How long a notice has to have been up before being preempted counts as
+      // having been read. Under this it is requeued, over it is dropped.
+      var NOTICE_MIN_SEEN = 700;
       var noticeTimer = null;
       var noticeQueue = [];
 
@@ -2241,6 +2266,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           if (noticeQueue[i].rank > noticeQueue[best].rank) { best = i; }
         }
         var next = noticeQueue.splice(best, 1)[0];
+        next.shownAt = Date.now();
         $scope.notice = next;
         noticeTimer = setTimeout(function () {
           $scope.$evalAsync(noticeAdvance);
@@ -2272,10 +2298,21 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           noticeAdvance();
           return;
         }
-        // Outranks what is up: preempt, and put the displaced one back in the
-        // queue rather than dropping it. It has already been earned.
+        // Outranks what is up: preempt it.
+        //
+        // The displaced notice goes back in the queue ONLY if it has not really
+        // been seen yet. Requeueing unconditionally is what made a fastest lap
+        // replay itself a few seconds after the race ended: the chequered flag
+        // preempted it, the fastest lap went back in the queue, and it came
+        // round again when the flag expired. From the driver's seat that reads
+        // as the notification firing twice.
+        //
+        // A notice that has held the panel for MIN_SEEN has done its job and is
+        // superseded. One that was pushed a moment before something outranked
+        // it never reached anybody and is worth keeping.
         if (item.rank > $scope.notice.rank) {
-          noticeQueue.push($scope.notice);
+          var seen = Date.now() - ($scope.notice.shownAt || 0);
+          if (seen < NOTICE_MIN_SEEN) { noticeQueue.push($scope.notice); }
           noticeQueue.push(item);
           noticeTrim();
           noticeAdvance();
@@ -3830,10 +3867,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         // The drag listeners are on the root element, not on a row, so they
         // outlive every ng-repeat rebuild -- which is the point of delegating
         // them, and also why they have to be taken off by hand here.
-        $element[0].removeEventListener('dragstart', onDragStart);
-        $element[0].removeEventListener('dragover', onDragOver);
-        $element[0].removeEventListener('drop', onDrop);
-        $element[0].removeEventListener('dragend', onDragEnd);
+        $element[0].removeEventListener('mousedown', onDragDown);
+        document.removeEventListener('mousemove', onDragMove, true);
+        document.removeEventListener('mouseup', onDragUp, true);
         if (vehErrTimer) { clearTimeout(vehErrTimer); }
         if (goTimer) { clearTimeout(goTimer); }
         stopLapTicker();

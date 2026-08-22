@@ -1202,10 +1202,16 @@ end
 -- "just went white", and a flash needs the second one. These are the latches
 -- that turn the standing state into an event exactly once.
 local flags = {
-  -- Lap this client has already been shown the white flag for. The approach to
-  -- the line lasts several seconds and is sampled every frame, so without this
-  -- the flash would re-arm continuously for the whole run down to it.
-  whiteLap  = nil,
+  -- Lap this client has already been shown each approach flag for. An approach
+  -- lasts several seconds and is sampled every frame, so without these the
+  -- flash would re-arm continuously for the whole run down to the line.
+  whiteLap     = nil,
+  chequeredLap = nil,
+  -- The approach flash already happened, so taking the flag a moment later says
+  -- the placing rather than the flag again.
+  chequeredSeen = false,
+  -- The flag has been shown for this session by whichever of the two paths got
+  -- there first.
   chequered = false,
 }
 
@@ -1314,8 +1320,10 @@ local function resetLapTracking()
   -- The flags go with the session. A white flag latched on lap 4 of the last
   -- race would suppress it on lap 4 of the next one, and a chequered left set
   -- would suppress it entirely.
-  flags.whiteLap  = nil
-  flags.chequered = false
+  flags.whiteLap      = nil
+  flags.chequeredLap  = nil
+  flags.chequeredSeen = false
+  flags.chequered     = false
   -- Joker credit and the reset allowance are per-session too: a new phase means
   -- a clean sheet on both.
   jokerArmed   = 1
@@ -1751,16 +1759,36 @@ end
 -- second-to-last lap. Nothing is allocated and the vehicle is not touched until
 -- everything else has already passed.
 local function whiteFlagWatch()
-  if flags.whiteLap == localLap then return end
-  if phase ~= 'racing' or pointToPoint then return end
-  -- A one-lap race has no approach to a final lap: lap 1 IS the flag, and there
-  -- is no earlier lap to be waved at on.
-  if totalLaps <= 1 then return end
-  if localLap ~= totalLaps - 1 then return end
+  if phase ~= 'racing' or spectatorLock then return end
   -- Driving at the start/finish line specifically. The last checkpoint IS the
   -- line, so any other armed gate means this driver is still out on the lap.
-  if armedWp ~= #route then return end
-  if spectatorLock then return end
+  if armedWp ~= #route or #route == 0 then return end
+
+  -- WHICH FLAG IS ON THIS APPROACH, if either.
+  --
+  -- The last lap is announced on the run down to the line that STARTS it, and
+  -- the finish on the run down to the line that ends it. Same fifty metres,
+  -- same per-driver lap counter, one lap apart -- so they are one watcher
+  -- rather than two that could disagree about where the line is.
+  --
+  -- A sprint stage has no white flag (there is no earlier lap to be waved at
+  -- on) but very much has a finish, so point-to-point only rules out the first.
+  local which, latch
+  if pointToPoint then
+    -- A SPRINT IS DRIVEN ONCE. Its last gate is a finish rather than a line you
+    -- come back round to, so the only approach there is is the one to it -- and
+    -- the lap counter never reaches a lap TARGET to compare against, which is
+    -- why this cannot be folded into the test below.
+    which, latch = 'chequered', 'chequeredLap'
+  elseif totalLaps > 0 and localLap >= totalLaps then
+    which, latch = 'chequered', 'chequeredLap'
+  elseif totalLaps > 1 and localLap == totalLaps - 1 then
+    which, latch = 'white', 'whiteLap'
+  else
+    return
+  end
+  if flags[latch] == localLap then return end
+
   local _, pos = sampledVehicle()
   if not pos then return end
   local wp = route[#route]
@@ -1769,9 +1797,18 @@ local function whiteFlagWatch()
   -- Squared, so the per-frame path never takes a square root.
   local limit = TUNE.WHITE_FLAG_AT * TUNE.WHITE_FLAG_AT
   if (dx * dx + dy * dy + dz * dz) > limit then return end
-  flags.whiteLap = localLap
-  pushNotice('flag', 'WHITE FLAG WAVING',
-    { sub = 'Last lap', colour = 'white' })
+
+  flags[latch] = localLap
+  if which == 'chequered' then
+    -- The APPROACH flash. Taking the flag pushes one of its own off the
+    -- spectator lock a moment later, carrying the placing; this one is the
+    -- marshal leaning out as the driver comes down the straight, and it is
+    -- latched separately so the two cannot collapse into one.
+    flags.chequeredSeen = true
+    pushNotice('flag', 'CHEQUERED FLAG', { sub = 'Finish line', colour = 'chequered' })
+  else
+    pushNotice('flag', 'WHITE FLAG', { sub = 'Last lap', colour = 'white' })
+  end
 end
 
 local function reportProgress(dt)
@@ -3151,9 +3188,26 @@ function M.onVehicleResetted(vehId)
     if blockNoticeLeft <= 0 then
       blockNoticeLeft = BLOCK_NOTICE_EVERY
       if inMultiplayer() then TriggerServerEvent('RM_ResetDenied', '') end
-      pushNotice('reset', maxResets == 0
-        and 'RESET BLOCKED: no resets allowed in this session'
-        or  ('RESET BLOCKED: all ' .. maxResets .. ' resets used'))
+      -- THE MOMENT IT MATTERS: the driver reached for a reset and it did not
+      -- come. Said here rather than when the last one was spent, because
+      -- spending the last one still gave them a reset -- being refused one is
+      -- the thing that changes what they can do about the wall they are in.
+      --
+      -- Every refused attempt says it again, not just the first: a driver who
+      -- has forgotten and presses reset three corners later needs the same
+      -- answer, and silence reads as the key having broken. Still throttled by
+      -- blockNoticeLeft above, which is about a HELD key rather than about
+      -- repeat attempts.
+      --
+      -- A session with no resets at all is a different sentence. Those drivers
+      -- never had one to run out of.
+      if maxResets == 0 then
+        pushNotice('resetsout', 'No resets in this session',
+          { sub = 'You are on your own out there', colour = 'amber' })
+      else
+        pushNotice('resetsout', "Uh oh! You're out of resets",
+          { sub = 'All ' .. maxResets .. ' used', colour = 'amber' })
+      end
       log('W', 'raceManager', 'Reset blocked: allowance of ' .. maxResets
         .. ' exhausted (position ' .. (restored and 'restored' or 'NOT restored') .. ')')
     end
@@ -3233,26 +3287,10 @@ function M.onVehicleResetted(vehId)
     resetsUsed = resetsUsed + 1
     if inMultiplayer() then TriggerServerEvent('RM_VehicleReset', '') end
     local left = maxResets - resetsUsed
-    if left <= 0 then
-      -- THE LAST ONE, said as its own event rather than as "0 left" on the end
-      -- of a tally. The rule has just changed for this driver and the way they
-      -- used to find out was by pressing reset in a wall and nothing happening.
-      --
-      -- Private by construction: pushNotice is a guihook into THIS client's
-      -- panel and goes nowhere near the server, so there is no lobby broadcast
-      -- to suppress. Nobody else is told, which is the point -- running out is
-      -- not something a driver needs announced to the people racing them.
-      --
-      -- Fires exactly once because it cannot be reached twice: the allowance
-      -- check above this sends every later attempt down the blocked path
-      -- instead, so resetsUsed passes maxResets one time only. A zero
-      -- allowance never reaches here at all, which is right -- a driver with no
-      -- resets to begin with has not run out of anything.
-      pushNotice('resetsout', "Uh oh! You're out of resets",
-        { sub = 'That was your last one', colour = 'amber' })
-    else
-      pushNotice('reset', string.format('Reset %d/%d used: %d left', resetsUsed, maxResets, left))
-    end
+    -- Spending the last one is still just the tally reaching zero. The driver is
+    -- told they are OUT when they next reach for a reset and it does not come,
+    -- which is the moment it actually matters to them -- see the blocked path.
+    pushNotice('reset', string.format('Reset %d/%d used: %d left', resetsUsed, maxResets, left))
     pushRouteState()
     return
   end
@@ -5709,7 +5747,7 @@ function nudge.set(on)
   if not on then nudge.release(); pushRouteState(); return end
   if not nudge.available() then
     guihooks.trigger('RaceManagerEditorMsg', {
-      msg = 'Nudge mode cannot start, missing: ' .. table.concat(nudge.missing(), ', ') })
+      msg = 'Place mode cannot start, missing: ' .. table.concat(nudge.missing(), ', ') })
     return
   end
   nudge.on, nudge.sel, nudge.dragging = true, nil, false
@@ -7404,10 +7442,20 @@ local function onForceSpectate(rawData)
   if source ~= 'derby' and not flags.chequered then
     flags.chequered = true
     local place = tonumber(data.place)
-    pushNotice('flag', 'CHEQUERED FLAG', {
-      sub = (place and place > 0) and ('You placed ' .. ordinal(place)) or nil,
-      colour = 'grey',
-    })
+    local placed = (place and place > 0) and ('You placed ' .. ordinal(place)) or nil
+    if flags.chequeredSeen then
+      -- The flag was already waved on the approach, seconds ago. Saying it again
+      -- the instant they cross is the same news twice; what they do not know yet
+      -- is where they came.
+      if placed then
+        pushNotice('finish', placed)
+      end
+    else
+      -- No approach flash happened: the driver was retired by something other
+      -- than crossing the line (time expired, a DNF, an admin ending it), so
+      -- this is the first and only time they see it.
+      pushNotice('flag', 'CHEQUERED FLAG', { sub = placed, colour = 'chequered' })
+    end
   end
 end
 

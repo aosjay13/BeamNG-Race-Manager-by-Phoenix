@@ -101,6 +101,13 @@ local function loadCircuit()
 end
 
 local function startRace(laps)
+  -- RELEASE THE SPECTATOR LOCK FIRST. Nothing else clears it: resetLapTracking
+  -- does not, because in a real session the SERVER releases it when the session
+  -- ends. A block that finished a driver therefore leaves the lock standing,
+  -- and every approach check after it returns early on spectatorLock -- so the
+  -- next block's flags silently never fire and the failure looks like the
+  -- watcher being broken rather than the harness not ending the last race.
+  handlers['RM_ReleaseSpectate']({ source = 'race' })
   loadCircuit()
   serverState({ phase = 'racing', totalLaps = laps, maxResets = -1, drivers = {} })
   moveTo(10)
@@ -143,6 +150,12 @@ local function flagNotices()
   return out
 end
 local function clearLog() hooks = {} end
+-- The two approach flags share a kind, so tests about one have to say which.
+local function flagsNamed(name)
+  local n = 0
+  for _, f in ipairs(flagNotices()) do if f.msg == name then n = n + 1 end end
+  return n
+end
 
 -- ---------------------------------------------------------------------------
 -- The white flag is waved BEFORE the line, not after it
@@ -167,7 +180,7 @@ check(#flagNotices() == 0, 'no white flag while still 80 m from the line')
 moveTo(170)
 local white = flagNotices()
 check(#white == 1, 'the white flag is waved on the approach to the final lap')
-check(white[1] and white[1].msg == 'WHITE FLAG WAVING', 'and says so')
+check(white[1] and white[1].msg == 'WHITE FLAG', 'and says so')
 check(white[1] and white[1].colour == 'white', 'and waves white')
 
 -- It does not re-arm every frame for the rest of the approach. The run down to
@@ -177,12 +190,21 @@ clearLog()
 moveTo(180); moveTo(190); frame(20)
 check(#flagNotices() == 0, 'the white flag fires once, not every frame of the approach')
 
--- ...and not again on the final lap itself, having already been given.
+-- ...and not again on the final lap itself, having already been given. That run
+-- to the line is now the CHEQUERED approach, so the assertion is about which
+-- flag appears rather than about silence.
 completeLap()
 clearLog()
 ontoTheApproach()
 moveTo(175)
-check(#flagNotices() == 0, 'and not a second time on the last lap')
+check(flagsNamed('WHITE FLAG') == 0, 'and not a second time on the last lap')
+check(flagsNamed('CHEQUERED FLAG') == 1,
+  'the run to the finish waves the chequered flag on the same fifty metres')
+
+-- Once, like the white one: this is sampled every frame for the whole approach.
+clearLog()
+moveTo(185); moveTo(192); frame(20)
+check(flagsNamed('CHEQUERED FLAG') == 0, 'and waves it once, not every frame')
 
 -- ---------------------------------------------------------------------------
 -- Races that have no approach to a final lap
@@ -193,7 +215,9 @@ startRace(1)
 clearLog()
 ontoTheApproach()
 moveTo(180)
-check(#flagNotices() == 0, 'a one-lap race never waves a white flag')
+check(flagsNamed('WHITE FLAG') == 0, 'a one-lap race never waves a white flag')
+check(flagsNamed('CHEQUERED FLAG') == 1,
+  'but it does have a finish, and lap 1 IS the flag')
 
 -- A sprint stage is driven once from the first gate to the last: the last gate
 -- is a FINISH, not a line you come back round to.
@@ -209,7 +233,9 @@ moveTo(10)
 clearLog()
 ontoTheApproach()
 moveTo(180)
-check(#flagNotices() == 0, 'a point-to-point stage never waves a white flag')
+check(flagsNamed('WHITE FLAG') == 0, 'a point-to-point stage never waves a white flag')
+check(flagsNamed('CHEQUERED FLAG') == 1,
+  'though its last gate is still a finish to be waved at')
 
 -- ---------------------------------------------------------------------------
 -- The flag goes with the session
@@ -221,18 +247,40 @@ completeLap()
 clearLog()
 ontoTheApproach()
 moveTo(170)
-check(#flagNotices() == 1, 'a fresh session waves the white flag again')
+check(flagsNamed('WHITE FLAG') == 1, 'a fresh session waves the white flag again')
 
 -- ---------------------------------------------------------------------------
 -- The chequered flag, once, for this driver
 -- ---------------------------------------------------------------------------
+-- Retired WITHOUT having crossed the line -- a DNF, an admin ending the session,
+-- the clock running out. No approach flash happened, so this is the only time
+-- this driver sees the flag.
+startRace(3)
 clearLog()
 handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race', place = 4 })
 local chq = flagNotices()
-check(#chq == 1, 'taking the flag waves a chequered one')
+check(#chq == 1, 'a driver retired without crossing the line still gets the flag')
 check(chq[1] and chq[1].msg == 'CHEQUERED FLAG', 'and says so')
 check(chq[1] and chq[1].sub and chq[1].sub:find('4th', 1, true) ~= nil,
   'and carries the placing as its second line rather than as a notice of its own')
+
+-- ...but a driver who DROVE across the line saw it seconds ago on the approach.
+-- Waving it again the instant they cross is the same news twice; the placing is
+-- the part they do not have yet.
+startRace(1)
+clearLog()
+ontoTheApproach()
+moveTo(180)
+check(flagsNamed('CHEQUERED FLAG') == 1, 'the approach waves it')
+clearLog()
+handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race', place = 2 })
+check(flagsNamed('CHEQUERED FLAG') == 0, 'crossing does not wave it a second time')
+local placed = nil
+for _, h in ipairs(hooks) do
+  if h.event == 'RaceManagerNotice' and h.payload.kind == 'finish' then placed = h.payload end
+end
+check(placed and tostring(placed.msg):find('2nd', 1, true) ~= nil,
+  'it says where they came instead')
 
 -- A repeat broadcast is not a second finish. The server re-sends state freely
 -- and a flash per broadcast would be a strobe.

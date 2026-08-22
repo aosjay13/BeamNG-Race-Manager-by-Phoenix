@@ -1177,8 +1177,8 @@
       <button class="rm-btn rm-btn-end"   ng-click="editorClear()" ng-disabled="!editorWaypoints().length">Clear</button>
       <button class="rm-btn" ng-click="editorToggleVisualize()">{{ visualize ? 'Hide' : 'Show' }} Gates</button>
       <button class="rm-btn" ng-class="{'rm-btn-nudge-on': nudgeOn}" ng-click="toggleNudge()"
-              title="Move and turn placed gates with the mouse. Releases the cursor from the camera.">
-        {{ nudgeOn ? '✋ Nudge: ON' : '✋ Nudge' }}
+              title="Place, move and turn gates with the mouse. Releases the cursor from the camera.">
+        {{ nudgeOn ? '✋ Place: ON' : '✋ Place' }}
       </button>
     </div>
     <div class="rm-nudge-hint" ng-if="nudgeOn">
@@ -1341,8 +1341,7 @@
                         'rm-editor-wp-over': dragOverIndex === $index}"
              ng-click="selectCheckpoint($index + 1)"
              data-wp-index="{{ $index }}"
-             draggable="{{ editorTarget === 'branch' ? 'false' : 'true' }}"
-             title="Click to open this gate's size controls. Drag it to move it in the running order.">
+             title="Click to open this gate's size controls. Drag the grip to move it in the running order.">
           <!-- The grip is the affordance, not the mechanism: the whole row is
                draggable, because a 4px target is not something you hit while
                also driving. Branch gates are not draggable at all - they are
@@ -4433,6 +4432,30 @@
   .rm-flash-gold   { background: rgba(150, 110, 0, 0.6); }
   .rm-flash-amber  { background: rgba(175, 85, 0, 0.6); }
   .rm-flash-grey   { background: rgba(40, 44, 52, 0.72); }
+  /* An actual chequered flag rather than a word on a grey wash. Two offset
+     gradients make the squares; the dark base underneath keeps the text legible
+     where a square happens to be white. 18px reads as a flag at a glance and
+     does not turn into grey mush on a driver's narrow panel. */
+  .rm-flash-chequered {
+    background-color: rgba(25, 27, 32, 0.82);
+    background-image:
+      linear-gradient(45deg, rgba(255,255,255,0.92) 25%, transparent 25%,
+                             transparent 75%, rgba(255,255,255,0.92) 75%),
+      linear-gradient(45deg, rgba(255,255,255,0.92) 25%, transparent 25%,
+                             transparent 75%, rgba(255,255,255,0.92) 75%);
+    background-size: 36px 36px;
+    background-position: 0 0, 18px 18px;
+  }
+  /* On the chequered flash the text sits over both black and white squares, so
+     it carries its own dark plate rather than relying on a shadow. */
+  .rm-flash-chequered .rm-flash-title,
+  .rm-flash-chequered .rm-flash-sub {
+    background: rgba(15, 17, 22, 0.82);
+    border-radius: 3px;
+    padding: 2px 12px;
+  }
+  .rm-minimal .rm-flash-chequered { background-size: 24px 24px; }
+  .rm-minimal .rm-flash-chequered { background-position: 0 0, 12px 12px; }
   .rm-flash-title {
     font-size: 30px;
     font-weight: 800;
