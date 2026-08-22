@@ -44,7 +44,11 @@ function veh:setPositionRotation(x, y, z, qx, qy, qz, qw)
   self.x, self.y, self.z = x, y, z
   teleports[#teleports + 1] = { x = x, y = y, z = z, qx = qx, qy = qy, qz = qz, qw = qw }
 end
-function veh:queueLuaCommand(cmd) frozen = cmd end
+-- EVERY queued command, not just the last one. `frozen` kept only the most
+-- recent, which was fine while the freeze was the only thing queued -- the
+-- trailer re-couple is queued in the same breath and would have overwritten it.
+local queued = {}
+function veh:queueLuaCommand(cmd) frozen = cmd; queued[#queued + 1] = cmd end
 
 -- Where BeamNG's own reset dropped the car before the mod hears about it.
 local function driverPressedReset(x, y, z)
@@ -653,6 +657,91 @@ resetHook()
 local none = noticesOfKind('resetsout')
 check(#none == 1 and none[1].msg == 'No resets in this session',
   'a session with no resets says so, rather than that you have run out of them')
+
+
+-- ===========================================================================
+-- A coupled trailer goes back on after the mod moves the car
+-- ===========================================================================
+-- BeamNG treats a trailer as a second vehicle that belongs to the same driver,
+-- so a grid placement brings it along -- and drops it DETACHED. Every trailer
+-- race so far has started with the driver re-coupling by hand before the
+-- countdown.
+--
+-- beamstate.attachCouplers() is exactly that manual re-couple: it is the onDown
+-- of BeamNG's own couplersLock action.
+local function queuedHas(what)
+  for _, c in ipairs(queued) do
+    if tostring(c):find(what, 1, true) then return true end
+  end
+  return false
+end
+
+-- A SLOT TO BE PLACED ON. Without one, RM_GridAssign has nowhere to put the car,
+-- no teleport happens, and every assertion below passes or fails for want of a
+-- start position rather than for anything to do with trailers.
+serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+RM.setEditorTarget('start')
+veh.x, veh.y, veh.z = 300, 10, 0
+veh.hx, veh.hy = 1, 0
+RM.editorAdd()
+RM.setEditorTarget('main')
+
+-- Nothing coupled: the mod must not reach out and grab whatever is parked
+-- alongside. On a packed grid that is a worse bug than the one being fixed.
+core_vehicles = { attachedCouplers = {} }
+serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+veh.x, veh.y, veh.z = 0, 0, 0
+frames(0.6)
+queued = {}
+gridAssign(1, 1, 1)
+resetHook()
+check(not queuedHas('attachCouplers'),
+  'a car with no trailer does not couple to whatever is beside it on the grid')
+
+-- With a trailer attached, the coupling is put back.
+core_vehicles = { attachedCouplers = { { veh.id, 99, 12, 34 } } }
+serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+veh.x, veh.y, veh.z = 0, 0, 0
+frames(0.6)
+queued = {}
+gridAssign(1, 1, 1)
+resetHook()
+check(queuedHas('attachCouplers'), 'a coupled trailer is re-attached after placement')
+check(queuedHas('setFreeze') or frozen ~= nil,
+  'and the grid hold still goes back on alongside it')
+
+-- The pair can name our vehicle on EITHER side: which end of the coupling a
+-- vehicle is on says nothing about whose trailer it is.
+core_vehicles = { attachedCouplers = { { 99, veh.id, 34, 12 } } }
+serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+veh.x, veh.y, veh.z = 0, 0, 0
+frames(0.6)
+queued = {}
+gridAssign(1, 1, 1)
+resetHook()
+check(queuedHas('attachCouplers'), 'and found when our id is the second of the pair')
+
+-- A DRIVER's own reset is not our teleport, so nothing is re-coupled: BeamNG
+-- keeps the trailer through one of those on its own, which is why this was only
+-- ever a problem on the grid.
+core_vehicles = { attachedCouplers = { { veh.id, 99, 12, 34 } } }
+serverState({ phase = 'racing', maxResets = 5, totalLaps = 3, drivers = {} })
+veh.x, veh.y, veh.z = 500, 0, 0
+frames(0.6)
+queued = {}
+driverPressedReset(501, 1, 0)
+resetHook()
+check(not queuedHas('attachCouplers'),
+  'a driver reset is left alone: the game keeps the trailer through those itself')
+
+-- The extension being absent costs the trailer, not the teleport.
+core_vehicles = nil
+serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+veh.x, veh.y, veh.z = 0, 0, 0
+frames(0.6)
+queued = {}
+local okPlace = pcall(function () gridAssign(1, 1, 1); resetHook() end)
+check(okPlace, 'a build without core_vehicles still places the car on the grid')
 
 if fails == 0 then
   print('reset_test: ' .. checks .. ' checks, 0 failures')

@@ -2807,6 +2807,35 @@ end
 local function noteSelfTeleport(x, y, z)
   selfTeleport.left = TELEPORT_WINDOW
   selfTeleport.x, selfTeleport.y, selfTeleport.z = x, y, z
+  -- REMEMBERED HERE, because here is the last moment it is still true.
+  --
+  -- A teleport breaks the coupling: the trailer arrives with the car (BeamNG
+  -- brings it, which is why one turns up on the grid at all) but arrives
+  -- UNCOUPLED, and the driver has been re-attaching it by hand every race. By
+  -- the time the reset echo lands there is nothing left to ask -- the couplers
+  -- are already detached -- so whether there was a trailer has to be recorded
+  -- before the car moves rather than discovered afterwards.
+  --
+  -- INLINE rather than a named helper, and that is the file talking: this is
+  -- the 200th local and there is no 201st. It is called from exactly one place
+  -- anyway.
+  --
+  -- core_vehicles.attachedCouplers is the live list of coupled pairs, each
+  -- { vehA, vehB, nodeA, nodeB }; a trailer shows up as a pair naming our id on
+  -- one side or the other. Read behind pcall and a type test, because that is a
+  -- GE extension that may not be loaded and a build that renames it should cost
+  -- the trailer rather than every teleport the mod performs.
+  selfTeleport.hadRig = false
+  local veh = ownVehicle()
+  if veh then
+    local id = vehicleId(veh)
+    pcall(function ()
+      if not (core_vehicles and type(core_vehicles.attachedCouplers) == 'table') then return end
+      for _, pair in ipairs(core_vehicles.attachedCouplers) do
+        if pair[1] == id or pair[2] == id then selfTeleport.hadRig = true; return end
+      end
+    end)
+  end
 end
 
 -- True when the reset just reported is the echo of our own teleport: it arrived
@@ -3276,6 +3305,31 @@ function M.onVehicleResetted(vehId)
     if holdWanted then
       setLocalVehicleFrozen(true, holdWanted)
       log('I', 'raceManager', 'Hold re-applied after placement reset (' .. tostring(holdWanted) .. ')')
+    end
+    -- AND THE TRAILER GOES BACK ON.
+    --
+    -- A teleport brings a coupled trailer along -- BeamNG treats it as a second
+    -- vehicle belonging to the same driver, which is why one turns up on the
+    -- grid at all -- but it arrives DETACHED. Every trailer race so far has
+    -- started with the driver re-coupling by hand before the countdown.
+    --
+    -- beamstate.attachCouplers() is exactly what that manual re-couple is: it
+    -- is the onDown of BeamNG's own couplersLock action, a vehicle-side call
+    -- reached through queueLuaCommand, the same bridge the freeze above uses.
+    -- It attaches whatever coupler is in range, and the trailer arriving beside
+    -- the car is what puts one there.
+    --
+    -- ONLY WHEN THERE WAS ONE. Firing this unconditionally would have a car on
+    -- a packed grid reach out and couple to whatever happened to be parked next
+    -- to it, which is a worse bug than the one being fixed. selfTeleport.hadRig
+    -- was recorded before the car moved, because by now the couplers have
+    -- already let go and there is nothing left to ask.
+    if selfTeleport.hadRig then
+      local rigVeh = ownVehicle()
+      if rigVeh then
+        pcall(function () rigVeh:queueLuaCommand('beamstate.attachCouplers()') end)
+        log('I', 'raceManager', 'Trailer re-coupled after placement reset')
+      end
     end
     return
   end
