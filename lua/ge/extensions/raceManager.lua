@@ -4395,8 +4395,19 @@ function ghost.wouldWeld(vehId, veh)
   -- undo it -- which is the failure this file has already been through once.
   if not c1 and not mine then return false end
   local weld = false
-  forEachVehicle(vehId, function (other)
+  -- OUR OWN RIG IS NOT A WELD HAZARD, the same as in ghost.occupied. A coupled
+  -- trailer is inside this box permanently and by design -- it is bolted on --
+  -- so counting it means waiting for something that can never happen, and the
+  -- car and its trailer stay ghosted for the rest of the session.
+  --
+  -- BOTH checks need this and only one of them having it is what the first
+  -- attempt got wrong: occupied governs OUR countdown, wouldWeld governs
+  -- whether a restore is deferred at all, and a rig blocked here never even
+  -- reached the countdown.
+  local mates = ghost.rigMates(vehId)
+  forEachVehicle(vehId, function (other, otherId)
     if weld then return end
+    if mates[otherId] then return end
     local c2, x2, y2, z2 = ghost.bounds(other, 0)
     if c1 and c2 and type(overlapsOBB_OBB) == 'function' then
       local okHit, hit = pcall(overlapsOBB_OBB, c1, x1, y1, z1, c2, x2, y2, z2)
@@ -4524,6 +4535,41 @@ end
 -- than an optimisation: a ghost cannot weld to anything, so it is not a hazard,
 -- and counting it as one would deadlock two overlapping ghosts against each
 -- other forever -- which is exactly the three-cars-stacked case.
+-- EVERY VEHICLE COUPLED TO THIS ONE, directly or down a chain of them.
+--
+-- A trailer is a separate vehicle as far as BeamNG and this mod are concerned,
+-- and that is the whole source of the trouble: without this, your own trailer
+-- counts as a rival. It gets ghosted as one, and it permanently occupies your
+-- space so neither of you can ever go solid again -- "too close to another
+-- vehicle", about a vehicle bolted to your tow hitch.
+--
+-- Transitive, because a rig can be a chain: car -> dolly -> trailer. Anything
+-- reachable through couplings is part of the same rig and none of it is a
+-- hazard to the rest -- they are already physically joined, which is what a
+-- coupler IS.
+--
+-- Behind pcall and a type test like every other read of this list: core_vehicles
+-- is a GE extension that may not be loaded, and a build that renames it should
+-- cost trailer support rather than ghosting.
+function ghost.rigMates(vehId)
+  local mates = {}
+  if not vehId then return mates end
+  pcall(function ()
+    if not (core_vehicles and type(core_vehicles.attachedCouplers) == 'table') then return end
+    local seen = { [vehId] = true }
+    local grew = true
+    while grew do
+      grew = false
+      for _, pair in ipairs(core_vehicles.attachedCouplers) do
+        local a, b = pair[1], pair[2]
+        if seen[a] and b and not seen[b] then seen[b] = true; mates[b] = true; grew = true end
+        if seen[b] and a and not seen[a] then seen[a] = true; mates[a] = true; grew = true end
+      end
+    end
+  end)
+  return mates
+end
+
 function ghost.occupied(vehId, veh)
   local c1, x1, y1, z1 = ghost.bounds(veh, TUNE.GHOST_OVERLAP_MARGIN)
   local mine = ghost.centre(veh)
@@ -4537,8 +4583,13 @@ function ghost.occupied(vehId, veh)
   end
 
   local blocked, sawAny, reason = false, false, nil
+  -- Our own rig is not somebody else's car. A coupled trailer sits inside this
+  -- box permanently and by design, so counting it would mean waiting for it to
+  -- drive away -- which it cannot do, because it is attached.
+  local mates = ghost.rigMates(vehId)
   forEachVehicle(vehId, function (other, otherId)
     if blocked then return end
+    if mates[otherId] then return end
     -- A car inside this one blocks the restore whether or not it is ITSELF a
     -- ghost right now.
     --
@@ -4615,12 +4666,20 @@ setGhostReason = function (reason, on)
   -- to clear it: a car that flashes solid as its reset ghost expires and goes
   -- straight back to being a ghost for the rest of the race. Clearing a reason a
   -- car never had is free.
-  local skipId = nil
+  local skipId, skipRig = nil, nil
   if on then
     local mine = ownVehicle()
     skipId = mine and vehicleId(mine) or nil
+    -- ...AND ANYTHING COUPLED TO IT. These reasons mean "rivals are ghosts", and
+    -- a trailer on your own tow hitch is not a rival. Skipping only the car left
+    -- the trailer ghosted for the whole race while the car it was bolted to was
+    -- solid.
+    skipRig = skipId and ghost.rigMates(skipId) or nil
   end
-  forEachVehicle(skipId, function (veh, id) ghost.reason(id, reason, on, veh) end)
+  forEachVehicle(skipId, function (veh, id)
+    if skipRig and skipRig[id] then return end
+    ghost.reason(id, reason, on, veh)
+  end)
   if on then ghost.field[reason] = true else ghost.field[reason] = nil end
 end
 
