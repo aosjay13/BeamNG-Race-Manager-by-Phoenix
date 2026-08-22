@@ -3991,9 +3991,24 @@ function RM_onDeleteLayout(pid, rawData)
   print(string.format('[RaceManager] Delete failed: no layout "%s" for map %s', data.name, map))
 end
 
--- Load a saved layout: look it up under the current map only and broadcast the
--- checkpoint set to every connected client, which instantly rebuilds its gates.
--- Locked once a countdown/race is under way - nobody swaps the track mid-race.
+-- Load a saved layout, in one of TWO senses, and the difference is the whole
+-- point of this handler.
+--
+--   forEditing = true   Private. The layout goes to the ONE admin who asked and
+--                       nowhere else, and no server state moves. This is an
+--                       admin opening a track to work on it.
+--
+--   forEditing = false  Public. The layout becomes the track the server is
+--                       racing: broadcast to everybody, race.* updated, chat
+--                       told. This is what Load Layout has always done.
+--
+-- Both were the second one, which is why two admins could not build anything at
+-- the same time. Opening a track to edit it moved the whole server onto it and
+-- overwrote whatever the other admin had in progress. The client-side buffer
+-- guard stops the damage; this is what stops the collision happening at all.
+--
+-- Locked once a countdown/race is under way in both senses - nobody swaps the
+-- track mid-race, and nobody edits during one either.
 function RM_onLoadLayout(pid, rawData)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
@@ -4004,6 +4019,30 @@ function RM_onLoadLayout(pid, rawData)
   local list, map = layoutsForCurrentMap()
   for _, l in ipairs(list) do
     if l.name:lower() == data.name:lower() then
+      -- PRIVATE LOAD: this admin's editor, and nothing else.
+      --
+      -- Targeted rather than broadcast, and it returns before a single race.*
+      -- field is touched. That is what makes two admins on one map independent:
+      -- neither the gates nor the grid nor the joker count leave this client, so
+      -- there is nothing for the other admin's session to notice.
+      --
+      -- The purge is targeted for the same reason, and it has to be sent: the
+      -- client drops its old gates on RM_ClearTrack, and an apply without one
+      -- would leave the previous track's checkpoints standing underneath.
+      if data.forEditing == true then
+        MP.TriggerClientEvent(pid, 'RM_ClearTrack', Util.JsonEncode({
+          reason = 'opening "' .. l.name .. '" in the editor',
+        }))
+        MP.TriggerClientEvent(pid, 'RM_ApplyLayout', Util.JsonEncode(l))
+        MP.SendChatMessage(pid, string.format(
+          '[RaceManager] "%s" is open in your editor only. Nobody else has it: '
+          .. 'press Load Layout when you want the server on it.', l.name))
+        print(string.format(
+          '[RaceManager] Layout "%s" opened for editing by %s (private, %d gates)',
+          l.name, MP.GetPlayerName(pid) or pid, #l.checkpoints))
+        return
+      end
+
       -- Purge first: every client must drop its existing gates before the new
       -- set arrives, so no checkpoint from a previous layout can survive.
       clearTrackState('loading layout "' .. l.name .. '"')

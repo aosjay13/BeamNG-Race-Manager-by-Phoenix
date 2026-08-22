@@ -341,7 +341,7 @@
     </div>
     <button class="rm-btn rm-btn-grid" ng-click="loadLayout()"
             ng-disabled="!layoutUi.selected || phase === 'countdown' || phase === 'racing'"
-            title="Broadcast this layout's checkpoints to every connected player. No need to open the editor.">
+            title="Put the whole server on this track: every connected player gets its checkpoints. To work on a layout without moving anyone, use Open in Editor.">
       Load Layout
     </button>
   </div>
@@ -1403,6 +1403,15 @@
           <span class="rm-layouts-target" ng-class="{'rm-layouts-target-empty': !layoutUi.selected}">
             {{ layoutUi.selected || 'no layout selected' }}
           </span>
+          <!-- PRIVATE. The counterpart to Load Layout up in the race controls:
+               that one moves the whole server onto a track, this pulls a copy
+               down to work on and leaves everyone else where they are. It is
+               what lets two admins build on one map at the same time. -->
+          <button class="rm-btn rm-btn-grid" ng-click="editLayout()"
+                  ng-disabled="!layoutUi.selected || phase === 'countdown' || phase === 'racing'"
+                  title="Open the selected layout in YOUR editor only. Nobody else's track changes.">
+            Open in Editor
+          </button>
           <button class="rm-btn rm-btn-grid" ng-click="overwriteLayout()"
                   ng-disabled="!routeWaypoints.length || !layoutUi.selected || phase === 'countdown' || phase === 'racing'"
                   title="Replace the selected layout with what is placed right now">

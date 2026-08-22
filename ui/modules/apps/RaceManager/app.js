@@ -3014,6 +3014,19 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         bngApi.engineLua('raceManager.loadLayout(' + luaStr($scope.layoutUi.selected) + ')');
       };
 
+      // OPEN IN THE EDITOR: the same layout, to this admin only.
+      //
+      // The distinction is the one thing separating two admins working at once
+      // from two admins overwriting each other. Load Layout moves the whole
+      // server onto a track; this pulls a copy down to edit and leaves the
+      // server's own track, grid and joker count exactly where they are.
+      $scope.editLayout = function () {
+        if (!$scope.layoutUi.selected) { return; }
+        console.log('[RaceManager] Edit Layout "' + $scope.layoutUi.selected + '" requested (private)');
+        bngApi.engineLua('raceManager.loadLayout('
+          + luaStr($scope.layoutUi.selected) + ', true)');
+      };
+
       // The layout and arena pickers are absolutely positioned menus, and the
       // admin tab body is a scroll container - a menu opened near its bottom
       // edge would hang below the visible area. Scroll it into the scroller

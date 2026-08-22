@@ -6842,7 +6842,7 @@ function M.requestLayouts()
   if inMultiplayer() then TriggerServerEvent('RM_RequestLayouts', '') end
 end
 
-function M.loadLayout(name)
+function M.loadLayout(name, forEditing)
   name = tostring(name or '')
   if name == '' then return end
   if not inMultiplayer() then
@@ -6860,7 +6860,17 @@ function M.loadLayout(name)
   -- leaves the buffer exactly as it was, and the next apply re-stamps it.
   edit.stamp   = nil
   edit.refused = nil
-  TriggerServerEvent('RM_LoadLayout', jsonEncode({ name = name }))
+  -- `forEditing` asks for the PRIVATE load: the server sends the layout back to
+  -- this client alone and leaves the raced track, the grid and the joker count
+  -- where they are. Without it this is the public load it has always been, and
+  -- the whole server moves onto the track.
+  --
+  -- Sent as nil rather than false when unset, so an older server that has never
+  -- heard of the flag sees exactly the payload it used to get.
+  TriggerServerEvent('RM_LoadLayout', jsonEncode({
+    name       = name,
+    forEditing = forEditing and true or nil,
+  }))
 end
 
 function M.deleteLayout(name)

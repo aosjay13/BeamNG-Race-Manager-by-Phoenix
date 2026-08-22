@@ -491,6 +491,69 @@ lastApplied = nil
 RM_onLoadLayout(2, '{"name":"Coast Run"}')
 check(lastApplied == nil, 'layout from another map cannot be loaded')
 
+-- ---------------------------------------------------------------------------
+-- PRIVATE LOAD: one admin opening a layout in their own editor
+-- ---------------------------------------------------------------------------
+-- Two admins on one map have to be able to build at the same time. Loading a
+-- layout used to move the WHOLE SERVER onto it, so an admin opening a track to
+-- work on it dragged everyone else onto it too and overwrote the other admin's
+-- work in progress. `forEditing` is the private sense of the same request: the
+-- layout goes to the one client that asked and no server state moves.
+--
+-- A second layout on this map, so "the server is on A" and "an admin opened B"
+-- are distinguishable states rather than the same one.
+local cpAlt = '[{"x":900,"y":10,"z":5,"hx":0,"hy":1},'
+  .. '{"x":940,"y":80,"z":5,"hx":1,"hy":0},'
+  .. '{"x":880,"y":140,"z":5,"hx":0,"hy":-1}]'
+RM_onSaveLayout(1, '{"name":"Club Circuit","width":12,"checkpoints":' .. cpAlt .. '}')
+
+-- The server is publicly on GP Circuit.
+RM_onLoadLayout(2, '{"name":"GP Circuit"}')
+check(appliedLayouts[-1] ~= nil and appliedLayouts[-1].width == 30,
+  'public load broadcasts to every client')
+
+-- Admin 1 opens the OTHER layout privately.
+appliedLayouts = {}
+lastCleared = nil
+eventSeq = {}
+RM_onLoadLayout(1, '{"name":"Club Circuit","forEditing":true}')
+check(appliedLayouts[1] ~= nil and appliedLayouts[1].width == 12,
+  'private load sends the layout to the admin who asked')
+check(appliedLayouts[-1] == nil,
+  'private load does NOT broadcast the layout to everyone')
+check(lastCleared ~= nil, 'private load still purges the asking client first')
+
+-- Nothing global moved. This is the assertion that matters: another client
+-- asking the server what track it is on must still be told GP Circuit, because
+-- race.layout was never touched.
+appliedLayouts = {}
+RM_onRequestState(2)
+check(appliedLayouts[2] ~= nil and appliedLayouts[2].width == 30,
+  'the server is still on the publicly loaded track after a private load')
+check(appliedLayouts[2].name ~= 'Club Circuit',
+  'a private load never becomes the raced track')
+
+-- ...and the public path still works afterwards, so the two senses do not
+-- interfere. An admin who opened a track to edit it can still put the server on
+-- it when they are ready.
+appliedLayouts = {}
+RM_onLoadLayout(1, '{"name":"Club Circuit"}')
+check(appliedLayouts[-1] ~= nil and appliedLayouts[-1].width == 12,
+  'a layout opened privately can still be loaded publicly afterwards')
+
+-- Private load obeys the same admin gate as the public one.
+appliedLayouts = {}
+RM_onLoadLayout(3, '{"name":"GP Circuit","forEditing":true}')
+check(appliedLayouts[3] == nil, 'a non-admin cannot open a layout in the editor')
+
+-- Put the map back the way this block found it: one layout, and the server on
+-- it. The persistence and clear-state assertions below count what is on disk,
+-- so a scratch layout left behind here fails them somewhere else entirely.
+RM_onDeleteLayout(1, '{"name":"Club Circuit"}')
+RM_onLoadLayout(1, '{"name":"GP Circuit"}')
+check(lastLayouts ~= nil and #lastLayouts.layouts == 1,
+  'the private-load block leaves the layout list as it found it')
+
 -- Explicit clear-state command: purges clients and re-reads layouts from disk
 lastCleared = nil
 lastLayouts = nil
