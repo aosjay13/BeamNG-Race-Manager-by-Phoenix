@@ -2007,13 +2007,20 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         // Flags outrank everything: a caution is a fact about the session and
         // has to reach a driver whose eyes are on the road, ahead of any
         // informational message competing for the same strip.
-        flag:     { rank: 40, flash: false, ms: 6000 },
+        // The flash, and the colour comes from the notice rather than from
+        // here: green, yellow, red, white and chequered are all kind 'flag'
+        // and each waves in its own colour.
+        flag:     { rank: 40, flash: true,  ms: 2600 },
         // Being removed from the session, or having a car refused, is the other
         // class a driver cannot afford to miss.
         spectate: { rank: 30, flash: false, ms: 6000 },
         vehicle:  { rank: 30, flash: false, ms: 6000 },
         session:  { rank: 20, flash: false, ms: 6000 },
-        fastest:  { rank: 10, flash: false, ms: 6000 },
+        // Gold, and a flash rather than the strip. On a driver's panel the
+        // strip painted 16% gold over a transparent root, which is to say over
+        // the road going past: legible on an admin's dark panel and very nearly
+        // invisible on everybody else's, which is how it went unnoticed.
+        fastest:  { rank: 10, flash: true,  ms: 2600, colour: 'gold' },
         // Everything else (grid, joker, pit, reset, ghost, finish, server)
         // takes NOTICE_DEFAULT. They are the running commentary.
       };

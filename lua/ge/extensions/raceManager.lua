@@ -134,6 +134,14 @@ local TUNE = {
   -- recover/load-home drops it at a spawn point that is never this close.
   RECOVER_SNAP_RANGE = 25,
   PROGRESS_EVERY = 0.3,   -- seconds between live-position reports
+  -- Metres before the start/finish line that the white flag is shown.
+  --
+  -- A marshal waves it AT you on the approach, not once you have gone past, so
+  -- the driver meets the flag before the line rather than reading about it
+  -- afterwards. Not measured off the live-position report either: that is
+  -- throttled to PROGRESS_EVERY, which at 90 mph is twelve metres between
+  -- samples and would show the flag anywhere from here to the line itself.
+  WHITE_FLAG_AT = 50,
   -- Live lap clock for the driver's own HUD. Pushed on a slow cadence and
   -- INTERPOLATED in the UI between pushes, which keeps the readout smooth
   -- without a guihook every frame. ~3.3 Hz: responsive enough to resolve a
@@ -1175,9 +1183,31 @@ end
 -- Dedicated, dismissable notice channel for regulation events (reset denied,
 -- joker invalidated, vehicle rejected) so they don't get lost among the
 -- editor's transient messages.
-local function pushNotice(kind, msg)
-  guihooks.trigger('RaceManagerNotice', { kind = kind, msg = msg })
+-- `extra` carries the two things a full-panel flash needs that a strip never
+-- did: a second line, and which colour the flash is. Optional, so every one of
+-- the thirty-odd existing callers keeps working untouched.
+local function pushNotice(kind, msg, extra)
+  local payload = { kind = kind, msg = msg }
+  if type(extra) == 'table' then
+    payload.sub    = extra.sub
+    payload.colour = extra.colour
+  end
+  guihooks.trigger('RaceManagerNotice', payload)
 end
+
+-- FLAG TRANSITIONS, which are not the same thing as flag STATE.
+--
+-- driverFlag() answers "what is this driver's flag right now" and the header
+-- glyph asks it every frame. Nothing in a query can tell "still white" from
+-- "just went white", and a flash needs the second one. These are the latches
+-- that turn the standing state into an event exactly once.
+local flags = {
+  -- Lap this client has already been shown the white flag for. The approach to
+  -- the line lasts several seconds and is sampled every frame, so without this
+  -- the flash would re-arm continuously for the whole run down to it.
+  whiteLap  = nil,
+  chequered = false,
+}
 
 -- Every state broadcast from the current server plugin carries this stamp. A
 -- broadcast without it comes from an OUTDATED copy of the server plugin still
@@ -1281,6 +1311,11 @@ local function resetLapTracking()
   lapStart     = localTime
   localLap     = 1
   prevPos      = nil
+  -- The flags go with the session. A white flag latched on lap 4 of the last
+  -- race would suppress it on lap 4 of the next one, and a chequered left set
+  -- would suppress it entirely.
+  flags.whiteLap  = nil
+  flags.chequered = false
   -- Joker credit and the reset allowance are per-session too: a new phase means
   -- a clean sheet on both.
   jokerArmed   = 1
@@ -1682,6 +1717,44 @@ end
 -- The DISTANCE is throttled with it. It used to be recomputed every frame -- a
 -- vehicle query and a square root -- for a value that is only ever read by the
 -- payload below, so ~55 out of every 60 were thrown away unused.
+-- THE WHITE FLAG, WAVED AT THIS DRIVER, on the run down to the line that starts
+-- their last lap.
+--
+-- Per driver, and it has to be: the field is spread around the circuit and the
+-- leader takes the flag a lap before the backmarkers do. It follows the local
+-- lap counter for the same reason everything else about this driver's lap does.
+--
+-- Runs every frame rather than off the throttled position report, because that
+-- report fires every 0.3 s and a car at 90 mph covers twelve metres between two
+-- of them: the flag would appear anywhere between here and the line. The cost of
+-- that is paid back in the early-outs, which are ordered cheapest first and
+-- reject on a single integer compare for every driver who is not on the
+-- second-to-last lap. Nothing is allocated and the vehicle is not touched until
+-- everything else has already passed.
+local function whiteFlagWatch()
+  if flags.whiteLap == localLap then return end
+  if phase ~= 'racing' or pointToPoint then return end
+  -- A one-lap race has no approach to a final lap: lap 1 IS the flag, and there
+  -- is no earlier lap to be waved at on.
+  if totalLaps <= 1 then return end
+  if localLap ~= totalLaps - 1 then return end
+  -- Driving at the start/finish line specifically. The last checkpoint IS the
+  -- line, so any other armed gate means this driver is still out on the lap.
+  if armedWp ~= #route then return end
+  if spectatorLock then return end
+  local _, pos = sampledVehicle()
+  if not pos then return end
+  local wp = route[#route]
+  if not wp then return end
+  local dx, dy, dz = pos.x - wp.x, pos.y - wp.y, pos.z - wp.z
+  -- Squared, so the per-frame path never takes a square root.
+  local limit = TUNE.WHITE_FLAG_AT * TUNE.WHITE_FLAG_AT
+  if (dx * dx + dy * dy + dz * dz) > limit then return end
+  flags.whiteLap = localLap
+  pushNotice('flag', 'WHITE FLAG WAVING',
+    { sub = 'Last lap', colour = 'white' })
+end
+
 local function reportProgress(dt)
   if not sessionRunning() or spectatorLock then return end
   if #route == 0 then return end
@@ -5366,6 +5439,7 @@ function M.onUpdate(dt)
   joinRequestUpdate(dt)     -- deferred state request after joining a server
   checkGates()
   lapTimerUpdate(dt)        -- live lap clock for this driver's own HUD
+  whiteFlagWatch()          -- the last-lap flag, waved on the approach
   reportProgress(dt)        -- live position telemetry (distance to next gate)
   drawGates(derby.derbyState.phase == 'running')
   drawStartPositions()      -- starting grid slots
@@ -7009,12 +7083,17 @@ local function onServerUpdate(rawData)
     raceFlag = data.flag
   end
   if raceFlag ~= wasFlag and sessionRunning() then
+    -- The instruction moves to the second line and the flag itself becomes the
+    -- headline. On a full-panel flash the first line is what gets read at
+    -- speed, and "RED FLAG" is the part that has to survive a glance.
     if raceFlag == 'red' then
-      pushNotice('flag', 'RED FLAG: stop where you are and wait')
+      pushNotice('flag', 'RED FLAG',
+        { sub = 'Stop where you are and wait', colour = 'red' })
     elseif raceFlag == 'yellow' then
-      pushNotice('flag', 'YELLOW FLAG: caution called, race back to the line')
+      pushNotice('flag', 'YELLOW FLAG',
+        { sub = 'Caution: race back to the line', colour = 'yellow' })
     else
-      pushNotice('flag', 'GREEN FLAG: racing')
+      pushNotice('flag', 'GREEN FLAG', { sub = 'Racing', colour = 'green' })
     end
   end
   -- Per-player admin status. Present only on a targeted reply (RM_RequestState),
@@ -7096,8 +7175,9 @@ local function onServerUpdate(rawData)
   if bestPid ~= lastBestLapPid or bestTime ~= lastBestLapTime then
     if bestPid and myId and bestPid == myId and bestTime then
       local mins = math.floor(bestTime / 60)
-      pushNotice('fastest',
-        string.format('FASTEST LAP: %d:%06.3f', mins, bestTime - mins * 60))
+      pushNotice('fastest', 'FASTEST LAP', {
+        sub = string.format('%d:%06.3f', mins, bestTime - mins * 60),
+      })
     end
     lastBestLapPid  = bestPid
     lastBestLapTime = bestTime
@@ -7272,9 +7352,24 @@ local function onForceSpectate(rawData)
   -- The placement toast. A MOMENT, so it is a transient notice: the standing
   -- itself is on the leaderboard and the checkered flag is the persistent half
   -- of saying the race is over for this driver.
-  local place = tonumber(data.place)
-  if place and place > 0 and source ~= 'derby' then
-    pushNotice('finish', 'Race over: you placed ' .. ordinal(place))
+  -- THE CHEQUERED FLAG, for this driver, once.
+  --
+  -- Every driver gets one as they finish, including a backmarker taking it long
+  -- after the leader: this fires off that driver's own removal from the session,
+  -- not off the race being decided. A derby elimination is not a finish and has
+  -- an overlay of its own, so it is left out here exactly as it is in
+  -- driverFlag().
+  --
+  -- The placing rides along as the second line rather than as a notice of its
+  -- own. Two arriving together would rank the flag first and hold the placing
+  -- behind it for six seconds, which is a strange way to tell somebody they won.
+  if source ~= 'derby' and not flags.chequered then
+    flags.chequered = true
+    local place = tonumber(data.place)
+    pushNotice('flag', 'CHEQUERED FLAG', {
+      sub = (place and place > 0) and ('You placed ' .. ordinal(place)) or nil,
+      colour = 'grey',
+    })
   end
 end
 

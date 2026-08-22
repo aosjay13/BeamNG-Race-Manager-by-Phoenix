@@ -724,11 +724,18 @@ check(fastestNotices() == 0, 'the same lap re-broadcast says nothing further')
 clearLog()
 racing({ bestLapPid = OWN_PID, bestLapTime = 93.0 })
 check(fastestNotices() == 1, 'beating your own fastest lap is announced again')
-local msg
+-- The time moved to the notice's SECOND line when fastest lap became a
+-- full-panel flash: the headline is what gets read at speed, so it is the words
+-- rather than the number. Both halves are asserted, because a flash that says
+-- FASTEST LAP over an empty sub-line is the half of this worth catching.
+local msg, sub
 for _, h in ipairs(hooks) do
-  if h.event == 'RaceManagerNotice' and h.payload.kind == 'fastest' then msg = h.payload.msg end
+  if h.event == 'RaceManagerNotice' and h.payload.kind == 'fastest' then
+    msg, sub = h.payload.msg, h.payload.sub
+  end
 end
-check(msg and msg:find('1:33.000', 1, true) ~= nil, 'and carries the new time')
+check(msg == 'FASTEST LAP', 'and the headline is the flag itself')
+check(sub and sub:find('1:33.000', 1, true) ~= nil, 'and carries the new time')
 
 -- Somebody else taking it is not announced to us -- they get their own notice.
 clearLog()
