@@ -264,6 +264,73 @@ local edit = {
   refused = nil,
 }
 
+-- DIRECTION MARKERS: signage, and nothing else.
+--
+-- A marker is placed exactly the way a checkpoint is and does nothing at all
+-- once it is there. It is not armed, not crossed, not timed, not counted, and
+-- never appears in a lap, a split or a results file -- the crossing code has no
+-- idea these exist. On a long point-to-point stage the problem is not scoring,
+-- it is that a driver arriving at a junction at speed has no idea which way the
+-- route goes, and a checkpoint placed to answer that would be a checkpoint they
+-- have to hit.
+--
+-- ONE TABLE, and this one is not a style preference: the file has exactly one
+-- top-level local left of Lua's 200. Everything markers need -- the list, the
+-- symbol the editor is placing, the symbol geometry -- hangs off this. The next
+-- feature after this one has to start by extracting a module.
+local marker = {
+  -- Placed markers: { x, y, z, hx, hy, width, height, depth, kind }.
+  list = {},
+  -- The symbol the NEXT placed marker gets, and what the mode buttons set. A
+  -- marker's symbol is changed after placement too, which is the point of
+  -- keeping it as a field rather than baking it into seven placement buttons.
+  kind = 'right',
+}
+
+-- Every symbol, in one place. The order is the order the panel offers them.
+marker.KINDS = { 'right', 'left', 'up', 'down', 'uturn', 'splitRight', 'splitLeft' }
+marker.LABEL = {
+  right = 'Right', left = 'Left', up = 'Straight on', down = 'Slow / stop',
+  uturn = 'U turn', splitRight = 'Split, keep right', splitLeft = 'Split, keep left',
+}
+
+-- SYMBOL GEOMETRY, as line segments in a unit cell.
+--
+-- Each entry is a list of { x1, y1, x2, y2 } in a box running -1..1 across and
+-- -1..1 up, with +x to the marker's RIGHT as a driver faces it and +y up. The
+-- draw pass scales the cell and repeats it across the marker's width, so a
+-- symbol is authored once at one size and works at every size.
+--
+-- Drawn as segments rather than as text because debugDrawer text does not
+-- scale with distance the way a shape does: a glyph readable in the editor is
+-- a speck at two hundred metres, which is exactly where a direction marker has
+-- to be readable.
+marker.GLYPH = {
+  right = { {-0.7,0, 0.6,0}, {0.6,0, 0.1,0.45}, {0.6,0, 0.1,-0.45} },
+  left  = { {0.7,0, -0.6,0}, {-0.6,0, -0.1,0.45}, {-0.6,0, -0.1,-0.45} },
+  up    = { {0,-0.7, 0,0.6}, {0,0.6, -0.45,0.1}, {0,0.6, 0.45,0.1} },
+  down  = { {0,0.7, 0,-0.6}, {0,-0.6, -0.45,-0.1}, {0,-0.6, 0.45,-0.1} },
+  -- Up the middle, over the top, and back down the right: the shape of the
+  -- manoeuvre rather than a letter for it.
+  uturn = { {-0.35,-0.7, -0.35,0.25}, {-0.35,0.25, -0.2,0.5}, {-0.2,0.5, 0.2,0.5},
+            {0.2,0.5, 0.35,0.25}, {0.35,0.25, 0.35,-0.2},
+            {0.35,-0.2, 0.1,0.1}, {0.35,-0.2, 0.6,0.1} },
+  -- A stem that forks. The barbs go on the branch being recommended, so the
+  -- symbol says which way to go rather than only that a choice is coming.
+  splitRight = { {0,-0.7, 0,0}, {0,0, -0.5,0.5}, {0,0, 0.6,0.5},
+                 {0.6,0.5, 0.15,0.45}, {0.6,0.5, 0.55,0.05} },
+  splitLeft  = { {0,-0.7, 0,0}, {0,0, 0.5,0.5}, {0,0, -0.6,0.5},
+                 {-0.6,0.5, -0.15,0.45}, {-0.6,0.5, -0.55,0.05} },
+}
+
+function marker.validKind(k)
+  k = tostring(k or '')
+  for i = 1, #marker.KINDS do
+    if marker.KINDS[i] == k then return k end
+  end
+  return nil
+end
+
 -- BRANCHING ROUTES (the other ways through a checkpoint).
 --
 -- A checkpoint can have more than one gate. Slot i is cleared by crossing the
@@ -1167,6 +1234,11 @@ local function pushRouteState()
     driverFlag   = driverFlag(),
     nudgeOn      = nudge.on,
     nudgeSel     = nudge.sel,
+    -- Direction markers: signage, armed by nothing.
+    markers      = marker.list,
+    markerKind   = marker.kind,
+    markerKinds  = marker.KINDS,
+    markerLabels = marker.LABEL,
     -- Branch gates (the other ways through a checkpoint)
     branches     = branch.list,
     branchSlot   = branch.editSlot,
@@ -1399,6 +1471,10 @@ local function clearTrackState(reason)
   progressLeft = 0
   lastGate     = nil
   lastGateBack = false
+  -- Markers go too. They arm nothing, so a stray one cannot affect a lap -- but
+  -- a sign pointing left on a track that no longer turns left is worse than no
+  -- sign, and it would ride along into the next save.
+  marker.list   = {}
   -- The branch gates go with the main ones. One left standing after a purge would
   -- arm a gate from a track that is no longer loaded.
   branch.list   = {}
@@ -4931,6 +5007,13 @@ local function palette()
     -- The chevron on the floor: which way the stall faces, and therefore which
     -- way the car is stood when it stops.
     pitArrow     = ColorF(1, 0.88, 0.35, 0.85),
+    -- Direction markers. Cyan, because every other colour on a track already
+    -- means something a driver has learned -- green is the gate they are
+    -- driving at, orange the rest of the route, violet the joker, amber the
+    -- pits -- and a sign that is not any of those must not borrow one of them.
+    markerLine   = ColorF(0.2, 0.95, 1, 0.95),
+    markerFill   = ColorF(0.2, 0.85, 1, 0.13),
+    markerSel    = ColorF(1, 1, 1, 1),
     -- The state glyph drawn across a joker gate: a cross while it is shut, a
     -- tick once it is spent. Both semi-transparent, because they are drawn over
     -- the piece of track the driver is about to aim at.
@@ -5249,6 +5332,62 @@ function paint.glyph(g, kind)
   end
 end
 
+-- A DIRECTION MARKER: a translucent panel with its symbol repeated across it.
+--
+-- REPEATED, because the panel is as wide as the admin drew it and a stage
+-- marker gets drawn wide -- one arrow floating in the middle of a forty metre
+-- board is a dot, and a single arrow STRETCHED to forty metres is a line with
+-- a bend in it. A fixed-size symbol tiled across the span keeps the same shape
+-- at every width, which is what a real sign does.
+--
+-- Built from segments rather than text: debugDrawer text does not shrink with
+-- distance the way geometry does, so a glyph sized to read in the editor is a
+-- speck at the two hundred metres where a marker actually has to work.
+function paint.markerPanel(wp, color, fill)
+  local w, h, d = gateDims(wp)
+  local hw = w * 0.5
+  local fx, fy = wp.hx or 0, wp.hy or 1
+  -- Lateral axis: to the driver's right as they face the marker.
+  local rx, ry = fy, -fx
+  local top, bot = wp.z + h, wp.z - d
+  local function at(u, v)
+    return vec3(wp.x + rx * u, wp.y + ry * u, v)
+  end
+
+  -- The board. Translucent so the road behind it stays visible: this is
+  -- signage, and a sign a driver cannot see through is an obstacle.
+  debugDrawer:drawQuadSolid(at(-hw, bot), at(hw, bot), at(hw, top), at(-hw, top), fill)
+
+  -- HOW MANY SYMBOLS FIT. Cells are square and sized off the board's HEIGHT, so
+  -- a tall marker gets big arrows and a low one gets small ones -- the symbol
+  -- stays in proportion to the sign rather than to how wide it happens to be.
+  local cell = math.min(h + d, w)
+  if cell < 0.5 then return end
+  local n = math.max(1, math.floor(w / cell + 0.5))
+  -- Spread evenly with a half-cell margin at each end, so the row is centred
+  -- and no arrow is cut in half by the edge of the board.
+  local step = w / n
+  local half = step * 0.45          -- symbol slightly smaller than its cell
+  local midV = (top + bot) * 0.5
+
+  local glyph = marker.GLYPH[wp.kind] or marker.GLYPH.right
+  local r = TUNE.POLE_RADIUS * 0.8
+  for i = 1, n do
+    local cx = -hw + step * (i - 0.5)
+    for k = 1, #glyph do
+      local g = glyph[k]
+      debugDrawer:drawCylinder(
+        at(cx + g[1] * half, midV + g[2] * half),
+        at(cx + g[3] * half, midV + g[4] * half), r, color)
+    end
+  end
+
+  -- Edge posts, so the extent of the board reads at distance and in flat light
+  -- where a translucent fill alone disappears.
+  debugDrawer:drawCylinder(at(-hw, bot), at(-hw, top), TUNE.POLE_RADIUS, color)
+  debugDrawer:drawCylinder(at(hw, bot),  at(hw, top),  TUNE.POLE_RADIUS, color)
+end
+
 -- THE PIT STALL IS A BOX, SO IT IS DRAWN AS ONE.
 --
 -- pit.inside tests a volume: the gate's width across, TUNE.PIT_DEPTH either way
@@ -5392,6 +5531,22 @@ local function drawDriverGate(derbyLive)
     branch.eachAt(a % n + 1, poles, p.routeNext or p.route)
   end
 
+  -- MARKERS, ALL OF THEM, ALWAYS.
+  --
+  -- Unlike a checkpoint there is no "next" marker to highlight and nothing to
+  -- arm: a sign is useful precisely when the driver has not reached it yet, so
+  -- there is no look-ahead window to limit this to. They are cheap -- a quad,
+  -- a few segments and two posts each -- and a stage carries a handful.
+  --
+  -- Drawn for a driver as well as in the editor, which is the whole reason they
+  -- exist: the editor pass above adds numbering and picks up the nudge
+  -- selection, and this one is the sign as a driver sees it.
+  if not editorOpen then
+    for _, wp in ipairs(marker.list) do
+      paint.markerPanel(wp, p.markerLine, p.markerFill)
+    end
+  end
+
   -- The joker and the nearest pit stall, in the same style and the same colours
   -- they have always had. They used to be the stock markers' job (slots 3 and 4)
   -- and are drawn here now so a track has ONE checkpoint visual rather than two
@@ -5493,6 +5648,17 @@ local function drawGates(derbyLive)
   -- Pit stalls. Amber, and labelled as stalls rather than numbered gates: they
   -- are not part of the checkpoint sequence and must not look as though they
   -- are. Editor only -- a driver gets a pole on the nearest one instead.
+  -- Direction markers. Drawn in the editor with a number, so an admin can tell
+  -- the panel's list from what is on the ground.
+  for i, wp in ipairs(marker.list) do
+    local col = nudgeSelected(marker.list, i) and p.nudged or p.markerLine
+    paint.markerPanel(wp, col, p.markerFill)
+    debugDrawer:drawTextAdvanced(
+      vec3(wp.x, wp.y, wp.z + (gateDims(wp)) * 0 + 1.2),
+      String('MARKER ' .. i .. ' ' .. (marker.LABEL[wp.kind] or '')),
+      p.text, true, false, p.textBg)
+  end
+
   for i, wp in ipairs(pitRoute) do
     local col = nudgeSelected(pitRoute, i) and p.nudged or p.pit
     -- THE BOX, AND ONLY THE BOX.
@@ -5710,7 +5876,7 @@ end
 function M.setEditorTarget(target)
   target = tostring(target or 'main')
   if target ~= 'joker' and target ~= 'start' and target ~= 'pit'
-     and target ~= 'branch' then target = 'main' end
+     and target ~= 'branch' and target ~= 'marker' then target = 'main' end
   editorTarget = target
   pushRouteState()
   log('I', 'raceManager', 'Editor target: ' .. editorTarget)
@@ -5721,6 +5887,7 @@ local function activeEditorRoute()
   if editorTarget == 'pit'   then return pitRoute end
   if editorTarget == 'start' then return startPositions end
   if editorTarget == 'branch' then return branch.list end
+  if editorTarget == 'marker' then return marker.list end
   return route
 end
 
@@ -6348,10 +6515,41 @@ function M.editorAdd(place)
     log('I', 'raceManager', 'Branch gate added for CP ' .. slot)
     return
   end
+  -- A marker carries the symbol the editor is currently set to. Stamped at
+  -- placement rather than chosen through seven different placement buttons:
+  -- driving the route dropping signs and then going back to say what each one
+  -- means is how somebody actually builds a stage, and the symbol stays
+  -- changeable afterwards either way.
+  if editorTarget == 'marker' then
+    place.kind = marker.validKind(marker.kind) or 'right'
+  end
   target[#target + 1] = place
   -- A slot placed by hand after a generate leaves the generator's block no
   -- longer the last `count` of them, so it stops claiming to own one.
   if editorTarget == 'start' then branch.gridTool.generated = false end
+  pushRouteState()
+end
+
+-- The symbol new markers get, and the one an already-placed marker shows.
+--
+-- Two jobs in one entry point because they are the same decision from the
+-- admin's side: `index` nil means "what I am about to place", a number means
+-- "that one there". A marker whose kind is changed is not moved, so the sign
+-- can be corrected from the panel without driving back to it.
+function M.setMarkerKind(kind, index)
+  local k = marker.validKind(kind)
+  if not k then return end
+  local i = tonumber(index)
+  if i then
+    i = math.floor(i)
+    local m = marker.list[i]
+    if not m then return end
+    m.kind = k
+    log('I', 'raceManager', 'Marker ' .. i .. ' set to ' .. k)
+  else
+    marker.kind = k
+    log('I', 'raceManager', 'Next marker will be ' .. k)
+  end
   pushRouteState()
 end
 
@@ -6377,6 +6575,15 @@ function M.editorClear()
     pitRoute = {}
     pushRouteState()
     log('I', 'raceManager', 'Pit stalls cleared')
+    return
+  end
+  -- Signage only. Without this branch, clearing while the Marker tab is open
+  -- falls through to the bottom of this function and wipes the MAIN ROUTE --
+  -- the whole track, from a button that says it clears markers.
+  if editorTarget == 'marker' then
+    marker.list = {}
+    pushRouteState()
+    log('I', 'raceManager', 'Markers cleared')
     return
   end
   if editorTarget == 'joker' then
@@ -7045,6 +7252,11 @@ function M.saveLayout(name, confirmDrop)
       if tonumber(wp.height) then out[i].height = clampHeight(wp.height) end
       if tonumber(wp.depth)  then out[i].depth  = clampDepth(wp.depth)   end
       if wp.oneWay == true   then out[i].oneWay = true end
+      -- A marker's SYMBOL is the only thing that distinguishes one from
+      -- another, so it travels with the geometry. Validated on the way out
+      -- rather than trusted: a layout carrying kind = "banana" would draw
+      -- nothing at all on reload, and silently.
+      if wp.kind ~= nil then out[i].kind = marker.validKind(wp.kind) or 'right' end
     end
     return out
   end
@@ -7107,6 +7319,10 @@ function M.saveLayout(name, confirmDrop)
     -- share one row of slots.
     gridOffLine    = branch.gridIsOff(),
     pits           = bundle(pitRoute, 'pit stall') or {},
+    -- Signage rides with the track it points around. A stage without its
+    -- markers is a stage nobody can follow, so they are part of the layout
+    -- rather than something placed again every session.
+    markers        = bundle(marker.list, 'marker') or {},
     -- Whether this track is a sprint stage or a circuit is a property of the
     -- TRACK, so it is stored with it. An admin who built a point-to-point stage
     -- should not have to remember to set it again every race night.
@@ -7716,6 +7932,17 @@ local function onApplyLayout(rawData)
   if type(data.pits) == 'table' and #data.pits > 0 then
     pits = unbundle(data.pits, 'pit stall') or {}
   end
+  -- Markers, with their symbols. unbundle only carries geometry, so the kind is
+  -- re-attached here from the payload and validated on the way in -- a layout
+  -- hand-edited to an unknown symbol gets the default rather than a marker that
+  -- draws nothing.
+  local marks = {}
+  if type(data.markers) == 'table' and #data.markers > 0 then
+    marks = unbundle(data.markers, 'marker') or {}
+    for i = 1, #marks do
+      marks[i].kind = marker.validKind(data.markers[i] and data.markers[i].kind) or 'right'
+    end
+  end
   -- Branch gates, resolved into the per-checkpoint lookup the crossing code
   -- reads. Done ONCE, here, rather than searched per frame: the gates for a
   -- checkpoint have to be found sixty times a second and this is what makes that
@@ -7772,6 +7999,7 @@ local function onApplyLayout(rawData)
   route      = cps
   jokerRoute = jokerCps
   pitRoute   = pits
+  marker.list = marks
   startPositions = starts
   branch.list   = alts
   branch.bySlot = bySlot

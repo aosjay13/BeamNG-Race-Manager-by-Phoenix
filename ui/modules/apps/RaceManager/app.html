@@ -1154,6 +1154,12 @@
               title="Another way through a checkpoint that already exists. Drive through either gate and it counts, so the whole field scores together.">
         Branch ({{ branches.length }})
       </button>
+      <button class="rm-btn rm-btn-mini rm-route-tab-marker"
+              ng-class="{'rm-route-tab-marker-active': editorTarget === 'marker'}"
+              ng-click="setEditorTarget('marker')"
+              title="Signage. A marker is placed like a checkpoint and does nothing at all: not armed, not timed, not counted. For telling drivers which way a long stage goes.">
+        Marker ({{ markers.length }})
+      </button>
       <button class="rm-btn rm-btn-mini rm-route-tab-start"
               ng-class="{'rm-route-tab-start-active': editorTarget === 'start'}"
               ng-click="setEditorTarget('start')"
@@ -1181,6 +1187,23 @@
         Slot 1 is pole. Drivers are placed here and held until the countdown ends.
         <b ng-if="gridOffLine">This grid is away from the start/finish line, so the first lap is an out lap and is not timed.</b>
       </span>
+      <!-- WHICH SIGN. Sets what the next marker will be, and doubles as the
+           legend: the same seven buttons appear on every placed marker's row
+           below, so choosing one here and correcting one down there are visibly
+           the same control. -->
+      <div class="rm-marker-kinds" ng-if="editorTarget === 'marker'">
+        <button class="rm-btn rm-btn-mini rm-marker-kind"
+                ng-repeat="k in markerKinds track by k"
+                ng-class="{'rm-marker-kind-on': markerKind === k}"
+                ng-click="setMarkerKind(k)"
+                title="{{ markerLabelOf(k) }}">{{ markerGlyph(k) }}</button>
+        <span class="rm-route-tab-note">{{ markerLabelOf(markerKind) }}</span>
+      </div>
+      <span class="rm-route-tab-note" ng-if="editorTarget === 'marker'">
+        Markers are signs, not gates. Nothing arms them and nothing scores them:
+        place them where a stage turns, then set what each one says. The symbol
+        repeats across the board, so a wider marker reads from further away.
+      </span>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'branch'">
         Branch gates are drawn cyan. Both they and the main gate are armed together, so
         driving through <b>either</b> clears that checkpoint. They never add one.
@@ -1188,7 +1211,7 @@
     </div>
     <div class="rm-editor-controls">
       <button class="rm-btn rm-btn-grid"  ng-click="editorAdd()"
-              ng-disabled="editorTarget === 'branch' && !waypoints.length">+ {{ editorTarget === 'joker' ? 'Joker Gate' : (editorTarget === 'start' ? 'Place Start Position' : (editorTarget === 'pit' ? 'Place Pit Stall' : (editorTarget === 'branch' ? ('Branch Gate for CP ' + branchSlot) : 'Checkpoint'))) }} Here</button>
+              ng-disabled="editorTarget === 'branch' && !waypoints.length">+ {{ editorTarget === 'joker' ? 'Joker Gate' : (editorTarget === 'start' ? 'Place Start Position' : (editorTarget === 'pit' ? 'Place Pit Stall' : (editorTarget === 'branch' ? ('Branch Gate for CP ' + branchSlot) : (editorTarget === 'marker' ? ('Marker ' + markerGlyph(markerKind)) : 'Checkpoint')))) }} Here</button>
       <button class="rm-btn"              ng-click="editorUndo()"  ng-disabled="!editorWaypoints().length">Undo</button>
       <button class="rm-btn rm-btn-end"   ng-click="editorClear()" ng-disabled="!editorWaypoints().length">Clear</button>
       <button class="rm-btn" ng-click="editorToggleVisualize()">{{ visualize ? 'Hide' : 'Show' }} Gates</button>
@@ -1350,7 +1373,8 @@
     </div>
 
     <!-- Gate list (main lap / joker route) -->
-    <div class="rm-editor-list" ng-if="editorWaypoints().length && !editingGrid()">
+    <div class="rm-editor-list"
+         ng-if="editorWaypoints().length && !editingGrid() && editorTarget !== 'marker'">
       <div class="rm-editor-wp-wrap" ng-repeat="wp in editorWaypoints() track by $index">
         <div class="rm-editor-wp"
              ng-class="{'rm-editor-wp-sel': selectedCp === $index + 1,
@@ -1447,6 +1471,31 @@
           <button class="rm-btn rm-btn-mini" ng-click="resetCheckpointOverride()"
                   title="Back to the standard size. Only this gate changes.">Default</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Marker list: every placed sign, with its symbol changeable in place.
+         Its own list rather than a column bolted onto the gate rows, because a
+         marker has no index in a sequence, no size override worth editing from
+         here, and nothing to reorder -- what it has is a symbol, and that is
+         what this row is for. -->
+    <div class="rm-editor-list" ng-if="editorTarget === 'marker' && markers.length">
+      <div class="rm-editor-wp rm-marker-row" ng-repeat="mk in markers track by $index">
+        <span class="rm-editor-idx rm-marker-idx">{{ $index + 1 }}</span>
+        <span class="rm-editor-coords">{{ mk.x.toFixed(1) }}, {{ mk.y.toFixed(1) }}, {{ mk.z.toFixed(1) }}</span>
+        <span class="rm-marker-kinds rm-marker-kinds-row">
+          <button class="rm-btn rm-btn-mini rm-marker-kind"
+                  ng-repeat="k in markerKinds track by k"
+                  ng-class="{'rm-marker-kind-on': mk.kind === k}"
+                  ng-click="$event.stopPropagation(); setMarkerKind(k, $index + 1)"
+                  title="{{ markerLabelOf(k) }}">{{ markerGlyph(k) }}</button>
+        </span>
+        <button class="rm-btn rm-btn-mini" title="Put your car at this marker, facing the way it points"
+                ng-click="$event.stopPropagation(); previewCheckpoint($index + 1)">Go</button>
+        <button class="rm-btn rm-btn-mini rm-btn-grid" title="Move this marker to where your car is standing now"
+                ng-click="$event.stopPropagation(); moveCheckpoint($index + 1)">Move Here</button>
+        <button class="rm-btn rm-btn-mini rm-btn-end" title="Delete this marker"
+                ng-click="$event.stopPropagation(); removeCheckpoint($index + 1)">✕</button>
       </div>
     </div>
 
@@ -3043,6 +3092,28 @@
      the question is "between which two" and a filled row answers a different
      one. */
   .rm-editor-wp-over { box-shadow: inset 0 2px 0 0 #ff8c1a; }
+  /* Direction markers: cyan, matching what they draw in the world, and not any
+     of the colours a driver has already learned to read as a gate. */
+  .rm-route-tab-marker { border-color: rgba(45, 220, 255, 0.55); color: #9fe9ff; }
+  .rm-route-tab-marker-active {
+    background: rgba(45, 220, 255, 0.22);
+    border-color: rgba(45, 220, 255, 0.9);
+    color: #d6f6ff;
+  }
+  .rm-marker-idx { background: rgba(45, 220, 255, 0.2); color: #9fe9ff; }
+  .rm-marker-kinds { display: flex; gap: 3px; align-items: center; flex-wrap: wrap; }
+  .rm-marker-kinds-row { flex: 1; min-width: 0; }
+  .rm-marker-kind {
+    padding: 1px 6px;
+    font-size: 13px;
+    line-height: 1.1;
+    min-width: 24px;
+  }
+  .rm-marker-kind-on {
+    background: rgba(45, 220, 255, 0.28);
+    border-color: rgba(45, 220, 255, 0.9);
+    color: #e6fbff;
+  }
   .rm-editor-idx { width: 22px; text-align: right; color: #ff6600; font-weight: 700; }
   .rm-editor-finish { color: #e8eaed; }
   .rm-editor-coords { color: #bdc1c6; flex: 1; }
