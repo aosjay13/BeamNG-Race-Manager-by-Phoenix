@@ -3151,6 +3151,24 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         bngApi.engineLua('raceManager.loadLayout(' + luaStr($scope.layoutUi.selected) + ')');
       };
 
+      // NOTHING LOADED: no race track, no derby arena, one press.
+      //
+      // Confirmed first, because it is the one editor action that throws away
+      // what everybody on the server can see rather than only what this admin
+      // is working on. The confirmation reuses the layout panel's own inline
+      // prompt: the game's CEF layer cannot draw a browser dialog over the
+      // world, which is the same reason the layout picker is not a <select>.
+      // askLayout is declared further down and is reached here by hoisting,
+      // which JS does for function declarations and Lua does not do for locals.
+      // The equivalent line in the extension would be a nil global.
+      $scope.clearEverything = function () {
+        askLayout(
+          'Clear the race track AND the derby arena for everyone? '
+            + 'Saved layouts and arenas are not deleted.',
+          'Clear everything',
+          function () { bngApi.engineLua('raceManager.clearEverything()'); });
+      };
+
       // OPEN IN THE EDITOR: the same layout, to this admin only.
       //
       // The distinction is the one thing separating two admins working at once

@@ -3786,6 +3786,50 @@ function RM_onClearTrackState(pid)
   sendLayoutList(-1)
 end
 
+-- NOTHING LOADED: no race track, no derby arena, one press.
+--
+-- The two live in separate modules with separate state, separate broadcasts and
+-- separate clears, so "put the server back to nothing" was two commands on two
+-- different tabs and the second was easy to forget. What that leaves behind is
+-- not obvious either: an arena with no race track still draws its walls, and a
+-- track with no arena still arms its gates.
+--
+-- Forwarded through the derby's OWN handlers rather than reaching into its
+-- state. Two reasons, and the second is the one that would have bitten:
+--
+-- The derby is a module with its own state and its own broadcast, and going
+-- through its public entry points is the boundary the file was split along.
+-- It also has to be done this way round: `derby` is a local declared some six
+-- hundred lines BELOW this, so naming it here would compile fine and resolve to
+-- a nil global the first time an admin pressed the button. The RM_* handlers
+-- are globals and resolve at call time, which is exactly what is needed.
+--
+-- Refused mid-session for the same reason a load is: this pulls the track out
+-- from under whoever is driving on it.
+function RM_onClearEverything(pid)
+  if not requireAuth(pid) then return end
+  if sessionUnderWay() then
+    MP.SendChatMessage(pid, '[RaceManager] Not while a session is running: end it first.')
+    return
+  end
+  local who = MP.GetPlayerName(pid) or pid
+  clearTrackState('cleared by ' .. who)
+  sendLayoutList(-1)
+  -- "No arena loaded" is an empty boundary and an empty start grid. The rules
+  -- (wall height, the out-of-bounds and demolished timers, the reset allowance)
+  -- are settings rather than an arena and are deliberately left alone: an admin
+  -- clearing the map is not asking for their timers to be reset too.
+  --
+  -- Each of these refuses on its own while a derby is running, so a running
+  -- derby is safe without a check here.
+  RM_onDerbyClearBoundary(pid)
+  RM_onDerbyClearStarts(pid)
+  local msg = '[RaceManager] Everything cleared by ' .. who
+    .. ': no race track and no derby arena are loaded.'
+  MP.SendChatMessage(-1, msg)
+  print(msg)
+end
+
 -- Save the checkpoints the client bundled up as a named layout for the current
 -- map. Same name on the same map overwrites (that's the edit workflow); the
 -- refreshed list goes to every client so all open UIs stay in sync.
@@ -7521,6 +7565,7 @@ function onInit()
   MP.RegisterEvent('RM_SetSpectating',    'RM_onSetSpectating')
   MP.RegisterEvent('RM_Retire',           'RM_onRetire')
   MP.RegisterEvent('RM_ClearTrackState',  'RM_onClearTrackState')
+  MP.RegisterEvent('RM_ClearEverything',  'RM_onClearEverything')
   -- Demo Derby module (isolated event namespace; see the DEMO DERBY section).
   MP.RegisterEvent('RM_DerbySetConfig',     'RM_onDerbySetConfig')
   MP.RegisterEvent('RM_DerbyAddMarker',     'RM_onDerbyAddMarker')

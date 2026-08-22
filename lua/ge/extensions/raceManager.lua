@@ -1398,6 +1398,25 @@ function M.clearTrackState()
   if inMultiplayer() then TriggerServerEvent('RM_ClearTrackState', '') end
 end
 
+-- Nothing loaded: no race track, no derby arena, one press.
+--
+-- The local purge runs either way so the button does something offline too, but
+-- on a server the SERVER is what makes it stick: it clears its own copy, tells
+-- every other client, and refuses the whole thing if a session or a derby is
+-- running. Purging here first would otherwise leave this one admin looking at an
+-- empty map that nobody else agrees with.
+function M.clearEverything()
+  clearTrackState('clear everything')
+  if inMultiplayer() then
+    TriggerServerEvent('RM_ClearEverything', '')
+  else
+    -- pushNotice, not editorMsg. editorMsg is declared five thousand lines
+    -- below this and would resolve to a nil global here: it compiles clean and
+    -- throws the first time somebody presses the button offline.
+    pushNotice('session', 'Cleared: nothing is loaded')
+  end
+end
+
 -- Is the lap this driver is on the out lap -- the one that is given away?
 --
 -- Worked out locally rather than read off this client's own driver row, and the

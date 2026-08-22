@@ -1434,6 +1434,16 @@
                   title="Delete the selected layout from the server">
             Delete
           </button>
+          <!-- Puts the server back to nothing loaded. Not a delete: the saved
+               layouts and arenas are all still there, this only unloads what is
+               currently on the map. The race track and the derby arena go
+               together because leaving one behind is what makes "clear" mean
+               two commands on two different tabs. -->
+          <button class="rm-btn rm-btn-end" ng-click="clearEverything()"
+                  ng-disabled="!canEdit()"
+                  title="Unload the race track AND the derby arena for everyone. Saved layouts and arenas are kept.">
+            Clear Everything
+          </button>
         </div>
         <!-- Confirmations live here rather than in a browser dialog: the game's
              CEF layer cannot draw one over the world (the same reason the layout
