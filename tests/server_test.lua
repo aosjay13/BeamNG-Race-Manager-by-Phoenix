@@ -1600,6 +1600,58 @@ do
 end
 
 -- ===========================================================================
+-- A driver done with qualifying is a ghost, not an obstacle
+-- ===========================================================================
+-- Retiring from qualifying goes through the same path a race finish does:
+-- status 'finished', the spectator lock, and the CAR IS KEPT -- a finisher
+-- watches the rest of the session from their own car rather than having it
+-- taken away.
+--
+-- What was missing is the half that makes keeping it safe. ghostFinished, the
+-- list every client ghosts, was built only while the phase was 'racing' or
+-- 'countdown', so a driver who had used their qualifying laps sat on the
+-- circuit fully SOLID while everybody else was still on a hot lap. That is
+-- worse in qualifying than in a race: there is no pack to hide in, and a single
+-- contact ruins a single-lap session.
+do
+  local qCps = '[{"x":0,"y":100,"z":0,"hx":0,"hy":1},{"x":0,"y":200,"z":0,"hx":0,"hy":1}]'
+  adminLogin(1)
+  RM_onSaveLayout(1, '{"name":"Quali","width":20,"checkpoints":' .. qCps
+    .. ',"startPositions":' .. qCps .. '}')
+  RM_onLoadLayout(1, '{"name":"Quali"}')
+  RM_onSetQualiLimits(1, '{"laps":1,"seconds":0}')
+  RM_onStartQualifying(1)
+  RM_onStartCountdown(1)
+  for _ = 1, 8 do RM_CountdownTick() end
+  check(lastState.phase == 'qualifying', 'qualifying is running')
+
+  local function ghostedIds()
+    local t = {}
+    for _, id in ipairs(lastState.ghostFinished or {}) do t[tonumber(id)] = true end
+    return t
+  end
+  check(next(ghostedIds()) == nil, 'nobody is a finished-ghost while everyone is still out')
+
+  -- Alice uses her allowance. A one-lap limit is more than one CROSSING when an
+  -- out lap is owed, so she is driven round until the server retires her; the
+  -- assertion below is on the outcome rather than on the crossing count.
+  for _ = 1, 4 do RM_onLap(1, '{"lapTime":40.0}') end
+  local done = ghostedIds()
+  check(done[1] == true,
+    'a driver who has used their qualifying laps is ghosted for everyone else')
+  check(done[2] ~= true, 'and a driver still on a hot lap is not')
+
+  -- The handoff at the end of the session: the list empties, so every client
+  -- hands the collisions back rather than leaving a field of ghosts behind.
+  RM_onEndRace(1)
+  settleRace()
+  check(next(ghostedIds()) == nil,
+    'the finished-ghost list empties when qualifying ends, so collisions come back')
+
+  RM_onDeleteLayout(1, '{"name":"Quali"}')
+end
+
+-- ===========================================================================
 -- LIFECYCLE: three races back to back leave the server in the same place
 -- ===========================================================================
 -- The client half of this lives in lifecycle_test.lua; this is the durable

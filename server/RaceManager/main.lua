@@ -1016,11 +1016,23 @@ end
 -- leaving a retired car solid on the racing line would put back the obstacle
 -- this whole change removes.
 --
--- Only while a race is actually running. Once the race is over the list empties
--- and every client hands the collisions back, which is the un-ghost at the flag.
+-- Only while a session is actually running. Once it is over the list empties and
+-- every client hands the collisions back, which is the un-ghost at the flag.
+--
+-- QUALIFYING COUNTS, and leaving it out was a hole rather than a decision. A
+-- driver who has used their lap allowance is retired exactly the way a finisher
+-- is -- status 'finished', spectator lock, car kept -- but this list was empty
+-- outside a race, so their car stayed SOLID while everybody else was still on a
+-- hot lap. A parked or cruising car on the racing line is worse in qualifying
+-- than in a race: there is no pack to hide in and the whole session is single
+-- laps that a single contact ruins.
+--
+-- 'countdown' is in the list for the race's sake and does no harm here;
+-- qualifying reaches 'qualifying' directly from the grid.
 local function finishedRoster()
   local list = {}
-  if race.phase ~= 'racing' and race.phase ~= 'countdown' then return list end
+  if race.phase ~= 'racing' and race.phase ~= 'countdown'
+     and race.phase ~= 'qualifying' then return list end
   for _, rec in pairs(players) do
     local st = rec.status
     if st == 'finished' or st == 'dnf' or st == 'dsq' then
