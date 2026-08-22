@@ -239,7 +239,44 @@ local totalLaps = 5          -- mirrored from server broadcasts
 -- also carry per-checkpoint width/height overrides; absent, it inherits the
 -- global defaults below. Each checkpoint is a flat, upright rectangle:
 -- width = lateral span, height = vertical extent (covers banking).
-local route            = {}
+-- THE TRACK, AS ONE OBJECT.
+--
+-- These eight were eight separate top-level locals, and being separate is what
+-- made them expensive to hand to anything else. Four are REBOUND wholesale when
+-- a layout loads (route = cps), so anything holding a reference would keep the
+-- old table forever -- which is why every consumer of them would have needed a
+-- getter rather than the value.
+--
+-- One table fixes that by construction: `track.route` is rebound, `track` never
+-- is, so anything handed this table sees every later change for free. It is the
+-- same reason branch, pit, nudge, marker, field and spectate are tables. This is
+-- simply the last part of the state that never got the treatment, and it is the
+-- part everything else reads.
+--
+-- It buys the register budget back too: eight locals become one, in a file that
+-- had none left.
+local track = {
+  -- Checkpoints: ordered { x, y, z, hx, hy }, where (hx, hy) is the normalized
+  -- direction of travel captured at placement. The LAST one is the start/finish
+  -- line. A gate may carry its own width/height/depth; absent, it inherits the
+  -- defaults below.
+  route = {},
+  -- Optional rallycross joker route: a second, independent gate sequence.
+  jokerRoute = {},
+  -- Pit stalls. Never part of the checkpoint sequence.
+  pitRoute = {},
+  -- Starting grid, slot 1 is pole. Travels with the layout.
+  startPositions = {},
+  -- Circuit or sprint. A point-to-point stage is driven once, first gate to
+  -- last, and its last gate is a FINISH rather than a line you come back round
+  -- to.
+  pointToPoint = false,
+  -- Size given to newly placed gates, and the layout's stored default for any
+  -- gate without an override of its own.
+  checkpointWidth  = TUNE.DEFAULT_WIDTH,
+  checkpointHeight = TUNE.DEFAULT_HEIGHT,
+  checkpointDepth  = TUNE.DEFAULT_DEPTH,
+}
 -- Is this track a circuit or a sprint?
 --
 -- A point-to-point stage is driven once, from the first gate to the last, and
@@ -248,7 +285,6 @@ local route            = {}
 -- workaround -- but it reads as a one-lap circuit everywhere it is shown, and a
 -- driver on a sprint stage wants to be told they are on a sprint stage. It
 -- belongs to the TRACK, so it travels with the layout.
-local pointToPoint     = false
 
 -- WHO OWNS THE ROUTE BUFFER RIGHT NOW.
 --
@@ -385,9 +421,6 @@ local branch = {
   -- Editor: the checkpoint the next placed branch gate belongs to.
   editSlot = 1,
 }
-local checkpointWidth  = TUNE.DEFAULT_WIDTH
-local checkpointHeight = TUNE.DEFAULT_HEIGHT
-local checkpointDepth  = TUNE.DEFAULT_DEPTH
 local raceFlag         = 'green'   -- green | yellow | red, mirrored from the server
 local selfSpectating   = false     -- this player has opted out of the field
 local visualize        = true
@@ -395,7 +428,6 @@ local visualize        = true
 -- Starting grid: ordered list of { x, y, z, hx, hy } placed by the race
 -- creator. Slot 1 is pole. Travels with the track layout; the server assigns a
 -- slot number per driver and this client puts its own car on that slot.
-local startPositions = {}
 local gridSlot       = nil       -- slot the server assigned us for this race
 local gridFrozen     = false     -- true while the freeze command has been issued
 -- What the session WANTS held ('race' | 'derby' | nil), as opposed to whether
@@ -675,7 +707,6 @@ end
 -- list, like the joker route, and the checkpoint sequence never sees them.
 --
 -- Driving into one stops the car, repairs it in place and lets it go again.
-local pitRoute     = {}
 local pit = {
   active   = false,  -- a stop is running
   left     = 0,      -- seconds until release
@@ -709,7 +740,6 @@ local pit = {
   -- when a reset ghost was already running and owns that broadcast.
   ghostSent = false,
 }
-local jokerRoute   = {}
 local jokerEnabled = false       -- mirrored from the server broadcast
 local jokerArmed   = 1           -- next joker gate the local car must cross
 local jokerTaken   = false       -- joker route already completed this race
@@ -1059,13 +1089,13 @@ end
 -- silently doubling in size the day this shipped. Anything the editor touches is
 -- written back with both fields, so a track only reads this way once.
 local function gateDims(wp)
-  local w = clampWidth(wp.width or checkpointWidth)
+  local w = clampWidth(wp.width or track.checkpointWidth)
   if wp.depth == nil and wp.height ~= nil then
     local half = wp.height * 0.5
     return w, clampHeight(half), clampDepth(half)
   end
-  return w, clampHeight(wp.height or checkpointHeight),
-         clampDepth(wp.depth or checkpointDepth)
+  return w, clampHeight(wp.height or track.checkpointHeight),
+         clampDepth(wp.depth or track.checkpointDepth)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1090,11 +1120,11 @@ local lastReportedStarts = nil
 -- edited: the payload is a few dozen numbers, not something to repeat.
 local function reportStartCount()
   if not inMultiplayer() then return end
-  local n = #startPositions
+  local n = #track.startPositions
   if n == lastReportedStarts then return end
   lastReportedStarts = n
   local positions = {}
-  for i, sp in ipairs(startPositions) do
+  for i, sp in ipairs(track.startPositions) do
     positions[i] = { x = sp.x, y = sp.y, z = sp.z, hx = sp.hx, hy = sp.hy }
   end
   -- Branch gates are NOT reported. The server has no physics and never tests a
@@ -1107,7 +1137,7 @@ local function reportStartCount()
     -- The joker lap cannot be armed on a track with no joker route: the rule
     -- disqualifies anyone who did not complete it, and with no route that is
     -- everyone. The server needs the count to refuse it.
-    jokerGates  = #jokerRoute,
+    jokerGates  = #track.jokerRoute,
   }))
 end
 
@@ -1132,7 +1162,7 @@ local function driverFlag()
   -- running underneath it: red goes to yellow, then back to green.
   if raceFlag == 'red' or phase == 'grid' or gridFrozen then return 'red' end
   if raceFlag == 'yellow' then return 'yellow' end
-  if phase == 'racing' and not pointToPoint and totalLaps > 0
+  if phase == 'racing' and not track.pointToPoint and totalLaps > 0
      and localLap >= totalLaps then
     return 'white'
   end
@@ -1161,10 +1191,10 @@ function edit.fingerprint()
         + math.floor((w.z or 0) * 100)) % 2147483647
     end
   end
-  fold(route)
-  fold(jokerRoute)
-  fold(pitRoute)
-  fold(startPositions)
+  fold(track.route)
+  fold(track.jokerRoute)
+  fold(track.pitRoute)
+  fold(track.startPositions)
   fold(branch.list)
   return n
 end
@@ -1220,25 +1250,25 @@ local function pushRouteState()
   reportStartCount()
   guihooks.trigger('RaceManagerRoute', {
     clientBuild  = RM_BUILD,
-    waypoints    = route,
+    waypoints    = track.route,
     nextWp       = armedWp,
-    width        = checkpointWidth,
-    height       = checkpointHeight,
-    depth        = checkpointDepth,
+    width        = track.checkpointWidth,
+    height       = track.checkpointHeight,
+    depth        = track.checkpointDepth,
     visualize    = visualize,
     -- Starting grid
-    startPositions = startPositions,
-    pointToPoint   = pointToPoint,
+    startPositions = track.startPositions,
+    pointToPoint   = track.pointToPoint,
     gridSlot       = gridSlot,
     gridFrozen     = gridFrozen,
     -- Admin session, so a freshly mounted UI app knows straight away that this
     -- client is still logged in (see the isAdmin declaration above).
     isAdmin      = isAdmin,
     -- Joker route (Module 2)
-    pitRoute     = pitRoute,
+    pitRoute     = track.pitRoute,
     pitActive    = pit.active,
     pitLeft      = pit.left,
-    jokerRoute   = jokerRoute,
+    jokerRoute   = track.jokerRoute,
     jokerNext    = jokerArmed,
     jokerTaken   = jokerTaken,
     jokerLap     = jokerLapUsed,
@@ -1456,7 +1486,7 @@ local function resetLapTracking()
     -- so nothing can be crossed or scored from the grid.
     armedWp = 1
   else
-    armedWp = math.max(#route, 1)
+    armedWp = math.max(#track.route, 1)
   end
   pushRouteState()
 end
@@ -1469,12 +1499,12 @@ end
 -- server broadcasts RM_ClearTrack, so ghost checkpoints from an earlier
 -- session cannot survive.
 local function clearTrackState(reason)
-  route        = {}
-  jokerRoute   = {}
+  track.route        = {}
+  track.jokerRoute   = {}
   -- The pit lane goes too. Stalls used to survive a purge, stay standing on the
   -- next track, and ride along into the next save.
-  pitRoute     = {}
-  startPositions = {}
+  track.pitRoute     = {}
+  track.startPositions = {}
   gridSlot     = nil
   armedWp      = 1
   jokerArmed   = 1
@@ -1602,9 +1632,9 @@ end
 --   * Once per race - a completed joker route is reported exactly once; every
 --     later run is ignored and flagged to the driver.
 local function checkJokerGates(prev, cur)
-  if not jokerEnabled or #jokerRoute == 0 then return end
+  if not jokerEnabled or #track.jokerRoute == 0 then return end
   if phase ~= 'racing' then return end
-  local wp = jokerRoute[jokerArmed]
+  local wp = track.jokerRoute[jokerArmed]
   if not wp or not segmentCrossesGate(wp, prev, cur) then return end
 
   if localLap <= 1 then
@@ -1624,7 +1654,7 @@ local function checkJokerGates(prev, cur)
     return
   end
 
-  if jokerArmed >= #jokerRoute then
+  if jokerArmed >= #track.jokerRoute then
     jokerTaken   = true
     jokerLapUsed = localLap
     jokerArmed   = 1
@@ -1667,10 +1697,10 @@ end
 --     grid at eight metres a row is under 250m, so beyond that it is not a grid
 --     stretching back from the line, it is a grid somewhere else on the circuit.
 function branch.gridIsOff()
-  local sf = route[#route]
-  if not sf or #startPositions == 0 then return false end
+  local sf = track.route[#track.route]
+  if not sf or #track.startPositions == 0 then return false end
   local r2 = TUNE.GRID_ON_LINE_RANGE * TUNE.GRID_ON_LINE_RANGE
-  for _, sp in ipairs(startPositions) do
+  for _, sp in ipairs(track.startPositions) do
     if (sp.hx or 0) * (sf.hx or 0) + (sp.hy or 1) * (sf.hy or 1) < 0 then return true end
     local dx, dy = sp.x - sf.x, sp.y - sf.y
     if dx * dx + dy * dy > r2 then return true end
@@ -1679,7 +1709,7 @@ function branch.gridIsOff()
 end
 
 function branch.crossedAt(i, p0, p1)
-  local wp = route[i]
+  local wp = track.route[i]
   if wp then
     local crossed, backwards = segmentCrossesGate(wp, p0, p1)
     if crossed then return wp, backwards end
@@ -1699,7 +1729,7 @@ end
 -- by the distance to a gate half of them are driving AWAY from would put one
 -- whole direction last all race.
 function branch.nearestAt(i, pos)
-  local best = route[i]
+  local best = track.route[i]
   local alts = branch.bySlot[i]
   if not alts then return best end
   local bd = math.huge
@@ -1720,7 +1750,7 @@ end
 -- gates. Takes a callback rather than returning a list because the drawing pass
 -- calls it every frame and a list would be an allocation per gate per frame.
 function branch.eachAt(i, fn, arg)
-  local wp = route[i]
+  local wp = track.route[i]
   if wp then fn(wp, arg) end
   local alts = branch.bySlot[i]
   if alts then
@@ -1730,7 +1760,7 @@ end
 
 local function checkGates()
   if spectatorLock then return end     -- out of the session: no more timing
-  if #route == 0 and #jokerRoute == 0 then return end
+  if #track.route == 0 and #track.jokerRoute == 0 then return end
   if phase ~= 'qualifying' and phase ~= 'racing' then return end
   local veh, pos = sampledVehicle()
   if not veh or not pos then return end
@@ -1759,8 +1789,8 @@ local function checkGates()
     -- even with slots still uncleared. Nothing on this lap is scored, so there is
     -- nothing to protect by making them go back for a gate.
     local lineEndedOutLap = false
-    if onOut and not crossed and armedWp < #route then
-      local line = route[#route]
+    if onOut and not crossed and armedWp < #track.route then
+      local line = track.route[#track.route]
       if line then
         crossed, backwards = segmentCrossesGate(line, prevPos, pos)
         if crossed then wp, lineEndedOutLap = line, true end
@@ -1777,7 +1807,7 @@ local function checkGates()
         -- it always has for qualifying.
         onLapCompleted()
         armedWp = 1
-      elseif armedWp >= #route then
+      elseif armedWp >= #track.route then
         onLapCompleted()
         armedWp = 1
       else
@@ -1864,7 +1894,7 @@ local function whiteFlagWatch()
   if phase ~= 'racing' or spectatorLock then return end
   -- Driving at the start/finish line specifically. The last checkpoint IS the
   -- line, so any other armed gate means this driver is still out on the lap.
-  if armedWp ~= #route or #route == 0 then return end
+  if armedWp ~= #track.route or #track.route == 0 then return end
 
   -- WHICH FLAG IS ON THIS APPROACH, if either.
   --
@@ -1876,7 +1906,7 @@ local function whiteFlagWatch()
   -- A sprint stage has no white flag (there is no earlier lap to be waved at
   -- on) but very much has a finish, so point-to-point only rules out the first.
   local which, latch
-  if pointToPoint then
+  if track.pointToPoint then
     -- A SPRINT IS DRIVEN ONCE. Its last gate is a finish rather than a line you
     -- come back round to, so the only approach there is is the one to it -- and
     -- the lap counter never reaches a lap TARGET to compare against, which is
@@ -1893,7 +1923,7 @@ local function whiteFlagWatch()
 
   local _, pos = sampledVehicle()
   if not pos then return end
-  local wp = route[#route]
+  local wp = track.route[#track.route]
   if not wp then return end
   local dx, dy, dz = pos.x - wp.x, pos.y - wp.y, pos.z - wp.z
   -- Squared, so the per-frame path never takes a square root.
@@ -1915,7 +1945,7 @@ end
 
 local function reportProgress(dt)
   if not sessionRunning() or spectatorLock then return end
-  if #route == 0 then return end
+  if #track.route == 0 then return end
 
   progressLeft = progressLeft - dt
   if progressLeft > 0 then return end
@@ -1927,7 +1957,7 @@ local function reportProgress(dt)
   -- The gate THIS car is driving towards. A checkpoint with a branch gate has
   -- more than one, and which of them is nearest is the only honest answer to
   -- that: it needs the car's position, so it is resolved here rather than above.
-  local wp = onOutLap() and route[#route] or branch.nearestAt(armedWp, pos)
+  local wp = onOutLap() and track.route[#track.route] or branch.nearestAt(armedWp, pos)
   if not wp then return end
 
   -- Distance from the car to the centre of the next checkpoint, in metres.
@@ -2273,8 +2303,8 @@ local function respawnRemovedVehicle()
   -- their slot, then any placed slot, then the snapshot. Sharing someone else's
   -- slot for a moment is harmless while the ghosting holds.
   local slot = snap.slot or gridSlot
-  local sp = slot and startPositions[slot]
-  if not (type(sp) == 'table' and sp.x) then sp = startPositions[1] end
+  local sp = slot and track.startPositions[slot]
+  if not (type(sp) == 'table' and sp.x) then sp = track.startPositions[1] end
   if type(sp) == 'table' and sp.x and sp.y and sp.z then
     opts.pos = vec3(sp.x, sp.y, sp.z)
     opts.rot = nil          -- set below, by the call that knows the convention
@@ -2285,7 +2315,7 @@ local function respawnRemovedVehicle()
     -- is the position this took two rounds to get out of.
     log('W', 'raceManager', 'Respawning where the car was removed: no start '
       .. 'position to use (slot=' .. tostring(slot) .. ', grid has '
-      .. tostring(#startPositions) .. ' placed)')
+      .. tostring(#track.startPositions) .. ' placed)')
   end
   local spawned = false
   if core_vehicles and core_vehicles.spawnNewVehicle then
@@ -2641,7 +2671,7 @@ local function releaseSpectator(source, order, count)
   if removedVehicle then
     local slot = nil
     if source ~= 'derby' then
-      slot = removedVehicle.slot or gridSlot or (startPositions[1] and 1 or nil)
+      slot = removedVehicle.slot or gridSlot or (track.startPositions[1] and 1 or nil)
     end
     if queueFieldPlacement then
       queueFieldPlacement({ respawn = true, slot = slot, order = order, count = count })
@@ -3007,7 +3037,7 @@ function pit.update(dt)
 
   if pit.promptLeft > 0 then pit.promptLeft = pit.promptLeft - dt end
 
-  if #pitRoute == 0 then return end
+  if #track.pitRoute == 0 then return end
   if not sessionRunning() or spectatorLock or gridFrozen then return end
   local veh, pos = sampledVehicle()
   if not veh or not pos then return end
@@ -3017,7 +3047,7 @@ function pit.update(dt)
   -- what makes the next entry a fresh visit, and a driver who has left and come
   -- back has done the thing a stop asks for.
   local inStall = nil
-  for i, wp in ipairs(pitRoute) do
+  for i, wp in ipairs(track.pitRoute) do
     if pit.inside(wp, pos) then inStall = i; break end
   end
   if not inStall then
@@ -3087,7 +3117,7 @@ function pit.update(dt)
   -- Noted as our own teleport first. Without that the reset hook this provokes
   -- is read as a driver reset and spends an allowance nobody used, which is the
   -- bug the grid placement already had once.
-  local stallWp = pitRoute[inStall]
+  local stallWp = track.pitRoute[inStall]
   if stallWp then
     local wp = stallWp
     -- The car's OWN height, not a ground probe. It is stopped in the stall, so
@@ -3940,7 +3970,7 @@ local field = {
 -- placing a car is the part that has to be staggered and ghosted.
 local function placeOnAssignedSlot()
   local slot = field.slot
-  local list = field.slots or startPositions
+  local list = field.slots or track.startPositions
   local sp = slot and list[slot]
   -- Same fallback as the respawn above, and for the same reason: any placed slot
   -- is a better place to stand than wherever the car happened to appear.
@@ -5322,7 +5352,7 @@ local function drawStartPosition(sp, index, mine)
 end
 
 local function drawStartPositions()
-  if #startPositions == 0 or not debugDrawer then return end
+  if #track.startPositions == 0 or not debugDrawer then return end
   -- Editor-only furniture. These markers exist to lay out and check a grid, so
   -- they are drawn only while the editor panel is open -- they used to render
   -- for every racer, including drivers who can't edit anything. This is purely
@@ -5332,7 +5362,7 @@ local function drawStartPositions()
   if not editorOpen then return end
   -- Inside the editor, the same Hide/Show Gates toggle the checkpoints use.
   if not visualize then return end
-  for i, sp in ipairs(startPositions) do
+  for i, sp in ipairs(track.startPositions) do
     drawStartPosition(sp, i, gridSlot == i)
   end
 end
@@ -5352,14 +5382,14 @@ end
 local labelCache = { routeLen = -1, jokerLen = -1, route = {}, joker = {} }
 
 local function routeLabel(i, n)
-  if labelCache.routeLen ~= n or labelCache.p2p ~= pointToPoint then
+  if labelCache.routeLen ~= n or labelCache.p2p ~= track.pointToPoint then
     labelCache.routeLen = n
-    labelCache.p2p = pointToPoint
+    labelCache.p2p = track.pointToPoint
     labelCache.route = {}
   end
   local l = labelCache.route[i]
   if not l then
-    if pointToPoint then
+    if track.pointToPoint then
       -- A sprint stage has a start and a finish, not a line crossed twice.
       l = (i == n) and (i .. ' FINISH') or (i == 1 and '1 START' or ('CP ' .. i))
     else
@@ -5702,14 +5732,14 @@ end
 local function drawDriverGate(derbyLive)
   if not debugDrawer or not visualize then return end
   if derbyLive or spectatorLock then return end
-  if #route == 0 then return end
+  if #track.route == 0 then return end
   -- EVERY PHASE, not just a running session. A driver who loads a track and
   -- looks at it wants to see where the gates are as much as one racing through
   -- them, and the joker LABEL is drawn on those terms already, so gating the
   -- poles on the phase left a label floating over an invisible gate until the
   -- lights went out. The stock markers this replaced had no phase gate either.
   local p = palette()
-  local n = #route
+  local n = #track.route
 
   -- NO TEXT ON ANY GATE, INCLUDING THE JOKER. The poles say where a gate is and
   -- the colour says which one is next; a driver reading "CP 3" at speed learns
@@ -5748,7 +5778,7 @@ local function drawDriverGate(derbyLive)
   --
   -- Only the wrap is suppressed. Everywhere else on the last lap the look-ahead
   -- is as useful as it is on any other, so `a == n` is the whole condition.
-  local lastLap = phase == 'racing' and not pointToPoint
+  local lastLap = phase == 'racing' and not track.pointToPoint
     and totalLaps > 0 and localLap >= totalLaps
   if n > 1 and not (lastLap and a == n) then
     branch.eachAt(a % n + 1, poles, p.routeNext or p.route)
@@ -5774,10 +5804,10 @@ local function drawDriverGate(derbyLive)
   -- they have always had. They used to be the stock markers' job (slots 3 and 4)
   -- and are drawn here now so a track has ONE checkpoint visual rather than two
   -- that do not match.
-  if jokerEnabled and #jokerRoute > 0 then
+  if jokerEnabled and #track.jokerRoute > 0 then
     local j = jokerArmed
-    if j < 1 or j > #jokerRoute then j = 1 end
-    local wp = jokerRoute[j]
+    if j < 1 or j > #track.jokerRoute then j = 1 end
+    local wp = track.jokerRoute[j]
     if wp then
       local state = jokerTaken and 'used'
         or ((sessionRunning() and localLap <= 1) and 'closed' or 'open')
@@ -5793,11 +5823,11 @@ local function drawDriverGate(derbyLive)
         jokerTaken and p.jokerUsedFill or p.jokerFill, glyph)
     end
   end
-  if #pitRoute > 0 then
+  if #track.pitRoute > 0 then
     local _, ppos = sampledVehicle()
     local best, bestD = 1, math.huge
     if ppos then
-      for i, wp in ipairs(pitRoute) do
+      for i, wp in ipairs(track.pitRoute) do
         local dx, dy = wp.x - ppos.x, wp.y - ppos.y
         local d = dx * dx + dy * dy
         if d < bestD then best, bestD = i, d end
@@ -5806,7 +5836,7 @@ local function drawDriverGate(derbyLive)
     -- Amber, and unlabelled like the rest: a pit stall is somewhere you either
     -- meant to go or did not. Drawn as the BOX pit.inside actually tests, so
     -- "come to a stop inside the box" refers to something the driver can see.
-    if pitRoute[best] then paint.pitBox(pitRoute[best], p.pit) end
+    if track.pitRoute[best] then paint.pitBox(track.pitRoute[best], p.pit) end
   end
 end
 
@@ -5834,8 +5864,8 @@ local function drawGates(derbyLive)
   local active = sessionRunning() or phase == 'countdown' or phase == 'grid'
   local p = palette()
 
-  local n = #route
-  for i, wp in ipairs(route) do
+  local n = #track.route
+  for i, wp in ipairs(track.route) do
     local color
     if i == n then
       color = p.finish
@@ -5849,7 +5879,7 @@ local function drawGates(derbyLive)
     local label = routeLabel(i, n)
     local alts = branch.bySlot[i]
     if alts and #alts > 0 then label = label .. ' (+' .. #alts .. ')' end
-    if nudgeSelected(route, i) then color = p.nudged end
+    if nudgeSelected(track.route, i) then color = p.nudged end
     drawGate(wp, color, label, authoring)
   end
 
@@ -5882,8 +5912,8 @@ local function drawGates(derbyLive)
       p.text, true, false, p.textBg)
   end
 
-  for i, wp in ipairs(pitRoute) do
-    local col = nudgeSelected(pitRoute, i) and p.nudged or p.pit
+  for i, wp in ipairs(track.pitRoute) do
+    local col = nudgeSelected(track.pitRoute, i) and p.nudged or p.pit
     -- THE BOX, AND ONLY THE BOX.
     --
     -- This used to draw the footprint and then a full-height gate on top of it,
@@ -5904,10 +5934,10 @@ local function drawGates(derbyLive)
   -- Joker route: violet, so it never reads as part of the main lap. The next
   -- joker gate lights up green like the main route, and the whole set greys out
   -- once the joker has been used (or while it is still forbidden on lap 1).
-  local jn = #jokerRoute
+  local jn = #track.jokerRoute
   local state = jokerTaken and 'used'
     or ((active and localLap <= 1) and 'closed' or 'open')
-  for i, wp in ipairs(jokerRoute) do
+  for i, wp in ipairs(track.jokerRoute) do
     local color
     if jokerTaken then
       color = p.jokerUsed
@@ -5916,7 +5946,7 @@ local function drawGates(derbyLive)
     else
       color = p.joker
     end
-    if nudgeSelected(jokerRoute, i) then color = p.nudged end
+    if nudgeSelected(track.jokerRoute, i) then color = p.nudged end
     drawGate(wp, color, jokerLabel(i, jn, state), authoring)
   end
 end
@@ -5953,7 +5983,7 @@ derby.init({
   maxResets = function () return maxResets end,
   -- Tables, by reference, so both halves see the same object.
   spectate = spectate,
-  startPositions = startPositions,
+  startPositions = track.startPositions,
   -- The derby reset allowance is genuinely shared: the reset code above
   -- polices race and derby resets through one path, so it reads what the
   -- module writes. One table rather than three variables and a copy.
@@ -6087,13 +6117,13 @@ end
 -- server's and a sprint stage is one traversal by definition -- leaving an
 -- admin to also remember "and set laps to 1" is the workaround this replaces.
 function M.setPointToPoint(on)
-  pointToPoint = on == true
+  track.pointToPoint = on == true
   labelCache.route = {}          -- the gate labels say which mode this is
   if inMultiplayer() then
-    TriggerServerEvent('RM_SetPointToPoint', jsonEncode({ enabled = pointToPoint }))
+    TriggerServerEvent('RM_SetPointToPoint', jsonEncode({ enabled = track.pointToPoint }))
   end
   pushRouteState()
-  log('I', 'raceManager', 'Track mode: ' .. (pointToPoint and 'POINT TO POINT' or 'circuit'))
+  log('I', 'raceManager', 'Track mode: ' .. (track.pointToPoint and 'POINT TO POINT' or 'circuit'))
 end
 
 function M.setEditorTarget(target)
@@ -6106,12 +6136,12 @@ function M.setEditorTarget(target)
 end
 
 local function activeEditorRoute()
-  if editorTarget == 'joker' then return jokerRoute end
-  if editorTarget == 'pit'   then return pitRoute end
-  if editorTarget == 'start' then return startPositions end
+  if editorTarget == 'joker' then return track.jokerRoute end
+  if editorTarget == 'pit'   then return track.pitRoute end
+  if editorTarget == 'start' then return track.startPositions end
   if editorTarget == 'branch' then return branch.list end
   if editorTarget == 'marker' then return marker.list end
-  return route
+  return track.route
 end
 
 -- Nudge mode's behaviour. The table itself is declared at the top of the file,
@@ -6648,17 +6678,17 @@ end
 -- The lowest checkpoint with no branch gate yet, so placing a full mirror lap is
 -- drive-and-click without touching the checkpoint picker once.
 function branch.nextFreeSlot()
-  for i = 1, math.max(#route, 1) do
+  for i = 1, math.max(#track.route, 1) do
     if not branch.bySlot[i] then return i end
   end
-  return math.max(#route, 1)
+  return math.max(#track.route, 1)
 end
 
 -- Which checkpoint the next placed branch gate belongs to.
 function M.setBranchSlot(slot)
   slot = math.floor(tonumber(slot) or 1)
   if slot < 1 then slot = 1 end
-  if #route > 0 and slot > #route then slot = #route end
+  if #track.route > 0 and slot > #track.route then slot = #track.route end
   branch.editSlot = slot
   pushRouteState()
 end
@@ -6671,7 +6701,7 @@ function M.setBranchGateSlot(index, slot)
   if not g then return end
   slot = math.floor(tonumber(slot) or 1)
   if slot < 1 then slot = 1 end
-  if #route > 0 and slot > #route then slot = #route end
+  if #track.route > 0 and slot > #track.route then slot = #track.route end
   g.slot = slot
   branch.rebuild()
   pushRouteState()
@@ -6710,9 +6740,9 @@ function M.editorAdd(place)
   local target = activeEditorRoute()
   if editorTarget ~= 'start' then
     local prev = target[#target]
-    place.width  = clampWidth(prev and prev.width  or checkpointWidth)
-    place.height = clampHeight(prev and prev.height or checkpointHeight)
-    place.depth  = clampDepth(prev and prev.depth  or checkpointDepth)
+    place.width  = clampWidth(prev and prev.width  or track.checkpointWidth)
+    place.height = clampHeight(prev and prev.height or track.checkpointHeight)
+    place.depth  = clampDepth(prev and prev.depth  or track.checkpointDepth)
   end
   -- A branch gate is placed AGAINST A CHECKPOINT: it is not a new checkpoint, it
   -- is the other way of taking one that already exists. Placing it is what makes
@@ -6723,13 +6753,13 @@ function M.editorAdd(place)
   -- many ways through it as an admin cares to place, and "move the existing one"
   -- would make three ways through a corner impossible. Move is Nudge, or Move Here.
   if editorTarget == 'branch' then
-    if #route == 0 then
+    if #track.route == 0 then
       guihooks.trigger('RaceManagerEditorMsg', { msg = 'Place the main route first' })
       return
     end
     local slot = math.floor(branch.editSlot or 1)
     if slot < 1 then slot = 1 end
-    if slot > #route then slot = #route end
+    if slot > #track.route then slot = #track.route end
     place.slot = slot
     branch.list[#branch.list + 1] = place
     branch.rebuild()
@@ -6781,9 +6811,9 @@ function M.editorUndo()
   if #target > 0 then
     target[#target] = nil
     if editorTarget == 'joker' then
-      if jokerArmed > #jokerRoute then jokerArmed = math.max(#jokerRoute, 1) end
-    elseif editorTarget == 'main' and armedWp > #route then
-      armedWp = math.max(#route, 1)
+      if jokerArmed > #track.jokerRoute then jokerArmed = math.max(#track.jokerRoute, 1) end
+    elseif editorTarget == 'main' and armedWp > #track.route then
+      armedWp = math.max(#track.route, 1)
     elseif editorTarget == 'branch' then
       branch.rebuild()
       branch.editSlot = branch.nextFreeSlot()
@@ -6795,7 +6825,7 @@ end
 function M.editorClear()
   -- Clearing the joker route or the grid on its own must not wipe the main lap.
   if editorTarget == 'pit' then
-    pitRoute = {}
+    track.pitRoute = {}
     pushRouteState()
     log('I', 'raceManager', 'Pit stalls cleared')
     return
@@ -6810,7 +6840,7 @@ function M.editorClear()
     return
   end
   if editorTarget == 'joker' then
-    jokerRoute   = {}
+    track.jokerRoute   = {}
     jokerArmed   = 1
     jokerTaken   = false
     jokerLapUsed = nil
@@ -6819,7 +6849,7 @@ function M.editorClear()
     return
   end
   if editorTarget == 'start' then
-    startPositions = {}
+    track.startPositions = {}
     gridSlot = nil
     branch.gridTool.generated = false
     pushRouteState()
@@ -6844,7 +6874,7 @@ end
 -- drop it and let the rest of the grid close up.
 function M.moveStartPosition(index)
   index = math.floor(tonumber(index) or 0)
-  if not startPositions[index] then
+  if not track.startPositions[index] then
     log('W', 'raceManager', 'moveStartPosition: no start position at ' .. tostring(index))
     return
   end
@@ -6853,7 +6883,7 @@ function M.moveStartPosition(index)
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
     return
   end
-  startPositions[index] = place
+  track.startPositions[index] = place
   -- Hand-placed now, so the sliders let go of it: they own a block of slots by
   -- count, and a slot moved by hand is no longer where that count says it is.
   branch.gridTool.generated = false
@@ -6863,9 +6893,9 @@ end
 
 function M.removeStartPosition(index)
   index = math.floor(tonumber(index) or 0)
-  if not startPositions[index] then return end
-  table.remove(startPositions, index)
-  if gridSlot and gridSlot > #startPositions then gridSlot = nil end
+  if not track.startPositions[index] then return end
+  table.remove(track.startPositions, index)
+  if gridSlot and gridSlot > #track.startPositions then gridSlot = nil end
   branch.gridTool.generated = false
   pushRouteState()
 end
@@ -6874,7 +6904,7 @@ end
 -- without starting a race. Never freezes - this is an editor convenience.
 function M.previewStartPosition(index)
   index = math.floor(tonumber(index) or 0)
-  local sp = startPositions[index]
+  local sp = track.startPositions[index]
   if not sp then return end
   if not placeOnStartPosition(sp) then
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Could not move the vehicle' })
@@ -6970,9 +7000,9 @@ function M.removeCheckpoint(index)
           .. ' branch gate(s) on that slot dropped with it',
       })
     end
-    if armedWp > #route then armedWp = math.max(#route, 1) end
+    if armedWp > #track.route then armedWp = math.max(#track.route, 1) end
   elseif editorTarget == 'joker' then
-    if jokerArmed > #jokerRoute then jokerArmed = math.max(#jokerRoute, 1) end
+    if jokerArmed > #track.jokerRoute then jokerArmed = math.max(#track.jokerRoute, 1) end
   elseif editorTarget == 'branch' then
     branch.rebuild()
     branch.editSlot = branch.nextFreeSlot()
@@ -6996,9 +7026,9 @@ function M.insertCheckpoint(index, place)
   end
   if editorTarget ~= 'start' then
     local prev = list[index] or list[#list]
-    place.width  = clampWidth(prev and prev.width  or checkpointWidth)
-    place.height = clampHeight(prev and prev.height or checkpointHeight)
-    place.depth  = clampDepth(prev and prev.depth  or checkpointDepth)
+    place.width  = clampWidth(prev and prev.width  or track.checkpointWidth)
+    place.height = clampHeight(prev and prev.height or track.checkpointHeight)
+    place.depth  = clampDepth(prev and prev.depth  or track.checkpointDepth)
   end
   if editorTarget == 'branch' then
     guihooks.trigger('RaceManagerEditorMsg', {
@@ -7080,7 +7110,7 @@ function branch.layOutGrid(anchor, count, spacing, stagger, width, replace)
   width = math.floor(tonumber(width) or 2)
   if width < 1 then width = 1 end
   if width > TUNE.GRID_MAX_WIDTH then width = TUNE.GRID_MAX_WIDTH end
-  if replace then startPositions = {} end
+  if replace then track.startPositions = {} end
   local mid = (width - 1) * 0.5
   -- EVERY SLOT FINDS ITS OWN GROUND.
   --
@@ -7107,7 +7137,7 @@ function branch.layOutGrid(anchor, count, spacing, stagger, width, replace)
     -- has no height yet. A probe that starts fifty metres above the anchor still
     -- clears anything the grid is being laid across.
     local g = groundAt(x, y, anchor.z)
-    startPositions[#startPositions + 1] = {
+    track.startPositions[#track.startPositions + 1] = {
       x  = x,
       y  = y,
       z  = g and (g + lift) or anchor.z,
@@ -7143,11 +7173,11 @@ function M.generateStartPositions(count, spacing, stagger, from, width)
 
   local anchor, replace
   local slot = math.floor(tonumber(from) or 0)
-  if startPositions[slot] then
+  if track.startPositions[slot] then
     -- Rebuild the grid from an existing slot, keeping everything before it.
-    local sp = startPositions[slot]
+    local sp = track.startPositions[slot]
     anchor = { x = sp.x, y = sp.y, z = sp.z, hx = sp.hx, hy = sp.hy }
-    for i = #startPositions, slot, -1 do table.remove(startPositions, i) end
+    for i = #track.startPositions, slot, -1 do table.remove(track.startPositions, i) end
     replace = false
   else
     anchor = vehiclePlacement()
@@ -7194,7 +7224,7 @@ function M.respaceGrid(spacing, stagger, width)
   if width > TUNE.GRID_MAX_WIDTH then width = TUNE.GRID_MAX_WIDTH end
   -- The slots this generator owns are the last `count` of them; anything placed
   -- before the generate stays exactly where the creator put it.
-  local keep = #startPositions - branch.gridTool.count
+  local keep = #track.startPositions - branch.gridTool.count
   if keep < 0 then keep = 0 end
   -- HEADINGS SURVIVE THE MOVE. A heading belongs to the slot, and respacing moves
   -- slots rather than replacing them.
@@ -7206,15 +7236,15 @@ function M.respaceGrid(spacing, stagger, width)
   -- slider would silently un-turn half the field and the two directions would
   -- set off together.
   local held = {}
-  for i = keep + 1, #startPositions do
-    local sp = startPositions[i]
+  for i = keep + 1, #track.startPositions do
+    local sp = track.startPositions[i]
     held[i - keep] = sp and { hx = sp.hx, hy = sp.hy } or nil
   end
-  for i = #startPositions, keep + 1, -1 do table.remove(startPositions, i) end
+  for i = #track.startPositions, keep + 1, -1 do table.remove(track.startPositions, i) end
   branch.layOutGrid(branch.gridTool.anchor, branch.gridTool.count,
     spacing, stagger, width, false)
   for i = 1, branch.gridTool.count do
-    local sp, was = startPositions[keep + i], held[i]
+    local sp, was = track.startPositions[keep + i], held[i]
     if sp and was and was.hx and was.hy then sp.hx, sp.hy = was.hx, was.hy end
   end
   -- Changing the width re-flows the SAME slots into different rows -- slot 5 of a
@@ -7232,12 +7262,12 @@ end
 -- head-on grid without driving the second half of it.
 function M.flipStartPositions(from, to)
   from = math.floor(tonumber(from) or 1)
-  to   = math.floor(tonumber(to) or #startPositions)
+  to   = math.floor(tonumber(to) or #track.startPositions)
   if from < 1 then from = 1 end
-  if to > #startPositions then to = #startPositions end
+  if to > #track.startPositions then to = #track.startPositions end
   local n = 0
   for i = from, to do
-    local sp = startPositions[i]
+    local sp = track.startPositions[i]
     if sp then
       sp.hx, sp.hy = -(sp.hx or 0), -(sp.hy or 1)
       n = n + 1
@@ -7258,17 +7288,17 @@ end
 -- with Flip and the field is split.
 
 function M.setCheckpointWidth(w)
-  checkpointWidth = clampWidth(w)
+  track.checkpointWidth = clampWidth(w)
   pushRouteState()
 end
 
 function M.setCheckpointHeight(h)
-  checkpointHeight = clampHeight(h)
+  track.checkpointHeight = clampHeight(h)
   pushRouteState()
 end
 
 function M.setCheckpointDepth(d)
-  checkpointDepth = clampDepth(d)
+  track.checkpointDepth = clampDepth(d)
   pushRouteState()
 end
 
@@ -7296,7 +7326,7 @@ function M.setCheckpointOverride(index, w, h, d)
   -- and substitutes the session default. So a depth of 0 could not be set at
   -- all. Only nil and a non-number mean inherit here.
   local dv = tonumber(d)
-  wp.depth = dv and clampDepth(dv) or clampDepth(checkpointDepth)
+  wp.depth = dv and clampDepth(dv) or clampDepth(track.checkpointDepth)
   pushRouteState()
 end
 
@@ -7440,13 +7470,13 @@ end
 -- RM_SaveHeld. See the silent-drop guard there.
 function M.saveLayout(name, confirmDrop)
   name = tostring(name or ''):gsub('^%s+', ''):gsub('%s+$', '')
-  print('[raceManager] saveLayout("' .. name .. '") with ' .. #route .. ' checkpoint(s)')
+  print('[raceManager] saveLayout("' .. name .. '") with ' .. #track.route .. ' checkpoint(s)')
   if name == '' then
     log('W', 'raceManager', 'saveLayout: no layout name given, nothing sent')
     editorMsg('Enter a layout name first')
     return
   end
-  if #route == 0 then
+  if #track.route == 0 then
     log('W', 'raceManager', 'saveLayout: no checkpoints placed, nothing sent')
     editorMsg('Place checkpoints before saving a layout')
     return
@@ -7483,20 +7513,20 @@ function M.saveLayout(name, confirmDrop)
     end
     return out
   end
-  local cps = bundle(route, 'route')
+  local cps = bundle(track.route, 'route')
   if not cps then return end
   -- The joker route rides along with the layout so a rallycross track is a
   -- single saved object. Omitted entirely when no joker gates are placed.
   local jokerCps = nil
-  if #jokerRoute > 0 then
-    jokerCps = bundle(jokerRoute, 'joker')
+  if #track.jokerRoute > 0 then
+    jokerCps = bundle(track.jokerRoute, 'joker')
     if not jokerCps then return end
   end
   -- The starting grid travels with the layout too: a track is its gates AND
   -- where the cars line up.
   local starts = nil
-  if #startPositions > 0 then
-    starts = bundle(startPositions, 'start position')
+  if #track.startPositions > 0 then
+    starts = bundle(track.startPositions, 'start position')
     if not starts then return end
   end
   -- The branch gates travel with the layout, like the joker route and the grid: a
@@ -7528,9 +7558,9 @@ function M.saveLayout(name, confirmDrop)
   end
   local payload = jsonEncode({
     name        = name,
-    width       = clampWidth(checkpointWidth),
-    height      = clampHeight(checkpointHeight),
-    depth       = clampDepth(checkpointDepth),
+    width       = clampWidth(track.checkpointWidth),
+    height      = clampHeight(track.checkpointHeight),
+    depth       = clampDepth(track.checkpointDepth),
     checkpoints = cps,
     joker       = jokerCps,
     startPositions = starts,
@@ -7541,7 +7571,7 @@ function M.saveLayout(name, confirmDrop)
     -- forget. A head-on layout always trips it, because two directions cannot
     -- share one row of slots.
     gridOffLine    = branch.gridIsOff(),
-    pits           = bundle(pitRoute, 'pit stall') or {},
+    pits           = bundle(track.pitRoute, 'pit stall') or {},
     -- Signage rides with the track it points around. A stage without its
     -- markers is a stage nobody can follow, so they are part of the layout
     -- rather than something placed again every session.
@@ -7549,7 +7579,7 @@ function M.saveLayout(name, confirmDrop)
     -- Whether this track is a sprint stage or a circuit is a property of the
     -- TRACK, so it is stored with it. An admin who built a point-to-point stage
     -- should not have to remember to set it again every race night.
-    pointToPoint   = pointToPoint,
+    pointToPoint   = track.pointToPoint,
     confirmDrop    = confirmDrop == true,
   })
   print('[raceManager] saveLayout: sending RM_SaveLayout (' .. #payload .. ' bytes) to server')
@@ -7606,7 +7636,7 @@ end
 function M.setFinishLine(x, y, z, hx, hy)
   local len = math.sqrt((hx or 0) ^ 2 + (hy or 0) ^ 2)
   if len > 1e-4 then hx, hy = hx / len, hy / len else hx, hy = 0, 1 end
-  route = { { x = x, y = y, z = z, hx = hx, hy = hy } }
+  track.route = { { x = x, y = y, z = z, hx = hx, hy = hy } }
   armedWp = 1
   pushRouteState()
 end
@@ -7727,7 +7757,7 @@ local function onServerUpdate(rawData)
     pushNotice('session', 'TIME EXPIRED: FINAL LAP. Your session ends as you cross the line.')
   end
   -- Race entry + qualifying rules.
-  if type(data.pointToPoint) == 'boolean' then pointToPoint = data.pointToPoint end
+  if type(data.pointToPoint) == 'boolean' then track.pointToPoint = data.pointToPoint end
   ghostQuali = data.ghostQuali == true
   qualiOutLap = data.qualiOutLap == true
   if type(data.qualiLapLimit)  == 'number' then qualiLapLimit  = data.qualiLapLimit  end
@@ -8119,7 +8149,7 @@ local function onApplyLayout(rawData)
       -- given the layout's stored default here, so it keeps exactly the size it
       -- was drawn with and never depends on a live setting again.
       if what ~= 'start position' then
-        out[i].width = clampWidth(tonumber(cp.width) or data.width or checkpointWidth)
+        out[i].width = clampWidth(tonumber(cp.width) or data.width or track.checkpointWidth)
         local h = tonumber(cp.height) or data.height
         local d = tonumber(cp.depth)  or data.depth
         if d == nil and h ~= nil then
@@ -8131,8 +8161,8 @@ local function onApplyLayout(rawData)
           out[i].height = clampHeight(h * 0.5)
           out[i].depth  = clampDepth(h * 0.5)
         else
-          out[i].height = clampHeight(h or checkpointHeight)
-          out[i].depth  = clampDepth(d or checkpointDepth)
+          out[i].height = clampHeight(h or track.checkpointHeight)
+          out[i].depth  = clampDepth(d or track.checkpointDepth)
         end
       end
     end
@@ -8184,8 +8214,8 @@ local function onApplyLayout(rawData)
         local gate = {
           slot = slot, x = x, y = y, z = z,
           hx = tonumber(g.hx) or 0, hy = tonumber(g.hy) or 1,
-          width  = clampWidth(tonumber(g.width) or data.width or checkpointWidth),
-          height = clampHeight(tonumber(g.height) or data.height or checkpointHeight),
+          width  = clampWidth(tonumber(g.width) or data.width or track.checkpointWidth),
+          height = clampHeight(tonumber(g.height) or data.height or track.checkpointHeight),
           depth  = clampDepth(tonumber(g.depth) or data.depth
             or ((tonumber(g.height) or data.height or 0) * 0.5)),
         }
@@ -8219,27 +8249,27 @@ local function onApplyLayout(rawData)
   end
 
   clearTrackState('applying layout "' .. tostring(data.name) .. '"')
-  route      = cps
-  jokerRoute = jokerCps
-  pitRoute   = pits
+  track.route      = cps
+  track.jokerRoute = jokerCps
+  track.pitRoute   = pits
   marker.list = marks
-  startPositions = starts
+  track.startPositions = starts
   branch.list   = alts
   branch.bySlot = bySlot
   branch.gridOffLine = data.gridOffLine == true
-  checkpointWidth  = clampWidth(data.width or checkpointWidth)
+  track.checkpointWidth  = clampWidth(data.width or track.checkpointWidth)
   -- The layout's DEFAULT is migrated the same way its gates are, or the two
   -- disagree: every placed gate would keep the shape it always had while a
   -- newly placed one, or one whose override was cleared, took the old full-span
   -- number as a height and stood twice as tall.
   if data.depth == nil and data.height ~= nil then
-    checkpointHeight = clampHeight(data.height * 0.5)
-    checkpointDepth  = clampDepth(data.height * 0.5)
+    track.checkpointHeight = clampHeight(data.height * 0.5)
+    track.checkpointDepth  = clampDepth(data.height * 0.5)
   else
-    checkpointHeight = clampHeight(data.height or checkpointHeight)
-    checkpointDepth  = clampDepth(data.depth or checkpointDepth)
+    track.checkpointHeight = clampHeight(data.height or track.checkpointHeight)
+    track.checkpointDepth  = clampDepth(data.depth or track.checkpointDepth)
   end
-  pointToPoint     = data.pointToPoint == true
+  track.pointToPoint     = data.pointToPoint == true
   resetLapTracking()
   -- The buffer now matches what the server handed over, so this is the baseline
   -- every later drift is measured against. Stamped AFTER the whole apply, not
@@ -8248,12 +8278,12 @@ local function onApplyLayout(rawData)
   edit.stamp   = edit.fingerprint()
   edit.refused = nil
   editorMsg('Loaded layout "' .. tostring(data.name) .. '" ('
-    .. (pointToPoint and 'point to point, ' or '') .. #route .. ' gates'
-    .. (#jokerRoute > 0 and (' + ' .. #jokerRoute .. ' joker') or '')
-    .. (#startPositions > 0 and (', ' .. #startPositions .. ' grid slots') or '') .. ')')
+    .. (track.pointToPoint and 'point to point, ' or '') .. #track.route .. ' gates'
+    .. (#track.jokerRoute > 0 and (' + ' .. #track.jokerRoute .. ' joker') or '')
+    .. (#track.startPositions > 0 and (', ' .. #track.startPositions .. ' grid slots') or '') .. ')')
   log('I', 'raceManager', 'Applied server layout "' .. tostring(data.name)
-    .. '" with ' .. #route .. ' checkpoints, ' .. #jokerRoute .. ' joker gates and '
-    .. #startPositions .. ' start positions')
+    .. '" with ' .. #track.route .. ' checkpoints, ' .. #track.jokerRoute .. ' joker gates and '
+    .. #track.startPositions .. ' start positions')
 end
 
 -- The server refused an overwrite that would have emptied part of a layout. The
@@ -8925,7 +8955,7 @@ local function resetToIdle(reason)
   selfTeleport.left = 0
   blockNoticeLeft = 0
   jokerEnabled    = false
-  pitRoute        = {}
+  track.pitRoute        = {}
   pit.active      = false
   pit.left        = 0
   pit.settleLeft  = 0
