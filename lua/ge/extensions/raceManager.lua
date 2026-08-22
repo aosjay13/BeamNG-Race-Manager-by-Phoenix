@@ -225,6 +225,31 @@ local route            = {}
 -- belongs to the TRACK, so it travels with the layout.
 local pointToPoint     = false
 
+-- WHO OWNS THE ROUTE BUFFER RIGHT NOW.
+--
+-- route, jokerRoute, pitRoute, startPositions and branch.list are two things at
+-- once: the track this client races against, and the working copy the editor
+-- appends to. Nothing separated them, so an incoming layout overwrote whatever
+-- an admin had half-built.
+--
+-- That is the cross-admin bug, and the controller back button was a symptom
+-- rather than the cause. The app asks the server for state on every mount, the
+-- server answers with whichever layout is globally loaded, and the reply landed
+-- here as an unconditional overwrite. A rejoin, a HUD apps toggle or a UI scale
+-- change did it just as well as the back button did.
+--
+-- ONE TABLE, not three locals: the top level of this file is a function, Lua
+-- allows it 200 locals, and 196 are spoken for. There are four left.
+local edit = {
+  -- Fingerprint of the buffer as the server last handed it over. nil until a
+  -- layout has been applied, which is what keeps a fresh client, a late joiner
+  -- and every non-admin driver on the unconditional path.
+  stamp   = nil,
+  -- Name of a layout whose apply was refused, held so the panel can say which
+  -- one is waiting rather than only that something was.
+  refused = nil,
+}
+
 -- BRANCHING ROUTES (the other ways through a checkpoint).
 --
 -- A checkpoint can have more than one gate. Slot i is cleared by crossing the
@@ -1011,6 +1036,51 @@ local function driverFlag()
     return 'white'
   end
   return 'green'
+end
+
+-- Cheap fingerprint of everything an admin can author, used to tell an editor
+-- buffer that has DRIFTED from the one the server handed over from one that is
+-- still exactly as it arrived.
+--
+-- Counts alone would miss a nudge, and a nudge is the edit somebody is most
+-- likely to be part-way through when another admin presses Load. Positions fold
+-- in at centimetre resolution deliberately: a fingerprint carrying raw floats
+-- would change on physics noise alone and report every buffer as dirty, which
+-- would refuse every layout on the server and look exactly like the bug it is
+-- meant to fix.
+function edit.fingerprint()
+  local n = 0
+  local function fold(list)
+    n = (n * 31 + #list) % 2147483647
+    for i = 1, #list do
+      local w = list[i]
+      n = (n * 31
+        + math.floor((w.x or 0) * 100)
+        + math.floor((w.y or 0) * 100)
+        + math.floor((w.z or 0) * 100)) % 2147483647
+    end
+  end
+  fold(route)
+  fold(jokerRoute)
+  fold(pitRoute)
+  fold(startPositions)
+  fold(branch.list)
+  return n
+end
+
+-- Is the local editor holding work that an incoming layout would destroy?
+--
+-- All three have to be true. The editor is OPEN, so a driver never holds the
+-- buffer and never has a layout refused. The buffer has DRIFTED, so an admin
+-- sitting in a clean editor still gets layouts normally. And no session is
+-- under way, because a layout pushed for a race outranks anything unsaved: the
+-- alternative is a driver racing a track nobody else is on.
+function edit.holdsBuffer()
+  if not editorOpen then return false end
+  if edit.stamp == nil then return false end
+  if phase == 'grid' or phase == 'countdown'
+     or phase == 'racing' or phase == 'qualifying' then return false end
+  return edit.fingerprint() ~= edit.stamp
 end
 
 local function pushRouteState()
@@ -6779,6 +6849,17 @@ function M.loadLayout(name)
     editorMsg('Layouts need a BeamMP server')
     return
   end
+  -- PRESSING LOAD IS THE ADMIN SAYING YES.
+  --
+  -- The buffer guard exists to stop somebody ELSE's layout landing on unsaved
+  -- work; it must never stop the admin loading one deliberately. Standing it
+  -- down here rather than special-casing the reply keeps the guard itself with
+  -- no notion of who asked, which is the only reason it stays this small.
+  --
+  -- It clears whether or not the load succeeds. A refused or missing layout
+  -- leaves the buffer exactly as it was, and the next apply re-stamps it.
+  edit.stamp   = nil
+  edit.refused = nil
   TriggerServerEvent('RM_LoadLayout', jsonEncode({ name = name }))
 end
 
@@ -7298,6 +7379,26 @@ local function onApplyLayout(rawData)
     end
   end
 
+  -- REFUSED WHILE THE LOCAL EDITOR HOLDS THE BUFFER. See edit.holdsBuffer.
+  --
+  -- Checked here rather than at the top of the handler on purpose: the payload
+  -- is validated first, so a malformed broadcast is still rejected as malformed
+  -- and never reads as somebody else's layout arriving.
+  --
+  -- Nothing is queued. The admin either saves what they have and presses Load,
+  -- or presses Load to take the server's copy; both go through M.loadLayout,
+  -- which stands the guard down for the reply it is expecting. Holding the
+  -- payload to apply later would mean applying a layout that may since have
+  -- been deleted or overwritten.
+  if edit.holdsBuffer() then
+    edit.refused = tostring(data.name or '')
+    editorMsg('"' .. edit.refused .. '" was loaded on the server. Your unsaved '
+      .. 'editor work has been kept: Save it, or press Load to take the server\'s.')
+    log('W', 'raceManager', 'RM_ApplyLayout("' .. edit.refused
+      .. '") refused: the local editor buffer has unsaved changes')
+    return
+  end
+
   clearTrackState('applying layout "' .. tostring(data.name) .. '"')
   route      = cps
   jokerRoute = jokerCps
@@ -7320,6 +7421,12 @@ local function onApplyLayout(rawData)
   end
   pointToPoint     = data.pointToPoint == true
   resetLapTracking()
+  -- The buffer now matches what the server handed over, so this is the baseline
+  -- every later drift is measured against. Stamped AFTER the whole apply, not
+  -- beside the route assignment above: branch.list lands further up and a stamp
+  -- taken before it would read as dirty from the moment it was written.
+  edit.stamp   = edit.fingerprint()
+  edit.refused = nil
   editorMsg('Loaded layout "' .. tostring(data.name) .. '" ('
     .. (pointToPoint and 'point to point, ' or '') .. #route .. ' gates'
     .. (#jokerRoute > 0 and (' + ' .. #jokerRoute .. ' joker') or '')
@@ -7359,7 +7466,25 @@ local function onClearTrack(rawData)
   local reason = 'server'
   local ok, data = pcall(jsonDecode, rawData)
   if ok and type(data) == 'table' and data.reason then reason = tostring(data.reason) end
+  -- THE OTHER DOOR INTO THE SAME BUG, and the more destructive of the two.
+  --
+  -- A server-side layout load purges every client BEFORE it broadcasts the new
+  -- gates, so an admin editing elsewhere took the wipe here and the refusal in
+  -- onApplyLayout, and was left holding an EMPTY editor. Guarding the apply
+  -- alone would have turned "your work was replaced" into "your work is gone",
+  -- which is worse than the bug being fixed.
+  if edit.holdsBuffer() then
+    log('W', 'raceManager', 'RM_ClearTrack (' .. reason
+      .. ') refused: the local editor buffer has unsaved changes')
+    return
+  end
   clearTrackState('server: ' .. reason)
+  -- The buffer belongs to the server again, so the stamp it was measured
+  -- against is meaningless. Dropping it is what stops the APPLY that follows a
+  -- load-purge being refused against a fingerprint this purge just invalidated:
+  -- an open but CLEAN editor would otherwise be wiped by the clear, read as
+  -- dirty a moment later, and refuse the very layout it was waiting for.
+  edit.stamp = nil
 end
 
 -- Server replied to a login attempt: forward the success flag to the UI, which
