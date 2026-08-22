@@ -84,7 +84,10 @@ angular.module('beamng.apps')
       // the main lap, the joker route and the starting grid. Anything else is
       // not a target the client Lua knows about, so it falls back to the main
       // lap - the same normalisation raceManager.setEditorTarget applies.
-      var EDITOR_TARGETS = { main: true, joker: true, pit: true, start: true, branch: true };
+      // Every tab the editor offers. A tab missing from here silently falls back
+      // to the main route, which looks like the button doing nothing.
+      var EDITOR_TARGETS = { main: true, joker: true, pit: true, start: true,
+                             branch: true, marker: true };
       function editorTargetOf(value) {
         return EDITOR_TARGETS[value] ? value : 'main';
       }
@@ -96,6 +99,12 @@ angular.module('beamng.apps')
       // gate clears the same slot - which is why the leaderboard needs no lane
       // arithmetic at all, and why nothing here tracks which way a driver went.
       $scope.branches = [];        // [{ slot, x, y, z, ... }]
+      // Direction markers: signage for long point-to-point stages. Non-functional
+      // by design -- nothing arms them, nothing scores them.
+      $scope.markers = [];         // [{ x, y, z, hx, hy, kind, ... }]
+      $scope.markerKind = 'right'; // the symbol the next placed marker gets
+      $scope.markerKinds = [];     // symbol keys, in the order the panel offers them
+      $scope.markerLabels = {};    // key -> human label, both from the extension
       $scope.branchSlot = 1;       // checkpoint the next placed branch gate belongs to
       $scope.gridOffLine = false;  // grid is away from the line, so an out lap is owed
       $scope.hasBranches = false;  // mirrored from the server: any branch gates on this track?
@@ -1970,6 +1979,10 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.nudgeSel = data.nudgeSel || null;
           // Branch gates.
           $scope.branches = toArray(data.branches);
+          $scope.markers = toArray(data.markers);
+          if (data.markerKind) { $scope.markerKind = data.markerKind; }
+          if (data.markerKinds) { $scope.markerKinds = toArray(data.markerKinds); }
+          if (data.markerLabels) { $scope.markerLabels = data.markerLabels; }
           if (typeof data.branchSlot === 'number') { $scope.branchSlot = data.branchSlot; }
           $scope.gridOffLine = !!data.gridOffLine;
           // The spacing sliders are only offered while the generator owns a
@@ -2008,6 +2021,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         if ($scope.editorTarget === 'pit')   { return $scope.pitRoute; }
         if ($scope.editorTarget === 'start') { return $scope.startPositions; }
         if ($scope.editorTarget === 'branch') { return $scope.branches; }
+        if ($scope.editorTarget === 'marker') { return $scope.markers; }
         return $scope.routeWaypoints;
       };
 
@@ -2159,6 +2173,28 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.insertCheckpoint = function (i) {
         bngApi.engineLua('raceManager.insertCheckpoint(' + i + ')');
       };
+      // The symbol for the NEXT marker placed, or for one already down.
+      //
+      // One entry point for both because it is the same decision from the
+      // admin's side: no index means "what I am about to place", an index means
+      // "that one there". Drive the route dropping signs, then say what each one
+      // means -- which is how a stage actually gets built.
+      $scope.setMarkerKind = function (kind, index) {
+        if (!kind) { return; }
+        bngApi.engineLua('raceManager.setMarkerKind(' + luaStr(kind)
+          + (index === undefined || index === null ? '' : ', ' + index) + ')');
+      };
+      $scope.markerLabelOf = function (kind) {
+        return $scope.markerLabels[kind] || kind || '';
+      };
+      // The glyph the BUTTON shows. Deliberately not the same drawing as the
+      // one on the board: this is a 12px label in a row of seven, and the
+      // in-world symbol is line geometry sized to read at two hundred metres.
+      $scope.markerGlyph = function (kind) {
+        return ({ right: '→', left: '←', up: '↑', down: '↓',
+                  uturn: '↰', splitRight: '⤴', splitLeft: '⤳' })[kind] || '?';
+      };
+
       $scope.reorderCheckpoint = function (from, to) {
         var list = $scope.editorWaypoints();
         if (to < 1 || to > list.length) { return; }

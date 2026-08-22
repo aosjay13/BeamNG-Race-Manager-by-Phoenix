@@ -1135,6 +1135,50 @@ expect(clearLine and clearLine:find('countdown !== 0', 1, true) ~= nil,
   'and it spares the GO frame, which owns its own lifetime on a timer')
 
 -- ---------------------------------------------------------------------------
+-- A REPEAT INSIDE A REPEAT MUST NOT ADDRESS THE OUTER ROW BY $index
+-- ---------------------------------------------------------------------------
+-- ng-repeat shadows $index at every level, so a button inside an inner repeat
+-- that calls something with $index is naming its OWN position in the inner
+-- list, not the row it is sitting in. It reads perfectly and silently targets
+-- the wrong thing.
+--
+-- That shipped: the marker symbol buttons are a repeat over seven symbols
+-- inside a repeat over the placed markers, so every button addressed the marker
+-- numbered after the arrow it drew. Pressing them looked like doing nothing,
+-- because the marker that changed was elsewhere in the list.
+--
+-- THIS CHECK IS DELIBERATELY NARROW. A general "nested repeat using $index"
+-- rule cannot be written against text: real nesting needs the DOM, an
+-- indent-based guess flags separate subtrees as nested (it reported the derby
+-- boundary and start lists, both of which are single-level and correct), and
+-- the branch-gate buttons repeat over their own list where $index is exactly
+-- right. A lint with false positives gets switched off, so this pins the one
+-- place the mistake was actually made.
+do
+  local markerBtns = 0
+  for tag in html:gmatch('<button[^>]-markerKinds[^>]->') do
+    markerBtns = markerBtns + 1
+    local click = tag:match('ng%-click="([^"]*)"') or ''
+    -- Only the buttons that NAME A ROW. The picker above the list sets the
+    -- symbol for the next marker placed and passes no index at all, which is
+    -- correct and must not be dragged into this.
+    local args = click:match('setMarkerKind%(([^)]*)%)') or ''
+    if args:find(',', 1, true) then
+      expect(args:find('%$index') == nil,
+        'a marker symbol button addresses its row with $index, which inside that '
+          .. 'inner repeat is the SYMBOL position, not the marker')
+      expect(args:find('mIndex', 1, true) ~= nil,
+        'a marker symbol button addresses its row through the index captured by '
+          .. 'ng-init on the outer repeat')
+    end
+  end
+  expect(markerBtns > 0, 'found the marker symbol buttons (got ' .. markerBtns .. ')')
+  -- ...and the capture it depends on is still there.
+  expect(html:find('ng%-init="mIndex = %$index"') ~= nil,
+    'the gate row captures its index as mIndex for the symbol buttons to use')
+end
+
+-- ---------------------------------------------------------------------------
 -- Every full-window overlay is confined to the panel in minimal mode
 -- ---------------------------------------------------------------------------
 -- These are `position: absolute; inset: 0` against the root, and the root is the
