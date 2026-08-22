@@ -149,7 +149,9 @@ angular.module('beamng.apps')
       $scope.carTaken = false;
       $scope.spectatorReason = null;
       // Transient banners: regulation notices and vehicle rejections.
-      $scope.notice = null;           // { kind, msg }
+      // { kind, msg, sub, rank, flash, ms } or null. Set only by noticeAdvance;
+      // everything else goes through noticePush and waits its turn.
+      $scope.notice = null;
       $scope.vehicleError = null;     // { message, detail }
 
       // Live position telemetry for THIS client (pushed by the client Lua at
@@ -1983,15 +1985,114 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // ------------------------------------------------------------------
       // Regulation notices, forced spectating and vehicle rejections
       // ------------------------------------------------------------------
+      // ONE QUEUE, and everything transient goes through it.
+      //
+      // What was here before was a single slot: each notice overwrote whatever
+      // was showing AND restarted the one shared six-second timer, so a reset
+      // notice arriving behind a caution replaced the caution and then hid
+      // itself at a time that belonged to neither. Two things arriving together
+      // meant one of them was never seen at all, and there was no way to say
+      // that a flag matters more than a lap time.
+      //
+      // Notices now RANK. A higher-ranked one preempts what is showing and the
+      // displaced notice is not lost, it waits. Equal ranks queue in arrival
+      // order. Anything outranked by what is already up waits its turn rather
+      // than clobbering it.
+      //
+      // Presentation is decided per kind, in NOTICE_STYLE below, so that adding
+      // a notification later is one row there rather than another timer and
+      // another slot in this controller.
+      var NOTICE_DEFAULT = { rank: 0, flash: false, ms: 6000, colour: 'grey' };
+      var NOTICE_STYLE = {
+        // Flags outrank everything: a caution is a fact about the session and
+        // has to reach a driver whose eyes are on the road, ahead of any
+        // informational message competing for the same strip.
+        flag:     { rank: 40, flash: false, ms: 6000 },
+        // Being removed from the session, or having a car refused, is the other
+        // class a driver cannot afford to miss.
+        spectate: { rank: 30, flash: false, ms: 6000 },
+        vehicle:  { rank: 30, flash: false, ms: 6000 },
+        session:  { rank: 20, flash: false, ms: 6000 },
+        fastest:  { rank: 10, flash: false, ms: 6000 },
+        // Everything else (grid, joker, pit, reset, ghost, finish, server)
+        // takes NOTICE_DEFAULT. They are the running commentary.
+      };
+      function noticeStyle(kind) {
+        var s = NOTICE_STYLE[kind] || NOTICE_DEFAULT;
+        return {
+          rank:   s.rank   !== undefined ? s.rank   : NOTICE_DEFAULT.rank,
+          flash:  s.flash  !== undefined ? s.flash  : NOTICE_DEFAULT.flash,
+          ms:     s.ms     !== undefined ? s.ms     : NOTICE_DEFAULT.ms,
+          colour: s.colour !== undefined ? s.colour : NOTICE_DEFAULT.colour
+        };
+      }
+
       var noticeTimer = null;
+      var noticeQueue = [];
+
+      function noticeClear() {
+        if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+      }
+
+      // Show the highest-ranked thing waiting, if anything is.
+      function noticeAdvance() {
+        noticeClear();
+        if (!noticeQueue.length) { $scope.notice = null; return; }
+        var best = 0;
+        for (var i = 1; i < noticeQueue.length; i++) {
+          if (noticeQueue[i].rank > noticeQueue[best].rank) { best = i; }
+        }
+        var next = noticeQueue.splice(best, 1)[0];
+        $scope.notice = next;
+        noticeTimer = setTimeout(function () {
+          $scope.$evalAsync(noticeAdvance);
+        }, next.ms);
+      }
+
+      // A cap, because a queue with no bound is a way to make the panel
+      // unusable: a driver spinning in a barrier can generate reset notices
+      // faster than they drain. The OLDEST LOW-RANKED one goes, never the
+      // highest, so a caution is never the thing dropped to make room.
+      var NOTICE_QUEUE_MAX = 8;
+      function noticeTrim() {
+        while (noticeQueue.length > NOTICE_QUEUE_MAX) {
+          var worst = 0;
+          for (var i = 1; i < noticeQueue.length; i++) {
+            if (noticeQueue[i].rank < noticeQueue[worst].rank) { worst = i; }
+          }
+          noticeQueue.splice(worst, 1);
+        }
+      }
+
+      function noticePush(kind, msg, sub) {
+        var st = noticeStyle(kind);
+        var item = { kind: kind, msg: msg, sub: sub || null, rank: st.rank,
+                     flash: st.flash, ms: st.ms, colour: st.colour };
+        // Nothing showing: straight up.
+        if (!$scope.notice) {
+          noticeQueue.push(item);
+          noticeAdvance();
+          return;
+        }
+        // Outranks what is up: preempt, and put the displaced one back in the
+        // queue rather than dropping it. It has already been earned.
+        if (item.rank > $scope.notice.rank) {
+          noticeQueue.push($scope.notice);
+          noticeQueue.push(item);
+          noticeTrim();
+          noticeAdvance();
+          return;
+        }
+        noticeQueue.push(item);
+        noticeTrim();
+      }
+      // Reachable from the rest of the controller, and the only way in.
+      $scope.pushNotice = noticePush;
+
       $scope.$on('RaceManagerNotice', function (event, data) {
         if (!data || !data.msg) { return; }
         $scope.$evalAsync(function () {
-          $scope.notice = { kind: data.kind || 'info', msg: data.msg };
-          if (noticeTimer) { clearTimeout(noticeTimer); }
-          noticeTimer = setTimeout(function () {
-            $scope.$evalAsync(function () { $scope.notice = null; });
-          }, 6000);
+          noticePush(data.kind || 'info', data.msg, data.sub);
         });
       });
 
@@ -3505,7 +3606,11 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.$on('$destroy', function () {
         document.removeEventListener('mousemove', onResizeMove);
         document.removeEventListener('mouseup', onResizeEnd);
-        if (noticeTimer) { clearTimeout(noticeTimer); }
+        // The queue goes with the timer. A teardown that stopped the clock but
+        // left eight notices waiting would show all of them the moment the app
+        // came back, timestamped to a session that has since ended.
+        if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+        noticeQueue.length = 0;
         if (vehErrTimer) { clearTimeout(vehErrTimer); }
         if (goTimer) { clearTimeout(goTimer); }
         stopLapTicker();

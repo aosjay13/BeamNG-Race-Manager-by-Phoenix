@@ -1144,17 +1144,57 @@ expect(clearLine and clearLine:find('countdown !== 0', 1, true) ~= nil,
 --
 -- This asserts the LIST is complete rather than that one entry exists: patching
 -- them one at a time is exactly what let the second one through.
+-- GROUPED SELECTORS COUNT TOO, and reading only the line with the brace on it
+-- is how one goes missing. `.rm-flash` and `.rm-derby-warning` share a rule now:
+--
+--     .rm-flash,
+--     .rm-derby-warning {
+--       position: absolute;
+--       inset: 0;
+--
+-- A pattern anchored on "  .name {" sees the second of those and never the
+-- first, so the shared primitive would sit outside this guard while the count
+-- below stayed reassuringly unchanged. The whole selector list is walked back
+-- from the declaration instead.
 local overlays = {}
-for cls in html:gmatch('\n  %.([%w%-]+) {\n    position: absolute;\n    inset: 0;') do
-  overlays[#overlays + 1] = cls
+do
+  local lines = {}
+  for line in (html .. NL):gmatch('([^' .. NL .. ']*)' .. NL) do lines[#lines + 1] = line end
+  for i = 2, #lines - 1 do
+    if lines[i]:match('^    position: absolute;$')
+       and lines[i + 1]:match('^    inset: 0;$') then
+      -- The line directly above the declarations carries the brace, and every
+      -- line above THAT which ends in a comma is another selector in the same
+      -- group. Walking stops at the first line that is not one.
+      local j = i - 1
+      local sel = lines[j]:match('^  %.([%w%-]+)%s*{%s*$')
+      if sel then
+        overlays[#overlays + 1] = sel
+        j = j - 1
+        while j >= 1 do
+          local grouped = lines[j]:match('^  %.([%w%-]+),%s*$')
+          if not grouped then break end
+          overlays[#overlays + 1] = grouped
+          j = j - 1
+        end
+      end
+    end
+  end
 end
-expect(#overlays > 0, 'found the full-window overlays (got ' .. #overlays .. ')')
+expect(#overlays >= 3, 'found the full-window overlays, grouped selectors '
+  .. 'included (got ' .. #overlays .. ': ' .. table.concat(overlays, ', ') .. ')')
 
 for _, cls in ipairs(overlays) do
   -- Escaped: `-` is a quantifier in a Lua pattern, so a bare class name here
   -- silently matches nothing and the guard passes by never looking.
   local safe = cls:gsub('%-', '%%-')
-  expect(html:find('%.rm%-minimal %.' .. safe) ~= nil,
+  -- BOUNDED, or a longer class name satisfies the guard for a shorter one.
+  -- `.rm-minimal .rm-flash-title` contains `.rm-minimal .rm-flash`, so an
+  -- unbounded find reported the flash overlay as confined on the strength of a
+  -- font-size rule for its caption, while the overlay itself was not in the
+  -- list at all. The class has to be followed by something that cannot continue
+  -- it: a comma, a brace, or whitespace.
+  expect(html:find('%.rm%-minimal %.' .. safe .. '[^%w%-]') ~= nil,
     'the ' .. cls .. ' overlay is confined to the panel in minimal mode. Any '
       .. 'new overlay that covers the window belongs in that selector list too')
 end

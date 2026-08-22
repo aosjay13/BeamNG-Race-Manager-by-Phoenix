@@ -1905,8 +1905,20 @@
     <span class="rm-vehicle-error-title">{{ vehicleError.message }}</span>
     <span class="rm-vehicle-error-detail" ng-if="vehicleError.detail">{{ vehicleError.detail }}</span>
   </div>
-  <!-- Transient regulation notices (reset used/denied, joker rulings). -->
-  <div class="rm-notice" ng-class="'rm-notice-' + notice.kind" ng-if="notice">{{ notice.msg }}</div>
+  <!-- Transient regulation notices (reset used/denied, joker rulings).
+       The strip is what a notice gets unless its kind asks for the flash. -->
+  <div class="rm-notice" ng-class="'rm-notice-' + notice.kind"
+       ng-if="notice && !notice.flash">{{ notice.msg }}</div>
+
+  <!-- ...and the full-panel flash for the ones that cannot be missed. Same
+       queue, same timer, same ranking: only the presentation differs, decided
+       per kind in NOTICE_STYLE. Nothing opts in yet, so this draws nothing
+       until a later change flips a kind over. -->
+  <div class="rm-flash" ng-class="'rm-flash-' + (notice.colour || 'grey')"
+       ng-if="notice && notice.flash">
+    <div class="rm-flash-title">{{ notice.msg }}</div>
+    <div class="rm-flash-sub" ng-if="notice.sub">{{ notice.sub }}</div>
+  </div>
 
   <!-- Pit stop: this driver is held in a stall while the car is repaired. -->
   <div class="rm-pit" ng-if="pitActive">
@@ -3479,7 +3491,7 @@
      driver went looking for, they are the app telling them something is
      happening to them right now. Collapsing hides what you browse, never what
      finds you. */
-  .rm-collapsed > *:not(.rm-header):not(.rm-driverbar):not(.rm-broadcast-board):not(.rm-countdown):not(.rm-derby-warning):not(.rm-vehicle-error):not(.rm-notice):not(.rm-spectator-bar):not(.rm-pit):not(.rm-ghost) {
+  .rm-collapsed > *:not(.rm-header):not(.rm-driverbar):not(.rm-broadcast-board):not(.rm-countdown):not(.rm-flash):not(.rm-derby-warning):not(.rm-vehicle-error):not(.rm-notice):not(.rm-spectator-bar):not(.rm-pit):not(.rm-ghost) {
     display: none !important;
   }
   /* The dragged HEIGHT belongs to the expanded panel: collapsed, the root is
@@ -3862,6 +3874,7 @@
      that covers the window belongs in this selector list, not in a rule of its
      own. */
   .rm-minimal .rm-countdown,
+  .rm-minimal .rm-flash,
   .rm-minimal .rm-derby-warning {
     right: auto;
     bottom: auto;
@@ -4257,6 +4270,24 @@
   .rm-derby-row-winner td { background: rgba(251, 188, 5, 0.08); }
 
   /* Full-window flashing warning overlays (hidden unless a countdown runs) */
+  /* THE FULL-PANEL FLASH, as one thing.
+
+     The derby's OUT OF BOUNDS warning was the only overlay shaped like this and
+     everything else that wanted one grew its own. It is the right presentation
+     for anything a driver has to register without reading: it covers the panel,
+     it blinks, and the word is large enough to catch peripherally.
+
+     Two consumers now, and .rm-derby-warning stays a NAME rather than becoming
+     .rm-flash in the markup: it carries a live countdown that updates every
+     frame and is not a queued notification at all. Sharing the look is right;
+     sharing the plumbing would be wrong.
+
+     ANY NEW OVERLAY BELONGS IN THE .rm-minimal LIST TOO. These are inset:0
+     against the root, and on a driver's panel the root is the whole HUD app
+     window - so an overlay that skips that rule flashes across the entire
+     windscreen instead of across the leaderboard. That is exactly how the derby
+     warning shipped broken for non-admins once already. */
+  .rm-flash,
   .rm-derby-warning {
     position: absolute;
     inset: 0;
@@ -4272,6 +4303,38 @@
   }
   .rm-derby-warning-oob  { background: rgba(180, 15, 15, 0.55); }
   .rm-derby-warning-stop { background: rgba(190, 110, 0, 0.55); }
+
+  /* Flash colours. Opaque enough to read against a bright sky and a dark tunnel
+     alike, which the 16%-alpha notice strip never was on a driver's panel: the
+     root goes transparent in minimal mode, so a wash that faint had nothing
+     behind it but the road going past. */
+  .rm-flash-red    { background: rgba(180, 15, 15, 0.55); }
+  .rm-flash-yellow { background: rgba(190, 150, 0, 0.55); }
+  .rm-flash-green  { background: rgba(20, 130, 55, 0.55); }
+  .rm-flash-white  { background: rgba(235, 235, 235, 0.5); }
+  .rm-flash-gold   { background: rgba(150, 110, 0, 0.6); }
+  .rm-flash-grey   { background: rgba(40, 44, 52, 0.72); }
+  .rm-flash-title {
+    font-size: 30px;
+    font-weight: 800;
+    letter-spacing: 2px;
+    color: #ffffff;
+    text-shadow: 0 0 16px rgba(0, 0, 0, 0.85);
+    padding: 0 8px;
+  }
+  /* The white flag is the one that cannot take white text. */
+  .rm-flash-white .rm-flash-title { color: #14161a; text-shadow: none; }
+  .rm-flash-white .rm-flash-sub   { color: #2b2f36; text-shadow: none; }
+  .rm-flash-sub {
+    font-size: 15px;
+    font-weight: 700;
+    color: #ffe082;
+    text-shadow: 0 0 12px rgba(0, 0, 0, 0.8);
+    padding: 0 8px;
+  }
+  /* A narrow driver's panel gets the same words at a size that fits it. */
+  .rm-minimal .rm-flash-title { font-size: 22px; letter-spacing: 1px; }
+  .rm-minimal .rm-flash-sub   { font-size: 12px; }
   .rm-derby-warning-title {
     font-size: 30px;
     font-weight: 800;
