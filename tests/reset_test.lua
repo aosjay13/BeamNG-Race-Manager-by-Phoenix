@@ -706,9 +706,21 @@ frames(0.6)
 queued = {}
 gridAssign(1, 1, 1)
 resetHook()
-check(queuedHas('attachCouplers'), 'a coupled trailer is re-attached after placement')
-check(queuedHas('setFreeze') or frozen ~= nil,
-  'and the grid hold still goes back on alongside it')
+
+-- NOT WHILE THE CAR IS STILL GHOSTED, which is the whole bug.
+--
+-- A field placement ghosts the car so the grid can land through itself, and a
+-- ghosted vehicle has no collisions for a coupler to find. The first version of
+-- this fired in the vehicle-reset echo -- during the placement, mid-ghost -- so
+-- attachCouplers did nothing whatsoever and the trailer still arrived loose.
+check(not queuedHas('attachCouplers'),
+  'nothing is coupled while the placement ghost is still on: there are no '
+    .. 'collisions for the coupler to find')
+
+-- ...and once the field has settled and collisions are back, it goes on.
+frames(3.5)
+check(queuedHas('attachCouplers'), 'a coupled trailer is re-attached once the ghost lifts')
+check(frozen ~= nil, 'and the grid hold still went on alongside it')
 
 -- The pair can name our vehicle on EITHER side: which end of the coupling a
 -- vehicle is on says nothing about whose trailer it is.
@@ -719,6 +731,7 @@ frames(0.6)
 queued = {}
 gridAssign(1, 1, 1)
 resetHook()
+frames(3.5)
 check(queuedHas('attachCouplers'), 'and found when our id is the second of the pair')
 
 -- A DRIVER's own reset is not our teleport, so nothing is re-coupled: BeamNG
@@ -731,6 +744,7 @@ frames(0.6)
 queued = {}
 driverPressedReset(501, 1, 0)
 resetHook()
+frames(3.5)
 check(not queuedHas('attachCouplers'),
   'a driver reset is left alone: the game keeps the trailer through those itself')
 
@@ -740,7 +754,7 @@ serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
 veh.x, veh.y, veh.z = 0, 0, 0
 frames(0.6)
 queued = {}
-local okPlace = pcall(function () gridAssign(1, 1, 1); resetHook() end)
+local okPlace = pcall(function () gridAssign(1, 1, 1); resetHook(); frames(3.5) end)
 check(okPlace, 'a build without core_vehicles still places the car on the grid')
 
 if fails == 0 then

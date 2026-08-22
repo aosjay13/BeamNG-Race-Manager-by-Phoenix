@@ -3306,31 +3306,6 @@ function M.onVehicleResetted(vehId)
       setLocalVehicleFrozen(true, holdWanted)
       log('I', 'raceManager', 'Hold re-applied after placement reset (' .. tostring(holdWanted) .. ')')
     end
-    -- AND THE TRAILER GOES BACK ON.
-    --
-    -- A teleport brings a coupled trailer along -- BeamNG treats it as a second
-    -- vehicle belonging to the same driver, which is why one turns up on the
-    -- grid at all -- but it arrives DETACHED. Every trailer race so far has
-    -- started with the driver re-coupling by hand before the countdown.
-    --
-    -- beamstate.attachCouplers() is exactly what that manual re-couple is: it
-    -- is the onDown of BeamNG's own couplersLock action, a vehicle-side call
-    -- reached through queueLuaCommand, the same bridge the freeze above uses.
-    -- It attaches whatever coupler is in range, and the trailer arriving beside
-    -- the car is what puts one there.
-    --
-    -- ONLY WHEN THERE WAS ONE. Firing this unconditionally would have a car on
-    -- a packed grid reach out and couple to whatever happened to be parked next
-    -- to it, which is a worse bug than the one being fixed. selfTeleport.hadRig
-    -- was recorded before the car moved, because by now the couplers have
-    -- already let go and there is nothing left to ask.
-    if selfTeleport.hadRig then
-      local rigVeh = ownVehicle()
-      if rigVeh then
-        pcall(function () rigVeh:queueLuaCommand('beamstate.attachCouplers()') end)
-        log('I', 'raceManager', 'Trailer re-coupled after placement reset')
-      end
-    end
     return
   end
   if spectatorLock then
@@ -3932,10 +3907,22 @@ local FIELD = {
   SETTLE      = 1.2,    -- seconds after the last car lands
   SPAWN_GRACE = 0.5,    -- seconds for a spawned vehicle to exist
   TIMEOUT     = 15.0,   -- hard cap: collisions come back regardless
+  -- Re-coupling a trailer after the placement ghost lifts. The window is long
+  -- because the ghost lift is itself a queued vehicle-side command: how many
+  -- frames it takes for collisions to actually come back is not something this
+  -- side can know, and a coupler found before they do attaches to nothing.
+  COUPLE_FOR   = 3.0,   -- seconds the retry window stays open
+  COUPLE_EVERY = 0.4,   -- seconds between attempts inside it
 }
 
 local field = {
   active  = false,
+  -- Trailer re-coupling: whether this driver had one on the back when the
+  -- placement was queued, how long the retry window has left, and when the next
+  -- attempt is due.
+  hadRig     = false,
+  coupleLeft = 0,
+  coupleNext = 0,
   step    = nil,     -- wait | spawn | grace | place | settle
   delay   = 0,       -- until OUR car is placed
   grace   = 0,       -- until a just-spawned vehicle is usable
@@ -4002,6 +3989,22 @@ local function endFieldOperation()
   field.respawn = false
   field.holdSource = nil
   if setGhostReason then setGhostReason('placement', false) end
+  -- THE TRAILER GOES BACK ON FROM HERE, not a moment earlier.
+  --
+  -- The first attempt at this fired in the vehicle-reset echo, which is during
+  -- the placement while the car is still GHOSTED -- and a ghosted vehicle has
+  -- no collisions for a coupler to find, so attachCouplers did nothing at all.
+  -- That is the whole reason the trailer still arrived loose and still had to
+  -- be reconnected by hand.
+  --
+  -- This is the line that hands collisions back, so the window opens on the
+  -- other side of it. Retried rather than fired once, because the ghost lift is
+  -- itself a queued vehicle-side command and how long it takes to land is not
+  -- something this side gets to know.
+  if field.hadRig then
+    field.coupleLeft = FIELD.COUPLE_FOR
+    field.coupleNext = 0
+  end
 end
 
 -- Queue a placement. A release and a grid slot that arrive on the same tick --
@@ -4044,12 +4047,54 @@ queueFieldPlacement = function (opts)
   field.hold    = opts.hold == true
   field.holdSource = opts.holdSource
   if setGhostReason then setGhostReason('placement', true) end
+  -- WAS A TRAILER ON THE BACK? Asked here, before anything moves, because the
+  -- placement is what detaches it -- by the time the car has landed there is
+  -- nothing left to ask.
+  --
+  -- core_vehicles.attachedCouplers is the live list of coupled pairs, each
+  -- { vehA, vehB, nodeA, nodeB }; a trailer shows up as a pair naming our id on
+  -- either side. Behind pcall and a type test, because that is a GE extension
+  -- that may not be loaded and a build that renames it should cost the trailer
+  -- rather than the placement.
+  field.hadRig = false
+  do
+    local rigVeh = ownVehicle()
+    if rigVeh then
+      local rigId = vehicleId(rigVeh)
+      pcall(function ()
+        if not (core_vehicles and type(core_vehicles.attachedCouplers) == 'table') then return end
+        for _, pair in ipairs(core_vehicles.attachedCouplers) do
+          if pair[1] == rigId or pair[2] == rigId then field.hadRig = true; return end
+        end
+      end)
+    end
+  end
   log('I', 'raceManager', string.format(
     'Field placement queued (order %d/%d, +%.2fs, respawn=%s, slot=%s)',
     order, count, delay, tostring(field.respawn), tostring(field.slot)))
 end
 
 local function fieldUpdate(dt)
+  -- Runs whether or not a placement is in progress: the re-couple window opens
+  -- as the operation ENDS, so a guard above it would stop the retry before it
+  -- ever ran.
+  if field.coupleLeft > 0 then
+    field.coupleLeft = field.coupleLeft - dt
+    field.coupleNext = field.coupleNext - dt
+    if field.coupleNext <= 0 then
+      field.coupleNext = FIELD.COUPLE_EVERY
+      local rigVeh = ownVehicle()
+      if rigVeh then
+        -- Attaching an already-attached coupler does nothing, so repeating this
+        -- costs a queued command and cannot double-couple anything.
+        pcall(function () rigVeh:queueLuaCommand('beamstate.attachCouplers()') end)
+      end
+    end
+    if field.coupleLeft <= 0 then
+      field.hadRig = false
+      log('I', 'raceManager', 'Trailer re-couple window closed')
+    end
+  end
   if not field.active then return end
   field.timeout = field.timeout - dt
 
