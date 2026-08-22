@@ -323,6 +323,30 @@ angular.module('beamng.apps')
         loadPref('adminTab.' + $scope.mode, DEFAULT_TAB[$scope.mode]));
       $scope.isMode = function (mode) { return $scope.mode === mode; };
       $scope.isAdminTab = function (tab) { return $scope.adminTab === tab; };
+
+      // RUNNING A RACE, OR CONFIGURING ONE.
+      //
+      // These two replace fourteen copies of "phase === 'countdown' || phase
+      // === 'racing'" spread through the markup, and the copies were wrong the
+      // same way fourteen times: every one of them missed QUALIFYING, so the
+      // whole editor stayed live for the length of a qualifying session. 'grid'
+      // was missed too, where the field is already placed and frozen on its
+      // slots and a gate moving under a parked car is the same mistake as one
+      // moving under a car at speed.
+      //
+      // canEdit is the CAPABILITY, and it is the seam a permissions system
+      // plugs into later: the markup asks whether this thing may be done, not
+      // who is doing it or what the phase happens to be called. The matching
+      // gate in Lua (edit.canConfigure) is what actually enforces it -- this
+      // half only decides what the panel offers, and a disabled button has
+      // never stopped anybody who can reach the console.
+      $scope.sessionRunning = function () {
+        return $scope.phase === 'grid' || $scope.phase === 'countdown'
+            || $scope.phase === 'racing' || $scope.phase === 'qualifying';
+      };
+      $scope.canEdit = function () {
+        return $scope.isAdmin && !$scope.sessionRunning();
+      };
       // Both editors are render gates in Lua, which has no idea whether its panel
       // is on screen. Tell it, so authoring furniture - start-slot outlines, gate
       // rectangles, arena corner labels - stays in the editor instead of being

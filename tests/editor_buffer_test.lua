@@ -251,5 +251,56 @@ RM.setEditorOpen(false)
 applyLayout(layout('Hotel', 6600))
 check(routeStartsAt() == 6600, 'closing the editor releases the buffer')
 
+-- ---------------------------------------------------------------------------
+-- The editor is closed while a session is running
+-- ---------------------------------------------------------------------------
+-- Until this guard existed, nothing in Lua stopped a gate moving under a car at
+-- speed: the only thing in the way was an ng-disabled attribute in the panel,
+-- and those tested for 'countdown' and 'racing' and missed QUALIFYING in all
+-- fourteen places. The whole editor was live for every qualifying session.
+RM.setEditorOpen(true)
+serverState({ phase = 'waiting', drivers = {} })
+RM.loadLayout('Guard Base')
+applyLayout(layout('Guard Base', 400))
+check(routeStartsAt() == 400, 'baseline for the mode guard')
+
+for _, running in ipairs({ 'grid', 'countdown', 'racing', 'qualifying' }) do
+  serverState({ phase = running, drivers = {} })
+  local before = routeStartsAt()
+
+  RM.setFinishLine(1234, 0, 0, 0, 1)
+  check(routeStartsAt() == before, running .. ': setFinishLine is refused')
+
+  veh.x, veh.y, veh.z = 500, 500, 0
+  RM.editorAdd()
+  local r = currentRoute()
+  check(r and #r == 3, running .. ': editorAdd cannot place a gate')
+
+  RM.editorClear()
+  r = currentRoute()
+  check(r and #r == 3, running .. ': editorClear cannot wipe the track')
+
+  RM.removeCheckpoint(1)
+  r = currentRoute()
+  check(r and #r == 3, running .. ': removeCheckpoint is refused')
+end
+
+-- ...and every one of them works again the moment the session is over. A guard
+-- that latched on would be a worse bug than the one it fixed.
+serverState({ phase = 'waiting', drivers = {} })
+RM.setFinishLine(1234, 0, 0, 0, 1)
+check(routeStartsAt() == 1234, 'the editor works again once the session ends')
+veh.x, veh.y, veh.z = 600, 600, 0
+RM.editorAdd()
+check(#currentRoute() == 2, 'and gates can be placed again')
+
+-- The refusal is visible. A control that silently does nothing reads as broken.
+local warned = false
+for _, h in ipairs(hooks) do
+  local msg = h.event == 'RaceManagerEditorMsg' and tostring(h.payload.msg) or ''
+  if msg:find('session is running', 1, true) then warned = true end
+end
+check(warned, 'a refused editor action says why')
+
 print(string.format('editor_buffer_test: %d checks, %d failures', checks, fails))
 os.exit(fails == 0 and 0 or 1)

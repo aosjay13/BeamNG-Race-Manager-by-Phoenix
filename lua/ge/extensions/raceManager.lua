@@ -1075,11 +1075,43 @@ end
 -- sitting in a clean editor still gets layouts normally. And no session is
 -- under way, because a layout pushed for a race outranks anything unsaved: the
 -- alternative is a driver racing a track nobody else is on.
+-- RUNNING A RACE OR CONFIGURING ONE. The line between the two modes, in one
+-- place, phrased as the question every caller actually has.
+--
+-- 'grid' counts as running even though the lights have not gone out: the field
+-- is placed and frozen on its slots, and moving a gate under a car already
+-- standing on the grid is the same mistake as moving one under a car at speed.
+-- Qualifying counts for the obvious reason and used to be missed everywhere --
+-- the panel's own guards tested for countdown and racing only, so every editor
+-- control in the app was live for the whole of a qualifying session.
+-- The DERBY is deliberately not consulted here. It is a separate editor with a
+-- separate gate of its own (derbyMarkersEditable, server side), and reaching for
+-- it from this far up the file would resolve `derby` as a global: the module is
+-- required several thousand lines below this, so the upvalue does not exist yet
+-- and the mistake costs a nil index at runtime rather than a compile error.
+function edit.running()
+  return phase == 'grid' or phase == 'countdown'
+      or phase == 'racing' or phase == 'qualifying'
+end
+
+-- The capability the editor is gated on. ONE function, so a permissions system
+-- has one place to plug into rather than a boolean spread through the UI.
+--
+-- MODE, not identity, and the distinction is load-bearing. Admin is the
+-- server's question and it already answers it where it counts: save, load and
+-- delete all go through requireAuth, and the panel that reaches them is drawn
+-- only for an admin. Asking it again here would break the case with no admin in
+-- it at all -- building a track offline, and the headless tests that do the
+-- same thing -- for no gain, since a local placement is invisible to everyone
+-- else and is overwritten by the server's own layout the moment a grid forms.
+function edit.canConfigure()
+  return not edit.running()
+end
+
 function edit.holdsBuffer()
   if not editorOpen then return false end
   if edit.stamp == nil then return false end
-  if phase == 'grid' or phase == 'countdown'
-     or phase == 'racing' or phase == 'qualifying' then return false end
+  if edit.running() then return false end
   return edit.fingerprint() ~= edit.stamp
 end
 
@@ -6891,6 +6923,55 @@ function M.setFinishLine(x, y, z, hx, hy)
   route = { { x = x, y = y, z = z, hx = hx, hy = hy } }
   armedWp = 1
   pushRouteState()
+end
+
+-- ---------------------------------------------------------------------------
+-- The editor is closed while a session is running
+-- ---------------------------------------------------------------------------
+-- ENFORCED, not asked for. Every function below mutates the route buffer, and
+-- until now not one of them checked anything: the only thing standing between a
+-- driver at speed and a gate moving under them was an ng-disabled attribute in
+-- the panel. Those attributes tested for 'countdown' and 'racing' and missed
+-- QUALIFYING in all fourteen places, so the entire editor was live for the whole
+-- of every qualifying session.
+--
+-- Wrapped in one pass over a list rather than a guard pasted into twenty-two
+-- functions, because the guard pasted into twenty-two functions is how the
+-- fourteenth one gets forgotten. A new editor action is covered by adding its
+-- name here, and an action that is NOT in this list is one that does not touch
+-- the buffer -- the previews, the visualisation toggle and the panel's own
+-- open/closed state are all deliberately absent, since blocking those would
+-- stop an admin looking at a track they are not allowed to change.
+--
+-- saveLayout, loadLayout and deleteLayout are absent too, and that is not an
+-- oversight: the SERVER refuses those mid-session on its own terms, and its
+-- terms are not quite these (it permits a load while a grid is formed). Copying
+-- the rule here would silently change which of them work.
+for _, name in ipairs({
+  'editorAdd', 'editorUndo', 'editorClear', 'setFinishLine',
+  'moveCheckpoint', 'removeCheckpoint', 'insertCheckpoint', 'reorderCheckpoint',
+  'setCheckpointWidth', 'setCheckpointHeight', 'setCheckpointDepth',
+  'setCheckpointOverride', 'setPointToPoint',
+  'moveStartPosition', 'removeStartPosition',
+  'generateStartPositions', 'respaceGrid', 'flipStartPositions',
+  'setBranchSlot', 'setBranchGateSlot', 'removeBranchGate',
+  'nudgeTurn', 'nudgeLift', 'nudgeDelete',
+}) do
+  local inner = M[name]
+  -- A name that is not there is a typo in the list above, and a silent one:
+  -- wrapping nil would replace the function with a guard that returns nothing
+  -- and the action would simply stop working. Say so at load instead.
+  if type(inner) ~= 'function' then
+    log('E', 'raceManager', 'editor guard: no such action "' .. name .. '"')
+  else
+    M[name] = function (...)
+      if not edit.canConfigure() then
+        editorMsg('Not while a session is running: end it first.')
+        return
+      end
+      return inner(...)
+    end
+  end
 end
 
 -- ---------------------------------------------------------------------------

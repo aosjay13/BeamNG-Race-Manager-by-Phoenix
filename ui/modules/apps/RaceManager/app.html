@@ -340,7 +340,7 @@
       </div>
     </div>
     <button class="rm-btn rm-btn-grid" ng-click="loadLayout()"
-            ng-disabled="!layoutUi.selected || phase === 'countdown' || phase === 'racing'"
+            ng-disabled="!layoutUi.selected || !canEdit()"
             title="Put the whole server on this track: every connected player gets its checkpoints. To work on a layout without moving anyone, use Open in Editor.">
       Load Layout
     </button>
@@ -410,6 +410,18 @@
        body below scrolls as a safety net for the tall ones.
        The set shown depends on the mode picked above. -->
   <div class="rm-admin-tabs" ng-if="isAdmin && isMode('race')">
+    <!-- WHICH MODE THE PANEL IS IN, said out loud.
+         Half the editor controls below grey out while a session is running, and
+         without this the only thing telling an admin why is the controls being
+         grey - which reads as the app having broken rather than as a rule. It
+         sits first in the tab row because that is where the eye lands before it
+         reaches the control that is not responding. -->
+    <span class="rm-mode-badge" ng-class="sessionRunning() ? 'rm-mode-running' : 'rm-mode-config'"
+          title="{{ sessionRunning()
+            ? 'A session is running. Track and rule changes are locked until it ends.'
+            : 'No session running. The track and the rules can be changed.' }}">
+      {{ sessionRunning() ? 'RUNNING' : 'CONFIG' }}
+    </span>
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('race')}"
             ng-click="selectAdminTab('race')"
             title="Race distance, reset ruleset and the joker lap">Race</button>
@@ -454,7 +466,7 @@
       <input type="number" min="1" max="500" ng-model="settingsUi.laps"
              ng-model-options="{ debounce: { default: 500, blur: 0 } }"
              ng-change="applyTotalLaps()"
-             ng-disabled="pointToPoint || phase === 'countdown' || phase === 'racing'">
+             ng-disabled="pointToPoint || !canEdit()">
       <span class="rm-setting-val" ng-if="!pointToPoint">race: {{ totalLaps }}</span>
       <span class="rm-setting-val rm-p2p-note" ng-if="pointToPoint">point to point: driven once</span>
     </span>
@@ -464,17 +476,17 @@
       <input type="number" class="rm-width-num" min="-1" max="99" step="1" ng-model="settingsUi.resets"
              ng-model-options="{ debounce: { default: 500, blur: 0 } }"
              ng-change="applyMaxResets()"
-             ng-disabled="phase === 'countdown' || phase === 'racing'">
+             ng-disabled="!canEdit()">
       <span class="rm-setting-val">{{ resetRuleLabel() }}</span>
     </span>
     <span class="rm-setting" title="Repair in place, or respawn at the last checkpoint crossed.">
       <label>Reset mode</label>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': resetMode === 'inplace'}"
               ng-click="setResetMode('inplace')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'">In place</button>
+              ng-disabled="!canEdit()">In place</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': resetMode === 'checkpoint'}"
               ng-click="setResetMode('checkpoint')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'">Last checkpoint</button>
+              ng-disabled="!canEdit()">Last checkpoint</button>
     </span>
     <!-- Module 2: rallycross joker lap -->
     <span class="rm-setting" title="Every finisher must take the Joker Route once, never on lap 1, or they are disqualified.">
@@ -486,7 +498,7 @@
            look available in the first place. -->
       <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': jokerEnabled}"
               ng-click="toggleJoker()"
-              ng-disabled="phase === 'countdown' || phase === 'racing' || !jokerGates">
+              ng-disabled="!canEdit() || !jokerGates">
         {{ jokerEnabled ? '✓ Enabled' : 'Disabled' }}
       </button>
       <span class="rm-setting-val" ng-if="jokerEnabled">{{ jokerGates }} gates</span>
@@ -540,19 +552,19 @@
       <label>Grid order</label>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'quali'}"
               ng-click="setGridMode('quali')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              ng-disabled="!canEdit()"
               title="Fastest qualifier on pole. Drivers with no time line up at the back.">Quali</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'reverse'}"
               ng-click="setGridMode('reverse')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              ng-disabled="!canEdit()"
               title="Slowest qualifier on pole, fastest at the back. Drivers with no time still start last.">Reverse</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'random'}"
               ng-click="setGridMode('random')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              ng-disabled="!canEdit()"
               title="A random draw, for a race with no qualifying behind it.">Random</button>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'custom'}"
               ng-click="setGridMode('custom')"
-              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              ng-disabled="!canEdit()"
               title="Type a slot number in the Start column. Everyone else falls in behind by quali time.">Custom</button>
       <span class="rm-setting-val">{{ startSlots }} start position{{ startSlots === 1 ? '' : 's' }}</span>
     </span>
@@ -1071,7 +1083,7 @@
       <button class="rm-btn rm-btn-mini rm-p2p-toggle" ng-if="editorTarget === 'main'"
               ng-class="{'rm-p2p-on': pointToPoint}"
               ng-click="togglePointToPoint()"
-              ng-disabled="phase === 'countdown' || phase === 'racing'"
+              ng-disabled="!canEdit()"
               title="Circuit: laps a start/finish line. Point to point: driven once, first gate to last.">
         {{ pointToPoint ? '⇥ Point to Point' : '⟳ Circuit' }}
       </button>
@@ -1408,17 +1420,17 @@
                down to work on and leaves everyone else where they are. It is
                what lets two admins build on one map at the same time. -->
           <button class="rm-btn rm-btn-grid" ng-click="editLayout()"
-                  ng-disabled="!layoutUi.selected || phase === 'countdown' || phase === 'racing'"
+                  ng-disabled="!layoutUi.selected || !canEdit()"
                   title="Open the selected layout in YOUR editor only. Nobody else's track changes.">
             Open in Editor
           </button>
           <button class="rm-btn rm-btn-grid" ng-click="overwriteLayout()"
-                  ng-disabled="!routeWaypoints.length || !layoutUi.selected || phase === 'countdown' || phase === 'racing'"
+                  ng-disabled="!routeWaypoints.length || !layoutUi.selected || !canEdit()"
                   title="Replace the selected layout with what is placed right now">
             Overwrite
           </button>
           <button class="rm-btn rm-btn-end" ng-click="deleteLayout()"
-                  ng-disabled="!layoutUi.selected || phase === 'countdown' || phase === 'racing'"
+                  ng-disabled="!layoutUi.selected || !canEdit()"
                   title="Delete the selected layout from the server">
             Delete
           </button>
@@ -2726,6 +2738,30 @@
     background: rgba(255, 102, 0, 0.28);
     border-color: #ff6600;
     color: #ffb380;
+  }
+  /* Running or configuring, in the admin tab row. Deliberately not colour
+     alone: the word is the signal and the colour only agrees with it, because
+     the two states have to be told apart at a glance by somebody who is also
+     driving. */
+  .rm-mode-badge {
+    align-self: center;
+    margin-right: 6px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    white-space: nowrap;
+  }
+  .rm-mode-config {
+    background: rgba(52, 168, 83, 0.18);
+    color: #6ddc8b;
+    border: 1px solid rgba(52, 168, 83, 0.45);
+  }
+  .rm-mode-running {
+    background: rgba(234, 67, 53, 0.18);
+    color: #f28b82;
+    border: 1px solid rgba(234, 67, 53, 0.5);
   }
   .rm-tab-count {
     margin-left: 4px;
