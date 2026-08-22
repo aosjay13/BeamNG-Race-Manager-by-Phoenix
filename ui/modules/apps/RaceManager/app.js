@@ -468,6 +468,9 @@ angular.module('beamng.apps')
       // must not wipe a table being typed.
       $scope.cupUi = {
         name: '',
+        // Name typed into "Save as". Initialised here so the object owns it
+        // before any child scope can shadow it.
+        saveName: '',
         preset: '',
         derbyPreset: '',
         points: [],
@@ -767,6 +770,38 @@ angular.module('beamng.apps')
         cupExpectReseed('derby');
         bngApi.engineLua('raceManager.cupSetPreset("' + $scope.cupUi.derbyPreset + '", "derby")');
       };
+      // Saving the current race table as a named system.
+      //
+      // A saved system joins the SAME picker the built-ins are in, rather than
+      // getting a list of its own: from the admin's side "load 25P Moderate" and
+      // "load the table we agreed last month" are the same action, and the
+      // server marks which ones it made so only those offer Delete.
+      // ON cupUi, NOT a bare scope property. Every control here sits inside
+      // ng-if="cup.enabled && cupUi.showScoring", which makes a CHILD scope: a
+      // bare ng-model would write the typed name onto that child, leaving the
+      // controller's copy empty and Save sending nothing. Going through the
+      // object resolves it on the controller and mutates it in place.
+      $scope.cupSavePreset = function () {
+        var name = ($scope.cupUi.saveName || '').trim();
+        if (!name) { return; }
+        cupExpectReseed('race');
+        bngApi.engineLua('raceManager.cupSavePreset(' + luaStr(name) + ')');
+        $scope.cupUi.saveName = '';
+      };
+      // Only the saved ones can go. The picker carries the flag from the server
+      // so the button is absent on a built-in rather than refused after a click.
+      $scope.cupSelectedIsSaved = function () {
+        var list = $scope.cup.presets || [];
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].key === $scope.cupUi.preset) { return list[i].saved === true; }
+        }
+        return false;
+      };
+      $scope.cupDeletePreset = function () {
+        if (!$scope.cupSelectedIsSaved()) { return; }
+        bngApi.engineLua('raceManager.cupDeletePreset(' + luaStr($scope.cupUi.preset) + ')');
+      };
+
       $scope.cupToggleScoring = function () {
         $scope.cupUi.showScoring = !$scope.cupUi.showScoring;
       };

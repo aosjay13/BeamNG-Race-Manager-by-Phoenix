@@ -731,7 +731,26 @@
         </div>
         <button class="rm-btn rm-btn-mini" ng-click="cupApplyPreset()"
                 ng-disabled="!cupUi.preset">Load</button>
+        <!-- Only offered on a system the admin saved. A built-in has no Delete
+             rather than a Delete that refuses. -->
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="cupDeletePreset()"
+                ng-if="cupSelectedIsSaved()"
+                title="Delete this saved scoring system. The built-in presets cannot be deleted.">Delete</button>
         <span class="rm-cup-hint">Loading a preset fills the table below: edit it afterwards if you like.</span>
+      </div>
+
+      <!-- SAVE THE TABLE YOU AGREED ON.
+           A league spends an evening settling a points structure and it used to
+           live only in the running cup. Saved systems sit in the same picker as
+           the built-ins, and End Cup does not clear them. -->
+      <div class="rm-cup-row">
+        <label>Save as</label>
+        <input type="text" class="rm-cup-line" ng-model="cupUi.saveName"
+               placeholder="name this scoring system"
+               ng-keydown="$event.keyCode === 13 &amp;&amp; cupSavePreset()">
+        <button class="rm-btn rm-btn-mini" ng-click="cupSavePreset()"
+                ng-disabled="!cupUi.saveName || cupTableEmpty('race')"
+                title="Save the race points table above under this name. Saving over a name you already used replaces it.">Save system</button>
       </div>
 
       <!-- TYPE THE TABLE, or nudge the boxes below: same buffer, both ways.

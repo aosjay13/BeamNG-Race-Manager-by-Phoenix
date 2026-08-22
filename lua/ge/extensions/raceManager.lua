@@ -7998,6 +7998,21 @@ function M.cupSetPreset(preset, target)
   end
 end
 
+-- Save the race table as a named scoring system, and delete one again. The
+-- server holds them beside the live scoring in cup.json, which is deliberately
+-- what End Cup does not clear.
+function M.cupSavePreset(name)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSavePreset', jsonEncode({ name = tostring(name or '') }))
+  end
+end
+
+function M.cupDeletePreset(key)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupDeletePreset', jsonEncode({ preset = tostring(key or '') }))
+  end
+end
+
 -- A points table arrives from the app as "30,27,25,..." and goes up as an
 -- array. A comma-separated string rather than a structure because every other
 -- command in this bridge takes numbers and strings, and the app would otherwise
