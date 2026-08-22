@@ -44,6 +44,7 @@ ColorI = function (r, g, b, a) colorAllocs = colorAllocs + 1; return { r, g, b, 
 String = function (s) return s end
 
 local quads = {}
+local tris = {}
 local cylinders, texts = {}, {}
 debugDrawer = {
   drawCylinder = function (_, a, b, radius, color)
@@ -55,6 +56,11 @@ debugDrawer = {
   -- The filled surface of an editor gate. Only the authoring view draws it.
   drawQuadSolid = function (_, a, b, c, d, color)
     quads[#quads + 1] = { a = a, b = b, c = c, d = d, color = color }
+  end,
+  -- Filled triangles: how a direction marker's chevrons are painted. Lines
+  -- would have been cheaper and look like a wireframe.
+  drawTriSolid = function (_, a, b, c, color)
+    tris[#tris + 1] = { a = a, b = b, c = c, color = color }
   end,
 }
 
@@ -673,6 +679,69 @@ check(near(maxX - minX, 6),
     .. tostring(maxX - minX) .. ')')
 check(near(maxY - minY, 20),
   'and the gate width across it (20 m, got ' .. tostring(maxY - minY) .. ')')
+
+
+-- ===========================================================================
+-- Direction markers are FILLED, and built once rather than per frame
+-- ===========================================================================
+-- Marks are filled polygons, not line strokes: the difference between a painted
+-- road marking and a wireframe. That costs four vertices a stroke instead of
+-- two, and a board can carry sixty marks -- so the geometry is cached against
+-- the marker and rebuilt only when it moves, resizes or is re-signed.
+--
+-- Without that cache this is a few hundred vec3 allocations EVERY FRAME, for
+-- every marker on the stage, which is the garbage the gate cache already exists
+-- to stop.
+serverState({ phase = 'waiting', totalLaps = 3, maxResets = -1, drivers = {} })
+handlers['RM_ApplyLayout']({
+  name = 'signed', width = 20, height = 6, depth = 2,
+  checkpoints = { { x = 0, y = 200, z = 5, hx = 0, hy = 1 } },
+  markers = { { x = 0, y = 120, z = 5, hx = 0, hy = 1, kind = 'right', width = 24 } },
+})
+RM.setEditorOpen(false)
+tris = {}
+frame()
+check(#tris > 0, 'a marker is painted with filled triangles, not lines (got '
+  .. #tris .. ')')
+-- Two passes: a dark outline and the mark on top, so it reads over pale gravel
+-- and dark tarmac alike.
+local edgeSeen, faceSeen = false, false
+for _, t in ipairs(tris) do
+  if t.color and t.color[1] and t.color[1] < 0.1 then edgeSeen = true else faceSeen = true end
+end
+check(edgeSeen, 'each mark carries a dark outline behind it')
+check(faceSeen, 'and the mark itself on top')
+
+-- Repeated across the board rather than stretched to fill it.
+local wide = #tris
+handlers['RM_ApplyLayout']({
+  name = 'wider', width = 20, height = 6, depth = 2,
+  checkpoints = { { x = 0, y = 200, z = 5, hx = 0, hy = 1 } },
+  markers = { { x = 0, y = 120, z = 5, hx = 0, hy = 1, kind = 'right', width = 48 } },
+})
+tris = {}
+frame()
+check(#tris > wide, 'a wider board carries MORE marks rather than bigger ones ('
+  .. wide .. ' -> ' .. #tris .. ')')
+
+-- THE CACHE. A steady frame rebuilds nothing.
+frame()
+vec3Allocs = 0
+for _ = 1, 10 do frame() end
+check(vec3Allocs <= 10,
+  'ten steady frames with a marker on screen allocate no marker geometry (got '
+    .. vec3Allocs .. ')')
+
+-- ...and it notices when the marker actually changes.
+tris = {}
+RM.setEditorTarget('marker')
+RM.setMarkerKind('uturn', 1)
+frame()
+local turned = #tris
+RM.setMarkerKind('right', 1)
+frame()
+check(#tris ~= turned or turned > 0,
+  're-signing a marker rebuilds its geometry rather than serving the old shape')
 
 if fails == 0 then
   print('draw_test: ' .. checks .. ' checks, 0 failures')

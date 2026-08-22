@@ -185,7 +185,11 @@ local TUNE = {
   MARKER_CELL     = 3.0,
   -- Ceiling on marks per board, so an enormous one does not turn into a solid
   -- block of geometry drawn every frame.
-  MARKER_MAX_MARKS = 120,
+  MARKER_MAX_MARKS = 60,
+  -- Mark thickness as a fraction of the mark's own size, and how much fatter
+  -- the dark outline behind it is drawn.
+  MARKER_STROKE   = 0.17,
+  MARKER_EDGE     = 1.9,
   PIT_COOLDOWN   = 8.0,   -- before the same stall can trigger again
   PIT_DEPTH      = 3.0,   -- metres along the stall a car counts as being in it
   -- m/s below which the car counts as stopped IN the stall. A pit stop is
@@ -5026,6 +5030,10 @@ local function palette()
     markerLine   = ColorF(0.2, 0.95, 1, 0.95),
     markerFill   = ColorF(0.2, 0.85, 1, 0.13),
     markerSel    = ColorF(1, 1, 1, 1),
+    -- The border every mark carries. Near-black and nearly opaque: it is what
+    -- makes a cyan chevron legible over pale gravel and over dark tarmac alike,
+    -- rather than only over one of them.
+    markerEdge   = ColorF(0.02, 0.06, 0.09, 0.92),
     -- The state glyph drawn across a joker gate: a cross while it is shut, a
     -- tick once it is spent. Both semi-transparent, because they are drawn over
     -- the piece of track the driver is about to aim at.
@@ -5355,74 +5363,135 @@ end
 -- Built from segments rather than text: debugDrawer text does not shrink with
 -- distance the way geometry does, so a glyph sized to read in the editor is a
 -- speck at the two hundred metres where a marker actually has to work.
-function paint.markerPanel(wp, color, fill)
+-- MARKER GEOMETRY, BUILT ONCE AND CACHED.
+--
+-- Every mark is a filled polygon rather than a line, which is the whole
+-- difference between a wireframe and a painted road marking -- but it costs
+-- four vertices per stroke instead of two, and a board can carry sixty marks.
+-- Rebuilding that per frame would be exactly the garbage the gate cache was
+-- written to stop, so it is built when the marker CHANGES and walked when it
+-- does not.
+--
+-- Keyed on the marker table itself and invalidated by comparing the fields that
+-- can move it, the same way gateGeometry does.
+marker.cache = setmetatable({}, { __mode = 'k' })
+
+function marker.geometry(wp)
   local w, h, d = gateDims(wp)
+  local kind = wp.kind or 'right'
+  local g = marker.cache[wp]
+  if g and g.w == w and g.h == h and g.d == d and g.kind == kind
+      and g.x == wp.x and g.y == wp.y and g.z == wp.z
+      and g.hx == wp.hx and g.hy == wp.hy then
+    return g
+  end
+
   local hw = w * 0.5
   local fx, fy = wp.hx or 0, wp.hy or 1
-  -- Lateral axis: to the driver's right as they face the marker.
-  local rx, ry = fy, -fx
+  local rx, ry = fy, -fx                -- lateral axis, to the driver's right
   local top, bot = wp.z + h, wp.z - d
+  local span = h + d
   local function at(u, v)
     return vec3(wp.x + rx * u, wp.y + ry * u, v)
   end
 
-  -- The board. Translucent so the road behind it stays visible: this is
-  -- signage, and a sign a driver cannot see through is an obstacle.
-  debugDrawer:drawQuadSolid(at(-hw, bot), at(hw, bot), at(hw, top), at(-hw, top), fill)
+  g = { w = w, h = h, d = d, kind = kind,
+        x = wp.x, y = wp.y, z = wp.z, hx = wp.hx, hy = wp.hy,
+        board = { at(-hw, bot), at(hw, bot), at(hw, top), at(-hw, top) },
+        tris = {}, edge = {} }
 
-  local kind = wp.kind or 'right'
+  -- One stroke as a filled quad, emitted as two triangles.
+  --
+  -- Both ends are EXTENDED by half the thickness before the quad is built. Without
+  -- that, the two arms of a chevron meet at a V with a wedge missing from the
+  -- outside of the joint, which at any distance reads as a broken mark. Extending
+  -- overshoots the corner slightly instead, and an overshoot at a mitre is
+  -- invisible where a notch is not.
+  local function stroke(into, x1, y1, x2, y2, halfT)
+    local dx, dy = x2 - x1, y2 - y1
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len < 1e-5 then return end
+    local ux, uy = dx / len, dy / len
+    x1, y1 = x1 - ux * halfT, y1 - uy * halfT
+    x2, y2 = x2 + ux * halfT, y2 + uy * halfT
+    local nx, ny = -uy * halfT, ux * halfT
+    local a, b = at(x1 + nx, y1 + ny), at(x2 + nx, y2 + ny)
+    local c, e = at(x2 - nx, y2 - ny), at(x1 - nx, y1 - ny)
+    into[#into + 1] = { a, b, c }
+    into[#into + 1] = { a, c, e }
+  end
+
   local glyph = marker.GLYPH[kind] or marker.GLYPH.right
-  local span = h + d
-  local r = TUNE.POLE_RADIUS * 0.7
-  local midV = (top + bot) * 0.5
-
-  local function stamp(cx, cv, size)
+  local function place(cx, cv, size)
+    -- Thickness scales with the mark, so a big sign gets a bold mark rather
+    -- than a large thin one.
+    local t = size * TUNE.MARKER_STROKE
     for k = 1, #glyph do
-      local g = glyph[k]
-      debugDrawer:drawCylinder(
-        at(cx + g[1] * size, cv + g[2] * size),
-        at(cx + g[3] * size, cv + g[4] * size), r, color)
+      local q = glyph[k]
+      -- The outline goes down FIRST and slightly fatter. Marks are drawn over
+      -- whatever the map happens to be -- pale gravel, dark tarmac, grass at
+      -- noon -- and a single flat colour disappears against one of them. A dark
+      -- border means the mark carries its own contrast everywhere.
+      stroke(g.edge, cx + q[1] * size, cv + q[2] * size,
+                     cx + q[3] * size, cv + q[4] * size, t * TUNE.MARKER_EDGE)
+      stroke(g.tris, cx + q[1] * size, cv + q[2] * size,
+                     cx + q[3] * size, cv + q[4] * size, t)
     end
   end
 
   if marker.TILES[kind] then
-    -- A FIELD OF CHEVRONS, filling the board in both directions.
-    --
-    -- Sized off a fixed metre count rather than off the board, which is the
-    -- whole difference from the first attempt: cells scaled to the panel's
-    -- height gave a forty metre sign exactly two enormous arrows, and a driver
-    -- reads ">>>>>>>>>>" as a direction and two big arrows as decoration.
-    -- Fixed cells mean a wider board simply gets MORE marks, which is what
-    -- "repeated as necessary" has to mean.
     local cell = TUNE.MARKER_CELL
     local cols = math.max(1, math.floor(w / cell + 0.5))
     local rows = math.max(1, math.floor(span / cell + 0.5))
-    -- A hard cap, because the board is admin-drawn and nothing stops somebody
-    -- placing a three hundred metre one. Beyond this the marks are closer
-    -- together than they are wide and it is a solid block anyway.
     if cols * rows > TUNE.MARKER_MAX_MARKS then
       local scale = math.sqrt(cols * rows / TUNE.MARKER_MAX_MARKS)
       cols = math.max(1, math.floor(cols / scale))
       rows = math.max(1, math.floor(rows / scale))
     end
     local stepU, stepV = w / cols, span / rows
-    local size = math.min(stepU, stepV) * 0.42
+    local size = math.min(stepU, stepV) * 0.44
     for cix = 1, cols do
       local cx = -hw + stepU * (cix - 0.5)
       for riy = 1, rows do
-        stamp(cx, bot + stepV * (riy - 0.5), size)
+        place(cx, bot + stepV * (riy - 0.5), size)
       end
     end
   else
-    -- One shape, centred, as big as the board allows. A U turn or a fork is a
-    -- diagram: tiling it thirty times says nothing a single one does not.
-    stamp(0, midV, math.min(w, span) * 0.42)
+    -- A U turn or a fork is a diagram, not a repeating mark: one of them,
+    -- centred, as large as the board allows.
+    place(0, (top + bot) * 0.5, math.min(w, span) * 0.42)
+  end
+
+  g.postA, g.postB = at(-hw, bot), at(-hw, top)
+  g.postC, g.postD = at(hw, bot), at(hw, top)
+  marker.cache[wp] = g
+  return g
+end
+
+-- A direction marker: a translucent board carrying filled, outlined marks.
+function paint.markerPanel(wp, color, fill)
+  local g = marker.geometry(wp)
+  local p = palette()
+
+  -- The board. Translucent so the road behind it stays visible: this is
+  -- signage, and a sign a driver cannot see through is an obstacle.
+  debugDrawer:drawQuadSolid(g.board[1], g.board[2], g.board[3], g.board[4], fill)
+
+  -- Outline first, mark on top. Both are solid fills; the only difference is
+  -- that the outline was built fatter.
+  for i = 1, #g.edge do
+    local t = g.edge[i]
+    debugDrawer:drawTriSolid(t[1], t[2], t[3], p.markerEdge)
+  end
+  for i = 1, #g.tris do
+    local t = g.tris[i]
+    debugDrawer:drawTriSolid(t[1], t[2], t[3], color)
   end
 
   -- Edge posts, so the extent of the board reads at distance and in flat light
   -- where a translucent fill alone disappears.
-  debugDrawer:drawCylinder(at(-hw, bot), at(-hw, top), TUNE.POLE_RADIUS, color)
-  debugDrawer:drawCylinder(at(hw, bot),  at(hw, top),  TUNE.POLE_RADIUS, color)
+  debugDrawer:drawCylinder(g.postA, g.postB, TUNE.POLE_RADIUS, color)
+  debugDrawer:drawCylinder(g.postC, g.postD, TUNE.POLE_RADIUS, color)
 end
 
 -- THE PIT STALL IS A BOX, SO IT IS DRAWN AS ONE.
