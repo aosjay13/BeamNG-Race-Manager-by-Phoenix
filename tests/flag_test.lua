@@ -191,20 +191,20 @@ moveTo(180); moveTo(190); frame(20)
 check(#flagNotices() == 0, 'the white flag fires once, not every frame of the approach')
 
 -- ...and not again on the final lap itself, having already been given. That run
--- to the line is now the CHEQUERED approach, so the assertion is about which
+-- to the line is now the CHECKERED approach, so the assertion is about which
 -- flag appears rather than about silence.
 completeLap()
 clearLog()
 ontoTheApproach()
 moveTo(175)
 check(flagsNamed('WHITE FLAG') == 0, 'and not a second time on the last lap')
-check(flagsNamed('CHEQUERED FLAG') == 1,
-  'the run to the finish waves the chequered flag on the same fifty metres')
+check(flagsNamed('CHECKERED FLAG') == 1,
+  'the run to the finish waves the checkered flag on the same fifty metres')
 
 -- Once, like the white one: this is sampled every frame for the whole approach.
 clearLog()
 moveTo(185); moveTo(192); frame(20)
-check(flagsNamed('CHEQUERED FLAG') == 0, 'and waves it once, not every frame')
+check(flagsNamed('CHECKERED FLAG') == 0, 'and waves it once, not every frame')
 
 -- ---------------------------------------------------------------------------
 -- Races that have no approach to a final lap
@@ -216,7 +216,7 @@ clearLog()
 ontoTheApproach()
 moveTo(180)
 check(flagsNamed('WHITE FLAG') == 0, 'a one-lap race never waves a white flag')
-check(flagsNamed('CHEQUERED FLAG') == 1,
+check(flagsNamed('CHECKERED FLAG') == 1,
   'but it does have a finish, and lap 1 IS the flag')
 
 -- A sprint stage is driven once from the first gate to the last: the last gate
@@ -234,7 +234,7 @@ clearLog()
 ontoTheApproach()
 moveTo(180)
 check(flagsNamed('WHITE FLAG') == 0, 'a point-to-point stage never waves a white flag')
-check(flagsNamed('CHEQUERED FLAG') == 1,
+check(flagsNamed('CHECKERED FLAG') == 1,
   'though its last gate is still a finish to be waved at')
 
 -- ---------------------------------------------------------------------------
@@ -250,7 +250,7 @@ moveTo(170)
 check(flagsNamed('WHITE FLAG') == 1, 'a fresh session waves the white flag again')
 
 -- ---------------------------------------------------------------------------
--- The chequered flag, once, for this driver
+-- The checkered flag, once, for this driver
 -- ---------------------------------------------------------------------------
 -- Retired WITHOUT having crossed the line -- a DNF, an admin ending the session,
 -- the clock running out. No approach flash happened, so this is the only time
@@ -260,7 +260,7 @@ clearLog()
 handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race', place = 4 })
 local chq = flagNotices()
 check(#chq == 1, 'a driver retired without crossing the line still gets the flag')
-check(chq[1] and chq[1].msg == 'CHEQUERED FLAG', 'and says so')
+check(chq[1] and chq[1].msg == 'CHECKERED FLAG', 'and says so')
 check(chq[1] and chq[1].sub and chq[1].sub:find('4th', 1, true) ~= nil,
   'and carries the placing as its second line rather than as a notice of its own')
 
@@ -271,10 +271,10 @@ startRace(1)
 clearLog()
 ontoTheApproach()
 moveTo(180)
-check(flagsNamed('CHEQUERED FLAG') == 1, 'the approach waves it')
+check(flagsNamed('CHECKERED FLAG') == 1, 'the approach waves it')
 clearLog()
 handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race', place = 2 })
-check(flagsNamed('CHEQUERED FLAG') == 0, 'crossing does not wave it a second time')
+check(flagsNamed('CHECKERED FLAG') == 0, 'crossing does not wave it a second time')
 local placed = nil
 for _, h in ipairs(hooks) do
   if h.event == 'RaceManagerNotice' and h.payload.kind == 'finish' then placed = h.payload end
@@ -286,14 +286,14 @@ check(placed and tostring(placed.msg):find('2nd', 1, true) ~= nil,
 -- and a flash per broadcast would be a strobe.
 clearLog()
 handlers['RM_ForceSpectate']({ reason = 'You finished', source = 'race', place = 4 })
-check(#flagNotices() == 0, 'the chequered flag is waved once, not per broadcast')
+check(#flagNotices() == 0, 'the checkered flag is waved once, not per broadcast')
 
 -- A derby elimination is not a finish. It has an overlay of its own, and
 -- driverFlag() leaves it out for the same reason.
 startRace(3)
 clearLog()
 handlers['RM_ForceSpectate']({ reason = 'Eliminated', source = 'derby', place = 2 })
-check(#flagNotices() == 0, 'a derby elimination does not wave a chequered flag')
+check(#flagNotices() == 0, 'a derby elimination does not wave a checkered flag')
 
 -- ---------------------------------------------------------------------------
 -- Session flags carry their own colour

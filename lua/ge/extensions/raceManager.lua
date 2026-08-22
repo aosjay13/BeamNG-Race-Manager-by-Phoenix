@@ -1206,13 +1206,13 @@ local flags = {
   -- lasts several seconds and is sampled every frame, so without these the
   -- flash would re-arm continuously for the whole run down to the line.
   whiteLap     = nil,
-  chequeredLap = nil,
+  checkeredLap = nil,
   -- The approach flash already happened, so taking the flag a moment later says
   -- the placing rather than the flag again.
-  chequeredSeen = false,
+  checkeredSeen = false,
   -- The flag has been shown for this session by whichever of the two paths got
   -- there first.
-  chequered = false,
+  checkered = false,
 }
 
 -- Every state broadcast from the current server plugin carries this stamp. A
@@ -1318,12 +1318,12 @@ local function resetLapTracking()
   localLap     = 1
   prevPos      = nil
   -- The flags go with the session. A white flag latched on lap 4 of the last
-  -- race would suppress it on lap 4 of the next one, and a chequered left set
+  -- race would suppress it on lap 4 of the next one, and a checkered left set
   -- would suppress it entirely.
   flags.whiteLap      = nil
-  flags.chequeredLap  = nil
-  flags.chequeredSeen = false
-  flags.chequered     = false
+  flags.checkeredLap  = nil
+  flags.checkeredSeen = false
+  flags.checkered     = false
   -- Joker credit and the reset allowance are per-session too: a new phase means
   -- a clean sheet on both.
   jokerArmed   = 1
@@ -1779,9 +1779,9 @@ local function whiteFlagWatch()
     -- come back round to, so the only approach there is is the one to it -- and
     -- the lap counter never reaches a lap TARGET to compare against, which is
     -- why this cannot be folded into the test below.
-    which, latch = 'chequered', 'chequeredLap'
+    which, latch = 'checkered', 'checkeredLap'
   elseif totalLaps > 0 and localLap >= totalLaps then
-    which, latch = 'chequered', 'chequeredLap'
+    which, latch = 'checkered', 'checkeredLap'
   elseif totalLaps > 1 and localLap == totalLaps - 1 then
     which, latch = 'white', 'whiteLap'
   else
@@ -1799,13 +1799,13 @@ local function whiteFlagWatch()
   if (dx * dx + dy * dy + dz * dz) > limit then return end
 
   flags[latch] = localLap
-  if which == 'chequered' then
+  if which == 'checkered' then
     -- The APPROACH flash. Taking the flag pushes one of its own off the
     -- spectator lock a moment later, carrying the placing; this one is the
     -- marshal leaning out as the driver comes down the straight, and it is
     -- latched separately so the two cannot collapse into one.
-    flags.chequeredSeen = true
-    pushNotice('flag', 'CHEQUERED FLAG', { sub = 'Finish line', colour = 'chequered' })
+    flags.checkeredSeen = true
+    pushNotice('flag', 'CHECKERED FLAG', { sub = 'Finish line', colour = 'checkered' })
   else
     pushNotice('flag', 'WHITE FLAG', { sub = 'Last lap', colour = 'white' })
   end
@@ -2924,6 +2924,39 @@ function pit.update(dt)
   pit.repaired = false
   pit.stops    = pit.stops + 1
   pit.promptLeft = 0
+  -- STAND THE CAR STRAIGHT IN THE STALL.
+  --
+  -- A stall is driven into, and cars arrive in it sideways, backwards, or half
+  -- off the side of it -- a spin into the pit lane is exactly when somebody
+  -- needs a stop. Freezing them in whatever attitude they landed in meant the
+  -- release handed back a car pointing at the wall, which costs more time than
+  -- the stop did.
+  --
+  -- Done on ENTRY rather than at the release: the driver watches the hold count
+  -- down, so the car being straightened is visible and reads as being serviced,
+  -- where a snap at the moment of release reads as the mod grabbing the car.
+  -- The position comes from the stall rather than from where they stopped, so a
+  -- car half out of the box is pulled into it.
+  --
+  -- Noted as our own teleport first. Without that the reset hook this provokes
+  -- is read as a driver reset and spends an allowance nobody used, which is the
+  -- bug the grid placement already had once.
+  local stallWp = pitRoute[inStall]
+  if stallWp then
+    local wp = stallWp
+    -- The car's OWN height, not a ground probe. It is stopped in the stall, so
+    -- it is already standing on whatever surface the stall is on -- and groundAt
+    -- is declared below this point anyway, so naming it here would resolve to a
+    -- nil global and throw on the first pit stop of the session.
+    local okPlace = pcall(function ()
+      noteSelfTeleport(wp.x, wp.y, pos.z)
+      local r = headingRot(wp.hx or 0, wp.hy or 1)
+      veh:setPositionRotation(wp.x, wp.y, pos.z, r.x, r.y, r.z, r.w)
+    end)
+    if not okPlace then
+      log('W', 'raceManager', 'Pit stall: could not straighten the car, leaving it as it landed')
+    end
+  end
   setLocalVehicleFrozen(true, 'pit')
   -- Ghost before the notice, so a car that is about to sit frozen in the lane
   -- stops being solid on the same frame it stops being able to move.
@@ -4860,8 +4893,14 @@ local function palette()
     -- it at speed and wants to see the road.
     jokerFill    = ColorF(0.72, 0.35, 1, 0.13),
     jokerUsedFill = ColorF(0.62, 0.62, 0.7, 0.10),
-    pitFill      = ColorF(1, 0.72, 0.1, 0.11),
-    pitWall      = ColorF(1, 0.72, 0.1, 0.07),
+    -- The FOOTPRINT is the rule, so it is the part that has to read. At 0.11
+    -- over pale ground it was invisible and a stall showed as an outline the
+    -- size of the track with nothing inside it.
+    pitFill      = ColorF(1, 0.72, 0.1, 0.24),
+    pitWall      = ColorF(1, 0.72, 0.1, 0.14),
+    -- The chevron on the floor: which way the stall faces, and therefore which
+    -- way the car is stood when it stops.
+    pitArrow     = ColorF(1, 0.88, 0.35, 0.85),
     -- The state glyph drawn across a joker gate: a cross while it is shut, a
     -- tick once it is spent. Both semi-transparent, because they are drawn over
     -- the piece of track the driver is about to aim at.
@@ -5228,6 +5267,24 @@ function paint.pitBox(wp, color)
   local ml = vec3(wp.x + rx * hw, wp.y + ry * hw, z + 0.05)
   local mr = vec3(wp.x - rx * hw, wp.y - ry * hw, z + 0.05)
   debugDrawer:drawCylinder(ml, mr, r * 0.6, color)
+  -- A CHEVRON POINTING THE WAY THE STALL FACES.
+  --
+  -- The box alone is symmetrical, so it says where to stop and nothing about
+  -- which way round. That matters now that stopping in one stands the car on
+  -- the stall's heading: without this the car turning as it is serviced looks
+  -- arbitrary rather than like being pointed back down the lane.
+  --
+  -- Sized off the stall's DEPTH rather than its width, so it stays car-sized on
+  -- a stall that inherited a wide checkpoint's span.
+  local p2 = palette()
+  local tip  = vec3(wp.x + fx * d * 0.55, wp.y + fy * d * 0.55, z + 0.06)
+  local tail = vec3(wp.x - fx * d * 0.35, wp.y - fy * d * 0.35, z + 0.06)
+  local barb = math.min(hw, d * 0.5)
+  local bl2  = vec3(tip.x - fx * d * 0.4 + rx * barb, tip.y - fy * d * 0.4 + ry * barb, z + 0.06)
+  local br2  = vec3(tip.x - fx * d * 0.4 - rx * barb, tip.y - fy * d * 0.4 - ry * barb, z + 0.06)
+  debugDrawer:drawCylinder(tail, tip, r * 0.5, p2.pitArrow)
+  debugDrawer:drawCylinder(bl2, tip, r * 0.5, p2.pitArrow)
+  debugDrawer:drawCylinder(br2, tip, r * 0.5, p2.pitArrow)
 end
 
 -- `fill` and `glyph` are for the joker and nothing else. An ordinary checkpoint
@@ -5408,11 +5465,21 @@ local function drawGates(derbyLive)
   -- are. Editor only -- a driver gets a pole on the nearest one instead.
   for i, wp in ipairs(pitRoute) do
     local col = nudgeSelected(pitRoute, i) and p.nudged or p.pit
-    -- The footprint too, in the editor: a stall is placed as a box and judged
-    -- against the lane it sits in, and the rectangle alone says nothing about
-    -- how far along the stall a car still counts as being in it.
+    -- THE BOX, AND ONLY THE BOX.
+    --
+    -- This used to draw the footprint and then a full-height gate on top of it,
+    -- which is two shapes for one rule and the taller one won: a stall read as a
+    -- pair of tall amber poles, exactly like a checkpoint it is not, while the
+    -- rectangle on the ground that actually decides the stop was lost underneath
+    -- them.
+    --
+    -- A stall is a footprint. It is drawn as one, with its corner posts for
+    -- distance, and the label floats over the middle where the car is meant to
+    -- end up rather than being pinned to a gate that is no longer there.
     paint.pitBox(wp, col)
-    drawGate(wp, col, 'PIT ' .. i, authoring)
+    debugDrawer:drawTextAdvanced(
+      vec3(wp.x, wp.y, wp.z + TUNE.PIT_WALL_H + 0.9),
+      String('PIT ' .. i), p.text, true, false, p.textBg)
   end
 
   -- Joker route: violet, so it never reads as part of the main lap. The next
@@ -7428,7 +7495,7 @@ local function onForceSpectate(rawData)
   -- The placement toast. A MOMENT, so it is a transient notice: the standing
   -- itself is on the leaderboard and the checkered flag is the persistent half
   -- of saying the race is over for this driver.
-  -- THE CHEQUERED FLAG, for this driver, once.
+  -- THE CHECKERED FLAG, for this driver, once.
   --
   -- Every driver gets one as they finish, including a backmarker taking it long
   -- after the leader: this fires off that driver's own removal from the session,
@@ -7439,11 +7506,11 @@ local function onForceSpectate(rawData)
   -- The placing rides along as the second line rather than as a notice of its
   -- own. Two arriving together would rank the flag first and hold the placing
   -- behind it for six seconds, which is a strange way to tell somebody they won.
-  if source ~= 'derby' and not flags.chequered then
-    flags.chequered = true
+  if source ~= 'derby' and not flags.checkered then
+    flags.checkered = true
     local place = tonumber(data.place)
     local placed = (place and place > 0) and ('You placed ' .. ordinal(place)) or nil
-    if flags.chequeredSeen then
+    if flags.checkeredSeen then
       -- The flag was already waved on the approach, seconds ago. Saying it again
       -- the instant they cross is the same news twice; what they do not know yet
       -- is where they came.
@@ -7454,7 +7521,7 @@ local function onForceSpectate(rawData)
       -- No approach flash happened: the driver was retired by something other
       -- than crossing the line (time expired, a DNF, an admin ending it), so
       -- this is the first and only time they see it.
-      pushNotice('flag', 'CHEQUERED FLAG', { sub = placed, colour = 'chequered' })
+      pushNotice('flag', 'CHECKERED FLAG', { sub = placed, colour = 'checkered' })
     end
   end
 end
@@ -8282,6 +8349,48 @@ local function bindServerHandlers()
     end, HANDLER_SOURCE)
   end
   return true
+end
+
+-- A RESET THE INPUT FILTER SWALLOWED.
+--
+-- Once the allowance is spent the reset actions are filtered out in C++, so the
+-- key press never becomes a vehicle reset and onVehicleResetted never fires.
+-- That is deliberate -- a reset REPAIRS the car, and letting it through and
+-- teleporting the car back afterwards would hand out free repairs -- but it
+-- also meant the driver pressed reset and got nothing at all: no movement, no
+-- message, no way to tell the rule from a broken key.
+--
+-- BeamNG hands filtered input to this hook, so it is the one place a swallowed
+-- press is still visible. Guarded on resetInputsBlocked first, which is false
+-- for almost the whole of every session: an analog axis fires this hook
+-- constantly and nothing below the guard should run for steering.
+function M.onFilteredInputChanged(devName, action, value)
+  if not resetInputsBlocked then return end
+  -- Presses only. Releases come through as 0 and are not a second attempt.
+  if not value or value <= 0 then return end
+  if type(action) ~= 'string' then return end
+  local wanted = false
+  for i = 1, #RESET_ACTIONS do
+    if RESET_ACTIONS[i] == action then wanted = true; break end
+  end
+  if not wanted then return end
+  if blockNoticeLeft > 0 then return end
+  blockNoticeLeft = BLOCK_NOTICE_EVERY
+  -- Recorded on the server as well, so a driver leaning on the key still shows
+  -- up in the live table and the results the same way a reset the filter could
+  -- not see already does.
+  if inMultiplayer() then TriggerServerEvent('RM_ResetDenied', '') end
+  if derbyResetsEnforced() then
+    pushNotice('resetsout', "Uh oh! You're out of resets",
+      { sub = 'All ' .. derbyResets.max .. ' derby resets used', colour = 'amber' })
+  elseif maxResets == 0 then
+    pushNotice('resetsout', 'No resets in this session',
+      { sub = 'You are on your own out there', colour = 'amber' })
+  else
+    pushNotice('resetsout', "Uh oh! You're out of resets",
+      { sub = 'All ' .. maxResets .. ' used', colour = 'amber' })
+  end
+  log('W', 'raceManager', 'Reset key pressed with no allowance left (input filtered)')
 end
 
 function M.onExtensionLoaded()

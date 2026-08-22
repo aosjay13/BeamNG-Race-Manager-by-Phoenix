@@ -61,8 +61,8 @@
 
          THE FLAG IS THE LAST STATUS THING, which is where it always was -- it
          just used to be last in the run rather than last in the row. Green
-         racing, yellow caution, white last lap, red held or stopped, chequered
-         your race is over. The chequered one is a STATE and persists until the
+         racing, yellow caution, white last lap, red held or stopped, checkered
+         your race is over. The checkered one is a STATE and persists until the
          session ends; the placement itself is a moment and goes out as a toast
          instead. -->
     <span class="rm-bar-corner">
@@ -107,7 +107,7 @@
     <span class="rm-driverbar-label" ng-if="resetsLimited()">
       RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
     </span>
-    <!-- The chequered flag's caption. It used to sit beside the flag, and it
+    <!-- The checkered flag's caption. It used to sit beside the flag, and it
          followed the flag to the corner when the flag moved -- where a sentence
          is exactly the wrong shape. It is a readout, so it lives with the
          readouts. -->
@@ -1119,30 +1119,30 @@
     <!-- Which route is being built: the main lap or the rallycross joker -->
     <div class="rm-route-tabs">
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-route-tab-active': editorTarget === 'main'}"
-              ng-click="setEditorTarget('main')">Main Route ({{ routeWaypoints.length }})</button>
+              ng-click="setEditorTarget('main')">Main ({{ routeWaypoints.length }})</button>
       <button class="rm-btn rm-btn-mini rm-route-tab-joker"
               ng-class="{'rm-route-tab-joker-active': editorTarget === 'joker'}"
               ng-click="setEditorTarget('joker')"
               title="The alternate rallycross route. Saved with the layout, driven once per race.">
-        Joker Route ({{ jokerRoute.length }})
+        Joker ({{ jokerRoute.length }})
       </button>
       <button class="rm-btn rm-btn-mini rm-route-tab-pit"
               ng-class="{'rm-route-tab-pit-active': editorTarget === 'pit'}"
               ng-click="setEditorTarget('pit')"
               title="Drive into a stall and press the button. A stall stops, repairs and releases the car. Not a checkpoint.">
-        Pit Stalls ({{ pitRoute.length }})
+        Pit ({{ pitRoute.length }})
       </button>
       <button class="rm-btn rm-btn-mini rm-route-tab-branch"
               ng-class="{'rm-route-tab-branch-active': editorTarget === 'branch'}"
               ng-click="setEditorTarget('branch')"
               title="Another way through a checkpoint that already exists. Drive through either gate and it counts, so the whole field scores together.">
-        Branches ({{ branches.length }})
+        Branch ({{ branches.length }})
       </button>
       <button class="rm-btn rm-btn-mini rm-route-tab-start"
               ng-class="{'rm-route-tab-start-active': editorTarget === 'start'}"
               ng-click="setEditorTarget('start')"
               title="Drive to each slot and press the button. Slot 1 is pole.">
-        Start Grid ({{ startPositions.length }})
+        Grid ({{ startPositions.length }})
       </button>
       <!-- Circuit or sprint. Setting a circuit to one lap times the same thing,
            which is why that was the workaround - but it reads as a one-lap
@@ -1153,7 +1153,7 @@
               ng-click="togglePointToPoint()"
               ng-disabled="!canEdit()"
               title="Circuit: laps a start/finish line. Point to point: driven once, first gate to last.">
-        {{ pointToPoint ? '⇥ Point to Point' : '⟳ Circuit' }}
+        {{ pointToPoint ? '⇥ P2P' : '⟳ Circuit' }}
       </button>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'joker'">
         Joker gates are drawn violet. Enable the joker lap in Race settings to enforce it.
@@ -1511,16 +1511,19 @@
                   title="Delete the selected layout from the server">
             Delete
           </button>
-          <!-- Puts the server back to nothing loaded. Not a delete: the saved
-               layouts and arenas are all still there, this only unloads what is
-               currently on the map. The race track and the derby arena go
-               together because leaving one behind is what makes "clear" mean
-               two commands on two different tabs. -->
+        </div>
+        <!-- ITS OWN ROW, because it is not a per-layout action. Open, Overwrite
+             and Delete all act on the layout selected above; this one acts on
+             the whole server and is the only thing here that changes what
+             everybody else can see. Sitting it beside them was what pushed that
+             row past the column width in the first place. -->
+        <div class="rm-layouts-row">
           <button class="rm-btn rm-btn-end" ng-click="clearEverything()"
                   ng-disabled="!canEdit()"
                   title="Unload the race track AND the derby arena for everyone. Saved layouts and arenas are kept.">
             Clear Everything
           </button>
+          <span class="rm-layouts-target rm-layouts-target-empty">unloads for everyone</span>
         </div>
         <!-- Confirmations live here rather than in a browser dialog: the game's
              CEF layer cannot draw one over the world (the same reason the layout
@@ -3046,10 +3049,26 @@
     font-weight: 700;
   }
   .rm-layouts-map { color: #9aa0a6; font-weight: 400; text-transform: none; }
-  .rm-layouts-row { display: flex; gap: 5px; align-items: center; }
+  /* WRAPS RATHER THAN SQUEEZES.
+     This column is about 300px wide (the rest goes to the route preview), and
+     without wrapping the flex children just compress: the name field collapsed
+     to a sliver and the buttons folded their OWN text onto two and three lines,
+     which is the worst of both -- unreadable labels and a taller row than
+     wrapping would have cost anyway. Wrap the row, never the words. */
+  .rm-layouts-row {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .rm-layouts-row .rm-btn { white-space: nowrap; }
   .rm-layout-name {
     flex: 1;
-    min-width: 0;
+    /* Enough to read a name in. At min-width 0 this collapsed to a few pixels
+       the moment the button beside it needed room, so the field you type the
+       name into was the first thing to disappear. */
+    min-width: 120px;
     background: rgba(255, 255, 255, 0.08);
     border: 1px solid rgba(255, 255, 255, 0.2);
     color: #e8eaed;
@@ -3426,7 +3445,7 @@
   .rm-flag-yellow { color: #fdd663; }
   .rm-flag-white  { color: #ffffff; }
   .rm-flag-red    { color: #ff5252; }
-  /* Chequered: the flag glyph is monochrome, so it takes the plain foreground
+  /* Checkered: the flag glyph is monochrome, so it takes the plain foreground
      rather than a colour of its own. It is the one flag that is about THIS
      driver rather than the session, which is why it outranks the rest. */
   .rm-flag-checkered { color: #e8eaed; }
@@ -4432,30 +4451,53 @@
   .rm-flash-gold   { background: rgba(150, 110, 0, 0.6); }
   .rm-flash-amber  { background: rgba(175, 85, 0, 0.6); }
   .rm-flash-grey   { background: rgba(40, 44, 52, 0.72); }
-  /* An actual chequered flag rather than a word on a grey wash. Two offset
+  /* An actual checkered flag rather than a word on a grey wash. Two offset
      gradients make the squares; the dark base underneath keeps the text legible
      where a square happens to be white. 18px reads as a flag at a glance and
      does not turn into grey mush on a driver's narrow panel. */
-  .rm-flash-chequered {
-    background-color: rgba(25, 27, 32, 0.82);
-    background-image:
-      linear-gradient(45deg, rgba(255,255,255,0.92) 25%, transparent 25%,
-                             transparent 75%, rgba(255,255,255,0.92) 75%),
-      linear-gradient(45deg, rgba(255,255,255,0.92) 25%, transparent 25%,
-                             transparent 75%, rgba(255,255,255,0.92) 75%);
-    background-size: 36px 36px;
-    background-position: 0 0, 18px 18px;
+  /* A REAL CHECKERBOARD, and it stays black and white.
+     Two things were wrong with the first attempt. The 45deg two-gradient recipe
+     draws DIAMONDS rather than squares -- it is the standard trick and it is the
+     standard trick for a diagonal check. And the base .rm-flash animation fades
+     opacity to 0.35 every half second, which over a dark panel is precisely how
+     black and white average out to the grey that was reported.
+     One conic gradient gives four true squares per tile, and the animation is
+     overridden below so the flag waves instead of fading. */
+  .rm-flash-checkered {
+    background-color: #f2f2f2;
+    background-image: conic-gradient(
+      #14161a 0deg 90deg, #f2f2f2 90deg 180deg,
+      #14161a 180deg 270deg, #f2f2f2 270deg 360deg);
+    background-size: 44px 44px;
+    /* Squares SWAP rather than the whole panel dimming. Reads as a flag being
+       waved, and never spends half its life grey. steps(1) keeps the edges hard;
+       a smooth slide would smear into grey again on a moving panel. */
+    animation: rm-checker-wave 0.45s steps(1) infinite;
   }
-  /* On the chequered flash the text sits over both black and white squares, so
-     it carries its own dark plate rather than relying on a shadow. */
-  .rm-flash-chequered .rm-flash-title,
-  .rm-flash-chequered .rm-flash-sub {
-    background: rgba(15, 17, 22, 0.82);
+  @keyframes rm-checker-wave {
+    0%, 100% { background-position: 0 0; }
+    50%      { background-position: 22px 0; }
+  }
+  /* The text sits over both black and white squares, so it carries its own
+     plate rather than relying on a shadow that only works over one of them. */
+  .rm-flash-checkered .rm-flash-title,
+  .rm-flash-checkered .rm-flash-sub {
+    background: rgba(12, 14, 18, 0.88);
     border-radius: 3px;
-    padding: 2px 12px;
+    padding: 3px 14px;
   }
-  .rm-minimal .rm-flash-chequered { background-size: 24px 24px; }
-  .rm-minimal .rm-flash-chequered { background-position: 0 0, 12px 12px; }
+  .rm-flash-checkered .rm-flash-title { color: #ffffff; text-shadow: none; }
+  .rm-flash-checkered .rm-flash-sub   { color: #ffe082; text-shadow: none; }
+  /* A driver's panel is narrower, so the squares come down with it: 44px checks
+     on a 300px panel are three squares across and read as stripes. */
+  .rm-minimal .rm-flash-checkered {
+    background-size: 28px 28px;
+    animation-name: rm-checker-wave-sm;
+  }
+  @keyframes rm-checker-wave-sm {
+    0%, 100% { background-position: 0 0; }
+    50%      { background-position: 14px 0; }
+  }
   .rm-flash-title {
     font-size: 30px;
     font-weight: 800;

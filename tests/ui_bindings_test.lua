@@ -1662,16 +1662,32 @@ for attr in html:gmatch('class="([^"]*)"') do
 end
 for attr in html:gmatch("'(rm%-[%w%-]+)'%s*:") do worn[attr] = true end   -- ng-class keys
 for attr in html:gmatch("'(rm%-[%w%-]+)'") do worn[attr] = true end       -- ng-class values
+-- CLASSES BUILT AT RUNTIME. ng-class="'rm-flash-' + notice.colour" wears a
+-- class whose name exists nowhere in this file, so a purely literal search
+-- reports it as dead weight and fails on a rule that is very much in use. Any
+-- prefix the markup concatenates onto marks everything sharing it as worn --
+-- which is as precise as a static check can be about a name assembled at
+-- runtime, and still catches a whole prefix nobody references.
+local prefixes = {}
+for pre in html:gmatch("'(rm%-[%w%-]-%-)'%s*%+") do prefixes[#prefixes + 1] = pre end
+local function isWorn(cls)
+  if worn[cls] then return true end
+  for _, pre in ipairs(prefixes) do
+    if cls:sub(1, #pre) == pre then return true end
+  end
+  return false
+end
 local animated = 0
 for cls in html:gmatch('%.(rm%-[%w%-]+)%s*{[^}]-animation:[^}]-infinite') do
   animated = animated + 1
-  expect(worn[cls] == true,
+  expect(isWorn(cls),
     'the infinitely animated class ' .. cls .. ' is worn by an element')
 end
 -- A loop over nothing passes silently, which for a guard is the same as not
--- having one. Two forever-animations exist by design: the derby-live badge and
--- the out-of-bounds warning.
-expect(animated == 2, 'both infinite animations were found and checked, got '
+-- having one. Three forever-animations exist by design: the derby-live badge,
+-- the out-of-bounds warning, and the checkered flash -- whose squares SWAP
+-- rather than fading, because the shared fade takes black and white to grey.
+expect(animated == 3, 'every infinite animation was found and checked, got '
   .. animated)
 
 -- ---------------------------------------------------------------------------
