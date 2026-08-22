@@ -464,7 +464,28 @@ RM_onCupStart(ADMIN, '{"name":"Broadcast Cup"}')
 check(lastCup ~= nil, 'starting a cup pushes the cup state to clients')
 check(lastCup.cupEnabled == true and lastCup.cupName == 'Broadcast Cup',
   'the payload carries the cup itself')
-check(#lastCup.presets == 5, 'and the list of scoring presets the server supports')
+-- Not a hardcoded count. This asserted `== 5` and broke the moment a preset was
+-- added, which tells you nothing except that somebody added one: the thing worth
+-- protecting is that every entry is USABLE by the dropdown, not how many there
+-- are. A preset missing its key cannot be picked and a preset missing its label
+-- shows as a blank row, and neither fails anywhere else.
+check(#lastCup.presets >= 5, 'and the list of scoring presets the server supports')
+local presetsOk, byKey = true, {}
+for _, p in ipairs(lastCup.presets) do
+  if type(p.key) ~= 'string' or p.key == ''
+     or type(p.label) ~= 'string' or p.label == '' then presetsOk = false end
+  byKey[p.key] = p
+end
+check(presetsOk, 'every preset carries the key the dropdown sends and a label to show')
+
+-- Collision Course: podium only, and nothing for turning up. Three deep rather
+-- than three followed by twenty-one zeroes, because a position past the end of
+-- the table already scores nothing.
+RM_onCupSetPreset(ADMIN, '{"preset":"collision-course","target":"race"}')
+check(byKey['collision-course'] ~= nil, 'Collision Course is offered as a preset')
+check(#lastCup.racePoints == 3 and lastCup.racePoints[1] == 3
+  and lastCup.racePoints[2] == 2 and lastCup.racePoints[3] == 1,
+  'and pays 3, 2, 1 with nothing behind it')
 check(#lastCup.bonuses == 4, 'and the bonus registry, so the panel renders itself from it')
 check(lastCup.bonuses[1].key ~= nil and lastCup.bonuses[1].label ~= nil,
   'each bonus arrives with a key and a label')

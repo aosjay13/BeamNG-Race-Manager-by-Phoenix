@@ -578,13 +578,25 @@ angular.module('beamng.apps')
         var sig;
 
         sig = cupSig($scope.cup.racePoints);
-        if (cupSeen.race !== sig) { cupFill($scope.cupUi.points, $scope.cup.racePoints); cupSeen.race = sig; }
+        if (cupSeen.race !== sig) {
+          cupFill($scope.cupUi.points, $scope.cup.racePoints); cupSeen.race = sig;
+          // The typed line follows the buffer whenever the SERVER reseeds it,
+          // or a preset load would fill the boxes and leave the line showing
+          // the table before it.
+          $scope.cupSyncLine('race');
+        }
 
         sig = cupSig($scope.cup.derbyPoints);
-        if (cupSeen.derby !== sig) { cupFill($scope.cupUi.derby, $scope.cup.derbyPoints); cupSeen.derby = sig; }
+        if (cupSeen.derby !== sig) {
+          cupFill($scope.cupUi.derby, $scope.cup.derbyPoints); cupSeen.derby = sig;
+          $scope.cupSyncLine('derby');
+        }
 
         sig = cupSig($scope.cup.qualiPoints);
-        if (cupSeen.quali !== sig) { cupFill($scope.cupUi.quali, $scope.cup.qualiPoints); cupSeen.quali = sig; }
+        if (cupSeen.quali !== sig) {
+          cupFill($scope.cupUi.quali, $scope.cup.qualiPoints); cupSeen.quali = sig;
+          $scope.cupSyncLine('quali');
+        }
 
         sig = cupBonusSig($scope.cup.bonuses);
         if (cupSeen.bonus !== sig) {
@@ -777,6 +789,73 @@ angular.module('beamng.apps')
         while (out.length > 0 && out[out.length - 1] === 0) { out.pop(); }
         return out.join(',');
       }
+      // ------------------------------------------------------------------
+      // Typing a table instead of nudging twenty-four spinners
+      // ------------------------------------------------------------------
+      // The spinner grid is fine for changing ONE position and miserable for
+      // entering a system: twenty-four boxes, each a click-click-click, and no
+      // way to see the shape of what you have typed. A points table is a list of
+      // numbers and reads perfectly well as one.
+      //
+      // The line and the boxes are the SAME buffer, in both directions. Typing
+      // in the line fills the boxes, nudging a box rewrites the line, and Apply
+      // sends whatever is in the buffer either way -- so neither is a second
+      // source of truth and there is no "which one wins" to get wrong.
+      //
+      // Nothing new crosses to Lua: cupCsv already built exactly this string for
+      // the Apply path, and the bridge already parses it back. This is the same
+      // format, shown to the admin instead of hidden from them.
+      function cupParseCsv(text, buffer) {
+        var parts = String(text || '').split(/[^0-9]+/);
+        var n = 0;
+        for (var i = 0; i < parts.length && n < CUP_EDIT_POSITIONS; i++) {
+          if (parts[i] !== '') { buffer[n++] = Math.min(9999, Math.floor(Number(parts[i]))); }
+        }
+        // Anything the typed line did not reach scores nothing. Without this a
+        // shorter line would leave the tail of a longer previous table standing
+        // underneath it, which is the one way this could silently pay points
+        // nobody entered.
+        while (n < CUP_EDIT_POSITIONS) { buffer[n++] = 0; }
+      }
+
+      // Split out so the three tables share one implementation rather than
+      // three that drift. `which` names the buffer and the label only.
+      var CUP_TABLES = { race: 'points', derby: 'derby', quali: 'quali' };
+      $scope.cupLine = { race: '', derby: '', quali: '' };
+
+      // Rebuild the visible line from the buffer. Called whenever a spinner
+      // moves and whenever the server reseeds a table.
+      $scope.cupSyncLine = function (which) {
+        var buf = $scope.cupUi[CUP_TABLES[which]];
+        $scope.cupLine[which] = cupCsv(buf);
+      };
+      $scope.cupLineChanged = function (which) {
+        cupParseCsv($scope.cupLine[which], $scope.cupUi[CUP_TABLES[which]]);
+      };
+      // Every position to zero, in one press. The Apply button next to it is
+      // what commits it, so a mis-click costs nothing until it is confirmed.
+      $scope.cupClearTable = function (which) {
+        var buf = $scope.cupUi[CUP_TABLES[which]];
+        for (var i = 0; i < CUP_EDIT_POSITIONS; i++) { buf[i] = 0; }
+        $scope.cupSyncLine(which);
+      };
+      // Qualifying and the derby, filled from the race table. A cup that pays
+      // the same for a derby as for a race is a normal thing to want and was
+      // twenty-four boxes of retyping.
+      $scope.cupCopyFromRace = function (which) {
+        if (which === 'race') { return; }
+        var src = $scope.cupUi.points, dst = $scope.cupUi[CUP_TABLES[which]];
+        for (var i = 0; i < CUP_EDIT_POSITIONS; i++) { dst[i] = Math.floor(Number(src[i]) || 0); }
+        $scope.cupSyncLine(which);
+      };
+      $scope.cupTableEmpty = function (which) {
+        var buf = $scope.cupUi[CUP_TABLES[which]];
+        for (var i = 0; i < CUP_EDIT_POSITIONS; i++) {
+          if (Math.floor(Number(buf[i]) || 0) > 0) { return false; }
+        }
+        return true;
+      };
+
       $scope.cupApplyPoints = function () {
         bngApi.engineLua('raceManager.cupSetRacePoints("' + cupCsv($scope.cupUi.points) + '")');
       };

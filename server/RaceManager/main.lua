@@ -6154,6 +6154,15 @@ local CUP_PRESETS = {
   { key = '35p-folk',       label = '35P Folk Race',
     race = { 35, 30, 25, 20, 18, 16, 15, 14, 13, 12, 11,
              10,  9,  8,  7,  6,  5,  4,  3,  2,  1 } },
+  -- Podium only. Three deep and nothing behind it, which is a whole different
+  -- kind of championship: there is no points to be had for turning up and
+  -- circulating, so a driver either races the front three or scores nothing.
+  --
+  -- The table stops at three rather than carrying twenty-one zeroes, because
+  -- cupPointsFor returns 0 for any position past the end. "3,2,1" and the same
+  -- followed by zeroes are the same scoring system, and this is the short form.
+  { key = 'collision-course', label = 'Collision Course',
+    race = { 3, 2, 1 } },
 }
 
 -- Bonus achievements, as DATA. Each entry names a configurable pot of points,

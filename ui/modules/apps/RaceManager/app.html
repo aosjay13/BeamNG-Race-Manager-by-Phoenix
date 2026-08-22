@@ -734,12 +734,27 @@
         <span class="rm-cup-hint">Loading a preset fills the table below: edit it afterwards if you like.</span>
       </div>
 
-      <div class="rm-cup-row rm-cup-table-row">
+      <!-- TYPE THE TABLE, or nudge the boxes below: same buffer, both ways.
+           Twenty-four spinners are fine for changing one position and
+           miserable for entering a system, and they show you nothing about
+           the SHAPE of what you have typed. A points table is a list of
+           numbers and reads perfectly well as one. -->
+      <div class="rm-cup-row">
         <label>Race points</label>
+        <input type="text" class="rm-cup-line" ng-model="cupLine.race"
+               ng-change="cupLineChanged('race')"
+               placeholder="25,18,15,12,10,8,6,4,2,1"
+               title="Points for P1 downward, separated by commas. A position past the end of the list scores nothing.">
+        <button class="rm-btn rm-btn-mini" ng-click="cupClearTable('race')"
+                ng-disabled="cupTableEmpty('race')"
+                title="Set every position to zero. Nothing is sent until you press Apply.">Clear</button>
+      </div>
+      <div class="rm-cup-row rm-cup-table-row">
+        <label>Per position</label>
         <span class="rm-cup-cell" ng-repeat="p in cupPositions track by $index">
           <span class="rm-cup-pos">P{{ p }}</span>
           <input type="number" class="rm-cup-num" min="0" max="9999" step="1"
-                 ng-model="cupUi.points[$index]">
+                 ng-model="cupUi.points[$index]" ng-change="cupSyncLine('race')">
         </span>
       </div>
       <div class="rm-cup-row">
@@ -810,12 +825,29 @@
                 ng-disabled="!cupUi.derbyPreset">Load</button>
         <span class="rm-cup-hint">Derby position is survival order: the winner, then whoever lasted longest.</span>
       </div>
-      <div class="rm-cup-row rm-cup-table-row">
+      <!-- TYPE THE TABLE, or nudge the boxes below: same buffer, both ways.
+           Twenty-four spinners are fine for changing one position and
+           miserable for entering a system, and they show you nothing about
+           the SHAPE of what you have typed. A points table is a list of
+           numbers and reads perfectly well as one. -->
+      <div class="rm-cup-row">
         <label>Derby points</label>
+        <input type="text" class="rm-cup-line" ng-model="cupLine.derby"
+               ng-change="cupLineChanged('derby')"
+               placeholder="25,18,15,12,10,8,6,4,2,1"
+               title="Points for P1 downward, separated by commas. A position past the end of the list scores nothing.">
+        <button class="rm-btn rm-btn-mini" ng-click="cupClearTable('derby')"
+                ng-disabled="cupTableEmpty('derby')"
+                title="Set every position to zero. Nothing is sent until you press Apply.">Clear</button>
+        <button class="rm-btn rm-btn-mini" ng-click="cupCopyFromRace('derby')"
+                title="Copy the race table into this one.">Same as race</button>
+      </div>
+      <div class="rm-cup-row rm-cup-table-row">
+        <label>Per position</label>
         <span class="rm-cup-cell" ng-repeat="p in cupPositions track by $index">
           <span class="rm-cup-pos">P{{ p }}</span>
           <input type="number" class="rm-cup-num" min="0" max="9999" step="1"
-                 ng-model="cupUi.derby[$index]">
+                 ng-model="cupUi.derby[$index]" ng-change="cupSyncLine('derby')">
         </span>
       </div>
       <div class="rm-cup-row">
@@ -839,12 +871,29 @@
 
       <div class="rm-cup-sep">Qualifying</div>
 
-      <div class="rm-cup-row rm-cup-table-row">
+      <!-- TYPE THE TABLE, or nudge the boxes below: same buffer, both ways.
+           Twenty-four spinners are fine for changing one position and
+           miserable for entering a system, and they show you nothing about
+           the SHAPE of what you have typed. A points table is a list of
+           numbers and reads perfectly well as one. -->
+      <div class="rm-cup-row">
         <label>Quali points</label>
+        <input type="text" class="rm-cup-line" ng-model="cupLine.quali"
+               ng-change="cupLineChanged('quali')"
+               placeholder="3,2,1"
+               title="Points for P1 downward, separated by commas. A position past the end of the list scores nothing.">
+        <button class="rm-btn rm-btn-mini" ng-click="cupClearTable('quali')"
+                ng-disabled="cupTableEmpty('quali')"
+                title="Set every position to zero. Nothing is sent until you press Apply.">Clear</button>
+        <button class="rm-btn rm-btn-mini" ng-click="cupCopyFromRace('quali')"
+                title="Copy the race table into this one.">Same as race</button>
+      </div>
+      <div class="rm-cup-row rm-cup-table-row">
+        <label>Per position</label>
         <span class="rm-cup-cell" ng-repeat="p in cupPositions track by $index">
           <span class="rm-cup-pos">P{{ p }}</span>
           <input type="number" class="rm-cup-num" min="0" max="9999" step="1"
-                 ng-model="cupUi.quali[$index]">
+                 ng-model="cupUi.quali[$index]" ng-change="cupSyncLine('quali')">
         </span>
       </div>
       <div class="rm-cup-row">
@@ -3615,6 +3664,20 @@
   .rm-cup-table-row { gap: 3px; }
   .rm-cup-cell { display: inline-flex; align-items: center; gap: 2px; }
   .rm-cup-pos { font-size: 9px; color: #5f6368; width: 20px; text-align: right; }
+  /* The typed points line. Wide, monospaced digits, and it grows with the
+     row rather than sitting at a fixed width: a 24-deep table is a long line
+     and a box that truncated it would defeat the point of showing it. */
+  .rm-cup-line {
+    flex: 1;
+    min-width: 0;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 3px;
+    color: #e8eaed;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    padding: 3px 6px;
+  }
   .rm-cup-num {
     width: 38px;
     background: rgba(0, 0, 0, 0.35);
