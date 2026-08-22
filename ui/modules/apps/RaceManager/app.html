@@ -106,6 +106,14 @@
     </span>
     <span class="rm-driverbar-label" ng-if="resetsLimited()">
       RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
+      <!-- OUT, said in words and kept on screen.
+           The flash cannot be driven off the key press: once the allowance is
+           spent the reset actions are filtered out in C++ and the press never
+           reaches Lua at all, so nothing in the mod ever learns it happened.
+           A driver pressing a dead key needs the answer to be ALREADY THERE
+           rather than to arrive, so this stays up for the rest of the
+           session instead of appearing for two seconds and going. -->
+      <span class="rm-reset-out" ng-if="myResetsLow()">OUT</span>
     </span>
     <!-- The checkered flag's caption. It used to sit beside the flag, and it
          followed the flag to the corner when the flag moved -- where a sentence
@@ -2110,6 +2118,14 @@
     </span>
     <span class="rm-driverbar-label" ng-if="resetsLimited()">
       RESETS <b ng-class="{'rm-reset-low': myResetsLow()}">{{ resetsUsed }}/{{ maxResets }}</b>
+      <!-- OUT, said in words and kept on screen.
+           The flash cannot be driven off the key press: once the allowance is
+           spent the reset actions are filtered out in C++ and the press never
+           reaches Lua at all, so nothing in the mod ever learns it happened.
+           A driver pressing a dead key needs the answer to be ALREADY THERE
+           rather than to arrive, so this stays up for the rest of the
+           session instead of appearing for two seconds and going. -->
+      <span class="rm-reset-out" ng-if="myResetsLow()">OUT</span>
     </span>
     <span class="rm-waiting" ng-if="driverFlag === 'checkered' && stillRacing() > 0"
           title="You are waiting on the drivers still out on track">
@@ -3951,6 +3967,19 @@
   .rm-joker-done    { color: #7ee2a8; }
   .rm-joker-missing { color: #fdd663; }
   .rm-reset-low     { color: #f28b82; font-weight: 700; }
+  /* Reads at a glance from a moving car, which the number beside it does not:
+     2/2 and 1/2 are one character apart. */
+  .rm-reset-out {
+    margin-left: 4px;
+    padding: 0 5px;
+    border-radius: 3px;
+    background: rgba(234, 67, 53, 0.28);
+    border: 1px solid rgba(234, 67, 53, 0.65);
+    color: #ffb3ac;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 1px;
+  }
   .rm-row-dsq td { opacity: 0.6; background: rgba(234, 67, 53, 0.06); }
   .rm-light-dsq { background: #fbbc05; box-shadow: 0 0 5px rgba(251, 188, 5, 0.7); }
 

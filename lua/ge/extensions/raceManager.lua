@@ -172,7 +172,13 @@ local TUNE = {
   -- punishment. The repair lands part-way through so the car is whole before
   -- the driver gets it back.
   PIT_HOLD_SEC   = 5.0,
-  PIT_REPAIR_AT  = 2.0,   -- seconds remaining when the repair is issued
+  -- Seconds spent re-asserting the freeze and the ghost after a stop is
+  -- serviced. recoverInPlace reloads the vehicle's Lua VM to do its work and
+  -- both of those are vehicle-side calls, so both quietly go with it; this is
+  -- how long the mod keeps putting them back. Generous on purpose -- it costs
+  -- two calls a frame on one car, and the alternative is a car that is briefly
+  -- solid and free to drive in the middle of its own pit stop.
+  PIT_SETTLE_SEC = 1.5,
   PIT_COOLDOWN   = 8.0,   -- before the same stall can trigger again
   PIT_DEPTH      = 3.0,   -- metres along the stall a car counts as being in it
   -- m/s below which the car counts as stopped IN the stall. A pit stop is
@@ -590,7 +596,11 @@ local pitRoute     = {}
 local pit = {
   active   = false,  -- a stop is running
   left     = 0,      -- seconds until release
-  repaired = false,  -- the repair has been issued for this stop
+  -- Seconds left of re-asserting the freeze and the ghost after servicing. The
+  -- repair reloads the vehicle's Lua VM asynchronously and takes both with it,
+  -- so they are kept re-applied until the car has settled rather than put back
+  -- once at a moment guessed in advance.
+  settleLeft = 0,
   cooldown = 0,      -- a short delay before the same stall is live again
   -- The car has to LEAVE a stall before it can serve another stop in one.
   --
@@ -2813,7 +2823,7 @@ function pit.release(reason)
   if not pit.active then return end
   pit.active   = false
   pit.left     = 0
-  pit.repaired = false
+  pit.settleLeft = 0
   pit.cooldown = TUNE.PIT_COOLDOWN
   -- The car is standing in the box it just used. It does not get another stop
   -- out of that box until it has driven out of it.
@@ -2841,29 +2851,31 @@ function pit.update(dt)
 
   if pit.active then
     pit.left = pit.left - dt
-    if not pit.repaired and pit.left <= TUNE.PIT_REPAIR_AT then
-      pit.repaired = true
+    -- THE HOLD IS JUST A HOLD. Everything the stop DOES to the car happened the
+    -- moment it stopped: repaired, stood straight, frozen, ghosted, in that
+    -- order and in one place.
+    --
+    -- What is left here is settling. recoverInPlace is queued into the vehicle's
+    -- own Lua VM and that VM RELOADS to service it, silently taking the freeze
+    -- and the ghost with it -- both are vehicle-side calls. So they are
+    -- re-asserted for a short window afterwards rather than once at a moment
+    -- picked in advance: a fixed re-apply is a guess about how long a reload
+    -- takes, and this simply keeps saying it until the car has settled.
+    if pit.settleLeft > 0 then
+      pit.settleLeft = pit.settleLeft - dt
       local veh = ownVehicle()
       if veh then
-        -- The repair is a vehicle reset as far as BeamNG is concerned, and the
-        -- reset hook must recognise it as ours: a pit stop is not a driver
-        -- reset and must never spend a reset allowance or be reported as one.
-        local ok, p = pcall(function () return veh:getPosition() end)
-        if ok and p then noteSelfTeleport(p.x, p.y, p.z) end
-        pcall(function () veh:queueLuaCommand('recovery.recoverInPlace()') end)
-        -- The reset reloads the vehicle VM and takes the freeze with it, so it
-        -- goes straight back on -- the car must not be free to leave early.
         setLocalVehicleFrozen(true, 'pit')
-        -- The VM reload takes the GHOST with it too, for the same reason and
-        -- just as silently: setGhostEnabled is a vehicle-side call, so the
-        -- repair would quietly hand collision back with seconds of the stop
-        -- still to run. Re-assert it against the id we ghosted, not a fresh
-        -- lookup, so this is the same car either way.
-        if pit.ghostVeh then
-          ghost.apply(pit.ghostVeh, veh, true, TUNE.GHOST_ALPHA)
-        end
+        if pit.ghostVeh then ghost.apply(pit.ghostVeh, veh, true, TUNE.GHOST_ALPHA) end
+        -- AND THE ECHO WINDOW WITH THEM. recoverInPlace is queued into the
+        -- vehicle VM, so the vehicle-reset hook it provokes lands whenever that
+        -- VM gets to it -- a frame later on a quiet map, several under load.
+        -- Arming the window once at entry means a slow reload comes back after
+        -- it has closed and is read as a DRIVER reset: reported to the server
+        -- and charged against the allowance, for a repair the mod asked for.
+        local ok, p2 = pcall(function () return veh:getPosition() end)
+        if ok and p2 then noteSelfTeleport(p2.x, p2.y, p2.z) end
       end
-      pushNotice('pit', 'Repaired, hold for the release')
     end
     if pit.left <= 0 then
       pit.release('complete')
@@ -2921,10 +2933,23 @@ function pit.update(dt)
   end
   pit.active   = true
   pit.left     = TUNE.PIT_HOLD_SEC
-  pit.repaired = false
   pit.stops    = pit.stops + 1
   pit.promptLeft = 0
-  -- STAND THE CAR STRAIGHT IN THE STALL.
+  pit.settleLeft = TUNE.PIT_SETTLE_SEC
+  -- SERVICE THE CAR, ONCE, HERE.
+  --
+  -- Stopped in the box is the whole entry condition; what follows is the stop
+  -- itself and it is four things in a fixed order: stand it straight on the
+  -- stall, repair it, freeze it, ghost it. The hold that follows is only a
+  -- clock.
+  --
+  -- The repair used to happen part way through the hold, which meant the car
+  -- was mutated twice at two different moments and each one needed the freeze
+  -- and the ghost putting back separately. One service is easier to reason
+  -- about and easier to watch.
+  --
+  -- STRAIGHT BEFORE REPAIRED, deliberately: recoverInPlace recovers where the
+  -- car IS, so placing it first is what makes "in place" mean the stall.
   --
   -- A stall is driven into, and cars arrive in it sideways, backwards, or half
   -- off the side of it -- a spin into the pit lane is exactly when somebody
@@ -2957,6 +2982,11 @@ function pit.update(dt)
       log('W', 'raceManager', 'Pit stall: could not straighten the car, leaving it as it landed')
     end
   end
+  -- The repair is a vehicle reset as far as BeamNG is concerned, and the reset
+  -- hook must recognise it as ours: a pit stop is not a driver reset and must
+  -- never spend a reset allowance or be reported as one. noteSelfTeleport above
+  -- is what covers it.
+  pcall(function () veh:queueLuaCommand('recovery.recoverInPlace()') end)
   setLocalVehicleFrozen(true, 'pit')
   -- Ghost before the notice, so a car that is about to sit frozen in the lane
   -- stops being solid on the same frame it stops being able to move.
@@ -8360,10 +8390,22 @@ end
 -- also meant the driver pressed reset and got nothing at all: no movement, no
 -- message, no way to tell the rule from a broken key.
 --
--- BeamNG hands filtered input to this hook, so it is the one place a swallowed
--- press is still visible. Guarded on resetInputsBlocked first, which is false
--- for almost the whole of every session: an analog axis fires this hook
--- constantly and nothing below the guard should run for steering.
+-- INERT ON THE CURRENT BUILD, and kept anyway.
+--
+-- This was the one place a swallowed press looked like it might still be
+-- visible, and a live session settled it: BeamNG does NOT deliver filtered
+-- actions here. The filtering happens in C++ inside ActionMap, and a blocked
+-- action is dropped before any Lua hook runs -- onFilteredInputChanged means
+-- "input that got through the filter", not "input the filter stopped".
+--
+-- Not deleted, because it costs one boolean test per input event and it is the
+-- exact shape the answer would take if a future build ever did route blocked
+-- actions through a hook. The panel carries a standing OUT marker instead,
+-- which needs nothing from the engine.
+--
+-- Guarded on resetInputsBlocked first, which is false for almost the whole of
+-- every session: an analog axis fires this hook constantly and nothing below
+-- the guard should run for steering.
 function M.onFilteredInputChanged(devName, action, value)
   if not resetInputsBlocked then return end
   -- Presses only. Releases come through as 0 and are not a second attempt.
@@ -8435,7 +8477,7 @@ local function resetToIdle(reason)
   pitRoute        = {}
   pit.active      = false
   pit.left        = 0
-  pit.repaired    = false
+  pit.settleLeft  = 0
   pit.cooldown    = 0
   pit.promptLeft  = 0
   -- clearGhostReasons above has already swept every car in the world clean, so
