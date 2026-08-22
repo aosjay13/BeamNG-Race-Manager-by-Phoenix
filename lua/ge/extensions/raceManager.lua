@@ -5030,10 +5030,19 @@ local function palette()
     markerLine   = ColorF(0.2, 0.95, 1, 0.95),
     markerFill   = ColorF(0.2, 0.85, 1, 0.13),
     markerSel    = ColorF(1, 1, 1, 1),
-    -- The border every mark carries. Near-black and nearly opaque: it is what
-    -- makes a cyan chevron legible over pale gravel and over dark tarmac alike,
-    -- rather than only over one of them.
-    markerEdge   = ColorF(0.02, 0.06, 0.09, 0.92),
+    -- PACKED INTEGERS, NOT ColorF, and that is not a style choice.
+    --
+    -- drawTriSolid takes `packedCol` -- one number built by the engine's global
+    -- color(r,g,b,a) at 0..255 -- where every other call this file makes takes
+    -- a ColorF. Handing it a ColorF is a hard error inside the C++ drawer, once
+    -- per triangle per frame, which is a wall of exceptions and no marker.
+    --
+    -- Guarded, because `color` is a global from BeamNG's utils and a build
+    -- without it should cost the marker faces rather than the whole draw pass.
+    -- nil here means the fill is skipped and the board, posts and outline still
+    -- draw: markers degrade to their previous look instead of vanishing.
+    markerFace   = type(color) == 'function' and color(51, 242, 255, 240) or nil,
+    markerEdgeP  = type(color) == 'function' and color(5, 15, 23, 235) or nil,
     -- The state glyph drawn across a joker gate: a cross while it is shut, a
     -- tick once it is spent. Both semi-transparent, because they are drawn over
     -- the piece of track the driver is about to aim at.
@@ -5469,7 +5478,10 @@ function marker.geometry(wp)
 end
 
 -- A direction marker: a translucent board carrying filled, outlined marks.
-function paint.markerPanel(wp, color, fill)
+-- `lineCol` rather than `color`: the engine's packed-colour builder is a GLOBAL
+-- called color(), and a parameter of that name shadows it inside this function.
+-- That is how the first version came to hand a ColorF to drawTriSolid.
+function paint.markerPanel(wp, lineCol, fill)
   local g = marker.geometry(wp)
   local p = palette()
 
@@ -5479,19 +5491,25 @@ function paint.markerPanel(wp, color, fill)
 
   -- Outline first, mark on top. Both are solid fills; the only difference is
   -- that the outline was built fatter.
-  for i = 1, #g.edge do
-    local t = g.edge[i]
-    debugDrawer:drawTriSolid(t[1], t[2], t[3], p.markerEdge)
-  end
-  for i = 1, #g.tris do
-    local t = g.tris[i]
-    debugDrawer:drawTriSolid(t[1], t[2], t[3], color)
+  --
+  -- Skipped entirely when the packed colours are missing, which is the whole
+  -- fallback: a build with no global color() draws the board, the posts and
+  -- nothing else rather than throwing per triangle per frame.
+  if p.markerFace and p.markerEdgeP then
+    for i = 1, #g.edge do
+      local t = g.edge[i]
+      debugDrawer:drawTriSolid(t[1], t[2], t[3], p.markerEdgeP)
+    end
+    for i = 1, #g.tris do
+      local t = g.tris[i]
+      debugDrawer:drawTriSolid(t[1], t[2], t[3], p.markerFace)
+    end
   end
 
   -- Edge posts, so the extent of the board reads at distance and in flat light
   -- where a translucent fill alone disappears.
-  debugDrawer:drawCylinder(g.postA, g.postB, TUNE.POLE_RADIUS, color)
-  debugDrawer:drawCylinder(g.postC, g.postD, TUNE.POLE_RADIUS, color)
+  debugDrawer:drawCylinder(g.postA, g.postB, TUNE.POLE_RADIUS, lineCol)
+  debugDrawer:drawCylinder(g.postC, g.postD, TUNE.POLE_RADIUS, lineCol)
 end
 
 -- THE PIT STALL IS A BOX, SO IT IS DRAWN AS ONE.

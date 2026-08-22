@@ -38,6 +38,13 @@ vec3 = function (x, y, z)
 end
 quat = function (x, y, z, w) return { x = x, y = y, z = z, w = w } end
 
+-- BeamNG's packed-colour builder, from lua/common/utils.lua. Components are
+-- 0..255 and the result is one integer, which is what the solid-fill calls take.
+color = function (r, g, b, a)
+  local function chan(v) return math.max(0, math.min(255, math.floor(v or 0))) end
+  return chan(r) * 16777216 + chan(g) * 65536 + chan(b) * 256 + chan(a or 255)
+end
+
 local colorAllocs = 0
 ColorF = function (r, g, b, a) colorAllocs = colorAllocs + 1; return { r, g, b, a } end
 ColorI = function (r, g, b, a) colorAllocs = colorAllocs + 1; return { r, g, b, a } end
@@ -57,10 +64,23 @@ debugDrawer = {
   drawQuadSolid = function (_, a, b, c, d, color)
     quads[#quads + 1] = { a = a, b = b, c = c, d = d, color = color }
   end,
-  -- Filled triangles: how a direction marker's chevrons are painted. Lines
-  -- would have been cheaper and look like a wireframe.
-  drawTriSolid = function (_, a, b, c, color)
-    tris[#tris + 1] = { a = a, b = b, c = c, color = color }
+  -- Filled triangles: how a direction marker's chevrons are painted.
+  --
+  -- THE STUB ENFORCES THE ENGINE'S SIGNATURE, and it did not the first time.
+  -- drawTriSolid takes a PACKED colour -- one integer from the global
+  -- color(r,g,b,a) -- where every other drawer call in this mod takes a ColorF.
+  -- The first version was handed a ColorF, which is a hard error inside the C++
+  -- drawer, once per triangle per frame: a wall of exceptions and no marker.
+  --
+  -- The tests passed, because the stub was written to the same wrong assumption
+  -- as the code. A stub that accepts anything only ever checks that the caller
+  -- agrees with itself -- so this one asserts what BeamNG actually asks for.
+  drawTriSolid = function (_, a, b, c, packedCol)
+    if type(packedCol) ~= 'number' then
+      error('drawTriSolid wants a PACKED colour (a number from color(r,g,b,a)), got '
+        .. type(packedCol), 2)
+    end
+    tris[#tris + 1] = { a = a, b = b, c = c, packed = packedCol }
   end,
 }
 
@@ -705,9 +725,12 @@ check(#tris > 0, 'a marker is painted with filled triangles, not lines (got '
   .. #tris .. ')')
 -- Two passes: a dark outline and the mark on top, so it reads over pale gravel
 -- and dark tarmac alike.
+-- Packed colours, so the two passes are told apart by their red channel: the
+-- outline is near-black, the mark is bright cyan.
 local edgeSeen, faceSeen = false, false
 for _, t in ipairs(tris) do
-  if t.color and t.color[1] and t.color[1] < 0.1 then edgeSeen = true else faceSeen = true end
+  local red = math.floor((t.packed or 0) / 16777216)
+  if red < 32 then edgeSeen = true else faceSeen = true end
 end
 check(edgeSeen, 'each mark carries a dark outline behind it')
 check(faceSeen, 'and the mark itself on top')
