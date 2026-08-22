@@ -2016,6 +2016,11 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         spectate: { rank: 30, flash: false, ms: 6000 },
         vehicle:  { rank: 30, flash: false, ms: 6000 },
         session:  { rank: 20, flash: false, ms: 6000 },
+        // Running out of resets changes what this driver is allowed to do for
+        // the rest of the session, so it flashes rather than scrolling past in
+        // the strip. Amber, not the flag yellow: a caution is about the
+        // session and this is about one car.
+        resetsout: { rank: 25, flash: true, ms: 2600, colour: 'amber' },
         // Gold, and a flash rather than the strip. On a driver's panel the
         // strip painted 16% gold over a transparent root, which is to say over
         // the road going past: legible on an admin's dark panel and very nearly

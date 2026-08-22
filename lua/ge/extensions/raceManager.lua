@@ -3214,7 +3214,26 @@ function M.onVehicleResetted(vehId)
     resetsUsed = resetsUsed + 1
     if inMultiplayer() then TriggerServerEvent('RM_VehicleReset', '') end
     local left = maxResets - resetsUsed
-    pushNotice('reset', string.format('Reset %d/%d used: %d left', resetsUsed, maxResets, left))
+    if left <= 0 then
+      -- THE LAST ONE, said as its own event rather than as "0 left" on the end
+      -- of a tally. The rule has just changed for this driver and the way they
+      -- used to find out was by pressing reset in a wall and nothing happening.
+      --
+      -- Private by construction: pushNotice is a guihook into THIS client's
+      -- panel and goes nowhere near the server, so there is no lobby broadcast
+      -- to suppress. Nobody else is told, which is the point -- running out is
+      -- not something a driver needs announced to the people racing them.
+      --
+      -- Fires exactly once because it cannot be reached twice: the allowance
+      -- check above this sends every later attempt down the blocked path
+      -- instead, so resetsUsed passes maxResets one time only. A zero
+      -- allowance never reaches here at all, which is right -- a driver with no
+      -- resets to begin with has not run out of anything.
+      pushNotice('resetsout', "Uh oh! You're out of resets",
+        { sub = 'That was your last one', colour = 'amber' })
+    else
+      pushNotice('reset', string.format('Reset %d/%d used: %d left', resetsUsed, maxResets, left))
+    end
     pushRouteState()
     return
   end

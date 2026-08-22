@@ -544,6 +544,94 @@ for _, hook in ipairs({ 'onBeamMPPostJoin', 'runPostJoin' }) do
   check(countSent('RM_RequestLayouts') == 1, hook .. ' and for the track layouts')
 end
 
+-- ===========================================================================
+-- Running out of resets is its own event
+-- ===========================================================================
+-- The way a driver used to find out their allowance was gone was by pressing
+-- reset in a wall and nothing happening. The last one spent is the moment the
+-- rule changes for them, so it is said then rather than buried as "0 left" on
+-- the end of a running tally.
+--
+-- PRIVATE by construction, and worth stating because the brief asked for it
+-- explicitly: this is a guihook into one client's panel. It never reaches the
+-- server, so there is no lobby announcement to suppress -- the only thing sent
+-- on this path is the RM_VehicleReset that spends the allowance, exactly as
+-- before.
+local function noticesOfKind(kind)
+  local out = {}
+  for _, h in ipairs(hooks) do
+    if h.event == 'RaceManagerNotice' and h.payload.kind == kind then
+      out[#out + 1] = h.payload
+    end
+  end
+  return out
+end
+-- The RUNNING TALLY specifically ("Reset 1/2 used: 1 left"), which is the thing
+-- the out-of-resets announcement replaces. Not every kind='reset' notice: a
+-- reset also explains what it just did to the car ("Recovered in place"), and
+-- that one is not a tally and keeps arriving either way. Counting the kind
+-- alone made this section pass on the wrong message.
+local function tallyNotices()
+  local out = {}
+  for _, n in ipairs(noticesOfKind('reset')) do
+    if tostring(n.msg):find('used:', 1, true) then out[#out + 1] = n end
+  end
+  return out
+end
+
+serverState({ phase = 'waiting', maxResets = 2, totalLaps = 3, drivers = {} })
+serverState({ phase = 'racing',  maxResets = 2, totalLaps = 3, drivers = {} })
+veh.x, veh.y, veh.z = 300, 0, 0
+frames(0.6)
+clearLog()
+
+-- One of two. Still inside the allowance, so it is the ordinary tally.
+driverPressedReset(301, 1, 0)
+resetHook()
+check(#noticesOfKind('resetsout') == 0, 'spending a reset that is not the last says nothing special')
+check(#tallyNotices() == 1, 'it is the ordinary running tally')
+
+-- Two of two: the last one.
+veh.x, veh.y, veh.z = 400, 0, 0
+frames(0.6)
+clearLog()
+driverPressedReset(401, 1, 0)
+resetHook()
+local out = noticesOfKind('resetsout')
+check(#out == 1, 'spending the last reset is announced')
+check(out[1] and out[1].msg == "Uh oh! You're out of resets", 'in the words the brief asked for')
+check(#tallyNotices() == 0, 'and replaces the tally rather than arriving beside it')
+check(countSent('RM_VehicleReset') == 1, 'the last reset is still spent and still reported')
+
+-- Pressing reset again is BLOCKED, not a second announcement. Firing once on
+-- the transition is the whole requirement: a driver leaning on the key in a
+-- barrier would otherwise get one of these per attempt.
+veh.x, veh.y, veh.z = 500, 0, 0
+frames(0.6)
+clearLog()
+driverPressedReset(5, 5, 0)
+resetHook()
+check(#noticesOfKind('resetsout') == 0, 'a blocked attempt does not announce it again')
+local blocked = noticesOfKind('reset')
+check(#blocked == 1 and tostring(blocked[1].msg):find('BLOCKED', 1, true) ~= nil,
+  'it is the blocked-reset notice instead')
+check(countSent('RM_ResetDenied') == 1, 'and the attempt is reported as denied')
+
+-- A zero allowance never runs OUT of anything: there was nothing to spend, and
+-- every attempt is blocked from the first one.
+serverState({ phase = 'waiting', maxResets = 0, totalLaps = 3, drivers = {} })
+serverState({ phase = 'racing',  maxResets = 0, totalLaps = 3, drivers = {} })
+veh.x, veh.y, veh.z = 600, 0, 0
+frames(0.6)
+clearLog()
+driverPressedReset(601, 1, 0)
+resetHook()
+check(#noticesOfKind('resetsout') == 0,
+  'a session with no resets at all never says you have run out of them')
+local none = noticesOfKind('reset')
+check(#none == 1 and tostring(none[1].msg):find('BLOCKED', 1, true) ~= nil,
+  'it says resets are not allowed, which is a different thing')
+
 if fails == 0 then
   print('reset_test: ' .. checks .. ' checks, 0 failures')
 else
