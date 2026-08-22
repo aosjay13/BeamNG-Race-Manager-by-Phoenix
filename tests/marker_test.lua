@@ -285,5 +285,57 @@ handlers['RM_ApplyLayout']({
 check(routeState().markers[1].kind == 'right',
   'an unknown symbol from a layout falls back to a real one')
 
+-- ---------------------------------------------------------------------------
+-- A marker is resized like any other gate
+-- ---------------------------------------------------------------------------
+-- Reported from the first session: markers could not be resized. The size
+-- controls go through activeEditorRoute(), so the fix was to stop giving
+-- markers a list of their own in the panel and let them share the gate row --
+-- which is also where click-to-select and the width editor underneath live.
+serverState({ phase = 'waiting', totalLaps = 3, maxResets = -1, drivers = {} })
+handlers['RM_ApplyLayout']({
+  name = 'sizing', width = 40, height = 10, depth = 2,
+  checkpoints = { { x = 0, y = SF_Y, z = 0, hx = 0, hy = 1 } },
+  markers = { { x = 0, y = 150, z = 0, hx = 0, hy = 1, kind = 'right' } },
+})
+RM.setEditorTarget('marker')
+RM.setCheckpointOverride(1, 60, 14, 3)
+local mk = routeState().markers[1]
+check(mk.width == 60, 'a marker takes a width override')
+check(mk.height == 14 and mk.depth == 3, 'and its own height and depth')
+check(#routeState().waypoints == 1 and routeState().waypoints[1].width ~= 60,
+  'and resizing a marker does not touch the main route')
+
+-- The size editor addresses the ACTIVE list, so the same index on another tab
+-- is a different gate. This is what a shared row has to get right.
+RM.setEditorTarget('main')
+RM.setCheckpointOverride(1, 22, nil, nil)
+check(routeState().waypoints[1].width == 22, 'the same control resizes a checkpoint')
+check(routeState().markers[1].width == 60, 'and left the marker where it was')
+
+-- ---------------------------------------------------------------------------
+-- Each marker is re-signed independently
+-- ---------------------------------------------------------------------------
+-- The symbol buttons appeared to do nothing, and the cause was a repeat inside
+-- a repeat: the inner one shadows $index with the SYMBOL's position, so every
+-- button targeted the marker numbered after the arrow it drew. Three markers
+-- and three different symbols is what that could not have produced.
+RM.setEditorTarget('marker')
+handlers['RM_ApplyLayout']({
+  name = 'three signs', width = 40, height = 10, depth = 2,
+  checkpoints = { { x = 0, y = SF_Y, z = 0, hx = 0, hy = 1 } },
+  markers = { { x = 0, y = 120, z = 0, hx = 0, hy = 1, kind = 'right' },
+              { x = 0, y = 140, z = 0, hx = 0, hy = 1, kind = 'right' },
+              { x = 0, y = 160, z = 0, hx = 0, hy = 1, kind = 'right' } },
+})
+RM.setMarkerKind('left', 2)
+local list = routeState().markers
+check(list[1].kind == 'right' and list[2].kind == 'left' and list[3].kind == 'right',
+  'signing the middle marker changes only the middle marker')
+RM.setMarkerKind('uturn', 3)
+list = routeState().markers
+check(list[1].kind == 'right' and list[2].kind == 'left' and list[3].kind == 'uturn',
+  'and each one keeps whatever it was last set to')
+
 print(string.format('marker_test: %d checks, %d failures', checks, fails))
 os.exit(fails == 0 and 0 or 1)

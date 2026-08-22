@@ -1373,9 +1373,9 @@
     </div>
 
     <!-- Gate list (main lap / joker route) -->
-    <div class="rm-editor-list"
-         ng-if="editorWaypoints().length && !editingGrid() && editorTarget !== 'marker'">
-      <div class="rm-editor-wp-wrap" ng-repeat="wp in editorWaypoints() track by $index">
+    <div class="rm-editor-list" ng-if="editorWaypoints().length && !editingGrid()">
+      <div class="rm-editor-wp-wrap" ng-repeat="wp in editorWaypoints() track by $index"
+           ng-init="mIndex = $index">
         <div class="rm-editor-wp"
              ng-class="{'rm-editor-wp-sel': selectedCp === $index + 1,
                         'rm-editor-wp-over': dragOverIndex === $index}"
@@ -1392,7 +1392,7 @@
           <!-- A branch gate is numbered by the CHECKPOINT it belongs to, not by
                its place in this list: it is not a checkpoint of its own, it is
                the other way of taking one that already exists. -->
-          <span class="rm-editor-idx" ng-class="{'rm-editor-finish': $last && editorTarget === 'main', 'rm-editor-joker': editorTarget === 'joker', 'rm-editor-branch': editorTarget === 'branch'}">{{ (editorTarget === 'branch') ? ('CP ' + wp.slot) : (($last && editorTarget === 'main') ? '🏁' : ($index + 1)) }}</span>
+          <span class="rm-editor-idx" ng-class="{'rm-editor-finish': $last && editorTarget === 'main', 'rm-editor-joker': editorTarget === 'joker', 'rm-editor-branch': editorTarget === 'branch', 'rm-marker-idx': editorTarget === 'marker'}">{{ (editorTarget === 'branch') ? ('CP ' + wp.slot) : (($last && editorTarget === 'main') ? '🏁' : ($index + 1)) }}</span>
           <span class="rm-editor-coords">{{ wp.x.toFixed(1) }}, {{ wp.y.toFixed(1) }}, {{ wp.z.toFixed(1) }}</span>
           <!-- How many other ways there are through this corner. -->
           <span class="rm-editor-lanes" ng-if="editorTarget === 'main' && slotBranchCount($index + 1)"
@@ -1416,6 +1416,23 @@
                    ng-click="pickGateSlot($index + 1, s)">CP {{ s }}</div>
             </div>
           </div>
+          <!-- WHICH SIGN THIS ONE IS. Markers only, and inside the gate row
+               rather than in a list of their own: sharing the row is what gives
+               a marker click-to-select, the width/height editor underneath, Go,
+               Move Here, delete and drag-reorder without any of it being
+               written twice.
+
+               mIndex, NOT $index. This is a repeat inside a repeat, and the
+               inner one shadows $index with the SYMBOL's position -- so every
+               button pointed at a marker numbered after the arrow it drew,
+               which is why pressing them appeared to do nothing at all. -->
+          <span class="rm-marker-kinds rm-marker-kinds-row" ng-if="editorTarget === 'marker'">
+            <button class="rm-btn rm-btn-mini rm-marker-kind"
+                    ng-repeat="k in markerKinds track by k"
+                    ng-class="{'rm-marker-kind-on': wp.kind === k}"
+                    ng-click="$event.stopPropagation(); setMarkerKind(k, mIndex + 1)"
+                    title="{{ markerLabelOf(k) }}">{{ markerGlyph(k) }}</button>
+          </span>
           <span class="rm-editor-dims">
             <span ng-class="{'rm-dim-set': wp.width != null}">W{{ cpDim(wp, 'width') }}</span>
             <span ng-class="{'rm-dim-set': wp.height != null}">↑{{ cpDim(wp, 'height') }}</span>
@@ -1471,31 +1488,6 @@
           <button class="rm-btn rm-btn-mini" ng-click="resetCheckpointOverride()"
                   title="Back to the standard size. Only this gate changes.">Default</button>
         </div>
-      </div>
-    </div>
-
-    <!-- Marker list: every placed sign, with its symbol changeable in place.
-         Its own list rather than a column bolted onto the gate rows, because a
-         marker has no index in a sequence, no size override worth editing from
-         here, and nothing to reorder -- what it has is a symbol, and that is
-         what this row is for. -->
-    <div class="rm-editor-list" ng-if="editorTarget === 'marker' && markers.length">
-      <div class="rm-editor-wp rm-marker-row" ng-repeat="mk in markers track by $index">
-        <span class="rm-editor-idx rm-marker-idx">{{ $index + 1 }}</span>
-        <span class="rm-editor-coords">{{ mk.x.toFixed(1) }}, {{ mk.y.toFixed(1) }}, {{ mk.z.toFixed(1) }}</span>
-        <span class="rm-marker-kinds rm-marker-kinds-row">
-          <button class="rm-btn rm-btn-mini rm-marker-kind"
-                  ng-repeat="k in markerKinds track by k"
-                  ng-class="{'rm-marker-kind-on': mk.kind === k}"
-                  ng-click="$event.stopPropagation(); setMarkerKind(k, $index + 1)"
-                  title="{{ markerLabelOf(k) }}">{{ markerGlyph(k) }}</button>
-        </span>
-        <button class="rm-btn rm-btn-mini" title="Put your car at this marker, facing the way it points"
-                ng-click="$event.stopPropagation(); previewCheckpoint($index + 1)">Go</button>
-        <button class="rm-btn rm-btn-mini rm-btn-grid" title="Move this marker to where your car is standing now"
-                ng-click="$event.stopPropagation(); moveCheckpoint($index + 1)">Move Here</button>
-        <button class="rm-btn rm-btn-mini rm-btn-end" title="Delete this marker"
-                ng-click="$event.stopPropagation(); removeCheckpoint($index + 1)">✕</button>
       </div>
     </div>
 

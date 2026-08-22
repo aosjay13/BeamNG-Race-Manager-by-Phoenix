@@ -3663,6 +3663,19 @@ end
 -- starting grid goes through this too.
 sanitizeCheckpoints = function (raw)
   if type(raw) ~= 'table' then return nil end
+  -- The symbols a marker may carry. Mirrors marker.KINDS in the client
+  -- extension and is kept in step by hand; a symbol missing from here is
+  -- dropped rather than stored, so the failure mode is a marker that reverts to
+  -- the default rather than a layout that will not load.
+  --
+  -- INSIDE the function, not beside it. This file is at Lua's 200-local ceiling
+  -- too -- the same one the client extension documents -- and one more up there
+  -- stops the whole plugin compiling. Rebuilt per call, which costs nothing:
+  -- this runs on save and load, not per frame.
+  local MARKER_KINDS = {
+    right = true, left = true, up = true, down = true,
+    uturn = true, splitRight = true, splitLeft = true,
+  }
   local out = {}
   for i, cp in ipairs(raw) do
     if type(cp) ~= 'table' then return nil end
@@ -3686,6 +3699,17 @@ sanitizeCheckpoints = function (raw)
     -- where direction is the only thing separating two legs of a track. Carried
     -- only when set, like the size overrides above.
     if cp.oneWay == true then out[i].oneWay = true end
+    -- A DIRECTION MARKER'S SYMBOL, carried but never interpreted. The server
+    -- has no idea what these mean and does not need one: markers are signage,
+    -- they arm nothing and score nothing, and the only thing this side owes
+    -- them is storing what an admin placed and handing it back unchanged.
+    --
+    -- Whitelisted rather than passed through, because this is the one field on
+    -- a checkpoint that reaches the client as a LOOKUP KEY. Anything else in it
+    -- draws nothing at all, silently, on every client at once.
+    if type(cp.kind) == 'string' and MARKER_KINDS[cp.kind] then
+      out[i].kind = cp.kind
+    end
   end
   if #out == 0 then return nil end
   return out
@@ -3897,6 +3921,9 @@ function RM_onSaveLayout(pid, rawData)
     -- of the checkpoint list on purpose -- they are an area, not a gate to be
     -- passed in order, and lap validation must never see them.
     pits         = sanitizeCheckpoints(data.pits),
+    -- Signage travels with the track it points around: a stage without its
+    -- markers is a stage nobody can follow.
+    markers      = sanitizeCheckpoints(data.markers),
     -- Sprint stage or circuit. A property of the track, not of the session.
     pointToPoint = data.pointToPoint == true,
     -- Optional branching routes: the other ways round this track. Validated

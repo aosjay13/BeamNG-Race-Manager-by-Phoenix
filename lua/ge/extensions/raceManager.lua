@@ -179,6 +179,13 @@ local TUNE = {
   -- two calls a frame on one car, and the alternative is a car that is briefly
   -- solid and free to drive in the middle of its own pit stop.
   PIT_SETTLE_SEC = 1.5,
+  -- Metres per direction-marker chevron. Small enough that a board reads as a
+  -- run of marks rather than a couple of big arrows, large enough to see from
+  -- the far end of a straight.
+  MARKER_CELL     = 3.0,
+  -- Ceiling on marks per board, so an enormous one does not turn into a solid
+  -- block of geometry drawn every frame.
+  MARKER_MAX_MARKS = 120,
   PIT_COOLDOWN   = 8.0,   -- before the same stall can trigger again
   PIT_DEPTH      = 3.0,   -- metres along the stall a car counts as being in it
   -- m/s below which the car counts as stopped IN the stall. A pit stop is
@@ -306,22 +313,27 @@ marker.LABEL = {
 -- a speck at two hundred metres, which is exactly where a direction marker has
 -- to be readable.
 marker.GLYPH = {
-  right = { {-0.7,0, 0.6,0}, {0.6,0, 0.1,0.45}, {0.6,0, 0.1,-0.45} },
-  left  = { {0.7,0, -0.6,0}, {-0.6,0, -0.1,0.45}, {-0.6,0, -0.1,-0.45} },
-  up    = { {0,-0.7, 0,0.6}, {0,0.6, -0.45,0.1}, {0,0.6, 0.45,0.1} },
-  down  = { {0,0.7, 0,-0.6}, {0,-0.6, -0.45,-0.1}, {0,-0.6, 0.45,-0.1} },
-  -- Up the middle, over the top, and back down the right: the shape of the
-  -- manoeuvre rather than a letter for it.
-  uturn = { {-0.35,-0.7, -0.35,0.25}, {-0.35,0.25, -0.2,0.5}, {-0.2,0.5, 0.2,0.5},
-            {0.2,0.5, 0.35,0.25}, {0.35,0.25, 0.35,-0.2},
-            {0.35,-0.2, 0.1,0.1}, {0.35,-0.2, 0.6,0.1} },
-  -- A stem that forks. The barbs go on the branch being recommended, so the
-  -- symbol says which way to go rather than only that a choice is coming.
-  splitRight = { {0,-0.7, 0,0}, {0,0, -0.5,0.5}, {0,0, 0.6,0.5},
-                 {0.6,0.5, 0.15,0.45}, {0.6,0.5, 0.55,0.05} },
-  splitLeft  = { {0,-0.7, 0,0}, {0,0, 0.5,0.5}, {0,0, -0.6,0.5},
-                 {-0.6,0.5, -0.15,0.45}, {-0.6,0.5, -0.55,0.05} },
+  -- CHEVRONS, not arrows. A stemmed arrow tiled ten times reads as ten arrows;
+  -- a chevron tiled ten times reads as ONE arrow ten cells long, which is what
+  -- a lane marking on a real road does and what ">>>>>>>>" says at a glance.
+  right = { {-0.55,0.8, 0.45,0}, {0.45,0, -0.55,-0.8} },
+  left  = { {0.55,0.8, -0.45,0}, {-0.45,0, 0.55,-0.8} },
+  up    = { {-0.8,-0.55, 0,0.45}, {0,0.45, 0.8,-0.55} },
+  down  = { {-0.8,0.55, 0,-0.45}, {0,-0.45, 0.8,0.55} },
+  -- These three are SHAPES rather than repeating marks, so they carry a stem:
+  -- a U turn tiled across a board still has to look like a U turn.
+  uturn = { {-0.3,-0.8, -0.3,0.2}, {-0.3,0.2, -0.15,0.5}, {-0.15,0.5, 0.15,0.5},
+            {0.15,0.5, 0.3,0.2}, {0.3,0.2, 0.3,-0.25},
+            {0.3,-0.25, 0.08,0.05}, {0.3,-0.25, 0.52,0.05} },
+  splitRight = { {0,-0.8, 0,-0.1}, {0,-0.1, -0.45,0.5}, {0,-0.1, 0.5,0.5},
+                 {0.5,0.5, 0.1,0.42}, {0.5,0.5, 0.44,0.08} },
+  splitLeft  = { {0,-0.8, 0,-0.1}, {0,-0.1, 0.45,0.5}, {0,-0.1, -0.5,0.5},
+                 {-0.5,0.5, -0.1,0.42}, {-0.5,0.5, -0.44,0.08} },
 }
+
+-- Which symbols TILE as a repeating mark and which are one shape.
+-- A chevron field wants to be dense; a U turn wants to be legible.
+marker.TILES = { right = true, left = true, up = true, down = true }
 
 function marker.validKind(k)
   k = tostring(k or '')
@@ -5358,28 +5370,53 @@ function paint.markerPanel(wp, color, fill)
   -- signage, and a sign a driver cannot see through is an obstacle.
   debugDrawer:drawQuadSolid(at(-hw, bot), at(hw, bot), at(hw, top), at(-hw, top), fill)
 
-  -- HOW MANY SYMBOLS FIT. Cells are square and sized off the board's HEIGHT, so
-  -- a tall marker gets big arrows and a low one gets small ones -- the symbol
-  -- stays in proportion to the sign rather than to how wide it happens to be.
-  local cell = math.min(h + d, w)
-  if cell < 0.5 then return end
-  local n = math.max(1, math.floor(w / cell + 0.5))
-  -- Spread evenly with a half-cell margin at each end, so the row is centred
-  -- and no arrow is cut in half by the edge of the board.
-  local step = w / n
-  local half = step * 0.45          -- symbol slightly smaller than its cell
+  local kind = wp.kind or 'right'
+  local glyph = marker.GLYPH[kind] or marker.GLYPH.right
+  local span = h + d
+  local r = TUNE.POLE_RADIUS * 0.7
   local midV = (top + bot) * 0.5
 
-  local glyph = marker.GLYPH[wp.kind] or marker.GLYPH.right
-  local r = TUNE.POLE_RADIUS * 0.8
-  for i = 1, n do
-    local cx = -hw + step * (i - 0.5)
+  local function stamp(cx, cv, size)
     for k = 1, #glyph do
       local g = glyph[k]
       debugDrawer:drawCylinder(
-        at(cx + g[1] * half, midV + g[2] * half),
-        at(cx + g[3] * half, midV + g[4] * half), r, color)
+        at(cx + g[1] * size, cv + g[2] * size),
+        at(cx + g[3] * size, cv + g[4] * size), r, color)
     end
+  end
+
+  if marker.TILES[kind] then
+    -- A FIELD OF CHEVRONS, filling the board in both directions.
+    --
+    -- Sized off a fixed metre count rather than off the board, which is the
+    -- whole difference from the first attempt: cells scaled to the panel's
+    -- height gave a forty metre sign exactly two enormous arrows, and a driver
+    -- reads ">>>>>>>>>>" as a direction and two big arrows as decoration.
+    -- Fixed cells mean a wider board simply gets MORE marks, which is what
+    -- "repeated as necessary" has to mean.
+    local cell = TUNE.MARKER_CELL
+    local cols = math.max(1, math.floor(w / cell + 0.5))
+    local rows = math.max(1, math.floor(span / cell + 0.5))
+    -- A hard cap, because the board is admin-drawn and nothing stops somebody
+    -- placing a three hundred metre one. Beyond this the marks are closer
+    -- together than they are wide and it is a solid block anyway.
+    if cols * rows > TUNE.MARKER_MAX_MARKS then
+      local scale = math.sqrt(cols * rows / TUNE.MARKER_MAX_MARKS)
+      cols = math.max(1, math.floor(cols / scale))
+      rows = math.max(1, math.floor(rows / scale))
+    end
+    local stepU, stepV = w / cols, span / rows
+    local size = math.min(stepU, stepV) * 0.42
+    for cix = 1, cols do
+      local cx = -hw + stepU * (cix - 0.5)
+      for riy = 1, rows do
+        stamp(cx, bot + stepV * (riy - 0.5), size)
+      end
+    end
+  else
+    -- One shape, centred, as big as the board allows. A U turn or a fork is a
+    -- diagram: tiling it thirty times says nothing a single one does not.
+    stamp(0, midV, math.min(w, span) * 0.42)
   end
 
   -- Edge posts, so the extent of the board reads at distance and in flat light
