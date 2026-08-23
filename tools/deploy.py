@@ -240,7 +240,18 @@ def deploy(server, client, dry_run=False, force=False, running=False):
     ok = True
     for data, dest in targets:
         rel = os.path.relpath(dest, server)
-        # WRITING main.lua ON A LIVE SERVER ENDS THE SESSION.
+        # ALREADY IDENTICAL: nothing to write, so nothing to refuse.
+        #
+        # This check comes FIRST for that reason. It used to sit BELOW the
+        # live-server refusal, so a client-only deploy reported both server
+        # files as REFUSED and exited "FINISHED WITH ERRORS" -- while the
+        # server was up, the files were byte-identical, and nothing was in any
+        # danger. A warning that fires when nothing is wrong is one people
+        # learn to click past, and this one guards a real hazard.
+        if os.path.exists(dest) and sha_file(dest) == sha(data):
+            print('  unchanged  %s' % rel)
+            continue
+        # WRITING A PLUGIN FILE ON A LIVE SERVER ENDS THE SESSION.
         #
         # BeamMP watches plugin files and HOT-RELOADS on change: it does not wait
         # for a restart. The reload runs onInit, which clears the track, so a
@@ -249,10 +260,10 @@ def deploy(server, client, dry_run=False, force=False, running=False):
         # here, and from inside the game it looked like a bug in the joker gates,
         # because that is what the driver was doing at the time.
         #
+        # Any server .lua, not just main.lua: BeamMP reloads the plugin when any
+        # file in its folder changes.
+        #
         # The client zip is safe: BeamMP only serves it to players as they join.
-        # ANY server .lua, not just main.lua: BeamMP reloads the plugin when
-        # any file in its folder changes, so a module is exactly as disruptive
-        # as the entry point.
         if running and not force and dest.endswith('.lua'):
             print('  REFUSED   %s' % rel)
             print('            The server is UP, and BeamMP hot-reloads a changed')
@@ -260,9 +271,6 @@ def deploy(server, client, dry_run=False, force=False, running=False):
             print('            end any session in progress. Stop the server, or')
             print('            pass --force if nothing is running.')
             ok = False
-            continue
-        if os.path.exists(dest) and sha_file(dest) == sha(data):
-            print('  unchanged  %s' % rel)
             continue
         if dry_run:
             print('  WOULD write %s (%d bytes)' % (rel, len(data)))
