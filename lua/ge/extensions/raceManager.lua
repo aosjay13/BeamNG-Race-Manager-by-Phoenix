@@ -270,6 +270,13 @@ local session = {
   gridFrozen = false,
   -- Out of the session: finished, retired, or eliminated. 'race' | 'derby'.
   spectatorLock = nil,
+  -- Is this client an authenticated admin?
+  --
+  -- Cached here on purpose so it survives the pause menu, and corrected by the
+  -- server whenever it refuses a command -- BeamMP REUSES session ids, so a
+  -- reconnect can inherit a stale one. Session-scoped rather than editor state:
+  -- it gates the editor, but it is not part of it.
+  isAdmin = false,
 }
 
 -- Checkpoints: ordered list of { x, y, z, hx, hy } where (hx, hy) is the
@@ -341,6 +348,16 @@ local track = {
 -- ONE TABLE, not three locals: the top level of this file is a function, Lua
 -- allows it 200 locals, and 196 are spoken for. There are four left.
 local edit = {
+  -- IS THE PANEL OPEN, and what is it pointed at. Mirrored here because the
+  -- authoring furniture -- start-slot outlines, gate rectangles, marker boards
+  -- -- is drawn from Lua and the panel's open/closed state only exists in the
+  -- UI. A closed app means a closed editor.
+  open   = false,
+  -- Which list the editor appends to: main | joker | pit | branch | marker | start.
+  target = 'main',
+  -- Draw the gates at all. The Hide/Show toggle, and it belongs with the editor
+  -- rather than with the session: it is about this client's VIEW, not the race.
+  visualize = true,
   -- Fingerprint of the buffer as the server last handed it over. nil until a
   -- layout has been applied, which is what keeps a fresh client, a late joiner
   -- and every non-admin driver on the unconditional path.
@@ -461,7 +478,6 @@ local branch = {
   editSlot = 1,
 }
 local selfSpectating   = false     -- this player has opted out of the field
-local visualize        = true
 
 -- Starting grid: ordered list of { x, y, z, hx, hy } placed by the race
 -- creator. Slot 1 is pole. Travels with the track layout; the server assigns a
@@ -776,12 +792,10 @@ local pit = {
   -- when a reset ghost was already running and owns that broadcast.
   ghostSent = false,
 }
-local editorTarget = 'main'      -- which route the editor appends to: main | joker
 -- Is the editor panel open in the UI app? Mirrored here because the start-slot
 -- markers are drawn from Lua (debugDrawer) and the panel's open/closed state
 -- only exists in the UI. Pushed by the app whenever its admin tab changes, on
 -- mount, and on teardown -- so a closed app means a closed editor.
-local editorOpen   = false
 
 -- Local lap tracking (reset on every session change)
 local localTime    = 0
@@ -861,7 +875,6 @@ local BLOCK_NOTICE_EVERY = 1.0   -- seconds between blocked-reset reports
 -- across the pause menu -- modScript sets it to manual unload -- so it is the
 -- durable place to keep it. Pushed to the UI with every route state, and
 -- re-confirmed by the server on RM_RequestState (which the app sends on mount).
-local isAdmin   = false
 
 -- Qualifying: ghost mode + session limits, all mirrored from the server.
 -- finalLap is the timed session's post-expiry state: the clock has run out and
@@ -1263,7 +1276,7 @@ function edit.canConfigure()
 end
 
 function edit.holdsBuffer()
-  if not editorOpen then return false end
+  if not edit.open then return false end
   if edit.stamp == nil then return false end
   if edit.running() then return false end
   return edit.fingerprint() ~= edit.stamp
@@ -1278,7 +1291,7 @@ local function pushRouteState()
     width        = track.checkpointWidth,
     height       = track.checkpointHeight,
     depth        = track.checkpointDepth,
-    visualize    = visualize,
+    visualize    = edit.visualize,
     -- Starting grid
     startPositions = track.startPositions,
     pointToPoint   = track.pointToPoint,
@@ -1286,7 +1299,7 @@ local function pushRouteState()
     gridFrozen     = session.gridFrozen,
     -- Admin session, so a freshly mounted UI app knows straight away that this
     -- client is still logged in (see the isAdmin declaration above).
-    isAdmin      = isAdmin,
+    isAdmin      = session.isAdmin,
     -- Joker route (Module 2)
     pitRoute     = track.pitRoute,
     pitActive    = pit.active,
@@ -1296,7 +1309,7 @@ local function pushRouteState()
     jokerTaken   = session.jokerTaken,
     jokerLap     = session.jokerLapUsed,
     jokerEnabled = session.jokerEnabled,
-    editorTarget = editorTarget,
+    editorTarget = edit.target,
     -- Which flag is out FOR THIS DRIVER. Resolved here rather than in the UI
     -- because the white flag is a fact about one driver's own lap, and the panel
     -- has no idea which lap that is. One field, one meaning, both panels.
@@ -5463,9 +5476,9 @@ local function drawStartPositions()
   -- a render gate: `startPositions` itself is untouched and still drives grid
   -- placement (applyGridSlot), the slot count reported to the server, and the
   -- saved layout, for every client whether the editor is open or not.
-  if not editorOpen then return end
+  if not edit.open then return end
   -- Inside the editor, the same Hide/Show Gates toggle the checkpoints use.
-  if not visualize then return end
+  if not edit.visualize then return end
   for i, sp in ipairs(track.startPositions) do
     drawStartPosition(sp, i, session.gridSlot == i)
   end
@@ -5834,7 +5847,7 @@ local function drawPoleGate(wp, color, label, fill, glyph)
 end
 
 local function drawDriverGate(derbyLive)
-  if not debugDrawer or not visualize then return end
+  if not debugDrawer or not edit.visualize then return end
   if derbyLive or session.spectatorLock then return end
   if #track.route == 0 then return end
   -- EVERY PHASE, not just a running session. A driver who loads a track and
@@ -5898,7 +5911,7 @@ local function drawDriverGate(derbyLive)
   -- Drawn for a driver as well as in the editor, which is the whole reason they
   -- exist: the editor pass above adds numbering and picks up the nudge
   -- selection, and this one is the sign as a driver sees it.
-  if not editorOpen then
+  if not edit.open then
     for _, wp in ipairs(marker.list) do
       paint.markerPanel(wp, p.markerLine, p.markerFill)
     end
@@ -5957,11 +5970,11 @@ local function drawGates(derbyLive)
   -- editor's. A driver gets drawDriverGate above: the gate they are aiming at
   -- and the one after it, which is what they can act on. `visualize` still hides
   -- both for an admin who wants the unobstructed view while placing gates.
-  if not (editorOpen and isAdmin) then
+  if not (edit.open and session.isAdmin) then
     drawDriverGate(derbyLive)
     return
   end
-  if not visualize then return end
+  if not edit.visualize then return end
   local authoring = true
   -- Still needed below: which gate is armed, and whether the joker is open,
   -- only mean anything while a session is under way.
@@ -6081,9 +6094,9 @@ derby.init({
   releaseGridHold = releaseGridHold, requestHold = requestHold,
   -- Mutable scalars this file owns: getters, never values.
   phase = function () return session.phase end,
-  isAdmin = function () return isAdmin end,
-  editorOpen = function () return editorOpen end,
-  visualize = function () return visualize end,
+  isAdmin = function () return session.isAdmin end,
+  editorOpen = function () return edit.open end,
+  visualize = function () return edit.visualize end,
   maxResets = function () return session.maxResets end,
   -- Tables, by reference, so both halves see the same object.
   spectate = spectate,
@@ -6209,10 +6222,10 @@ function M.ghostStatus()
 end
 
 function M.setEditorOpen(open)
-  editorOpen = open == true
+  edit.open = open == true
   -- A closed editor cannot have a mouse mode, and a cursor left released with
   -- nothing to use it is a camera that has stopped answering for no reason.
-  if not editorOpen then nudge.release() end
+  if not edit.open then nudge.release() end
 end
 
 -- Editor toggle: is this track a sprint or a circuit?
@@ -6234,17 +6247,17 @@ function M.setEditorTarget(target)
   target = tostring(target or 'main')
   if target ~= 'joker' and target ~= 'start' and target ~= 'pit'
      and target ~= 'branch' and target ~= 'marker' then target = 'main' end
-  editorTarget = target
+  edit.target = target
   pushRouteState()
-  log('I', 'raceManager', 'Editor target: ' .. editorTarget)
+  log('I', 'raceManager', 'Editor target: ' .. edit.target)
 end
 
 local function activeEditorRoute()
-  if editorTarget == 'joker' then return track.jokerRoute end
-  if editorTarget == 'pit'   then return track.pitRoute end
-  if editorTarget == 'start' then return track.startPositions end
-  if editorTarget == 'branch' then return branch.list end
-  if editorTarget == 'marker' then return marker.list end
+  if edit.target == 'joker' then return track.jokerRoute end
+  if edit.target == 'pit'   then return track.pitRoute end
+  if edit.target == 'start' then return track.startPositions end
+  if edit.target == 'branch' then return branch.list end
+  if edit.target == 'marker' then return marker.list end
   return track.route
 end
 
@@ -6513,12 +6526,12 @@ function nudge.place(list, hit, ray)
   -- end of the route while inserting into the middle of it aimed the new gate at
   -- wherever the lap happened to finish, which is what stood a car sideways
   -- across the track on a reset.
-  local after = (nudge.sel and editorTarget ~= 'branch') and list[nudge.sel] or list[#list]
+  local after = (nudge.sel and edit.target ~= 'branch') and list[nudge.sel] or list[#list]
   local hx, hy = nudge.headingFor(list, x, y, ray, after)
   local place = { x = x, y = y, z = z, hx = hx, hy = hy }
   -- A branch gate belongs to a slot rather than a position in an order, so it is
   -- always an add: insertCheckpoint refuses them for the same reason.
-  if nudge.sel and editorTarget ~= 'branch' then
+  if nudge.sel and edit.target ~= 'branch' then
     local at = nudge.sel + 1
     M.insertCheckpoint(at, place)
     nudge.sel = at
@@ -6540,7 +6553,7 @@ function M.nudgeTurn(dir)
   local wp = nudge.list[nudge.sel]
   if not wp then return end
   nudge.turn(wp, (tonumber(dir) or 1) >= 0 and nudge.TURN_PER_STEP or -nudge.TURN_PER_STEP)
-  if editorTarget == 'branch' then branch.rebuild() end
+  if edit.target == 'branch' then branch.rebuild() end
   pushRouteState()
 end
 
@@ -6566,7 +6579,7 @@ function M.nudgeLift(dir)
     wp.z = lowerToGround(wp.x, wp.y, wp.z, TUNE.NUDGE_LIFT_PER_PRESS,
       TUNE.GROUND_CLEAR)
   end
-  if editorTarget == 'branch' then branch.rebuild() end
+  if edit.target == 'branch' then branch.rebuild() end
   pushRouteState()
 end
 
@@ -6576,7 +6589,7 @@ function M.nudgeDelete()
   if not (nudge.on and nudge.sel) then return end
   local i = nudge.sel
   nudge.sel, nudge.dragging = nil, false
-  if editorTarget == 'start' then
+  if edit.target == 'start' then
     M.removeStartPosition(i)
   else
     M.removeCheckpoint(i)
@@ -6591,7 +6604,7 @@ function nudge.update()
   -- The editor closing, the admin logging out, or a session starting all end it.
   -- Authoring a track while it is being raced on is not a thing to allow, and
   -- the cursor has to go back either way.
-  if not (editorOpen and isAdmin) or sessionRunning() then
+  if not (edit.open and session.isAdmin) or sessionRunning() then
     nudge.release()
     return
   end
@@ -6714,8 +6727,8 @@ function nudge.update()
         -- Dragged into rising ground, a gate would end up inside the hill. This
         -- is the only height change a drag can make, and it only ever lifts.
         wp.z = liftAboveGround(wp.x, wp.y, wp.z, TUNE.GROUND_CLEAR)
-        if editorTarget == 'branch' then branch.rebuild() end
-        if editorTarget == 'start' then branch.gridTool.generated = false end
+        if edit.target == 'branch' then branch.rebuild() end
+        if edit.target == 'start' then branch.gridTool.generated = false end
         pushRouteState()
       end
     end
@@ -6753,7 +6766,7 @@ function nudge.update()
     else
       nudge.turn(wp, wheel * nudge.TURN_PER_STEP)
     end
-    if editorTarget == 'branch' then branch.rebuild() end
+    if edit.target == 'branch' then branch.rebuild() end
     pushRouteState()
   end
 end
@@ -6842,7 +6855,7 @@ function M.editorAdd(place)
     return
   end
   local target = activeEditorRoute()
-  if editorTarget ~= 'start' then
+  if edit.target ~= 'start' then
     local prev = target[#target]
     place.width  = clampWidth(prev and prev.width  or track.checkpointWidth)
     place.height = clampHeight(prev and prev.height or track.checkpointHeight)
@@ -6856,7 +6869,7 @@ function M.editorAdd(place)
   -- the difference from every other editor target: a checkpoint is allowed as
   -- many ways through it as an admin cares to place, and "move the existing one"
   -- would make three ways through a corner impossible. Move is Nudge, or Move Here.
-  if editorTarget == 'branch' then
+  if edit.target == 'branch' then
     if #track.route == 0 then
       guihooks.trigger('RaceManagerEditorMsg', { msg = 'Place the main route first' })
       return
@@ -6877,13 +6890,13 @@ function M.editorAdd(place)
   -- driving the route dropping signs and then going back to say what each one
   -- means is how somebody actually builds a stage, and the symbol stays
   -- changeable afterwards either way.
-  if editorTarget == 'marker' then
+  if edit.target == 'marker' then
     place.kind = marker.validKind(marker.kind) or 'right'
   end
   target[#target + 1] = place
   -- A slot placed by hand after a generate leaves the generator's block no
   -- longer the last `count` of them, so it stops claiming to own one.
-  if editorTarget == 'start' then branch.gridTool.generated = false end
+  if edit.target == 'start' then branch.gridTool.generated = false end
   pushRouteState()
 end
 
@@ -6914,11 +6927,11 @@ function M.editorUndo()
   local target = activeEditorRoute()
   if #target > 0 then
     target[#target] = nil
-    if editorTarget == 'joker' then
+    if edit.target == 'joker' then
       if session.jokerArmed > #track.jokerRoute then session.jokerArmed = math.max(#track.jokerRoute, 1) end
-    elseif editorTarget == 'main' and session.armedWp > #track.route then
+    elseif edit.target == 'main' and session.armedWp > #track.route then
       session.armedWp = math.max(#track.route, 1)
-    elseif editorTarget == 'branch' then
+    elseif edit.target == 'branch' then
       branch.rebuild()
       branch.editSlot = branch.nextFreeSlot()
     end
@@ -6928,7 +6941,7 @@ end
 
 function M.editorClear()
   -- Clearing the joker route or the grid on its own must not wipe the main lap.
-  if editorTarget == 'pit' then
+  if edit.target == 'pit' then
     track.pitRoute = {}
     pushRouteState()
     log('I', 'raceManager', 'Pit stalls cleared')
@@ -6937,13 +6950,13 @@ function M.editorClear()
   -- Signage only. Without this branch, clearing while the Marker tab is open
   -- falls through to the bottom of this function and wipes the MAIN ROUTE --
   -- the whole track, from a button that says it clears markers.
-  if editorTarget == 'marker' then
+  if edit.target == 'marker' then
     marker.list = {}
     pushRouteState()
     log('I', 'raceManager', 'Markers cleared')
     return
   end
-  if editorTarget == 'joker' then
+  if edit.target == 'joker' then
     track.jokerRoute   = {}
     session.jokerArmed   = 1
     session.jokerTaken   = false
@@ -6952,7 +6965,7 @@ function M.editorClear()
     log('I', 'raceManager', 'Joker route cleared')
     return
   end
-  if editorTarget == 'start' then
+  if edit.target == 'start' then
     track.startPositions = {}
     session.gridSlot = nil
     branch.gridTool.generated = false
@@ -6962,7 +6975,7 @@ function M.editorClear()
   end
   -- Clears the branch gates, not the main route: the other way round a track is
   -- a thing an admin iterates on, and the lap it branches off has to survive it.
-  if editorTarget == 'branch' then
+  if edit.target == 'branch' then
     branch.list   = {}
     branch.bySlot = {}
     branch.editSlot = 1
@@ -7040,7 +7053,7 @@ function M.moveCheckpoint(index)
   wp.hx, wp.hy = place.hx, place.hy
   pushRouteState()
   log('I', 'raceManager', string.format('%s %d moved to the current vehicle',
-    editorTarget, index))
+    edit.target, index))
 end
 
 -- Stand the car on a placed gate, facing the way through it, so the creator can
@@ -7094,7 +7107,7 @@ function M.removeCheckpoint(index)
     return
   end
   table.remove(list, index)
-  if editorTarget == 'main' then
+  if edit.target == 'main' then
     local dropped = branch.dropSlot(index)
     branch.shiftSlots(index + 1, -1)
     branch.rebuild()
@@ -7105,14 +7118,14 @@ function M.removeCheckpoint(index)
       })
     end
     if session.armedWp > #track.route then session.armedWp = math.max(#track.route, 1) end
-  elseif editorTarget == 'joker' then
+  elseif edit.target == 'joker' then
     if session.jokerArmed > #track.jokerRoute then session.jokerArmed = math.max(#track.jokerRoute, 1) end
-  elseif editorTarget == 'branch' then
+  elseif edit.target == 'branch' then
     branch.rebuild()
     branch.editSlot = branch.nextFreeSlot()
   end
   pushRouteState()
-  log('I', 'raceManager', string.format('%s %d removed', editorTarget, index))
+  log('I', 'raceManager', string.format('%s %d removed', edit.target, index))
 end
 
 -- Place a gate BEFORE an existing one, at the car. The missing half of "add":
@@ -7128,25 +7141,25 @@ function M.insertCheckpoint(index, place)
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
     return
   end
-  if editorTarget ~= 'start' then
+  if edit.target ~= 'start' then
     local prev = list[index] or list[#list]
     place.width  = clampWidth(prev and prev.width  or track.checkpointWidth)
     place.height = clampHeight(prev and prev.height or track.checkpointHeight)
     place.depth  = clampDepth(prev and prev.depth  or track.checkpointDepth)
   end
-  if editorTarget == 'branch' then
+  if edit.target == 'branch' then
     guihooks.trigger('RaceManagerEditorMsg', {
       msg = 'Branch gates are placed against a slot, not in an order',
     })
     return
   end
   table.insert(list, index, place)
-  if editorTarget == 'main' then
+  if edit.target == 'main' then
     branch.shiftSlots(index, 1)
     branch.rebuild()
   end
   pushRouteState()
-  log('I', 'raceManager', string.format('%s inserted at %d', editorTarget, index))
+  log('I', 'raceManager', string.format('%s inserted at %d', edit.target, index))
 end
 
 -- Move one gate (or grid slot) to a different place in the order. Slot 1 of the
@@ -7160,7 +7173,7 @@ function M.reorderCheckpoint(from, to)
   if to > #list then to = #list end
   local item = table.remove(list, from)
   table.insert(list, to, item)
-  if editorTarget == 'main' then
+  if edit.target == 'main' then
     -- The main route's slots moved, so every branch override addressing one of
     -- them has to move with it. Worked out from the shift the item made rather
     -- than re-derived: exactly one slot changed position, everything between
@@ -7174,7 +7187,7 @@ function M.reorderCheckpoint(from, to)
     branch.rebuild()
   end
   pushRouteState()
-  log('I', 'raceManager', string.format('%s %d moved to %d', editorTarget, from, to))
+  log('I', 'raceManager', string.format('%s %d moved to %d', edit.target, from, to))
 end
 
 -- --- Building a grid without driving it -------------------------------------
@@ -7458,8 +7471,8 @@ function M.nudgeStatus()
     -- leaves the cursor free rather than guessing.
     cursorProbe = nudge.cursorFree(),
     cursorWasFree = nudge.wasFree,
-    editorOpen  = editorOpen,
-    isAdmin     = isAdmin,
+    editorOpen  = edit.open,
+    isAdmin     = session.isAdmin,
   }
 end
 
@@ -7554,7 +7567,7 @@ function M.setNudgeMode(on)
 end
 
 function M.editorToggleVisualize()
-  visualize = not visualize
+  edit.visualize = not edit.visualize
   pushRouteState()
 end
 
@@ -7846,9 +7859,9 @@ local function onServerUpdate(rawData)
   -- so the global broadcast never disturbs it. The server is the authority here:
   -- if it says this session is not authenticated, the local flag is wrong and
   -- gets corrected (server restart, or an admin logged out from elsewhere).
-  if type(data.youAreAdmin) == 'boolean' and data.youAreAdmin ~= isAdmin then
-    isAdmin = data.youAreAdmin
-    guihooks.trigger('RaceManagerAuth', { success = isAdmin, restored = true })
+  if type(data.youAreAdmin) == 'boolean' and data.youAreAdmin ~= session.isAdmin then
+    session.isAdmin = data.youAreAdmin
+    guihooks.trigger('RaceManagerAuth', { success = session.isAdmin, restored = true })
     pushRouteState()
   end
   -- The qualifying clock has expired and this driver is on their last lap. Read
@@ -8448,16 +8461,16 @@ local function onLoginResult(rawData)
   if not ok or type(data) ~= 'table' then return end
   -- Remember it here as well as telling the UI: the UI's copy dies with the
   -- app, this one outlives the pause menu.
-  isAdmin = data.success == true
+  session.isAdmin = data.success == true
   -- `lapsed` means this was not an answer to a login attempt: the server refused
   -- a command because the session is no longer authenticated. Worth saying out
   -- loud, because from the panel it looks exactly like the mod has stopped
   -- working rather than like being logged out.
-  guihooks.trigger('RaceManagerAuth', { success = isAdmin, lapsed = data.lapsed == true })
+  guihooks.trigger('RaceManagerAuth', { success = session.isAdmin, lapsed = data.lapsed == true })
   if data.lapsed == true then
     pushNotice('server', 'Admin session expired: log in again to run the session')
   end
-  log('I', 'raceManager', 'Login result: ' .. tostring(isAdmin)
+  log('I', 'raceManager', 'Login result: ' .. tostring(session.isAdmin)
     .. (data.lapsed == true and ' (session lapsed)' or ''))
 end
 
@@ -8484,7 +8497,7 @@ function M.login(password)
     -- Offline: no server to authenticate against, but the checkpoint editor is
     -- meant to stay usable single-player, so grant local admin outright. Recorded
     -- here too, so the offline editor also survives the pause menu.
-    isAdmin = true
+    session.isAdmin = true
     guihooks.trigger('RaceManagerAuth', { success = true, offline = true })
     pushRouteState()
   end
@@ -8495,7 +8508,7 @@ end
 function M.logout()
   -- Clear the durable copy FIRST. If it stayed set, the next route push would
   -- hand admin straight back to the UI that just logged out.
-  isAdmin = false
+  session.isAdmin = false
   if inMultiplayer() then TriggerServerEvent('RM_Logout', '') end
   pushRouteState()
 end
@@ -8893,7 +8906,7 @@ function M.requestState()
     -- The flag has to be set here too, not just announced to the UI: every
     -- later route push carries it, and a push saying "not admin" would take the
     -- offline editor's own controls away again on the next gate placed.
-    isAdmin = true
+    session.isAdmin = true
     guihooks.trigger('RaceManagerUpdate', { phase = 'waiting', raceTime = 0, totalLaps = session.totalLaps, drivers = {} })
     guihooks.trigger('RaceManagerAuth', { success = true, offline = true })
     log('W', 'raceManager', 'Racing is multiplayer-only; the checkpoint editor works offline')
@@ -9035,8 +9048,8 @@ local function resetToIdle(reason)
   -- The server drops authenticatedPlayers on disconnect, so a session that has
   -- ended takes the admin rights with it. Forget them here or the next server
   -- would inherit an admin flag it never granted.
-  isAdmin = false
-  editorOpen = false
+  session.isAdmin = false
+  edit.open = false
   clearTrackState(reason)
   releaseSpectator(nil)
   -- No more update ticks are coming, so anything the placement queue still owes
@@ -9070,7 +9083,7 @@ local function resetToIdle(reason)
   -- stop would think it was already ghosted and never ghost at all.
   pit.ghostVeh    = nil
   pit.ghostSent   = false
-  editorTarget    = 'main'
+  edit.target    = 'main'
   lastReportedSig = nil
   session.gridSlot        = nil
   finalLap        = false
