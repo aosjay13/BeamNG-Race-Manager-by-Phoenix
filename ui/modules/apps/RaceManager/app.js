@@ -1731,6 +1731,31 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         return formatBehind(row.qualiBest - leader.qualiBest);
       };
 
+      // THE BROADCAST BOARD'S GAP COLUMN, which has to serve both session kinds
+      // off one table.
+      //
+      // The ordinary board has two tables and switches between them, so its
+      // qualifying rows call qualiGapLabel and its race rows call gapLabel. The
+      // broadcast board renders one table for everything -- so it was calling
+      // gapLabel always, and gapLabel reads row.gap, which the SERVER leaves nil
+      // for the whole of qualifying by design (a split-based gap between two
+      // cars on flying laps at opposite ends of the circuit is not a gap
+      // anybody is racing). The column was blank for every qualifying session
+      // ever streamed.
+      //
+      // Not qualiGapLabel directly: that one measures against drivers[0], and
+      // this board renders bcRunning, which is drivers with the retired and the
+      // spectating filtered out. On a session where P1 retired, the two lists
+      // have different leaders and every gap on the stream would be measured
+      // against a car that is not in the race.
+      $scope.bcGapLabel = function (row, index) {
+        if ($scope.sessionKind !== 'quali') { return $scope.gapLabel(row); }
+        if (!row || !row.qualiBest || index === 0) { return ''; }
+        var leader = $scope.bcRunning[0];
+        if (!leader || !leader.qualiBest) { return ''; }
+        return formatBehind(row.qualiBest - leader.qualiBest);
+      };
+
       // The one thing worth saying about a row beyond its numbers. Blank while a
       // driver is simply circulating: a column reading "Racing" on every line is
       // a column of noise, and a stream graphic has no room for one.

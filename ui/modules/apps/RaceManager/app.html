@@ -2355,7 +2355,7 @@
           <!-- The two a commentator actually says out loud. Both are measured at
                the driver's own last checkpoint, which is the last point they and
                the car they are being compared against have both reached. -->
-          <th class="rm-bc-col-time" title="Time behind the leader at this driver's last checkpoint">Gap</th>
+          <th class="rm-bc-col-time" title="{{ sessionKind === 'quali' ? 'Time behind the fastest lap of the session' : 'Time behind the leader, at the last checkpoint this driver reached' }}">Gap</th>
           <th class="rm-bc-col-time" title="Time behind the car directly ahead">Int</th>
           <th class="rm-bc-col-time">Best</th>
           <th class="rm-bc-col-note"></th>
@@ -2383,7 +2383,7 @@
             <span class="rm-bc-eye" ng-if="isWatching(row)">&#x1F441;</span>{{ driverName(row) }}
           </td>
           <td class="rm-bc-col-lap">{{ lapLabel(row) }}</td>
-          <td class="rm-bc-col-time rm-bc-gap" ng-class="{'rm-bc-lapped': lapsDown(row)}">{{ gapLabel(row) }}</td>
+          <td class="rm-bc-col-time rm-bc-gap" ng-class="{'rm-bc-lapped': lapsDown(row)}">{{ bcGapLabel(row, $index) }}</td>
           <td class="rm-bc-col-time rm-bc-int" ng-class="{'rm-bc-lapped': lapsDown(row)}">{{ intervalLabel(row) }}</td>
           <td class="rm-bc-col-time" ng-class="{'rm-best-lap': row.id === bestLapPid}">{{ formatLap(row.raceBest || row.qualiBest) }}</td>
           <td class="rm-bc-col-note">

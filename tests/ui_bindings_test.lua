@@ -704,6 +704,36 @@ expect(occurrences(html, 'ng-if="sectorHolding()"') == 2,
     .. occurrences(html, 'ng-if="sectorHolding()"') .. ')')
 expect(occurrences(html, 'deltaClass(sectorHold.delta)') == 2,
   'including its delta, which is the half that would go missing quietly')
+
+-- ---------------------------------------------------------------------------
+-- THE BROADCAST GAP COLUMN WORKS IN QUALIFYING TOO
+-- ---------------------------------------------------------------------------
+-- The ordinary board has two tables and switches: its qualifying rows call
+-- qualiGapLabel, its race rows call gapLabel. The broadcast board renders ONE
+-- table for everything, and it was calling gapLabel always.
+--
+-- gapLabel reads row.gap, which the server leaves nil for the whole of
+-- qualifying by design -- a split-based gap between two cars on flying laps at
+-- opposite ends of the circuit is not a gap anybody is racing. So the column
+-- was blank for every qualifying session ever streamed, on the one board whose
+-- entire job is being read by people who are not driving.
+expect(html:find('bcGapLabel(row, $index)', 1, true) ~= nil,
+  'the broadcast gap cell goes through bcGapLabel, not gapLabel')
+expect(js:find("if ($scope.sessionKind !== 'quali') { return $scope.gapLabel(row); }", 1, true) ~= nil,
+  'and bcGapLabel falls through to the race gap outside qualifying')
+expect(js:find('row.qualiBest - leader.qualiBest', 1, true) ~= nil,
+  'while qualifying compares best laps, which is what a quali gap is')
+
+-- MEASURED AGAINST bcRunning[0], NOT drivers[0]. The broadcast board renders
+-- bcRunning -- drivers with the retired and the spectating filtered out -- so on
+-- a session where P1 retired the two lists have different leaders, and every gap
+-- on the stream would be measured against a car that is not in the session.
+local bcGap = js:match('%$scope%.bcGapLabel = function.-};')
+expect(bcGap ~= nil, 'bcGapLabel is defined')
+expect(bcGap and bcGap:find('$scope.bcRunning[0]', 1, true) ~= nil,
+  'and takes its leader from the list it actually renders')
+expect(bcGap and bcGap:find('$scope.drivers[0]', 1, true) == nil,
+  'not from the unfiltered driver list')
 expect(js:find('cup: true', 1, true) ~= nil,
   'the cup tab is registered in MODE_TABS for race mode')
 
