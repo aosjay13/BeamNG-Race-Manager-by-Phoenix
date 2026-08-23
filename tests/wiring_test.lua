@@ -29,12 +29,27 @@ local function readFile(path)
 end
 
 local server = readFile('server/RaceManager/main.lua')
+
+-- The plugin is more than its entry point now: the demo derby is a required
+-- sibling, and it defines twenty-seven of the RM_Derby* handlers registered
+-- below. Registration is BY STRING, so a handler living in another file is
+-- resolved identically at fire time -- but a check that only reads main.lua
+-- would call every one of them missing.
+--
+-- Concatenated rather than searched file by file, because the question this
+-- test asks is "does a global by this name exist anywhere in the plugin", and
+-- that is exactly what BeamMP asks when the event fires.
+local serverModules = { 'derby' }
+local plugin = server
+for _, m in ipairs(serverModules) do
+  plugin = plugin .. readFile('server/RaceManager/' .. m .. '.lua')
+end
 local client = readFile('lua/ge/extensions/raceManager.lua')
 local ui     = readFile('ui/modules/apps/RaceManager/app.js')
 
 -- Everything the server plugin registers a handler for.
 local registered = {}
-for name in server:gmatch("MP%.RegisterEvent%s*%(%s*'([%w_]+)'") do
+for name in plugin:gmatch("MP%.RegisterEvent%s*%(%s*'([%w_]+)'") do
   registered[name] = true
 end
 expect(next(registered) ~= nil, 'found MP.RegisterEvent calls in the server plugin')
@@ -46,7 +61,7 @@ expect(next(registered) ~= nil, 'found MP.RegisterEvent calls in the server plug
 -- under that name the timer runs forever and does nothing at all.
 -- ---------------------------------------------------------------------------
 local timers = {}
-for name in server:gmatch("MP%.CreateEventTimer%s*%(%s*'([%w_]+)'") do
+for name in plugin:gmatch("MP%.CreateEventTimer%s*%(%s*'([%w_]+)'") do
   timers[name] = true
 end
 expect(next(timers) ~= nil, 'found MP.CreateEventTimer calls in the server plugin')
@@ -90,7 +105,7 @@ if dispatchBlock then
 end
 
 local sentDownstream = {}
-for name in server:gmatch("MP%.TriggerClientEvent%s*%([^,]+,%s*'([%w_]+)'") do
+for name in plugin:gmatch("MP%.TriggerClientEvent%s*%([^,]+,%s*'([%w_]+)'") do
   sentDownstream[name] = true
 end
 expect(next(sentDownstream) ~= nil, 'found MP.TriggerClientEvent calls in the server plugin')
@@ -106,16 +121,16 @@ end
 -- MP.RegisterEvent takes the handler name as a STRING, so a typo cannot be
 -- caught by the compiler -- it resolves to nil at fire time.
 -- ---------------------------------------------------------------------------
-for event, handler in server:gmatch("MP%.RegisterEvent%s*%(%s*'[%w_]+'%s*,%s*'([%w_]+)'()") do
+for event, handler in plugin:gmatch("MP%.RegisterEvent%s*%(%s*'[%w_]+'%s*,%s*'([%w_]+)'()") do
   local _ = handler
 end
-for event, handler in server:gmatch("MP%.RegisterEvent%s*%(%s*'([%w_]+)'%s*,%s*'([%w_]+)'") do
+for event, handler in plugin:gmatch("MP%.RegisterEvent%s*%(%s*'([%w_]+)'%s*,%s*'([%w_]+)'") do
   -- Our own handlers are global functions defined in this file. BeamMP's base
   -- hooks (onPlayerJoin and friends) are ours too -- every name we register
   -- points at a function we define.
-  expect(server:find('function ' .. handler .. '%s*%(') ~= nil,
+  expect(plugin:find('function ' .. handler .. '%s*%(') ~= nil,
     'event "' .. event .. '" is registered to handler "' .. handler
-      .. '", which is not defined in the server plugin')
+      .. '", which is not defined in the server plugin (main.lua or a module)')
 end
 
 -- ---------------------------------------------------------------------------

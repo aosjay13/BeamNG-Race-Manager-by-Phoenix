@@ -39,14 +39,23 @@ local FILES = {
   'lua/ge/extensions/raceManager/derby.lua',
   'lua/ge/extensions/raceManager/render.lua',
   'server/RaceManager/main.lua',
+  'server/RaceManager/derby.lua',
 }
 
--- The extension, and the modules split out of it. Used by the orphan check
+-- Each host file, and the modules split out of it. Used by the orphan check
 -- below; add a module here when it is created and both checks cover it.
-local EXTENSION = 'lua/ge/extensions/raceManager.lua'
-local MODULES = {
-  'lua/ge/extensions/raceManager/derby.lua',
-  'lua/ge/extensions/raceManager/render.lua',
+--
+-- BOTH SIDES, because both are splitting the same way for the same reason and
+-- the mistake is identical on either. The server pair arrived second and the
+-- server made it immediately.
+local HOSTS = {
+  { host = 'lua/ge/extensions/raceManager.lua', modules = {
+      'lua/ge/extensions/raceManager/derby.lua',
+      'lua/ge/extensions/raceManager/render.lua',
+    } },
+  { host = 'server/RaceManager/main.lua', modules = {
+      'server/RaceManager/derby.lua',
+    } },
 }
 
 -- Comments and string literals are stripped first. Without that, a name
@@ -128,15 +137,15 @@ end
 --
 -- Every future extraction can leave one of these, which is what makes it worth
 -- a test rather than a careful read.
-local function orphans()
+local function orphans(EXTENSION, MODULES)
   local declared = {}
   for name in pairs(select(2, scan(EXTENSION))) do declared[name] = true end
 
   local found = {}
   for _, mod in ipairs(MODULES) do
     for name in pairs(select(2, scan(mod))) do
-      -- A name the module owns and the extension does not declare. Bare uses
-      -- only: `render.palette` is the module's public surface and correct.
+      -- A name the module owns and the host does not declare. Bare uses only:
+      -- `render.palette` is the module's public surface and correct.
       if not declared[name] then
         local code = select(3, scan(EXTENSION))
         for i, l in ipairs(code) do
@@ -153,11 +162,13 @@ local function orphans()
   return found
 end
 
-local orphaned = orphans()
-for _, line in ipairs(orphaned) do print('  ' .. line) end
-check(#orphaned == 0, EXTENSION .. ' calls nothing that moved into a module '
-  .. '(found ' .. #orphaned .. '). Reach it through the module table, or expose '
-  .. 'it as a function on the module if the extension genuinely needs it')
+for _, pair in ipairs(HOSTS) do
+  local orphaned = orphans(pair.host, pair.modules)
+  for _, line in ipairs(orphaned) do print('  ' .. line) end
+  check(#orphaned == 0, pair.host .. ' calls nothing that moved into a module '
+    .. '(found ' .. #orphaned .. '). Reach it through the module table, or '
+    .. 'expose it as a function on the module if the host genuinely needs it')
+end
 
 -- The check has to be able to FAIL, or a broken pattern would report every file
 -- as clean forever. A file that is wrong on purpose, scanned the same way.
