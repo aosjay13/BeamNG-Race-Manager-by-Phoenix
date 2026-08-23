@@ -1107,7 +1107,8 @@ angular.module('beamng.apps')
         players: []           // { id, name, status, reason, elimTime, resets }
       };
       // Dot rule again: these inputs live inside the ng-if derby panel.
-      $scope.derbyUi = { oob: 5, demo: 10, lives: 1, resets: -1, name: '', selected: '' };
+      $scope.derbyUi = { oob: 5, demo: 10, lives: 1, resets: -1, mode: 'lms',
+                         name: '', selected: '' };
       // The rectangle sliders. Width and length are the FULL span in metres,
       // which is what an admin measures an arena in - the server stores half
       // extents and the conversion happens in the Lua command. `square` links
@@ -2637,6 +2638,10 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
             }
             derbyCfgSeen.demo = data.demoLimit;
           }
+          if ((data.derbyMode === 'lms' || data.derbyMode === 'dm')
+              && $scope.derby.phase !== 'running') {
+            $scope.derbyUi.mode = data.derbyMode;
+          }
           if (typeof data.maxResets === 'number' && $scope.derby.phase !== 'running') {
             if (derbyCfgSeen.resets === null || Number($scope.derbyUi.resets) === derbyCfgSeen.resets) {
               $scope.derbyUi.resets = data.maxResets;
@@ -2699,7 +2704,17 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         var lives = parseInt($scope.derbyUi.lives, 10);
         if (isNaN(lives) || lives < 1) { lives = 1; }
         bngApi.engineLua('raceManager.derbySetConfig(' + oob + ', ' + demo + ', '
-          + resets + ', ' + lives + ')');
+          + resets + ', ' + lives + ", '" + ($scope.derbyUi.mode || 'lms') + "')");
+      };
+      // Picking a mode applies immediately rather than waiting for the settings
+      // to be submitted: it changes which boxes are on screen, and a panel that
+      // rearranges itself without having saved anything is a panel an admin
+      // cannot trust. The server forces lives to 1 in LMS, so the value sent
+      // here is what DM would go back to.
+      $scope.derbySetMode = function (mode) {
+        if (mode !== 'lms' && mode !== 'dm') { return; }
+        $scope.derbyUi.mode = mode;
+        $scope.derbyApplyConfig();
       };
       $scope.derbyAddMarker = function () {
         bngApi.engineLua('raceManager.derbyAddMarker()');

@@ -156,6 +156,23 @@ local derby = {
   -- reason is written here rather than in the history because the idea sounds
   -- sensible enough to have again.
   demoLimit = DERBY_DEFAULT_DEMO_LIMIT,
+  -- HOW THE DERBY IS SCORED: 'lms' or 'dm'.
+  --
+  -- Both run exactly the same rules. The stopped timer and the boundary are
+  -- enforced identically, because the stopped timer is the wreck detector and
+  -- neither mode works without it (see demoLimit above). The mode decides what
+  -- an admin is asked to CONFIGURE, and one rule underneath:
+  --
+  --   lms  Last man standing. One life: the first time your car stops, you are
+  --        out. Lives is not a setting because there is nothing to set.
+  --   dm   Deathmatch. Lives are configurable, and a stopped timer spends one
+  --        and puts the driver back on their start slot instead of ending them.
+  --
+  -- Held on the server rather than the UI because it FORCES lives to 1 in lms.
+  -- A client that forgot to send lives, or an old one that cannot, must not be
+  -- able to leave a three-life value sitting behind a mode that does not show
+  -- it -- which would be a derby whose rules do not match its own panel.
+  mode      = 'lms',
   -- HOW MANY TIMES A DRIVER MAY BE COUNTED OUT BEFORE THEY ARE OUT FOR GOOD.
   --
   -- 1 is exactly the behaviour that existed before this: the first time the
@@ -412,6 +429,7 @@ local function broadcastDerbyState(targetPid)
     entrants   = derbyEligibleCount(),
     oobLimit   = derby.oobLimit,
     demoLimit  = derby.demoLimit,
+    derbyMode  = derby.mode,
     lives      = derby.lives,
     maxResets  = derby.maxResets,
     derbyTime  = derby.time,
@@ -621,6 +639,10 @@ function RM_onDerbySetConfig(pid, rawData)
   if not ok or type(data) ~= 'table' then return end
   derby.oobLimit  = derbyClampLimit(data.oobLimit,  derby.oobLimit)
   derby.demoLimit = derbyClampLimit(data.demoLimit, derby.demoLimit)
+  -- Mode. Anything unrecognised leaves it alone rather than falling back to a
+  -- default: a garbled payload should not quietly change how the night is
+  -- scored.
+  if data.mode == 'lms' or data.mode == 'dm' then derby.mode = data.mode end
   -- Lives. Floored at 1, because zero would eliminate the whole field on the
   -- first stopped timer and there is no sensible reading of "nought lives".
   local lives = tonumber(data.lives)
@@ -630,6 +652,10 @@ function RM_onDerbySetConfig(pid, rawData)
     if lives > DERBY_MAX_LIVES then lives = DERBY_MAX_LIVES end
     derby.lives = lives
   end
+  -- LMS IS ONE LIFE, ENFORCED HERE AND NOT IN THE PANEL. Applied after the
+  -- assignment above so it wins regardless of what the client sent, in either
+  -- order, including from a client that does not know about modes at all.
+  if derby.mode == 'lms' then derby.lives = 1 end
   -- Reset allowance, mirroring the race rule: negative = unlimited, 0 = none.
   local resets = tonumber(data.maxResets)
   if resets then
@@ -639,8 +665,10 @@ function RM_onDerbySetConfig(pid, rawData)
     derby.maxResets = resets
   end
   broadcastDerbyState()
-  print(string.format('[RaceManager] Derby config by %s: OOB %gs, stop %gs, resets %s',
-    MP.GetPlayerName(pid) or pid, derby.oobLimit, derby.demoLimit,
+  print(string.format('[RaceManager] Derby config by %s: %s, OOB %gs, stop %gs, '
+    .. 'lives %d, resets %s',
+    MP.GetPlayerName(pid) or pid, string.upper(derby.mode), derby.oobLimit,
+    derby.demoLimit, derby.lives,
     derby.maxResets < 0 and 'unlimited' or tostring(derby.maxResets)))
 end
 

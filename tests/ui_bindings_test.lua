@@ -598,6 +598,30 @@ expect(html:find("isMode('race') && isAdminTab('cup')", 1, true) == nil,
   'and the old race-mode gate is gone rather than merely bypassed')
 expect(js:find('derby: { derby: true, cup: true, editor: true }', 1, true) ~= nil,
   'derby mode lists cup as a selectable tab, so selectAdminTab cannot fall back')
+
+-- ---------------------------------------------------------------------------
+-- LMS / DM
+-- ---------------------------------------------------------------------------
+-- The mode changes which SETTINGS are offered, not which rules apply: the
+-- stopped timer is the wreck detector and runs in both. Lives is the one box
+-- that belongs to DM alone.
+expect(html:find("derbySetMode('lms')", 1, true) ~= nil, 'there is an LMS button')
+expect(html:find("derbySetMode('dm')", 1, true) ~= nil, 'and a DM button')
+expect(html:find("ng-if=\"derbyUi.mode === 'dm'\"", 1, true) ~= nil,
+  'the lives setting is shown for DM only')
+
+-- The timers are NOT mode-gated, and that is the point of the whole exercise:
+-- a stopped timer hidden in LMS is a derby that cannot detect a wreck.
+local demoRow = html:match('<span class="rm%-setting">%s*<label>Demolished timer.-</span>')
+expect(demoRow ~= nil and not demoRow:find('ng-if', 1, true),
+  'the stopped timer is offered in both modes, with no ng-if hiding it')
+local oobRow = html:match('<span class="rm%-setting">%s*<label>OOB timer.-</span>')
+expect(oobRow ~= nil and not oobRow:find('ng-if', 1, true),
+  'and so is out-of-bounds')
+
+expect(js:find("mode: 'lms'", 1, true) ~= nil, 'the panel starts in LMS')
+expect(js:find('data.derbyMode', 1, true) ~= nil,
+  'and mirrors the mode from the server, which owns it')
 expect(js:find('cup: true', 1, true) ~= nil,
   'the cup tab is registered in MODE_TABS for race mode')
 

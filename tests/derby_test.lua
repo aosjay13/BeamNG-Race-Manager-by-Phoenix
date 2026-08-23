@@ -157,6 +157,60 @@ check(lastDerby.oobLimit == 1, 'and neither does out-of-bounds')
 RM_onDerbySetConfig(1, '{"oobLimit":-5,"demoLimit":-5}')
 check(lastDerby.demoLimit == 1 and lastDerby.oobLimit == 1,
   'a negative is a floor, not an off switch')
+
+-- ---------------------------------------------------------------------------
+-- LMS and DM
+-- ---------------------------------------------------------------------------
+-- Both modes enforce the SAME rules -- the stopped timer is the wreck detector
+-- and neither works without it. The mode decides what an admin configures, plus
+-- one rule underneath: LMS is one life.
+--
+-- That rule lives on the server, not in the panel, and these checks are why. A
+-- client that sends lives without a mode, sends them in the wrong order, or is
+-- too old to know about modes at all must not be able to leave a three-life
+-- value sitting behind a mode whose panel does not show it.
+check(lastDerby.derbyMode == 'lms', 'a derby starts in LMS')
+
+RM_onDerbySetConfig(1, '{"mode":"dm","lives":3}')
+check(lastDerby.derbyMode == 'dm' and lastDerby.lives == 3,
+  'DM takes a lives setting')
+
+RM_onDerbySetConfig(1, '{"mode":"lms"}')
+check(lastDerby.lives == 1,
+  'switching to LMS forces one life, so the rules match the panel (got '
+    .. tostring(lastDerby.lives) .. ')')
+
+RM_onDerbySetConfig(1, '{"mode":"lms","lives":5}')
+check(lastDerby.lives == 1, 'and LMS refuses lives however they arrive')
+
+RM_onDerbySetConfig(1, '{"lives":4}')
+check(lastDerby.lives == 1,
+  'including from a client that does not send a mode at all')
+
+RM_onDerbySetConfig(1, '{"mode":"dm","lives":4}')
+check(lastDerby.derbyMode == 'dm' and lastDerby.lives == 4,
+  'and DM gets its lives back')
+
+-- FROM DM, DELIBERATELY. Asked from LMS this check passes whether the garbled
+-- value is ignored or falls back to a default, because the default IS lms --
+-- it would be a check that cannot fail. Asked from DM, only ignoring it keeps
+-- the mode where the admin left it.
+RM_onDerbySetConfig(1, '{"mode":"nonsense"}')
+check(lastDerby.derbyMode == 'dm',
+  'an unrecognised mode leaves the setting alone rather than defaulting (got '
+    .. tostring(lastDerby.derbyMode) .. ')')
+check(lastDerby.lives == 4, 'and does not disturb the lives behind it')
+
+-- LEFT IN DM AT ONE LIFE, which is exactly the behaviour every check below this
+-- point was written against: lives configurable, and a single stopped timer
+-- ends a driver.
+--
+-- DM because lives only exist there -- restoring LMS would pin them at 1 and
+-- fail a dozen checks that have nothing to do with modes. One life because
+-- leaving four means nobody is eliminated on a first stopped timer and the
+-- elimination, results and winner checks all fail instead.
+RM_onDerbySetConfig(1, '{"mode":"dm","lives":1}')
+check(lastDerby.lives == 1, 'fixture back to one life for the checks below')
 RM_onDerbySetConfig(1, '{"oobLimit":5,"demoLimit":10}')
 
 RM_onDerbyAddMarker(1, '{"x":0,"y":0,"z":50}')

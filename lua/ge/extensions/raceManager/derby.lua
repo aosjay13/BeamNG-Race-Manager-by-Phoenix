@@ -109,6 +109,7 @@ D.derbyState = {
   editorOpen = false,
   oobLimit  = 5,        -- seconds (mirrored from server config)
   demoLimit = 10,
+  mode = 'lms',   -- server-owned; mirrored so the offline panel matches
   starts    = {},       -- derby starting grid { x, y, z, hx, hy } (mirrored)
   slot      = nil,      -- start slot the server assigned us for this derby
   visualize = true,     -- Hide/Show toggle for the boundary + grid visuals
@@ -583,12 +584,16 @@ end
 -- the kind of thing that reads correctly and means something else.
 -- `lives` is optional so an older UI, which sends three arguments, still sets
 -- the two timers and the reset allowance instead of failing on arity.
-function D.derbySetConfig(oobLimit, demoLimit, resetLimit, lives)
+-- `mode` is last for the same reason `lives` was: an older UI sends four
+-- arguments, and the server leaves the mode alone when it does not recognise
+-- what it is given -- including nil.
+function D.derbySetConfig(oobLimit, demoLimit, resetLimit, lives, mode)
   if host.inMultiplayer() then
     TriggerServerEvent('RM_DerbySetConfig', jsonEncode({
       oobLimit = tonumber(oobLimit), demoLimit = tonumber(demoLimit),
       maxResets = tonumber(resetLimit),
       lives = tonumber(lives),
+      mode = (mode == 'lms' or mode == 'dm') and mode or nil,
     }))
   end
 end
@@ -734,7 +739,8 @@ function D.derbyRequestState()
     TriggerServerEvent('RM_DerbyRequestLayouts', '')
   else
     guihooks.trigger('RaceManagerDerby', {
-      derbyPhase = 'idle', oobLimit = D.derbyState.oobLimit, demoLimit = D.derbyState.demoLimit,
+      derbyPhase = 'idle', derbyMode = D.derbyState.mode,
+      oobLimit = D.derbyState.oobLimit, demoLimit = D.derbyState.demoLimit,
       maxResets = host.resets.max, derbyTime = 0, boundary = {},
       boundaryMode = 'polygon', shape = nil, wallHeight = D.derbyState.wallHeight,
       wallDepth = D.derbyState.wallDepth,
@@ -851,6 +857,9 @@ D.onDerbyUpdate = function (rawData)
 
   D.derbyState.oobLimit  = tonumber(data.oobLimit)  or D.derbyState.oobLimit
   D.derbyState.demoLimit = tonumber(data.demoLimit) or D.derbyState.demoLimit
+  if data.derbyMode == 'lms' or data.derbyMode == 'dm' then
+    D.derbyState.mode = data.derbyMode
+  end
   if type(data.maxResets) == 'number' then
     host.resets.max = math.floor(data.maxResets)
   end
