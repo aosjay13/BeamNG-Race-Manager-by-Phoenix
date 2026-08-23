@@ -394,12 +394,26 @@ do
   check(blockedGroups['raceManagerSpectate'] ~= true,
     'but the CONTROLS stay live -- there is nothing to win and the car cannot move')
 
+  -- THE PART THE SINGLE input.event CANNOT DO.
+  --
+  -- Letting go of the throttle once is right for a driver who has lifted, and
+  -- useless against one who has not: the input system re-reads the held pedal
+  -- on the next frame, the throttle comes straight back, and the engine screams
+  -- against the frozen car for the whole cool-down. Reported from a race night
+  -- after the stand-down was supposedly fixed -- it WAS fixed, for the lifted
+  -- case, and nothing here could tell the difference because the test only
+  -- looked for the input.event that had already been sent.
+  check(blockedGroups['raceManagerPropulsion'] == true,
+    'and propulsion is filtered, so a held pedal cannot re-apply itself')
+
   -- Released when the derby actually ends, whatever order the broadcasts land in.
   handlers['RM_DerbyUpdate']({ rmProtocol = 2, derbyPhase = 'finished',
     derbyOver = true, derbyPlayers = {} })
   frames(0.4)
   check(frozen == false, 'the freeze lifts when the derby ends')
   check(blockedGroups['raceManagerResets'] ~= true, 'and the reset keys come back')
+  check(blockedGroups['raceManagerPropulsion'] ~= true,
+    'and so does the throttle -- a filter left armed is a car that will not drive')
 end
 
 -- ---------------------------------------------------------------------------

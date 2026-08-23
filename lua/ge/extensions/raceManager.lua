@@ -2423,6 +2423,26 @@ local spectate = {
     'throttle', 'brake', 'steering', 'clutch', 'parkingbrake',
     'nitrousOxideActive',
   },
+  -- WHAT MAKES A CAR GO, and nothing else. Armed only while a derby is standing
+  -- its cars down at the end of a heat.
+  --
+  -- Steering and the brakes are deliberately absent. The stand-down already
+  -- applies full brake and handbrake before the freeze goes on, and blocking an
+  -- input LATCHES it at the value it had when the filter armed -- so leaving
+  -- them out is what keeps the car stopped rather than a car that could be
+  -- released. Steering stays live because taking somebody's wheel away as a
+  -- prize for having been in a derby is worse than pointless.
+  --
+  -- WHY THIS EXISTS AT ALL. The stand-down zeroes the throttle with a single
+  -- input.event, which works perfectly for a driver who has lifted. A derby ends
+  -- with somebody's foot flat to the floor, and the input system re-reads that
+  -- held pedal on the very next frame: the throttle comes straight back and the
+  -- engine screams against the frozen car until the cool-down lifts. Setting a
+  -- value once cannot beat a key that is still down; only the filter can.
+  PROPULSION = {
+    'accelerate', 'throttle', 'nitrousOxideActive',
+  },
+  propulsionBlocked = false,
   -- Guarded on the function existing, which is how the BeamMP mods that do this
   -- in production write it: a vehicle with no main controller -- a trailer,
   -- anything unpowered -- has no such call, and an unguarded one would throw
@@ -2822,6 +2842,22 @@ local function setResetInputsBlocked(blocked)
   end
 end
 
+-- Kill propulsion while a derby stands its cars down.
+--
+-- Read the note below before widening this: throttle blocking during a GRID
+-- HOLD was removed on purpose, because revving against the hold and picking a
+-- gear before the lights is how a standing start works. A derby that has
+-- already been decided is the opposite case -- there is nothing left to rev
+-- for, and the noise is the complaint.
+function spectate.setPropulsionBlocked(blocked)
+  blocked = blocked and true or false
+  if blocked == spectate.propulsionBlocked then return end
+  if setActionGroupBlocked('raceManagerPropulsion', spectate.PROPULSION, blocked) then
+    spectate.propulsionBlocked = blocked
+    log('I', 'raceManager', 'Propulsion ' .. (blocked and 'BLOCKED' or 'released'))
+  end
+end
+
 -- NOTE: driving inputs are deliberately NOT filtered while a car is held.
 -- controller.setFreeze pins the car in place but leaves the drivetrain live, and
 -- that is the point: revving against the hold and pre-selecting a gear before
@@ -2840,6 +2876,9 @@ local function resetInputBlockUpdate()
   -- the vehicle out from under the freeze and hand somebody a driveable car in
   -- the middle of a settled result.
   setResetInputsBlocked(wantBlocked or spectate.derbyStoodDown())
+  -- Same tick, same source of truth. Recomputed rather than applied once by the
+  -- derby module, so it cannot be left armed by a broadcast that never arrives.
+  spectate.setPropulsionBlocked(spectate.derbyStoodDown())
 end
 
 -- Rolling "last good position" sample. Taken a few times a second while the
@@ -8215,6 +8254,7 @@ local function resetToIdle(reason)
   releaseGridHold()
   clearGhostReasons()
   setResetInputsBlocked(false)   -- never leave the reset keys dead after unload
+  spectate.setPropulsionBlocked(false)  -- nor the throttle
   -- Same rule for the two filters this mod added. Unloading with the driving or
   -- the node grabber still filtered off would leave the player in a car they
   -- cannot drive with nothing on screen explaining why -- and nothing left
