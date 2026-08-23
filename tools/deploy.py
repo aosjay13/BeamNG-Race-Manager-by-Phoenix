@@ -12,11 +12,13 @@ Run from the repo root. Exit code is non-zero if anything failed.
 
 Two rules this script will not break, because both have cost real work:
 
-  * It writes exactly two paths: Resources/Client/RaceManager.zip and
-    Resources/Server/RaceManager/main.lua. Everything else under
-    Resources/Server/RaceManager is LIVE DATA the server owns: layouts.json is
-    every track you have built, and cup.json, roster.json, garage.json,
-    derbyArenas.json and results/ are the rest of a race night.
+  * It writes Resources/Client/RaceManager.zip and the plugin's .lua files,
+    and NOTHING ELSE. The .lua set is discovered from server/RaceManager rather
+    than listed, so a new module cannot be left behind -- but the rule that
+    matters is the other half: everything under Resources/Server/RaceManager
+    that is not a .lua is LIVE DATA the server owns. layouts.json is every
+    track you have built, and cup.json, roster.json, garage.json,
+    derbyArenas.json, config.json and results/ are the rest of a race night.
 
   * It backs up whatever it replaces first, and verifies by hash afterwards.
     A stale file fails silently in this mod: a button just stops working.
@@ -54,6 +56,29 @@ def client_files():
                     out.append(os.path.join(root, n).replace(os.sep, '/'))
     return sorted(out)
 SERVER_PLUGIN = 'server/RaceManager/main.lua'
+SERVER_DIR = 'server/RaceManager'
+
+
+def server_files():
+    """Every .lua the server plugin is made of, entry point first.
+
+    The plugin used to be one file. It is not any more: BeamMP puts each plugin
+    folder on its own package.path, so main.lua can `require` a sibling, and the
+    big subsystems are moving out that way to get clear of Lua's 200-local
+    ceiling.
+
+    DISCOVERED RATHER THAN LISTED, because the failure mode of a list is a new
+    module that is never deployed. main.lua would load, `require` a file that is
+    not on the server, and the plugin would fail at startup -- or worse, the
+    server keeps running the PREVIOUS copy and the change simply has no effect,
+    which in this mod looks like a button that does nothing.
+    """
+    found = sorted(
+        os.path.join(SERVER_DIR, n).replace(os.sep, '/')
+        for n in os.listdir(SERVER_DIR) if n.endswith('.lua')
+    )
+    found.sort(key=lambda f: (f != SERVER_PLUGIN, f))
+    return found
 RELEASE_NAME = 'RaceManager-v0.9.0.zip'
 
 # Loose Race Manager files that collect in a server root from hand-installs.
@@ -89,21 +114,25 @@ def build():
 
     os.makedirs('package/Client', exist_ok=True)
     os.makedirs('package/Server/RaceManager', exist_ok=True)
+    server_lua = server_files()
     os.makedirs('dist', exist_ok=True)
     with open('package/Client/RaceManager.zip', 'wb') as f:
         f.write(client)
-    shutil.copyfile(SERVER_PLUGIN, 'package/Server/RaceManager/main.lua')
+    for f in server_lua:
+        shutil.copyfile(f, 'package/Server/RaceManager/' + os.path.basename(f))
 
     release = os.path.join('dist', RELEASE_NAME)
     with zipfile.ZipFile(release, 'w', zipfile.ZIP_DEFLATED) as z:
         z.write('LICENSE', 'LICENSE')
         z.writestr('Client/RaceManager.zip', client)
-        z.write(SERVER_PLUGIN, 'Server/RaceManager/main.lua')
+        for f in server_lua:
+            z.write(f, 'Server/RaceManager/' + os.path.basename(f))
 
     print('built %s (%d bytes) from %d client files' % (release, os.path.getsize(release), len(files)))
     print('  client zip %s  %d bytes' % (sha(client), len(client)))
-    print('  server lua %s  %d bytes' % (sha_file(SERVER_PLUGIN),
-                                         os.path.getsize(SERVER_PLUGIN)))
+    for f in server_lua:
+        print('  server lua %s  %8d bytes  %s'
+              % (sha_file(f), os.path.getsize(f), os.path.basename(f)))
     return client
 
 
@@ -190,9 +219,11 @@ def deploy(server, client, dry_run=False, force=False, running=False):
     backup = os.path.join(server, '_attic', 'deploy-' + stamp)
     targets = [
         (client, os.path.join(server, 'Resources', 'Client', 'RaceManager.zip')),
-        (open(SERVER_PLUGIN, 'rb').read(),
-         os.path.join(server, 'Resources', 'Server', 'RaceManager', 'main.lua')),
     ]
+    for f in server_files():
+        targets.append((open(f, 'rb').read(),
+                        os.path.join(server, 'Resources', 'Server', 'RaceManager',
+                                     os.path.basename(f))))
 
     ok = True
     for data, dest in targets:
@@ -207,7 +238,10 @@ def deploy(server, client, dry_run=False, force=False, running=False):
         # because that is what the driver was doing at the time.
         #
         # The client zip is safe: BeamMP only serves it to players as they join.
-        if running and not force and dest.endswith('main.lua'):
+        # ANY server .lua, not just main.lua: BeamMP reloads the plugin when
+        # any file in its folder changes, so a module is exactly as disruptive
+        # as the entry point.
+        if running and not force and dest.endswith('.lua'):
             print('  REFUSED   %s' % rel)
             print('            The server is UP, and BeamMP hot-reloads a changed')
             print('            plugin immediately: this would clear the track and')

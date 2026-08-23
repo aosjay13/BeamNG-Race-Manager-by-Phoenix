@@ -282,6 +282,23 @@ local ghosts = {}
 local tickCounter = 0
 local countdownValue = nil  -- current countdown number while phase == 'countdown'
 local lapFirsts = {}        -- [lapNumber] = pid of the first driver to complete that lap
+
+-- Empty a table WITHOUT replacing it.
+--
+-- `players = {}` reads as "start again" and mostly behaves that way, but it
+-- swaps the table for a new one and leaves every existing reference pointing at
+-- the old contents. Nothing was holding one when this was written, which is why
+-- it was fine; a module that captures host state once at init IS such a holder,
+-- and a session reset would quietly leave it reading a table nobody else
+-- updates any more.
+--
+-- Clearing in place keeps one identity for the life of the process, so a
+-- reference taken at startup is still the right table after any number of
+-- resets. Same visible behaviour, one fewer way to go wrong later.
+local function wipe(t)
+  for k in pairs(t) do t[k] = nil end
+  return t
+end
 -- How long a timed session waits, after the clock expires, for drivers still out
 -- there to come round and take the flag. A driver sitting in the pits, parked,
 -- or who never left the grid has no crossing to give, and without a bound the
@@ -2015,8 +2032,8 @@ function RM_onStartQualifying(pid)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
   MP.CancelEventTimer('RM_CountdownTick')
-  players = {}
-  lapFirsts = {}
+  wipe(players)
+  wipe(lapFirsts)
   race.bestLapTime, race.bestLapPid = nil, nil
   race.time = 0.0
   -- The hold goes with the clock it was measured against.
@@ -2325,7 +2342,7 @@ formGrid = function (kind, byName)
   race.endsAt, race.endReason = nil, nil
   race.finalLap     = false
   race.finalLapLeft = 0
-  lapFirsts = {}
+  wipe(lapFirsts)
   race.bestLapTime, race.bestLapPid = nil, nil
 
   -- Purge ghost records first: drivers kept after disconnecting (DNF/finished,
@@ -3096,7 +3113,7 @@ function RM_CountdownTick()
   race.qualiTime = 0.0
   race.finalLap     = false
   race.finalLapLeft = 0
-  lapFirsts = {}
+  wipe(lapFirsts)
   race.bestLapTime, race.bestLapPid = nil, nil
   for _, rec in pairs(players) do
     if rec.status == 'gridded' then
@@ -3211,8 +3228,8 @@ function RM_onResetLeaderboard(pid)
   -- ever going to clear, and every other client would go on seeing that car as
   -- intangible for the rest of the night.
   clearAllGhosts('session reset')
-  players = {}
-  lapFirsts = {}
+  wipe(players)
+  wipe(lapFirsts)
   race.bestLapTime, race.bestLapPid = nil, nil
   race.phase = 'waiting'
   race.sessionKind = 'race'
