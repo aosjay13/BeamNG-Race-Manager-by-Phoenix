@@ -4004,18 +4004,95 @@ local function layoutsForCurrentMap()
   return list, map
 end
 
+-- WHAT THIS PLAYER IS ALLOWED TO SEE.
+--
+-- An admin gets every layout on the map. Everybody else gets the ones approved
+-- for practice, and this is the authoritative half of that rule: hiding rows in
+-- the UI is presentation, and a client that stopped hiding them would be asking
+-- for a list the server had already sent. The unapproved ones never leave the
+-- server for a non-admin at all.
+--
+-- A broadcast reaches admins and drivers on one wire and cannot be tailored, so
+-- it carries what the least privileged recipient may have -- and every admin is
+-- then sent the full list addressed to them, which lands second.
+local function layoutsVisibleTo(pid, list)
+  -- isAuthenticated, NOT requireAuth. This is a visibility question, not a
+  -- refused command: requireAuth tells the client its login has lapsed, which
+  -- for a driver who never had one would log them out of nothing, repeatedly,
+  -- every time a layout list went out.
+  if pid and isAuthenticated(pid) then return list end
+  local out = {}
+  for _, l in ipairs(list) do
+    if l.practice == true then out[#out + 1] = l end
+  end
+  return out
+end
+
 local function sendLayoutList(targetPid)
-  local list, map = layoutsForCurrentMap()
-  local gates = 0
-  for _, l in ipairs(list) do gates = gates + #l.checkpoints end
-  print(string.format('[RaceManager] Sending layout list to %s: %d layout(s), %d gate(s) total, map %s',
-    targetPid and tostring(targetPid) or 'all', #list, gates, map))
-  MP.TriggerClientEvent(targetPid or -1, 'RM_Layouts',
-    Util.JsonEncode({ map = map, layouts = list }))
+  local all, map = layoutsForCurrentMap()
+
+  -- BROADCAST IS -1, NOT nil. Every call site in this file spells it out, so a
+  -- `if targetPid then` here reads as "one player" for the broadcasts too --
+  -- which quietly sent every admin the driver-visible list and emptied the
+  -- layout panel of whoever had just pressed Save.
+  if targetPid and targetPid ~= -1 then
+    local list = layoutsVisibleTo(targetPid, all)
+    print(string.format('[RaceManager] Sending layout list to %s: %d of %d layout(s), map %s',
+      tostring(targetPid), #list, #all, map))
+    MP.TriggerClientEvent(targetPid, 'RM_Layouts',
+      Util.JsonEncode({ map = map, layouts = list }))
+    return
+  end
+
+  -- A BROADCAST IS TWO DIFFERENT LISTS, so it cannot be one broadcast.
+  --
+  -- The safe list goes to everyone, and every admin then gets the full one
+  -- addressed to them, which lands second and replaces it. The alternative --
+  -- broadcasting the safe list and leaving admins to re-request -- empties the
+  -- layout panel of the admin who just pressed Save, until they happen to
+  -- refresh it. Their own layout vanishing is not a subtle failure.
+  local safe = layoutsVisibleTo(nil, all)
+  print(string.format('[RaceManager] Sending layout list to all: %d of %d layout(s), map %s',
+    #safe, #all, map))
+  MP.TriggerClientEvent(-1, 'RM_Layouts', Util.JsonEncode({ map = map, layouts = safe }))
+  if #safe == #all then return end            -- nothing withheld: nothing to top up
+  for pid in pairs(authenticatedPlayers) do
+    MP.TriggerClientEvent(pid, 'RM_Layouts', Util.JsonEncode({ map = map, layouts = all }))
+  end
 end
 
 function RM_onRequestLayouts(pid)
   sendLayoutList(pid)
+end
+
+-- Approve (or un-approve) a layout for practice.
+--
+-- Allowed WHILE A SESSION IS UNDER WAY, unlike the rest of the layout commands.
+-- It changes nothing about the running race: no gates move, no rule changes,
+-- nothing is sent to anybody in the session. It only decides what a driver may
+-- pull up on their own afterwards, and refusing it for twenty minutes because a
+-- race is on would be a rule with no reason behind it.
+function RM_onSetLayoutPractice(pid, rawData)
+  local data = adminPayload(pid, rawData)
+  if not data or type(data.name) ~= 'string' then return end
+
+  local list = layoutsForCurrentMap()
+  for _, l in ipairs(list) do
+    if l.name:lower() == data.name:lower() then
+      l.practice = data.practice == true
+      local wrote, werr = saveLayoutsToDisk()
+      if not wrote then
+        print('[RaceManager] Failed to write ' .. LAYOUTS_FILE .. ': ' .. tostring(werr))
+        return
+      end
+      sendLayoutList(-1)
+      MP.SendChatMessage(pid, string.format('[RaceManager] "%s" is %s for practice.',
+        l.name, l.practice and 'OPEN' or 'closed'))
+      print(string.format('[RaceManager] Layout "%s" practice %s by %s',
+        l.name, l.practice and 'ENABLED' or 'disabled', MP.GetPlayerName(pid) or pid))
+      return
+    end
+  end
 end
 
 -- Send the loaded track to one client, or to everyone with -1.
@@ -4165,6 +4242,18 @@ function RM_onSaveLayout(pid, rawData)
     markers      = sanitizeCheckpoints(data.markers),
     -- Sprint stage or circuit. A property of the track, not of the session.
     pointToPoint = data.pointToPoint == true,
+    -- APPROVED FOR PRACTICE: may a non-admin load this on their own, with no
+    -- session running, to drive it and be timed locally?
+    --
+    -- Opt-in, and it defaults to FALSE for every layout including ones saved
+    -- before this existed. A track an admin is midway through building, or one
+    -- kept back for an event, should not become public the moment the server
+    -- learns the word "practice". Turning it on is one click; turning it back
+    -- off after somebody has already been driving it is not.
+    --
+    -- Carried through a re-save so editing a layout never silently revokes its
+    -- approval, which would look like the toggle not working.
+    practice     = (data.practice == true) or (existing ~= nil and existing.practice == true),
     -- Optional branching routes: the other ways round this track. Validated
     -- against the main route's length, so a slot number can never point past the
     -- end of the lap it is overriding.
@@ -4330,11 +4419,18 @@ end
 -- Locked once a countdown/race is under way in both senses - nobody swaps the
 -- track mid-race, and nobody edits during one either.
 function RM_onLoadLayout(pid, rawData)
-  if not requireAuth(pid) then return end
-  if sessionUnderWay() then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' or type(data.name) ~= 'string' then return end
+  -- A PRACTICE LOAD IS THE ONE FORM OF THIS ANY PLAYER MAY SEND, so the admin
+  -- guard runs after the payload is known rather than before it. Everything the
+  -- practice branch is then allowed to do is targeted at the sender and touches
+  -- no race state; its own rules (approved layout, no session running) are
+  -- enforced inside it.
+  if data.forPractice ~= true then
+    if not requireAuth(pid) then return end
+    if sessionUnderWay() then return end
+  end
 
   local list, map = layoutsForCurrentMap()
   for _, l in ipairs(list) do
@@ -4349,6 +4445,52 @@ function RM_onLoadLayout(pid, rawData)
       -- The purge is targeted for the same reason, and it has to be sent: the
       -- client drops its old gates on RM_ClearTrack, and an apply without one
       -- would leave the previous track's checkpoints standing underneath.
+      -- PRACTICE LOAD: any player, no session running, approved layouts only.
+      --
+      -- The same targeted shape as the editor load below and for the same
+      -- reason -- it returns before a single race.* field is touched, so a
+      -- driver pulling up a track to practice on cannot disturb anybody else's
+      -- session, or each other's.
+      --
+      -- The approval is re-checked HERE rather than trusted from the list that
+      -- was sent. A client can ask for any name it likes; the list is what it
+      -- was shown, not what it may have.
+      if data.forPractice == true then
+        if l.practice ~= true then
+          MP.SendChatMessage(pid, string.format(
+            '[RaceManager] "%s" is not open for practice.', l.name))
+          return
+        end
+        -- WAITING, NOT merely "not under way".
+        --
+        -- sessionUnderWay() is false during the GRID phase on purpose: an admin
+        -- may still set laps and rules while the field is lined up. Practice is
+        -- a different question. Loading a practice track clears this client's
+        -- gates and applies another set -- doing that to a driver standing on
+        -- the grid for a real session would take the race away from them a
+        -- moment before the lights.
+        --
+        -- 'finished' is excluded for the smaller version of the same reason: the
+        -- results are up and the field is still on track.
+        if race.phase ~= 'waiting' then
+          MP.SendChatMessage(pid,
+            '[RaceManager] Practice is for between sessions.')
+          return
+        end
+        MP.TriggerClientEvent(pid, 'RM_ClearTrack', Util.JsonEncode({
+          reason = 'loading "' .. l.name .. '" to practice on',
+        }))
+        MP.TriggerClientEvent(pid, 'RM_ApplyLayout', Util.JsonEncode(l))
+        MP.TriggerClientEvent(pid, 'RM_Practice', Util.JsonEncode({
+          on = true, layout = l.name,
+        }))
+        MP.SendChatMessage(pid, string.format(
+          '[RaceManager] Practising on "%s". Your laps are timed for you only, '
+          .. 'and count for nothing.', l.name))
+        print(string.format('[RaceManager] Practice layout "%s" loaded by %s',
+          l.name, MP.GetPlayerName(pid) or pid))
+        return
+      end
       if data.forEditing == true then
         MP.TriggerClientEvent(pid, 'RM_ClearTrack', Util.JsonEncode({
           reason = 'opening "' .. l.name .. '" in the editor',
@@ -6721,6 +6863,7 @@ function onInit()
   MP.RegisterEvent('RM_Progress',         'RM_onProgress')  -- live position telemetry
   MP.RegisterEvent('RM_RequestState',     'RM_onRequestState')
   MP.RegisterEvent('RM_RequestLayouts',   'RM_onRequestLayouts')
+  MP.RegisterEvent('RM_SetLayoutPractice','RM_onSetLayoutPractice')
   MP.RegisterEvent('RM_SaveLayout',       'RM_onSaveLayout')
   MP.RegisterEvent('RM_LoadLayout',       'RM_onLoadLayout')
   MP.RegisterEvent('RM_DeleteLayout',     'RM_onDeleteLayout')
