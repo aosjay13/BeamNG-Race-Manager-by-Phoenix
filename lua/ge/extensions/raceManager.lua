@@ -2465,18 +2465,35 @@ local spectate = {
 -- block because they answer to different things: driving is filtered while a
 -- driver is OUT of a session, the grabber while a derby is ON, and an eliminated
 -- driver in a running derby is both at once.
+-- ARM OR DISARM ONE INPUT-FILTER GROUP.
+--
+-- Three callers wanted this and each carried its own copy: the same
+-- availability check, the same pcall, the same setGroup/addAction pair. Only
+-- the group name and the action list ever differed.
+--
+-- Worth having as one function for a reason beyond the line count: the
+-- availability check is the interesting part. core_input_actionFilter is a
+-- BeamNG extension that a build can rename or not load, and every caller has to
+-- survive that by doing nothing rather than by throwing. Three copies of a
+-- guard is three chances to write the fourth one without it.
+--
+-- Returns whether the filter was actually reached, so a caller only records the
+-- new state when the engine really took it.
+local function setActionGroupBlocked(group, actions, blocked)
+  if not (core_input_actionFilter and core_input_actionFilter.setGroup
+      and core_input_actionFilter.addAction) then
+    return false
+  end
+  return (pcall(function ()
+    core_input_actionFilter.setGroup(group, actions)
+    core_input_actionFilter.addAction(0, group, blocked)
+  end))
+end
+
 function spectate.setGrabberBlocked(blocked)
   blocked = blocked and true or false
   if blocked == spectate.grabBlocked then return end
-  if not (core_input_actionFilter and core_input_actionFilter.setGroup
-      and core_input_actionFilter.addAction) then
-    return
-  end
-  local ok = pcall(function ()
-    core_input_actionFilter.setGroup('raceManagerGrabber', spectate.GRAB)
-    core_input_actionFilter.addAction(0, 'raceManagerGrabber', blocked)
-  end)
-  if ok then
+  if setActionGroupBlocked('raceManagerGrabber', spectate.GRAB, blocked) then
     spectate.grabBlocked = blocked
     log('I', 'raceManager', 'Node grabber ' .. (blocked and 'BLOCKED' or 'released'))
   end
@@ -2488,15 +2505,7 @@ end
 function spectate.setInputsBlocked(blocked)
   blocked = blocked and true or false
   if blocked == spectate.blocked then return end
-  if not (core_input_actionFilter and core_input_actionFilter.setGroup
-      and core_input_actionFilter.addAction) then
-    return
-  end
-  local ok = pcall(function ()
-    core_input_actionFilter.setGroup('raceManagerSpectate', spectate.DRIVE)
-    core_input_actionFilter.addAction(0, 'raceManagerSpectate', blocked)
-  end)
-  if ok then
+  if setActionGroupBlocked('raceManagerSpectate', spectate.DRIVE, blocked) then
     spectate.blocked = blocked
     log('I', 'raceManager', 'Driving inputs ' .. (blocked and 'BLOCKED' or 'released'))
   end
@@ -2807,15 +2816,7 @@ end
 local function setResetInputsBlocked(blocked)
   blocked = blocked and true or false
   if blocked == resetInputsBlocked then return end
-  if not (core_input_actionFilter and core_input_actionFilter.setGroup
-      and core_input_actionFilter.addAction) then
-    return
-  end
-  local ok = pcall(function ()
-    core_input_actionFilter.setGroup('raceManagerResets', RESET_ACTIONS)
-    core_input_actionFilter.addAction(0, 'raceManagerResets', blocked)
-  end)
-  if ok then
+  if setActionGroupBlocked('raceManagerResets', RESET_ACTIONS, blocked) then
     resetInputsBlocked = blocked
     log('I', 'raceManager', 'Reset inputs ' .. (blocked and 'BLOCKED' or 'released'))
   end

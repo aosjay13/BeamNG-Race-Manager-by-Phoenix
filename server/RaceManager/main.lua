@@ -1759,6 +1759,34 @@ local function sessionUnderWay()
   return race.phase == 'countdown' or race.phase == 'racing' or race.phase == 'qualifying'
 end
 
+-- THE OPENING OF AN ADMIN COMMAND THAT CARRIES A PAYLOAD.
+--
+-- Seventeen handlers began with the same four or five lines: authenticate,
+-- optionally refuse while a session is under way, check the payload is a
+-- non-empty string, decode it, check the result is a table. About a hundred and
+-- twenty lines of guard across the file, and every one of them a chance to
+-- write the next handler with one missing.
+--
+-- The missing guard is the point, not the line count. A new command without
+-- requireAuth is an open door; one without sessionUnderWay lets an admin change
+-- the rules under cars already at racing speed. Neither fails visibly in
+-- testing -- they fail on a race night, to somebody else.
+--
+-- `idle` is the only thing that varied, so it is the only argument: pass true
+-- for a command that must not run mid-session.
+--
+-- Returns the decoded table, or nil meaning the handler should return. Callers
+-- read as `local data = adminPayload(pid, rawData); if not data then return end`
+-- which states both halves at the point of use.
+local function adminPayload(pid, rawData, idle)
+  if not requireAuth(pid) then return nil end
+  if idle and sessionUnderWay() then return nil end
+  if type(rawData) ~= 'string' or rawData == '' then return nil end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return nil end
+  return data
+end
+
 -- How many drivers are still circulating. Every "is this session over?" test in
 -- the file asks this, so there is one answer to it.
 local function driversOnTrack()
@@ -2128,10 +2156,8 @@ end
 -- setPlayerNickSuffix, which is text and nothing else -- see the note on
 -- nametag.apply in the client bridge for why that is the only acceptable way in.
 function RM_onSetNametags(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   race.nametags = data.enabled == true or data.enabled == 1
   broadcastState()
   print('[RaceManager] Display names on nametags '
@@ -2140,10 +2166,8 @@ function RM_onSetNametags(pid, rawData)
 end
 
 function RM_onSetGhostQuali(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   race.ghostQuali = data.enabled == true or data.enabled == 1
   broadcastState()
   print('[RaceManager] Ghost qualifying ' .. (race.ghostQuali and 'ENABLED' or 'disabled')
@@ -2154,11 +2178,8 @@ end
 -- 0 means unlimited for both. Locked while qualifying is actually running so a
 -- driver can't have the rug pulled mid-lap.
 function RM_onSetQualiLimits(pid, rawData)
-  if not requireAuth(pid) then return end
-  if sessionUnderWay() then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData, true)
+  if not data then return end
   local laps = tonumber(data.laps)
   local secs = tonumber(data.seconds)
   if laps then
@@ -2506,11 +2527,8 @@ end
 -- on the next Generate Grid; when the grid is already formed it re-forms the
 -- order immediately so the admin sees the result.
 function RM_onSetDriverGrid(pid, rawData)
-  if not requireAuth(pid) then return end
-  if sessionUnderWay() then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData, true)
+  if not data then return end
   local target = tonumber(data.pid)
   local slot   = tonumber(data.slot)
   if not target or not slot then return end
@@ -2645,11 +2663,8 @@ end
 -- Locked once a session is under way, like every other regulation: the shape of
 -- the race must not change under the drivers running it.
 function RM_onSetPointToPoint(pid, rawData)
-  if not requireAuth(pid) then return end
-  if sessionUnderWay() then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData, true)
+  if not data then return end
   race.pointToPoint = data.enabled == true or data.enabled == 1
   broadcastState()
   print('[RaceManager] Track mode: ' .. (race.pointToPoint and 'POINT TO POINT' or 'circuit')
@@ -3003,11 +3018,8 @@ end
 -- countdown/race so drivers can't be judged against a rule that appeared
 -- mid-race.
 function RM_onSetJokerEnabled(pid, rawData)
-  if not requireAuth(pid) then return end
-  if sessionUnderWay() then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData, true)
+  if not data then return end
   local want = data.enabled == true or data.enabled == 1
   -- A JOKER LAP WITH NO JOKER ROUTE DISQUALIFIES THE ENTIRE FIELD.
   --
@@ -4205,10 +4217,8 @@ end
 -- Announced in chat as well as broadcast, because the panel is not where a
 -- driver's eyes are when a caution is called.
 function RM_onSetFlag(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   local want = tostring(data.flag or '')
   if want ~= 'green' and want ~= 'yellow' and want ~= 'red' then return end
   if not sessionUnderWay() then
@@ -4622,10 +4632,8 @@ function RM_onRemoveGarageEntry(pid, rawData)
 end
 
 function RM_onSetGarageEnforce(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   getGarage().enforce = data.enabled == true or data.enabled == 1
   saveGarageToDisk()
   broadcastState()
@@ -7279,10 +7287,8 @@ end
 -- the whole module is exercisable exactly the way every other handler in this
 -- file is tested -- by calling it.
 function RM_onCupSetEnabled(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   getCup().enabled = data.enabled == true or data.enabled == 1
   saveCupToDisk()
   print('[RaceManager] Cup points ' .. (cup.enabled and 'ENABLED' or 'disabled')
@@ -7428,10 +7434,8 @@ end
 -- Custom scoring. Every field is optional, so the UI can send just the part the
 -- admin edited; anything present replaces that part outright.
 function RM_onCupSetScoring(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   getCup()
   local touched = false
   if type(data.race) == 'table' then
@@ -7534,10 +7538,8 @@ end
 -- because nothing else can know: BeamMP hands out a fresh random guest name
 -- every join, so the server cannot tell a returning regular from a stranger.
 function RM_onCupBindDriver(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   local target = tonumber(data.pid)
   local entryId = tonumber(data.entryId)
   if not target then return end
@@ -7621,10 +7623,8 @@ end
 -- them away. Identified by cup entry id -- the roster entry -- so an adjustment
 -- lands on the driver and not on whoever happens to hold a session id.
 function RM_onCupAdjust(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   getCup()
   if not cup.enabled then
     print('[RaceManager] Cup adjustment ignored: no cup is running')
@@ -7659,10 +7659,8 @@ end
 
 -- Remove one adjustment from a driver's ledger, by its index in that ledger.
 function RM_onCupRemoveAdjust(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   getCup()
   local entry = cupFindEntry(math.floor(tonumber(data.entryId) or -1))
   local index = math.floor(tonumber(data.index) or 0)
@@ -7681,10 +7679,8 @@ end
 -- deliberately left alone -- the event did take place, and renumbering every
 -- later round to close the gap would rewrite history to hide a correction.
 function RM_onCupDropRound(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   getCup()
   local entry = cupFindEntry(math.floor(tonumber(data.entryId) or -1))
   local round = math.floor(tonumber(data.round) or 0)
