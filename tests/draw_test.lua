@@ -723,6 +723,31 @@ tris = {}
 frame()
 check(#tris > 0, 'a marker is painted with filled triangles, not lines (got '
   .. #tris .. ')')
+
+-- ...AND THEY HAVE AREA. Every check around this one counts triangles, and a
+-- count is blind to the one failure that matters most here: a stroke whose
+-- thickness collapses still emits its two triangles, in the right place, in the
+-- right colour, with three points in a line. The marker vanishes and the whole
+-- suite goes green.
+--
+-- Found by breaking the stroke normal on purpose and watching nothing fail.
+local flattest = math.huge
+for _, t in ipairs(tris) do
+  -- Twice the triangle area: the MAGNITUDE of the 3D cross product.
+  --
+  -- The flat x/y version is wrong here and quietly so. A marker board stands
+  -- upright, so its triangles span lateral and vertical -- seen from above they
+  -- are a line, and a 2D area test calls every healthy mark degenerate. Caught
+  -- because the first version of this check failed on clean code.
+  local ux, uy, uz = t.b.x - t.a.x, t.b.y - t.a.y, t.b.z - t.a.z
+  local vx, vy, vz = t.c.x - t.a.x, t.c.y - t.a.y, t.c.z - t.a.z
+  local cx, cy, cz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+  local area2 = math.sqrt(cx * cx + cy * cy + cz * cz)
+  if area2 < flattest then flattest = area2 end
+end
+check(flattest > 1e-4,
+  'and every one of them has area, so the marks are visible rather than '
+    .. 'collapsed to a line (thinnest was ' .. string.format('%.6f', flattest) .. ')')
 -- Two passes: a dark outline and the mark on top, so it reads over pale gravel
 -- and dark tarmac alike.
 -- Packed colours, so the two passes are told apart by their red channel: the

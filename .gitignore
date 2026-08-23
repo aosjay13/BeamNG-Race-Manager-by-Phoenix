@@ -4,3 +4,7 @@ Resources/
 # Per-machine Claude Code settings. Records the literal Bash commands that were
 # approved, so it leaks local paths and whatever was poked at while debugging.
 .claude/settings.local.json
+
+# Parity captures from tools/parity.py: local, transient, and regenerated
+# on demand. Nothing here is worth keeping between sessions.
+.parity/

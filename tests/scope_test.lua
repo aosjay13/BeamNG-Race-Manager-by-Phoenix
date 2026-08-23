@@ -37,7 +37,16 @@ end
 local FILES = {
   'lua/ge/extensions/raceManager.lua',
   'lua/ge/extensions/raceManager/derby.lua',
+  'lua/ge/extensions/raceManager/render.lua',
   'server/RaceManager/main.lua',
+}
+
+-- The extension, and the modules split out of it. Used by the orphan check
+-- below; add a module here when it is created and both checks cover it.
+local EXTENSION = 'lua/ge/extensions/raceManager.lua'
+local MODULES = {
+  'lua/ge/extensions/raceManager/derby.lua',
+  'lua/ge/extensions/raceManager/render.lua',
 }
 
 -- Comments and string literals are stripped first. Without that, a name
@@ -85,7 +94,7 @@ local function scan(path)
       end
     end
   end
-  return bad
+  return bad, declAt, code
 end
 
 for _, path in ipairs(FILES) do
@@ -98,6 +107,57 @@ for _, path in ipairs(FILES) do
     .. 'nil global at runtime: move the declaration up, or reach the value '
     .. 'through a global RM_* handler, which resolves when it is called')
 end
+
+-- ---------------------------------------------------------------------------
+-- ORPHANS: names the extension still calls after they moved into a module
+-- ---------------------------------------------------------------------------
+-- The same nil-global crash as above, arrived at from the other direction, and
+-- the check above cannot see it. That one asks "is this declared LATER?"; this
+-- asks "is it declared AT ALL?". When a block of code moves into a module, a
+-- call site left behind names something that is now declared in a different
+-- file -- so it is not a use-before-declaration, it is a use-before-nothing.
+--
+-- This is not hypothetical. Extracting the renderer left exactly one:
+--
+--     labelCache.route = {}      -- in setPointToPoint
+--
+-- labelCache went with the renderer. The line compiled, the whole suite stayed
+-- green, and the editor's sprint/circuit toggle would have thrown the moment an
+-- admin pressed it -- because nothing covered that toggle, and a crash needs a
+-- test to walk into it. A static check does not.
+--
+-- Every future extraction can leave one of these, which is what makes it worth
+-- a test rather than a careful read.
+local function orphans()
+  local declared = {}
+  for name in pairs(select(2, scan(EXTENSION))) do declared[name] = true end
+
+  local found = {}
+  for _, mod in ipairs(MODULES) do
+    for name in pairs(select(2, scan(mod))) do
+      -- A name the module owns and the extension does not declare. Bare uses
+      -- only: `render.palette` is the module's public surface and correct.
+      if not declared[name] then
+        local code = select(3, scan(EXTENSION))
+        for i, l in ipairs(code) do
+          if l:find('[^%w_%.:]' .. name .. '%s*[%(%.:]')
+             or l:find('^' .. name .. '%s*[%(%.:]') then
+            found[#found + 1] = string.format(
+              '%s:%d calls "%s", which now lives in %s',
+              EXTENSION, i, name, mod:match('([%w_]+)%.lua$'))
+          end
+        end
+      end
+    end
+  end
+  return found
+end
+
+local orphaned = orphans()
+for _, line in ipairs(orphaned) do print('  ' .. line) end
+check(#orphaned == 0, EXTENSION .. ' calls nothing that moved into a module '
+  .. '(found ' .. #orphaned .. '). Reach it through the module table, or expose '
+  .. 'it as a function on the module if the extension genuinely needs it')
 
 -- The check has to be able to FAIL, or a broken pattern would report every file
 -- as clean forever. A file that is wrong on purpose, scanned the same way.

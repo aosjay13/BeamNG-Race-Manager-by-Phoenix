@@ -984,5 +984,121 @@ do
   end
 end
 
+
+-- ===========================================================================
+-- A COUPLED TRAILER IS NOT A RIVAL
+-- ===========================================================================
+-- BeamNG treats a trailer as a second vehicle, and this mod used to agree --
+-- which broke ghosting twice over.
+--
+-- It ghosted the trailer as though it belonged to somebody else, so a driver
+-- towed a translucent trailer for the whole race. And it counted the trailer as
+-- occupying the car's space, which is permanently true of something bolted to
+-- the tow hitch -- so NEITHER could ever go solid again. Reported from a
+-- session as "they stayed ghosted together after the race": everybody is
+-- respawned and ghosted at the flag, and this pair had no way back.
+--
+-- core_vehicles.attachedCouplers is the engine's live list of coupled pairs.
+local TRAILER_ID = 77
+world[TRAILER_ID] = makeVehicle(TRAILER_ID, 0, 0)
+local trailer = world[TRAILER_ID]
+core_vehicles = { attachedCouplers = { { OWN_ID, TRAILER_ID, 12, 34 } } }
+
+-- Park the trailer right where a trailer is: inside our own bounding box.
+own.x, own.y = 0, 0
+trailer.x, trailer.y = 0, 2.0
+-- EVERY other car well clear, not just the rival. A third car is still parked
+-- where an earlier case left it, and one forgotten vehicle inside our box makes
+-- this read as the trailer skip failing when it is working perfectly.
+rival.x, rival.y = 500, 500
+third.x, third.y = 600, 600
+
+-- A field-wide ghost (a respawn, a grid forming) must skip our whole rig, not
+-- just our car.
+racing()
+clearLog()
+own.ghosted, trailer.ghosted = nil, nil
+serverState({ phase = 'racing', ghosts = {}, ghostFinished = {},
+              ghostOnReset = true, ghostMinSec = 1, ghostMaxSec = 15,
+              drivers = {} })
+handlers['RM_GridAssign']({ slot = 1, order = 1, count = 1 })
+frames(0.3)
+check(trailer.ghosted ~= true,
+  'a field ghost skips the trailer on our own tow hitch, not just the car')
+
+-- LET THE FIELD OPERATION FINISH. It runs for FIELD.SETTLE seconds after the
+-- last car lands, and leaving one in flight means the next case resets in the
+-- middle of a placement -- which looks exactly like the ghost failing to lift.
+frames(6.0)
+
+-- ...and the pair can go SOLID again, which is the half that stranded them.
+clearLog()
+own.ghosted, trailer.ghosted = nil, nil
+driverReset(0, 0)
+check(own.ghosted == true, 'a reset still ghosts the car as usual')
+frames(20.0)
+check(own.ghosted == false,
+  'and the car goes solid again even with a trailer permanently inside its box')
+
+-- ===========================================================================
+-- THE RESET GHOST COVERS THE WHOLE RIG
+-- ===========================================================================
+-- The mirror image of the rule above, and both are right. A FIELD reason means
+-- "rivals are ghosts", so our own rig is skipped. A RESET ghost means "this car
+-- is a ghost", and the trailer on its hitch has to be intangible with it.
+--
+-- Half a rig passing through a rival while the other half hits them is worse
+-- than no ghost at all: the driver has been told they are clear.
+clearLog()
+own.ghosted, trailer.ghosted = nil, nil
+driverReset(0, 0)
+check(own.ghosted == true, 'a reset ghosts the car')
+check(trailer.ghosted == true, 'and the trailer coupled to it, on the same reset')
+
+-- The trailer carries the car's reason rather than a timer of its own, so the
+-- two move TOGETHER. Asserted as "never disagree" across the whole ghost rather
+-- than at a chosen moment: picking a time only tests the configured duration.
+local disagreed = false
+for _ = 1, 60 do
+  frames(0.4)
+  if own.ghosted ~= trailer.ghosted then disagreed = true end
+end
+check(not disagreed, 'the trailer is never in a different state from the car it is on')
+frames(20.0)
+check(own.ghosted == false, 'the car goes solid')
+check(trailer.ghosted == false, 'and the trailer goes solid with it, not later')
+
+-- A REMOTE driver's reset ghosts their trailer too, seen from here. Coupling is
+-- simulated on every client, so this side can see what is on their hitch --
+-- which matters, because the ghost broadcast carries a PLAYER id and a player
+-- has exactly one car as far as the server is concerned.
+core_vehicles = { attachedCouplers = { { OWN_ID, TRAILER_ID, 12, 34 },
+                                       { RIVAL_ID, THIRD_ID, 12, 34 } } }
+rival.ghosted, third.ghosted = nil, nil
+handlers['RM_Ghost']({ pid = RIVAL_PID, active = true,
+                       startedAt = raceTime, duration = 5.0 })
+check(rival.ghosted == true, 'a rival reset ghost still reaches their car')
+check(third.ghosted == true, 'and the trailer on their hitch')
+core_vehicles = { attachedCouplers = { { OWN_ID, TRAILER_ID, 12, 34 } } }
+rival.ghosted, third.ghosted = nil, nil
+handlers['RM_Ghost']({ pid = RIVAL_PID, active = false })
+
+-- THE SAFETY INVARIANT IS UNTOUCHED. Skipping our own rig must not become
+-- skipping everybody: a real car overlapping still blocks, with no time limit.
+-- Welding two cars together ends both races and cannot be undone.
+clearLog()
+own.ghosted = nil
+third.x, third.y = 600, 600           -- still clear; only the rival moves in
+rival.x, rival.y = 0, 0              -- a genuine rival, right on top of us
+driverReset(0, 0)
+frames(30.0)
+check(own.ghosted == true,
+  'a RIVAL inside the car still blocks the restore: rig-mates are the only '
+    .. 'thing skipped, and that invariant is what stops two welded races')
+
+rival.x, rival.y = 500, 500
+core_vehicles = nil
+world[TRAILER_ID] = nil
+
 print(string.format('ghost_test: %d checks, %d failures', checks, fails))
 if fails > 0 then os.exit(1) end

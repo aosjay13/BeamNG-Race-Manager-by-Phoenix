@@ -20,18 +20,72 @@
 -- ---------------------------------------------------------------------------
 -- Tunables
 -- ---------------------------------------------------------------------------
-local TICK_MS            = 100   -- server clock resolution
+-- ---------------------------------------------------------------------------
+-- SERVER CONFIGURATION
+-- ---------------------------------------------------------------------------
+-- Every number an admin might reasonably want to change, in one table, with
+-- the file that overrides it sitting beside layouts.json.
+--
+-- These were sixteen separate top-level constants scattered down the file, and
+-- changing any of them meant editing Lua and redeploying -- which on a live
+-- league means a server restart to alter the lap count. They are one object
+-- now, seeded here and overridden from config.json at boot.
+--
+-- SEEDED, NOT LIVE. This is what a session STARTS as. An admin changing laps
+-- from the panel mid-evening changes race.totalLaps, not this -- so the file
+-- stays what the server comes up as, and the panel stays the way to change the
+-- race in front of you.
+--
+-- The file is written out with these values the first time the plugin runs, so
+-- there is always something on disk to edit rather than a format to guess at.
+-- Assigned further down, once the JSON codec and the directory helper it needs
+-- exist. Declared HERE because changing the admin password has to write the
+-- file, and that handler sits two thousand lines above the writer.
+local saveConfigToDisk
+
+local CFG = {
+  -- The admin password. It lives here so that CHANGING it survives a restart:
+  -- until now the change was in memory only, so every restart quietly put the
+  -- password back to 'phoenix' and nobody found out until a login failed.
+  adminPassword = 'phoenix',
+
+  -- What a race starts as.
+  totalLaps     = 5,
+  maxResets     = -1,        -- -1 unlimited, 0 none, N per driver per session
+  resetMode     = 'inplace', -- 'inplace' | 'checkpoint'
+  nametags      = false,
+  countdownFrom = 3,         -- 3, 2, 1, GO!
+  endDelay      = 5,         -- seconds the results are held after the last car home
+
+  -- Qualifying, as a session starts.
+  qualiLapLimit  = 0,        -- timed laps per driver, 0 = unlimited
+  qualiTimeLimit = 0,        -- seconds, 0 = no limit
+  finalLapGrace  = 180,      -- seconds a final lap may take before it is closed
+
+  -- Reset ghosting.
+  ghostOnReset     = true,
+  ghostMinSeconds  = 5.0,
+  ghostMaxSeconds  = 15.0,
+
+  -- The standing-start hold.
+  holdTolerance    = 0.5,    -- metres a held car may drift off its slot
+  holdCorrectEvery = 0.5,    -- seconds between corrections for one driver
+
+  -- ADVANCED. Changing these changes how the plugin behaves rather than how a
+  -- race is run, and the limits exist to keep a typo from becoming a hang.
+  tickMs          = 100,     -- server clock resolution
+  pushEveryTicks  = 3,       -- broadcasts are one in this many ticks
+  maxTotalLaps    = 500,
+  maxResetLimit   = 99,
+  maxQualiLaps    = 99,
+  maxQualiTime    = 7200,    -- seconds (2 h)
+  unlimitedResets = -1,      -- the sentinel, not a preference: do not change
+}
 -- Broadcast cadence while racing. This is also the live-position refresh rate:
 -- every push re-sorts the running order and re-stamps each driver's position,
 -- so 3 ticks (~300 ms) keeps the leaderboard lively without flooding clients.
-local PUSH_EVERY_TICKS   = 3
-local COUNTDOWN_FROM     = 3     -- 3, 2, 1, GO!
-local DEFAULT_TOTAL_LAPS = 5
-local MAX_TOTAL_LAPS     = 500
 -- League regulations. Resets: -1 means unlimited (the historical behaviour and
 -- the default), 0 forbids resets outright, N allows N per session.
-local UNLIMITED_RESETS   = -1
-local MAX_RESET_LIMIT    = 99
 -- Reset ghosting. A driver who resets mid-session is intangible to other cars
 -- for a moment, so the car they materialise on top of is not hit by them and
 -- they are not hit by anyone.
@@ -53,11 +107,6 @@ local MAX_RESET_LIMIT    = 99
 -- coordinates, and a second near-identical sanitizer would drift from the first.
 local sanitizeCheckpoints
 local sanitizeBranches
-local HOLD_TOLERANCE     = 0.5   -- metres a held car may be off its slot
-local HOLD_CORRECT_EVERY = 0.5   -- seconds between corrections for one driver
-local GHOST_ON_RESET     = true
-local GHOST_MIN_SECONDS  = 5.0
-local GHOST_MAX_SECONDS  = 15.0
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -77,8 +126,8 @@ local race = {
   -- from it. See RM_onSetNametags.
   nametags     = false,
   time         = 0.0,        -- seconds since GO (advanced by RM_Tick while a session runs)
-  totalLaps    = DEFAULT_TOTAL_LAPS,
-  maxResets    = UNLIMITED_RESETS,  -- vehicle resets allowed per driver per session
+  totalLaps    = CFG.totalLaps,
+  maxResets    = CFG.unlimitedResets,  -- vehicle resets allowed per driver per session
   resetMode    = 'inplace',  -- what a legal reset does: 'inplace' | 'checkpoint'
   jokerEnabled = false,      -- rallycross joker lap required exactly once per race
   -- Joker gates the loaded track actually has. The joker lap cannot be armed
@@ -233,15 +282,12 @@ local ghosts = {}
 local tickCounter = 0
 local countdownValue = nil  -- current countdown number while phase == 'countdown'
 local lapFirsts = {}        -- [lapNumber] = pid of the first driver to complete that lap
-local MAX_QUALI_LAPS   = 99
-local MAX_QUALI_TIME   = 7200   -- seconds (2 h)
 -- How long a timed session waits, after the clock expires, for drivers still out
 -- there to come round and take the flag. A driver sitting in the pits, parked,
 -- or who never left the grid has no crossing to give, and without a bound the
 -- session would wait for them forever. Sized to comfortably clear one lap of a
 -- long circuit; when it runs out the stragglers are taken where they stand and
 -- the session closes normally.
-local FINAL_LAP_GRACE  = 180    -- seconds
 
 -- Does the session now running open with an OUT LAP -- one trip past the line
 -- that is neither timed nor scored nor counted against the lap allowance?
@@ -289,8 +335,7 @@ end
 -- authenticatedPlayers and every admin-level event checks that table before
 -- acting. The default below is meant to be rotated on the fly (RM_ChangePassword)
 -- once an admin is logged in -- change it before the first public session.
-local DEFAULT_ADMIN_PASSWORD = 'phoenix'
-local adminPassword = DEFAULT_ADMIN_PASSWORD
+local adminPassword = CFG.adminPassword
 local authenticatedPlayers = {}   -- [playerID] = true while that session is an admin
 
 local function isAuthenticated(pid)
@@ -1149,9 +1194,9 @@ local function broadcastState(targetPid)
     -- now. The roster rides on the state broadcast for the same reason finalLap
     -- does -- it is what a client that joined mid-ghost needs, and a one-shot
     -- event it was not connected for can never give it.
-    ghostOnReset = GHOST_ON_RESET,
-    ghostMinSec  = GHOST_MIN_SECONDS,
-    ghostMaxSec  = GHOST_MAX_SECONDS,
+    ghostOnReset = CFG.ghostOnReset,
+    ghostMinSec  = CFG.ghostMinSeconds,
+    ghostMaxSec  = CFG.ghostMaxSeconds,
     ghosts       = ghostRoster(),
     ghostFinished = finishedRoster(),
     -- Qualifying rules and clock.
@@ -1277,6 +1322,16 @@ function RM_onChangePassword(pid, rawData)
   local newPass = decodeString(rawData, 'password')
   if not newPass or newPass == '' then return end
   adminPassword = newPass
+  -- AND IT SURVIVES A RESTART NOW. This used to change the password in memory
+  -- only, so every restart quietly put it back to the shipped default and the
+  -- first anybody knew was a login that should have worked and did not.
+  CFG.adminPassword = newPass
+  if saveConfigToDisk() then
+    print('[RaceManager] Admin password changed and saved to config.json')
+  else
+    print('[RaceManager] Admin password changed, but config.json could not be '
+      .. 'written: it will revert on restart')
+  end
   MP.TriggerClientEvent(-1, 'RM_PasswordChanged', Util.JsonEncode({
     changedBy = MP.GetPlayerName(pid) or ('Player ' .. pid),
   }))
@@ -1704,6 +1759,34 @@ local function sessionUnderWay()
   return race.phase == 'countdown' or race.phase == 'racing' or race.phase == 'qualifying'
 end
 
+-- THE OPENING OF AN ADMIN COMMAND THAT CARRIES A PAYLOAD.
+--
+-- Seventeen handlers began with the same four or five lines: authenticate,
+-- optionally refuse while a session is under way, check the payload is a
+-- non-empty string, decode it, check the result is a table. About a hundred and
+-- twenty lines of guard across the file, and every one of them a chance to
+-- write the next handler with one missing.
+--
+-- The missing guard is the point, not the line count. A new command without
+-- requireAuth is an open door; one without sessionUnderWay lets an admin change
+-- the rules under cars already at racing speed. Neither fails visibly in
+-- testing -- they fail on a race night, to somebody else.
+--
+-- `idle` is the only thing that varied, so it is the only argument: pass true
+-- for a command that must not run mid-session.
+--
+-- Returns the decoded table, or nil meaning the handler should return. Callers
+-- read as `local data = adminPayload(pid, rawData); if not data then return end`
+-- which states both halves at the point of use.
+local function adminPayload(pid, rawData, idle)
+  if not requireAuth(pid) then return nil end
+  if idle and sessionUnderWay() then return nil end
+  if type(rawData) ~= 'string' or rawData == '' then return nil end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return nil end
+  return data
+end
+
 -- How many drivers are still circulating. Every "is this session over?" test in
 -- the file asks this, so there is one answer to it.
 local function driversOnTrack()
@@ -2073,10 +2156,8 @@ end
 -- setPlayerNickSuffix, which is text and nothing else -- see the note on
 -- nametag.apply in the client bridge for why that is the only acceptable way in.
 function RM_onSetNametags(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   race.nametags = data.enabled == true or data.enabled == 1
   broadcastState()
   print('[RaceManager] Display names on nametags '
@@ -2085,10 +2166,8 @@ function RM_onSetNametags(pid, rawData)
 end
 
 function RM_onSetGhostQuali(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   race.ghostQuali = data.enabled == true or data.enabled == 1
   broadcastState()
   print('[RaceManager] Ghost qualifying ' .. (race.ghostQuali and 'ENABLED' or 'disabled')
@@ -2099,21 +2178,18 @@ end
 -- 0 means unlimited for both. Locked while qualifying is actually running so a
 -- driver can't have the rug pulled mid-lap.
 function RM_onSetQualiLimits(pid, rawData)
-  if not requireAuth(pid) then return end
-  if sessionUnderWay() then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData, true)
+  if not data then return end
   local laps = tonumber(data.laps)
   local secs = tonumber(data.seconds)
   if laps then
     laps = math.floor(laps)
-    if laps < 0 then laps = 0 elseif laps > MAX_QUALI_LAPS then laps = MAX_QUALI_LAPS end
+    if laps < 0 then laps = 0 elseif laps > CFG.maxQualiLaps then laps = CFG.maxQualiLaps end
     race.qualiLapLimit = laps
   end
   if secs then
     secs = math.floor(secs)
-    if secs < 0 then secs = 0 elseif secs > MAX_QUALI_TIME then secs = MAX_QUALI_TIME end
+    if secs < 0 then secs = 0 elseif secs > CFG.maxQualiTime then secs = CFG.maxQualiTime end
     race.qualiTimeLimit = secs
   end
   broadcastState()
@@ -2153,7 +2229,7 @@ local function beginFinalLap()
     return
   end
   race.finalLap     = true
-  race.finalLapLeft = FINAL_LAP_GRACE
+  race.finalLapLeft = CFG.finalLapGrace
   broadcastState()
   MP.SendChatMessage(-1, '[RaceManager] TIME EXPIRED: the lap you are on is your '
     .. 'FINAL LAP. Your session ends as you cross the line.')
@@ -2451,11 +2527,8 @@ end
 -- on the next Generate Grid; when the grid is already formed it re-forms the
 -- order immediately so the admin sees the result.
 function RM_onSetDriverGrid(pid, rawData)
-  if not requireAuth(pid) then return end
-  if sessionUnderWay() then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData, true)
+  if not data then return end
   local target = tonumber(data.pid)
   local slot   = tonumber(data.slot)
   if not target or not slot then return end
@@ -2590,11 +2663,8 @@ end
 -- Locked once a session is under way, like every other regulation: the shape of
 -- the race must not change under the drivers running it.
 function RM_onSetPointToPoint(pid, rawData)
-  if not requireAuth(pid) then return end
-  if sessionUnderWay() then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData, true)
+  if not data then return end
   race.pointToPoint = data.enabled == true or data.enabled == 1
   broadcastState()
   print('[RaceManager] Track mode: ' .. (race.pointToPoint and 'POINT TO POINT' or 'circuit')
@@ -2661,7 +2731,7 @@ function RM_onHoldPos(pid, rawData)
   -- off the line is a move across the ground, so that is what is measured.
   local dx, dy = x - slot.x, y - slot.y
   local drift = math.sqrt(dx * dx + dy * dy)
-  if drift <= HOLD_TOLERANCE then
+  if drift <= CFG.holdTolerance then
     rec.holdWarned = nil
     return
   end
@@ -2670,7 +2740,7 @@ function RM_onHoldPos(pid, rawData)
   -- the client: a car being physically pushed by someone else could otherwise
   -- generate a correction on every report for as long as the shoving lasts.
   local now = race.time
-  if rec.holdCorrectedAt and (now - rec.holdCorrectedAt) < HOLD_CORRECT_EVERY then
+  if rec.holdCorrectedAt and (now - rec.holdCorrectedAt) < CFG.holdCorrectEvery then
     return
   end
   rec.holdCorrectedAt = now
@@ -2683,7 +2753,7 @@ function RM_onHoldPos(pid, rawData)
   print(string.format(
     '[RaceManager] HOLD violation: %s was %.2fm off grid slot %d during %s '
     .. '(tolerance %.2fm): pulled back, correction #%d',
-    rec.name, drift, rec.gridPos, race.phase, HOLD_TOLERANCE, rec.holdCorrections))
+    rec.name, drift, rec.gridPos, race.phase, CFG.holdTolerance, rec.holdCorrections))
 end
 
 -- Admin sets or clears a driver's display alias. Admin-only on purpose: with
@@ -2783,7 +2853,7 @@ function RM_onSetTotalLaps(pid, rawData)
   local n = decodeNumber(rawData, 'laps')
   if not n then return end
   n = math.floor(n)
-  if n < 1 then n = 1 elseif n > MAX_TOTAL_LAPS then n = MAX_TOTAL_LAPS end
+  if n < 1 then n = 1 elseif n > CFG.maxTotalLaps then n = CFG.maxTotalLaps end
   race.totalLaps = n
   broadcastState()
   print('[RaceManager] Total laps set to ' .. n .. ' by ' .. (MP.GetPlayerName(pid) or pid))
@@ -2804,7 +2874,7 @@ function RM_onSetMaxResets(pid, rawData)
   local n = decodeNumber(rawData, 'maxResets')
   if not n then return end
   n = math.floor(n)
-  if n < 0 then n = UNLIMITED_RESETS elseif n > MAX_RESET_LIMIT then n = MAX_RESET_LIMIT end
+  if n < 0 then n = CFG.unlimitedResets elseif n > CFG.maxResetLimit then n = CFG.maxResetLimit end
   race.maxResets = n
   broadcastState()
   print('[RaceManager] Max vehicle resets set to '
@@ -2874,21 +2944,21 @@ end
 function RM_onGhostStart(pid, rawData)
   pid = pidKey(pid)
   if not pid then return end
-  if not GHOST_ON_RESET then return end
+  if not CFG.ghostOnReset then return end
   local rec = players[pid]
   if not rec then return end
   if not sessionUnderWay() then return end
   if not onTrack(rec) and rec.status ~= 'gridded' then return end
 
-  local requested = GHOST_MIN_SECONDS
+  local requested = CFG.ghostMinSeconds
   if type(rawData) == 'string' and rawData ~= '' then
     local ok, data = pcall(Util.JsonDecode, rawData)
     if ok and type(data) == 'table' and tonumber(data.duration) then
       requested = tonumber(data.duration)
     end
   end
-  if requested < GHOST_MIN_SECONDS then requested = GHOST_MIN_SECONDS end
-  if requested > GHOST_MAX_SECONDS then requested = GHOST_MAX_SECONDS end
+  if requested < CFG.ghostMinSeconds then requested = CFG.ghostMinSeconds end
+  if requested > CFG.ghostMaxSeconds then requested = CFG.ghostMaxSeconds end
 
   -- A repeat reset restarts the timer rather than stacking a second ghost.
   local repeated = ghosts[pid] ~= nil
@@ -2948,11 +3018,8 @@ end
 -- countdown/race so drivers can't be judged against a rule that appeared
 -- mid-race.
 function RM_onSetJokerEnabled(pid, rawData)
-  if not requireAuth(pid) then return end
-  if sessionUnderWay() then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData, true)
+  if not data then return end
   local want = data.enabled == true or data.enabled == 1
   -- A JOKER LAP WITH NO JOKER ROUTE DISQUALIFIES THE ENTIRE FIELD.
   --
@@ -2997,7 +3064,7 @@ function RM_onStartCountdown(pid)
   if not requireAuth(pid) then return end
   if race.phase ~= 'grid' then return end
   race.phase = 'countdown'
-  countdownValue = COUNTDOWN_FROM
+  countdownValue = CFG.countdownFrom
   broadcastState()
   broadcastCountdown(countdownValue)
   MP.CreateEventTimer('RM_CountdownTick', 1000)
@@ -3618,6 +3685,147 @@ local function ensureLayoutsDir()
   makeDirectory(LAYOUTS_DIR)
 end
 
+-- ---------------------------------------------------------------------------
+-- config.json: the settings file, beside layouts.json
+-- ---------------------------------------------------------------------------
+-- Read once at boot, written out with the built-in values the first time so
+-- there is always a file to edit rather than a format to guess at.
+--
+-- A KEY THE FILE DOES NOT MENTION KEEPS ITS BUILT-IN VALUE, and an unknown key
+-- is ignored. That makes the file safe to trim to the two lines somebody
+-- actually cares about, and safe to carry across an upgrade that adds settings.
+--
+-- Every value is validated against the same limits the live commands use. A
+-- hand-typed file is exactly where a lap count of "ten" or a negative countdown
+-- comes from, and one bad line must cost that line rather than the boot.
+local CONFIG_FILE = LAYOUTS_DIR .. '/config.json'
+
+local function applyConfigTable(data)
+  if type(data) ~= 'table' then return 0 end
+  local applied = 0
+  local function num(key, lo, hi)
+    local v = tonumber(data[key])
+    if v == nil then return end
+    if v < lo or v > hi then
+      print(string.format('[RaceManager] config.json: %s = %s is outside %s..%s, keeping %s',
+        key, tostring(data[key]), tostring(lo), tostring(hi), tostring(CFG[key])))
+      return
+    end
+    CFG[key] = v; applied = applied + 1
+  end
+  local function bool(key)
+    if type(data[key]) ~= 'boolean' then return end
+    CFG[key] = data[key]; applied = applied + 1
+  end
+  local function str(key, allowed)
+    local v = data[key]
+    if type(v) ~= 'string' or v == '' then return end
+    if allowed and not allowed[v] then
+      print('[RaceManager] config.json: ' .. key .. ' = "' .. v .. '" is not a valid value, ignored')
+      return
+    end
+    CFG[key] = v; applied = applied + 1
+  end
+
+  str('adminPassword')
+  num('totalLaps', 1, CFG.maxTotalLaps)
+  num('maxResets', -1, CFG.maxResetLimit)
+  str('resetMode', { inplace = true, checkpoint = true })
+  bool('nametags')
+  num('countdownFrom', 1, 60)
+  num('endDelay', 0, 120)
+  num('qualiLapLimit', 0, CFG.maxQualiLaps)
+  num('qualiTimeLimit', 0, CFG.maxQualiTime)
+  num('finalLapGrace', 10, 3600)
+  bool('ghostOnReset')
+  num('ghostMinSeconds', 0, 120)
+  num('ghostMaxSeconds', 0, 300)
+  num('holdTolerance', 0.1, 10)
+  num('holdCorrectEvery', 0.05, 5)
+  -- The ghost window has to be a window. A file with min above max would ghost
+  -- nobody, silently, for the whole season.
+  if CFG.ghostMinSeconds > CFG.ghostMaxSeconds then
+    print('[RaceManager] config.json: ghostMinSeconds is above ghostMaxSeconds; swapping them')
+    CFG.ghostMinSeconds, CFG.ghostMaxSeconds = CFG.ghostMaxSeconds, CFG.ghostMinSeconds
+  end
+  return applied
+end
+
+-- Write the current settings out. Called when the file is missing, and again
+-- whenever something durable changes (the admin password).
+saveConfigToDisk = function ()
+  ensureLayoutsDir()
+  local f = io.open(CONFIG_FILE, 'w')
+  if not f then
+    print('[RaceManager] Could not write ' .. CONFIG_FILE)
+    return false
+  end
+  f:write(jsonStringify({
+    adminPassword  = CFG.adminPassword,
+    totalLaps      = CFG.totalLaps,
+    maxResets      = CFG.maxResets,
+    resetMode      = CFG.resetMode,
+    nametags       = CFG.nametags,
+    countdownFrom  = CFG.countdownFrom,
+    endDelay       = CFG.endDelay,
+    qualiLapLimit  = CFG.qualiLapLimit,
+    qualiTimeLimit = CFG.qualiTimeLimit,
+    finalLapGrace  = CFG.finalLapGrace,
+    ghostOnReset   = CFG.ghostOnReset,
+    ghostMinSeconds = CFG.ghostMinSeconds,
+    ghostMaxSeconds = CFG.ghostMaxSeconds,
+    holdTolerance   = CFG.holdTolerance,
+    holdCorrectEvery = CFG.holdCorrectEvery,
+  }))
+  f:close()
+  return true
+end
+
+-- The race table is built at load time from CFG's built-in values, which is
+-- before config.json has been read -- so the file's values have to be pushed
+-- into it afterwards. Anything an admin can also change from the panel starts
+-- here and is theirs to move from then on.
+local function applyConfigToRace()
+  race.totalLaps      = CFG.totalLaps
+  race.maxResets      = CFG.maxResets
+  race.resetMode      = CFG.resetMode
+  race.nametags       = CFG.nametags
+  race.endDelay       = CFG.endDelay
+  race.qualiLapLimit  = CFG.qualiLapLimit
+  race.qualiTimeLimit = CFG.qualiTimeLimit
+  adminPassword       = CFG.adminPassword
+end
+
+local function loadConfigFromDisk()
+  local f = io.open(CONFIG_FILE, 'r')
+  if not f then
+    -- First run on this server. Write what the plugin ships with, so the admin
+    -- has a complete, valid file in front of them instead of a blank page.
+    if saveConfigToDisk() then
+      print('[RaceManager] Wrote default settings to ' .. CONFIG_FILE)
+    end
+    return
+  end
+  local text = f:read('*a')
+  f:close()
+  local ok, data = pcall(jsonParse, text)
+  if not ok or type(data) ~= 'table' then
+    -- A broken file is NOT a reason to refuse to start. A league whose server
+    -- will not boot because of a stray comma has a worse evening than one
+    -- running last week's lap count.
+    print('[RaceManager] ' .. CONFIG_FILE .. ' could not be read ('
+      .. tostring(data) .. '); using built-in defaults')
+    return
+  end
+  local n = applyConfigTable(data)
+  print(string.format('[RaceManager] Settings loaded from config.json (%d value%s): '
+    .. '%d laps, resets %s, countdown %d, ghost %.0f-%.0fs',
+    n, n == 1 and '' or 's', CFG.totalLaps,
+    CFG.maxResets < 0 and 'unlimited' or tostring(CFG.maxResets),
+    CFG.countdownFrom, CFG.ghostMinSeconds, CFG.ghostMaxSeconds))
+end
+
+
 local function loadLayoutsFromDisk()
   local f = io.open(LAYOUTS_FILE, 'r')
   if not f then return {} end
@@ -4009,10 +4217,8 @@ end
 -- Announced in chat as well as broadcast, because the panel is not where a
 -- driver's eyes are when a caution is called.
 function RM_onSetFlag(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   local want = tostring(data.flag or '')
   if want ~= 'green' and want ~= 'yellow' and want ~= 'red' then return end
   if not sessionUnderWay() then
@@ -4426,10 +4632,8 @@ function RM_onRemoveGarageEntry(pid, rawData)
 end
 
 function RM_onSetGarageEnforce(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   getGarage().enforce = data.enabled == true or data.enabled == 1
   saveGarageToDisk()
   broadcastState()
@@ -7083,10 +7287,8 @@ end
 -- the whole module is exercisable exactly the way every other handler in this
 -- file is tested -- by calling it.
 function RM_onCupSetEnabled(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   getCup().enabled = data.enabled == true or data.enabled == 1
   saveCupToDisk()
   print('[RaceManager] Cup points ' .. (cup.enabled and 'ENABLED' or 'disabled')
@@ -7232,10 +7434,8 @@ end
 -- Custom scoring. Every field is optional, so the UI can send just the part the
 -- admin edited; anything present replaces that part outright.
 function RM_onCupSetScoring(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   getCup()
   local touched = false
   if type(data.race) == 'table' then
@@ -7338,10 +7538,8 @@ end
 -- because nothing else can know: BeamMP hands out a fresh random guest name
 -- every join, so the server cannot tell a returning regular from a stranger.
 function RM_onCupBindDriver(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   local target = tonumber(data.pid)
   local entryId = tonumber(data.entryId)
   if not target then return end
@@ -7425,10 +7623,8 @@ end
 -- them away. Identified by cup entry id -- the roster entry -- so an adjustment
 -- lands on the driver and not on whoever happens to hold a session id.
 function RM_onCupAdjust(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   getCup()
   if not cup.enabled then
     print('[RaceManager] Cup adjustment ignored: no cup is running')
@@ -7463,10 +7659,8 @@ end
 
 -- Remove one adjustment from a driver's ledger, by its index in that ledger.
 function RM_onCupRemoveAdjust(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   getCup()
   local entry = cupFindEntry(math.floor(tonumber(data.entryId) or -1))
   local index = math.floor(tonumber(data.index) or 0)
@@ -7485,10 +7679,8 @@ end
 -- deliberately left alone -- the event did take place, and renumbering every
 -- later round to close the gap would rewrite history to hide a correction.
 function RM_onCupDropRound(pid, rawData)
-  if not requireAuth(pid) then return end
-  if type(rawData) ~= 'string' or rawData == '' then return end
-  local ok, data = pcall(Util.JsonDecode, rawData)
-  if not ok or type(data) ~= 'table' then return end
+  local data = adminPayload(pid, rawData)
+  if not data then return end
   getCup()
   local entry = cupFindEntry(math.floor(tonumber(data.entryId) or -1))
   local round = math.floor(tonumber(data.round) or 0)
@@ -7530,7 +7722,7 @@ function RM_Tick()
   -- One clock for both sessions. race.time is the session clock every finish
   -- time is stamped from; qualifying additionally runs its own wall clock,
   -- which is what closes the session when the admin set a time limit.
-  race.time = race.time + TICK_MS / 1000.0
+  race.time = race.time + CFG.tickMs / 1000.0
   -- The hold at the flag. Checked before anything else in the tick: once it
   -- expires there is no session left for the rest of this function to run.
   if race.endsAt and race.time >= race.endsAt then
@@ -7545,7 +7737,7 @@ function RM_Tick()
       -- counting down now is the grace: a driver parked in the pits, or one who
       -- never left the grid, has no crossing to give, and the session must not
       -- wait on them forever.
-      race.finalLapLeft = race.finalLapLeft - TICK_MS / 1000.0
+      race.finalLapLeft = race.finalLapLeft - CFG.tickMs / 1000.0
       if race.finalLapLeft <= 0 then
         local stranded = {}
         for _, rec in pairs(players) do
@@ -7566,7 +7758,7 @@ function RM_Tick()
         return
       end
     else
-      race.qualiTime = race.qualiTime + TICK_MS / 1000.0
+      race.qualiTime = race.qualiTime + CFG.tickMs / 1000.0
       if race.qualiTimeLimit > 0 and race.qualiTime >= race.qualiTimeLimit then
         beginFinalLap()
         -- Not a return: the session is still running, and the broadcast below
@@ -7575,7 +7767,7 @@ function RM_Tick()
     end
   end
   tickCounter = tickCounter + 1
-  if tickCounter >= PUSH_EVERY_TICKS then
+  if tickCounter >= CFG.pushEveryTicks then
     tickCounter = 0
     broadcastState()
   end
@@ -7679,6 +7871,11 @@ function RM_onPlayerDisconnect(pid)
 end
 
 function onInit()
+  -- SETTINGS FIRST, before any of it is read. The race table below was seeded
+  -- from CFG when the file loaded, so anything config.json overrides has to be
+  -- pushed into the live state as well -- see applyConfigToRace.
+  loadConfigFromDisk()
+  applyConfigToRace()
   MP.RegisterEvent('RM_Login',            'RM_onLogin')
   MP.RegisterEvent('RM_Logout',           'RM_onLogout')
   MP.RegisterEvent('RM_ChangePassword',   'RM_onChangePassword')
@@ -7785,7 +7982,7 @@ function onInit()
   MP.RegisterEvent('onPlayerDisconnect',  'RM_onPlayerDisconnect')
   MP.RegisterEvent('RM_Tick',             'RM_Tick')
   MP.RegisterEvent('RM_CountdownTick',    'RM_CountdownTick')
-  MP.CreateEventTimer('RM_Tick', TICK_MS)
+  MP.CreateEventTimer('RM_Tick', CFG.tickMs)
   -- Boot from a clean slate: any client still connected across a plugin
   -- reload drops its stale gates, then the layout cache is re-warmed from disk.
   clearTrackState('server startup')
