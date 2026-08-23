@@ -458,6 +458,9 @@
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('derby')}"
             ng-click="selectAdminTab('derby')"
             title="Derby rules, entry and the live standings">Derby</button>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('cup')}"
+            ng-click="selectAdminTab('cup')"
+            title="Championship points across several races and derbies: scoring, bonuses and standings">Cup <span class="rm-tab-count" ng-if="cup.enabled">R{{ cup.round }}</span></button>
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('editor')}"
             ng-click="selectAdminTab('editor')"
             title="Arena boundary, start grid and saved arenas">Derby Editor <span class="rm-tab-count" ng-if="derby.boundaryCount">{{ derby.boundaryCount }}</span></button>
@@ -599,7 +602,7 @@
        of that: it is twenty-four number fields, and it is set once a season.
        Standings and the scoring rules both come from the server; nothing here
        works out a total of its own. -->
-  <div class="rm-cup" ng-if="isMode('race') && isAdminTab('cup')">
+  <div class="rm-cup" ng-if="isAdminTab('cup')">
     <div class="rm-cup-head">
       <span class="rm-cup-title">Cup points across races</span>
       <span class="rm-cup-state" ng-if="cup.enabled">

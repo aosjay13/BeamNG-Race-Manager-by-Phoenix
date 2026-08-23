@@ -575,12 +575,29 @@ for _, field in ipairs({ 'cupEnabled', 'cupName', 'round', 'preset', 'racePoints
     'cup field ' .. field .. ' is mirrored from the RaceManagerCup broadcast')
 end
 
--- The cup is a race-mode tab. It has nothing to say about a derby, and putting
--- it anywhere else would repeat the mistake the mode split fixed.
-expect(html:match('ng%-click="selectAdminTab%(\'cup\'%)"') ~= nil,
-  'there is a Cup tab button')
-expect(html:find("isMode('race') && isAdminTab('cup')", 1, true) ~= nil,
-  'the cup panel is scoped to race mode')
+-- The cup is reachable from Race AND Derby, and it was not always.
+--
+-- It began as a race-mode tab on the reasoning that a cup is a property of a
+-- race night rather than a parallel game mode. That part still holds -- it is
+-- not a fourth mode -- but "it has nothing to say about a derby" was wrong: a
+-- derby banks a cup round exactly like a race does, there is a derby column in
+-- the scoring table and derby points in every preset. An admin running an
+-- evening of derbies could see none of it without switching modes.
+--
+-- So the panel is gated on the TAB alone. Both mode tab bars must offer the
+-- button, or the tab is selectable in a mode with no way back to it.
+local cupButtons = 0
+for _ in html:gmatch('selectAdminTab%(\'cup\'%)') do
+  cupButtons = cupButtons + 1
+end
+expect(cupButtons == 2,
+  'both the race and derby tab bars offer a Cup button (found ' .. cupButtons .. ')')
+expect(html:find('ng-if="isAdminTab(\'cup\')"', 1, true) ~= nil,
+  'the cup panel is gated on the tab alone, not on the mode')
+expect(html:find("isMode('race') && isAdminTab('cup')", 1, true) == nil,
+  'and the old race-mode gate is gone rather than merely bypassed')
+expect(js:find('derby: { derby: true, cup: true, editor: true }', 1, true) ~= nil,
+  'derby mode lists cup as a selectable tab, so selectAdminTab cannot fall back')
 expect(js:find('cup: true', 1, true) ~= nil,
   'the cup tab is registered in MODE_TABS for race mode')
 

@@ -312,10 +312,16 @@ angular.module('beamng.apps')
       var MODE_TABS = {
         // Cup sits under Race rather than beside it as a fourth mode: a cup is
         // a property of a race night, not a parallel game mode the way a derby
-        // is. Nothing in it applies to a derby, and it wraps the races that the
-        // other tabs here configure.
+        // is, and it wraps the races that the other tabs here configure.
+        //
+        // It appears under Derby TOO, showing the same panel. A derby banks a
+        // cup round like a race does -- there is a derby column in the scoring
+        // table and derby points in every preset -- so an admin running an
+        // evening of derbies needs the standings and the adjustment controls
+        // without switching modes to reach them. Reported from a race night:
+        // the leaderboard was only reachable from the race side.
         race:  { race: true, quali: true, cup: true, garage: true, editor: true },
-        derby: { derby: true, editor: true },
+        derby: { derby: true, cup: true, editor: true },
         admin: { admin: true }
       };
       var DEFAULT_TAB = { race: 'race', derby: 'derby', admin: 'admin' };
@@ -414,7 +420,9 @@ angular.module('beamng.apps')
         // The cup is pushed only when it changes, so a panel opened long after
         // the last change would otherwise render an empty table until the next
         // race finished. Same reason the derby pulls its own state here.
-        if ($scope.mode === 'race' && $scope.adminTab === 'cup') {
+        // Not mode-gated: the cup panel is reachable from Race and Derby both,
+        // and it needs the same pull either way.
+        if ($scope.adminTab === 'cup') {
           bngApi.engineLua('raceManager.cupRequestState()');
         }
       }
