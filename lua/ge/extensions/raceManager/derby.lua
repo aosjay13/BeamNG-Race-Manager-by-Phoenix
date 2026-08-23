@@ -88,7 +88,10 @@ local DERBY_START_GRACE   = 5
 -- So the total time from stopping to being counted out is this PLUS the
 -- configured timer. Deliberately: the grace is for driving, the timer is for
 -- being wrecked, and they are answering different questions.
-local DERBY_STOP_GRACE    = 5
+--
+-- Ten after a race night at five: five was enough to stop the warning flashing
+-- on every pause, and still short enough to catch a driver lining a run up.
+local DERBY_STOP_GRACE    = 10
 local DERBY_POLE_HEIGHT   = 6     -- fallback wall height, until the server says
 -- Fallback skirt, likewise. This used to BE the answer: a hardcoded drop with no
 -- way to change it, so on uneven ground the wall floated above every dip and
