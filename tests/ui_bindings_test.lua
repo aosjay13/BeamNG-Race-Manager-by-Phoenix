@@ -677,6 +677,33 @@ expect(html:find('against your best for this sector', 1, true) ~= nil,
 -- the same crossing that ends the lap.
 expect(html:find('ng-if="sectorHolding()"', 1, true) ~= nil,
   'the sector readout has its own hold, independent of the lap one')
+
+-- BOTH BOARDS CARRY BOTH READOUTS.
+--
+-- This app renders two: the admin header, and the driver bar that is the WHOLE
+-- HUD for a non-admin -- no header above it, no panel beside it. The deltas
+-- went onto the header first, which put a timing aid in front of the person
+-- least likely to be driving.
+--
+-- Counted rather than merely found, because "it is in the file somewhere"
+-- passes with one board still missing it, which is exactly the state this
+-- check was added to end.
+local function occurrences(hay, needle)
+  local n, at = 0, 1
+  while true do
+    local i = hay:find(needle, at, true)
+    if not i then return n end
+    n, at = n + 1, i + 1
+  end
+end
+expect(occurrences(html, 'deltaClass(lapHold.delta)') == 2,
+  'the lap delta is on the admin header AND the driver bar (found '
+    .. occurrences(html, 'deltaClass(lapHold.delta)') .. ')')
+expect(occurrences(html, 'ng-if="sectorHolding()"') == 2,
+  'and so is the sector readout (found '
+    .. occurrences(html, 'ng-if="sectorHolding()"') .. ')')
+expect(occurrences(html, 'deltaClass(sectorHold.delta)') == 2,
+  'including its delta, which is the half that would go missing quietly')
 expect(js:find('cup: true', 1, true) ~= nil,
   'the cup tab is registered in MODE_TABS for race mode')
 

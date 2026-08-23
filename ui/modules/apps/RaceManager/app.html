@@ -2147,7 +2147,22 @@
         {{ sessionKind === 'quali' ? 'OUT LAP DONE, TIMING' : 'TIMING FROM HERE' }}
       </span>
       <span class="rm-laptime-hold" ng-if="lapHolding() && !outLapDone()">
-        LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}
+        LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}<span
+          class="rm-delta" ng-class="deltaClass(lapHold.delta)"
+          ng-if="lapHold.delta !== null && lapHold.delta !== undefined"
+          title="Against your previous lap. Green is faster.">&nbsp;{{ formatDelta(lapHold.delta) }}</span>
+      </span>
+      <!-- SECTORS ON THE DRIVER BAR TOO, and this is the board that needs them
+           most: it is the whole HUD for a non-admin, who has no header above it
+           and no panel beside it. A delta only shown to admins would be a
+           timing aid for the person least likely to be driving. -->
+      <span class="rm-sector-hold" ng-if="sectorHolding()"
+            ng-class="{'rm-sector-best': sectorHold.best}"
+            title="Sector time, against your best for this sector. Green is faster.">
+        S{{ sectorHold.sector }} {{ formatLapLive(sectorHold.time) }}<span
+          class="rm-delta" ng-class="deltaClass(sectorHold.delta)"
+          ng-if="sectorHold.delta !== null && sectorHold.delta !== undefined"
+          >&nbsp;{{ formatDelta(sectorHold.delta) }}</span>
       </span>
       <!-- No clock on the out lap. A running number on a lap that is not being
            timed is a lie, and this bar is the whole HUD for a driver. -->
