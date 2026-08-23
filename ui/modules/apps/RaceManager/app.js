@@ -184,7 +184,7 @@ angular.module('beamng.apps')
       // behind with every short lap -- on a short circuit the display would
       // never catch up to reality.
       $scope.lapLive = null;   // { elapsed, at, lap }: last push + when it landed
-      $scope.lapHold = null;   // { lapTime, lap, until }: completed time on hold
+      $scope.lapHold = null;   // { lapTime, lap, delta, until }: completed time on hold
       var lapTicker = null;
 
       function startLapTicker() {
@@ -195,7 +195,15 @@ angular.module('beamng.apps')
           if ($scope.lapHold && Date.now() >= $scope.lapHold.until) {
             $scope.lapHold = null;
           }
-          if (!$scope.lapLive && !$scope.lapHold) { stopLapTicker(); }
+          if ($scope.sectorHold && Date.now() >= $scope.sectorHold.until) {
+            $scope.sectorHold = null;
+          }
+          // The sector hold keeps the ticker alive too, or a sector time shown
+          // between laps would sit on screen until something else happened to
+          // start it again.
+          if (!$scope.lapLive && !$scope.lapHold && !$scope.sectorHold) {
+            stopLapTicker();
+          }
         }, LAP_TICK_MS);
       }
       function stopLapTicker() {
@@ -260,7 +268,37 @@ angular.module('beamng.apps')
             lapTime: data.outLap ? null : data.lapTime,
             outLap: !!data.outLap,
             lap: data.lap || null,
+            delta: (typeof data.delta === 'number') ? data.delta : null,
             until: Date.now() + LAP_HOLD_MS
+          };
+          startLapTicker();
+        });
+      });
+
+      // SECTOR TIMES, held briefly the way a lap time is.
+      //
+      // Compared to this driver's BEST for that sector rather than to their last
+      // lap, which is the opposite baseline to the lap readout and deliberate:
+      // at the line the useful question is "am I still improving", mid-lap it is
+      // "where am I losing it", and that one only has an answer against a
+      // reference. Sectors also arrive several times a lap, so a same-sector-
+      // last-lap comparison would swing on one bad corner and read as noise.
+      //
+      // Purely local: the client stamps its own crossings, so this needs no
+      // server round trip and cannot blank on a dropped packet.
+      var SECTOR_HOLD_MS = 4000;
+      $scope.sectorHold = null;
+      $scope.sectorHolding = function () { return !!$scope.sectorHold; };
+      $scope.$on('RaceManagerSector', function (event, data) {
+        if (!data || typeof data.time !== 'number') { return; }
+        $scope.$evalAsync(function () {
+          $scope.sectorHold = {
+            sector: data.sector, count: data.count, time: data.time,
+            // null on the first visit to a sector: nothing to compare against,
+            // and a 0.000 would read as "dead level" rather than "no data".
+            delta: (typeof data.delta === 'number') ? data.delta : null,
+            best: data.best === true,
+            until: Date.now() + SECTOR_HOLD_MS
           };
           startLapTicker();
         });
@@ -1750,6 +1788,23 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         return pad2(m) + ':' + pad2(s);
       };
 
+      // A DELTA IS ONLY WORTH SHOWING WITH ITS SIGN. Always three decimals and
+      // always an explicit + or -, so the eye reads the direction before it
+      // reads the number.
+      $scope.formatDelta = function (d) {
+        if (d === null || d === undefined) { return ''; }
+        return (d >= 0 ? '+' : '-') + Math.abs(d).toFixed(3);
+      };
+      // GREEN IS FASTER, RED IS SLOWER, which is the way round every timing
+      // screen in racing does it -- so it needs no learning at speed. Note that
+      // makes green the NEGATIVE number: a lap that took less time.
+      //
+      // Zero counts as neither. An exact tie to the thousandth is not an
+      // improvement, and colouring it green would overstate it.
+      $scope.deltaClass = function (d) {
+        if (d === null || d === undefined || d === 0) { return ''; }
+        return d < 0 ? 'rm-delta-faster' : 'rm-delta-slower';
+      };
       $scope.formatLap = function (t) {
         if (t === null || t === undefined) { return '-'; }
         var m = Math.floor(t / 60);

@@ -644,6 +644,39 @@ end
 -- the length of a derby, so a box setting how many you get would be a lie.
 expect(html:find('derbyUi.resets', 1, true) == nil,
   'the derby Max resets box is gone, because there is no allowance any more')
+
+-- ---------------------------------------------------------------------------
+-- LAP AND SECTOR DELTAS
+-- ---------------------------------------------------------------------------
+-- GREEN IS FASTER. This is the one detail worth a test of its own: a delta is
+-- read at speed, mid-corner, and a driver who has to work out which way round
+-- it goes is not reading it at all. Faster means a SMALLER time, so green is
+-- the negative number -- the inversion that makes it easy to write backwards.
+expect(js:find("return d < 0 ? 'rm-delta-faster' : 'rm-delta-slower';", 1, true) ~= nil,
+  'a negative delta (a quicker time) is the FASTER class, not the slower one')
+expect(html:find('.rm-delta-faster { color: #7ee2a8; }', 1, true) ~= nil,
+  'and the faster class is green')
+expect(html:find('.rm-delta-slower { color: #f28b82; }', 1, true) ~= nil,
+  'while the slower class is red')
+
+-- Zero is neither. An exact tie to the thousandth is not an improvement, and
+-- green would overstate it.
+expect(js:find('d === 0', 1, true) ~= nil, 'a dead-level delta is left uncoloured')
+
+-- The two readouts use DIFFERENT baselines on purpose: at the line the question
+-- is "am I still improving" (against the last lap), mid-lap it is "where am I
+-- losing it" (against the best for that sector).
+expect(js:find('timing.prevLap', 1, true) == nil,
+  'the lap baseline is held in the extension, not mirrored into the UI')
+expect(html:find('Against your previous lap', 1, true) ~= nil,
+  'the lap delta says it is against the previous lap')
+expect(html:find('against your best for this sector', 1, true) ~= nil,
+  'and the sector delta says it is against your best')
+
+-- Both readouts can be on screen together: the final sector of a lap closes on
+-- the same crossing that ends the lap.
+expect(html:find('ng-if="sectorHolding()"', 1, true) ~= nil,
+  'the sector readout has its own hold, independent of the lap one')
 expect(js:find('cup: true', 1, true) ~= nil,
   'the cup tab is registered in MODE_TABS for race mode')
 

@@ -800,6 +800,33 @@ local pit = {
 -- Local lap tracking (reset on every session change)
 local localTime    = 0
 
+-- SELF-TIMING: this driver's lap and sector deltas.
+--
+-- Entirely local, and deliberately so. The server already stamps every
+-- checkpoint crossing into rec.splits, but that table exists to build the gap
+-- to the LEADER -- comparing two drivers on one clock. A driver's delta to
+-- their own previous lap compares them to themselves, so it needs no other
+-- car, no server round trip, and cannot be blanked by a dropped packet the way
+-- a cross-driver gap can.
+--
+-- One table rather than four locals: this chunk is near Lua's 200-local ceiling
+-- (see docs/ARCHITECTURE.md), and grouping is what the rest of the file does.
+--
+--   sectorStart  localTime the current sector began
+--   prevLap      the last TIMED lap, which the lap delta is measured against
+--   bestSector   [n] = fastest time seen for sector n this session
+--   sectors      [n] = this lap's sector times, for the readout
+local timing = { sectorStart = 0, prevLap = nil, bestSector = {}, sectors = {} }
+
+-- Wipe the lot. A session change makes every stored time meaningless: a
+-- different track, or the same one from a standing start with a new grid.
+local function timingReset()
+  timing.sectorStart = localTime
+  timing.prevLap     = nil
+  timing.bestSector  = {}
+  timing.sectors     = {}
+end
+
 -- Live position telemetry: seconds until the next report of this car's distance
 -- to the next checkpoint is due. The distance itself is computed inside that
 -- report and nowhere else, so it needs no state up here.
@@ -1480,6 +1507,7 @@ local function resetLapTracking()
   session.timingActive = false
   session.lapStart     = localTime
   session.localLap     = 1
+  timingReset()
   session.prevPos      = nil
   -- The flags go with the session. A white flag latched on lap 4 of the last
   -- race would suppress it on lap 4 of the next one, and a checkered left set
@@ -1549,6 +1577,7 @@ local function clearTrackState(reason)
   session.timingActive = false
   session.localLap     = 1
   session.lapStart     = localTime
+  timingReset()
   session.prevPos      = nil
   progressLeft = 0
   lastGate     = nil
@@ -1622,7 +1651,17 @@ local function onLapCompleted()
   -- reports above: the server is still told the same lapTime it always was, and
   -- lapStart is reset either way, so the lap clock never pauses for the hold.
   local function announceLap(n)
-    guihooks.trigger('RaceManagerLapDone', { lapTime = lapTime, lap = n })
+    -- DELTA TO THE PREVIOUS LAP, not to the best one. "Am I still improving"
+    -- is the question a driver asks at the line, and against a best lap the
+    -- answer is +ve for most of a race once a good one is set, which stops
+    -- telling them anything. The SECTOR readout compares to best instead --
+    -- different question, different baseline.
+    --
+    -- nil on the first timed lap: there is nothing to compare it to, and a
+    -- delta of 0.000 would be a lie rather than a blank.
+    local delta = timing.prevLap and (lapTime - timing.prevLap) or nil
+    timing.prevLap = lapTime
+    guihooks.trigger('RaceManagerLapDone', { lapTime = lapTime, lap = n, delta = delta })
   end
 
   -- ONE report, for both kinds of session, and for the out lap as much as for a
@@ -1654,6 +1693,10 @@ local function onLapCompleted()
   end
   session.localLap = session.localLap + 1
   session.lapStart = localTime
+  -- A new lap starts a new set of sectors. The stamp is NOT reset here -- the
+  -- crossing that ended the lap already moved it, and resetting again would
+  -- hand sector 1 of the next lap the few microseconds in between.
+  timing.sectors = {}
 end
 
 -- ---------------------------------------------------------------------------
@@ -1836,6 +1879,36 @@ local function checkGates()
     if crossed then
       lastGate     = wp   -- the "Last Checkpoint" reset mode respawns here
       lastGateBack = backwards
+
+      -- SECTOR CLOSED. Every checkpoint ends one, so the sector number is the
+      -- gate number and the last sector of a lap ends at the line.
+      --
+      -- Taken BEFORE the armedWp branches below, because one of them calls
+      -- onLapCompleted, which moves session.lapStart out from under this.
+      --
+      -- The out lap is stamped but never scored: it is a lap driven from a
+      -- standing start, and letting it set the best sector would leave every
+      -- later comparison measured against a time nobody was trying to beat.
+      do
+        local n = session.armedWp
+        local sectorTime = localTime - timing.sectorStart
+        timing.sectorStart = localTime
+        -- NOT ON A BACKWARDS CROSSING. Reversing through the gate ahead still
+        -- clears it -- that is the route's rule, and the "Last Checkpoint"
+        -- reset mode depends on it -- but a sector closed by driving backwards
+        -- through its end is not a time anybody drove. It would also poison the
+        -- best, which every later delta is then measured against.
+        if sectorTime > 0 and not backwards and not onOutLap() then
+          timing.sectors[n] = sectorTime
+          local best = timing.bestSector[n]
+          local delta = best and (sectorTime - best) or nil
+          if not best or sectorTime < best then timing.bestSector[n] = sectorTime end
+          guihooks.trigger('RaceManagerSector', {
+            sector = n, count = #track.route, time = sectorTime,
+            delta = delta, best = not best or sectorTime <= timing.bestSector[n],
+          })
+        end
+      end
       if lineEndedOutLap then
         -- Reached the line with slots still owing. The out lap is over; slot 1
         -- arms behind it with timing running. onLapCompleted reports the crossing

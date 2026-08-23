@@ -32,7 +32,22 @@
       </span>
       <span class="rm-laptime-hold" ng-if="lapHolding() && !outLapDone()"
             title="Lap just completed: held briefly so it can be read">
-        LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}
+        LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}<span
+          class="rm-delta" ng-class="deltaClass(lapHold.delta)"
+          ng-if="lapHold.delta !== null && lapHold.delta !== undefined"
+          title="Against your previous lap. Green is faster.">&nbsp;{{ formatDelta(lapHold.delta) }}</span>
+      </span>
+      <!-- Sector times sit beside the lap readout rather than replacing it:
+           both can be on screen at once (the last sector of a lap closes at the
+           same crossing that ends the lap), and a driver reading one is not
+           served by the other vanishing. -->
+      <span class="rm-sector-hold" ng-if="sectorHolding()"
+            ng-class="{'rm-sector-best': sectorHold.best}"
+            title="Sector time, against your best for this sector. Green is faster.">
+        S{{ sectorHold.sector }} {{ formatLapLive(sectorHold.time) }}<span
+          class="rm-delta" ng-class="deltaClass(sectorHold.delta)"
+          ng-if="sectorHold.delta !== null && sectorHold.delta !== undefined"
+          >&nbsp;{{ formatDelta(sectorHold.delta) }}</span>
       </span>
       <!-- A running clock reads as a time being taken, so the out lap does not
            get one. The driver is told what the lap is for instead. -->
@@ -2788,6 +2803,34 @@
     animation: rm-lap-pop 0.25s ease-out;
   }
   .rm-laptime-hold b { font-weight: 700; }
+  /* DELTA COLOURS. Green is faster, red is slower -- the way round every timing
+     screen in racing does it, which is what makes it readable at a glance and
+     at speed. Green is therefore the NEGATIVE number.
+     Both tokens are already the app's own green and red, used throughout for
+     gained and lost; a delta is the same idea. */
+  .rm-delta { font-weight: 700; }
+  .rm-delta-faster { color: #7ee2a8; }
+  .rm-delta-slower { color: #f28b82; }
+  /* The sector box is the quieter sibling of the lap box: same shape, no amber
+     fill. A sector is read in passing while a lap time is the headline, and two
+     boxes shouting at once is neither of them being read. */
+  .rm-sector-hold {
+    display: inline-block;
+    padding: 0 6px;
+    margin-left: 4px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #bdc1c6;
+    background: rgba(154, 160, 166, 0.14);
+    border: 1px solid rgba(154, 160, 166, 0.4);
+  }
+  /* A personal best for that sector: the one case worth the extra colour. */
+  .rm-sector-best {
+    color: #ce93d8;
+    background: rgba(206, 147, 216, 0.16);
+    border-color: rgba(206, 147, 216, 0.55);
+  }
   /* The out lap takes the same slot as both of those and must not be mistaken
      for either: not the quiet grey of a clock that is running, and not the amber
      box of a time that was set. Purple is qualifying's colour throughout this
