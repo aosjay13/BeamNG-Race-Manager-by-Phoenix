@@ -2024,6 +2024,13 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.pitLeft = data.pitLeft || 0;
           $scope.nextWp = data.nextWp || 1;
           $scope.visualize = data.visualize !== false;
+          // Free practice. Mirrored rather than tracked locally: the client Lua
+          // owns it, and pressing the button is a request, not the state.
+          $scope.practice       = data.practice === true;
+          $scope.practiceLayout = data.practiceLayout || null;
+          $scope.practiceDone   = data.practiceDone || 0;
+          $scope.practiceLeft   = (typeof data.practiceLeft === 'number')
+                                  ? data.practiceLeft : null;
           if (typeof data.pointToPoint === 'boolean') { $scope.pointToPoint = data.pointToPoint; }
           if (typeof data.clientBuild === 'string') { $scope.clientBuild = data.clientBuild; }
           // Admin session restored from the client bridge. This directive is
@@ -3575,6 +3582,72 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         console.log('[RaceManager] Edit Layout "' + $scope.layoutUi.selected + '" requested (private)');
         bngApi.engineLua('raceManager.loadLayout('
           + luaStr($scope.layoutUi.selected) + ', true)');
+      };
+
+      // --- Free practice --------------------------------------------------
+      //
+      // Two halves that never appear together: admins approve, drivers drive.
+
+      // ADMIN: open or close the selected layout for practice.
+      //
+      // Reads the flag off the layout list rather than keeping its own copy, so
+      // the button always says what the SERVER thinks -- the one place it can
+      // be wrong is the one that matters.
+      $scope.practiceApproved = function (name) {
+        for (var i = 0; i < $scope.layouts.length; i++) {
+          if ($scope.layouts[i].name === name) { return $scope.layouts[i].practice === true; }
+        }
+        return false;
+      };
+      $scope.togglePracticeApproval = function () {
+        var name = $scope.layoutUi.selected;
+        if (!name) { return; }
+        bngApi.engineLua('raceManager.setLayoutPractice('
+          + luaStr(name) + ', ' + (!$scope.practiceApproved(name)) + ')');
+      };
+
+      // DRIVER: the practice picker. Its own selection, deliberately separate
+      // from layoutUi.selected -- that one drives the admin's Load/Overwrite/
+      // Delete buttons, and sharing it would let a driver's browsing move an
+      // admin's target out from under them mid-edit.
+      $scope.practice       = false;
+      $scope.practiceLayout = null;
+      $scope.practiceDone   = 0;
+      $scope.practiceLeft   = null;
+      $scope.practiceUi = { selected: '', laps: 0 };
+      $scope.practiceLayouts = function () {
+        var out = [];
+        for (var i = 0; i < $scope.layouts.length; i++) {
+          if ($scope.layouts[i].practice === true) { out.push($scope.layouts[i]); }
+        }
+        return out;
+      };
+      // Offered only when the server is idle. The server refuses otherwise, and
+      // a button that is going to be refused should not look available.
+      $scope.canPractice = function () {
+        return $scope.phase === 'waiting' && !$scope.derbyActive();
+      };
+      $scope.practiceDropdownOpen = false;
+      $scope.togglePracticeDropdown = function () {
+        $scope.practiceDropdownOpen = !$scope.practiceDropdownOpen;
+        if ($scope.practiceDropdownOpen) { revealDropdown('.rm-practice .rm-layout-menu'); }
+      };
+      $scope.selectPracticeLayout = function (l) {
+        $scope.practiceUi.selected = l && l.name || '';
+        $scope.practiceDropdownOpen = false;
+      };
+      $scope.startPractice = function () {
+        if (!$scope.practiceUi.selected) { return; }
+        bngApi.engineLua('raceManager.practiceLayout('
+          + luaStr($scope.practiceUi.selected) + ')');
+      };
+      $scope.applyPracticeLaps = function () {
+        var n = parseInt($scope.practiceUi.laps, 10);
+        if (isNaN(n) || n < 0) { n = 0; }
+        bngApi.engineLua('raceManager.setPracticeLaps(' + n + ')');
+      };
+      $scope.endPractice = function () {
+        bngApi.engineLua('raceManager.endPractice()');
       };
 
       // The layout and arena pickers are absolutely positioned menus, and the

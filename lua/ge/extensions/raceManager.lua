@@ -7057,6 +7057,23 @@ function M.loadLayout(name, forEditing)
   }))
 end
 
+-- Admin: open or close a saved layout for practice.
+--
+-- Allowed while a session is under way, unlike the other layout commands: it
+-- changes nothing about the running race, only what a driver may pull up on
+-- their own afterwards.
+function M.setLayoutPractice(name, on)
+  name = tostring(name or '')
+  if name == '' then return end
+  if not inMultiplayer() then
+    editorMsg('Layouts need a BeamMP server')
+    return
+  end
+  TriggerServerEvent('RM_SetLayoutPractice', jsonEncode({
+    name = name, practice = on == true,
+  }))
+end
+
 -- --- Free practice ---------------------------------------------------------
 
 -- Pull up an approved track to practise on. Any player, admin or not.

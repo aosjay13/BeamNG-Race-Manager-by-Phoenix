@@ -264,6 +264,70 @@
        championship table would be in the way. Admins have the full panel under
        the Cup tab, so this is for everybody else - a driver should be able to
        see where they stand without asking. -->
+  <!-- ================= Free practice ==================================
+       Shown to EVERYBODY, admin or not: practice is not an admin power, and an
+       admin wanting a few laps between sessions should not have to log out to
+       get them. It is hidden while a session is on, because the server refuses
+       it then and a control that is going to be refused should not look
+       available.
+
+       Only approved tracks are listed, and the list a non-admin holds contains
+       nothing else -- the server never sent them the rest. -->
+  <div class="rm-practice" ng-if="!minimalMode() && (canPractice() || practice)">
+    <div class="rm-practice-head">
+      <span class="rm-practice-title">Practice</span>
+      <span class="rm-practice-state" ng-if="practice">
+        on <b>{{ practiceLayout }}</b> &middot; lap {{ practiceDone + 1 }}<span
+          ng-if="practiceLeft !== null">, {{ practiceLeft }} left</span>
+      </span>
+      <span class="rm-practice-state rm-practice-off" ng-if="!practice && !practiceLayouts().length">
+        No tracks are open for practice
+      </span>
+    </div>
+    <div class="rm-practice-row" ng-if="!practice && practiceLayouts().length">
+      <!-- The app's own dropdown, not a native select: a select's popup is an
+           OS window CEF never draws over the game, so it renders and then does
+           nothing. -->
+      <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': practiceDropdownOpen}">
+        <button type="button" class="rm-layout-trigger"
+                ng-class="{'rm-layout-trigger-empty': !practiceUi.selected}"
+                ng-click="togglePracticeDropdown()">
+          <span class="rm-layout-trigger-label">{{ practiceUi.selected || 'Pick a track…' }}</span>
+          <span class="rm-layout-caret">&#9662;</span>
+        </button>
+        <div class="rm-layout-menu" ng-if="practiceDropdownOpen">
+          <div class="rm-layout-option"
+               ng-repeat="l in practiceLayouts() track by l.name"
+               ng-class="{'rm-layout-option-active': l.name === practiceUi.selected}"
+               ng-click="selectPracticeLayout(l)">
+            {{ l.name }} ({{ l.checkpoints.length }} gates)
+          </div>
+        </div>
+      </div>
+      <!-- 0 or blank is unlimited, which is the default: practice with a target
+           is the unusual case, and the common one should need no decision. -->
+      <input type="number" class="rm-width-num" min="0" max="99" step="1"
+             ng-model="practiceUi.laps" ng-change="applyPracticeLaps()"
+             ng-model-options="{debounce: 600}"
+             title="How many laps to run. 0 or blank is unlimited.">
+      <span class="rm-setting-val">{{ practiceUi.laps > 0 ? 'laps' : 'unlimited' }}</span>
+      <button class="rm-btn rm-btn-start" ng-click="startPractice()"
+              ng-disabled="!practiceUi.selected || !canPractice()"
+              title="Load this track for yourself and start timing. Nobody else is moved, and nothing you do is scored.">
+        Start Practice
+      </button>
+    </div>
+    <div class="rm-practice-row" ng-if="practice">
+      <span class="rm-practice-note">
+        Your laps are timed for you alone: nothing here is scored, reported or saved.
+      </span>
+      <button class="rm-btn rm-btn-end" ng-click="endPractice()"
+              title="Stop timing. The track stays loaded so you can still see where it goes.">
+        End Practice
+      </button>
+    </div>
+  </div>
+
   <div class="rm-cup-driver" ng-if="!isAdmin && cup.enabled && !minimalMode()">
     <div class="rm-cup-head">
       <span class="rm-cup-title">{{ cup.name || 'Cup' }}: standings</span>
@@ -1586,6 +1650,15 @@
                   title="Delete the selected layout from the server">
             Delete
           </button>
+          <!-- Opening a track for practice is not an edit, so it is NOT behind
+               canEdit(): it changes nothing about the track or any session, only
+               whether a driver may pull it up on their own between sessions. -->
+          <button class="rm-btn rm-btn-mini"
+                  ng-class="{'rm-admin-tab-active': practiceApproved(layoutUi.selected)}"
+                  ng-click="togglePracticeApproval()" ng-disabled="!layoutUi.selected"
+                  title="Let any driver load this track on their own between sessions and be timed on it. Their laps are theirs alone: nothing is scored, reported or saved. Off by default.">
+            Practice: {{ practiceApproved(layoutUi.selected) ? 'OPEN' : 'closed' }}
+          </button>
         </div>
         <!-- ITS OWN ROW, because it is not a per-layout action. Open, Overwrite
              and Delete all act on the layout selected above; this one acts on
@@ -2817,6 +2890,22 @@
     border: 1px solid rgba(251, 188, 5, 0.55);
     animation: rm-lap-pop 0.25s ease-out;
   }
+  /* Free practice sits with the driver-facing panels, not the admin ones. */
+  .rm-practice {
+    margin: 4px 0;
+    padding: 5px 7px;
+    border-radius: 4px;
+    background: rgba(66, 133, 244, 0.10);
+    border: 1px solid rgba(66, 133, 244, 0.35);
+  }
+  .rm-practice-head { display: flex; align-items: baseline; gap: 8px; }
+  .rm-practice-title { font-weight: 700; font-size: 11px; color: #8ab4f8; }
+  .rm-practice-state { font-size: 11px; color: #bdc1c6; }
+  .rm-practice-off { color: #9aa0a6; }
+  .rm-practice-row {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px;
+  }
+  .rm-practice-note { font-size: 11px; color: #9aa0a6; }
   .rm-laptime-hold b { font-weight: 700; }
   /* DELTA COLOURS. Green is faster, red is slower -- the way round every timing
      screen in racing does it, which is what makes it readable at a glance and
