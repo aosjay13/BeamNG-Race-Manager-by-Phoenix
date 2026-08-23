@@ -230,8 +230,47 @@ local RM_BUILD = '0.9.0'
 -- ---------------------------------------------------------------------------
 -- State
 -- ---------------------------------------------------------------------------
-local phase     = 'waiting'  -- mirrored from server broadcasts
-local totalLaps = 5          -- mirrored from server broadcasts
+-- THE SESSION, AS ONE OBJECT.
+--
+-- Eighteen top-level locals describing what the race is doing right now: the
+-- phase, this driver's lap and armed gate, the joker's state, the flag, the
+-- reset allowance, the grid slot, the spectator lock.
+--
+-- Same reasoning as `track` above. Loose scalars are cheap to read and
+-- expensive to SHARE: every one of them is rebound constantly, so anything
+-- outside this file needed a getter per name -- which is what made the renderer
+-- extraction cost twenty-five handles instead of three.
+--
+-- Mirrored from the server on every broadcast, not owned here. The server is
+-- authoritative for all of it; this is the client's copy, and the only fields
+-- the client decides for itself are the per-driver ones it measures locally
+-- (localLap, armedWp, timingActive) because only the client has physics.
+local session = {
+  -- Mirrored from the server broadcast.
+  phase      = 'waiting',   -- waiting | grid | countdown | racing | qualifying | finished
+  totalLaps  = 5,
+  raceFlag   = 'green',     -- green | yellow | red
+  maxResets  = -1,          -- -1 unlimited, 0 none, N per driver per session
+  resetMode  = 'inplace',   -- inplace | checkpoint
+  jokerEnabled = false,
+  -- This driver's own lap, measured here because only the client sees the car
+  -- cross anything. The server scores what this reports.
+  localLap     = 1,
+  armedWp      = 1,         -- next gate the local car must cross
+  timingActive = false,     -- quali: false until the first S/F crossing (out lap)
+  lapStart     = 0,         -- localTime at the start of the current lap
+  prevPos      = nil,       -- vehicle position last frame (the crossing segment)
+  resetsUsed   = 0,         -- what THIS client has spent
+  -- Joker lap progress, per driver and per session.
+  jokerArmed   = 1,         -- next joker gate the local car must cross
+  jokerTaken   = false,     -- joker route already completed this race
+  jokerLapUsed = nil,       -- lap the joker was taken on, for the UI
+  -- Where the server put this car for the start, and whether the hold is on.
+  gridSlot   = nil,
+  gridFrozen = false,
+  -- Out of the session: finished, retired, or eliminated. 'race' | 'derby'.
+  spectatorLock = nil,
+}
 
 -- Checkpoints: ordered list of { x, y, z, hx, hy } where (hx, hy) is the
 -- normalized direction of travel captured at placement. The gate rectangle runs
@@ -421,15 +460,12 @@ local branch = {
   -- Editor: the checkpoint the next placed branch gate belongs to.
   editSlot = 1,
 }
-local raceFlag         = 'green'   -- green | yellow | red, mirrored from the server
 local selfSpectating   = false     -- this player has opted out of the field
 local visualize        = true
 
 -- Starting grid: ordered list of { x, y, z, hx, hy } placed by the race
 -- creator. Slot 1 is pole. Travels with the track layout; the server assigns a
 -- slot number per driver and this client puts its own car on that slot.
-local gridSlot       = nil       -- slot the server assigned us for this race
-local gridFrozen     = false     -- true while the freeze command has been issued
 -- What the session WANTS held ('race' | 'derby' | nil), as opposed to whether
 -- the freeze is currently applied. Separating intent from state is what lets the
 -- freeze be put back at the one moment it is known to be lost: the vehicle reset
@@ -740,10 +776,6 @@ local pit = {
   -- when a reset ghost was already running and owns that broadcast.
   ghostSent = false,
 }
-local jokerEnabled = false       -- mirrored from the server broadcast
-local jokerArmed   = 1           -- next joker gate the local car must cross
-local jokerTaken   = false       -- joker route already completed this race
-local jokerLapUsed = nil         -- lap the joker was taken on (for the UI)
 local editorTarget = 'main'      -- which route the editor appends to: main | joker
 -- Is the editor panel open in the UI app? Mirrored here because the start-slot
 -- markers are drawn from Lua (debugDrawer) and the panel's open/closed state
@@ -752,12 +784,7 @@ local editorTarget = 'main'      -- which route the editor appends to: main | jo
 local editorOpen   = false
 
 -- Local lap tracking (reset on every session change)
-local armedWp      = 1           -- next gate the local car must cross
-local timingActive = false       -- quali: false until the first S/F crossing (out-lap)
-local lapStart     = 0           -- localTime at the start of the current lap
-local localLap     = 1
 local localTime    = 0
-local prevPos      = nil         -- vehicle position last frame (crossing segment)
 
 -- Live position telemetry: seconds until the next report of this car's distance
 -- to the next checkpoint is due. The distance itself is computed inside that
@@ -773,8 +800,6 @@ local joinRequestLeft = nil
 -- Once the allowance is gone the reset is BLOCKED rather than punished: the car
 -- is put straight back where it was, so pressing R buys nothing and costs
 -- nothing. lastGood* is the rolling snapshot that restore uses.
-local maxResets      = -1
-local resetsUsed     = 0
 local lastGoodPos    = nil       -- vec3-ish { x, y, z } sampled while driving
 local lastGoodRot    = nil       -- quaternion { x, y, z, w } for the same sample
 local snapshotLeft   = 0         -- seconds until the next snapshot is taken
@@ -783,7 +808,6 @@ local SNAPSHOT_EVERY = 0.25      -- seconds between "last good position" samples
 -- What a LEGAL reset does while racing (mirrored from the server):
 --   'inplace'    -- BeamNG's normal repair-where-you-stand (the default)
 --   'checkpoint' -- the car is moved to the last checkpoint it crossed
-local resetMode      = 'inplace'
 local lastGate       = nil       -- last checkpoint the local car crossed (a wp table)
 -- Was that crossing made BACKWARDS through the gate?
 --
@@ -867,7 +891,6 @@ local isBystander    = false
 -- session: it holds the source ('race' or 'derby') that imposed the penalty, so
 -- the isolated derby module and the racing state machine can never release each
 -- other's spectators.
-local spectatorLock   = nil
 local spectatorReason = nil
 
 local function inMultiplayer()
@@ -1155,15 +1178,15 @@ local function driverFlag()
   -- session actually ends, which is the moment the lock is released.
   --
   -- Race only. A derby elimination is not a finish and has its own overlay.
-  if spectatorLock and spectatorLock ~= 'derby' then return 'checkered' end
+  if session.spectatorLock and session.spectatorLock ~= 'derby' then return 'checkered' end
   -- RED NEXT. Held on the grid is a red flag, and so is an admin calling one:
   -- both mean the same thing to a driver, which is that nobody is racing right
   -- now. It is a CONDITION rather than a state change, and the session is still
   -- running underneath it: red goes to yellow, then back to green.
-  if raceFlag == 'red' or phase == 'grid' or gridFrozen then return 'red' end
-  if raceFlag == 'yellow' then return 'yellow' end
-  if phase == 'racing' and not track.pointToPoint and totalLaps > 0
-     and localLap >= totalLaps then
+  if session.raceFlag == 'red' or session.phase == 'grid' or session.gridFrozen then return 'red' end
+  if session.raceFlag == 'yellow' then return 'yellow' end
+  if session.phase == 'racing' and not track.pointToPoint and session.totalLaps > 0
+     and session.localLap >= session.totalLaps then
     return 'white'
   end
   return 'green'
@@ -1221,8 +1244,8 @@ end
 -- required several thousand lines below this, so the upvalue does not exist yet
 -- and the mistake costs a nil index at runtime rather than a compile error.
 function edit.running()
-  return phase == 'grid' or phase == 'countdown'
-      or phase == 'racing' or phase == 'qualifying'
+  return session.phase == 'grid' or session.phase == 'countdown'
+      or session.phase == 'racing' or session.phase == 'qualifying'
 end
 
 -- The capability the editor is gated on. ONE function, so a permissions system
@@ -1251,7 +1274,7 @@ local function pushRouteState()
   guihooks.trigger('RaceManagerRoute', {
     clientBuild  = RM_BUILD,
     waypoints    = track.route,
-    nextWp       = armedWp,
+    nextWp       = session.armedWp,
     width        = track.checkpointWidth,
     height       = track.checkpointHeight,
     depth        = track.checkpointDepth,
@@ -1259,8 +1282,8 @@ local function pushRouteState()
     -- Starting grid
     startPositions = track.startPositions,
     pointToPoint   = track.pointToPoint,
-    gridSlot       = gridSlot,
-    gridFrozen     = gridFrozen,
+    gridSlot       = session.gridSlot,
+    gridFrozen     = session.gridFrozen,
     -- Admin session, so a freshly mounted UI app knows straight away that this
     -- client is still logged in (see the isAdmin declaration above).
     isAdmin      = isAdmin,
@@ -1269,10 +1292,10 @@ local function pushRouteState()
     pitActive    = pit.active,
     pitLeft      = pit.left,
     jokerRoute   = track.jokerRoute,
-    jokerNext    = jokerArmed,
-    jokerTaken   = jokerTaken,
-    jokerLap     = jokerLapUsed,
-    jokerEnabled = jokerEnabled,
+    jokerNext    = session.jokerArmed,
+    jokerTaken   = session.jokerTaken,
+    jokerLap     = session.jokerLapUsed,
+    jokerEnabled = session.jokerEnabled,
     editorTarget = editorTarget,
     -- Which flag is out FOR THIS DRIVER. Resolved here rather than in the UI
     -- because the white flag is a fact about one driver's own lap, and the panel
@@ -1296,15 +1319,15 @@ local function pushRouteState()
     gridStagger   = branch.gridTool.stagger,
     gridWidth     = branch.gridTool.width,
     -- Reset ruleset (Module 1)
-    maxResets    = maxResets,
-    resetsUsed   = resetsUsed,
-    resetMode    = resetMode,
+    maxResets    = session.maxResets,
+    resetsUsed   = session.resetsUsed,
+    resetMode    = session.resetMode,
     -- YOUR CAR HAS BEEN TAKEN AWAY, which is not the same question as whether
     -- you entered. A finisher and a driver serving a penalty are both in freecam
     -- without having opted out of anything. Named apart from the entry decision
     -- because they shared one field once, and every route push overwrote "I am
     -- sitting this one out" with "my car is gone".
-    carTaken     = spectatorLock ~= nil,
+    carTaken     = session.spectatorLock ~= nil,
   })
 end
 
@@ -1437,14 +1460,14 @@ end
 -- does about it is presentation -- it does not show the driver a time for a lap
 -- that was not timed.
 local function sessionRunning()
-  return phase == 'racing' or phase == 'qualifying'
+  return session.phase == 'racing' or session.phase == 'qualifying'
 end
 
 local function resetLapTracking()
-  timingActive = false
-  lapStart     = localTime
-  localLap     = 1
-  prevPos      = nil
+  session.timingActive = false
+  session.lapStart     = localTime
+  session.localLap     = 1
+  session.prevPos      = nil
   -- The flags go with the session. A white flag latched on lap 4 of the last
   -- race would suppress it on lap 4 of the next one, and a checkered left set
   -- would suppress it entirely.
@@ -1454,10 +1477,10 @@ local function resetLapTracking()
   flags.checkered     = false
   -- Joker credit and the reset allowance are per-session too: a new phase means
   -- a clean sheet on both.
-  jokerArmed   = 1
-  jokerTaken   = false
-  jokerLapUsed = nil
-  resetsUsed   = 0
+  session.jokerArmed   = 1
+  session.jokerTaken   = false
+  session.jokerLapUsed = nil
+  session.resetsUsed   = 0
   lastGate     = nil
   lastGateBack = false
   blockNoticeLeft = 0   -- a fresh session may report its first blocked attempt at once
@@ -1473,9 +1496,9 @@ local function resetLapTracking()
   -- armed, so a driver pottering about before the lights still gets sensible
   -- gate colours.
   if sessionRunning() then
-    armedWp = 1
-    timingActive = true
-  elseif phase == 'grid' or phase == 'countdown' then
+    session.armedWp = 1
+    session.timingActive = true
+  elseif session.phase == 'grid' or session.phase == 'countdown' then
     -- STANDING ON THE GRID IS STANDING AT THE LINE, so the gate ahead is
     -- checkpoint 1, exactly as it will be a second later at GO. Arming the
     -- finish line here highlighted the gate BEHIND the field and dimmed CP1 as
@@ -1484,9 +1507,9 @@ local function resetLapTracking()
     --
     -- Presentation only: checkGates refuses to run outside a running session,
     -- so nothing can be crossed or scored from the grid.
-    armedWp = 1
+    session.armedWp = 1
   else
-    armedWp = math.max(#track.route, 1)
+    session.armedWp = math.max(#track.route, 1)
   end
   pushRouteState()
 end
@@ -1505,15 +1528,15 @@ local function clearTrackState(reason)
   -- next track, and ride along into the next save.
   track.pitRoute     = {}
   track.startPositions = {}
-  gridSlot     = nil
-  armedWp      = 1
-  jokerArmed   = 1
-  jokerTaken   = false
-  jokerLapUsed = nil
-  timingActive = false
-  localLap     = 1
-  lapStart     = localTime
-  prevPos      = nil
+  session.gridSlot     = nil
+  session.armedWp      = 1
+  session.jokerArmed   = 1
+  session.jokerTaken   = false
+  session.jokerLapUsed = nil
+  session.timingActive = false
+  session.localLap     = 1
+  session.lapStart     = localTime
+  session.prevPos      = nil
   progressLeft = 0
   lastGate     = nil
   lastGateBack = false
@@ -1574,12 +1597,12 @@ end
 -- of both of them: a driver who has taken the flag is neither on an out lap for
 -- the HUD's purposes nor owed an armed gate for the crossing code's.
 local function onOutLap()
-  return qualiOutLap and sessionRunning() and localLap <= 1 and not spectatorLock
+  return qualiOutLap and sessionRunning() and session.localLap <= 1 and not session.spectatorLock
 end
 
 local function onLapCompleted()
-  local lapTime = localTime - lapStart
-  if timingActive and lapTime < TUNE.LAP_DEBOUNCE then return end  -- double-fire guard
+  local lapTime = localTime - session.lapStart
+  if session.timingActive and lapTime < TUNE.LAP_DEBOUNCE then return end  -- double-fire guard
 
   -- Hand the finished time to this driver's own HUD so it can hold it on screen
   -- long enough to read. Display only, and deliberately separate from the
@@ -1608,16 +1631,16 @@ local function onLapCompleted()
     -- happened instead, and the notice channel says what happens next -- this is
     -- the moment the driver most needs to know their timing has started, and it
     -- is the moment they are least able to go looking for it.
-    guihooks.trigger('RaceManagerLapDone', { outLap = true, lap = localLap })
+    guihooks.trigger('RaceManagerLapDone', { outLap = true, lap = session.localLap })
     pushNotice('session', 'OUT LAP COMPLETE: you are on a TIMED lap now')
     log('I', 'raceManager', string.format('Out lap done: %.3fs (not timed)', lapTime))
   else
-    announceLap(localLap)
+    announceLap(session.localLap)
     log('I', 'raceManager', string.format('Lap %d done: %.3fs (%s)',
-      localLap, lapTime, phase))
+      session.localLap, lapTime, session.phase))
   end
-  localLap = localLap + 1
-  lapStart = localTime
+  session.localLap = session.localLap + 1
+  session.lapStart = localTime
 end
 
 -- ---------------------------------------------------------------------------
@@ -1632,39 +1655,39 @@ end
 --   * Once per race - a completed joker route is reported exactly once; every
 --     later run is ignored and flagged to the driver.
 local function checkJokerGates(prev, cur)
-  if not jokerEnabled or #track.jokerRoute == 0 then return end
-  if phase ~= 'racing' then return end
-  local wp = track.jokerRoute[jokerArmed]
+  if not session.jokerEnabled or #track.jokerRoute == 0 then return end
+  if session.phase ~= 'racing' then return end
+  local wp = track.jokerRoute[session.jokerArmed]
   if not wp or not segmentCrossesGate(wp, prev, cur) then return end
 
-  if localLap <= 1 then
+  if session.localLap <= 1 then
     -- Lap 1: the attempt never counts. Re-arm from the first joker gate so a
     -- legal run on a later lap still works.
-    jokerArmed = 1
+    session.jokerArmed = 1
     pushNotice('joker', 'JOKER LAP NOT ALLOWED ON LAP 1: attempt invalidated')
     log('W', 'raceManager', 'Joker route attempted on lap 1: attempt invalidated')
     pushRouteState()
     return
   end
 
-  if jokerTaken then
-    jokerArmed = 1
+  if session.jokerTaken then
+    session.jokerArmed = 1
     pushNotice('joker', 'Joker Lap already taken: this run does not count')
     pushRouteState()
     return
   end
 
-  if jokerArmed >= #track.jokerRoute then
-    jokerTaken   = true
-    jokerLapUsed = localLap
-    jokerArmed   = 1
+  if session.jokerArmed >= #track.jokerRoute then
+    session.jokerTaken   = true
+    session.jokerLapUsed = session.localLap
+    session.jokerArmed   = 1
     if inMultiplayer() then
-      TriggerServerEvent('RM_JokerLap', jsonEncode({ lap = localLap }))
+      TriggerServerEvent('RM_JokerLap', jsonEncode({ lap = session.localLap }))
     end
-    pushNotice('joker', 'JOKER LAP COMPLETE (lap ' .. localLap .. ')')
-    log('I', 'raceManager', 'Joker route completed on lap ' .. localLap)
+    pushNotice('joker', 'JOKER LAP COMPLETE (lap ' .. session.localLap .. ')')
+    log('I', 'raceManager', 'Joker route completed on lap ' .. session.localLap)
   else
-    jokerArmed = jokerArmed + 1
+    session.jokerArmed = session.jokerArmed + 1
   end
   pushRouteState()
 end
@@ -1759,12 +1782,12 @@ function branch.eachAt(i, fn, arg)
 end
 
 local function checkGates()
-  if spectatorLock then return end     -- out of the session: no more timing
+  if session.spectatorLock then return end     -- out of the session: no more timing
   if #track.route == 0 and #track.jokerRoute == 0 then return end
-  if phase ~= 'qualifying' and phase ~= 'racing' then return end
+  if session.phase ~= 'qualifying' and session.phase ~= 'racing' then return end
   local veh, pos = sampledVehicle()
   if not veh or not pos then return end
-  if prevPos then
+  if session.prevPos then
     -- The checkpoint this car must clear next, by whichever of its gates the car
     -- drives through. Nothing is carried between slots: the next one is decided
     -- the same way from scratch, which is what a branch gate being another way
@@ -1782,17 +1805,17 @@ local function checkGates()
     -- still end the out lap by reaching the line rather than being sent most of
     -- the way round backwards to arm a gate behind it.
     local onOut = onOutLap()
-    local wp, backwards = branch.crossedAt(armedWp, prevPos, pos)
+    local wp, backwards = branch.crossedAt(session.armedWp, session.prevPos, pos)
     local crossed = wp ~= nil
 
     -- On the out lap the LINE ends the lap from wherever the driver has got to,
     -- even with slots still uncleared. Nothing on this lap is scored, so there is
     -- nothing to protect by making them go back for a gate.
     local lineEndedOutLap = false
-    if onOut and not crossed and armedWp < #track.route then
+    if onOut and not crossed and session.armedWp < #track.route then
       local line = track.route[#track.route]
       if line then
-        crossed, backwards = segmentCrossesGate(line, prevPos, pos)
+        crossed, backwards = segmentCrossesGate(line, session.prevPos, pos)
         if crossed then wp, lineEndedOutLap = line, true end
       end
     end
@@ -1806,21 +1829,21 @@ local function checkGates()
         -- like any other -- the SERVER is what declines to score it, exactly as
         -- it always has for qualifying.
         onLapCompleted()
-        armedWp = 1
-      elseif armedWp >= #track.route then
+        session.armedWp = 1
+      elseif session.armedWp >= #track.route then
         onLapCompleted()
-        armedWp = 1
+        session.armedWp = 1
       else
-        armedWp = armedWp + 1
+        session.armedWp = session.armedWp + 1
       end
       -- Clearing a checkpoint is exactly when a position can change hands, so
       -- jump the throttle and report the new count on the next frame.
       progressLeft = 0
       pushRouteState()
     end
-    checkJokerGates(prevPos, pos)
+    checkJokerGates(session.prevPos, pos)
   end
-  prevPos = vec3(pos.x, pos.y, pos.z)
+  session.prevPos = vec3(pos.x, pos.y, pos.z)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1853,8 +1876,8 @@ local function lapTimerUpdate(dt)
   lapTimeLeft = TUNE.LAP_TIME_EVERY
   guihooks.trigger('RaceManagerLapTime', {
     running = true,
-    lap     = localLap,
-    elapsed = localTime - lapStart,
+    lap     = session.localLap,
+    elapsed = localTime - session.lapStart,
     -- The clock still runs and is still sent; what changes is what the app is
     -- allowed to do with it. On the out lap it shows the lap for what it is
     -- instead of a number that looks like a time being taken -- a driver
@@ -1891,10 +1914,10 @@ end
 -- second-to-last lap. Nothing is allocated and the vehicle is not touched until
 -- everything else has already passed.
 local function whiteFlagWatch()
-  if phase ~= 'racing' or spectatorLock then return end
+  if session.phase ~= 'racing' or session.spectatorLock then return end
   -- Driving at the start/finish line specifically. The last checkpoint IS the
   -- line, so any other armed gate means this driver is still out on the lap.
-  if armedWp ~= #track.route or #track.route == 0 then return end
+  if session.armedWp ~= #track.route or #track.route == 0 then return end
 
   -- WHICH FLAG IS ON THIS APPROACH, if either.
   --
@@ -1912,14 +1935,14 @@ local function whiteFlagWatch()
     -- the lap counter never reaches a lap TARGET to compare against, which is
     -- why this cannot be folded into the test below.
     which, latch = 'checkered', 'checkeredLap'
-  elseif totalLaps > 0 and localLap >= totalLaps then
+  elseif session.totalLaps > 0 and session.localLap >= session.totalLaps then
     which, latch = 'checkered', 'checkeredLap'
-  elseif totalLaps > 1 and localLap == totalLaps - 1 then
+  elseif session.totalLaps > 1 and session.localLap == session.totalLaps - 1 then
     which, latch = 'white', 'whiteLap'
   else
     return
   end
-  if flags[latch] == localLap then return end
+  if flags[latch] == session.localLap then return end
 
   local _, pos = sampledVehicle()
   if not pos then return end
@@ -1930,7 +1953,7 @@ local function whiteFlagWatch()
   local limit = TUNE.WHITE_FLAG_AT * TUNE.WHITE_FLAG_AT
   if (dx * dx + dy * dy + dz * dz) > limit then return end
 
-  flags[latch] = localLap
+  flags[latch] = session.localLap
   if which == 'checkered' then
     -- The APPROACH flash. Taking the flag pushes one of its own off the
     -- spectator lock a moment later, carrying the placing; this one is the
@@ -1944,7 +1967,7 @@ local function whiteFlagWatch()
 end
 
 local function reportProgress(dt)
-  if not sessionRunning() or spectatorLock then return end
+  if not sessionRunning() or session.spectatorLock then return end
   if #track.route == 0 then return end
 
   progressLeft = progressLeft - dt
@@ -1957,7 +1980,7 @@ local function reportProgress(dt)
   -- The gate THIS car is driving towards. A checkpoint with a branch gate has
   -- more than one, and which of them is nearest is the only honest answer to
   -- that: it needs the car's position, so it is resolved here rather than above.
-  local wp = onOutLap() and track.route[#track.route] or branch.nearestAt(armedWp, pos)
+  local wp = onOutLap() and track.route[#track.route] or branch.nearestAt(session.armedWp, pos)
   if not wp then return end
 
   -- Distance from the car to the centre of the next checkpoint, in metres.
@@ -1966,8 +1989,8 @@ local function reportProgress(dt)
   -- armedWp is the gate we are driving TOWARDS, so the count already cleared on
   -- this lap is one less (and 0 right after crossing the start/finish line).
   local payload = {
-    lap  = localLap,
-    cp   = armedWp - 1,
+    lap  = session.localLap,
+    cp   = session.armedWp - 1,
     dist = math.sqrt(dx * dx + dy * dy + dz * dz),
   }
   if inMultiplayer() then
@@ -2186,7 +2209,7 @@ local function captureVehicleSnapshot()
   -- on the finish line, which is where the whole field had just been removed
   -- from, on top of each other. A snapshot records where to put a car back, and
   -- the slot is part of that.
-  snap.slot = gridSlot
+  snap.slot = session.gridSlot
   if not snap.model then return nil end
   return snap
 end
@@ -2302,7 +2325,7 @@ local function respawnRemovedVehicle()
   -- however they crossed it: the reported "near the start/finish, sideways". So
   -- their slot, then any placed slot, then the snapshot. Sharing someone else's
   -- slot for a moment is harmless while the ghosting holds.
-  local slot = snap.slot or gridSlot
+  local slot = snap.slot or session.gridSlot
   local sp = slot and track.startPositions[slot]
   if not (type(sp) == 'table' and sp.x) then sp = track.startPositions[1] end
   if type(sp) == 'table' and sp.x and sp.y and sp.z then
@@ -2572,7 +2595,7 @@ function spectate.attachToRunner()
 end
 
 local function enterSpectator(reason, source)
-  spectatorLock   = source or 'race'
+  session.spectatorLock   = source or 'race'
   spectatorReason = reason or 'You are out of this session'
   -- DRIVING IS BLOCKED FOR A DERBY AND KEPT FOR A RACE, and that split is the
   -- point of the two branches below.
@@ -2587,8 +2610,8 @@ local function enterSpectator(reason, source)
   -- It CAN be driven back onto the racing line and seen there. That is a
   -- deliberate trade: the physics are provably unaffected and the alternative is
   -- taking a driver's car away for the last two laps.
-  spectate.setInputsBlocked(spectatorLock == 'derby')
-  if spectatorLock == 'derby' then
+  spectate.setInputsBlocked(session.spectatorLock == 'derby')
+  if session.spectatorLock == 'derby' then
     -- ELIMINATED IN A DERBY: the car stays exactly where it is, as a visible,
     -- physical wreck, and the driver stays in it. The arena is the show and they
     -- are sitting in it; being moved somewhere else the instant you are knocked
@@ -2620,11 +2643,11 @@ local function enterSpectator(reason, source)
     ghost.setFinished(true)
   end
   guihooks.trigger('RaceManagerSpectator', {
-    spectating = true, reason = spectatorReason, source = spectatorLock,
+    spectating = true, reason = spectatorReason, source = session.spectatorLock,
   })
   pushNotice('spectate', spectatorReason)
   pushRouteState()
-  log('I', 'raceManager', 'Spectator mode (' .. tostring(spectatorLock)
+  log('I', 'raceManager', 'Spectator mode (' .. tostring(session.spectatorLock)
     .. '): ' .. tostring(spectatorReason))
 end
 
@@ -2645,9 +2668,9 @@ end
 local queueFieldPlacement
 
 local function releaseSpectator(source, order, count)
-  if not spectatorLock then return end
-  if source and source ~= spectatorLock then return end
-  spectatorLock   = nil
+  if not session.spectatorLock then return end
+  if source and source ~= session.spectatorLock then return end
+  session.spectatorLock   = nil
   spectatorReason = nil
   -- Driving comes back first, so a driver is never released into a car they
   -- cannot move -- and the ignition with it, or "cannot move" outlives the
@@ -2671,7 +2694,7 @@ local function releaseSpectator(source, order, count)
   if removedVehicle then
     local slot = nil
     if source ~= 'derby' then
-      slot = removedVehicle.slot or gridSlot or (track.startPositions[1] and 1 or nil)
+      slot = removedVehicle.slot or session.gridSlot or (track.startPositions[1] and 1 or nil)
     end
     if queueFieldPlacement then
       queueFieldPlacement({ respawn = true, slot = slot, order = order, count = count })
@@ -2698,7 +2721,7 @@ end
 -- including a car the driver tabbed to themselves, and only its ceasing to exist
 -- triggers a re-acquire. Gone, not stopped: a parked car is still a car.
 local function spectatorUpdate(dt)
-  if not spectatorLock then
+  if not session.spectatorLock then
     spectate.target = nil
     return
   end
@@ -2736,7 +2759,7 @@ end
 -- well as a race, now that qualifying is one - and the countdown that starts it.
 -- The setup phases stay free.
 local function resetsEnforced()
-  return maxResets >= 0 and (sessionRunning() or phase == 'countdown')
+  return session.maxResets >= 0 and (sessionRunning() or session.phase == 'countdown')
 end
 
 -- Derby reset allowance, mirrored from the derby broadcast.
@@ -2796,8 +2819,8 @@ end
 -- dead the moment the allowance is spent and come back the moment the session
 -- lets go of the rule.
 local function resetInputBlockUpdate()
-  local wantBlocked = not spectatorLock
-    and ((resetsEnforced() and resetsUsed >= maxResets)
+  local wantBlocked = not session.spectatorLock
+    and ((resetsEnforced() and session.resetsUsed >= session.maxResets)
       or (derbyResetsEnforced() and derbyResets.used >= derbyResets.max))
   -- ...and while a derby is standing its cars down. A reset there would reload
   -- the vehicle out from under the freeze and hand somebody a driveable car in
@@ -2817,7 +2840,7 @@ end
 -- all, so there was nowhere to put a driver back to.
 local function snapshotUpdate(dt)
   local wanted = resetsEnforced() or derbyResetsEnforced() or sessionRunning()
-  if not wanted or spectatorLock or gridFrozen then return end
+  if not wanted or session.spectatorLock or session.gridFrozen then return end
   snapshotLeft = snapshotLeft - dt
   if snapshotLeft > 0 then return end
   snapshotLeft = SNAPSHOT_EVERY
@@ -2995,7 +3018,7 @@ function pit.update(dt)
 
   -- A stop cannot outlive the session it started in, or a driver is handed a
   -- frozen car in the lobby.
-  if pit.active and not (sessionRunning() and not spectatorLock) then
+  if pit.active and not (sessionRunning() and not session.spectatorLock) then
     pit.release('session ended')
     return
   end
@@ -3038,7 +3061,7 @@ function pit.update(dt)
   if pit.promptLeft > 0 then pit.promptLeft = pit.promptLeft - dt end
 
   if #track.pitRoute == 0 then return end
-  if not sessionRunning() or spectatorLock or gridFrozen then return end
+  if not sessionRunning() or session.spectatorLock or session.gridFrozen then return end
   local veh, pos = sampledVehicle()
   if not veh or not pos then return end
 
@@ -3338,7 +3361,7 @@ function M.onVehicleResetted(vehId)
     end
     return
   end
-  if spectatorLock then
+  if session.spectatorLock then
     -- Out of the session. A reset here is a driver recovering a car they are
     -- only spectating in -- flipped, in the water, or dropped off the map -- and
     -- it is allowed. It costs them nothing: the reset allowance is only counted
@@ -3355,8 +3378,8 @@ function M.onVehicleResetted(vehId)
     -- Re-applied the same way it is set, because the reset may have re-registered
     -- the action set out from under the filter.
     spectate.setInputsBlocked(false)   -- force the next call to re-apply
-    spectate.setInputsBlocked(spectatorLock == 'derby')
-    if spectatorLock ~= 'derby' then ghost.setFinished(true) end
+    spectate.setInputsBlocked(session.spectatorLock == 'derby')
+    if session.spectatorLock ~= 'derby' then ghost.setFinished(true) end
     return
   end
 
@@ -3385,11 +3408,11 @@ function M.onVehicleResetted(vehId)
   --
   -- Deliberately armed during qualifying as well as racing: the welding hazard
   -- is physics, not regulations, and cars are on track in both.
-  if ghost.rules.onReset and (phase == 'racing' or phase == 'qualifying') then
+  if ghost.rules.onReset and (session.phase == 'racing' or session.phase == 'qualifying') then
     ghost.arm()
   end
 
-  if resetsEnforced() and resetsUsed >= maxResets then
+  if resetsEnforced() and session.resetsUsed >= session.maxResets then
     -- Over the allowance. The reset INPUTS are already switched off at this
     -- point (resetInputBlockUpdate), so this branch only fires for a reset
     -- path the input filter cannot see; the car goes straight back where it
@@ -3415,14 +3438,14 @@ function M.onVehicleResetted(vehId)
       --
       -- A session with no resets at all is a different sentence. Those drivers
       -- never had one to run out of.
-      if maxResets == 0 then
+      if session.maxResets == 0 then
         pushNotice('resetsout', 'No resets in this session',
           { sub = 'You are on your own out there', colour = 'amber' })
       else
         pushNotice('resetsout', "Uh oh! You're out of resets",
-          { sub = 'All ' .. maxResets .. ' used', colour = 'amber' })
+          { sub = 'All ' .. session.maxResets .. ' used', colour = 'amber' })
       end
-      log('W', 'raceManager', 'Reset blocked: allowance of ' .. maxResets
+      log('W', 'raceManager', 'Reset blocked: allowance of ' .. session.maxResets
         .. ' exhausted (position ' .. (restored and 'restored' or 'NOT restored') .. ')')
     end
     -- Nothing in the pushed state changed (a blocked reset spends no allowance),
@@ -3436,9 +3459,9 @@ function M.onVehicleResetted(vehId)
   -- fired), but the driver races on from the last checkpoint they crossed
   -- rather than from the crash site. Applies whether or not resets are
   -- limited; before the first gate of a session it falls back to in-place.
-  if resetMode == 'checkpoint' and phase == 'racing' and lastGate and not gridFrozen then
+  if session.resetMode == 'checkpoint' and session.phase == 'racing' and lastGate and not session.gridFrozen then
     relocateToGate(lastGate)
-  elseif sessionRunning() and not gridFrozen and prevPos then
+  elseif sessionRunning() and not session.gridFrozen and session.prevPos then
     -- BOTH RESET KEYS HAVE TO MEAN THE SAME THING DURING A SESSION.
     --
     -- BeamNG ships two and they are not the same action: one repairs in place,
@@ -3457,7 +3480,7 @@ function M.onVehicleResetted(vehId)
     --     from before the teleport, the distance comes out as nothing, and the
     --     undo stands down. That is why a recovery key still stranded drivers on
     --     their start position.
-    local was = prevPos
+    local was = session.prevPos
     local veh = playerVehicle()
     local pos = nil
     if veh then pcall(function () pos = veh:getPosition() end) end
@@ -3495,16 +3518,16 @@ function M.onVehicleResetted(vehId)
   snapshotLeft = 0
   do
     local _, nowPos = sampledVehicle()
-    prevPos = nowPos and vec3(nowPos.x, nowPos.y, nowPos.z) or prevPos
+    session.prevPos = nowPos and vec3(nowPos.x, nowPos.y, nowPos.z) or session.prevPos
   end
   if resetsEnforced() then
-    resetsUsed = resetsUsed + 1
+    session.resetsUsed = session.resetsUsed + 1
     if inMultiplayer() then TriggerServerEvent('RM_VehicleReset', '') end
-    local left = maxResets - resetsUsed
+    local left = session.maxResets - session.resetsUsed
     -- Spending the last one is still just the tally reaching zero. The driver is
     -- told they are OUT when they next reach for a reset and it does not come,
     -- which is the moment it actually matters to them -- see the blocked path.
-    pushNotice('reset', string.format('Reset %d/%d used: %d left', resetsUsed, maxResets, left))
+    pushNotice('reset', string.format('Reset %d/%d used: %d left', session.resetsUsed, session.maxResets, left))
     pushRouteState()
     return
   end
@@ -3558,7 +3581,7 @@ function M.onVehicleSpawned(vehId)
     hold.restore('vehicle respawned while held on the grid')
     pushNotice('grid', 'Back on your grid slot, held for the countdown')
   end
-  if not spectatorLock then return end
+  if not session.spectatorLock then return end
   if not isOwnVehicle(vehId) then return end
   -- A spectator spawned themselves a fresh car. For a derby elimination the
   -- block is an INPUT filter rather than a property of the old vehicle, so the
@@ -3573,15 +3596,15 @@ function M.onVehicleSpawned(vehId)
   -- this, a finished driver could spawn themselves a car and drive it into the
   -- race with full collision.
   spectate.setInputsBlocked(false)
-  spectate.setInputsBlocked(spectatorLock == 'derby')
-  if spectatorLock ~= 'derby' then
+  spectate.setInputsBlocked(session.spectatorLock == 'derby')
+  if session.spectatorLock ~= 'derby' then
     ghost.setFinished(true)
     pushNotice('spectate', 'Your car is a ghost: nobody still racing can touch it')
   else
     pushNotice('spectate', 'You are spectating until the session ends')
   end
   log('W', 'raceManager', 'Vehicle spawned in spectator mode ('
-    .. tostring(spectatorLock) .. ')')
+    .. tostring(session.spectatorLock) .. ')')
 end
 
 -- BeamNG hook: a vehicle is being removed. Ghost bookkeeping is keyed by vehicle
@@ -3662,7 +3685,7 @@ setLocalVehicleFrozen = function (frozen, source)
     end)
   end
   if ok then
-    gridFrozen = want
+    session.gridFrozen = want
     freezeSource = want and (source or 'race') or nil
   end
   return ok
@@ -3803,7 +3826,7 @@ local function holdUpdate(dt)
     if hold.reportLeft <= 0 then
       hold.reportLeft = TUNE.HOLD_REPORT_EVERY
       TriggerServerEvent('RM_HoldPos', jsonEncode({
-        x = pos.x, y = pos.y, z = pos.z, slot = gridSlot,
+        x = pos.x, y = pos.y, z = pos.z, slot = session.gridSlot,
       }))
     end
   end
@@ -3898,10 +3921,10 @@ local function releaseGridHold(source)
     hold.settleLeft = 0
     hold.reportLeft = 0
   end
-  if not gridFrozen then return end
+  if not session.gridFrozen then return end
   if source and freezeSource and freezeSource ~= source then return end
   setLocalVehicleFrozen(false)
-  gridFrozen = false
+  session.gridFrozen = false
   freezeSource = nil
   pushRouteState()
 end
@@ -4204,7 +4227,7 @@ end
 -- staggered; they default to the slot number, which is the same thing whenever
 -- the grid is complete.
 local function applyGridSlot(slot, order, count)
-  gridSlot = slot
+  session.gridSlot = slot
   -- WHICH WAY ROUND THIS CAR IS GOING IS NOT SET HERE, and is not set anywhere.
   --
   -- The slot itself points the car, and every gate for the next checkpoint is
@@ -5009,7 +5032,7 @@ local function ghostUpdate(dt)
   -- it unconditionally would rebuild the vehicle list once a frame to tell it
   -- the same thing it was told last frame. The sweep at the bottom of this
   -- function is what catches cars that appeared since.
-  local wantQuali = ghostQuali and phase == 'qualifying' and not spectatorLock
+  local wantQuali = ghostQuali and session.phase == 'qualifying' and not session.spectatorLock
   if wantQuali ~= (ghost.field.quali == true) then
     setGhostReason('quali', wantQuali)
   end
@@ -5044,7 +5067,7 @@ local function ghostUpdate(dt)
   -- session finishing and a return to the lobby all land here, and none of them
   -- leaves a car to be careful around: the field is about to be respawned or
   -- removed wholesale, and the placement ghost covers that.
-  if own.vehId and not ((phase == 'racing' or phase == 'qualifying') and not spectatorLock) then
+  if own.vehId and not ((session.phase == 'racing' or session.phase == 'qualifying') and not session.spectatorLock) then
     ghost.release('session ended')
   end
   if own.vehId then
@@ -5444,7 +5467,7 @@ local function drawStartPositions()
   -- Inside the editor, the same Hide/Show Gates toggle the checkpoints use.
   if not visualize then return end
   for i, sp in ipairs(track.startPositions) do
-    drawStartPosition(sp, i, gridSlot == i)
+    drawStartPosition(sp, i, session.gridSlot == i)
   end
 end
 
@@ -5812,7 +5835,7 @@ end
 
 local function drawDriverGate(derbyLive)
   if not debugDrawer or not visualize then return end
-  if derbyLive or spectatorLock then return end
+  if derbyLive or session.spectatorLock then return end
   if #track.route == 0 then return end
   -- EVERY PHASE, not just a running session. A driver who loads a track and
   -- looks at it wants to see where the gates are as much as one racing through
@@ -5843,7 +5866,7 @@ local function drawDriverGate(derbyLive)
   -- both and pick; showing one would be choosing for them. On a head-on oval the
   -- two sit at opposite ends of the circuit and only one is ever in view anyway.
   local function poles(g, color) drawPoleGate(g, color, nil) end
-  local a = armedWp
+  local a = session.armedWp
   if a < 1 or a > n then a = 1 end
   branch.eachAt(a, poles, p.armed)
 
@@ -5859,8 +5882,8 @@ local function drawDriverGate(derbyLive)
   --
   -- Only the wrap is suppressed. Everywhere else on the last lap the look-ahead
   -- is as useful as it is on any other, so `a == n` is the whole condition.
-  local lastLap = phase == 'racing' and not track.pointToPoint
-    and totalLaps > 0 and localLap >= totalLaps
+  local lastLap = session.phase == 'racing' and not track.pointToPoint
+    and session.totalLaps > 0 and session.localLap >= session.totalLaps
   if n > 1 and not (lastLap and a == n) then
     branch.eachAt(a % n + 1, poles, p.routeNext or p.route)
   end
@@ -5885,13 +5908,13 @@ local function drawDriverGate(derbyLive)
   -- they have always had. They used to be the stock markers' job (slots 3 and 4)
   -- and are drawn here now so a track has ONE checkpoint visual rather than two
   -- that do not match.
-  if jokerEnabled and #track.jokerRoute > 0 then
-    local j = jokerArmed
+  if session.jokerEnabled and #track.jokerRoute > 0 then
+    local j = session.jokerArmed
     if j < 1 or j > #track.jokerRoute then j = 1 end
     local wp = track.jokerRoute[j]
     if wp then
-      local state = jokerTaken and 'used'
-        or ((sessionRunning() and localLap <= 1) and 'closed' or 'open')
+      local state = session.jokerTaken and 'used'
+        or ((sessionRunning() and session.localLap <= 1) and 'closed' or 'open')
       -- The joker is the one gate whose STATE changes what a driver must do, so
       -- it is the one gate that earns a fill and a symbol. NO LABEL: the glyph
       -- carries the state on its own and carries it faster (see the note above),
@@ -5900,8 +5923,8 @@ local function drawDriverGate(derbyLive)
       local glyph = (state == 'used' and 'done')
         or (state == 'closed' and 'shut')
         or 'open'
-      drawPoleGate(wp, jokerTaken and p.jokerUsed or p.joker, nil,
-        jokerTaken and p.jokerUsedFill or p.jokerFill, glyph)
+      drawPoleGate(wp, session.jokerTaken and p.jokerUsed or p.joker, nil,
+        session.jokerTaken and p.jokerUsedFill or p.jokerFill, glyph)
     end
   end
   if #track.pitRoute > 0 then
@@ -5942,7 +5965,7 @@ local function drawGates(derbyLive)
   local authoring = true
   -- Still needed below: which gate is armed, and whether the joker is open,
   -- only mean anything while a session is under way.
-  local active = sessionRunning() or phase == 'countdown' or phase == 'grid'
+  local active = sessionRunning() or session.phase == 'countdown' or session.phase == 'grid'
   local p = palette()
 
   local n = #track.route
@@ -5950,7 +5973,7 @@ local function drawGates(derbyLive)
     local color
     if i == n then
       color = p.finish
-    elseif active and i == armedWp then
+    elseif active and i == session.armedWp then
       color = p.armed
     else
       color = p.route
@@ -5974,7 +5997,7 @@ local function drawGates(derbyLive)
   for gi, g in ipairs(branch.list) do
     local slot = tonumber(g.slot) or 0
     local color = p.branch or p.joker
-    if active and slot == armedWp then color = p.armed end
+    if active and slot == session.armedWp then color = p.armed end
     if nudgeSelected(branch.list, gi) then color = p.nudged end
     drawGate(g, color, 'CP ' .. slot .. ' branch', authoring)
   end
@@ -6016,13 +6039,13 @@ local function drawGates(derbyLive)
   -- joker gate lights up green like the main route, and the whole set greys out
   -- once the joker has been used (or while it is still forbidden on lap 1).
   local jn = #track.jokerRoute
-  local state = jokerTaken and 'used'
-    or ((active and localLap <= 1) and 'closed' or 'open')
+  local state = session.jokerTaken and 'used'
+    or ((active and session.localLap <= 1) and 'closed' or 'open')
   for i, wp in ipairs(track.jokerRoute) do
     local color
-    if jokerTaken then
+    if session.jokerTaken then
       color = p.jokerUsed
-    elseif active and jokerEnabled and i == jokerArmed then
+    elseif active and session.jokerEnabled and i == session.jokerArmed then
       color = p.armed
     else
       color = p.joker
@@ -6057,11 +6080,11 @@ derby.init({
   fromCurrentServer = fromCurrentServer,
   releaseGridHold = releaseGridHold, requestHold = requestHold,
   -- Mutable scalars this file owns: getters, never values.
-  phase = function () return phase end,
+  phase = function () return session.phase end,
   isAdmin = function () return isAdmin end,
   editorOpen = function () return editorOpen end,
   visualize = function () return visualize end,
-  maxResets = function () return maxResets end,
+  maxResets = function () return session.maxResets end,
   -- Tables, by reference, so both halves see the same object.
   spectate = spectate,
   startPositions = track.startPositions,
@@ -6180,7 +6203,7 @@ function M.ghostStatus()
     boundsFrom     = how,
     carsGhosted    = ghosted,
     fieldReasons   = table.concat(reasons, ','),
-    phase          = phase,
+    phase          = session.phase,
     ghostQuali     = ghostQuali,
   }
 end
@@ -6892,9 +6915,9 @@ function M.editorUndo()
   if #target > 0 then
     target[#target] = nil
     if editorTarget == 'joker' then
-      if jokerArmed > #track.jokerRoute then jokerArmed = math.max(#track.jokerRoute, 1) end
-    elseif editorTarget == 'main' and armedWp > #track.route then
-      armedWp = math.max(#track.route, 1)
+      if session.jokerArmed > #track.jokerRoute then session.jokerArmed = math.max(#track.jokerRoute, 1) end
+    elseif editorTarget == 'main' and session.armedWp > #track.route then
+      session.armedWp = math.max(#track.route, 1)
     elseif editorTarget == 'branch' then
       branch.rebuild()
       branch.editSlot = branch.nextFreeSlot()
@@ -6922,16 +6945,16 @@ function M.editorClear()
   end
   if editorTarget == 'joker' then
     track.jokerRoute   = {}
-    jokerArmed   = 1
-    jokerTaken   = false
-    jokerLapUsed = nil
+    session.jokerArmed   = 1
+    session.jokerTaken   = false
+    session.jokerLapUsed = nil
     pushRouteState()
     log('I', 'raceManager', 'Joker route cleared')
     return
   end
   if editorTarget == 'start' then
     track.startPositions = {}
-    gridSlot = nil
+    session.gridSlot = nil
     branch.gridTool.generated = false
     pushRouteState()
     log('I', 'raceManager', 'Start positions cleared')
@@ -6976,7 +6999,7 @@ function M.removeStartPosition(index)
   index = math.floor(tonumber(index) or 0)
   if not track.startPositions[index] then return end
   table.remove(track.startPositions, index)
-  if gridSlot and gridSlot > #track.startPositions then gridSlot = nil end
+  if session.gridSlot and session.gridSlot > #track.startPositions then session.gridSlot = nil end
   branch.gridTool.generated = false
   pushRouteState()
 end
@@ -7081,9 +7104,9 @@ function M.removeCheckpoint(index)
           .. ' branch gate(s) on that slot dropped with it',
       })
     end
-    if armedWp > #track.route then armedWp = math.max(#track.route, 1) end
+    if session.armedWp > #track.route then session.armedWp = math.max(#track.route, 1) end
   elseif editorTarget == 'joker' then
-    if jokerArmed > #track.jokerRoute then jokerArmed = math.max(#track.jokerRoute, 1) end
+    if session.jokerArmed > #track.jokerRoute then session.jokerArmed = math.max(#track.jokerRoute, 1) end
   elseif editorTarget == 'branch' then
     branch.rebuild()
     branch.editSlot = branch.nextFreeSlot()
@@ -7718,7 +7741,7 @@ function M.setFinishLine(x, y, z, hx, hy)
   local len = math.sqrt((hx or 0) ^ 2 + (hy or 0) ^ 2)
   if len > 1e-4 then hx, hy = hx / len, hy / len else hx, hy = 0, 1 end
   track.route = { { x = x, y = y, z = z, hx = hx, hy = hy } }
-  armedWp = 1
+  session.armedWp = 1
   pushRouteState()
 end
 
@@ -7793,26 +7816,26 @@ local function onServerUpdate(rawData)
   if not fromCurrentServer(data) then return end
 
   -- League regulations arrive with every state broadcast (Modules 1 & 2).
-  if type(data.maxResets) == 'number' then maxResets = math.floor(data.maxResets) end
+  if type(data.maxResets) == 'number' then session.maxResets = math.floor(data.maxResets) end
   if data.resetMode == 'checkpoint' or data.resetMode == 'inplace' then
-    resetMode = data.resetMode
+    session.resetMode = data.resetMode
   end
   if type(data.youSpectating) == 'boolean' then selfSpectating = data.youSpectating end
-  jokerEnabled = data.jokerEnabled == true
+  session.jokerEnabled = data.jokerEnabled == true
   -- The flag, and a notice the moment it CHANGES. A caution that only appears
   -- on a panel is a caution the driver watching the road never sees.
-  local wasFlag = raceFlag
+  local wasFlag = session.raceFlag
   if data.flag == 'green' or data.flag == 'yellow' or data.flag == 'red' then
-    raceFlag = data.flag
+    session.raceFlag = data.flag
   end
-  if raceFlag ~= wasFlag and sessionRunning() then
+  if session.raceFlag ~= wasFlag and sessionRunning() then
     -- The instruction moves to the second line and the flag itself becomes the
     -- headline. On a full-panel flash the first line is what gets read at
     -- speed, and "RED FLAG" is the part that has to survive a glance.
-    if raceFlag == 'red' then
+    if session.raceFlag == 'red' then
       pushNotice('flag', 'RED FLAG',
         { sub = 'Stop where you are and wait', colour = 'red' })
-    elseif raceFlag == 'yellow' then
+    elseif session.raceFlag == 'yellow' then
       pushNotice('flag', 'YELLOW FLAG',
         { sub = 'Caution: race back to the line', colour = 'yellow' })
     else
@@ -7907,9 +7930,9 @@ local function onServerUpdate(rawData)
   end
 
   local newPhase = data.phase or 'waiting'
-  local phaseChanged = newPhase ~= phase
-  if newPhase ~= phase then
-    phase = newPhase
+  local phaseChanged = newPhase ~= session.phase
+  if newPhase ~= session.phase then
+    session.phase = newPhase
     -- Any session transition re-arms local detection from a clean slate:
     -- lap 1 starts at the line, from the grid, for both kinds of session.
     resetLapTracking()
@@ -7923,10 +7946,10 @@ local function onServerUpdate(rawData)
     -- Leaving the start procedure must never leave a car frozen.
     if newPhase ~= 'grid' and newPhase ~= 'countdown' then releaseGridHold('race') end
     if newPhase ~= 'grid' and newPhase ~= 'countdown' and not sessionRunning() then
-      gridSlot = nil
+      session.gridSlot = nil
     end
   end
-  totalLaps = data.totalLaps or totalLaps
+  session.totalLaps = data.totalLaps or session.totalLaps
 
   -- State broadcasts arrive several times a second while racing; only re-push
   -- the route/entry state to the UI when something in it actually moved.
@@ -8113,7 +8136,7 @@ local function onReleaseSpectate(rawData)
   local order, count = tonumber(data.order), tonumber(data.count)
   -- The server snapshots the participant list before releasing anyone and hands
   -- each driver its place in it, so the field respawns as a sequence.
-  if spectatorLock then
+  if session.spectatorLock then
     releaseSpectator(source, order, count)
     return
   end
@@ -8550,7 +8573,7 @@ function M.setMaxResets(n)
   if inMultiplayer() then
     TriggerServerEvent('RM_SetMaxResets', jsonEncode({ maxResets = n }))
   else
-    maxResets = n
+    session.maxResets = n
     pushRouteState()
   end
 end
@@ -8562,7 +8585,7 @@ function M.setResetMode(mode)
   if inMultiplayer() then
     TriggerServerEvent('RM_SetResetMode', jsonEncode({ mode = mode }))
   else
-    resetMode = mode
+    session.resetMode = mode
     pushRouteState()
   end
 end
@@ -8573,7 +8596,7 @@ function M.setJokerEnabled(enabled)
   if inMultiplayer() then
     TriggerServerEvent('RM_SetJokerEnabled', jsonEncode({ enabled = enabled }))
   else
-    jokerEnabled = enabled
+    session.jokerEnabled = enabled
     pushRouteState()
   end
 end
@@ -8871,7 +8894,7 @@ function M.requestState()
     -- later route push carries it, and a push saying "not admin" would take the
     -- offline editor's own controls away again on the next gate placed.
     isAdmin = true
-    guihooks.trigger('RaceManagerUpdate', { phase = 'waiting', raceTime = 0, totalLaps = totalLaps, drivers = {} })
+    guihooks.trigger('RaceManagerUpdate', { phase = 'waiting', raceTime = 0, totalLaps = session.totalLaps, drivers = {} })
     guihooks.trigger('RaceManagerAuth', { success = true, offline = true })
     log('W', 'raceManager', 'Racing is multiplayer-only; the checkpoint editor works offline')
   end
@@ -8987,12 +9010,12 @@ function M.onFilteredInputChanged(devName, action, value)
   if derbyResetsEnforced() then
     pushNotice('resetsout', "Uh oh! You're out of resets",
       { sub = 'All ' .. derbyResets.max .. ' derby resets used', colour = 'amber' })
-  elseif maxResets == 0 then
+  elseif session.maxResets == 0 then
     pushNotice('resetsout', 'No resets in this session',
       { sub = 'You are on your own out there', colour = 'amber' })
   else
     pushNotice('resetsout', "Uh oh! You're out of resets",
-      { sub = 'All ' .. maxResets .. ' used', colour = 'amber' })
+      { sub = 'All ' .. session.maxResets .. ' used', colour = 'amber' })
   end
   log('W', 'raceManager', 'Reset key pressed with no allowance left (input filtered)')
 end
@@ -9008,7 +9031,7 @@ end
 -- every one of these is a rule the SERVER owns and only this client can apply -
 -- with no server left to lift them they would otherwise stay applied.
 local function resetToIdle(reason)
-  phase = 'waiting'
+  session.phase = 'waiting'
   -- The server drops authenticatedPlayers on disconnect, so a session that has
   -- ended takes the admin rights with it. Forget them here or the next server
   -- would inherit an admin flag it never granted.
@@ -9029,13 +9052,13 @@ local function resetToIdle(reason)
   spectate.setInputsBlocked(false)
   spectate.setGrabberBlocked(false)
   holdWanted = nil               -- nothing is meant to be held any more
-  maxResets       = -1
-  resetsUsed      = 0
-  resetMode       = 'inplace'
+  session.maxResets       = -1
+  session.resetsUsed      = 0
+  session.resetMode       = 'inplace'
   lastGate        = nil
   selfTeleport.left = 0
   blockNoticeLeft = 0
-  jokerEnabled    = false
+  session.jokerEnabled    = false
   track.pitRoute        = {}
   pit.active      = false
   pit.left        = 0
@@ -9049,7 +9072,7 @@ local function resetToIdle(reason)
   pit.ghostSent   = false
   editorTarget    = 'main'
   lastReportedSig = nil
-  gridSlot        = nil
+  session.gridSlot        = nil
   finalLap        = false
   ghostQuali      = false
   -- Same purge for the isolated derby module: markers and warnings must not
