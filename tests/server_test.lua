@@ -554,6 +554,88 @@ RM_onLoadLayout(1, '{"name":"GP Circuit"}')
 check(lastLayouts ~= nil and #lastLayouts.layouts == 1,
   'the private-load block leaves the layout list as it found it')
 
+-- ===========================================================================
+-- FREE PRACTICE: approved layouts, and only approved layouts
+-- ===========================================================================
+-- A driver with no admin login may pull up a track on their own and drive it
+-- timed, between sessions. The rules are all on this side, because the client
+-- asking is the one that must not be trusted:
+--
+--   the layout has to be APPROVED for practice, opt-in, off by default;
+--   an unapproved layout is never even listed to a non-admin;
+--   the load is targeted and touches no race state;
+--   and none of it works while a session is under way.
+appliedLayouts = {}
+
+-- Off by default, including for a layout saved before any of this existed.
+check(lastLayouts.layouts[1].practice ~= true,
+  'a layout is NOT open for practice unless somebody says so')
+
+-- A NON-ADMIN IS NOT EVEN SHOWN IT.
+RM_onRequestLayouts(3)
+check(lastLayouts ~= nil and #lastLayouts.layouts == 0,
+  'an unapproved layout is not listed to a non-admin at all')
+RM_onRequestLayouts(1)
+check(#lastLayouts.layouts == 1, 'while an admin sees every layout on the map')
+
+-- ...and asking for it by name anyway is refused. The list is what a client was
+-- shown, not what it may have.
+RM_onLoadLayout(3, '{"name":"GP Circuit","forPractice":true}')
+check(appliedLayouts[3] == nil,
+  'and naming it directly does not get it either')
+
+-- APPROVE IT.
+RM_onSetLayoutPractice(1, '{"name":"GP Circuit","practice":true}')
+RM_onRequestLayouts(3)
+check(#lastLayouts.layouts == 1, 'once approved, a non-admin can see it')
+check(lastLayouts.layouts[1].practice == true, 'and it says so')
+
+appliedLayouts = {}
+RM_onLoadLayout(3, '{"name":"GP Circuit","forPractice":true}')
+check(appliedLayouts[3] ~= nil, 'and can load it to practise on')
+check(appliedLayouts[-1] == nil,
+  'targeted at them alone: nobody else is moved onto their practice track')
+
+-- THE RACED TRACK IS UNTOUCHED, which is the assertion that matters. A driver
+-- practising must not be able to move the server, or each other.
+appliedLayouts = {}
+RM_onRequestState(2)
+check(appliedLayouts[2] ~= nil and appliedLayouts[2].width == 30,
+  'the server is still on its own track after a practice load')
+
+-- ONLY A NON-ADMIN THING? No -- an admin practises the same way. The gate is
+-- the layout's approval, not who is asking.
+appliedLayouts = {}
+RM_onLoadLayout(1, '{"name":"GP Circuit","forPractice":true}')
+check(appliedLayouts[1] ~= nil, 'an admin can practise too')
+
+-- NOT ONCE A SESSION HAS STARTED -- and that includes the GRID, which is the
+-- case worth having a test for. sessionUnderWay() is false while the field is
+-- lined up, because an admin may still change the rules there; a practice load
+-- would clear this driver's gates and hand them another track a moment before
+-- the lights.
+RM_onStartQualifying(1)
+appliedLayouts = {}
+RM_onLoadLayout(3, '{"name":"GP Circuit","forPractice":true}')
+check(appliedLayouts[3] == nil,
+  'practice is for between sessions, not during one')
+RM_onEndRace(1)
+RM_onResetLeaderboard(1)   -- back to 'waiting', so practice is allowed again
+
+-- Un-approving takes it away again.
+RM_onSetLayoutPractice(1, '{"name":"GP Circuit","practice":false}')
+RM_onRequestLayouts(3)
+check(#lastLayouts.layouts == 0, 'un-approving hides it from drivers again')
+appliedLayouts = {}
+RM_onLoadLayout(3, '{"name":"GP Circuit","forPractice":true}')
+check(appliedLayouts[3] == nil, 'and refuses the load')
+
+-- A non-admin cannot approve anything.
+RM_onSetLayoutPractice(3, '{"name":"GP Circuit","practice":true}')
+RM_onRequestLayouts(3)
+check(#lastLayouts.layouts == 0, 'a non-admin cannot approve a layout for themselves')
+RM_onRequestLayouts(1)
+
 -- Explicit clear-state command: purges clients and re-reads layouts from disk
 lastCleared = nil
 lastLayouts = nil

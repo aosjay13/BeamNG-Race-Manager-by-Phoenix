@@ -800,6 +800,24 @@ local pit = {
 -- Local lap tracking (reset on every session change)
 local localTime    = 0
 
+-- FREE PRACTICE: driving a track on your own, timed, with nothing at stake.
+--
+-- Entirely local. The server hands over an approved layout and says "you are
+-- practising"; everything after that -- arming gates, timing laps, counting
+-- them -- happens on this client and is reported to nobody. No RM_Lap, no
+-- progress telemetry, no leaderboard row, no cup round.
+--
+-- It is deliberately NOT a session. sessionRunning() stays false throughout, so
+-- the grid, the hold, the reset allowance, the flags and the spectator lock all
+-- go on ignoring a practising driver, which is exactly right: those rules exist
+-- to make a race fair, and there is no race.
+--
+--   on        practising right now
+--   layout    the track pulled up, for the readout
+--   lapTarget how many laps the driver asked for, 0 = unlimited
+--   lapsDone  laps completed since practice started
+local practice = { on = false, layout = nil, lapTarget = 0, lapsDone = 0 }
+
 -- SELF-TIMING: this driver's lap and sector deltas.
 --
 -- Entirely local, and deliberately so. The server already stamps every
@@ -1319,6 +1337,16 @@ local function pushRouteState()
     height       = track.checkpointHeight,
     depth        = track.checkpointDepth,
     visualize    = edit.visualize,
+    -- Free practice, so the panel can offer the lap target and a way out of it.
+    -- lapsLeft is computed here rather than in the UI because the target may be
+    -- 0 (unlimited), and "unlimited minus four" is a subtraction the readout
+    -- should never be asked to reason about.
+    practice       = practice.on,
+    practiceLayout = practice.layout,
+    practiceLaps   = practice.lapTarget,
+    practiceDone   = practice.lapsDone,
+    practiceLeft   = (practice.on and practice.lapTarget > 0)
+                     and math.max(0, practice.lapTarget - practice.lapsDone) or nil,
     -- Starting grid
     startPositions = track.startPositions,
     pointToPoint   = track.pointToPoint,
@@ -1673,6 +1701,20 @@ local function onLapCompleted()
   -- client that withheld the out lap because it knew it would not be scored
   -- would be the same mistake in a new place -- the server needs the crossing
   -- either way, to advance the lap counter and clear the checkpoint telemetry.
+  -- A PRACTICE LAP IS ANNOUNCED AND NEVER REPORTED. It is the only path here
+  -- that returns before the server is told anything: no RM_Lap, so no
+  -- leaderboard row, no best lap, no cup round, and nothing for a real session
+  -- to notice. There is no out lap either -- practice starts when the driver
+  -- says so, from wherever they are.
+  if practice.on then
+    practice.lapsDone = practice.lapsDone + 1
+    announceLap(practice.lapsDone)
+    log('I', 'raceManager', string.format('Practice lap %d: %.3fs',
+      practice.lapsDone, lapTime))
+    session.lapStart = localTime
+    timing.sectors = {}
+    return
+  end
   if not sessionRunning() then return end
   local outLap = onOutLap()
   if inMultiplayer() then
@@ -1840,7 +1882,10 @@ end
 local function checkGates()
   if session.spectatorLock then return end     -- out of the session: no more timing
   if #track.route == 0 and #track.jokerRoute == 0 then return end
-  if session.phase ~= 'qualifying' and session.phase ~= 'racing' then return end
+  -- ...or while practising, which is the whole of what makes practice timed.
+  -- Everything else about a session stays switched off.
+  if not practice.on
+     and session.phase ~= 'qualifying' and session.phase ~= 'racing' then return end
   local veh, pos = sampledVehicle()
   if not veh or not pos then return end
   if session.prevPos then
@@ -7012,6 +7057,58 @@ function M.loadLayout(name, forEditing)
   }))
 end
 
+-- --- Free practice ---------------------------------------------------------
+
+-- Pull up an approved track to practise on. Any player, admin or not.
+--
+-- The same RM_LoadLayout event with a different flag, rather than a channel of
+-- its own: it is the same question ("send me this track"), and the server
+-- answers it the same targeted way. What differs is what it is allowed to do,
+-- and the server decides that -- this end cannot approve its own layout.
+function M.practiceLayout(name)
+  name = tostring(name or '')
+  if name == '' then return end
+  if not inMultiplayer() then
+    editorMsg('Practice needs a BeamMP server')
+    return
+  end
+  TriggerServerEvent('RM_LoadLayout', jsonEncode({ name = name, forPractice = true }))
+end
+
+-- How many laps the driver wants. 0 (or blank) is unlimited, which is the
+-- default: practice with a target is the unusual case.
+function M.setPracticeLaps(n)
+  practice.lapTarget = math.max(0, math.floor(tonumber(n) or 0))
+  pushRouteState()
+end
+
+-- Stop practising. The gates stay drawn -- the track is still loaded, and a
+-- driver who has stopped timing has not stopped looking at where it goes.
+function M.endPractice()
+  practice.on = false
+  practice.lapsDone = 0
+  timingReset()
+  pushNotice('session', 'Practice ended')
+  pushRouteState()
+end
+
+-- The server has put this client on a practice track.
+local function onPractice(data)
+  if type(data) ~= 'table' then return end
+  practice.on     = data.on == true
+  practice.layout = data.layout
+  practice.lapsDone = 0
+  session.localLap  = 1
+  session.lapStart  = localTime
+  session.armedWp   = 1
+  timingReset()
+  if practice.on then
+    pushNotice('session', 'PRACTICE: ' .. tostring(data.layout or 'track')
+      .. ' -- your laps are timed for you only')
+  end
+  pushRouteState()
+end
+
 function M.deleteLayout(name)
   name = tostring(name or '')
   if name == '' then return end
@@ -8205,6 +8302,7 @@ end
 -- extra argument.
 local HANDLER_SOURCE = 'raceManager'
 local DISPATCH = {
+  RM_Practice        = onPractice,
   RM_Update          = onServerUpdate,
   RM_Countdown       = onServerCountdown,
   RM_Layouts         = onLayoutList,
