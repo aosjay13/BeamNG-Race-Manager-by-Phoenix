@@ -622,6 +622,28 @@ expect(oobRow ~= nil and not oobRow:find('ng-if', 1, true),
 expect(js:find("mode: 'lms'", 1, true) ~= nil, 'the panel starts in LMS')
 expect(js:find('data.derbyMode', 1, true) ~= nil,
   'and mirrors the mode from the server, which owns it')
+
+-- NO SET RULES BUTTON. The derby settings apply as they are changed.
+--
+-- It was redundant -- nothing here needs staging -- and it was reported as
+-- having done something it cannot do: a 'you start from P1' notice appeared on
+-- pressing it. Nothing in derbyApplyConfig can place a car, and the path was
+-- never found; removing the button removes the question.
+expect(html:find('>Set Rules<', 1, true) == nil, 'the Set Rules button is gone')
+for _, field in ipairs({ 'oob', 'demo', 'lives' }) do
+  local row = html:match('ng%-model="derbyUi%.' .. field .. '".-ng%-disabled')
+  expect(row ~= nil and row:find('ng-change="derbyApplyConfig()"', 1, true) ~= nil,
+    'derbyUi.' .. field .. ' applies on change instead')
+  -- Debounced, or typing "10" applies 1 first -- which for a timer means the
+  -- floor, and for lives means a value the admin never chose.
+  expect(row ~= nil and row:find('debounce', 1, true) ~= nil,
+    'and is debounced, so a half-typed number is not applied')
+end
+
+-- The derby reset allowance is gone with it: resets are blocked outright for
+-- the length of a derby, so a box setting how many you get would be a lie.
+expect(html:find('derbyUi.resets', 1, true) == nil,
+  'the derby Max resets box is gone, because there is no allowance any more')
 expect(js:find('cup: true', 1, true) ~= nil,
   'the cup tab is registered in MODE_TABS for race mode')
 

@@ -2825,8 +2825,19 @@ local derbyResets = { max = -1, used = 0, active = function () return false end 
 -- docs/ARCHITECTURE.md on the 200-local ceiling).
 spectate.derbyStoodDown = function () return false end
 
+-- NO RESETS AT ALL WHILE A DERBY IS RUNNING, whatever the allowance says.
+--
+-- A reset REPAIRS the car. In a race that is a penalty-carrying recovery; in a
+-- demolition derby it undoes the entire object of the exercise -- get wrecked,
+-- press the button, come back whole. With it available the stopped timer can
+-- almost never decide anything, because a driver about to be counted out just
+-- resets instead, so the derby is settled by who remembers the keybind.
+--
+-- This used to be an ALLOWANCE, defaulting to unlimited, which is to say
+-- defaulting to off. The allowance is gone: being wrecked is final, and that is
+-- what makes a last man standing mean anything.
 local function derbyResetsEnforced()
-  return derbyResets.max >= 0 and derbyResets.active()
+  return derbyResets.active()
 end
 
 -- Switch the reset/recover input actions off (or back on) via BeamNG's input
@@ -3588,24 +3599,18 @@ function M.onVehicleResetted(vehId)
   -- Demo derby (isolated ruleset): the same policing against the derby's own
   -- allowance while a derby is running and this driver is still in it.
   if derbyResetsEnforced() then
-    if derbyResets.used >= derbyResets.max then
+    -- Always: there is no allowance left to check.
+    if true then
       local restored = restoreLastGoodPosition()
       if blockNoticeLeft <= 0 then
         blockNoticeLeft = BLOCK_NOTICE_EVERY
         if inMultiplayer() then TriggerServerEvent('RM_DerbyResetDenied', '') end
-        pushNotice('reset', derbyResets.max == 0
-          and 'RESET BLOCKED: no resets allowed in this derby'
-          or  ('RESET BLOCKED: all ' .. derbyResets.max .. ' derby resets used'))
-        log('W', 'raceManager', 'Derby reset blocked: allowance of ' .. derbyResets.max
-          .. ' exhausted (position ' .. (restored and 'restored' or 'NOT restored') .. ')')
+        pushNotice('reset', 'RESET BLOCKED: no resets in a derby')
+        log('W', 'raceManager', 'Derby reset blocked (position '
+          .. (restored and 'restored' or 'NOT restored') .. ')')
       end
       return
     end
-    derbyResets.used = derbyResets.used + 1
-    snapshotLeft = 0
-    if inMultiplayer() then TriggerServerEvent('RM_DerbyVehicleReset', '') end
-    pushNotice('reset', string.format('Derby reset %d/%d used: %d left',
-      derbyResets.used, derbyResets.max, derbyResets.max - derbyResets.used))
   end
 end
 

@@ -916,5 +916,51 @@ do
   check(derbyPlayer('Cara').lives == 3, 'and spends none of them')
 end
 
+-- ---------------------------------------------------------------------------
+-- A DERBY ENDED DURING ITS COOL-DOWN MUST NOT POISON THE NEXT ONE
+-- ---------------------------------------------------------------------------
+-- Reported from a race night as two separate faults -- "the hold sets the
+-- handbrake" and "the demolished timer starts immediately" -- one derby after
+-- the one that actually caused it.
+--
+-- derbyOver is what tells every client to stand its car down. It is derived
+-- from endsAt, which is set when a derby is DECIDED and used to be cleared only
+-- by the tick that runs the cool-down out. Pressing End Derby during those few
+-- seconds skipped that line, and nothing else ever cleared it: not form-up, not
+-- GO. The next derby was born already over, so every client froze and applied
+-- the handbrake the moment it started -- and a car that cannot move trips the
+-- stopped timer seconds later.
+do
+  RM_onDerbyEnd(1)                       -- whatever the section above left
+  RM_onDerbyEnd(1)                       -- finished -> idle
+  -- Stated outright rather than inherited: the section above runs on three
+  -- lives, where one demolition spends a life instead of deciding anything.
+  RM_onDerbySetConfig(1, '{"mode":"dm","lives":1}')
+
+  startDerby(1)
+  check(lastDerby.derbyPhase == 'running', 'a derby is running')
+  check(lastDerby.derbyOver ~= true, 'and is not decided yet')
+
+  -- Decide it: everyone out but one. That arms the cool-down.
+  RM_onDerbyDemolished(2)
+  RM_onDerbyDisqualified(3)
+  check(lastDerby.derbyOver == true, 'last man standing arms the cool-down')
+
+  -- END IT MID-COOL-DOWN, which is the whole point.
+  RM_onDerbyEnd(1)
+  check(lastDerby.derbyPhase == 'finished', 'ending during the cool-down finishes it')
+  check(lastDerby.derbyOver ~= true,
+    'and clears the decided flag rather than leaving it set for ever')
+
+  RM_onDerbyEnd(1)                       -- finished -> idle
+  startDerby(1)
+  check(lastDerby.derbyPhase == 'running', 'the next derby starts')
+  check(lastDerby.derbyOver ~= true,
+    'and is NOT born already over -- no stand-down, no handbrake, no stopped '
+      .. 'timer counting down on a frozen car')
+  RM_onDerbyEnd(1)
+  RM_onDerbyEnd(1)
+end
+
 print(string.format('derby_test: %d checks, %d failures', checks, fails))
 os.exit(fails == 0 and 0 or 1)

@@ -396,11 +396,19 @@ resetHook()
 check(#teleports == 1, 'the checkpoint respawn is not heard back as a fresh reset')
 
 -- ===========================================================================
--- Demo derby reset allowance (isolated from the race ruleset)
+-- No resets at all in a derby (isolated from the race ruleset)
 -- ===========================================================================
+-- This was an ALLOWANCE, defaulting to unlimited -- which is to say defaulting
+-- to off. A reset REPAIRS the car: in a demolition derby that undoes the entire
+-- object of the exercise, and while it is available the stopped timer can
+-- hardly ever decide anything, because a driver about to be counted out just
+-- resets instead.
+--
+-- So there is no allowance to spend and no number to get wrong. The keys are
+-- dead for the length of a running derby and come back when it ends.
 serverState({ phase = 'waiting', maxResets = -1, resetMode = 'inplace',
   totalLaps = 3, drivers = {} })
-derbyState({ derbyPhase = 'running', oobLimit = 5, demoLimit = 10, maxResets = 1,
+derbyState({ derbyPhase = 'running', oobLimit = 5, demoLimit = 10, maxResets = -1,
   derbyTime = 0, boundary = {}, startPositions = {},
   players = { { id = 1, status = 'alive' } } })
 
@@ -409,24 +417,30 @@ frames(0.6)                                  -- rolling snapshot: (500, 0, 0)
 clearLog()
 driverPressedReset(5, 5, 0)
 resetHook()
-check(countSent('RM_DerbyVehicleReset') == 1, 'a derby reset inside the allowance is reported')
-check(#teleports == 0, 'and not undone')
-
-frames(1.2)                                  -- new snapshot + notice throttle expiry
-clearLog()
-driverPressedReset(80, 80, 0)
-resetHook()
-check(#teleports == 1 and teleports[1].x == 5 and teleports[1].y == 5,
-  'an over-allowance derby reset is put back on the last good position')
-check(countSent('RM_DerbyResetDenied') == 1, 'the blocked derby attempt is reported')
-check(countSent('RM_DerbyVehicleReset') == 0, 'and spends no derby allowance')
+-- maxResets = -1 is the case that used to mean "unlimited", and is the one that
+-- has to be dead now: it is the default, so it is what a derby actually runs on.
+check(countSent('RM_DerbyVehicleReset') == 0,
+  'the very first reset of a derby is refused, on the setting that used to '
+    .. 'mean unlimited')
+check(#teleports == 1 and teleports[1].x == 500,
+  'and the car is put back where it was rather than left where it reset to')
+check(countSent('RM_DerbyResetDenied') == 1, 'the blocked attempt is reported')
 frames(0.2)
-check(inputsBlocked == true, 'derby: reset inputs go dead once the derby allowance is spent')
+check(inputsBlocked == true, 'derby: the reset inputs are dead for the whole derby')
 
-derbyState({ derbyPhase = 'finished', oobLimit = 5, demoLimit = 10, maxResets = 1,
+derbyState({ derbyPhase = 'finished', oobLimit = 5, demoLimit = 10, maxResets = -1,
   derbyTime = 20, boundary = {}, startPositions = {}, players = {} })
 frames(0.2)
 check(inputsBlocked == false, 'derby over: the reset inputs come back')
+
+-- A RACE IS UNTOUCHED BY ANY OF THIS. The derby ruleset is meant to be
+-- isolated, and "no resets" leaking into the circuit side would take the
+-- allowance away from every driver on a race night.
+serverState({ phase = 'racing', maxResets = 2, resetMode = 'inplace',
+  totalLaps = 3, drivers = { { id = 1, laps = 0 } } })
+frames(0.2)
+check(inputsBlocked == false,
+  'a race with resets left keeps its keys after the derby blocked them')
 
 -- ===========================================================================
 -- BeamNG v0.39 compatibility

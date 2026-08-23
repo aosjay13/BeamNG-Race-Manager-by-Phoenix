@@ -2692,13 +2692,21 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         return Number($scope.derby.lives) > 1;
       };
 
+      // APPLIED AS THEY ARE CHANGED, with no Set Rules button.
+      //
+      // The button was redundant -- there is nothing here that needs staging,
+      // and every one of these is refused outright by the server while a derby
+      // is active, so a half-typed value can never reach a running derby.
+      // Debounced in the markup so typing "10" applies once, not as 1 then 10.
       $scope.derbyApplyConfig = function () {
         var oob = parseFloat($scope.derbyUi.oob);
         var demo = parseFloat($scope.derbyUi.demo);
         if (!isFinite(oob) || oob <= 0 || !isFinite(demo) || demo <= 0) { return; }
-        // Resets mirror the race rule: blank or negative = unlimited, 0 = none.
-        var resets = parseInt($scope.derbyUi.resets, 10);
-        if (isNaN(resets) || resets < 0) { resets = -1; }
+        // Resets are not configurable for a derby any more: they are blocked
+        // outright for the length of one. Still sent so an older server, which
+        // does police an allowance, is told to allow nothing rather than
+        // falling back to its unlimited default.
+        var resets = 0;
         // Lives floor at 1: nought lives would knock the whole field out on the
         // first stopped timer, which is not a derby.
         var lives = parseInt($scope.derbyUi.lives, 10);

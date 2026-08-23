@@ -564,6 +564,23 @@ end
 
 local function finishDerby(reason)
   derby.phase = 'finished'
+  -- THE COOL-DOWN IS OVER BECAUSE THE DERBY IS, however it got here.
+  --
+  -- endsAt is what tells every client "this derby is decided, stand your car
+  -- down", and it used to be cleared at ONE of the two call sites -- the tick
+  -- that runs the cool-down out. Ending a derby from the panel during those few
+  -- seconds skipped that line and left it set, and nothing ever unset it again:
+  -- not form-up, not GO, not the next derby.
+  --
+  -- So the following derby was born already over. The moment it reached
+  -- 'running' every client stood its car down -- freeze on, handbrake on -- and
+  -- a car that cannot move trips the stopped timer a few seconds later. From
+  -- the arena it looked like the hold and the demolished timer had both broken
+  -- at once, one derby after the one that actually caused it.
+  --
+  -- Cleared HERE, in the one place both paths funnel through, rather than
+  -- correctly at each call site.
+  derby.endsAt, derby.endReason = nil, nil
   MP.CancelEventTimer('RM_DerbyTick')
   -- The derby is over: every eliminated driver gets their car and camera back.
   -- Scoped to the 'derby' source so a racing DNF's spectator lock is untouched.
@@ -1170,6 +1187,9 @@ function RM_onDerbyFormUp(pid)
   derbyPlayers = {}
   derby.winner = nil
   derby.time   = 0
+  -- Belt and braces on the leak above: a derby being formed is not a derby that
+  -- has been decided, whatever the last one left behind.
+  derby.endsAt, derby.endReason = nil, nil
   for id in pairs(onlinePlayers()) do
     -- Same entry rule as a race: everyone takes part unless they are spectating.
     -- A player with no racing record has never pressed anything, so they are in.
@@ -1398,8 +1418,8 @@ function RM_DerbyTick()
   -- arena stays up so the result can be seen, and the only stretch of a SOLO
   -- derby that is actually running.
   if derby.endsAt and derby.time >= derby.endsAt then
+    -- finishDerby clears these; read the reason out before it does.
     local why = derby.endReason or 'derby over'
-    derby.endsAt, derby.endReason = nil, nil
     finishDerby(why)
     return
   end

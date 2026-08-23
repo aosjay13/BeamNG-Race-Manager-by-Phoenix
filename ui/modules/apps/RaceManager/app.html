@@ -1630,27 +1630,26 @@
       <span class="rm-setting">
         <label>OOB timer</label>
         <input type="number" min="1" max="120" step="0.5" ng-model="derbyUi.oob"
+               ng-model-options="{debounce: 600}"
+               ng-change="derbyApplyConfig()"
                ng-disabled="derbyActive()">
         <span class="rm-setting-val">s</span>
       </span>
       <span class="rm-setting">
         <label>Demolished timer</label>
         <input type="number" min="1" max="120" step="0.5" ng-model="derbyUi.demo"
+               ng-model-options="{debounce: 600}"
+               ng-change="derbyApplyConfig()"
                ng-disabled="derbyActive()">
         <span class="rm-setting-val">s</span>
       </span>
       <span class="rm-setting" ng-if="derbyUi.mode === 'dm'" title="How many times a driver may be counted out before they are out for good. 1 is knocked out on the first stopped timer. Higher puts them back on their start slot instead, ghosted while they land. Leaving the arena is still an outright elimination.">
         <label>Lives</label>
         <input type="number" class="rm-width-num" min="1" max="9" step="1" ng-model="derbyUi.lives"
+               ng-model-options="{debounce: 600}"
+               ng-change="derbyApplyConfig()"
                ng-disabled="derbyActive()">
       </span>
-      <span class="rm-setting" title="Resets per driver this derby. 0 = none, -1 or blank = unlimited. Past the allowance the reset keys are blocked. WORTH KNOWING: a reset repairs the car, so unlimited resets means a wrecked driver can always come back and the stopped timer rarely decides anything. 0 is the setting that makes being wrecked final.">
-        <label>Max resets</label>
-        <input type="number" class="rm-width-num" min="-1" max="99" step="1" ng-model="derbyUi.resets"
-               ng-disabled="derbyActive()">
-      </span>
-      <button class="rm-btn rm-btn-mini" ng-click="derbyApplyConfig()"
-              ng-disabled="derbyActive()">Set Rules</button>
       <span class="rm-setting" title="Everyone: all connected players take part. Opt-in: only those who pressed Join Race, so spectators are left alone.">
         <label>Entry</label>
         <span class="rm-setting-val">{{ derby.entrants }} in</span>
