@@ -2833,11 +2833,11 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       };
       // Reset cell for the derby standings, clamped the same way the race
       // table's is: never over the limit, never a "+N" tail.
-      $scope.derbyResetsLimited = function () { return $scope.derby.maxResets >= 0; };
-      $scope.derbyResetLabel = function (p) {
-        if (!$scope.derbyResetsLimited()) { return '∞'; }
-        return Math.min(p.resets || 0, $scope.derby.maxResets) + '/' + $scope.derby.maxResets;
-      };
+      // No Rst column on the derby leaderboard: there are no resets in a derby
+      // to count. It was hidden by accident rather than by design until now --
+      // the column showed when maxResets >= 0, and the default was -1, so
+      // switching the derby to "allow none" turned it ON, reading 0/0 for
+      // everybody. The helpers behind it are gone with the column.
       // A derby is under way from form-up onward, not just while running: the
       // field is standing on its slots and held, so the arena and the rules are
       // locked exactly as they are mid-derby.

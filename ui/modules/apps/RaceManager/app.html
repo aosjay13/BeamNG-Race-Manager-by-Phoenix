@@ -2494,7 +2494,6 @@
           <th class="rm-col-name">Driver</th>
           <th class="rm-col-status">Status</th>
           <th class="rm-col-reset" ng-if="derbyLivesOn()" title="Lives left. A driver counted out with lives in hand goes back to their start slot instead of out of the derby.">Lives</th>
-          <th class="rm-col-reset" ng-if="derbyResetsLimited()" title="Vehicle resets used / allowed this derby">Rst</th>
           <th class="rm-col-time">Out At</th>
         </tr>
       </thead>
@@ -2508,7 +2507,6 @@
             <span class="rm-status-text">{{ derbyStatusLabel(p) }}</span>
           </td>
           <td class="rm-col-reset" ng-if="derbyLivesOn()">{{ p.status === 'eliminated' ? '-' : (p.lives == null ? '-' : p.lives) }}</td>
-          <td class="rm-col-reset" ng-if="derbyResetsLimited()">{{ derbyResetLabel(p) }}</td>
           <td class="rm-col-time">{{ p.status === 'eliminated' ? formatDerbyTime(p.elimTime) : '-' }}</td>
         </tr>
       </tbody>

@@ -76,6 +76,19 @@ local DERBY_STOP_SPEED    = 0.7   -- m/s; below this the car counts as stopped
 -- than retuned: it is a gameplay value, and shortening it is a balance call for
 -- an admin to ask for, not a side effect of adding a countdown.
 local DERBY_START_GRACE   = 5
+-- HOW LONG A CAR MAY SIT STILL BEFORE THE STOPPED TIMER EVEN STARTS.
+--
+-- Separate from the countdown, and it is what makes the countdown mean
+-- something. Stopping is a normal part of driving a derby: you back off a wall,
+-- pause to pick a target, stop dead to turn around. Starting the clock the
+-- instant the wheels stop turning put a flashing elimination warning on screen
+-- for every one of those, which is noise -- and noise on a warning is how a
+-- real one gets ignored.
+--
+-- So the total time from stopping to being counted out is this PLUS the
+-- configured timer. Deliberately: the grace is for driving, the timer is for
+-- being wrecked, and they are answering different questions.
+local DERBY_STOP_GRACE    = 5
 local DERBY_POLE_HEIGHT   = 6     -- fallback wall height, until the server says
 -- Fallback skirt, likewise. This used to BE the answer: a hardcoded drop with no
 -- way to change it, so on uneven ground the wall floated above every dip and
@@ -255,11 +268,26 @@ D.derbyUpdate = function (dt)
   -- Stopped-vehicle ("demolished") check. Held off for the start grace
   -- period so a grid of cars parked for the start isn't counting down
   -- before anyone has had a chance to move.
+  --
+  -- TWO CLOCKS, NOT ONE. `stoppedFor` runs from the moment the car stops;
+  -- `demoLeft` only starts once that has passed DERBY_STOP_GRACE. Moving at any
+  -- point clears both, so the grace is granted again on the next stop rather
+  -- than being spent once per derby.
   local vel = veh:getVelocity()
   local speed = math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z)
   if speed > DERBY_STOP_SPEED or D.derbyState.runTime < DERBY_START_GRACE then
+    D.derbyState.stoppedFor = 0
     if D.derbyState.demoLeft then D.derbyState.demoLeft = nil; changed = true end
   else
+    D.derbyState.stoppedFor = (D.derbyState.stoppedFor or 0) + dt
+    -- Still inside the grace: no countdown, and NOTHING PUSHED. The warning
+    -- panel is driven by demoLeft, so leaving it nil is what keeps the screen
+    -- quiet while a driver is simply turning around.
+    if D.derbyState.stoppedFor < DERBY_STOP_GRACE then
+      if D.derbyState.demoLeft then D.derbyState.demoLeft = nil; changed = true end
+      if changed then derbyPushWarning() end
+      return
+    end
     if not D.derbyState.demoLeft then
       D.derbyState.demoLeft = D.derbyState.demoLimit
     else
@@ -842,6 +870,7 @@ D.onDerbyUpdate = function (rawData)
     D.derbyState.out = false
     D.derbyState.pending = false
     D.derbyState.runTime = 0
+    D.derbyState.stoppedFor = 0
     host.resets.used = 0
     D.derbyClearWarnings()
   elseif newPhase ~= 'running' then
@@ -992,6 +1021,7 @@ D.onDerbyLifeLost = function (rawData)
   D.derbyState.pending  = false
   D.derbyState.out      = false
   D.derbyClearWarnings()
+  D.derbyState.stoppedFor = 0
   D.derbyState.runTime  = 0     -- re-arms the start grace, so a car put down
                                 -- stationary is not immediately on the clock
 

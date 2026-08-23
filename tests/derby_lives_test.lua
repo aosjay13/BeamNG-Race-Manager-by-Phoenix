@@ -88,7 +88,13 @@ core_vehicleBridge = { executeAction = function () end }
 vec3 = function (x, y, z) return { x = x, y = y, z = z } end
 quat = function (x, y, z, w) return { x = x, y = y, z = z, w = w } end
 log  = function () end
-guihooks = { trigger = function () end }
+-- The derby warning panel: what the driver actually sees. Captured because the
+-- stop-grace behaviour below is entirely about what is NOT on screen while
+-- somebody is turning around.
+local lastWarning = nil
+guihooks = { trigger = function (name, payload)
+  if name == 'RaceManagerDerbyWarning' then lastWarning = payload end
+end }
 MPGameNetwork      = {}
 MPConfig           = { getPlayerServerID = function () return OWN_PID end }
 TriggerServerEvent = function (e, p) sent[#sent + 1] = { event = e, payload = p } end
@@ -238,6 +244,60 @@ handlers['RM_DerbyGhost']({ pid = OWN_PID, seconds = 4.0 })
 check(own.ghosted == true, 'our own car is ghosted when WE come back on a life')
 frames(5.0)
 check(own.ghosted == false, 'and comes back solid')
+
+-- ---------------------------------------------------------------------------
+-- STOPPING IS NOT THE SAME AS BEING WRECKED
+-- ---------------------------------------------------------------------------
+-- The stopped timer used to start the instant the wheels stopped turning, which
+-- put a flashing elimination warning on screen every time somebody backed off a
+-- wall or stopped to turn around. Noise on a warning is how a real one gets
+-- ignored.
+--
+-- So a car gets DERBY_STOP_GRACE (5s) of standing still before the countdown
+-- even starts, and the total from stopping to being counted out is that plus
+-- the configured timer. The two clocks answer different questions: the grace is
+-- for driving, the timer is for being wrecked.
+do
+  derbyState('idle', 'alive')
+  derbyState('running', 'alive', { demoLimit = 10 })
+  local before = countSent('RM_DerbyDemolished')
+  own.vx, own.vy, own.vz = 0, 0, 0
+
+  -- Past the START grace (5s) so only the STOP grace is in play, then a little
+  -- over half of it.
+  for _ = 1, 80 do RM.onUpdate(0.1) end        -- 8s stationary
+  check(countSent('RM_DerbyDemolished') == before,
+    'three seconds into a stop, nothing has been reported')
+  check(lastWarning == nil or lastWarning.stopped == nil,
+    'and no countdown is being shown -- the panel stays quiet while a driver '
+      .. 'is simply turning around')
+
+  -- DRIVE OFF, THEN STOP AGAIN FOR LESS THAN THE GRACE.
+  --
+  -- The lengths matter. Stopping for LONGER than the grace here would pass
+  -- whether or not moving resets the clock, because an accumulating counter
+  -- reaches the threshold either way -- the check could not fail, and did not
+  -- when the reset was removed on purpose. Three seconds is under the grace on
+  -- a clock that restarts, and over it on one that never stopped.
+  own.vx = 10
+  for _ = 1, 20 do RM.onUpdate(0.1) end        -- 2s driving
+  own.vx = 0
+  for _ = 1, 30 do RM.onUpdate(0.1) end        -- 3s stopped
+  check(lastWarning == nil or lastWarning.stopped == nil,
+    'driving grants the grace again: three seconds into the NEXT stop is still '
+      .. 'quiet, rather than resuming where the last stop left off')
+
+  for _ = 1, 30 do RM.onUpdate(0.1) end        -- 6s stopped: grace now passed
+  check(lastWarning ~= nil and lastWarning.stopped ~= nil,
+    'and once the grace really is over, the countdown starts')
+  check(countSent('RM_DerbyDemolished') == before,
+    'still only counting down, not finished')
+
+  -- All the way out: grace plus the ten-second timer.
+  for _ = 1, 130 do RM.onUpdate(0.1) end
+  check(countSent('RM_DerbyDemolished') == before + 1,
+    'and a car that really is wrecked is still counted out')
+end
 
 -- Garbage in changes nothing: the payload crosses the wire.
 vehCmds = {}
