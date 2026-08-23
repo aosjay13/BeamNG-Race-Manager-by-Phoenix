@@ -97,8 +97,15 @@ def sha_file(path):
         return sha(f.read())
 
 
-def build():
-    """Write the client zip in memory, then dist/ and package/ from it."""
+def build(write=True):
+    """Build the client zip in memory, then dist/ and package/ from it.
+
+    `write=False` builds and reports without touching the working tree, which
+    is what --dry-run needs. It used to build unconditionally, so a dry run
+    quietly rewrote dist/ and package/ while printing "nothing written" -- and
+    since package/ is version-controlled build output, a throwaway file dropped
+    in server/RaceManager to test module discovery ended up committed.
+    """
     files = client_files()
     if not os.path.exists(SERVER_PLUGIN):
         raise SystemExit('missing ' + SERVER_PLUGIN)
@@ -116,19 +123,24 @@ def build():
     os.makedirs('package/Server/RaceManager', exist_ok=True)
     server_lua = server_files()
     os.makedirs('dist', exist_ok=True)
-    with open('package/Client/RaceManager.zip', 'wb') as f:
-        f.write(client)
-    for f in server_lua:
-        shutil.copyfile(f, 'package/Server/RaceManager/' + os.path.basename(f))
-
     release = os.path.join('dist', RELEASE_NAME)
-    with zipfile.ZipFile(release, 'w', zipfile.ZIP_DEFLATED) as z:
-        z.write('LICENSE', 'LICENSE')
-        z.writestr('Client/RaceManager.zip', client)
+    if write:
+        os.makedirs('package/Client', exist_ok=True)
+        os.makedirs('package/Server/RaceManager', exist_ok=True)
+        os.makedirs('dist', exist_ok=True)
+        with open('package/Client/RaceManager.zip', 'wb') as f:
+            f.write(client)
         for f in server_lua:
-            z.write(f, 'Server/RaceManager/' + os.path.basename(f))
-
-    print('built %s (%d bytes) from %d client files' % (release, os.path.getsize(release), len(files)))
+            shutil.copyfile(f, 'package/Server/RaceManager/' + os.path.basename(f))
+        with zipfile.ZipFile(release, 'w', zipfile.ZIP_DEFLATED) as z:
+            z.write('LICENSE', 'LICENSE')
+            z.writestr('Client/RaceManager.zip', client)
+            for f in server_lua:
+                z.write(f, 'Server/RaceManager/' + os.path.basename(f))
+        print('built %s (%d bytes) from %d client files'
+              % (release, os.path.getsize(release), len(files)))
+    else:
+        print('would build %s from %d client files' % (release, len(files)))
     print('  client zip %s  %d bytes' % (sha(client), len(client)))
     for f in server_lua:
         print('  server lua %s  %8d bytes  %s'
@@ -310,7 +322,7 @@ def main():
     if not os.path.exists(SERVER_PLUGIN):
         raise SystemExit('run this from the repo root')
 
-    client = build()
+    client = build(write=not args.dry_run)
     if args.build_only:
         return 0
 
