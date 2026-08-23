@@ -1735,6 +1735,104 @@ do
   RM_onDeleteLayout(1, '{"name":"Audit"}')
 end
 
+
+-- ===========================================================================
+-- config.json: settings an admin can change without touching Lua
+-- ===========================================================================
+-- Sixteen constants used to be scattered down the plugin, so changing the lap
+-- count a league starts with meant editing code and redeploying. They are one
+-- table now, seeded from a file that sits beside layouts.json.
+do
+  local CONFIG = 'Resources/Server/RaceManager/config.json'
+  local function readConfig()
+    local f = io.open(CONFIG, 'r')
+    if not f then return nil end
+    local t = f:read('*a'); f:close()
+    local ok, d = pcall(jsonDecode, t)
+    return ok and d or nil
+  end
+  -- A server restart: re-read the plugin from source and initialise it, which
+  -- is what re-reads config.json. The same thing the persistence cases further
+  -- up this file do.
+  local function reboot()
+    dofile('server/RaceManager/main.lua')
+    onInit()
+  end
+  local function writeConfig(text)
+    -- The plugin creates this directory itself on first boot, and the test
+    -- above has already made it happen. Nothing to create here.
+    local f = assert(io.open(CONFIG, 'w'),
+      'cannot write ' .. CONFIG .. ' -- the plugin should have made the directory')
+    f:write(text); f:close()
+  end
+
+  -- FIRST RUN writes the file, so an admin has a complete valid document to
+  -- edit rather than a format to guess at.
+  local onDisk = readConfig()
+  check(onDisk ~= nil, 'the plugin writes config.json on first run')
+  check(onDisk and onDisk.totalLaps == 5 and onDisk.adminPassword == 'phoenix',
+    'and it contains the values the plugin actually shipped with')
+
+  -- A file with settings in it is applied at boot.
+  writeConfig('{"totalLaps":12,"maxResets":3,"countdownFrom":7,'
+    .. '"resetMode":"checkpoint","adminPassword":"thursday",'
+    .. '"ghostMinSeconds":2,"ghostMaxSeconds":9}')
+  reboot()
+  check(lastState.totalLaps == 12, 'totalLaps comes from the file')
+  check(lastState.maxResets == 3, 'so does the reset allowance')
+  check(lastState.resetMode == 'checkpoint', 'and the reset mode')
+  check(lastState.ghostMinSec == 2 and lastState.ghostMaxSec == 9,
+    'and the ghost window')
+
+  -- The password from the file is the one that works, and the shipped default
+  -- is not. A league that changed it must not still be open on 'phoenix'.
+  RM_onLogin(5, '{"password":"phoenix"}')
+  check(lastLogin and lastLogin.success ~= true,
+    'the shipped default password stops working once the file sets another')
+  RM_onLogin(5, '{"password":"thursday"}')
+  check(lastLogin and lastLogin.success == true, 'and the file password is accepted')
+
+  -- CHANGING IT PERSISTS. This is the bug the file fixes: the change used to be
+  -- in memory only, so every restart quietly put the password back and the
+  -- first anybody knew was a login that should have worked and did not.
+  RM_onChangePassword(5, '{"password":"friday"}')
+  local after = readConfig()
+  check(after and after.adminPassword == 'friday',
+    'changing the admin password writes it to config.json')
+  reboot()
+  RM_onLogin(6, '{"password":"friday"}')
+  check(lastLogin and lastLogin.success == true,
+    'and it still works after a restart, which it never did before')
+
+  -- A VALUE OUTSIDE ITS LIMITS costs that value, not the boot. A hand-typed
+  -- file is exactly where a negative countdown comes from.
+  writeConfig('{"totalLaps":-4,"countdownFrom":0,"maxResets":9999,"resetMode":"sideways"}')
+  reboot()
+  check(lastState.totalLaps == 5, 'a lap count outside the limits is refused, keeping the default')
+  check(lastState.resetMode == 'inplace', 'and so is a reset mode that is not one')
+
+  -- A KEY THE FILE OMITS keeps its built-in value, so the file can be trimmed
+  -- to the two lines somebody cares about, and survives an upgrade that adds
+  -- settings.
+  writeConfig('{"totalLaps":8}')
+  reboot()
+  check(lastState.totalLaps == 8, 'the one key in the file is applied')
+  check(lastState.maxResets == -1, 'and everything absent keeps its built-in value')
+
+  -- A BROKEN FILE must not stop the server booting. A league whose server will
+  -- not start because of a stray comma has a worse evening than one running
+  -- last week's lap count.
+  writeConfig('{"totalLaps": 9,,, oops')
+  local booted = pcall(reboot)
+  check(booted, 'a malformed config.json does not stop the plugin loading')
+  check(lastState.totalLaps == 5, 'and it falls back to the built-in defaults')
+
+  -- Put the file back to something sane for whatever runs next.
+  writeConfig('{"totalLaps":5,"adminPassword":"phoenix"}')
+  reboot()
+end
+
+
 removeTree('Resources')
 
 if fails == 0 then
