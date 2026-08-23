@@ -137,6 +137,24 @@ local derby = {
   -- would otherwise have to opt in twice for no benefit. It is a read, so the
   -- derby still never mutates racing state.
   oobLimit  = DERBY_DEFAULT_OOB_LIMIT,
+  -- SECONDS STOPPED BEFORE A DRIVER IS COUNTED OUT, and there is deliberately
+  -- no way to switch it off.
+  --
+  -- It was made toggleable once, on the reasonable-sounding grounds that not
+  -- every derby wants a stopped-car countdown. That misreads what the timer is
+  -- for. It is not a rule laid over the derby, it is the only thing that
+  -- DETECTS A WRECK: nothing else in the mod can tell a car that has been
+  -- destroyed from one that is parked. With it off, a driver who is finished
+  -- simply sits in the arena as a live entrant forever, the field never
+  -- reduces, and the derby cannot reach a last man standing at all.
+  --
+  -- Out of bounds is not a substitute. It only fires on someone driving out,
+  -- which a wreck by definition cannot do.
+  --
+  -- So it clamps to [1, 120] like the out-of-bounds timer, and 0 means one
+  -- second rather than never. Reverted within the hour it was built, and the
+  -- reason is written here rather than in the history because the idea sounds
+  -- sensible enough to have again.
   demoLimit = DERBY_DEFAULT_DEMO_LIMIT,
   -- HOW MANY TIMES A DRIVER MAY BE COUNTED OUT BEFORE THEY ARE OUT FOR GOOD.
   --
@@ -229,23 +247,6 @@ local function derbyClampLimit(n, default)
   if n < DERBY_MIN_LIMIT then return DERBY_MIN_LIMIT end
   if n > DERBY_MAX_LIMIT then return DERBY_MAX_LIMIT end
   return n
-end
-
--- The demolished timer, which unlike the out-of-bounds one can be switched OFF.
---
--- ZERO MEANS OFF, the same sentinel the reset allowance beside it already uses.
--- Not every derby wants it: on a big arena, or with heavy cars that take a
--- while to get going again, a stopped-car countdown eliminates people for being
--- unlucky rather than for being beaten.
---
--- There is no equivalent for out-of-bounds. That one is what makes the boundary
--- a boundary; without it the arena is a suggestion and the last car standing is
--- whoever drove furthest away.
-local function derbyClampDemoLimit(n, default)
-  n = tonumber(n)
-  if not n then return default end
-  if n <= 0 then return 0 end
-  return derbyClampLimit(n, default)
 end
 
 -- The same clamp against an arbitrary range, for the rectangle's extents and the
@@ -619,7 +620,7 @@ function RM_onDerbySetConfig(pid, rawData)
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
   derby.oobLimit  = derbyClampLimit(data.oobLimit,  derby.oobLimit)
-  derby.demoLimit = derbyClampDemoLimit(data.demoLimit, derby.demoLimit)
+  derby.demoLimit = derbyClampLimit(data.demoLimit, derby.demoLimit)
   -- Lives. Floored at 1, because zero would eliminate the whole field on the
   -- first stopped timer and there is no sensible reading of "nought lives".
   local lives = tonumber(data.lives)
@@ -1033,7 +1034,7 @@ function RM_onDerbySaveLayout(pid, rawData)
     wallHeight = derbyClampNum(data.wallHeight, DERBY_MIN_WALL, DERBY_MAX_WALL, derby.wallHeight),
     wallDepth  = derbyClampNum(data.wallDepth, 0, 30, derby.wallDepth),
     oobLimit  = derbyClampLimit(data.oobLimit,  derby.oobLimit),
-    demoLimit = derbyClampDemoLimit(data.demoLimit, derby.demoLimit),
+    demoLimit = derbyClampLimit(data.demoLimit, derby.demoLimit),
     maxResets = resets or derby.maxResets,
     -- Optional starting grid (same placement shape the race grid uses).
     startPositions = sanitizeCheckpoints(data.startPositions),
@@ -1098,7 +1099,7 @@ function RM_onDerbyLoadLayout(pid, rawData)
       derby.wallHeight = derbyClampNum(l.wallHeight,
         DERBY_MIN_WALL, DERBY_MAX_WALL, DERBY_DEFAULT_WALL)
       derby.oobLimit  = derbyClampLimit(l.oobLimit,  derby.oobLimit)
-      derby.demoLimit = derbyClampDemoLimit(l.demoLimit, derby.demoLimit)
+      derby.demoLimit = derbyClampLimit(l.demoLimit, derby.demoLimit)
       if type(l.maxResets) == 'number' then derby.maxResets = math.floor(l.maxResets) end
       derby.startPositions = sanitizeCheckpoints(l.startPositions) or {}
       broadcastDerbyState()

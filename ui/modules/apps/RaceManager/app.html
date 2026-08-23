@@ -1622,14 +1622,11 @@
                ng-disabled="derbyActive()">
         <span class="rm-setting-val">s</span>
       </span>
-      <span class="rm-setting" title="Eliminate a driver who sits still too long. Not every derby wants it: on a big arena, or with heavy cars that take a while to get going, a stopped-car countdown knocks people out for being unlucky rather than beaten. Out of bounds is always enforced.">
-        <label>
-          <input type="checkbox" ng-model="derbyUi.demoOn" ng-disabled="derbyActive()">
-          Demolished timer
-        </label>
+      <span class="rm-setting">
+        <label>Demolished timer</label>
         <input type="number" min="1" max="120" step="0.5" ng-model="derbyUi.demo"
-               ng-disabled="derbyActive() || !derbyUi.demoOn">
-        <span class="rm-setting-val">{{ derbyUi.demoOn ? 's' : 'off' }}</span>
+               ng-disabled="derbyActive()">
+        <span class="rm-setting-val">s</span>
       </span>
       <span class="rm-setting" title="How many times a driver may be counted out before they are out for good. 1 is knocked out on the first stopped timer. Higher puts them back on their start slot instead, ghosted while they land. Leaving the arena is still an outright elimination.">
         <label>Lives</label>

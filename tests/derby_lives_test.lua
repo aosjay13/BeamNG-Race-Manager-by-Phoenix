@@ -239,44 +239,6 @@ check(own.ghosted == true, 'our own car is ghosted when WE come back on a life')
 frames(5.0)
 check(own.ghosted == false, 'and comes back solid')
 
--- ---------------------------------------------------------------------------
--- The stopped timer switched OFF
--- ---------------------------------------------------------------------------
--- Not every derby wants one: on a big arena, or with heavy cars that take a
--- while to get going again, it eliminates people for being unlucky rather than
--- for being beaten. Zero is off, the same sentinel the reset allowance uses.
---
--- Out of bounds has no equivalent and must not gain one -- it is what makes the
--- boundary a boundary. Both halves are checked here, because "off" that also
--- switches off the rule next to it is worse than no toggle at all.
--- THROUGH IDLE FIRST, and this is not ceremony. A ruling is still outstanding
--- from the demolitions above, and derbyUpdate returns early while one is --
--- so a derby left in 'running' would make both checks below pass without
--- executing a line of the code they are about. Only a non-running phase
--- re-arms local detection from a clean slate. Found by writing the check,
--- watching it pass, and not believing it.
-derbyState('idle', 'alive')
-derbyState('running', 'alive', { demoLimit = 0 })
-local beforeOff = countSent('RM_DerbyDemolished')
-own.vx, own.vy, own.vz = 0, 0, 0
-for _ = 1, 400 do RM.onUpdate(0.1) end   -- 40s, four times the old limit
-check(countSent('RM_DerbyDemolished') == beforeOff,
-  'with the stopped timer off, sitting still for 40s is not a demolition')
-
--- ...and the boundary still is. Same frame budget, car parked outside a real
--- polygon, which is the case the toggle must not touch.
-derbyState('idle', 'alive')
--- z is REQUIRED on every marker: the client drops any without one, and a
--- boundary under three markers skips the out-of-bounds test entirely -- which
--- is a check that passes by testing nothing.
-derbyState('running', 'alive', { demoLimit = 0, boundary = {
-  { x = 500, y = 500, z = 0 }, { x = 520, y = 500, z = 0 },
-  { x = 520, y = 520, z = 0 }, { x = 500, y = 520, z = 0 },
-} })
-own.x, own.y = 0, 0
-check(sitStillUntilReported('RM_DerbyDisqualified'),
-  'but out-of-bounds still eliminates: it has no off switch')
-
 -- Garbage in changes nothing: the payload crosses the wire.
 vehCmds = {}
 handlers['RM_DerbyGhost']({})
