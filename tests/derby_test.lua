@@ -137,6 +137,22 @@ RM_onDerbySetConfig(1, '{"oobLimit":3,"demoLimit":8}')
 check(lastDerby.oobLimit == 3 and lastDerby.demoLimit == 8, 'timers configurable')
 RM_onDerbySetConfig(1, '{"oobLimit":0.1,"demoLimit":9999}')
 check(lastDerby.oobLimit == 1 and lastDerby.demoLimit == 120, 'timers clamped to [1,120]')
+-- THE DEMOLISHED TIMER CAN BE SWITCHED OFF; THE OUT-OF-BOUNDS ONE CANNOT.
+--
+-- Zero is the off sentinel, the same one the reset allowance uses. It has to
+-- survive the clamp that floors every other limit at 1 -- which is exactly what
+-- would silently turn "off" into "one second", the harshest setting there is.
+RM_onDerbySetConfig(1, '{"oobLimit":5,"demoLimit":0}')
+check(lastDerby.demoLimit == 0, 'the demolished timer can be switched off with 0')
+check(lastDerby.oobLimit == 5, 'and switching it off leaves out-of-bounds alone')
+RM_onDerbySetConfig(1, '{"oobLimit":0,"demoLimit":0}')
+check(lastDerby.oobLimit == 1,
+  'out-of-bounds has no off switch: 0 clamps to the 1s floor like any other value')
+RM_onDerbySetConfig(1, '{"oobLimit":5,"demoLimit":-4}')
+check(lastDerby.demoLimit == 0, 'a negative demolished timer is off, not a floor')
+RM_onDerbySetConfig(1, '{"oobLimit":5,"demoLimit":8}')
+check(lastDerby.demoLimit == 8, 'and it can be switched back on')
+
 RM_onDerbySetConfig(1, '{"oobLimit":5,"demoLimit":10}')
 
 RM_onDerbyAddMarker(1, '{"x":0,"y":0,"z":50}')

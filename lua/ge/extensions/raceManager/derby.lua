@@ -254,9 +254,21 @@ D.derbyUpdate = function (dt)
   -- Stopped-vehicle ("demolished") check. Held off for the start grace
   -- period so a grid of cars parked for the start isn't counting down
   -- before anyone has had a chance to move.
+  --
+  -- SWITCHED OFF IS ZERO, the same sentinel the reset allowance uses. Off means
+  -- the countdown never starts, and any timer already running is dropped -- so
+  -- turning it off between derbies cannot leave somebody a frame from being
+  -- eliminated by a rule that no longer applies.
+  --
+  -- A BRANCH RATHER THAN AN EARLY RETURN. The out-of-bounds check above shares
+  -- `changed` with this one and the single push at the bottom serves both;
+  -- returning here would swallow an out-of-bounds warning raised a few lines
+  -- earlier, on exactly the derbies where the boundary is the only rule left.
+  local demoOff = (D.derbyState.demoLimit or 0) <= 0
   local vel = veh:getVelocity()
   local speed = math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z)
-  if speed > DERBY_STOP_SPEED or D.derbyState.runTime < DERBY_START_GRACE then
+  if demoOff or speed > DERBY_STOP_SPEED
+      or D.derbyState.runTime < DERBY_START_GRACE then
     if D.derbyState.demoLeft then D.derbyState.demoLeft = nil; changed = true end
   else
     if not D.derbyState.demoLeft then

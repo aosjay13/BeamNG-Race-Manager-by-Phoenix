@@ -1107,7 +1107,11 @@ angular.module('beamng.apps')
         players: []           // { id, name, status, reason, elimTime, resets }
       };
       // Dot rule again: these inputs live inside the ng-if derby panel.
-      $scope.derbyUi = { oob: 5, demo: 10, lives: 1, resets: -1, name: '', selected: '' };
+      // demoOn mirrors the server's demoLimit > 0. The NUMBER is kept separately
+      // from the toggle so switching the timer off and on again returns the
+      // setting that was there, rather than a zero or a blank box.
+      $scope.derbyUi = { oob: 5, demo: 10, demoOn: true, lives: 1, resets: -1,
+                         name: '', selected: '' };
       // The rectangle sliders. Width and length are the FULL span in metres,
       // which is what an admin measures an arena in - the server stores half
       // extents and the conversion happens in the Lua command. `square` links
@@ -2632,7 +2636,14 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
             derbyCfgSeen.lives = data.lives;
           }
           if (typeof data.demoLimit === 'number' && $scope.derby.phase !== 'running') {
-            if (derbyCfgSeen.demo === null || Number($scope.derbyUi.demo) === derbyCfgSeen.demo) {
+            // Zero is OFF, not a duration. It drives the toggle and is
+            // deliberately NOT written into the number box: that box holds the
+            // duration to go back to, and overwriting it with 0 would lose the
+            // admin's setting the moment somebody turned the timer off.
+            $scope.derbyUi.demoOn = data.demoLimit > 0;
+            if (data.demoLimit > 0
+                && (derbyCfgSeen.demo === null
+                    || Number($scope.derbyUi.demo) === derbyCfgSeen.demo)) {
               $scope.derbyUi.demo = data.demoLimit;
             }
             derbyCfgSeen.demo = data.demoLimit;
@@ -2689,8 +2700,18 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
 
       $scope.derbyApplyConfig = function () {
         var oob = parseFloat($scope.derbyUi.oob);
-        var demo = parseFloat($scope.derbyUi.demo);
-        if (!isFinite(oob) || oob <= 0 || !isFinite(demo) || demo <= 0) { return; }
+        if (!isFinite(oob) || oob <= 0) { return; }
+        // The demolished timer is optional; out of bounds is not. Off is sent as
+        // 0, the sentinel the reset allowance beside it already uses.
+        //
+        // The number keeps its last value while the toggle is off, so an admin
+        // switching it back on gets the setting they had rather than a blank
+        // box. Only a switched-ON timer has to be a sane number.
+        var demo = 0;
+        if ($scope.derbyUi.demoOn) {
+          demo = parseFloat($scope.derbyUi.demo);
+          if (!isFinite(demo) || demo <= 0) { return; }
+        }
         // Resets mirror the race rule: blank or negative = unlimited, 0 = none.
         var resets = parseInt($scope.derbyUi.resets, 10);
         if (isNaN(resets) || resets < 0) { resets = -1; }
