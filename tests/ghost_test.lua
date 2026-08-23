@@ -1040,6 +1040,49 @@ frames(20.0)
 check(own.ghosted == false,
   'and the car goes solid again even with a trailer permanently inside its box')
 
+-- ===========================================================================
+-- THE RESET GHOST COVERS THE WHOLE RIG
+-- ===========================================================================
+-- The mirror image of the rule above, and both are right. A FIELD reason means
+-- "rivals are ghosts", so our own rig is skipped. A RESET ghost means "this car
+-- is a ghost", and the trailer on its hitch has to be intangible with it.
+--
+-- Half a rig passing through a rival while the other half hits them is worse
+-- than no ghost at all: the driver has been told they are clear.
+clearLog()
+own.ghosted, trailer.ghosted = nil, nil
+driverReset(0, 0)
+check(own.ghosted == true, 'a reset ghosts the car')
+check(trailer.ghosted == true, 'and the trailer coupled to it, on the same reset')
+
+-- The trailer carries the car's reason rather than a timer of its own, so the
+-- two move TOGETHER. Asserted as "never disagree" across the whole ghost rather
+-- than at a chosen moment: picking a time only tests the configured duration.
+local disagreed = false
+for _ = 1, 60 do
+  frames(0.4)
+  if own.ghosted ~= trailer.ghosted then disagreed = true end
+end
+check(not disagreed, 'the trailer is never in a different state from the car it is on')
+frames(20.0)
+check(own.ghosted == false, 'the car goes solid')
+check(trailer.ghosted == false, 'and the trailer goes solid with it, not later')
+
+-- A REMOTE driver's reset ghosts their trailer too, seen from here. Coupling is
+-- simulated on every client, so this side can see what is on their hitch --
+-- which matters, because the ghost broadcast carries a PLAYER id and a player
+-- has exactly one car as far as the server is concerned.
+core_vehicles = { attachedCouplers = { { OWN_ID, TRAILER_ID, 12, 34 },
+                                       { RIVAL_ID, THIRD_ID, 12, 34 } } }
+rival.ghosted, third.ghosted = nil, nil
+handlers['RM_Ghost']({ pid = RIVAL_PID, active = true,
+                       startedAt = raceTime, duration = 5.0 })
+check(rival.ghosted == true, 'a rival reset ghost still reaches their car')
+check(third.ghosted == true, 'and the trailer on their hitch')
+core_vehicles = { attachedCouplers = { { OWN_ID, TRAILER_ID, 12, 34 } } }
+rival.ghosted, third.ghosted = nil, nil
+handlers['RM_Ghost']({ pid = RIVAL_PID, active = false })
+
 -- THE SAFETY INVARIANT IS UNTOUCHED. Skipping our own rig must not become
 -- skipping everybody: a real car overlapping still blocks, with no time limit.
 -- Welding two cars together ends both races and cannot be undone.

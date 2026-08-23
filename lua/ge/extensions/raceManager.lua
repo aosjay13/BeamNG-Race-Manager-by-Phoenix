@@ -4337,6 +4337,24 @@ end
 -- sweep does, holding it from the walk it is in the middle of. Looking it up
 -- again by id would be a scene lookup per car per sweep for a value already in
 -- hand, and with eleven cars on a two-second sweep that adds up for nothing.
+-- A REASON, APPLIED TO A WHOLE RIG.
+--
+-- The reset ghost is the mirror image of the field reasons. Those mean "rivals
+-- are ghosts", so our own rig is skipped. This one means "THIS CAR is a ghost",
+-- and a trailer on its hitch has to be intangible with it -- half a rig passing
+-- through a rival while the other half hits them is worse than no ghost at all,
+-- because the driver has been told they are clear.
+--
+-- The trailer gets no countdown of its own. It carries the same named reason as
+-- the car, so it goes solid on exactly the same tick the car does rather than
+-- on a second timer that could drift.
+function ghost.reasonRig(vehId, reason, on, veh)
+  ghost.reason(vehId, reason, on, veh)
+  for id in pairs(ghost.rigMates(vehId)) do
+    ghost.reason(id, reason, on, nil)
+  end
+end
+
 function ghost.reason(vehId, reason, on, veh)
   if vehId == nil then return end
   local set = ghost.veh[vehId]
@@ -4743,7 +4761,7 @@ function ghost.arm()
   ghost.own.settling   = true
   ghost.own.settleLeft = TUNE.GHOST_SETTLE_MAX
   ghost.left[vehId]  = base
-  ghost.reason(vehId, 'reset', true)
+  ghost.reasonRig(vehId, 'reset', true)
   -- Holding the reset key fires the vehicle-reset hook over and over -- the same
   -- reason the blocked-reset notice further up is throttled. The ghost itself is
   -- re-armed every time (it is local, and free), but the SERVER is not told
@@ -4772,7 +4790,7 @@ function ghost.release(why)
   local vehId = ghost.own.vehId
   if vehId then
     ghost.left[vehId] = nil
-    ghost.reason(vehId, 'reset', false)
+    ghost.reasonRig(vehId, 'reset', false)
   end
   ghost.own.vehId    = nil
   ghost.own.settling = false
@@ -4818,7 +4836,11 @@ function ghost.applyRemote(pid, endsAt)
   if endsAt ~= nil then
     local left = endsAt - ghost.serverTime
     ghost.left[vehId] = left > 0 and left or nil
-    ghost.reason(vehId, 'reset', true)
+    -- Their trailer as well. Coupling is simulated on every client, so this
+    -- side can see what is on their hitch without the server saying so -- which
+    -- matters, because the ghost broadcast carries a PLAYER id and a player has
+    -- one car as far as the server is concerned.
+    ghost.reasonRig(vehId, 'reset', true)
     ghost.apply(vehId, veh, true, ghost.alphaFor(vehId))
   else
     ghost.left[vehId] = nil
