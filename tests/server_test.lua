@@ -636,6 +636,21 @@ RM_onRequestLayouts(3)
 check(#lastLayouts.layouts == 0, 'a non-admin cannot approve a layout for themselves')
 RM_onRequestLayouts(1)
 
+-- LOGGING IN HAS TO RESEND THE LIST, and this is the check that would have
+-- saved a race night.
+--
+-- The list is privilege-dependent now: a driver is shown only the approved
+-- layouts. A client asks for it once, when it joins, and gets that shorter one.
+-- Nothing else ever sent it again -- so an admin logged in and went on looking
+-- at a panel reading "no saved layouts" with a full set of them on disk, which
+-- is indistinguishable from the server having lost the file.
+RM_onLogout(2)
+RM_onRequestLayouts(2)
+check(#lastLayouts.layouts == 0, 'a logged-out client holds the driver list')
+RM_onLogin(2, '{"password":"phoenix"}')
+check(#lastLayouts.layouts > 0,
+  'and logging in resends it in full, without the client having to ask')
+
 -- Explicit clear-state command: purges clients and re-reads layouts from disk
 lastCleared = nil
 lastLayouts = nil
