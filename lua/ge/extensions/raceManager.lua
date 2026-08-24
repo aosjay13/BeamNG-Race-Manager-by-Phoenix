@@ -7110,8 +7110,19 @@ function M.endPractice()
 end
 
 -- The server has put this client on a practice track.
-local function onPractice(data)
-  if type(data) ~= 'table' then return end
+local function onPractice(rawData)
+  -- rawData, NOT data. Every handler in the DISPATCH table below is handed the
+  -- raw JSON string off the wire and decodes it itself. Taking a table here
+  -- meant the real payload -- a string -- failed the type check and returned,
+  -- so practice never switched on: the gates rendered exactly as they always do
+  -- outside a session, and nothing was ever armed.
+  --
+  -- The test did not catch it because it called this handler with a table
+  -- directly, which a decode-first handler also accepts (the harness's
+  -- jsonDecode is the identity function). It passed because it had been written
+  -- against the same mistake.
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
   practice.on     = data.on == true
   practice.layout = data.layout
   practice.lapsDone = 0
@@ -7120,6 +7131,29 @@ local function onPractice(data)
   session.armedWp   = 1
   timingReset()
   if practice.on then
+    -- STAND THE CAR ON THE GRID BEFORE TIMING ANYTHING.
+    --
+    -- Practice starts from wherever the driver happens to be, which on a track
+    -- they have just loaded is usually nowhere near it -- so the first lap was
+    -- the drive out to the circuit plus a lap, timed as one, and the delta on
+    -- lap two was meaningless. Placing them on a start position makes lap one a
+    -- lap.
+    --
+    -- Through the same queue the grid and the derby use: ghosted, dropped, and
+    -- solid again once it has settled. NOT held: a hold is a starting
+    -- procedure, and there is nobody to be fair to.
+    --
+    -- No start positions saved with the track is not an error. Plenty of
+    -- layouts have none, and the driver is simply left where they are.
+    if #track.startPositions > 0 then
+      queueFieldPlacement({
+        slot  = 1,
+        slots = track.startPositions,
+        hold  = false,
+        holdSource = 'practice',
+        order = 1, count = 1,     -- one car, no field to stagger behind
+      })
+    end
     pushNotice('session', 'PRACTICE: ' .. tostring(data.layout or 'track')
       .. ' -- your laps are timed for you only')
   end

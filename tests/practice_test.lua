@@ -155,6 +155,15 @@ end
 -- An idle server with a track loaded: exactly the state practice is for.
 handlers['RM_ReleaseSpectate']({ source = 'race' })
 loadCircuit()
+-- A start grid, so the placement on practice start has somewhere to go.
+handlers['RM_ApplyLayout']({
+  name = 'oval', width = 40, height = 10, depth = 2,
+  checkpoints = {
+    { x = 0, y = 100, z = 0, hx = 0, hy = 1 },
+    { x = 0, y = 200, z = 0, hx = 0, hy = 1 },
+  },
+  startPositions = { { x = 0, y = 10, z = 0, hx = 0, hy = 1 } },
+})
 serverState({ phase = 'waiting', totalLaps = 3, maxResets = -1, drivers = {} })
 moveTo(10)
 
@@ -173,7 +182,46 @@ check(lastHook('RaceManagerLapDone') == nil,
 -- ---------------------------------------------------------------------------
 -- Practising: timed here, reported nowhere
 -- ---------------------------------------------------------------------------
-handlers['RM_Practice']({ on = true, layout = 'oval' })
+-- THE HANDLER MUST DECODE ITS PAYLOAD, like every other one in DISPATCH.
+--
+-- Worth a check of its own because the first version took a table and the wire
+-- carries a STRING, so it failed its own type check and returned: practice
+-- never switched on, the gates rendered exactly as they always do outside a
+-- session, and nothing was ever armed. It looked like the checkpoints were
+-- broken.
+--
+-- This test could not see it. It called the handler with a table -- which a
+-- decode-first handler also accepts, because the harness's jsonDecode is the
+-- identity function -- so it passed against the bug and against the fix alike.
+-- Spying on the decode is what tells the two apart.
+local decodedPayload = false
+do
+  local realDecode = jsonDecode
+  jsonDecode = function (v) decodedPayload = true; return realDecode(v) end
+  handlers['RM_Practice']({ on = true, layout = 'oval' })
+  jsonDecode = realDecode
+end
+check(decodedPayload,
+  'the practice handler decodes what it is given, so a real JSON payload off '
+    .. 'the wire turns practice on rather than being dropped')
+
+-- ...and it stands the car on a start position, so lap one is a lap rather than
+-- the drive out to the circuit plus a lap, timed as one.
+--
+-- Checked by where the CAR ends up, not by a slot number in a payload: the
+-- placement goes through the same staggered queue the grid uses, so it takes a
+-- few frames and the assertion has to wait for it. A slot number says what was
+-- asked for; the position says what happened.
+-- Parked off to the SIDE, not straight up the road. The teleport back to the
+-- grid is seen as one segment, and a segment down the middle of the circuit
+-- crosses both gates on the way -- which advances the route and leaves the lap
+-- below starting from the wrong gate. x=300 is well outside the 40 m gates.
+veh.x, veh.y, veh.z = 300, 400, 0
+frame(60)
+check(math.abs(veh.y - 10) < 2,
+  'starting practice stands the car on start position 1 (y=10, got '
+    .. tostring(veh.y) .. ')')
+
 sent, hooks = {}, {}
 lap()
 
