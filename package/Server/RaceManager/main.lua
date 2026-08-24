@@ -1325,6 +1325,22 @@ function RM_onLogin(pid, rawData)
   if pass ~= nil and pass == adminPassword then
     authenticatedPlayers[pid] = true
     MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({ success = true }))
+    -- THE LAYOUT LIST IS PRIVILEGE-DEPENDENT NOW, so logging in has to resend it.
+    --
+    -- A driver is only shown the layouts approved for practice. This client
+    -- asked for the list when it joined and got that shorter one; nothing else
+    -- ever sends it again, so an admin logged in and went on looking at a panel
+    -- saying "no saved layouts" with thirteen of them on disk.
+    --
+    -- Sent HERE rather than fixed on the client, because the privilege changes
+    -- here. A client asking again would be guessing at when it had become
+    -- allowed to see more.
+    --
+    -- Through the GLOBAL handler, not sendLayoutList directly: that local is
+    -- declared two and a half thousand lines below this one, so naming it here
+    -- compiles to a nil global read and throws the moment somebody logs in.
+    -- scope_test caught exactly that.
+    RM_onRequestLayouts(pid)
     -- Tell every client an admin is now present (updates their adminPresent).
     broadcastState()
     print('[RaceManager] Admin login OK: ' .. (MP.GetPlayerName(pid) or pid))
