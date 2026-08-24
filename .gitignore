@@ -8,3 +8,7 @@ Resources/
 # Parity captures from tools/parity.py: local, transient, and regenerated
 # on demand. Nothing here is worth keeping between sessions.
 .parity/
+
+# Python bytecode from tools/. Created whenever deploy.py is imported rather
+# than run, which the package workflow does not do but a local check might.
+__pycache__/

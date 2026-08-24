@@ -34,32 +34,22 @@ jobs:
           DEFAULT_BUMP: ${{ inputs.bump }}
           WITH_V: true
 
-      # --- Build Client/RaceManager.zip (stays zipped) ---
+      # --- Build the package with the SAME tool the deploy uses ---
       #
-      # Client and Server are CAPITALISED, and that is not cosmetic. The two
-      # folders in this package map straight onto a BeamMP server's
-      # Resources/Client and Resources/Server, which is where BeamMP looks --
-      # and Linux, where a good share of servers are hosted, cares about the
-      # difference. Lowercase folders drop into Resources/ looking installed
-      # and are simply never read: no error, no mod, nothing to go on.
+      # tools/deploy.py, not a file list written out again here. This step used
+      # to name every file it zipped, and by the time anybody looked it was
+      # missing three: lua/ge/extensions/raceManager/derby.lua and render.lua on
+      # the client, and server/RaceManager/derby.lua. A release built from it
+      # would have mounted, failed its first `require`, and left the mod simply
+      # absent -- no error a server owner could act on.
       #
-      # It matched on Windows, which is why it survived this long.
-      - name: Create client zip
-        run: |
-          mkdir -p package/Client
-          zip package/Client/RaceManager.zip \
-            lua/ge/extensions/raceManager.lua \
-            scripts/raceManager/modScript.lua \
-            ui/modules/apps/RaceManager/app.html \
-            ui/modules/apps/RaceManager/app.js \
-            ui/modules/apps/RaceManager/app.json \
-            ui/modules/apps/RaceManager/app.png
-
-      # --- Copy server file, renamed to main.lua ---
-      - name: Copy server files
-        run: |
-          mkdir -p package/Server/RaceManager
-          cp server/RaceManager/main.lua package/Server/RaceManager/
+      # deploy.py had already learned this and DISCOVERS the files. Two lists of
+      # the same thing is one list that goes stale, and this is the copy nobody
+      # runs day to day, so it is the copy that goes stale first.
+      #
+      # --build-only writes package/ and dist/ and touches no server.
+      - name: Build package
+        run: python3 tools/deploy.py --build-only
 
       # --- Ship the license with the download ---
       #
@@ -76,19 +66,32 @@ jobs:
           cd package
           zip -r ../RaceManager-${{ steps.version.outputs.new_tag }}.zip .
 
-      # --- Show what shipped, and fail if the layout is wrong ---
+      # --- Show what shipped, and fail if anything is missing ---
+      #
       # The paths in this package are install instructions: they are copied
-      # as-is into a server's Resources/. A silent change to either of them
-      # produces a release that installs into nothing on a Linux host, so the
-      # run prints the layout and refuses to publish a package missing it.
+      # as-is into a server's Resources/. Client and Server are CAPITALISED,
+      # and that is not cosmetic -- Linux, where a good share of servers are
+      # hosted, cares, and lowercase folders drop into Resources/ looking
+      # installed and are simply never read. It matched on Windows, which is
+      # why it survived this long.
+      #
+      # EVERY MODULE IS CHECKED BY NAME, not just the entry points. A missing
+      # module is the failure this whole step exists for: the mod mounts, the
+      # require throws, and the mod is absent with nothing to go on. Add a line
+      # here when a module is added -- discovery builds the package, but a
+      # release is worth one deliberate list of what must be in it.
       - name: Verify package layout
         run: |
           unzip -l RaceManager-${{ steps.version.outputs.new_tag }}.zip
           unzip -l package/Client/RaceManager.zip
-          test -f package/Client/RaceManager.zip \
-            || { echo "::error::Client/RaceManager.zip missing (check the folder case)"; exit 1; }
-          test -f package/Server/RaceManager/main.lua \
-            || { echo "::error::Server/RaceManager/main.lua missing (check the folder case)"; exit 1; }
+          fail() { echo "::error::$1"; exit 1; }
+          test -f package/Client/RaceManager.zip             || fail "Client/RaceManager.zip missing (check the folder case)"
+          for f in lua/ge/extensions/raceManager.lua                    lua/ge/extensions/raceManager/derby.lua                    lua/ge/extensions/raceManager/render.lua                    scripts/raceManager/modScript.lua                    ui/modules/apps/RaceManager/app.html                    ui/modules/apps/RaceManager/app.js                    ui/modules/apps/RaceManager/app.json; do
+            unzip -l package/Client/RaceManager.zip | grep -q " $f$"               || fail "$f is missing from the client zip: the mod will mount and then fail its require"
+          done
+          for f in main.lua derby.lua; do
+            test -f "package/Server/RaceManager/$f"               || fail "Server/RaceManager/$f missing (check the folder case)"
+          done
 
       # --- Publish as a Release ---
       - name: Create Release
