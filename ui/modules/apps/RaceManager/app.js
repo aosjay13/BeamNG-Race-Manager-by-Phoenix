@@ -230,6 +230,13 @@ angular.module('beamng.apps')
         return $scope.lapLive.elapsed + (Date.now() - $scope.lapLive.at) / 1000;
       };
       $scope.lapHolding = function () { return !!$scope.lapHold; };
+      // IS THERE A LIVE TIMING RUN TO DRAW? The run owns a whole line, so an
+      // empty one is a blank row across the bar -- which is what the panel
+      // looked like between sessions before this asked the question.
+      $scope.showTiming = function () {
+        return $scope.phase === 'racing' || $scope.phase === 'finished'
+          || $scope.phase === 'qualifying' || $scope.showLapTime();
+      };
       // Only worth showing when there is a clock running or a time being held.
       //
       // A HELD SECTOR COUNTS AS ONE. The sector readout is drawn inside this
@@ -1292,7 +1299,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.9.9';
+      var APP_BUILD = '0.9.10';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)

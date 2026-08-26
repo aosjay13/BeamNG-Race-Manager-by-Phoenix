@@ -6,6 +6,43 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.9.10 - The race clock stays put
+
+### Fixed
+
+- **The race clock moved between the first and second rows of the bar while it
+  was being read.** Every readout beside it is conditional - the checkpoint
+  counter, the distance to the next gate, the lap and sector holds all come and
+  go mid-session - and they shared one wrapping line with the title, the phase
+  and the mode badge. So the line broke in a different place depending on which
+  of them happened to be showing, and the clock went with it. A clock you have
+  to find is not a clock.
+
+  Two changes, and both are needed:
+
+  - **The live timing run owns a line.** Not a break marker, which only says
+    "break here" and cannot stop the run being pulled up onto the line above
+    when the things before it are narrow enough that frame. A container with
+    `flex-basis: 100%` can never share a line with anything.
+  - **The clock leads the run.** Everything that appears and disappears is now
+    downstream of the one number that has to stay put, so it no longer slides
+    sideways either. It also gets a reserved width, so ticking from 9:59 to
+    10:00 does not shove the readouts after it.
+
+  **Both panels, same order.** The admin header and the driver bar carry the
+  same run, and `ui_bindings_test` compares them - switching between them must
+  not move a number.
+
+### Note
+
+That test had gone quietly blind to this field. It matched the clock by
+`formatRaceTime(raceTime)`, and 0.9.6 renamed the readout to `sessionClock()`
+when it learned to count down - so the pattern matched nothing, the clock
+dropped out of *both* orders, and the two panels went on agreeing about a field
+neither of them was checking. Repaired, and the new ordering is
+mutation-tested: putting the clock back behind the checkpoint counter fails
+three assertions.
+
 ## 0.9.9 - The setup actually folds away now
 
 ### Fixed

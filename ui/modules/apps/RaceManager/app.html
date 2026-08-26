@@ -32,12 +32,33 @@
                : 'A session is running. Track and rule changes are locked until it ends.') }}">
       {{ !sessionRunning() ? 'CONFIG' : (canSetRules() ? 'ON GRID' : 'RUNNING') }}
     </span>
-    <span class="rm-wp-progress" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">CP {{ nextWp }}/{{ routeWaypoints.length }}</span>
-    <!-- Live distance to your own next checkpoint (the third position metric) -->
-    <span class="rm-dist" ng-if="phase === 'racing' && progress && progress.dist != null">{{ formatDistance(progress.dist) }}</span>
+    <!-- ================= THE LIVE TIMING ROW =============================
+         ITS OWN LINE, ALWAYS, and the clock is the first thing on it.
+
+         Every readout here is conditional -- the checkpoint counter, the
+         distance, the lap and sector holds all come and go mid-session -- and
+         they were sharing one wrapping line with the title, the phase and the
+         mode badge. So the line broke in a different place depending on which
+         of them happened to be showing, and the race clock moved between row
+         one and row two while it was being read. A clock you have to find is
+         not a clock.
+
+         Two rules fix it and both are needed. The run gets a line of its own
+         (flex-basis 100%), so nothing above it can push it around; and the
+         CLOCK GOES FIRST within it, so the things that appear and disappear
+         are all downstream of the one number that has to stay put. Reading it
+         is then the same eye movement every lap.
+
+         The admin header and the driver bar carry the same run in the same
+         order, which ui_bindings_test pins -- switching between them must not
+         move a number. -->
+    <span class="rm-timing" ng-if="showTiming()">
     <span class="rm-clock" ng-if="phase === 'racing' || phase === 'finished'"
           ng-class="{'rm-clock-down': sessionClockDown()}"
           title="{{ sessionClockDown() ? 'Race time remaining' : 'Race time elapsed' }}">{{ sessionClock() }}</span>
+    <span class="rm-wp-progress" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">CP {{ nextWp }}/{{ routeWaypoints.length }}</span>
+    <!-- Live distance to your own next checkpoint (the third position metric) -->
+    <span class="rm-dist" ng-if="phase === 'racing' && progress && progress.dist != null">{{ formatDistance(progress.dist) }}</span>
     <!-- Own lap clock (same feed the driver bar uses; the header is the
          admin/spectator equivalent, since minimal mode removes it). -->
     <span class="rm-laptime" ng-if="showLapTime()">
@@ -98,6 +119,8 @@
          they are on, and their session ends as they cross the line. -->
     <span class="rm-clock rm-final-lap" ng-if="phase === 'qualifying' && finalLap"
           title="The qualifying clock has expired: the lap you are on is your last">FINAL LAP</span>
+    </span>
+    </span>
     <!-- ================= End of the first row =============================
          Everything after this push is shoved to the RIGHT-HAND END of row one:
          the flag, then the two window controls. The status run above reads left
@@ -2297,15 +2320,36 @@
          place twice. ui_bindings_test pins the order in both panels now. -->
     <span class="rm-phase rm-driverbar-phase" ng-class="'rm-phase-' + phase"
           ng-if="phase !== 'waiting'">{{ phaseLabel() }}</span>
+    <!-- ================= THE LIVE TIMING ROW =============================
+         ITS OWN LINE, ALWAYS, and the clock is the first thing on it.
+
+         Every readout here is conditional -- the checkpoint counter, the
+         distance, the lap and sector holds all come and go mid-session -- and
+         they were sharing one wrapping line with the title, the phase and the
+         mode badge. So the line broke in a different place depending on which
+         of them happened to be showing, and the race clock moved between row
+         one and row two while it was being read. A clock you have to find is
+         not a clock.
+
+         Two rules fix it and both are needed. The run gets a line of its own
+         (flex-basis 100%), so nothing above it can push it around; and the
+         CLOCK GOES FIRST within it, so the things that appear and disappear
+         are all downstream of the one number that has to stay put. Reading it
+         is then the same eye movement every lap.
+
+         The admin header and the driver bar carry the same run in the same
+         order, which ui_bindings_test pins -- switching between them must not
+         move a number. -->
+    <span class="rm-timing" ng-if="showTiming()">
+    <span class="rm-driverbar-label" ng-if="phase === 'racing' || phase === 'finished'">
+      RACE <b ng-class="{'rm-clock-down': sessionClockDown()}"
+              title="{{ sessionClockDown() ? 'Time remaining' : 'Time elapsed' }}">{{ sessionClock() }}</b>
+    </span>
     <span class="rm-driverbar-label" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">
       CP <b>{{ nextWp }}/{{ routeWaypoints.length }}</b>
     </span>
     <span class="rm-driverbar-label" ng-if="phase === 'racing' && progress && progress.dist != null">
       NEXT <b>{{ formatDistance(progress.dist) }}</b>
-    </span>
-    <span class="rm-driverbar-label" ng-if="phase === 'racing' || phase === 'finished'">
-      RACE <b ng-class="{'rm-clock-down': sessionClockDown()}"
-              title="{{ sessionClockDown() ? 'Time remaining' : 'Time elapsed' }}">{{ sessionClock() }}</b>
     </span>
     <!-- Own lap clock. A held time (just-completed lap) takes the slot for a few
          seconds and is styled differently so it never reads as a stalled clock;
@@ -4521,6 +4565,28 @@
      NOT WHEN COLLAPSED. Collapsing exists to leave a driver ONE line carrying
      the phase, the clock and the way back; a forced second row there would
      defeat the point of the control that got them there. */
+  /* THE LIVE TIMING RUN OWNS A LINE. Same trick as .rm-bar-break, but as a
+     container rather than a marker: the readouts inside are conditional, and a
+     marker only says "break here" -- it cannot stop the run itself being
+     dragged up onto the line above when the things before it happen to be
+     narrow enough that frame. A box with flex-basis:100% can never share a
+     line with anything, whatever is showing. */
+  .rm-timing {
+    flex: 0 0 100%;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    row-gap: 4px;
+    /* Lets the run shrink inside the bar rather than forcing the bar wider. */
+    min-width: 0;
+  }
+  .rm-driverbar .rm-timing { gap: 8px; }
+  /* A RESERVED WIDTH, so the readouts after it do not slide left and right as
+     the clock ticks through 9:59 into 10:00. tabular-nums holds the digits
+     steady; this holds the field steady. */
+  .rm-timing > .rm-clock,
+  .rm-timing > .rm-driverbar-label:first-child { min-width: 62px; }
   .rm-bar-break {
     flex-basis: 100%;
     width: 100%;

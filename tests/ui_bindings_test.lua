@@ -1437,17 +1437,28 @@ expect(js:find('--rm-lb-height', 1, true) ~= nil,
 -- carry them in different orders with different subsets: switching between admin
 -- and driver moved every number, and the flag was never twice in the same place.
 --
--- The order is: phase, checkpoint, distance, race clock, lap, line, joker,
+-- The order is: phase, race clock, checkpoint, distance, lap, line, joker,
 -- resets, flag. This compares the two RUNS against each other rather than
 -- against a copy of the list, so adding a field to one panel and not the other
 -- fails here rather than in somebody's peripheral vision mid-race.
+--
+-- THE CLOCK LEADS THE RUN, and that is the fix for a reported bug rather than a
+-- preference: every readout after it is conditional, so with the clock behind
+-- them it moved -- sideways as they came and went, and between rows as the line
+-- re-broke around them. First in the run, on a line the run owns, it is in the
+-- same place every lap.
 local function fieldOrder(chunk)
   local seen = {}
   local marks = {
     { 'phase',  'rm%-phase' },
+    -- sessionClock(), not formatRaceTime(raceTime): the readout learned to
+    -- count DOWN in a timed race and changed name doing it. The old pattern
+    -- went on matching nothing, which is worse than failing -- the clock
+    -- silently dropped out of both orders and they went on agreeing about a
+    -- field neither of them was checking.
+    { 'clock',  'sessionClock%(%)' },
     { 'cp',     'CP <?b?>?{?{? ?nextWp' },
     { 'dist',   'formatDistance%(progress%.dist%)' },
-    { 'clock',  'formatRaceTime%(raceTime%)' },
     { 'lap',    'class="rm%-laptime"' },
     { 'line',   'LINE <b>' },
     { 'joker',  'JOKER <b' },
@@ -1474,6 +1485,26 @@ local barOrder    = fieldOrder(barChunk or '')
 expect(headerOrder == barOrder,
   'the two panels list their status fields in the same order.\n    admin: '
     .. headerOrder .. '\n    driver: ' .. barOrder)
+-- The clock leads the timing run in both. Checked as "before cp and dist"
+-- rather than "first overall" because the phase badge sits ahead of the run in
+-- both panels and belongs there: it is what the run is timing.
+for _, pair in ipairs({ { 'admin', headerOrder }, { 'driver', barOrder } }) do
+  local order = pair[2]
+  local clockAt, cpAt = order:find('clock'), order:find('cp')
+  local distAt = order:find('dist')
+  expect(clockAt ~= nil, 'the ' .. pair[1] .. ' run carries the race clock')
+  expect(cpAt == nil or (clockAt and clockAt < cpAt),
+    'the ' .. pair[1] .. ' clock leads the checkpoint counter (' .. order .. ')')
+  expect(distAt == nil or (clockAt and clockAt < distAt),
+    'the ' .. pair[1] .. ' clock leads the distance readout (' .. order .. ')')
+end
+-- Both runs are wrapped in a container that owns its line, so nothing above can
+-- drag them up onto it. A marker cannot do this job; see .rm-timing.
+local timingRows = 0
+for _ in html:gmatch('<span class="rm%-timing"') do timingRows = timingRows + 1 end
+expect(timingRows == 2,
+  'the admin header and the driver bar each wrap their timing run (found '
+    .. timingRows .. ')')
 -- THE FLAG ENDS THE FIRST ROW, which is not the same claim as "ends the run"
 -- and replaces it. The wide, wordy readouts -- JOKER PENDING, RESETS n/m, the
 -- out-lap notice -- moved below the break, so they now come AFTER the flag in
