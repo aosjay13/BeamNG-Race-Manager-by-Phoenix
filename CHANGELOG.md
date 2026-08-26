@@ -6,6 +6,36 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.9.9 - The setup actually folds away now
+
+### Fixed
+
+- **The setup panels did not fold away during a session.** 0.9.8 gated the tab
+  row and the collapsed strip on `setupHidden()` and left the body they open
+  gated on nothing, so the settings stayed on screen. Folding the tabs without
+  the panel they belong to is worse than not folding at all.
+
+  If it still does not fold after this, it is BeamNG's UI cache serving a stale
+  `app.js` alongside the new `app.html` - `setupHidden` resolves to undefined,
+  which reads as "not hidden". The build stamps on the admin tab disagree when
+  that happens; a restart clears it.
+
+### Changed
+
+- **A control that is disabled during a race is now hidden during a race.**
+  Graying a button out is how a panel says "not now, and here is why" while you
+  are setting up. Mid-race it is a row of dead buttons over the one thing being
+  watched. **Start Quali**, **Generate Grid**, **Start Countdown**, **Load
+  Layout** and the **Race / Spectate** pair all go while a session runs.
+
+  Every condition is the `ng-disabled` one it replaces, unchanged, so nothing
+  became reachable or unreachable that was not already. **Retire stays** - it is
+  the one entry control that means anything mid-race - and so do the flags,
+  End Session and Reset.
+
+  What is left on an admin's screen once the lights go out: the header, the
+  flags, End Session, Reset, the board, and a one-line strip.
+
 ## 0.9.8 - One tab row, and the board above the setup
 
 ### Changed

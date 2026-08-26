@@ -1703,7 +1703,12 @@ do
       'a leaderboard renders under the broadcast board: ' .. attrs)
   end
   expect(wraps == 3, 'checked all three leaderboards (found ' .. wraps .. ')')
-  expect(html:find('class="rm-admin-body" ng-if="isAdmin && !broadcastMode()"', 1, true) ~= nil,
+  -- Matched on the CONDITION, not on the whole attribute. The body picked up a
+  -- second guard when the setup started folding away during a session, and an
+  -- exact-string match would have read that as the broadcast guard going
+  -- missing -- which is the assertion failing for the opposite of its reason.
+  local adminBody = html:match('<div class="rm%-admin%-body" ng%-if="([^"]*)"')
+  expect(adminBody ~= nil and adminBody:find('!broadcastMode()', 1, true) ~= nil,
     'the admin panels come out of the DOM too: an admin is often the broadcaster')
 
   -- The editor draws into the WORLD, and Lua only ever hears about the panel.

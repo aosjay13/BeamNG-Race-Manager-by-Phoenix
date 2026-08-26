@@ -256,7 +256,10 @@
          reachable whatever the panel thinks, and the marked one reports the
          state rather than gating the action. Same shape as the flag buttons:
          the one that is out is marked, not removed. -->
-    <span class="rm-entryset">
+    <!-- Hidden while a session runs: the server refuses both, and a pair of
+         dead buttons is a row of width over a race. Retire is on this row too
+         and stays -- it is the one entry control that means anything mid-race. -->
+    <span class="rm-entryset" ng-if="!sessionUnderWay()">
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-flag-on': !spectating}"
               ng-click="setSpectating(false)" ng-disabled="sessionUnderWay()"
               title="{{ sessionUnderWay()
@@ -383,14 +386,15 @@
        away behind a tab. They are race controls, so they belong to race mode
        and are gone while the derby is being run. -->
   <div class="rm-controls" ng-if="isAdmin && isMode('race')">
-    <button class="rm-btn rm-btn-quali" ng-click="startQualifying()" ng-disabled="sessionUnderWay()"
+    <button class="rm-btn rm-btn-quali" ng-click="startQualifying()" ng-if="!sessionUnderWay()"
             title="Stand every entrant on a start position and hold. Then Start Countdown.">Start Quali</button>
     <!-- Enabled DURING qualifying on purpose: it is the control that takes you
          from qualifying to the race, and gating it on sessionUnderWay() grayed
          it out for exactly as long as a host needed it. -->
-    <button class="rm-btn rm-btn-grid"  ng-click="generateGrid()"    ng-disabled="raceUnderWay()"
+    <button class="rm-btn rm-btn-grid"  ng-click="generateGrid()"    ng-if="!raceUnderWay()"
             title="Grid the field by qualifying time or your chosen order. Ends qualifying first, keeping the times.">Generate Grid</button>
-    <button class="rm-btn rm-btn-start" ng-click="startCountdown()"  ng-disabled="phase !== 'grid'"
+    <!-- Only ever pressable on the grid, so it is only ever ON the grid. -->
+    <button class="rm-btn rm-btn-start" ng-click="startCountdown()"  ng-if="phase === 'grid'"
             title="Count the field down and release the hold. Starts whichever session is on the grid.">Start Countdown</button>
     <!-- ALL THREE, ALWAYS. A single toggle hid whichever flag was not next, so
          the sequence a marshal actually runs -- red to clean up, yellow to pack
@@ -407,7 +411,7 @@
               ng-class="{'rm-flag-on': flag === 'green'}"
               title="Green flag: racing.">Green flag</button>
     </span>
-    <button class="rm-btn rm-btn-end"   ng-click="endRace()"         ng-disabled="phase !== 'racing' && phase !== 'countdown' && phase !== 'qualifying'">End Session</button>
+    <button class="rm-btn rm-btn-end"   ng-click="endRace()"         ng-if="phase === 'racing' || phase === 'countdown' || phase === 'qualifying'">End Session</button>
     <button class="rm-btn rm-btn-reset" ng-click="resetLeaderboard()">Reset</button>
   </div>
 
@@ -425,7 +429,7 @@
        IT KEEPS ITS ROW in the main flow, deliberately, and it is the one place
        the tab fold did not reclaim height. Behind the Track tab it would cost a
        click on the critical path of every single race. -->
-  <div class="rm-controls rm-controls-layout" ng-if="isAdmin && isMode('race')">
+  <div class="rm-controls rm-controls-layout" ng-if="isAdmin && isMode('race') && !setupHidden()">
     <span class="rm-controls-label">Track<span ng-if="layoutMap">: {{ layoutMap }}</span></span>
     <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': layoutDropdownOpen}">
       <button type="button" class="rm-layout-trigger"
@@ -563,7 +567,7 @@
   </div>
 
   <!-- ================= Admin tab body (scrolls) ========================== -->
-  <div class="rm-admin-body" ng-if="isAdmin && !broadcastMode()">
+  <div class="rm-admin-body" ng-if="isAdmin && !broadcastMode() && !setupHidden()">
 
   <!-- ================= Race settings ================= -->
   <div class="rm-settings" ng-if="isAdminTab('race')">
