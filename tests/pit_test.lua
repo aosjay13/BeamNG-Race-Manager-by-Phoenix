@@ -7,7 +7,7 @@
 -- Most of this file is about what a pit stop must NOT touch. Stalls are kept
 -- out of the checkpoint list entirely, so laps and splits cannot see them; and
 -- the repair is a vehicle reset as far as BeamNG is concerned, so it must be
--- recognised as the mod's own doing or a pit stop would silently spend a
+-- recognized as the mod's own doing or a pit stop would silently spend a
 -- driver's reset allowance and be reported to the server as a reset.
 --
 -- Run from the repo root: lua5.3 tests/pit_test.lua
@@ -34,7 +34,7 @@ local ghosted = nil         -- last obj:setGhostEnabled value reaching the vehic
 
 -- `speed` is the car's speed in m/s. A pit stop is only offered to a car that
 -- has come to a STOP in the stall, so most of this file drives a stationary car
--- (the historical behaviour, where the box alone was the trigger) and the
+-- (the historical behavior, where the box alone was the trigger) and the
 -- section on the stop rule moves it.
 local veh = { id = VEH_ID, x = 0, y = 0, z = 0, speed = 0 }
 function veh:getID() return self.id end
@@ -181,7 +181,7 @@ check(lastRoute().pitActive == false, 'and the readout clears')
 -- A pit stop is not a driver reset
 -- ===========================================================================
 -- The repair IS a vehicle reset as far as BeamNG is concerned. Left
--- unrecognised it would spend a reset allowance, be reported to the server, and
+-- unrecognized it would spend a reset allowance, be reported to the server, and
 -- on a spent allowance would have the car dragged back to its last good
 -- position mid-stop.
 clearLog()
@@ -302,7 +302,7 @@ check(countSent('RM_PitStop') == firstStops,
 -- ===========================================================================
 -- The stall used to trigger on the BOX ALONE, so a car that clipped a corner of
 -- one at racing speed was seized and frozen where it stood -- mid-lane, at
--- whatever angle it happened to be travelling, with the stop happening TO the
+-- whatever angle it happened to be traveling, with the stop happening TO the
 -- driver rather than being something they performed. The trigger is now the box
 -- AND a stopped car.
 clearLog()

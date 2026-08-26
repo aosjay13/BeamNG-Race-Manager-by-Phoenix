@@ -13,7 +13,7 @@
 -- the controller scope and mutates it in place, so both directions work.
 --
 -- The rule this file enforces: every ng-model path in the template contains a
--- dot, and the object it hangs off is initialised in the controller.
+-- dot, and the object it hangs off is initialized in the controller.
 -- Run from the repo root: lua5.3 tests/ui_bindings_test.lua
 
 local fails, checks = 0, 0
@@ -57,13 +57,13 @@ end
 expect(#models > 0, 'found ng-model bindings to check in app.html')
 
 -- ---------------------------------------------------------------------------
--- 2. Every object a control binds through is initialised on the controller
+-- 2. Every object a control binds through is initialized on the controller
 --    scope (otherwise the first keystroke auto-creates it on the child scope,
 --    which reintroduces the same shadowing).
 -- ---------------------------------------------------------------------------
 for root in pairs(roots) do
   expect(js:find('$scope.' .. root .. ' = {', 1, true) ~= nil,
-    '$scope.' .. root .. ' is never initialised as an object in app.js')
+    '$scope.' .. root .. ' is never initialized as an object in app.js')
 end
 
 -- ---------------------------------------------------------------------------
@@ -192,8 +192,19 @@ expect(js:find('$scope.settingsUi.resets = data.maxResets', 1, true) ~= nil,
   'RaceManagerUpdate re-seeds settingsUi.resets from the server maxResets')
 
 -- The displayed values stay read-only mirrors of the server state.
-expect(html:find('{{ totalLaps }}', 1, true) ~= nil,
-  'the Laps row still displays the authoritative totalLaps')
+--
+-- The race length row went through a label function when it grew a TIMED mode:
+-- it has two things to say now ("5 laps" or "10 min + 1 lap") and which one
+-- depends on the server's raceTimeLimit. So the check moved with it -- the row
+-- renders the label, and the label is the thing that reads the authoritative
+-- values. Asserting on '{{ totalLaps }}' would now pass only by putting a number
+-- back on screen that is wrong half the time.
+expect(html:find('{{ raceLimitLabel() }}', 1, true) ~= nil,
+  'the Race length row displays a label built from the server state')
+expect(js:find('$scope.totalLaps', 1, true) ~= nil
+  and js:find('$scope.raceTimeLimit', 1, true) ~= nil
+  and js:find("$scope.raceMode === 'endurance'", 1, true) ~= nil,
+  'and that label is built from the authoritative totalLaps, raceTimeLimit and raceMode')
 expect(js:find('$scope.totalLaps = data.totalLaps', 1, true) ~= nil,
   'totalLaps is mirrored from the server broadcast')
 expect(js:find('$scope.maxResets = data.maxResets', 1, true) ~= nil,
@@ -230,7 +241,7 @@ wired('setGhostQuali',      'toggleGhostQuali',   'Ghost qualifying')
 --
 -- State fields are exempt: `$scope.drivers = []` at init and `$scope.drivers =
 -- data.drivers` in the broadcast handler is the normal shape of every mirror in
--- this file. Only FUNCTIONS are checked, because only a function is a behaviour
+-- this file. Only FUNCTIONS are checked, because only a function is a behavior
 -- that can be silently replaced by a different one.
 do
   local seen, dupes = {}, {}
@@ -331,7 +342,7 @@ do
   end
   -- ...and so must the CLIENT RELAY between them, which is where this went
   -- wrong. Checking the panel against the server skipped the one layer in the
-  -- middle: M.setGridMode normalises anything it does not recognise back to
+  -- middle: M.setGridMode normalizes anything it does not recognize back to
   -- 'quali', so Reverse -- a mode both ends knew about -- was rewritten on the
   -- way out and the panel lit Quali up instead. Every hop has to name the mode,
   -- not just the two ends.
@@ -354,9 +365,9 @@ wired('derbyMoveMarker',        'derbyMoveMarker',   'Move derby boundary marker
 wired('derbyRemoveMarker',      'derbyRemoveMarker', 'Remove derby boundary marker')
 wired('derbyMoveStartPosition', 'derbyMoveStart',    'Move derby start position')
 wired('derbyRemoveStartPosition', 'derbyRemoveStart','Remove derby start position')
--- The rectangle arena editor: a centre, and sliders for the rest.
+-- The rectangle arena editor: a center, and sliders for the rest.
 wired('derbySetBoundaryMode', 'derbySetBoundaryMode', 'Derby boundary mode')
-wired('derbySetShapeCenter',  'derbySetShapeCenter',  'Derby rectangle centre')
+wired('derbySetShapeCenter',  'derbySetShapeCenter',  'Derby rectangle center')
 wired('derbySetShape',        'derbyApplyShape',      'Derby rectangle size')
 wired('derbySetShape',        'derbyApplyWallHeight', 'Derby wall height')
 
@@ -661,7 +672,7 @@ expect(html:find('.rm-delta-slower { color: #f28b82; }', 1, true) ~= nil,
 
 -- Zero is neither. An exact tie to the thousandth is not an improvement, and
 -- green would overstate it.
-expect(js:find('d === 0', 1, true) ~= nil, 'a dead-level delta is left uncoloured')
+expect(js:find('d === 0', 1, true) ~= nil, 'a dead-level delta is left uncolored')
 
 -- The two readouts use DIFFERENT baselines on purpose: at the line the question
 -- is "am I still improving" (against the last lap), mid-lap it is "where am I
@@ -1028,7 +1039,7 @@ for target in pairs(tabs) do
 end
 
 -- Every editorTarget assignment fed by a tab press or by the client's route
--- broadcast has to normalise through editorTargetOf; a hand-written ternary is
+-- broadcast has to normalize through editorTargetOf; a hand-written ternary is
 -- what dropped the third target on the floor.
 for assign in js:gmatch('%$scope%.editorTarget%s*=%s*([^\n]+)') do
   if assign:find('data.editorTarget', 1, true) or assign:find('target', 1, true) then
@@ -1215,9 +1226,9 @@ expect(js:find('$scope.setFlag = function', 1, true) ~= nil,
 -- out is MARKED rather than removed. A single toggle hid whichever flag was not
 -- next, so the sequence a marshal actually runs (red to clean up, yellow to pack
 -- them up, green to go) meant guessing which button would appear.
-for _, colour in ipairs({ 'red', 'yellow', 'green' }) do
-  expect(html:find("ng%-click=\"setFlag%('" .. colour .. "'%)\"") ~= nil,
-    'the ' .. colour .. ' flag has its own button')
+for _, color in ipairs({ 'red', 'yellow', 'green' }) do
+  expect(html:find("ng%-click=\"setFlag%('" .. color .. "'%)\"") ~= nil,
+    'the ' .. color .. ' flag has its own button')
 end
 local flagset = html:match('<span class="rm%-flagset"[^>]-ng%-if="([^"]*)"')
 expect(flagset ~= nil, 'the flag buttons are grouped')
@@ -1234,10 +1245,10 @@ expect(html:find("'rm%-flag%-on': flag === 'red'") ~= nil,
 -- rule exists rather than that anything WEARS it will hold dead code in place
 -- indefinitely, and here it held a rule carrying a permanent animation.
 --
--- The flag is the one thing that says this now, so the colours are what to pin.
-for _, colour in ipairs({ 'red', 'yellow', 'white', 'green' }) do
-  expect(html:find('%.rm%-flag%-' .. colour .. '%s*{') ~= nil,
-    'the ' .. colour .. ' flag has a colour rule')
+-- The flag is the one thing that says this now, so the colors are what to pin.
+for _, color in ipairs({ 'red', 'yellow', 'white', 'green' }) do
+  expect(html:find('%.rm%-flag%-' .. color .. '%s*{') ~= nil,
+    'the ' .. color .. ' flag has a color rule')
 end
 expect(js:find("$scope.phase === 'grid'", 1, true) ~= nil,
   'and the flag is shown on the grid, where red means held')
@@ -1502,15 +1513,15 @@ expect(js:find('$scope.setSpectating = function', 1, true) ~= nil,
 expect(js:find('data.youSpectating', 1, true) ~= nil,
   'and the panel follows the server, which owns whether you are in the field')
 
--- THE FLAG IS A GLYPH, AND IT MUST STILL TAKE ITS COLOUR FROM THE STATE.
+-- THE FLAG IS A GLYPH, AND IT MUST STILL TAKE ITS COLOR FROM THE STATE.
 --
--- A bare ⚑ renders as an EMOJI, carrying its own colour and ignoring CSS
+-- A bare ⚑ renders as an EMOJI, carrying its own color and ignoring CSS
 -- `color`, so the flag stayed one shade while a yellow was out. The chat line
 -- and the notice were correct the whole time, which is what made it look like a
 -- state bug rather than a font one. See the variation-selector checks below for
 -- how the text form is asked for.
 expect(html:find('rm%-flag rm%-flag%-{{ driverFlag }}"[^>]->[^<]*⚑[^9]') == nil,
-  'the flag glyph is never left bare: an emoji cannot be recoloured by the state')
+  'the flag glyph is never left bare: an emoji cannot be recolored by the state')
 
 -- A driver has to be able to reach their own participation controls, and the
 -- entry row is hidden for a non-admin for exactly as long as a session is live.
@@ -1726,7 +1737,7 @@ do
   -- THE BOARD DOES NOT OUTLIVE THE SPELL THAT SHOWED IT.
   --
   -- Being out of the field is two different things wearing one name: pressing
-  -- Spectate is a decision that lasts, while taking the chequered flag makes you
+  -- Spectate is a decision that lasts, while taking the checkered flag makes you
   -- a spectator for the few seconds between the finish and the results. The
   -- preference is remembered across a teardown (it has to be -- BeamNG rebuilds
   -- this directive whenever the HUD layer goes, and the pause menu does that),
@@ -1804,7 +1815,7 @@ expect(entryRow and entryRow:find('ng%-disabled="sessionUnderWay%(%)"') ~= nil,
 -- that reads the flag made the count say three.
 local writes = 0
 for _ in js:gmatch('%$scope%.spectating%s*=[^=]') do writes = writes + 1 end
-expect(writes == 2, 'only the initialiser and one server-owned write set $scope.spectating')
+expect(writes == 2, 'only the initializer and one server-owned write set $scope.spectating')
 expect(js:find('$scope.spectating = data.youSpectating', 1, true) ~= nil,
   'and that write is youSpectating, the entry decision')
 expect(js:find('$scope.carTaken', 1, true) ~= nil,
@@ -1819,7 +1830,7 @@ expect(html:find('class="rm-spectator-bar" ng-if="carTaken"', 1, true) ~= nil,
 -- The flag is a glyph, and it does not paint over anything else
 -- ---------------------------------------------------------------------------
 -- U+2691 arrives as an EMOJI unless the text form is asked for, and an emoji
--- carries its own colour: the flag stayed one shade whatever the session was
+-- carries its own color: the flag stayed one shade whatever the session was
 -- doing. The workaround was to draw a flag out of ::before and ::after, which
 -- then painted over the checkered flag in the results table, because that
 -- borrowed the same class. VS15 is the actual fix.
@@ -1859,7 +1870,7 @@ for attr in html:gmatch('class="([^"]*)"') do
 end
 for attr in html:gmatch("'(rm%-[%w%-]+)'%s*:") do worn[attr] = true end   -- ng-class keys
 for attr in html:gmatch("'(rm%-[%w%-]+)'") do worn[attr] = true end       -- ng-class values
--- CLASSES BUILT AT RUNTIME. ng-class="'rm-flash-' + notice.colour" wears a
+-- CLASSES BUILT AT RUNTIME. ng-class="'rm-flash-' + notice.color" wears a
 -- class whose name exists nowhere in this file, so a purely literal search
 -- reports it as dead weight and fails on a rule that is very much in use. Any
 -- prefix the markup concatenates onto marks everything sharing it as worn --
@@ -1883,7 +1894,7 @@ end
 -- A loop over nothing passes silently, which for a guard is the same as not
 -- having one. Three forever-animations exist by design: the derby-live badge,
 -- the out-of-bounds warning, and the checkered flash -- whose squares SWAP
--- rather than fading, because the shared fade takes black and white to grey.
+-- rather than fading, because the shared fade takes black and white to gray.
 expect(animated == 3, 'every infinite animation was found and checked, got '
   .. animated)
 

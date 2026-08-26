@@ -31,7 +31,7 @@ local function rectCrossesGate(wp, prev, cur, w, h, d)
   -- Height is UP from the placement point and depth is DOWN, so the vertical
   -- test is a range rather than a symmetric one. `d` defaults to h here so the
   -- cases written before the split still describe the gate they were written
-  -- for: back then height was the full span, centred.
+  -- for: back then height was the full span, centerd.
   d = d or h
   local dz = iz - wp.z
   if dz > h or dz < -d then return false end
@@ -152,7 +152,7 @@ local function check(cond, msg)
 end
 local function P(x, y, z) return { x = x, y = y, z = z or 0 } end
 
--- Drive straight through a gate's centre, along the direction given. `dir` is
+-- Drive straight through a gate's center, along the direction given. `dir` is
 -- +1 to go the way the gate points and -1 to come back through it.
 local function through(gate, dir)
   dir = dir or 1
@@ -390,7 +390,7 @@ check(S.laps == 1 and S.scored == 1 and S.armedWp == 1,
 -- --- 12. One-way still means one way ---------------------------------------
 -- Bidirectional gates are what make a shared corner work, but where direction is
 -- the only thing separating two legs of a track, oneWay puts it back. A branch
--- gate honours the flag exactly as a main gate does.
+-- gate honors the flag exactly as a main gate does.
 local r15 = select(1, oval())
 local oneWayAlt = { { slot = 1, x = TURN2.x, y = TURN2.y, z = 0, hx = 0, hy = 1, oneWay = true } }
 reset(r15, oneWayAlt)

@@ -89,7 +89,7 @@ vec3 = function (x, y, z) return { x = x, y = y, z = z } end
 quat = function (x, y, z, w) return { x = x, y = y, z = z, w = w } end
 log  = function () end
 -- The derby warning panel: what the driver actually sees. Captured because the
--- stop-grace behaviour below is entirely about what is NOT on screen while
+-- stop-grace behavior below is entirely about what is NOT on screen while
 -- somebody is turning around.
 local lastWarning = nil
 guihooks = { trigger = function (name, payload)

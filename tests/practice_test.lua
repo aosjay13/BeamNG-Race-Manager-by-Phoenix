@@ -171,13 +171,16 @@ moveTo(10)
 -- Without practice, an idle server times nothing
 -- ---------------------------------------------------------------------------
 -- The gates are still DRAWN -- a driver looking at a track wants to see where it
--- goes -- but nothing is armed and no lap is taken. This is the behaviour
+-- goes -- but nothing is armed and no lap is taken. This is the behavior
 -- practice exists to change, so it is worth pinning before changing it.
 sent, hooks = {}, {}
 lap()
 check(sentCount('RM_Lap') == 0, 'an idle server reports no laps')
 check(lastHook('RaceManagerLapDone') == nil,
   'and takes none either: no time is shown for a lap nobody was timing')
+local idleClock = lastHook('RaceManagerLapTime')
+check(idleClock == nil or idleClock.running ~= true,
+  'and runs no lap clock: there is nothing being timed to show')
 
 -- ---------------------------------------------------------------------------
 -- Practising: timed here, reported nowhere
@@ -243,6 +246,21 @@ for _, h in ipairs(hooks) do
 end
 check(sectors == 2, 'both sectors are timed while practising (got ' .. sectors .. ')')
 
+-- THE LIVE LAP CLOCK RUNS IN PRACTICE, and this is what was missing.
+--
+-- The sectors above were always being pushed. What was not was the clock -- and
+-- the app draws the sector readout inside the lap-time block, which only appears
+-- when a clock is running or a lap time is being held. So a practising driver
+-- saw a sector exactly once per lap: at the line, where a completed lap time had
+-- just put the block on screen, showing the last sector of the lap and no other.
+local clock = lastHook('RaceManagerLapTime')
+check(clock ~= nil and clock.running == true,
+  'the live lap clock runs while practising')
+check(clock ~= nil and type(clock.elapsed) == 'number' and clock.elapsed >= 0,
+  'and carries the seconds on the current lap')
+check(clock ~= nil and clock.outLap ~= true,
+  'practice has no out lap: it starts when the driver says so')
+
 -- A second lap carries a delta, the same as a session lap would.
 sent, hooks = {}, {}
 lap()
@@ -251,6 +269,15 @@ check(done ~= nil and done.lap == 2, 'the lap counter advances')
 check(done ~= nil and done.delta ~= nil,
   'and the second practice lap has a delta to the first')
 check(sentCount('RM_Lap') == 0, 'still reporting nothing')
+
+-- The clock counts practice laps, not session laps. session.localLap does not
+-- move in practice, so reading it here would leave the readout on LAP 1 for the
+-- whole afternoon.
+frame(20)   -- a tick after the crossing, so the clock has reported the new lap
+clock = lastHook('RaceManagerLapTime')
+check(clock ~= nil and clock.lap == 3,
+  'the lap clock is on the third lap after two are complete (got '
+    .. tostring(clock and clock.lap) .. ')')
 
 -- ---------------------------------------------------------------------------
 -- Practice is not a session
@@ -270,6 +297,13 @@ check(state == nil or state.phase ~= 'racing',
 -- ---------------------------------------------------------------------------
 hooks = {}
 RM.endPractice()
+-- A frame so the clock notices, and deliberately NO hook reset afterwards: the
+-- checks below read the route push endPractice itself made, and with timing off
+-- nothing else refreshes it.
+frame(2)
+local stopped = lastHook('RaceManagerLapTime')
+check(stopped ~= nil and stopped.running == false,
+  'ending practice takes the lap clock down rather than freezing it on screen')
 -- Read off the push endPractice itself makes. Reading it after the lap below
 -- would find nothing: with timing off, no gate crossing pushes route state, so
 -- the check would pass or fail on whether anything happened to refresh the

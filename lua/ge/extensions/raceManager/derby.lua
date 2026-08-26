@@ -316,7 +316,7 @@ end
 --
 -- Two things about the geometry are worth knowing before changing it:
 --
---   * A rectangle's corners all sit at the CENTRE's z (see the server's
+--   * A rectangle's corners all sit at the CENTER's z (see the server's
 --     derbyShapeToBoundary), so on sloped ground the ring is a flat plane cut
 --     through the hill. The walls therefore start BELOW the boundary z and run
 --     up from there: dropping the base by a skirt means the panel intersects the
@@ -437,7 +437,7 @@ D.derbyDrawBoundary = function ()
     if authoring then
       -- Editor-only furniture, built once with everything else: a numbered label
       -- over each corner, the arena's headline label, and -- for a rectangle --
-      -- the centre crosshair and a readout of what the sliders currently say.
+      -- the center crosshair and a readout of what the sliders currently say.
       local first = boundary[1]
       cache.labelAt = vec3(first.x, first.y, first.z + height + 0.8)
       local s = D.derbyState.shape
@@ -451,15 +451,15 @@ D.derbyDrawBoundary = function ()
             cache.floor[i] = vec3(m.x, m.y, m.z + 0.06)
           end
         end
-        cache.centre = {
+        cache.center = {
           at = vec3(s.cx, s.cy, s.cz),
-          -- A cross through the centre, turned with the rectangle, so the
+          -- A cross through the center, turned with the rectangle, so the
           -- rotation slider has something to visibly turn.
           armA = { a = vec3(s.cx - math.cos(s.rot) * 3, s.cy - math.sin(s.rot) * 3, s.cz + 0.1),
                    b = vec3(s.cx + math.cos(s.rot) * 3, s.cy + math.sin(s.rot) * 3, s.cz + 0.1) },
           armB = { a = vec3(s.cx + math.sin(s.rot) * 3, s.cy - math.cos(s.rot) * 3, s.cz + 0.1),
                    b = vec3(s.cx - math.sin(s.rot) * 3, s.cy + math.cos(s.rot) * 3, s.cz + 0.1) },
-          label = string.format('CENTRE: %.0f deg', math.deg(s.rot)),
+          label = string.format('CENTER: %.0f deg', math.deg(s.rot)),
           labelAt = vec3(s.cx, s.cy, s.cz + 1.6),
         }
       else
@@ -512,10 +512,10 @@ D.derbyDrawBoundary = function ()
     for _, cl in ipairs(cache.cornerLabels) do
       debugDrawer:drawTextAdvanced(cl.at, String(cl.text), p.text, true, false, p.derbyLabelBg)
     end
-    if cache.centre then
-      debugDrawer:drawCylinder(cache.centre.armA.a, cache.centre.armA.b, 0.12, edge)
-      debugDrawer:drawCylinder(cache.centre.armB.a, cache.centre.armB.b, 0.12, edge)
-      debugDrawer:drawTextAdvanced(cache.centre.labelAt, String(cache.centre.label),
+    if cache.center then
+      debugDrawer:drawCylinder(cache.center.armA.a, cache.center.armA.b, 0.12, edge)
+      debugDrawer:drawCylinder(cache.center.armB.a, cache.center.armB.b, 0.12, edge)
+      debugDrawer:drawTextAdvanced(cache.center.labelAt, String(cache.center.label),
         p.text, true, false, p.derbyLabelBg)
     end
   else
@@ -552,8 +552,8 @@ end
 
 -- --- Rectangle arena (the other boundary editor) ---------------------------
 -- Switch between driving the perimeter marker by marker and pulling a rectangle
--- out from a centre. Neither loses the other's work: see the server handler.
--- The vehicle position rides along as the centre to use when there is no
+-- out from a center. Neither loses the other's work: see the server handler.
+-- The vehicle position rides along as the center to use when there is no
 -- existing arena to fit a rectangle around.
 function D.derbySetBoundaryMode(mode)
   if not host.inMultiplayer() then
@@ -568,13 +568,13 @@ function D.derbySetBoundaryMode(mode)
     payload.cx, payload.cy, payload.cz = pos.x, pos.y, pos.z
   elseif mode == 'rect' and #D.derbyState.boundary < 3 then
     guihooks.trigger('RaceManagerEditorMsg', {
-      msg = 'Get in a vehicle first: the rectangle needs a centre' })
+      msg = 'Get in a vehicle first: the rectangle needs a center' })
     return
   end
   TriggerServerEvent('RM_DerbySetBoundaryMode', jsonEncode(payload))
 end
 
--- Re-centre the rectangle on the car. The derby's "Move Here", and the same
+-- Re-center the rectangle on the car. The derby's "Move Here", and the same
 -- gesture every other placement in this mod uses.
 function D.derbySetShapeCenter()
   if not host.inMultiplayer() then
@@ -616,7 +616,7 @@ end
 -- `lives` is optional so an older UI, which sends three arguments, still sets
 -- the two timers and the reset allowance instead of failing on arity.
 -- `mode` is last for the same reason `lives` was: an older UI sends four
--- arguments, and the server leaves the mode alone when it does not recognise
+-- arguments, and the server leaves the mode alone when it does not recognize
 -- what it is given -- including nil.
 function D.derbySetConfig(oobLimit, demoLimit, resetLimit, lives, mode)
   if host.inMultiplayer() then

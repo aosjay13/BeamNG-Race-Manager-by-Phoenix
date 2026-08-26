@@ -15,7 +15,7 @@
 --
 -- The overlap test is a real oriented-bounding-box query (the engine's
 -- overlapsOBB_OBB, fed from getSpawnWorldOOBB) and not a distance between
--- origins: a car lying crossways THROUGH another has its origin metres away and
+-- origins: a car lying crossways THROUGH another has its origin meters away and
 -- would be called clear by a radius check.
 --
 -- The extension is a GE module, so the BeamNG/BeamMP globals it calls are
@@ -238,7 +238,7 @@ check(lastSent('RM_GhostStart').duration == 5.0,
   'and asks for the configured minimum duration')
 
 -- ===========================================================================
--- The minimum duration is honoured
+-- The minimum duration is honored
 -- ===========================================================================
 frames(4.0)
 check(own.ghosted == true, 'the car is still a ghost four seconds in')
@@ -305,7 +305,7 @@ rival.x, rival.y = 0, 0
 driverReset(0, 2.4)
 frames(6.0)
 check(own.ghosted == true,
-  'overlapping cars whose ORIGINS are metres apart are still detected as overlapping')
+  'overlapping cars whose ORIGINS are meters apart are still detected as overlapping')
 
 -- Clear of it along the same axis (2.2 + 2.2 half-lengths plus the 0.25 m
 -- margin) and the space is genuinely free.
@@ -402,7 +402,7 @@ own.hasBounds, own.hasWorldBox, own.hasDims = true, true, true
 -- measurement failure as an overlap is what left drivers ghosted for a whole
 -- race: it was a verdict that could never be revisited, and one unmeasurable car
 -- anywhere on the map was enough to cause it. A car that cannot be sized up but
--- is half a kilometre away is plainly not inside us.
+-- is half a kilometer away is plainly not inside us.
 clearLog()
 driverReset(0, 0)
 rival.x, rival.y = 500, 0
@@ -467,7 +467,7 @@ rival.x, rival.y = 4.0, 0                          -- clear of us, but well insi
 driverReset(0, 0)                                  -- any blunt radius
 frames(8.0)
 check(own.ghosted == false,
-  'a car four metres away does not block a ghost when dimensions can be read')
+  'a car four meters away does not block a ghost when dimensions can be read')
 
 -- ...and a car genuinely overlapping still does.
 clearLog()
@@ -786,13 +786,13 @@ frames(12.0)
 check(world[OWN_ID].ghosted ~= true, 'starting from a solid car')
 
 -- The window: our car exists but nobody can say it is ours.
-local realIsOwn = MPVehicleGE.isOwn
+local realizOwn = MPVehicleGE.isOwn
 MPVehicleGE.isOwn = function () return false end
 RM.setGhostQuali(true)                      -- any field-wide reason will do
 serverState({ phase = 'qualifying', ghostQuali = true, maxResets = -1,
               totalLaps = 3, drivers = {} })
 frames(0.5)
-MPVehicleGE.isOwn = realIsOwn               -- ownership resolves again
+MPVehicleGE.isOwn = realizOwn               -- ownership resolves again
 
 -- Lift it. Our own car must not be left holding the reason.
 serverState({ phase = 'racing', ghostQuali = false, maxResets = -1,

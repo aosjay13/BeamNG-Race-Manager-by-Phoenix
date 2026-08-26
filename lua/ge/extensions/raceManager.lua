@@ -40,18 +40,18 @@ local TUNE = {
   MAX_WIDTH = 120,
   -- HEIGHT IS UP, DEPTH IS DOWN, both measured from the placement point.
   --
-  -- A gate used to be `height` tall CENTRED on where the car was standing, so
+  -- A gate used to be `height` tall CENTERD on where the car was standing, so
   -- half of every gate hung below the road. Making a gate tall enough to see
   -- buried an equal amount of it under the map, and there was no way to have one
   -- without the other. They are separate now: height raises the top bar, depth
   -- lowers the bottom bar.
   --
   -- The default is weighted upward for exactly that reason. The total is the 10
-  -- metres it always was; where it sits is what changed.
-  DEFAULT_HEIGHT = 8,     -- metres the gate rises ABOVE the placement point
+  -- meters it always was; where it sits is what changed.
+  DEFAULT_HEIGHT = 8,     -- meters the gate rises ABOVE the placement point
   MIN_HEIGHT = 1,
   MAX_HEIGHT = 100,
-  DEFAULT_DEPTH = 2,      -- metres it drops BELOW it
+  DEFAULT_DEPTH = 2,      -- meters it drops BELOW it
   -- Zero is the floor: the bottom bar reaches down from the placement point or
   -- sits level with it, never above. Lifting it clear was tried and taken back
   -- out; a gate you have to float by hand is a strange thing to ask of somebody
@@ -72,21 +72,21 @@ local TUNE = {
   -- a Last Checkpoint reset onto one spawned the car half in the dirt. Both
   -- paths now clear the ground by this much.
   GROUND_CLEAR = 0.5,
-  -- Metres a shift+scroll step raises or lowers a selected gate. Small enough to
+  -- Meters a shift+scroll step raises or lowers a selected gate. Small enough to
   -- fine-tune a gate on a crest, big enough to dig one out of the terrain
   -- without spinning the wheel for a minute.
   NUDGE_LIFT_PER_STEP = 0.75,
   -- One press of Raise/Lower. Bigger than a scroll click on purpose: the wheel
   -- is for settling a gate, the buttons are for getting one out of a hillside.
   NUDGE_LIFT_PER_PRESS = 2.0,
-  -- Furthest one drag or ctrl+click may move a gate, in metres.
+  -- Furthest one drag or ctrl+click may move a gate, in meters.
   --
   -- The cursor ray is cast at the world and lands on whatever it hits. Aimed
-  -- near the horizon that is terrain kilometres away, so a drag that clipped the
+  -- near the horizon that is terrain kilometers away, so a drag that clipped the
   -- skyline flung the gate somewhere the admin cannot see it, let alone drag it
   -- back. Generous enough to cross any sane arena or straight in one motion.
   NUDGE_MAX_REACH = 500,
-  -- Metres the cursor must travel before a drag starts moving anything. A hand
+  -- Meters the cursor must travel before a drag starts moving anything. A hand
   -- resting on a mouse is never perfectly still, and the raycast jitters over
   -- uneven ground even when it is.
   NUDGE_DRAG_MIN = 0.15,
@@ -107,7 +107,7 @@ local TUNE = {
   -- local presentation and local geometry, which no other client has an opinion
   -- about and which must never differ between two clients in a way that matters.
   GHOST_FADE_OUT_SEC     = 1.0,   -- fade back to solid over the last second
-  GHOST_OVERLAP_MARGIN   = 0.25,  -- metres added to every bound before testing
+  GHOST_OVERLAP_MARGIN   = 0.25,  -- meters added to every bound before testing
   GHOST_OVERLAP_WARN_SEC = 10.0,  -- blocked this long: warn the driver, tell the server
   -- Last-resort separation when a car cannot be measured at all. Comfortably
   -- larger than the longest vehicle pair, so it is conservative -- but finite,
@@ -121,25 +121,25 @@ local TUNE = {
   -- circuits report: this only needs to swallow same-crossing re-fires, not
   -- bound real lap times.
   LAP_DEBOUNCE = 2.0,
-  -- Metres a start position may be from the start/finish line and still count as
-  -- a grid stretching back from it. Sixty cars at eight metres a row is under
+  -- Meters a start position may be from the start/finish line and still count as
+  -- a grid stretching back from it. Sixty cars at eight meters a row is under
   -- 250, so past this the grid is somewhere else on the circuit and the first
   -- crossing is a part lap (see branch.gridIsOff).
   GRID_ON_LINE_RANGE = 250,
   -- Most cars a generated grid may put in one row. Two is a road-race grid and
   -- an oval's; three and four are short-track and dirt formats.
   GRID_MAX_WIDTH = 8,
-  -- Metres a legal reset may move a car before it is treated as a RECOVERY
-  -- teleport and undone. A repair in place moves it centimetres; BeamNG's
+  -- Meters a legal reset may move a car before it is treated as a RECOVERY
+  -- teleport and undone. A repair in place moves it centimeters; BeamNG's
   -- recover/load-home drops it at a spawn point that is never this close.
   RECOVER_SNAP_RANGE = 25,
   PROGRESS_EVERY = 0.3,   -- seconds between live-position reports
-  -- Metres before the start/finish line that the white flag is shown.
+  -- Meters before the start/finish line that the white flag is shown.
   --
   -- A marshal waves it AT you on the approach, not once you have gone past, so
   -- the driver meets the flag before the line rather than reading about it
   -- afterwards. Not measured off the live-position report either: that is
-  -- throttled to PROGRESS_EVERY, which at 90 mph is twelve metres between
+  -- throttled to PROGRESS_EVERY, which at 90 mph is twelve meters between
   -- samples and would show the flag anywhere from here to the line itself.
   WHITE_FLAG_AT = 50,
   -- Live lap clock for the driver's own HUD. Pushed on a slow cadence and
@@ -152,7 +152,7 @@ local TUNE = {
   -- second, so the client should normally have pulled the car back before the
   -- server ever sees it move. A correction that reaches the server means the
   -- local guard did not fire, which is worth knowing about.
-  HOLD_DRIFT       = 0.75,  -- metres off the settled slot before putting it back
+  HOLD_DRIFT       = 0.75,  -- meters off the settled slot before putting it back
   HOLD_CREEP_SPEED = 0.60,  -- m/s on the slot: a lost freeze, re-pin where it is
   -- A car dropped onto a start position falls onto its suspension. None of the
   -- enforcement above runs until that has finished, or it fights the settling
@@ -179,7 +179,7 @@ local TUNE = {
   -- two calls a frame on one car, and the alternative is a car that is briefly
   -- solid and free to drive in the middle of its own pit stop.
   PIT_SETTLE_SEC = 1.5,
-  -- Metres per direction-marker chevron. Small enough that a board reads as a
+  -- Meters per direction-marker chevron. Small enough that a board reads as a
   -- run of marks rather than a couple of big arrows, large enough to see from
   -- the far end of a straight.
   MARKER_CELL     = 3.0,
@@ -191,7 +191,7 @@ local TUNE = {
   MARKER_STROKE   = 0.17,
   MARKER_EDGE     = 1.9,
   PIT_COOLDOWN   = 8.0,   -- before the same stall can trigger again
-  PIT_DEPTH      = 3.0,   -- metres along the stall a car counts as being in it
+  PIT_DEPTH      = 3.0,   -- meters along the stall a car counts as being in it
   -- m/s below which the car counts as stopped IN the stall. A pit stop is
   -- something a driver performs, not something that happens to them: the stall
   -- used to trigger on the box alone, so clipping a corner of it at racing
@@ -205,16 +205,16 @@ local TUNE = {
   -- pit.inside excludes nobody, so the walls are kept low and out of the way
   -- while the footprint, which is the part that decides, is drawn honestly.
   PIT_WALL_H     = 1.4,
-  START_SLOT_LEN  = 4.6,  -- metres; roughly one car long
+  START_SLOT_LEN  = 4.6,  -- meters; roughly one car long
   START_SLOT_WIDE = 2.2,
-  -- The joker gate's pole colour, and its colour once the joker has been taken.
-  -- Pole colours set outright rather than lifted, because their stock value is
+  -- The joker gate's pole color, and its color once the joker has been taken.
+  -- Pole colors set outright rather than lifted, because their stock value is
   -- black and there is no brighter version of black to compute.
   --
   -- `next` is the gate AFTER the one being aimed at. The engine ships it black
   -- because in its own races that gate is not your concern yet; this mod puts a
   -- marker there on purpose, so the line through the corner reads before the
-  -- driver gets there. Orange, matching the editor's colour for the route
+  -- driver gets there. Orange, matching the editor's color for the route
   -- ahead, and a shade under the gate actually being aimed at so the two are
   -- never confused for one another.
   POLE_MODE_RGB = {
@@ -225,7 +225,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.9.0'
+local RM_BUILD = '0.9.7'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -268,6 +268,23 @@ local session = {
   -- Where the server put this car for the start, and whether the hold is on.
   gridSlot   = nil,
   gridFrozen = false,
+  -- TIMED RACE, mirrored from the server. Two flags because there are two
+  -- states and they mean different things to a driver:
+  --   raceExpired  the clock is out, nothing has changed yet, and the final lap
+  --                begins when the LEADER next takes the line. Two laps to go
+  --                from here: finish this one, then run the last.
+  --   lastLapNum   the leader has been past. Completing this lap number ends
+  --                your race, so a car behind the leader still gets a full lap
+  --                rather than being flagged off at the line.
+  -- The checkered flag after that is `finalLap`, which a race now reaches as
+  -- well as qualifying and which means the same thing in both: your next
+  -- crossing is your last.
+  raceExpired  = false,
+  lastLapNum   = nil,
+  -- 'laps' | 'timed' | 'endurance'. Needed HERE and not only in the panel: the
+  -- white and checkered flags are decided per driver on this client, and they
+  -- have to know that a timed race has no lap target for them to count towards.
+  raceMode     = 'laps',
   -- Out of the session: finished, retired, or eliminated. 'race' | 'derby'.
   spectatorLock = nil,
   -- Is this client an authenticated admin?
@@ -406,7 +423,7 @@ marker.LABEL = {
 --
 -- Drawn as segments rather than as text because debugDrawer text does not
 -- scale with distance the way a shape does: a glyph readable in the editor is
--- a speck at two hundred metres, which is exactly where a direction marker has
+-- a speck at two hundred meters, which is exactly where a direction marker has
 -- to be readable.
 marker.GLYPH = {
   -- CHEVRONS, not arrows. A stemmed arrow tiled ten times reads as ten arrows;
@@ -496,7 +513,7 @@ local setLocalVehicleFrozen      -- forward declaration, assigned further down
 -- is fine while it sticks and silently wrong when it does not, and there were
 -- four ways for it not to stick: the placement teleport reports back as a
 -- vehicle reset which reloads the vehicle's Lua VM and takes the freeze with it,
--- and the re-apply only happened when that report was recognised as our own echo
+-- and the re-apply only happened when that report was recognized as our own echo
 -- -- so a report arriving later than the 0.6 s echo window, a driver pressing
 -- reset on the grid, and a vehicle reloaded or respawned on the grid all left
 -- the car free. Nothing re-asserted it and nothing noticed, so any one of those
@@ -633,7 +650,7 @@ local ghost = {
 -- IT ADDS A SUFFIX AND DOES NOTHING ELSE, and that constraint is the whole
 -- design. BeamMP renders nametags itself in MPVehicleGE.onPreRender, and that
 -- rendering carries a lot that players are attached to: distance fade,
--- hide-behind-objects, the spectator list, role tags, colour, alpha. There IS a
+-- hide-behind-objects, the spectator list, role tags, color, alpha. There IS a
 -- way to take the whole thing over -- MPVehicleGE.hideNicknames(true) and draw
 -- your own, which is what BeamJoy does -- and it is rejected here on purpose.
 -- Owning the render means owning the fade, the occlusion and every setting a
@@ -904,7 +921,7 @@ local resetInputsBlocked = false
 -- reset reported from that spot inside the window is our own echo.
 local selfTeleport   = { left = 0, x = 0, y = 0, z = 0 }
 local TELEPORT_WINDOW = 0.6      -- seconds an echo of our own teleport can arrive in
-local TELEPORT_RADIUS = 2.0      -- metres from where we put the car
+local TELEPORT_RADIUS = 2.0      -- meters from where we put the car
 -- Reset fires repeatedly while the key is held, so the feedback for a blocked
 -- attempt (notice, log line, server report) is rate limited. The block itself
 -- is applied on every single attempt.
@@ -1077,7 +1094,7 @@ end
 -- button. Driving is still how a track gets built: it puts the gate exactly
 -- where a car fits and facing exactly the way one travels, which no amount of
 -- clicking from above can work out for you. This is for the pass afterwards,
--- where a gate is ten metres late or a couple of degrees off and re-driving the
+-- where a gate is ten meters late or a couple of degrees off and re-driving the
 -- whole corner to fix it is the expensive part.
 --
 -- ONE top-level local, like `branch` and `spectate`. This file sits at Lua's
@@ -1119,8 +1136,8 @@ local nudge = {
   wasFree  = nil,
 }
 
--- How close the cursor ray has to pass to a gate to pick it, in metres. Gates
--- are up to 120m wide but are PICKED BY THEIR CENTRE, because two gates whose
+-- How close the cursor ray has to pass to a gate to pick it, in meters. Gates
+-- are up to 120m wide but are PICKED BY THEIR CENTER, because two gates whose
 -- rectangles overlap are exactly the case where a generous radius picks the
 -- wrong one.
 nudge.PICK_RADIUS  = 8
@@ -1165,7 +1182,7 @@ end
 -- Width across, height ABOVE the placement point, depth BELOW it.
 --
 -- A gate saved before the two were separate carries a height and no depth, and
--- back then height meant the FULL span, centred. Splitting it in half here is
+-- back then height meant the FULL span, centerd. Splitting it in half here is
 -- what makes such a gate keep the exact shape it has always had, rather than
 -- silently doubling in size the day this shipped. Anything the editor touches is
 -- written back with both fields, so a track only reads this way once.
@@ -1222,6 +1239,32 @@ local function reportStartCount()
   }))
 end
 
+-- THE LAP NUMBER THAT ENDS THIS DRIVER'S RACE, or nil when nothing does yet.
+--
+-- This is the client's copy of the server's sessionLapTarget, and it exists
+-- because the flags are decided here. A driver's white and checkered flags are
+-- per-driver events on their own lap counter, so only this client can wave them
+-- -- and it was waving them off `session.totalLaps` alone.
+--
+-- IN A TIMED RACE THAT IS THE WRONG NUMBER AND ALWAYS WAS. The lap box is inert
+-- on the server (nobody knows how many laps ten minutes is), but it was still
+-- being broadcast and still being counted against here, so a timed race waved a
+-- second white flag and a second checkered flag at whatever the lap box happened
+-- to say. Two of each, one pair from the clock and one from a limit that was not
+-- being enforced by anything.
+--
+-- Order matters. lastLapNum wins whenever it is set: once the leader has started
+-- the final lap, THAT is the distance, whatever the lap box says and whichever
+-- mode armed it.
+local function effectiveLapTarget()
+  if track.pointToPoint then return 1 end
+  if session.lastLapNum then return session.lastLapNum end
+  -- A timed race has no lap target at all until the leader has been past.
+  -- Endurance keeps one: it is the other half of "whichever comes first".
+  if session.raceMode == 'timed' then return nil end
+  return session.totalLaps > 0 and session.totalLaps or nil
+end
+
 -- GREEN, YELLOW or WHITE, for this driver, right now.
 --
 -- Yellow is the server's and beats everything: a caution is a fact about the
@@ -1243,8 +1286,9 @@ local function driverFlag()
   -- running underneath it: red goes to yellow, then back to green.
   if session.raceFlag == 'red' or session.phase == 'grid' or session.gridFrozen then return 'red' end
   if session.raceFlag == 'yellow' then return 'yellow' end
-  if session.phase == 'racing' and not track.pointToPoint and session.totalLaps > 0
-     and session.localLap >= session.totalLaps then
+  local target = effectiveLapTarget()
+  if session.phase == 'racing' and not track.pointToPoint and target
+     and session.localLap >= target then
     return 'white'
   end
   return 'green'
@@ -1256,7 +1300,7 @@ end
 --
 -- Counts alone would miss a nudge, and a nudge is the edit somebody is most
 -- likely to be part-way through when another admin presses Load. Positions fold
--- in at centimetre resolution deliberately: a fingerprint carrying raw floats
+-- in at centimeter resolution deliberately: a fingerprint carrying raw floats
 -- would change on physics noise alone and report every buffer as dirty, which
 -- would refuse every layout on the server and look exactly like the bug it is
 -- meant to fix.
@@ -1403,15 +1447,74 @@ end
 -- joker invalidated, vehicle rejected) so they don't get lost among the
 -- editor's transient messages.
 -- `extra` carries the two things a full-panel flash needs that a strip never
--- did: a second line, and which colour the flash is. Optional, so every one of
+-- did: a second line, and which color the flash is. Optional, so every one of
 -- the thirty-odd existing callers keeps working untouched.
+-- BeamNG's own Messages HUD app, which is on screen by default for everybody.
+--
+-- WHY THIS EXISTS AT ALL: every other surface this mod has is its own. The
+-- notice strip, the full-panel flash and the red vehicle banner are drawn by
+-- the Race Manager app, and the server's chat line needs the chat window open.
+-- A driver running with the app minimised and chat closed sees none of them,
+-- and "RED FLAG: stop where you are" is not a message that can be allowed to
+-- depend on which windows somebody happens to have up.
+--
+-- ui_message is BeamNG's GE wrapper; the guihooks call underneath it is the
+-- fallback for a build that does not expose the wrapper.
+--
+-- `category` is PER KIND, not one shared string. A category makes a repeat
+-- REPLACE the message on screen rather than stack another copy, which is what
+-- keeps a repeating notice (a grid hold correction, the config poll) from
+-- filling the HUD. Sharing one category across kinds would give that same
+-- behavior the wrong way round: a pit call would wipe a red flag.
+-- Material icon per kind, because the HUD shows one and a glanced-at icon is
+-- read before the words are. Anything not listed falls back to the flag.
+local HUD_ICON = {
+  vehicle = 'directions_car', spectate = 'visibility', resetsout = 'block',
+  pit = 'build', finish = 'emoji_events', grid = 'grid_on',
+  session = 'timer', joker = 'alt_route', derby = 'warning',
+}
+
+local function hudMessage(kind, text, ttl)
+  kind = tostring(kind or 'info')
+  local category = 'raceManager_' .. kind
+  local icon = HUD_ICON[kind] or 'flag'
+  if type(ui_message) == 'function' then
+    if pcall(ui_message, text, ttl or 6, category, icon) then return end
+  end
+  pcall(guihooks.trigger, 'Message', {
+    ttl = ttl or 6, msg = text, category = category, icon = icon,
+  })
+end
+
+-- Which notices leave the app. The test is "would a driver with their eyes on
+-- the road have to ACT on this", not "is it interesting".
+--
+-- So the flags, the out lap, being put out of a session, running out of resets,
+-- a refused car, a joker ruling, where you start, a pit call and the derby are
+-- all in; the running commentary is not. `reset` ("Reset 2/5 used") and
+-- `fastest` are things a driver already knows they did, `ghost` and `server`
+-- describe a state that is visible, and `alias` is a name change. Pushing those
+-- through as well is how a channel that must be read becomes one that is not.
+local HUD_NOTICE = {
+  flag = true, session = true, spectate = true, resetsout = true,
+  vehicle = true, joker = true, finish = true, grid = true,
+  pit = true, derby = true,
+}
+
 local function pushNotice(kind, msg, extra)
   local payload = { kind = kind, msg = msg }
   if type(extra) == 'table' then
     payload.sub    = extra.sub
-    payload.colour = extra.colour
+    payload.color = extra.color
   end
   guihooks.trigger('RaceManagerNotice', payload)
+  -- ONE FUNNEL, deliberately. Every driver-facing notice in this mod already
+  -- comes through here, so the HUD copy is decided in one place by kind rather
+  -- than bolted onto forty call sites -- and a notice added later is carried by
+  -- whichever kind it is filed under, with no second thing to remember.
+  if HUD_NOTICE[kind] then
+    hudMessage(kind, payload.sub and (msg .. ': ' .. payload.sub) or msg)
+  end
 end
 
 -- FLAG TRANSITIONS, which are not the same thing as flag STATE.
@@ -1458,7 +1561,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Flat rectangle crossing test. A checkpoint is an upright rectangle centered
 -- on (wp.x, wp.y, wp.z), standing perpendicular to the stored heading:
---   forward f = (hx, hy)      the direction the car must be travelling
+--   forward f = (hx, hy)      the direction the car must be traveling
 --   lateral r = (hy, -hx)     span = width
 --   up      z                 span = height  (covers the banking)
 -- The car scores the gate when its frame-to-frame movement segment crosses the
@@ -1563,7 +1666,7 @@ local function resetLapTracking()
   -- Nothing here stops timing, because a lap the client did not measure is a lap
   -- the client cannot report.) Outside a running session the start/finish line is
   -- armed, so a driver pottering about before the lights still gets sensible
-  -- gate colours.
+  -- gate colors.
   if sessionRunning() then
     session.armedWp = 1
     session.timingActive = true
@@ -1815,7 +1918,7 @@ end
 --   * A start position facing AGAINST the start/finish line. That is a head-on
 --     layout, where one row of slots on the line is impossible by construction.
 --   * A start position further from the line than any grid is long. A sixty-car
---     grid at eight metres a row is under 250m, so beyond that it is not a grid
+--     grid at eight meters a row is under 250m, so beyond that it is not a grid
 --     stretching back from the line, it is a grid somewhere else on the circuit.
 function branch.gridIsOff()
   local sf = track.route[#track.route]
@@ -1989,9 +2092,18 @@ local lapTimeLeft    = 0
 local lapTimerArmed  = false     -- was the clock running on the previous tick?
 
 local function lapTimerUpdate(dt)
-  -- Running whenever this client's own lap clock is, which is now any session
-  -- from GO onwards: both kinds start from the grid with the clock already on.
-  local running = sessionRunning()
+  -- Running whenever this client's own lap clock is: any session from GO
+  -- onwards (both kinds start from the grid with the clock already on), AND
+  -- free practice.
+  --
+  -- PRACTICE WAS MISSING, and it took the sector times with it. checkGates
+  -- already runs in practice, so every sector was being closed and pushed - but
+  -- the app draws the sector readout INSIDE the lap-time block, and that block
+  -- only appears when there is a lap clock or a held lap time. With no clock,
+  -- the only moment anything showed was the instant a lap completed and parked a
+  -- time there, by which point the sector on hold was the last one of the lap.
+  -- Hence "only the final sector and the lap time, at the line".
+  local running = sessionRunning() or practice.on
   if not running then
     -- Tell the UI once on the way down so it can drop the readout instead of
     -- leaving the last value frozen on screen looking like a stalled clock.
@@ -2007,7 +2119,10 @@ local function lapTimerUpdate(dt)
   lapTimeLeft = TUNE.LAP_TIME_EVERY
   guihooks.trigger('RaceManagerLapTime', {
     running = true,
-    lap     = session.localLap,
+    -- session.localLap does not move in practice: onLapCompleted counts practice
+    -- laps in practice.lapsDone and returns before the session counter. Reading
+    -- it here would leave the readout saying LAP 1 all afternoon.
+    lap     = practice.on and (practice.lapsDone + 1) or session.localLap,
     elapsed = localTime - session.lapStart,
     -- The clock still runs and is still sent; what changes is what the app is
     -- allowed to do with it. On the out lap it shows the lap for what it is
@@ -2038,7 +2153,7 @@ end
 -- lap counter for the same reason everything else about this driver's lap does.
 --
 -- Runs every frame rather than off the throttled position report, because that
--- report fires every 0.3 s and a car at 90 mph covers twelve metres between two
+-- report fires every 0.3 s and a car at 90 mph covers twelve meters between two
 -- of them: the flag would appear anywhere between here and the line. The cost of
 -- that is paid back in the early-outs, which are ordered cheapest first and
 -- reject on a single integer compare for every driver who is not on the
@@ -2053,7 +2168,7 @@ local function whiteFlagWatch()
   -- WHICH FLAG IS ON THIS APPROACH, if either.
   --
   -- The last lap is announced on the run down to the line that STARTS it, and
-  -- the finish on the run down to the line that ends it. Same fifty metres,
+  -- the finish on the run down to the line that ends it. Same fifty meters,
   -- same per-driver lap counter, one lap apart -- so they are one watcher
   -- rather than two that could disagree about where the line is.
   --
@@ -2066,12 +2181,23 @@ local function whiteFlagWatch()
     -- the lap counter never reaches a lap TARGET to compare against, which is
     -- why this cannot be folded into the test below.
     which, latch = 'checkered', 'checkeredLap'
-  elseif session.totalLaps > 0 and session.localLap >= session.totalLaps then
-    which, latch = 'checkered', 'checkeredLap'
-  elseif session.totalLaps > 1 and session.localLap == session.totalLaps - 1 then
-    which, latch = 'white', 'whiteLap'
   else
-    return
+    -- nil target = a timed race whose leader has not been past yet. There is no
+    -- lap to be waved at, and waving one off the inert lap box is exactly the
+    -- bug this replaces.
+    local target = effectiveLapTarget()
+    if not target then return end
+    if session.localLap >= target then
+      which, latch = 'checkered', 'checkeredLap'
+    elseif target > 1 and session.localLap == target - 1 then
+      -- The lap BEFORE the last one, so the white flag is waved on the approach
+      -- that starts the final lap. In a timed race this is how a driver behind
+      -- the leader is told: lastLapNum landed while they were mid-lap, and this
+      -- is their run down to the line that begins it.
+      which, latch = 'white', 'whiteLap'
+    else
+      return
+    end
   end
   if flags[latch] == session.localLap then return end
 
@@ -2091,9 +2217,9 @@ local function whiteFlagWatch()
     -- marshal leaning out as the driver comes down the straight, and it is
     -- latched separately so the two cannot collapse into one.
     flags.checkeredSeen = true
-    pushNotice('flag', 'CHECKERED FLAG', { sub = 'Finish line', colour = 'checkered' })
+    pushNotice('flag', 'CHECKERED FLAG', { sub = 'Finish line', color = 'checkered' })
   else
-    pushNotice('flag', 'WHITE FLAG', { sub = 'Last lap', colour = 'white' })
+    pushNotice('flag', 'WHITE FLAG', { sub = 'Last lap', color = 'white' })
   end
 end
 
@@ -2114,7 +2240,7 @@ local function reportProgress(dt)
   local wp = onOutLap() and track.route[#track.route] or branch.nearestAt(session.armedWp, pos)
   if not wp then return end
 
-  -- Distance from the car to the centre of the next checkpoint, in metres.
+  -- Distance from the car to the center of the next checkpoint, in meters.
   local dx, dy, dz = pos.x - wp.x, pos.y - wp.y, pos.z - wp.z
 
   -- armedWp is the gate we are driving TOWARDS, so the count already cleared on
@@ -2199,9 +2325,32 @@ local function gameVersion()
 end
 
 -- Snapshot of the vehicle the local player is currently driving.
+--
+-- TWO SIGNATURES, NOT ONE, because parts and tuning are different rules. A
+-- league locks the PARTS (a spec series is a spec series) while leaving tuning
+-- and paint to the driver, and the server picks which of these it matches on -
+-- see the enforcement mode in the Garage panel. `partsSig` is a literal PREFIX
+-- of `sig`, which is what lets the server derive the parts half of an entry
+-- captured before this split existed instead of demanding a re-capture.
+--
+-- Paint was never in either signature and still is not: `cfg.paints` is simply
+-- not read, so a respray has never been able to trip the Garage List.
+--
+-- Returns nil, reason when there is nothing honest to report. THE CAMERA IS THE
+-- CATCH: core_vehicle_partmgmt.getConfig() describes the vehicle this client is
+-- ATTACHED to, not the one it owns, and in multiplayer those come apart the
+-- moment a driver spectates someone (see ownVehicle above, which exists for
+-- exactly this). Reporting then would file a rival's parts under our own name -
+-- rejecting us for their car, or whitelisting theirs when an admin presses
+-- capture. Saying nothing leaves the last good report standing, which is right:
+-- our car has not changed just because we stopped looking at it.
 local function localVehicleConfig()
-  local veh = playerVehicle()
-  if not veh then return nil end
+  local veh = ownVehicle()
+  if not veh then return nil, 'Get in a vehicle first' end
+  local attached = playerVehicle()
+  if attached and vehicleId(attached) ~= vehicleId(veh) then
+    return nil, 'Switch back to your own car first'
+  end
   local model = '?'
   pcall(function () model = tostring(veh:getJBeamFilename()) end)
 
@@ -2215,16 +2364,39 @@ local function localVehicleConfig()
     end
   end
 
-  local sig = 'model=' .. model
-    .. '|parts=' .. stableSerialize(parts)
-    .. '|vars='  .. stableSerialize(vars)
+  -- AN EMPTY PART LIST IS "NOT LOADED YET", NEVER A REAL CONFIGURATION.
+  --
+  -- This is the bug that made the Garage List reject the very car it had just
+  -- been given. onVehicleSpawned fires the moment the vehicle object appears,
+  -- and at that instant the vehicle's own Lua VM has not finished loading its
+  -- parts -- so getConfig() answers with nothing, the signature comes out as
+  -- 'model=X|parts=', and that matches no entry on any list. The report went out
+  -- one frame before the truth was knowable.
+  --
+  -- It was invisible until the deletion started working. A refused car used to
+  -- produce a message and nothing else (MP.RemoveVehicle was being handed the
+  -- wrong kind of id), so a spurious rejection at spawn cost nothing and was
+  -- never noticed. The moment the client began honoring the order, the same
+  -- spurious rejection deleted the car.
+  --
+  -- No BeamNG vehicle has zero parts, so there is no legitimate reading of this
+  -- other than "ask again in a moment". Saying nothing leaves the last good
+  -- declaration standing and the poll re-asks two seconds later.
+  if next(parts) == nil then return nil, 'The vehicle is still loading, try again' end
+
+  -- The byte layout of `sig` is unchanged from before the split, deliberately:
+  -- every entry already on disk was written in this exact form, so strict
+  -- matching keeps working across the upgrade with no re-capture at all.
+  local partsSig = 'model=' .. model .. '|parts=' .. stableSerialize(parts)
+  local sig      = partsSig .. '|vars=' .. stableSerialize(vars)
   local vid
   pcall(function () vid = veh:getID() end)
   return {
-    model = model,
-    label = configName and (model .. ' - ' .. configName) or model,
-    sig   = sig,
-    vid   = vid,
+    model    = model,
+    label    = configName and (model .. ' - ' .. configName) or model,
+    partsSig = partsSig,
+    sig      = sig,
+    vid      = vid,
   }
 end
 
@@ -2237,12 +2409,29 @@ local function reportVehicleConfig(force)
   if not inMultiplayer() then return end
   local cfg = localVehicleConfig()
   if not cfg then return end
+  -- Keyed on the FULL signature even though the server may only be matching the
+  -- parts half. The client is not told which mode is in force, and it must not
+  -- have to be: a tune that goes unreported here is a tune the server cannot
+  -- rule on if the admin switches to strict mid-evening.
   if not force and cfg.sig == lastReportedSig then return end
   lastReportedSig = cfg.sig
   TriggerServerEvent('RM_VehicleConfig', jsonEncode({
-    vid = cfg.vid, model = cfg.model, label = cfg.label, sig = cfg.sig,
+    vid = cfg.vid, model = cfg.model, label = cfg.label,
+    sig = cfg.sig, partsSig = cfg.partsSig,
     game = gameVersion(),
   }))
+end
+
+-- A car has just appeared: re-declare it, but not on this frame.
+--
+-- The forced report used to go out from onVehicleSpawned directly, which is one
+-- frame too early to know anything (see the part-list guard above). Arming the
+-- poll instead asks the same question shortly afterwards, when getConfig() can
+-- actually answer it. lastReportedSig is cleared so the answer counts as a
+-- change even if the driver respawned the identical car.
+local function armVehicleConfigReport()
+  lastReportedSig = nil
+  configCheckLeft = 1.0
 end
 
 -- Polls the local vehicle configuration. Applying a tune does not raise a
@@ -2264,13 +2453,14 @@ function M.whitelistCurrentVehicle()
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'The Garage List needs a BeamMP server' })
     return
   end
-  local cfg = localVehicleConfig()
+  local cfg, why = localVehicleConfig()
   if not cfg then
-    guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
+    guihooks.trigger('RaceManagerEditorMsg', { msg = why or 'Get in a vehicle first' })
     return
   end
   TriggerServerEvent('RM_WhitelistVehicle', jsonEncode({
-    model = cfg.model, label = cfg.label, sig = cfg.sig, game = gameVersion(),
+    model = cfg.model, label = cfg.label,
+    sig = cfg.sig, partsSig = cfg.partsSig, game = gameVersion(),
   }))
   log('I', 'raceManager', 'Whitelisting current vehicle: ' .. cfg.label)
 end
@@ -2291,6 +2481,44 @@ function M.setGarageEnforce(enabled)
   if inMultiplayer() then
     TriggerServerEvent('RM_SetGarageEnforce', jsonEncode({ enabled = enabled and true or false }))
   end
+end
+
+-- Which half of the signature the server matches on: 'parts' (model + parts,
+-- tuning and paint free) or 'strict' (model + parts + tuning). Anything else is
+-- refused server-side, so a stale UI cannot invent a third rule.
+function M.setGarageMode(mode)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetGarageMode', jsonEncode({ mode = tostring(mode or '') }))
+  end
+end
+
+-- The server ordered this client to drop the car it just refused.
+--
+-- WHY THE SERVER CANNOT DO THIS ITSELF: MP.RemoveVehicle wants BeamMP's own
+-- per-player vehicle id, the one handed to onVehicleSpawn. The id traveling on
+-- RM_VehicleConfig is veh:getID(), a BeamNG game object id from a different
+-- numbering space entirely, so the call matched nothing and failed silently
+-- inside its pcall. That is why a refused setup used to produce a red banner
+-- and no consequence whatsoever. The client knows which car is its own without
+-- any id at all, so the order is what crosses the wire and the deletion happens
+-- here.
+--
+-- Deliberately NOT removeLocalVehicle(): that one arms `removedVehicle` so the
+-- session end can put the car back, which is exactly wrong for a car that was
+-- refused. Nothing respawns an illegal setup.
+local function deleteOwnVehicleNow()
+  local veh = ownVehicle()
+  if not veh then return false end
+  local attached = playerVehicle()
+  -- core_vehicles.removeCurrent deletes whatever this client is ATTACHED to, so
+  -- it is only safe once that is known to be ours. Same guard as
+  -- removeLocalVehicle, same reason: otherwise a refused driver takes a rival's
+  -- car with them.
+  if core_vehicles and core_vehicles.removeCurrent
+      and attached and vehicleId(attached) == vehicleId(veh) then
+    if pcall(core_vehicles.removeCurrent) then return true end
+  end
+  return pcall(function () veh:delete() end)
 end
 
 -- ===========================================================================
@@ -2438,7 +2666,7 @@ local function respawnRemovedVehicle()
   -- SPAWN ON THE GRID SLOT, not where the car was taken away.
   --
   -- This is what welded the field together. A race removes cars AS THEY TAKE THE
-  -- FLAG, all within a few metres of the line, so respawning each at its own
+  -- FLAG, all within a few meters of the line, so respawning each at its own
   -- snapshot put the whole field down interpenetrated and BeamNG welds what it
   -- finds inside itself. The grid is spaced by construction. Falls back to the
   -- snapshot only when the track has no grid placed, covered by the ghosting
@@ -3038,7 +3266,7 @@ local function snapshotUpdate(dt)
 end
 
 -- Remember a teleport this mod just performed, so the vehicle-reset hook it
--- provokes can be recognised as our own doing rather than a driver reset.
+-- provokes can be recognized as our own doing rather than a driver reset.
 local function noteSelfTeleport(x, y, z)
   selfTeleport.left = TELEPORT_WINDOW
   selfTeleport.x, selfTeleport.y, selfTeleport.z = x, y, z
@@ -3082,7 +3310,7 @@ end
 -- teleport detector (objectTeleported(): "improved detection to reduce false
 -- positives/negatives in extreme cases (such as ... really fast vehicles)"), so
 -- an echo we used to hear on the same frame can now arrive a frame or two later
--- - and a car doing 250 km/h covers 2 metres in a frame and a half. Judged
+-- - and a car doing 250 km/h covers 2 meters in a frame and a half. Judged
 -- against a fixed 2 m the car would already be "somewhere else", the echo would
 -- be read as a driver reset, and a legitimately gridded or restored driver would
 -- be charged an allowance (or dragged back again). So the tolerance grows with
@@ -3266,7 +3494,7 @@ function pit.update(dt)
   -- A pit stop is something a driver PERFORMS. The trigger used to be the box
   -- alone, so a car that clipped a corner of a stall at racing speed was seized
   -- and frozen where it stood -- the stop happened TO them, in the middle of the
-  -- lane, at whatever angle they were travelling. Now the car has to actually be
+  -- lane, at whatever angle they were traveling. Now the car has to actually be
   -- stopped in the stall, which is the thing a pit stop is, and which puts the
   -- decision back with the driver: come in slowly enough to stop in the box, or
   -- run through it and go round again. Missing it costs nothing but the lap --
@@ -3339,7 +3567,7 @@ function pit.update(dt)
     end
   end
   -- The repair is a vehicle reset as far as BeamNG is concerned, and the reset
-  -- hook must recognise it as ours: a pit stop is not a driver reset and must
+  -- hook must recognize it as ours: a pit stop is not a driver reset and must
   -- never spend a reset allowance or be reported as one. noteSelfTeleport above
   -- is what covers it.
   pcall(function () veh:queueLuaCommand('recovery.recoverInPlace()') end)
@@ -3390,7 +3618,7 @@ local function groundAt(x, y, z)
   -- ground UNDER the gate, which is the only surface that has any claim to be
   -- called its ground.
   --
-  -- The first version of this started fifty metres ABOVE the gate and took the
+  -- The first version of this started fifty meters ABOVE the gate and took the
   -- first thing it hit on the way down, which is not the ground: it is whatever
   -- is HIGHEST in that column. A gate under a bridge got the bridge deck, a gate
   -- beside a building got the roof, a gate under trees got the canopy -- and
@@ -3420,7 +3648,7 @@ local function groundAt(x, y, z)
   -- So the probe walks UP in steps, and each ray is only long enough to reach
   -- back down to the point. The first step that hits anything has found the
   -- lowest surface the gate is under, which is the one it is buried in. A roof
-  -- forty metres overhead is never even reached, because the ray that could see
+  -- forty meters overhead is never even reached, because the ray that could see
   -- it is not cast until the shorter ones have already answered.
   for _, up in ipairs(TUNE.GROUND_RESCUE_STEPS) do
     local from = z + up
@@ -3432,7 +3660,7 @@ local function groundAt(x, y, z)
   return nil
 end
 
--- Lift a point so it clears the ground under it by at least `clear` metres.
+-- Lift a point so it clears the ground under it by at least `clear` meters.
 -- Points already higher than that are left exactly where they are: this rescues
 -- a buried thing without flattening a gate deliberately placed up on a bridge.
 local function liftAboveGround(x, y, z, clear)
@@ -3461,7 +3689,7 @@ local function lowerToGround(x, y, z, step, clear)
   return (want < floor) and floor or want
 end
 
--- "Last Checkpoint" reset mode: stand the car on a gate's centre, facing the
+-- "Last Checkpoint" reset mode: stand the car on a gate's center, facing the
 -- gate's direction of travel. The teleport is flagged as our own so the
 -- vehicle-reset echo it provokes is never miscounted, and the gate becomes the
 -- new "last good position" so a blocked follow-up reset restores there.
@@ -3622,10 +3850,10 @@ function M.onVehicleResetted(vehId)
       -- never had one to run out of.
       if session.maxResets == 0 then
         pushNotice('resetsout', 'No resets in this session',
-          { sub = 'You are on your own out there', colour = 'amber' })
+          { sub = 'You are on your own out there', color = 'amber' })
       else
         pushNotice('resetsout', "Uh oh! You're out of resets",
-          { sub = 'All ' .. session.maxResets .. ' used', colour = 'amber' })
+          { sub = 'All ' .. session.maxResets .. ' used', color = 'amber' })
       end
       log('W', 'raceManager', 'Reset blocked: allowance of ' .. session.maxResets
         .. ' exhausted (position ' .. (restored and 'restored' or 'NOT restored') .. ')')
@@ -3736,8 +3964,9 @@ end
 -- not be able to spawn a replacement until the session ends, so their new car
 -- is removed immediately. Other players' vehicles are left alone.
 function M.onVehicleSpawned(vehId)
-  -- Module 4: a new car means a new configuration to declare to the server.
-  reportVehicleConfig(true)
+  -- Module 4: a new car means a new configuration to declare to the server -
+  -- shortly, not now. Nothing about its parts is knowable on this frame.
+  armVehicleConfigReport()
   -- A car that appears while a field-wide ghost is in force is ghosted NOW, not
   -- whenever the two-second sweep next comes round. A mass respawn is precisely
   -- the moment cars appear, and a car that spawns solid in the middle of one --
@@ -4601,7 +4830,7 @@ end
 -- car and additionally explains itself, because that one has a driver waiting.
 function ghost.wouldWeld(vehId, veh)
   local c1, x1, y1, z1 = ghost.bounds(veh, TUNE.GHOST_OVERLAP_MARGIN)
-  local mine = ghost.centre(veh)
+  local mine = ghost.center(veh)
   -- A car the engine will not place at all is no evidence that anything is
   -- inside it, so it does not block. That asymmetry with ghost.occupied is
   -- deliberate: there, the car that cannot be located is OUR OWN and a driver
@@ -4631,7 +4860,7 @@ function ghost.wouldWeld(vehId, veh)
       if not okHit or hit then weld = true end
       return
     end
-    local theirs = ghost.centre(other)
+    local theirs = ghost.center(other)
     if not (mine and theirs) then return end
     local dx, dy, dz = mine.x - theirs.x, mine.y - theirs.y, mine.z - theirs.z
     if (dx * dx + dy * dy + dz * dz)
@@ -4665,7 +4894,7 @@ function ghost.alphaFor(vehId)
 end
 
 -- The oriented bounding box of a car, as the four vectors overlapsOBB_OBB wants,
--- with `margin` metres added to every half-extent.
+-- with `margin` meters added to every half-extent.
 --
 -- getSpawnWorldOOBB is the box BeamNG's own spawn-occupancy test uses
 -- (lua/ge/spawn.lua). It is an ORIENTED box: a car lying crossways through
@@ -4732,7 +4961,7 @@ end
 
 -- Where a car is, when nothing will say how big it is. Used only by the
 -- last-resort distance test below.
-function ghost.centre(veh)
+function ghost.center(veh)
   if not veh then return nil end
   local ok, p = pcall(function () return veh:getPosition() end)
   if not ok or not p then return nil end
@@ -4789,7 +5018,7 @@ end
 
 function ghost.occupied(vehId, veh)
   local c1, x1, y1, z1 = ghost.bounds(veh, TUNE.GHOST_OVERLAP_MARGIN)
-  local mine = ghost.centre(veh)
+  local mine = ghost.center(veh)
   -- Nothing to measure ourselves against and nowhere to stand: we genuinely
   -- know nothing, so we stay ghosted. This is the only remaining way to be
   -- blocked without another car being involved, and a car with no position at
@@ -4838,12 +5067,12 @@ function ghost.occupied(vehId, veh)
       return
     end
     -- One of the two cannot be measured. That is NOT the same as being inside
-    -- it: a car we cannot size up but which is fifty metres away is plainly not
+    -- it: a car we cannot size up but which is fifty meters away is plainly not
     -- overlapping anything. Treating every measurement failure as an overlap is
     -- what left drivers ghosted for a whole race, because it could never
     -- resolve -- so the fallback is a real (if blunt) test rather than a
     -- verdict. The radius comfortably contains the largest vehicle pair.
-    local theirs = ghost.centre(other)
+    local theirs = ghost.center(other)
     if not (mine and theirs) then
       reason = 'a nearby car cannot be located'
       blocked = true
@@ -5324,7 +5553,7 @@ local function ghostUpdate(dt)
   -- --- cars still waiting to go solid ------------------------------------
   -- A ghost whose reasons have all gone but which had a car inside it when the
   -- moment came. Retried until the space is clear, because "not while somebody
-  -- is inside you" is the whole rule and a timer cannot honour it.
+  -- is inside you" is the whole rule and a timer cannot honor it.
   --
   -- Faster than the re-assert sweep below and slower than a frame: a driver
   -- rolling clear should get their collisions back promptly, and the check
@@ -5364,7 +5593,7 @@ end
 -- and perpendicular to the direction of travel. Nothing else - no poles, no
 -- cage - so what an admin sees on track is the real trigger, and raising the
 -- height visibly grows the box up the banking.
--- Colours, built once on the first draw rather than at file scope.
+-- Colors, built once on the first draw rather than at file scope.
 --
 -- ColorF/ColorI are engine constructors and do not exist while this file is
 -- being loaded (nor in the headless tests), so they cannot be plain constants --
@@ -5580,7 +5809,7 @@ local function activeEditorRoute()
   return track.route
 end
 
--- Nudge mode's behaviour. The table itself is declared at the top of the file,
+-- Nudge mode's behavior. The table itself is declared at the top of the file,
 -- beside `branch`, because the frame loop and the drawing code both reach it and
 -- both run above this point: a local declared here would be a nil GLOBAL to
 -- them, which compiles cleanly and fails only when somebody drags a gate.
@@ -5712,7 +5941,7 @@ function nudge.set(on)
 end
 
 -- Nearest gate to the cursor ray, by perpendicular distance from the ray to the
--- gate's centre. Behind the camera does not count: a gate at your back is
+-- gate's center. Behind the camera does not count: a gate at your back is
 -- geometrically close to the ray running through it and is never what you meant.
 function nudge.pick(list, ray)
   if not (ray and ray.pos and ray.dir) then return nil end
@@ -5736,7 +5965,7 @@ end
 
 -- Turn a gate in place. Heading is a unit vector on the ground plane, and the
 -- gate's rectangle is built perpendicular to it, so rotating this rotates the
--- gate. Renormalised every time because repeated rotation of a stored pair
+-- gate. Renormalized every time because repeated rotation of a stored pair
 -- drifts off the unit circle, and a heading that is not unit length silently
 -- changes how wide the gate tests.
 function nudge.turn(wp, radians)
@@ -5751,7 +5980,7 @@ end
 
 -- Move a gate to a point on the ground, keeping the height it was authored at.
 -- The raycast lands ON the terrain, and a gate dropped to ground level is a gate
--- whose lower half is buried: what matters is the height of its CENTRE above the
+-- whose lower half is buried: what matters is the height of its CENTER above the
 -- road, which is what the original placement captured from the car.
 -- `newGround` is the ground at the DESTINATION, and passing it is what stops a
 -- gate climbing a tree.
@@ -5769,8 +5998,8 @@ end
 --
 -- THIS IS WHAT A DRAG FOLLOWS, instead of the raycast against the world. A
 -- raycast hit jumps: drag across a treeline and it flips between the ground and
--- the canopy twenty metres higher, so a centimetre of mouse movement reads as
--- metres of travel, in a direction nobody asked for. Dragging over woodland was
+-- the canopy twenty meters higher, so a centimeter of mouse movement reads as
+-- meters of travel, in a direction nobody asked for. Dragging over woodland was
 -- unusable for exactly that reason.
 --
 -- A plane at the gate's own height has none of that. It is continuous, it
@@ -5799,7 +6028,7 @@ end
 -- Which way should a gate placed by clicking face?
 --
 -- Driving answers this for free: the car IS the heading. A click has no
--- direction of its own, so it takes the one the route is already travelling,
+-- direction of its own, so it takes the one the route is already traveling,
 -- from the previous gate toward the new point. Clicking along a road in order
 -- then produces gates that face the way the road goes, which is the whole reason
 -- this is faster than driving a long track.
@@ -5834,7 +6063,7 @@ function nudge.place(list, hit, ray)
   local x, y = hit.pos.x, hit.pos.y
   -- THE RAY LANDS ON THE GROUND, AND A GATE MUST NOT.
   --
-  -- A gate placed by DRIVING takes the car's origin, which is about half a metre
+  -- A gate placed by DRIVING takes the car's origin, which is about half a meter
   -- up. A click takes the raycast hit, which is the terrain surface itself, so
   -- clicked gates sat lower than driven ones on the same track -- far enough
   -- that a Last Checkpoint reset onto one put the car half in the dirt, and on a
@@ -5969,12 +6198,12 @@ function nudge.update()
 
   -- A CLICK THAT PICKS NOTHING LEAVES THE SELECTION ALONE.
   --
-  -- It used to clear it, and that is what greyed the movement buttons out the
+  -- It used to clear it, and that is what grayed the movement buttons out the
   -- instant one was pressed: the panel is a CEF overlay, so the press arrives
   -- here as a world click too, the ray behind the panel hits no gate, and the
   -- gate being worked on was dropped. Pressing Up therefore disabled Up.
   --
-  -- Keeping it is the better behaviour on its own terms too. A miss is ambiguous
+  -- Keeping it is the better behavior on its own terms too. A miss is ambiguous
   -- -- the panel, a mis-aim, a gate hidden behind another -- and none of those
   -- are a request to forget what is being edited. Picking a different gate still
   -- switches, and leaving the mode still clears.
@@ -5991,7 +6220,7 @@ function nudge.update()
     -- point, never TO where the cursor ray happens to land. Those are only the
     -- same thing when the ray lands exactly on the gate, and it never does: a
     -- gate is a debug drawing with no collision, so the ray goes straight
-    -- through it to the ground behind, which from any raised camera is metres
+    -- through it to the ground behind, which from any raised camera is meters
     -- away and at whatever height is under THERE.
     --
     -- Moving TO the landing point is what teleported a gate under the map the
@@ -6350,7 +6579,7 @@ end
 -- Move a placed gate to where the car is standing, and stand the car on a
 -- placed gate. The same pair the starting grid has had all along -- an editor
 -- where a marker can be placed but never adjusted means deleting and re-driving
--- the whole route to fix one gate that landed a metre wide.
+-- the whole route to fix one gate that landed a meter wide.
 --
 -- Both work on whichever list the editor is pointed at, so they serve the main
 -- route, the joker route and the pit stalls without three copies of the code.
@@ -6521,8 +6750,8 @@ branch.gridTool = {
   generated = false,   -- was this grid laid out by the generator?
   anchor    = nil,     -- { x, y, z, hx, hy } the row-1 slot it was built from
   count     = 0,
-  spacing   = 8,       -- metres between rows
-  stagger   = 6,       -- metres between the cars ACROSS a row
+  spacing   = 8,       -- meters between rows
+  stagger   = 6,       -- meters between the cars ACROSS a row
   width     = 2,       -- cars per row
 }
 
@@ -6530,7 +6759,7 @@ branch.gridTool = {
 -- Nothing here is novel geometry: it is a placement plus arithmetic on the
 -- heading it already carries.
 --
--- The row is CENTRED on the anchor, whatever it is made of. Two abreast puts a
+-- The row is CENTERD on the anchor, whatever it is made of. Two abreast puts a
 -- car half a gap either side of where the creator stood; three puts one on that
 -- spot and one either side; one puts every car on it, single file. Centring is
 -- what makes the width a free choice -- a row that grew off one edge would walk
@@ -6538,7 +6767,7 @@ branch.gridTool = {
 -- into the wall.
 --
 -- `stagger` is the gap between ADJACENT cars across a row, not the distance from
--- some centre line. That is the measurement a creator can actually check against
+-- some center line. That is the measurement a creator can actually check against
 -- the track: it is how much room each car has beside the one next to it.
 function branch.layOutGrid(anchor, count, spacing, stagger, width, replace)
   local fx, fy = anchor.hx, anchor.hy
@@ -6570,7 +6799,7 @@ function branch.layOutGrid(anchor, count, spacing, stagger, width, replace)
     local x = anchor.x - fx * back + rx * side
     local y = anchor.y - fy * back + ry * side
     -- Probed from the ANCHOR's height rather than the slot's, because the slot
-    -- has no height yet. A probe that starts fifty metres above the anchor still
+    -- has no height yet. A probe that starts fifty meters above the anchor still
     -- clears anything the grid is being laid across.
     local g = groundAt(x, y, anchor.z)
     track.startPositions[#track.startPositions + 1] = {
@@ -7076,7 +7305,7 @@ end
 
 -- --- Free practice ---------------------------------------------------------
 
--- Pull up an approved track to practise on. Any player, admin or not.
+-- Pull up an approved track to practice on. Any player, admin or not.
 --
 -- The same RM_LoadLayout event with a different flag, rather than a channel of
 -- its own: it is the same question ("send me this track"), and the server
@@ -7269,12 +7498,12 @@ local function onServerUpdate(rawData)
     -- speed, and "RED FLAG" is the part that has to survive a glance.
     if session.raceFlag == 'red' then
       pushNotice('flag', 'RED FLAG',
-        { sub = 'Stop where you are and wait', colour = 'red' })
+        { sub = 'Stop where you are and wait', color = 'red' })
     elseif session.raceFlag == 'yellow' then
       pushNotice('flag', 'YELLOW FLAG',
-        { sub = 'Caution: race back to the line', colour = 'yellow' })
+        { sub = 'Caution: race back to the line', color = 'yellow' })
     else
-      pushNotice('flag', 'GREEN FLAG', { sub = 'Racing', colour = 'green' })
+      pushNotice('flag', 'GREEN FLAG', { sub = 'Racing', color = 'green' })
     end
   end
   -- Per-player admin status. Present only on a targeted reply (RM_RequestState),
@@ -7293,7 +7522,27 @@ local function onServerUpdate(rawData)
   local wasFinalLap = finalLap
   finalLap = data.finalLap == true
   if finalLap and not wasFinalLap then
-    pushNotice('session', 'TIME EXPIRED: FINAL LAP. Your session ends as you cross the line.')
+    -- Same flag, two sessions, and the sentence has to say which. In qualifying
+    -- the clock expiring IS the final lap; in a race this is the checkered flag
+    -- falling after the leader is already home.
+    pushNotice('session', session.phase == 'qualifying'
+      and 'TIME EXPIRED: FINAL LAP. Your session ends as you cross the line.'
+      or  'CHECKERED FLAG: the winner is home. Your race ends as you cross the line.')
+  end
+
+  -- TIMED RACE, both edges. Read off the state broadcast for the same reason
+  -- finalLap is: a client that joins or reconnects mid-race is told, and the
+  -- edge test is what keeps a 3 Hz broadcast from repeating the notice several
+  -- times a second.
+  local wasExpired, wasLastLap = session.raceExpired, session.lastLapNum
+  session.raceExpired = data.raceExpired == true
+  session.lastLapNum  = (type(data.lastLapNum) == 'number') and data.lastLapNum or nil
+  if type(data.raceMode) == 'string' then session.raceMode = data.raceMode end
+  if session.raceExpired and not wasExpired and not session.lastLapNum then
+    pushNotice('session', 'TIME UP: the FINAL LAP starts when the leader takes the line.')
+  end
+  if session.lastLapNum and not wasLastLap then
+    pushNotice('session', 'FINAL LAP: finish lap ' .. session.lastLapNum .. ' to take the flag.')
   end
   -- Race entry + qualifying rules.
   if type(data.pointToPoint) == 'boolean' then track.pointToPoint = data.pointToPoint end
@@ -7371,12 +7620,22 @@ local function onServerUpdate(rawData)
     -- Any session transition re-arms local detection from a clean slate:
     -- lap 1 starts at the line, from the grid, for both kinds of session.
     resetLapTracking()
-    -- Qualifying opens on the out lap, so say so at the moment the lights go
-    -- out. The lap readout carries it for the whole lap; this is the one push
-    -- that arrives while the driver is still stationary and reading.
-    if newPhase == 'qualifying' and qualiOutLap then
+    -- A session that owes an out lap says so at the moment the lights go out.
+    -- The lap readout carries it for the whole lap; this is the one push that
+    -- arrives while the driver is still stationary and reading.
+    --
+    -- BOTH SESSION KINDS, which it did not use to be. onOutLap() dropped its
+    -- phase test when a race gridded away from the line started owing one too,
+    -- and this push kept it -- so the race case existed ONLY as the server's
+    -- chat line, on the reasoning that chat "reaches a driver who has not opened
+    -- the app". It does not reach one who has not opened chat, which is most of
+    -- them. The two branches mirror the server's two exactly.
+    if qualiOutLap and newPhase == 'qualifying' then
       pushNotice('session',
         'OUT LAP: this lap is NOT timed. Timing starts as you cross the line.')
+    elseif qualiOutLap and newPhase == 'racing' then
+      pushNotice('session',
+        'Your first lap COUNTS but is not timed: a standing start is not a lap time.')
     end
     -- Leaving the start procedure must never leave a car frozen.
     if newPhase ~= 'grid' and newPhase ~= 'countdown' then releaseGridHold('race') end
@@ -7559,7 +7818,7 @@ local function onForceSpectate(rawData)
       -- No approach flash happened: the driver was retired by something other
       -- than crossing the line (time expired, a DNF, an admin ending it), so
       -- this is the first and only time they see it.
-      pushNotice('flag', 'CHECKERED FLAG', { sub = placed, colour = 'checkered' })
+      pushNotice('flag', 'CHECKERED FLAG', { sub = placed, color = 'checkered' })
     end
   end
 end
@@ -7589,14 +7848,31 @@ local function onReleaseSpectate(rawData)
 end
 
 -- --- Module 4: the server refused this client's vehicle/setup --------------
+--
+-- Two outcomes on one event. `remove` is the ordinary case: the car goes, here,
+-- because the server cannot delete it itself (see deleteOwnVehicleNow). Without
+-- it the driver is told the setup is illegal and keeps driving it, which is what
+-- the whole feature was doing before.
+--
+-- `remove` false is the ADMIN case. An admin who is also racing gets the same
+-- message and the same audit entry on the server, and keeps their car: they
+-- have to be able to drive an unapproved setup to capture it in the first
+-- place. Told, listed, not kicked.
 local function onVehicleRejected(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   local msg = (ok and type(data) == 'table' and data.message)
     and tostring(data.message) or 'Vehicle/Setup not allowed in this session.'
   local detail = (ok and type(data) == 'table' and data.detail) and tostring(data.detail) or ''
+  local remove = ok and type(data) == 'table' and data.remove == true
   guihooks.trigger('RaceManagerVehicleError', { message = msg, detail = detail })
-  pushNotice('vehicle', msg)
-  log('W', 'raceManager', 'Vehicle rejected by the server: ' .. msg .. ' (' .. detail .. ')')
+  -- The detail rides as `sub` so the HUD copy carries it. The notice strip
+  -- shows only `msg` (sub is a flash-template field), and the red banner above
+  -- already prints the detail on its own line, so nothing is lost by it.
+  pushNotice('vehicle', msg, { sub = detail ~= '' and detail or nil })
+  local gone = false
+  if remove then gone = deleteOwnVehicleNow() end
+  log('W', 'raceManager', 'Vehicle rejected by the server: ' .. msg .. ' (' .. detail .. ')'
+    .. (remove and (gone and ' [car deleted]' or ' [CAR NOT DELETED]') or ' [advisory only]'))
 end
 
 -- Server confirmed (or refused) a Whitelist Current Vehicle capture.
@@ -7693,7 +7969,7 @@ local function onApplyLayout(rawData)
         local d = tonumber(cp.depth)  or data.depth
         if d == nil and h ~= nil then
           -- A layout saved before height and depth were separate. Back then
-          -- height was the FULL span, centred on the placement point, so half of
+          -- height was the FULL span, centerd on the placement point, so half of
           -- it goes each way. Converted HERE, once, as it loads, which means the
           -- gate keeps the exact shape it has always had and the next save
           -- writes it in the new form.
@@ -8059,6 +8335,22 @@ function M.setGhostQuali(enabled)
 end
 
 -- Session length: a lap count, a time limit, or neither (0 = unlimited).
+-- A race runs to a lap count or to a clock, never both. Sending 0 seconds is
+-- what puts it back on laps, which is exactly what the panel's mode toggle does.
+-- `mode` is 'laps', 'timed' or 'endurance'. Sent explicitly rather than left to
+-- be inferred from which number is non-zero, because endurance has BOTH set and
+-- there is no reading of two numbers that tells it apart from the other two.
+function M.setRaceLimits(laps, seconds, mode)
+  laps    = math.max(math.floor(tonumber(laps) or 0), 0)
+  seconds = math.max(math.floor(tonumber(seconds) or 0), 0)
+  mode    = tostring(mode or '')
+  if mode ~= 'laps' and mode ~= 'timed' and mode ~= 'endurance' then mode = 'laps' end
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetRaceLimits',
+      jsonEncode({ laps = laps, seconds = seconds, mode = mode }))
+  end
+end
+
 function M.setQualiLimits(laps, seconds)
   laps    = math.max(math.floor(tonumber(laps) or 0), 0)
   seconds = math.max(math.floor(tonumber(seconds) or 0), 0)
@@ -8073,7 +8365,7 @@ end
 function M.setGridMode(mode)
   mode = tostring(mode or 'quali')
   -- Every mode the server accepts has to be named here too. This list was left
-  -- behind when reverse grids were added, so pressing Reverse normalised to
+  -- behind when reverse grids were added, so pressing Reverse normalized to
   -- 'quali' on the way out and the panel lit Quali back up -- a dead button that
   -- looked like it had picked the wrong one.
   if mode ~= 'random' and mode ~= 'custom' and mode ~= 'reverse' then mode = 'quali' end
@@ -8445,13 +8737,13 @@ function M.onFilteredInputChanged(devName, action, value)
   if inMultiplayer() then TriggerServerEvent('RM_ResetDenied', '') end
   if derbyResetsEnforced() then
     pushNotice('resetsout', "Uh oh! You're out of resets",
-      { sub = 'All ' .. derbyResets.max .. ' derby resets used', colour = 'amber' })
+      { sub = 'All ' .. derbyResets.max .. ' derby resets used', color = 'amber' })
   elseif session.maxResets == 0 then
     pushNotice('resetsout', 'No resets in this session',
-      { sub = 'You are on your own out there', colour = 'amber' })
+      { sub = 'You are on your own out there', color = 'amber' })
   else
     pushNotice('resetsout', "Uh oh! You're out of resets",
-      { sub = 'All ' .. session.maxResets .. ' used', colour = 'amber' })
+      { sub = 'All ' .. session.maxResets .. ' used', color = 'amber' })
   end
   log('W', 'raceManager', 'Reset key pressed with no allowance left (input filtered)')
 end

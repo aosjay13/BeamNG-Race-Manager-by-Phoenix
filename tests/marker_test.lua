@@ -120,7 +120,7 @@ end
 -- five of them is a quarter of a second long and never counts: the gates all
 -- register, nextWp cycles correctly, and localLap sits on 1 forever.
 --
--- The time is burned at y=105 -- just past gate 1, and ninety-five metres from
+-- The time is burned at y=105 -- just past gate 1, and ninety-five meters from
 -- the line, which is well outside the white-flag radius. Coasting anywhere
 -- inside that radius would trip the very thing under test.
 local function coast(seconds)
@@ -205,7 +205,7 @@ check(lapReports == 0, 'and reports no lap')
 -- Asserted the instant the line is crossed, and NOT after repositioning the car
 -- for the next case: gates score in both directions, so driving back to the
 -- start from beyond the line re-crosses gate 1 backwards and arms slot 2 again.
--- That is correct behaviour and it hides this result.
+-- That is correct behavior and it hides this result.
 coast(2.5)
 moveTo(195); moveTo(205)
 check(routeState().nextWp == 1, 'the lap still completes normally around it')

@@ -274,6 +274,14 @@ if plainPath then os.remove(plainPath) end
 local SIG_A = 'model=etk800|parts=body=etk800_body;engine=etk800_engine|vars=camber=-1.5000'
 local SIG_B = 'model=etk800|parts=body=etk800_body;engine=etk800_engine|vars=camber=-3.0000'
 
+-- START FROM A KNOWN GARAGE. This section persists to garage.json by design, so
+-- a run that dies partway leaves entries behind and the next run fails its first
+-- four checks for reasons that have nothing to do with the code being tested.
+os.remove('Resources/Server/RaceManager/garage.json')
+dofile('server/RaceManager/main.lua')
+onInit()
+adminLogin(1)
+
 -- Unauthenticated capture attempts are dropped.
 RM_onWhitelistVehicle(3, '{"model":"pigeon","label":"Pigeon","sig":"nope"}')
 check(lastState.garage == nil or #lastState.garage == 0,
@@ -301,32 +309,132 @@ check(lastState.garageEnforce == true, 'enforcement switched on')
 RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"' .. SIG_A .. '"}')
 check(rejected[3] == nil, 'the exact approved setup is allowed')
 
--- Same car, different tune: rejected and deleted.
+-- ---------------------------------------------------------------------------
+-- Parts mode (the default): the parts are the rule, the tune is not
+-- ---------------------------------------------------------------------------
+-- SIG_A and SIG_B are the same car with the same parts on a different camber
+-- setting. That is a legal setup change in a spec series and an illegal one in
+-- a one-make cup, which is the whole reason the mode exists.
+rejected = {}
+check(lastState.garageMode == 'parts', 'parts is the default enforcement mode')
 RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"' .. SIG_B .. '"}')
+check(rejected[3] == nil, 'in parts mode a re-tune of an approved car is allowed')
+
+-- The parts half is recovered from a one-signature (pre-split) client, so an
+-- older client is not locked out of a mode it knows nothing about.
+rejected = {}
+RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","partsSig":'
+  .. '"model=etk800|parts=body=etk800_body;engine=etk800_engine","sig":"' .. SIG_B .. '"}')
+check(rejected[3] == nil, 'a client sending both signatures matches on the parts half')
+
+-- Swap a part and it is refused, tune or no tune.
+rejected = {}
+RM_onVehicleConfig(3, '{"vid":7,"model":"etk800",'
+  .. '"sig":"model=etk800|parts=body=etk800_body;engine=v8_swap|vars=camber=-1.5000"}')
 check(rejected[3] ~= nil
   and rejected[3].message == 'Vehicle/Setup not allowed in this session.',
-  'a non-approved tune of an approved car is rejected with the exact error text')
-check(#removedVehicles == 1 and removedVehicles[1].pid == 3 and removedVehicles[1].vid == 7,
-  'the offending vehicle is removed from the server')
+  'a part swap on an approved car is rejected with the exact error text')
+check(rejected[3].detail:find('Parts', 1, true),
+  'and the refusal names the mode, so the driver knows what to undo')
+check(rejected[3].remove == true, 'the client is ordered to delete the car')
+check(#removedVehicles == 0,
+  'MP.RemoveVehicle is NOT called on the config path: the id there is a BeamNG '
+  .. 'game object id, not a BeamMP one, so the client is the one that deletes it')
 
--- Spawn hook: a model that is not on the list at all is cancelled outright.
+-- ---------------------------------------------------------------------------
+-- Strict mode: the tune is the rule as well
+-- ---------------------------------------------------------------------------
+RM_onSetGarageMode(1, '{"mode":"strict"}')
+check(lastState.garageMode == 'strict', 'enforcement mode switched to strict')
+rejected = {}
+RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"' .. SIG_A .. '"}')
+check(rejected[3] == nil, 'the exact captured tune is still allowed in strict mode')
+rejected = {}
+RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"' .. SIG_B .. '"}')
+check(rejected[3] ~= nil, 'the same parts on a different tune are refused in strict mode')
+check(rejected[3].detail:find('Strict', 1, true), 'and the refusal names strict mode')
+
+RM_onSetGarageMode(1, '{"mode":"nonsense"}')
+check(lastState.garageMode == 'strict', 'an unrecognized mode is refused, not applied')
+RM_onSetGarageMode(3, '{"mode":"parts"}')
+check(lastState.garageMode == 'strict', 'setting the mode requires authentication')
+RM_onSetGarageMode(1, '{"mode":"parts"}')
+check(lastState.garageMode == 'parts', 'and back to parts')
+
+-- Spawn hook: a model that is not on the list at all is canceled outright.
 rejected = {}; removedVehicles = {}
-local cancelled = RM_onVehicleSpawn(3, 12, '5-1{"jbm":"pigeon","vcf":{"parts":{}}}')
-check(cancelled == 1, 'spawning an unlisted model is cancelled')
+local canceled = RM_onVehicleSpawn(3, 12, '5-1{"jbm":"pigeon","vcf":{"parts":{}}}')
+check(canceled == 1, 'spawning an unlisted model is canceled')
 check(rejected[3] ~= nil, 'the spawning player is told why')
 check(RM_onVehicleSpawn(3, 13, '5-2{"jbm":"etk800","vcf":{"parts":{}}}') == nil,
   'spawning an approved model passes the model-level check')
 
--- Editing into an unlisted model is cancelled too.
+-- Editing into an unlisted model is canceled too.
 check(RM_onVehicleEdited(3, 13, '5-2{"jbm":"barstow","vcf":{"parts":{}}}') == 1,
-  'editing into an unlisted model is cancelled')
+  'editing into an unlisted model is canceled')
 
--- Admins are exempt, so they can spawn the car they are about to whitelist.
+-- NOBODY IS EXEMPT, admins included. This reverses how the split first shipped:
+-- an admin used to be told and listed but keep the car. Building the list is
+-- done with Enforcing switched off instead, and an empty list never enforces
+-- anything, so neither of the cases the exemption existed for needs it.
 rejected = {}
-check(RM_onVehicleSpawn(1, 20, '1-1{"jbm":"pigeon","vcf":{"parts":{}}}') == nil,
-  'authenticated admins bypass the garage check')
-RM_onVehicleConfig(1, '{"vid":20,"model":"pigeon","sig":"unknown"}')
-check(rejected[1] == nil, 'admin setups are never rejected')
+check(RM_onVehicleSpawn(1, 20, '1-1{"jbm":"pigeon","vcf":{"parts":{}}}') == 1,
+  'an admin spawning an unlisted model is canceled like anyone else')
+rejected = {}; removedVehicles = {}
+RM_onVehicleConfig(1, '{"vid":20,"model":"pigeon","sig":"model=pigeon|parts=body=x|vars="}')
+check(rejected[1] ~= nil, 'an admin in an unapproved car is refused')
+check(rejected[1].remove == true, 'and is ordered to delete it, exactly like a driver')
+-- Put the admin back in something legal so the later grid audit is about the
+-- driver under test and not about this.
+RM_onVehicleConfig(1, '{"vid":20,"model":"etk800","sig":"' .. SIG_A .. '"}')
+
+-- ---------------------------------------------------------------------------
+-- A signature with no parts in it is never ruled on
+-- ---------------------------------------------------------------------------
+-- THE BUG THAT REFUSED THE CAR THE LIST WAS BUILT FROM. onVehicleSpawned used
+-- to report on the frame the vehicle object appeared, before BeamNG had loaded
+-- its parts, so the client sent 'model=X|parts=' - which matches no entry on any
+-- list. That cost nothing while the deletion was broken and deleted the car the
+-- moment it started working.
+rejected = {}; removedVehicles = {}
+RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"model=etk800|parts=|vars="}')
+check(rejected[3] == nil,
+  'a report with an empty part list is ignored, not refused')
+RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","partsSig":"model=etk800|parts=",'
+  .. '"sig":"model=etk800|parts=|vars=camber=-1.5000"}')
+check(rejected[3] == nil, 'and the same when the client sends both signatures')
+
+-- The standing verdict survives it: "ask again in a moment" must not blank a
+-- ruling the panel is already showing.
+RM_onVehicleConfig(3, '{"vid":7,"model":"etk800",'
+  .. '"sig":"model=etk800|parts=body=etk800_body;engine=v8_swap|vars=camber=-1.5000"}')
+RM_onGenerateGrid(1)
+garageMsg = nil
+RM_onStartCountdown(1)
+check(garageMsg ~= nil and garageMsg.message:find('Cara', 1, true), 'the offender is listed')
+RM_onEndRace(1)
+RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"model=etk800|parts=|vars="}')
+RM_onGenerateGrid(1)
+garageMsg = nil
+RM_onStartCountdown(1)
+check(garageMsg ~= nil and garageMsg.message:find('Cara', 1, true),
+  'and an empty report afterwards leaves that ruling standing')
+RM_onEndRace(1)
+
+-- ---------------------------------------------------------------------------
+-- The model is matched on the bare jbeam name
+-- ---------------------------------------------------------------------------
+-- The list stores whatever veh:getJBeamFilename() returned and the spawn packet
+-- carries "jbm". Nothing promises those agree on case, on a leading path or on
+-- the extension, and a disagreement refuses a car that is plainly listed.
+rejected = {}
+RM_onWhitelistVehicle(1, '{"model":"/vehicles/covet/covet.jbeam","label":"Covet - Path",'
+  .. '"sig":"model=covet|parts=body=covet_body|vars="}')
+check(RM_onVehicleSpawn(3, 41, '5-4{"jbm":"covet","vcf":{"parts":{}}}') == nil,
+  'a path-and-extension model on the list matches a bare jbm on the packet')
+check(RM_onVehicleSpawn(3, 42, '5-5{"jbm":"COVET","vcf":{"parts":{}}}') == nil,
+  'and the comparison ignores case')
+RM_onRemoveGarageEntry(1, '{"index":2}')
 
 -- ---------------------------------------------------------------------------
 -- A Garage List captured before a BeamNG update that renamed vehicle parts
@@ -337,12 +445,14 @@ check(rejected[1] == nil, 'admin setups are never rejected')
 -- Nothing on the server can repair that (only a re-capture can), so the
 -- rejection has to name the cause.
 rejected = {}; removedVehicles = {}
+local SUN_OLD = 'model=sunburst|parts=body=sunburst_body;engine=sunburst_engine|vars='
+local SUN_NEW = 'model=sunburst|parts=body=sunburst_bodyshell;engine=sunburst_i4|vars='
 RM_onWhitelistVehicle(1,
-  '{"model":"sunburst","label":"Sunburst - Cup","sig":"' .. SIG_A .. 'sun","game":"0.38"}')
+  '{"model":"sunburst","label":"Sunburst - Cup","sig":"' .. SUN_OLD .. '","game":"0.38"}')
 check(#lastState.garage == 2, 'a capture carrying a game version is stored')
 
 -- Same model, signature built from the renamed parts, driver on the new build.
-RM_onVehicleConfig(3, '{"vid":9,"model":"sunburst","sig":"renamed parts","game":"0.39"}')
+RM_onVehicleConfig(3, '{"vid":9,"model":"sunburst","sig":"' .. SUN_NEW .. '","game":"0.39"}')
 check(rejected[3] ~= nil, 'a signature built from renamed parts is still rejected')
 check(rejected[3].detail:find('0.38', 1, true)
   and rejected[3].detail:find('0.39', 1, true)
@@ -351,17 +461,23 @@ check(rejected[3].detail:find('0.38', 1, true)
 check(rejected[3].message == 'Vehicle/Setup not allowed in this session.',
   'the driver-facing message is unchanged')
 
--- Same build on both sides: an ordinary "that tune is not allowed" rejection.
+-- Same build on both sides: an ordinary "that car is not allowed" rejection.
+-- Asserted as "does not blame the game version" rather than on the exact
+-- sentence, because the plain wording names the enforcement mode now and that
+-- text is meant to be free to improve.
 rejected = {}
-RM_onVehicleConfig(3, '{"vid":9,"model":"sunburst","sig":"some other tune","game":"0.38"}')
-check(rejected[3] ~= nil and rejected[3].detail == 'setup signature not on the Garage List',
+RM_onVehicleConfig(3, '{"vid":9,"model":"sunburst","sig":"' .. SUN_NEW .. '","game":"0.38"}')
+check(rejected[3] ~= nil and not rejected[3].detail:find('re%-capture'),
   'a mismatch on the same build keeps the plain wording')
+check(rejected[3].detail:find('Parts', 1, true), 'and names the mode in force')
 
 -- Entries captured before the version was recorded at all are never blamed on
--- a version skew.
+-- a version skew. A PART SWAP, not a re-tune: in parts mode a re-tune is legal,
+-- so it would never reach a rejection to check the wording of.
 rejected = {}
-RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"' .. SIG_B .. '","game":"0.39"}')
-check(rejected[3] ~= nil and rejected[3].detail == 'setup signature not on the Garage List',
+RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","game":"0.39",'
+  .. '"sig":"model=etk800|parts=body=etk800_body;engine=v8_swap|vars=camber=-1.5000"}')
+check(rejected[3] ~= nil and not rejected[3].detail:find('re%-capture'),
   'an entry with no recorded build is never reported as a version skew')
 
 RM_onRemoveGarageEntry(1, '{"index":2}')
@@ -419,15 +535,125 @@ check(#lastState.garage == 0, 'garage entry removed')
 check(RM_onVehicleSpawn(3, 30, '5-3{"jbm":"pigeon","vcf":{"parts":{}}}') == nil,
   'an empty garage never blocks anyone even with enforcement on')
 
--- Persistence across a server restart.
+-- ---------------------------------------------------------------------------
+-- The grid audit: who starts a race in a car the list does not cover
+-- ---------------------------------------------------------------------------
+-- Reports and does not act. The live check has already taken the car off any
+-- non-admin, so anyone still listed at the lights is a case it could not act
+-- on, and pulling a car off the grid during the countdown is worse for the race
+-- than starting with one wrong setup in it.
 RM_onWhitelistVehicle(1, '{"model":"etk800","label":"ETK 800 - Race","sig":"' .. SIG_A .. '"}')
+RM_onSetGarageEnforce(1, '{"enabled":true}')
+rejected = {}; garageMsg = nil; removedVehicles = {}
+RM_onVehicleConfig(2, '{"vid":8,"model":"etk800","label":"ETK 800 - Illegal",'
+  .. '"sig":"model=etk800|parts=body=etk800_body;engine=v8_swap|vars=camber=-1.5000"}')
+check(rejected[2] ~= nil, 'the offender was told at the moment they declared')
+RM_onGenerateGrid(1)
+garageMsg = nil
+RM_onStartCountdown(1)
+check(garageMsg ~= nil and garageMsg.message:find('Garage List', 1, true),
+  'Start Countdown reports the non-compliant grid to the admin who pressed it')
+check(garageMsg.message:find('Bob', 1, true), 'and names the driver')
+check(lastState.phase == 'countdown', 'and starts the race anyway: it reports, it does not block')
+RM_onEndRace(1)
+
+-- ---------------------------------------------------------------------------
+-- Changing the list re-judges the field
+-- ---------------------------------------------------------------------------
+-- Clients only re-declare when their OWN car changes, so an admin who adds the
+-- entry that legalises somebody would otherwise leave them marked as an
+-- offender until they next happened to touch their setup. The verdicts are
+-- re-derived from the signatures already on record whenever the list moves.
+local SIG_SWAP = 'model=etk800|parts=body=etk800_body;engine=v8_swap|vars=camber=-1.5000'
+rejected = {}
+RM_onVehicleConfig(2, '{"vid":8,"model":"etk800","sig":"' .. SIG_SWAP .. '"}')
+check(rejected[2] ~= nil, 'the swapped car is refused against the list as it stands')
+RM_onWhitelistVehicle(1, '{"model":"etk800","label":"ETK 800 - V8","sig":"' .. SIG_SWAP .. '"}')
+garageMsg = nil
+RM_onGenerateGrid(1)
+RM_onStartCountdown(1)
+check(garageMsg == nil,
+  'capturing the car clears the driver without them re-declaring anything')
+RM_onEndRace(1)
+
+-- ...and the same in reverse: dropping the entry puts the mark back.
+RM_onRemoveGarageEntry(1, '{"index":2}')
+garageMsg = nil
+RM_onGenerateGrid(1)
+RM_onStartCountdown(1)
+check(garageMsg ~= nil and garageMsg.message:find('Bob', 1, true),
+  'and removing it again marks them without them re-declaring either')
+RM_onEndRace(1)
+
+-- Switching the mode re-judges too: strict disagrees with parts about who is
+-- legal, and the verdicts have to follow the rule actually in force.
+RM_onVehicleConfig(2, '{"vid":8,"model":"etk800","sig":"' .. SIG_B .. '"}')
+RM_onSetGarageMode(1, '{"mode":"strict"}')
+garageMsg = nil
+RM_onGenerateGrid(1)
+RM_onStartCountdown(1)
+check(garageMsg ~= nil and garageMsg.message:find('Bob', 1, true),
+  'a re-tune legal under parts is marked the moment strict is switched on')
+RM_onEndRace(1)
+RM_onSetGarageMode(1, '{"mode":"parts"}')
+garageMsg = nil
+RM_onGenerateGrid(1)
+RM_onStartCountdown(1)
+-- Bob specifically, not "the audit is empty": Cara is still carrying the
+-- part-swapped signature she declared back in the version-skew section, and
+-- that is illegal under BOTH modes. An assertion that the whole audit went
+-- quiet would be testing the fixture rather than the re-judge.
+check(garageMsg == nil or not garageMsg.message:find('Bob', 1, true),
+  'and unmarked again on the way back')
+RM_onEndRace(1)
+
+-- A driver who has declared nothing is not an offender. "Hasn't reported yet"
+-- and "is cheating" are different states and only one of them is red.
+-- Everyone who declared an illegal setup earlier in this file is still carrying
+-- that verdict, which is the feature working. Put the whole field in something
+-- legal so the check below is about the empty case and not about them.
+rejected = {}; garageMsg = nil
+RM_onVehicleConfig(2, '{"vid":8,"model":"etk800","sig":"' .. SIG_A .. '"}')
+RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"' .. SIG_A .. '"}')
+RM_onGenerateGrid(1)
+garageMsg = nil
+RM_onStartCountdown(1)
+check(garageMsg == nil, 'a compliant grid produces no audit line at all')
+RM_onEndRace(1)
+
+-- Persistence across a server restart.
+RM_onSetGarageMode(1, '{"mode":"strict"}')
 dofile('server/RaceManager/main.lua')
 onInit()
 RM_onRequestState(1)
 check(#lastState.garage == 1 and lastState.garage[1].label == 'ETK 800 - Race',
   'the Garage List survives a server restart via garage.json')
 check(lastState.garageEnforce == true, 'the enforcement switch persists too')
+check(lastState.garageMode == 'strict', 'and so does the enforcement mode')
+
+-- A garage.json written before parts and tuning were split has no `mode` and no
+-- per-entry `partsSig`. It must load, default to the LOOSER mode, and recover
+-- the parts half from the full signature rather than demanding a re-capture:
+-- an upgrade that silently starts rejecting legal tunes is worse than useless.
+local legacy = io.open('Resources/Server/RaceManager/garage.json', 'w')
+legacy:write('{"version":1,"enforce":true,"list":[{"model":"etk800",'
+  .. '"label":"ETK 800 - Legacy","sig":"' .. SIG_A .. '"}]}')
+legacy:close()
+dofile('server/RaceManager/main.lua')
+onInit()
 adminLogin(1)
+RM_onRequestState(1)
+check(lastState.garageMode == 'parts', 'a pre-split garage.json loads in parts mode')
+check(#lastState.garage == 1 and lastState.garage[1].label == 'ETK 800 - Legacy',
+  'and its entries load')
+rejected = {}
+RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"' .. SIG_B .. '"}')
+check(rejected[3] == nil,
+  'the parts half was derived from the old signature: a re-tune matches with no re-capture')
+rejected = {}
+RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"' .. SIG_A .. '"}')
+check(rejected[3] == nil, 'and the exact captured setup still matches')
+
 RM_onClearGarage(1)
 check(#lastState.garage == 0, 'Clear Garage empties the list')
 

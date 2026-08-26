@@ -450,7 +450,7 @@ check(lastLayouts.layouts[1].width == 24
   and #lastLayouts.layouts[1].checkpoints == 3, 'saved layout keeps width and gates')
 check(lastLayouts.layouts[1].height == 8 and lastLayouts.layouts[1].depth == 2,
   'saved layout gets the default height AND depth when the client omits them. '
-    .. 'The default is weighted upward: the total is the 10 metres it always '
+    .. 'The default is weighted upward: the total is the 10 meters it always '
     .. 'was, but 8 of it is above the road instead of 5')
 
 -- Same name on the same map overwrites instead of duplicating
@@ -592,7 +592,7 @@ check(lastLayouts.layouts[1].practice == true, 'and it says so')
 
 appliedLayouts = {}
 RM_onLoadLayout(3, '{"name":"GP Circuit","forPractice":true}')
-check(appliedLayouts[3] ~= nil, 'and can load it to practise on')
+check(appliedLayouts[3] ~= nil, 'and can load it to practice on')
 check(appliedLayouts[-1] == nil,
   'targeted at them alone: nobody else is moved onto their practice track')
 
@@ -603,11 +603,11 @@ RM_onRequestState(2)
 check(appliedLayouts[2] ~= nil and appliedLayouts[2].width == 30,
   'the server is still on its own track after a practice load')
 
--- ONLY A NON-ADMIN THING? No -- an admin practises the same way. The gate is
+-- ONLY A NON-ADMIN THING? No -- an admin practices the same way. The gate is
 -- the layout's approval, not who is asking.
 appliedLayouts = {}
 RM_onLoadLayout(1, '{"name":"GP Circuit","forPractice":true}')
-check(appliedLayouts[1] ~= nil, 'an admin can practise too')
+check(appliedLayouts[1] ~= nil, 'an admin can practice too')
 
 -- NOT ONCE A SESSION HAS STARTED -- and that includes the GRID, which is the
 -- case worth having a test for. sessionUnderWay() is false while the field is
@@ -870,7 +870,7 @@ RM_onRequestState(1)
 check(lastState.bestLapPid == nil, 'no fastest lap before anyone has set one')
 
 -- The first crossing of a race is never timed (a grid sits just before the line,
--- so it is a few metres, not a lap), so it takes two crossings to put a time on
+-- so it is a few meters, not a lap), so it takes two crossings to put a time on
 -- the board at all.
 RM_onLap(1, '{"lapTime":95.5}')
 check(lastState.bestLapPid == nil, 'the first crossing sets no fastest lap')
@@ -1451,7 +1451,7 @@ check(lastState.jokerGates == 3,
 -- ---------------------------------------------------------------------------
 -- Sitting out: a self-declared spectator the field runs without
 -- ---------------------------------------------------------------------------
--- Racers pressed a button labelled "Spectate" expecting to watch a race and got
+-- Racers pressed a button labeled "Spectate" expecting to watch a race and got
 -- a dismissed login box. What they actually wanted was to not be IN the race,
 -- and under 'everyone races' entry there was no way to say so short of leaving
 -- the server.
@@ -1587,7 +1587,7 @@ RM_onSetFlag(1, '{"flag":"yellow"}')
 check(lastState.flag == 'yellow', 'an admin can call a caution')
 check(lastState.phase == 'racing',
   'and the session is still RACING: the flag rides alongside the phase rather '
-    .. 'than replacing it, so nothing that tests the phase changes behaviour')
+    .. 'than replacing it, so nothing that tests the phase changes behavior')
 check(type(lastChat) == 'string' and lastChat:find('YELLOW', 1, true),
   'the field is told in chat, because the panel is not where a driver is looking')
 
@@ -1597,7 +1597,7 @@ RM_onSetFlag(99, '{"flag":"green"}')
 check(lastState.flag == 'yellow', 'a non-admin cannot wave a flag')
 
 RM_onSetFlag(1, '{"flag":"chartreuse"}')
-check(lastState.flag == 'yellow', 'and an invented colour is ignored')
+check(lastState.flag == 'yellow', 'and an invented color is ignored')
 
 -- RED IS A CONDITION, NOT A STATE CHANGE. Stop, something gets cleaned up, then
 -- yellow and back to green. Nothing ends, nobody is frozen, and the phase does
@@ -1848,7 +1848,7 @@ do
     local ok, d = pcall(jsonDecode, t)
     return ok and d or nil
   end
-  -- A server restart: re-read the plugin from source and initialise it, which
+  -- A server restart: re-read the plugin from source and initialize it, which
   -- is what re-reads config.json. The same thing the persistence cases further
   -- up this file do.
   local function reboot()

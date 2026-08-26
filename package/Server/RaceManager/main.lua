@@ -65,6 +65,7 @@ local CFG = {
 
   -- What a race starts as.
   totalLaps     = 5,
+  raceTimeLimit = 0,         -- seconds, 0 = run to a lap count instead
   maxResets     = -1,        -- -1 unlimited, 0 none, N per driver per session
   resetMode     = 'inplace', -- 'inplace' | 'checkpoint'
   nametags      = false,
@@ -82,7 +83,7 @@ local CFG = {
   ghostMaxSeconds  = 15.0,
 
   -- The standing-start hold.
-  holdTolerance    = 0.5,    -- metres a held car may drift off its slot
+  holdTolerance    = 0.5,    -- meters a held car may drift off its slot
   holdCorrectEvery = 0.5,    -- seconds between corrections for one driver
 
   -- ADVANCED. Changing these changes how the plugin behaves rather than how a
@@ -93,12 +94,13 @@ local CFG = {
   maxResetLimit   = 99,
   maxQualiLaps    = 99,
   maxQualiTime    = 7200,    -- seconds (2 h)
+  maxRaceTime     = 21600,   -- seconds (6 h), so an endurance race is expressible
   unlimitedResets = -1,      -- the sentinel, not a preference: do not change
 }
 -- Broadcast cadence while racing. This is also the live-position refresh rate:
 -- every push re-sorts the running order and re-stamps each driver's position,
 -- so 3 ticks (~300 ms) keeps the leaderboard lively without flooding clients.
--- League regulations. Resets: -1 means unlimited (the historical behaviour and
+-- League regulations. Resets: -1 means unlimited (the historical behavior and
 -- the default), 0 forbids resets outright, N allows N per session.
 -- Reset ghosting. A driver who resets mid-session is intangible to other cars
 -- for a moment, so the car they materialise on top of is not hit by them and
@@ -178,7 +180,7 @@ local race = {
   -- has defaulted to 'all' since it was written; this is the racing side
   -- agreeing with it.
   -- Starting grid. gridMode decides how the slots are filled:
-  --   quali   -- fastest qualifying lap first (the classic behaviour)
+  --   quali   -- fastest qualifying lap first (the classic behavior)
   --   reverse -- slowest qualifying lap first, so the fastest starts last
   --   random  -- a random draw, for when no qualifying was run
   --   custom  -- the order the admin set by hand (RM_SetDriverGrid)
@@ -282,6 +284,46 @@ local race = {
   finalLap       = false,
   finalLapLeft   = 0,        -- seconds of grace left before the stragglers are
                              -- taken where they stand (see FINAL_LAP_GRACE)
+
+  -- ---------------------------------------------------------------------
+  -- TIMED RACES: "10 minutes + 1 lap"
+  -- ---------------------------------------------------------------------
+  -- A race runs to a lap count OR to a clock, never both (raceTimeLimit > 0
+  -- makes totalLaps inert - see sessionLapTarget). The clock does not end the
+  -- race when it expires, which is the whole point of the format: the race ends
+  -- one lap after the LEADER next takes the line.
+  --
+  -- Three states, in order, and each needs its own flag because the answer to
+  -- "is this crossing your last" is different in each:
+  --
+  --   raceExpired  the clock is out. Nothing changes for anybody yet: whoever
+  --                is leading has to reach the line first. A driver reading
+  --                "laps to go" sees TWO at this point - finish this one, then
+  --                run the last.
+  --   lastLapNum   the leader has crossed, and that crossing set the number of
+  --                the final lap. Completing THAT lap is what ends a driver's
+  --                race, so a car two seconds behind the leader still gets a
+  --                full lap rather than being flagged off at the line.
+  --   finalLap     the leader has finished. From here the checkered flag is
+  --                out and the NEXT crossing is terminal for everyone still
+  --                running, which is how lapped cars are classified. This is
+  --                the flag qualifying has always used and it means exactly the
+  --                same thing here.
+  -- WHICH LIMITS ARE LIVE, named rather than inferred from which numbers are
+  -- non-zero. Endurance needs both of them at once, so "raceTimeLimit > 0 means
+  -- the laps are inert" stopped being a safe reading the moment it existed.
+  --
+  --   'laps'       a fixed distance. raceTimeLimit is held at 0.
+  --   'timed'      a clock plus one lap. totalLaps is remembered but inert.
+  --   'endurance'  BOTH, whichever comes first: the distance, or the clock
+  --                plus one lap. This is the only mode where reaching the lap
+  --                target ends the race for everybody rather than only for the
+  --                driver who reached it - see RM_onLap.
+  raceMode       = 'laps',
+  raceTimeLimit  = CFG.raceTimeLimit,
+  raceExpired    = false,    -- clock out, waiting on the leader
+  raceExpiredAt  = nil,      -- race.time it expired, for the stuck-field valve
+  lastLapNum     = nil,      -- the lap number that is the final one
 }
 local players = {}          -- [playerID] = per-player record
 -- Authoritative reset-ghost state: [playerID] = { startedAt, duration }, both on
@@ -308,7 +350,7 @@ local lapFirsts = {}        -- [lapNumber] = pid of the first driver to complete
 --
 -- Clearing in place keeps one identity for the life of the process, so a
 -- reference taken at startup is still the right table after any number of
--- resets. Same visible behaviour, one fewer way to go wrong later.
+-- resets. Same visible behavior, one fewer way to go wrong later.
 local function wipe(t)
   for k in pairs(t) do t[k] = nil end
   return t
@@ -447,7 +489,7 @@ local function newRecord(pid)
     -- Live position tracking (see the "Running order" section below).
     position   = nil,        -- current place in the running order (1 = leader)
     cpCleared  = 0,          -- checkpoints passed on the current lap
-    distNext   = nil,        -- metres from the car to the next checkpoint centre
+    distNext   = nil,        -- meters from the car to the next checkpoint center
     -- Split timing: [lap][checkpoint] = race.time when this driver reached it,
     -- and the last point stamped. What the gap and interval are subtracted from.
     splits     = nil,        -- built lazily by progress.record
@@ -458,6 +500,19 @@ local function newRecord(pid)
     -- assignPositions; nil whenever there is nothing honest to say.
     gap        = nil,
     intv       = nil,
+    -- Module 4: the last vehicle configuration this client declared, and the
+    -- ruling on it. Recorded whether or not the Garage List is being enforced,
+    -- so switching enforcement on can audit the grid straight away instead of
+    -- waiting for every client's next poll.
+    --
+    -- carOk is deliberately THREE-VALUED: true approved, false not on the list,
+    -- nil nothing to say (not enforcing, or no declaration seen yet). A driver
+    -- who has not reported must not read as an offender.
+    carOk       = nil,
+    carSig      = nil,   -- model + parts + tuning
+    carPartsSig = nil,   -- model + parts, the half 'parts' mode matches on
+    carLabel    = nil,   -- what to call it in the audit
+    carGame     = nil,   -- BeamNG build, for the version-skew message
   }
 end
 
@@ -492,7 +547,7 @@ end
 -- ---------------------------------------------------------------------------
 -- What a gap to the leader is made of, and the only honest way to build one
 -- here. The running order is ranked on laps, then checkpoints cleared, then
--- metres to the next gate, and not one of those converts into seconds behind --
+-- meters to the next gate, and not one of those converts into seconds behind --
 -- but "you reached checkpoint 7 of lap 3 at 214.6s, the leader reached it at
 -- 212.1s" is a subtraction with nothing estimated in it.
 --
@@ -758,7 +813,7 @@ race.derbyUnderWay = function () return false end
 --   rosterUnbind(pid)     their display name was cleared, or they left
 --   rosterEntryFor(rec)   the roster entry a driver is bound to, or nil
 --
--- There is deliberately NO "recognise this driver automatically" here. BeamMP
+-- There is deliberately NO "recognize this driver automatically" here. BeamMP
 -- issues a fresh random guest name on every join, so a name proves nothing
 -- about who is behind it: matching on one would usually fail to spot a
 -- returning driver, and would occasionally hand a stranger somebody else's
@@ -855,8 +910,8 @@ end
 --                               lap counter (RM_onLap), never from the client
 --                               telemetry, so a client cannot invent a lap.
 --   2. Checkpoints cleared   -- on the current lap; more gates passed is ahead.
---   3. Distance to the next  -- metres from the car to the next checkpoint's
---      checkpoint               centre, measured client-side (the server has no
+--   3. Distance to the next  -- meters from the car to the next checkpoint's
+--      checkpoint               center, measured client-side (the server has no
 --                               physics access). Shorter is ahead.
 --
 -- Drivers who have not reported yet share the same defaults (0 checkpoints, no
@@ -970,6 +1025,9 @@ local DRIVER_WIRE_FIELDS = {
   -- Seconds behind the leader and behind the car ahead. Two numbers, and the
   -- panel does no arithmetic on them beyond formatting.
   'gap', 'intv',
+  -- Garage List verdict. Three-valued (see newRecord): the panel paints a mark
+  -- for true and false and nothing at all for nil.
+  'carOk',
 }
 
 -- Projection buffers are kept ON the record and reused, so a broadcast costs no
@@ -1026,6 +1084,12 @@ end
 -- Forward declaration: the garage store lives further down the file (its own
 -- module), but the state broadcast has to advertise the approved car list.
 local garageSnapshot
+-- Same arrangement, for the other direction: the countdown (far above the
+-- garage code) has to be able to ask who is starting a race in a car that is
+-- not on the list, and saveGarageToDisk (above the matcher) has to be able to
+-- re-judge the field when the list underneath it moves.
+local garageAudit
+local garageRejudge
 
 -- Stamped into every state broadcast. The client bridge drops broadcasts
 -- without the current stamp: they come from an OUTDATED copy of this plugin
@@ -1041,16 +1105,21 @@ local RM_PROTOCOL = 2
 -- a call to a scope function a stale app.js does not have, so a button does
 -- nothing at all, with no error in any console.
 --
--- Bump this in ALL FOUR places on EVERY change that needs redeploying -- not
+-- Bump this in ALL FIVE places on EVERY change that needs redeploying -- not
 -- just ones that change the client/server contract. That narrower rule is what
 -- let two client-side fixes ship under one stamp: the build line read as
 -- matching while a client was a fix behind, which is precisely the situation
--- this was added to make visible. The four are:
+-- this was added to make visible. The five are:
 --
 --   server/RaceManager/main.lua          RM_BUILD   (here)
 --   lua/ge/extensions/raceManager.lua    RM_BUILD
 --   ui/modules/apps/RaceManager/app.js   APP_BUILD
 --   ui/modules/apps/RaceManager/app.json version
+--   tools/deploy.py                      RELEASE_NAME
+--
+-- The fifth was outside the check until 0.9.1 and duly went stale: the build
+-- was produced as RaceManager-v0.9.0.zip from a 0.9.1 tree, which is precisely
+-- the disagreement the stamp exists to prevent.
 --
 -- tests/wiring_test.lua fails if they disagree, so this is checked rather than
 -- remembered.
@@ -1061,7 +1130,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.9.0'
+local RM_BUILD = '0.9.7'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -1213,7 +1282,7 @@ local function broadcastState(targetPid)
     -- label a track that has other ways through its checkpoints.
     hasBranches  = #race.branches > 0,
     gridOffLine  = race.gridOffLine,
-    -- So the panel can grey the joker toggle out and say why, rather than
+    -- So the panel can gray the joker toggle out and say why, rather than
     -- offering a switch the server is going to refuse.
     jokerGates   = race.jokerGates,
     flag         = race.flag,
@@ -1240,7 +1309,7 @@ local function broadcastState(targetPid)
     -- The name is historical: this used to be a qualifying-only rule, and a RACE
     -- on a track that grids its cars away from the start/finish line owes one for
     -- exactly the same reason (see outLapOwed). Kept as it is so every client and
-    -- every binding that already reads it starts honouring the race case without
+    -- every binding that already reads it starts honoring the race case without
     -- being changed to do it.
     qualiOutLap    = outLapOwed(),
     qualiLapLimit  = race.qualiLapLimit,
@@ -1254,9 +1323,21 @@ local function broadcastState(targetPid)
     -- it does not know is its last.
     finalLap       = race.finalLap,
     finalLapLeft   = race.finalLap and math.max(race.finalLapLeft, 0) or nil,
+    -- Timed races. raceLeft is the clock the header counts down; raceExpired
+    -- says it has run out and the field is waiting on the leader; lastLapNum is
+    -- the lap everyone still running finishes on once the leader has been past.
+    raceMode       = race.raceMode,
+    raceTimeLimit  = race.raceTimeLimit,
+    raceLeft       = race.raceTimeLimit > 0
+      and math.max(race.raceTimeLimit - race.time, 0) or nil,
+    raceExpired    = race.raceExpired,
+    lastLapNum     = race.lastLapNum,
     -- Approved vehicle/setup list (Module 4).
     garage        = garageInfo.list,
     garageEnforce = garageInfo.enforce,
+    -- 'parts' or 'strict'. Which half of a setup the list is matched on, so the
+    -- panel can label the switch and the capture button truthfully.
+    garageMode    = garageInfo.mode,
     -- Whether clients should hang display names off BeamMP's nametags.
     -- Purely a client-side presentation rule; the server neither renders
     -- nor enforces anything about it, it just holds the switch so every
@@ -1779,6 +1860,16 @@ local function sessionLapTarget()
   -- launching from a standing grid, or from slots spread round the circuit, would
   -- otherwise hand fastest lap to whoever started nearest the line. Ten laps
   -- means ten crossings; the first of them sets no time.
+  --
+  -- UNLESS THE RACE IS RUN TO A CLOCK, in which case there is no lap target at
+  -- all and totalLaps is inert. A timed race ends one lap after the leader next
+  -- takes the line, which is a rule about crossings and elapsed time and cannot
+  -- be expressed as a number of laps in advance: nobody knows how many laps ten
+  -- minutes is until it has been driven.
+  -- ENDURANCE KEEPS ITS LAP TARGET. It is the other half of "whichever comes
+  -- first", and dropping it here is how a 50-lap-or-60-minute race quietly
+  -- becomes a 60-minute one.
+  if race.raceMode == 'timed' then return nil end
   return race.totalLaps
 end
 
@@ -1987,6 +2078,9 @@ local function finishSession(reason)
   MP.CancelEventTimer('RM_CountdownTick')
   race.finalLap     = false
   race.finalLapLeft = 0
+  race.raceExpired  = false
+  race.raceExpiredAt = nil
+  race.lastLapNum   = nil
   -- Before either branch below, and before the respawn either of them runs: the
   -- session is over, so no reset ghost outlives it. The mass respawn that
   -- follows has a ghost of its own (the clients' 'placement' reason), which is
@@ -2284,6 +2378,33 @@ local function beginFinalLap()
     driversOnTrack()))
 end
 
+-- TIMED RACE: the leader has taken the line with the clock already out, so the
+-- lap they have just started is the last one.
+--
+-- `fromLap` is the lap number that ends the race. Everyone still running
+-- finishes by completing it - NOT by their next crossing, which is the rule
+-- qualifying uses and would be wrong here. A car two seconds behind the leader
+-- has not crossed the line yet when this fires; flagging it off at its next
+-- crossing would end its race a lap early, while the leader ran a full one.
+--
+-- The checkered flag (race.finalLap) is a LATER event, set when the first car
+-- actually completes `fromLap`. Only from that point is a crossing terminal for
+-- everybody, which is how lapped cars are classified: they get the flag as they
+-- come past, wherever they had got to.
+local function armRaceFinalLap(fromLap, why)
+  if race.lastLapNum then return end
+  if driversOnTrack() == 0 then
+    finishSession(why or 'the time limit expired')
+    return
+  end
+  race.lastLapNum = fromLap
+  broadcastState()
+  MP.SendChatMessage(-1, '[RaceManager] FINAL LAP: the leader has taken the line. '
+    .. 'Everyone still running finishes at the end of lap ' .. fromLap .. '.')
+  print(string.format('[RaceManager] Timed race: final lap is lap %d (%s), %d driver(s) out',
+    fromLap, why or 'leader crossed after the clock expired', driversOnTrack()))
+end
+
 -- Deterministic shuffle for the random grid draw. os.time seeding is fine
 -- here: two grids drawn in the same second is not a fairness problem, and
 -- nothing else on the server depends on the RNG stream.
@@ -2372,6 +2493,9 @@ formGrid = function (kind, byName)
   race.endsAt, race.endReason = nil, nil
   race.finalLap     = false
   race.finalLapLeft = 0
+  race.raceExpired  = false
+  race.raceExpiredAt = nil
+  race.lastLapNum   = nil
   wipe(lapFirsts)
   race.bestLapTime, race.bestLapPid = nil, nil
 
@@ -2894,6 +3018,67 @@ end
 
 -- Host sets the race distance. Locked once the countdown/race is under way.
 
+-- A race runs to a LAP COUNT or to a CLOCK, never both, and this is the one
+-- handler that sets either. Sending 0 seconds is what puts a race back on laps;
+-- the panel's mode toggle does exactly that, so the two can never both be armed.
+--
+-- Refused while a session is under way (adminPayload's `idle`): changing the
+-- distance of a race that is being driven is not a setting, it is a result.
+-- How long this race is, in words. One phrasing, so the console line, the
+-- results header and anything added later cannot drift apart.
+local function raceLengthLabel()
+  if race.pointToPoint then return 'point to point, driven once' end
+  if race.raceMode == 'timed' then
+    return math.floor(race.raceTimeLimit / 60) .. ' min + 1 lap'
+  end
+  if race.raceMode == 'endurance' then
+    return race.totalLaps .. ' laps or ' .. math.floor(race.raceTimeLimit / 60)
+      .. ' min + 1 lap, whichever comes first'
+  end
+  return race.totalLaps .. ' laps'
+end
+
+function RM_onSetRaceLimits(pid, rawData)
+  local data = adminPayload(pid, rawData, true)
+  if not data then return end
+  local laps = tonumber(data.laps)
+  local secs = tonumber(data.seconds)
+  local mode = tostring(data.mode or '')
+  if mode == 'laps' or mode == 'timed' or mode == 'endurance' then
+    race.raceMode = mode
+  elseif secs then
+    -- NO MODE ON THE PAYLOAD: a client from before endurance existed, which
+    -- said everything by the numbers alone. Read it the way that client meant
+    -- it, so an older panel goes on setting the two lengths it knows about
+    -- rather than silently turning every timed race back into a lap race.
+    race.raceMode = (tonumber(secs) or 0) > 0 and 'timed' or 'laps'
+  end
+  if laps then
+    laps = math.floor(laps)
+    if laps < 1 then laps = 1 elseif laps > CFG.maxTotalLaps then laps = CFG.maxTotalLaps end
+    race.totalLaps = laps
+  end
+  if secs then
+    secs = math.floor(secs)
+    if secs < 0 then secs = 0 elseif secs > CFG.maxRaceTime then secs = CFG.maxRaceTime end
+    race.raceTimeLimit = secs
+  end
+  -- THE INVARIANT, enforced here rather than trusted to the panel. A lap race
+  -- with a clock still set is a race that ends when neither the admin nor the
+  -- drivers expect it to, and the mode is the only thing that says which the
+  -- admin meant.
+  if race.raceMode == 'laps' then
+    race.raceTimeLimit = 0
+  elseif race.raceTimeLimit <= 0 then
+    -- Asked for a clock and gave none. Nothing to run to, so it is a lap race
+    -- whatever the button said.
+    race.raceMode = 'laps'
+  end
+  broadcastState()
+  print(string.format('[RaceManager] Race length set by %s: %s',
+    MP.GetPlayerName(pid) or pid, raceLengthLabel()))
+end
+
 function RM_onSetTotalLaps(pid, rawData)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
@@ -3110,6 +3295,25 @@ end
 function RM_onStartCountdown(pid)
   if not requireAuth(pid) then return end
   if race.phase ~= 'grid' then return end
+  -- Grid audit (Module 4). REPORTS, and deliberately does nothing else: the
+  -- live check has already taken the car off any non-admin who declared an
+  -- illegal setup, so anyone still listed here is either an admin (exempt by
+  -- design) or a case the live check could not act on. Deleting a car in the
+  -- last seconds before GO would do more damage to the race than starting with
+  -- one wrong setup in it, and it is the admin's call either way.
+  local bad = garageAudit and garageAudit() or {}
+  if #bad > 0 then
+    local names = {}
+    for i, b in ipairs(bad) do
+      names[i] = b.name .. (b.admin and ' (admin)' or '') .. ' [' .. b.label .. ']'
+    end
+    local line = 'Starting with ' .. #bad .. ' car(s) not on the Garage List: '
+      .. table.concat(names, ', ')
+    print('[RaceManager] ' .. line)
+    MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+      added = false, message = line,
+    }))
+  end
   race.phase = 'countdown'
   countdownValue = CFG.countdownFrom
   broadcastState()
@@ -3143,6 +3347,9 @@ function RM_CountdownTick()
   race.qualiTime = 0.0
   race.finalLap     = false
   race.finalLapLeft = 0
+  race.raceExpired  = false
+  race.raceExpiredAt = nil
+  race.lastLapNum   = nil
   wipe(lapFirsts)
   race.bestLapTime, race.bestLapPid = nil, nil
   for _, rec in pairs(players) do
@@ -3270,6 +3477,9 @@ function RM_onResetLeaderboard(pid)
   race.qualiOutLapRun = false
   race.finalLap     = false
   race.finalLapLeft = 0
+  race.raceExpired  = false
+  race.raceExpiredAt = nil
+  race.lastLapNum   = nil
   -- The records are gone and so is the entry list, but the display names are
   -- not: they live in the identity registry and ensurePlayer hands them straight
   -- back, which is what makes a name survive from one race into the next.
@@ -3289,13 +3499,13 @@ end
 --   lap  -- the lap it believes it is on (sanity check only; the server's own
 --           counter stays authoritative for metric 1)
 --   cp   -- checkpoints cleared on the current lap (metric 2)
---   dist -- metres to the centre of the next checkpoint (metric 3)
+--   dist -- meters to the center of the next checkpoint (metric 3)
 --
 -- This deliberately does NOT broadcast: with a full grid reporting at 3 Hz that
 -- would be dozens of broadcasts a second. The values are just stored, and the
 -- race tick loop re-sorts and pushes the running order on its own cadence.
 local MAX_CHECKPOINTS = 500      -- sanity clamp on a reported checkpoint count
-local MAX_REPORT_DIST = 1e6      -- metres; anything beyond this is nonsense
+local MAX_REPORT_DIST = 1e6      -- meters; anything beyond this is nonsense
 
 function RM_onProgress(pid, rawData)
   if not sessionRunning() then return end
@@ -3436,11 +3646,18 @@ function RM_onLap(pid, rawData)
   end
 
   local completed = rec.currentLap
+  -- DID THIS CROSSING LEAD THE LAP. lapFirsts already answers "who reached this
+  -- lap number first", which is precisely what "the leader crossing the line"
+  -- means - and it is immune to the case that makes a naive "first crossing
+  -- after the clock expired" rule wrong, namely a lapped car coming past. Its
+  -- lap number was claimed by the leader a lap ago, so it does not set this.
+  local ledThisLap = false
   if quali then
     rec.qualiLaps = (rec.qualiLaps or 0) + 1
   elseif not lapFirsts[completed] then
     lapFirsts[completed] = pid
     rec.lapsLed = rec.lapsLed + 1
+    ledThisLap = true
   end
   -- New lap (or the flag): the checkpoint/distance telemetry from the lap just
   -- completed must not linger and rank this driver against the next one.
@@ -3466,8 +3683,46 @@ function RM_onLap(pid, rawData)
   -- final lap worth running -- the order is not frozen at expiry, it settles when
   -- the last driver has taken the flag.
   local target = sessionLapTarget()
+  --   * completing the final lap of a timed race. Held separately from
+  --     race.finalLap because it is a LAP NUMBER, not "your next crossing":
+  --     everyone still running gets that whole lap, however far round they were
+  --     when the leader started it.
   local lastLap = (target and completed >= target) or race.finalLap
+    or (race.lastLapNum ~= nil and completed >= race.lastLapNum)
+
+  -- The leader's crossing after the clock has run out is what starts the final
+  -- lap. Read AFTER lastLap is settled, deliberately: the driver who raises the
+  -- flag must run the lap they have just begun, not be retired by it.
+  if not lastLap and ledThisLap and race.raceExpired and not race.lastLapNum then
+    armRaceFinalLap(completed + 1)
+  end
+
   if lastLap then
+    -- FIRST CAR HOME ON THE FINAL LAP OF A TIMED RACE: the checkered flag is
+    -- out. From here every crossing is terminal, which is what classifies the
+    -- cars behind - including any that are a lap or more down and would
+    -- otherwise still be owed a lap number they will never reach.
+    if race.lastLapNum and completed >= race.lastLapNum and not race.finalLap then
+      race.finalLap     = true
+      race.finalLapLeft = CFG.finalLapGrace
+      MP.SendChatMessage(-1, '[RaceManager] CHECKERED FLAG: '
+        .. displayName(rec) .. ' wins. Everyone still out is classified as they cross.')
+    end
+    -- ENDURANCE, reaching the DISTANCE rather than the clock. The flag falls on
+    -- the first car home and everyone else is classified as they come past,
+    -- which is what a race with a time limit on it means by "over".
+    --
+    -- Deliberately not done for a plain Laps race, where every driver runs the
+    -- full distance and a lapped car goes on circulating until it has. That is
+    -- long-standing behavior a league's results are built on; changing it is a
+    -- decision about how races are scored, not a detail of this mode.
+    if race.raceMode == 'endurance' and target and completed >= target
+        and not race.finalLap then
+      race.finalLap     = true
+      race.finalLapLeft = CFG.finalLapGrace
+      MP.SendChatMessage(-1, '[RaceManager] CHECKERED FLAG: ' .. displayName(rec)
+        .. ' completed the distance. Everyone still out is classified as they cross.')
+    end
     local why
     if quali and race.finalLap and not (target and completed >= target) then
       why = 'Qualifying over: you took the flag on the final lap'
@@ -3507,7 +3762,7 @@ function RM_onLap(pid, rawData)
     -- now and gets now, which is why this is here rather than in finishSession.
     --
     -- What the hold buys happens because the phase is still 'racing' underneath
-    -- it: finished drivers stay ghosted, the chequered flag stays out, and the
+    -- it: finished drivers stay ghosted, the checkered flag stays out, and the
     -- field gets a moment to look at the finish.
     local why = race.finalLap and 'every driver took the flag'
       or (quali and 'every driver used their lap allowance' or 'all drivers finished')
@@ -3944,7 +4199,7 @@ sanitizeCheckpoints = function (raw)
     -- The old one was a third box dimension and was dropped when a gate became a
     -- flat rectangle. This one is the other half of the vertical: height is how
     -- far the gate rises above the point it was placed at, depth how far it
-    -- drops below. A gate used to be centred, so making it tall enough to see
+    -- drops below. A gate used to be centerd, so making it tall enough to see
     -- buried an equal amount of it under the road.
     --
     -- Carried, not validated against height: they are independent, and a gate
@@ -4586,18 +4841,30 @@ end
 -- introspection of its own:
 --   1. BeamMP's onVehicleSpawn / onVehicleEdited hooks: the raw payload carries
 --      the jbeam model name ("jbm"), so a car whose *model* is not on the list
---      is cancelled outright before it ever exists for other players.
+--      is canceled outright before it ever exists for other players.
 --   2. RM_VehicleConfig: the client reports the exact signature of every
 --      vehicle it spawns or re-tunes. A signature that is not on the list gets
 --      the vehicle removed and an error pushed to that player's UI.
--- Authenticated admins are exempt - otherwise an admin could never spawn the
--- car they are about to whitelist.
+-- NOBODY IS EXEMPT, admins included. Building the list is done with Enforcing
+-- switched off, and an empty list never enforces anything, so the two cases
+-- that used to need the exemption are both covered without one.
 local GARAGE_FILE        = LAYOUTS_DIR .. '/garage.json'
 local MAX_GARAGE_ENTRIES = 60
 local MAX_SIG_LENGTH     = 4000
 
 local garage = {
   enforce = false,   -- master switch for the whole rule
+  -- WHICH HALF OF THE SIGNATURE IS MATCHED, and the reason this is a setting
+  -- rather than a constant: a league does not run one rule all season.
+  --
+  --   'parts'  model + parts. Tuning and paint are the driver's business.
+  --            The default, and the common case: a spec series locks what the
+  --            car IS and lets people set it up.
+  --   'strict' model + parts + tuning. Nothing moves at all.
+  --
+  -- Several allowed builds of the same car (a choice of engine, say) is not a
+  -- third mode - it is several entries under 'parts', one per build.
+  mode    = 'parts',
   -- { { model = 'etk800', label = 'ETK 800 - Race', sig = '...', game = '0.39' } }
   -- `game` is the BeamNG build the entry was captured on. A game update can
   -- rename vehicle parts without the car changing (BeamNG v0.39 did exactly
@@ -4622,16 +4889,41 @@ local function loadGarageFromDisk()
     return
   end
   garage.enforce = data.enforce == true
+  -- Anything that is not the word 'strict' is 'parts'. A file written before
+  -- modes existed has no key at all and lands on the default, which is the
+  -- looser of the two: an upgrade must not silently start rejecting the tuning
+  -- changes a league was already allowing.
+  garage.mode = (data.mode == 'strict') and 'strict' or 'parts'
   garage.list = {}
+  local derived = 0
   for _, e in ipairs(type(data.list) == 'table' and data.list or {}) do
     if type(e) == 'table' and type(e.sig) == 'string' and e.sig ~= '' then
+      -- Entries captured before the split carry only the full signature. The
+      -- parts half is a literal PREFIX of it ('model=X|parts=Y|vars=Z'), so it
+      -- is recovered here rather than demanded back off the admin as a
+      -- re-capture. Greedy '.*' so a part name that somehow contained the
+      -- marker still splits at the LAST one, which is the real boundary.
+      local partsSig = e.partsSig
+      if type(partsSig) ~= 'string' or partsSig == '' then
+        partsSig = e.sig:match('^(.*)|vars=')
+        if partsSig then derived = derived + 1 end
+      end
       garage.list[#garage.list + 1] = {
-        model = tostring(e.model or '?'),
-        label = tostring(e.label or e.model or 'Vehicle'),
-        sig   = e.sig,
-        game  = (type(e.game) == 'string' and e.game ~= '') and e.game or nil,
+        model    = tostring(e.model or '?'),
+        label    = tostring(e.label or e.model or 'Vehicle'),
+        sig      = e.sig,
+        -- nil only if the signature had no vars marker at all, which no
+        -- release has ever written. Such an entry still matches in strict
+        -- mode; garageAllows skips it in parts mode rather than guessing.
+        partsSig = partsSig,
+        game     = (type(e.game) == 'string' and e.game ~= '') and e.game or nil,
       }
     end
+  end
+  if derived > 0 then
+    print('[RaceManager] Garage list: derived the parts signature for '
+      .. derived .. ' entr' .. (derived == 1 and 'y' or 'ies') .. ' captured before '
+      .. 'parts/tuning were split (no re-capture needed)')
   end
 end
 
@@ -4640,7 +4932,7 @@ local function getGarage()
     garageLoaded = true
     loadGarageFromDisk()
     print('[RaceManager] Garage list: ' .. #garage.list .. ' approved vehicle(s), enforcement '
-      .. (garage.enforce and 'ON' or 'off'))
+      .. (garage.enforce and ('ON (' .. garage.mode .. ')') or 'off'))
   end
   return garage
 end
@@ -4660,10 +4952,24 @@ local function saveGarageToDisk()
   -- or the change would not survive a restart either, so there is no second rule
   -- to remember somewhere else.
   garageView = nil
+  -- And the same argument for the drivers' verdicts. A ruling reached against
+  -- the OLD list is not evidence about the new one, and clients only re-declare
+  -- when their own car changes -- so an admin who adds the entry that legalises
+  -- somebody would have left them marked as an offender until they next
+  -- happened to touch their setup. Re-judged from the signatures already on
+  -- record instead of cleared, so the panel is correct immediately rather than
+  -- blank until everyone reports again.
+  if garageRejudge then garageRejudge() end
   ensureLayoutsDir()
   local f, ferr = io.open(GARAGE_FILE, 'w')
   if not f then return false, tostring(ferr) end
-  f:write(jsonStringify({ version = 1, enforce = getGarage().enforce, list = getGarage().list }))
+  f:write(jsonStringify({
+    -- version 2 added `mode` and the per-entry `partsSig`. A version 1 file
+    -- still loads: loadGarageFromDisk defaults the mode and derives the missing
+    -- signature half, so downgrading the plugin is the only thing this breaks.
+    version = 2, enforce = getGarage().enforce, mode = getGarage().mode,
+    list = getGarage().list,
+  }))
   f:close()
   return true
 end
@@ -4687,7 +4993,7 @@ garageSnapshot = function ()
   for i, e in ipairs(g.list) do
     list[i] = { model = e.model, label = e.label }
   end
-  garageView = { list = list, enforce = g.enforce }
+  garageView = { list = list, enforce = g.enforce, mode = g.mode }
   return garageView
 end
 
@@ -4698,6 +5004,11 @@ local function garageEnforcing()
   return g.enforce and #g.list > 0
 end
 
+-- EXACT-duplicate test, and deliberately always on the full signature whatever
+-- the mode is. A capture that differs only in tuning adds nothing under 'parts'
+-- but is a distinct, meaningful entry under 'strict' - and an admin building a
+-- list on a Tuesday for a strict race on a Friday would be blocked from adding
+-- it if this followed the mode. Only a byte-identical capture is a duplicate.
 local function garageHasSig(sig)
   for _, e in ipairs(getGarage().list) do
     if e.sig == sig then return true end
@@ -4705,11 +5016,94 @@ local function garageHasSig(sig)
   return false
 end
 
-local function garageHasModel(model)
-  if not model or model == '' then return false end
-  model = model:lower()
+-- Does this setup match anything on the list, under the mode currently in
+-- force? The ONE place the mode is interpreted, so 'parts' cannot mean one
+-- thing to the live check and another to the grid audit.
+--
+-- An entry with no partsSig is skipped rather than guessed at in parts mode.
+-- That only happens to a signature with no vars marker in it, which no release
+-- has ever written; loadGarageFromDisk derives the rest.
+local function garageAllows(partsSig, fullSig)
+  local strict = getGarage().mode == 'strict'
   for _, e in ipairs(getGarage().list) do
-    if tostring(e.model):lower() == model then return true end
+    if strict then
+      if fullSig and fullSig ~= '' and e.sig == fullSig then return true end
+    else
+      if partsSig and partsSig ~= '' and e.partsSig == partsSig then return true end
+    end
+  end
+  return false
+end
+
+-- Re-rule every driver against the list as it stands now. Called from
+-- saveGarageToDisk, so a capture, a removal, Clear Garage, the enforcement
+-- switch and the mode switch all get this for free.
+--
+-- Reads only what RM_onVehicleConfig already recorded. A driver who has never
+-- declared has no signature and stays at nil, which is "no answer yet" and not
+-- "offender" -- the distinction the panel and the audit both depend on.
+garageRejudge = function ()
+  local enforcing = garageEnforcing()
+  for _, rec in pairs(players) do
+    if not enforcing or not rec.carSig then
+      rec.carOk = nil
+    else
+      rec.carOk = garageAllows(rec.carPartsSig, rec.carSig)
+    end
+  end
+end
+
+-- Who is about to start a race in a car the Garage List does not cover.
+--
+-- Assigned to the forward declaration near broadcastState so the countdown can
+-- reach it. Reads the verdicts RM_onVehicleConfig and garageRejudge already
+-- recorded rather than re-deriving anything: the server has no vehicle
+-- introspection of its own, so the last declaration IS the evidence.
+--
+-- Admins appear in this list. They are never removed from their car, which is
+-- precisely why they have to be visible here - an admin exempt from the check
+-- AND absent from the audit is an unapproved car nobody can see.
+--
+-- A driver with no verdict at all (carOk nil) is not an offender. That is
+-- "hasn't declared yet", not "illegal", and treating the two the same would
+-- flag every driver for the first seconds after enforcement is switched on.
+garageAudit = function ()
+  local bad = {}
+  if not garageEnforcing() then return bad end
+  for pid, rec in pairs(players) do
+    if rec.carOk == false and isEntrant(rec) then
+      bad[#bad + 1] = {
+        name  = displayName(rec),
+        label = rec.carLabel or '?',
+        admin = isAuthenticated(pid) and true or false,
+      }
+    end
+  end
+  table.sort(bad, function (a, b) return a.name < b.name end)
+  return bad
+end
+
+-- The bare jbeam name, however the two sides happen to spell it.
+--
+-- The list stores whatever veh:getJBeamFilename() returned and the spawn packet
+-- carries "jbm", and there is no promise anywhere that those agree on case, on
+-- a leading path, or on the .jbeam extension. A mismatch there refuses a car
+-- that is plainly on the list, with a message blaming the model, so the
+-- comparison is made on the part both forms always share.
+local function garageModelKey(model)
+  if type(model) ~= 'string' or model == '' then return nil end
+  model = model:match('([^/]+)$') or model
+  model = model:gsub('%.jbeam$', '')
+  model = model:lower()
+  if model == '' then return nil end
+  return model
+end
+
+local function garageHasModel(model)
+  local wanted = garageModelKey(model)
+  if not wanted then return false end
+  for _, e in ipairs(getGarage().list) do
+    if garageModelKey(e.model) == wanted then return true end
   end
   return false
 end
@@ -4725,10 +5119,10 @@ end
 -- its plain wording.
 local function garageVersionSkew(model, clientGame)
   if type(clientGame) ~= 'string' or clientGame == '' then return nil end
-  if not model or model == '' then return nil end
-  local wanted = model:lower()
+  local wanted = garageModelKey(model)
+  if not wanted then return nil end
   for _, e in ipairs(getGarage().list) do
-    if tostring(e.model):lower() == wanted and type(e.game) == 'string'
+    if garageModelKey(e.model) == wanted and type(e.game) == 'string'
         and e.game ~= '' and e.game ~= clientGame then
       return e
     end
@@ -4736,15 +5130,47 @@ local function garageVersionSkew(model, clientGame)
   return nil
 end
 
-local function rejectVehicle(pid, vid, why)
-  if MP.RemoveVehicle and vid then
+-- Tell a driver their car is not allowed, and (unless `advisory`) have it
+-- deleted.
+--
+-- THE DELETION HAPPENS ON THE CLIENT, which is not where it looks like it
+-- should. MP.RemoveVehicle wants BeamMP's own per-player vehicle id - the one
+-- handed to onVehicleSpawn below - and the id arriving on RM_VehicleConfig is
+-- the client's veh:getID(), a BeamNG game object id from an unrelated numbering
+-- space. So the call matched nothing and failed silently inside its pcall, and
+-- every refused setup produced a message and no consequence. The client knows
+-- which car is its own without any id, so it is sent the order instead.
+--
+-- The MP.RemoveVehicle call is KEPT, guarded on a vid that came from a source
+-- that actually uses BeamMP ids (the spawn hook passes one; the config report
+-- does not, and passes nil). Where the id is right it removes the car server-
+-- side too, which is a second belt on the one path that has one.
+--
+-- `advisory` told a driver without taking the car away. NOTHING PASSES IT NOW:
+-- admins are refused on the same terms as everyone else, which is a deliberate
+-- reversal of how this shipped. Building the list is done with Enforcing OFF -
+-- an admin who needs an unapproved car in order to capture it turns the switch
+-- off first, and an empty list never enforces anything, so the first capture of
+-- a session needs no special case either.
+--
+-- The branch is KEPT rather than deleted. Which way this rule should point is a
+-- league decision that has already changed once, and putting it back is passing
+-- `true` from the two call sites again rather than rebuilding the path under
+-- time pressure on a race night.
+local function rejectVehicle(pid, vid, why, advisory)
+  if MP.RemoveVehicle and vid and not advisory then
     pcall(MP.RemoveVehicle, pid, vid)
   end
   MP.TriggerClientEvent(pid, 'RM_VehicleRejected', Util.JsonEncode({
-    message = 'Vehicle/Setup not allowed in this session.',
+    message = advisory
+      and 'Vehicle/Setup not on the Garage List (admin: not removed).'
+      or  'Vehicle/Setup not allowed in this session.',
     detail  = why or '',
+    -- The client deletes its own car on this flag and on nothing else.
+    remove  = not advisory,
   }))
-  print(string.format('[RaceManager] Rejected vehicle from %s (%s)',
+  print(string.format('[RaceManager] %s vehicle from %s (%s)',
+    advisory and 'Flagged' or 'Rejected',
     MP.GetPlayerName(pid) or pid, why or 'not on the Garage List'))
 end
 
@@ -4759,7 +5185,19 @@ function RM_onWhitelistVehicle(pid, rawData)
   end
   local sig = data.sig and tostring(data.sig) or ''
   if sig == '' or #sig > MAX_SIG_LENGTH then
-    print('[RaceManager] Whitelist rejected: missing or oversized configuration signature')
+    -- ANSWERED TO THE ADMIN, not just the console. This used to print and
+    -- return, so the button did nothing visible and the car was believed to be
+    -- on a list it had never reached - which then reads as "the Garage List
+    -- refuses a car I whitelisted", the hardest kind of bug to see.
+    print('[RaceManager] Whitelist rejected: missing or oversized configuration signature ('
+      .. #sig .. ' bytes, limit ' .. MAX_SIG_LENGTH .. ')')
+    MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+      added = false,
+      message = sig == ''
+        and 'No configuration to capture: the vehicle is still loading, try again'
+        or  ('That configuration is too long to store (' .. #sig .. ' bytes, limit '
+             .. MAX_SIG_LENGTH .. ')'),
+    }))
     return
   end
   local g = getGarage()
@@ -4775,17 +5213,27 @@ function RM_onWhitelistVehicle(pid, rawData)
     }))
     return
   end
+  -- Clients since the parts/tuning split send both halves. One that does not is
+  -- an older build, and its full signature still carries the parts half as a
+  -- prefix, so it is recovered here on exactly the rule loadGarageFromDisk uses.
+  local partsSig = data.partsSig and tostring(data.partsSig) or ''
+  if partsSig == '' or #partsSig > MAX_SIG_LENGTH then
+    partsSig = sig:match('^(.*)|vars=')
+  end
   local entry = {
-    model = tostring(data.model or '?'),
-    label = tostring(data.label or data.model or 'Vehicle'),
-    sig   = sig,
-    game  = (type(data.game) == 'string' and data.game ~= '') and data.game or nil,
+    model    = tostring(data.model or '?'),
+    label    = tostring(data.label or data.model or 'Vehicle'),
+    sig      = sig,
+    partsSig = partsSig,
+    game     = (type(data.game) == 'string' and data.game ~= '') and data.game or nil,
   }
   g.list[#g.list + 1] = entry
   local wrote, werr = saveGarageToDisk()
   if not wrote then print('[RaceManager] Failed to write ' .. GARAGE_FILE .. ': ' .. tostring(werr)) end
   MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
-    added = true, message = 'Added "' .. entry.label .. '" to the Garage List',
+    added = true, message = 'Added "' .. entry.label .. '" to the Garage List ('
+      .. (g.mode == 'strict' and 'Strict: this exact tune'
+          or 'Parts: these parts, any tune') .. ')',
   }))
   local msg = string.format('[RaceManager] "%s" added to the Garage List by %s (%d approved)',
     entry.label, MP.GetPlayerName(pid) or pid, #g.list)
@@ -4827,29 +5275,116 @@ function RM_onSetGarageEnforce(pid, rawData)
   saveGarageToDisk()
   broadcastState()
   print('[RaceManager] Garage enforcement '
-    .. (garage.enforce and 'ENABLED' or 'disabled') .. ' by ' .. (MP.GetPlayerName(pid) or pid))
+    .. (garage.enforce and ('ENABLED (' .. garage.mode .. ')') or 'disabled')
+    .. ' by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- Client reported the exact configuration of a vehicle it just spawned or
--- re-tuned. This is the strict check: the signature must be on the list.
+-- Switch between locking the parts only and locking parts plus tuning.
+--
+-- The two modes disagree about who is legal, so every driver's verdict is
+-- re-judged against the new one. That happens inside saveGarageToDisk, which is
+-- where every other change to the list already goes.
+function RM_onSetGarageMode(pid, rawData)
+  local data = adminPayload(pid, rawData)
+  if not data then return end
+  local mode = tostring(data.mode or '')
+  if mode ~= 'parts' and mode ~= 'strict' then return end
+  local g = getGarage()
+  if g.mode == mode then return end
+  g.mode = mode
+  saveGarageToDisk()
+  broadcastState()
+  print('[RaceManager] Garage mode set to ' .. mode .. ' by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- Client reported the configuration of a vehicle it just spawned or re-tuned.
+-- Which half of it has to match is the enforcement mode's business, not this
+-- function's: it asks garageAllows and does as it is told.
+--
+-- WHAT IS RECORDED HAPPENS WHETHER OR NOT ENFORCEMENT IS ON, and that is the
+-- point of recording it. An admin who builds the list and then flips Enforcing
+-- can audit the grid immediately, instead of waiting up to two seconds per
+-- client for everyone to re-declare a setup the server was already told about.
+--
+-- ADMINS ARE REFUSED TOO, on the same terms as everybody else. They still
+-- appear in the grid audit; there is simply no longer a class of driver the
+-- rule does not reach. See rejectVehicle for how to put the exemption back.
 function RM_onVehicleConfig(pid, rawData)
-  if not garageEnforcing() then return end
-  if isAuthenticated(pid) then return end  -- admins build the list, exempt
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
   local sig = data.sig and tostring(data.sig) or ''
-  if sig ~= '' and garageHasSig(sig) then return end
+  if #sig > MAX_SIG_LENGTH then return end
+  local partsSig = data.partsSig and tostring(data.partsSig) or ''
+  -- Older client, one signature only. Its parts half is the prefix, same rule
+  -- as everywhere else this recovery happens.
+  if partsSig == '' and sig ~= '' then partsSig = sig:match('^(.*)|vars=') or '' end
   local model = data.model and tostring(data.model) or ''
+
+  -- A SIGNATURE WITH NO PARTS IN IT IS NOT AN ANSWER, and must never be ruled
+  -- on. A client that reports one frame too early (BeamNG has not finished
+  -- loading the vehicle's parts yet) sends 'model=X|parts=', which matches no
+  -- entry on any list - so the server refuses the very car it was just given,
+  -- and the client deletes it. That is the bug that made the Garage List reject
+  -- the car it had been built from. The client guards it too; the server
+  -- refuses to judge it because an old or patched client cannot be relied on to.
+  --
+  -- Returned WITHOUT touching rec.carOk. "Ask again in a moment" has to leave
+  -- the standing verdict alone: overwriting it with nil would blank the panel
+  -- every time anybody respawned.
+  if partsSig == '' or partsSig:match('|parts=$') then return end
+
+  local rec = ensurePlayer(pid)
+  if rec then
+    rec.carSig      = sig
+    rec.carPartsSig = partsSig
+    rec.carLabel    = data.label and tostring(data.label) or model
+    rec.carGame     = data.game and tostring(data.game) or nil
+  end
+
+  if not garageEnforcing() then
+    -- Nothing to be non-compliant with. Clearing rather than leaving the last
+    -- verdict standing: a stale red mark on a driver the server is no longer
+    -- policing is worse than no mark at all.
+    if rec then rec.carOk = nil end
+    return
+  end
+
+  local allowed = garageAllows(partsSig, sig)
+  if rec then rec.carOk = allowed end
+  if allowed then return end
+
+  -- WHAT ACTUALLY DIFFERED, in the server console. A refused driver is told the
+  -- rule they broke, which is all a driver can act on; an admin staring at a car
+  -- that ought to be on the list needs the two signatures side by side, and
+  -- there is nowhere else to get them. Truncated because a full part config is
+  -- long and the head of it is where a difference shows.
+  local shown = (getGarage().mode == 'strict') and sig or partsSig
+  print(string.format('[RaceManager] Garage mismatch (%s mode) for %s',
+    getGarage().mode, MP.GetPlayerName(pid) or pid))
+  print('[RaceManager]   driving: ' .. shown:sub(1, 300))
+  for _, e in ipairs(getGarage().list) do
+    if garageModelKey(e.model) == garageModelKey(model) then
+      local listed = (getGarage().mode == 'strict') and e.sig or e.partsSig
+      print('[RaceManager]   listed : ' .. tostring(listed):sub(1, 300))
+    end
+  end
+
   local stale = garageVersionSkew(model, data.game and tostring(data.game) or nil)
   if stale then
-    rejectVehicle(pid, tonumber(data.vid), 'the Garage List entry for "' .. stale.label
+    rejectVehicle(pid, nil, 'the Garage List entry for "' .. stale.label
       .. '" was captured on BeamNG ' .. stale.game .. ' and you are on '
       .. tostring(data.game) .. ': a game update can rename vehicle parts, so an '
       .. 'admin needs to re-capture the Garage List')
     return
   end
-  rejectVehicle(pid, tonumber(data.vid), 'setup signature not on the Garage List')
+  -- Naming the mode in the refusal is what makes it actionable. "Not on the
+  -- list" tells a driver nothing about whether the fix is undoing a part swap
+  -- or undoing a tune, and those are different evenings.
+  rejectVehicle(pid, nil, getGarage().mode == 'strict'
+    and 'this exact setup is not on the Garage List (Strict: parts AND tuning are locked)'
+    or  'these parts are not on the Garage List (Parts: tuning and paint are free, '
+        .. 'parts are locked)')
 end
 
 -- BeamMP spawn/edit hooks. The payload is the raw vehicle packet; the jbeam
@@ -4863,7 +5398,6 @@ end
 
 function RM_onVehicleSpawn(pid, vid, data)
   if not garageEnforcing() then return end
-  if isAuthenticated(pid) then return end
   local model = garageModelFromPacket(data)
   if model and not garageHasModel(model) then
     rejectVehicle(pid, vid, 'vehicle "' .. model .. '" is not on the Garage List')
@@ -4873,7 +5407,6 @@ end
 
 function RM_onVehicleEdited(pid, vid, data)
   if not garageEnforcing() then return end
-  if isAuthenticated(pid) then return end
   local model = garageModelFromPacket(data)
   if model and not garageHasModel(model) then
     rejectVehicle(pid, vid, 'edited into "' .. model .. '", which is not on the Garage List')
@@ -5969,7 +6502,7 @@ local function cupScoreRace()
         -- The place they were RUNNING IN, which is what "held" means and is a
         -- different fact from where they classify. Falls back to the
         -- classification when the driver stopped before a running order existed:
-        -- there is no held position to honour then.
+        -- there is no held position to honor then.
         scorePos = rec.heldPos or rec.dnfPos or i
       end
     end
@@ -6688,39 +7221,68 @@ function RM_Tick()
     finishSession(reason)
     return
   end
-  if race.phase == 'qualifying' then
-    if race.finalLap then
-      -- The clock has already expired and the field is on its last lap. What is
-      -- counting down now is the grace: a driver parked in the pits, or one who
-      -- never left the grid, has no crossing to give, and the session must not
-      -- wait on them forever.
-      race.finalLapLeft = race.finalLapLeft - CFG.tickMs / 1000.0
-      if race.finalLapLeft <= 0 then
-        local stranded = {}
-        for _, rec in pairs(players) do
-          if onTrack(rec) then stranded[#stranded + 1] = rec end
-        end
-        -- Snapshot first: retireDriver sends a client event per driver, and
-        -- building the list while that is going on is the shape of bug that
-        -- reached only the last name in it.
-        for _, rec in ipairs(stranded) do
-          retireDriver(rec, 'Qualifying over: the session closed before you reached the line')
-        end
-        if #stranded > 0 then
-          MP.SendChatMessage(-1, string.format(
-            '[RaceManager] Final-lap grace expired: %d driver%s taken where they stood.',
-            #stranded, #stranded == 1 and '' or 's'))
-        end
-        finishSession('the final-lap grace expired')
-        return
+  -- THE GRACE, and it is one rule for both session kinds now. Once the flag is
+  -- out, a driver with no crossing left to give -- parked in the pits, stuck in
+  -- a barrier, never left the grid -- must not hold the session open forever.
+  -- Qualifying has always done this; a timed race reaches the same state by a
+  -- different route and needs the same valve on it.
+  if race.finalLap then
+    race.finalLapLeft = race.finalLapLeft - CFG.tickMs / 1000.0
+    if race.finalLapLeft <= 0 then
+      local stranded = {}
+      for _, rec in pairs(players) do
+        if onTrack(rec) then stranded[#stranded + 1] = rec end
       end
-    else
-      race.qualiTime = race.qualiTime + CFG.tickMs / 1000.0
-      if race.qualiTimeLimit > 0 and race.qualiTime >= race.qualiTimeLimit then
-        beginFinalLap()
-        -- Not a return: the session is still running, and the broadcast below
-        -- is what carries the final-lap flag to every client.
+      -- Snapshot first: retireDriver sends a client event per driver, and
+      -- building the list while that is going on is the shape of bug that
+      -- reached only the last name in it.
+      for _, rec in ipairs(stranded) do
+        retireDriver(rec, isQualiSession()
+          and 'Qualifying over: the session closed before you reached the line'
+          or  'Race over: the flag fell before you reached the line')
       end
+      if #stranded > 0 then
+        MP.SendChatMessage(-1, string.format(
+          '[RaceManager] Final-lap grace expired: %d driver%s taken where they stood.',
+          #stranded, #stranded == 1 and '' or 's'))
+      end
+      finishSession('the final-lap grace expired')
+      return
+    end
+  elseif race.phase == 'qualifying' then
+    race.qualiTime = race.qualiTime + CFG.tickMs / 1000.0
+    if race.qualiTimeLimit > 0 and race.qualiTime >= race.qualiTimeLimit then
+      beginFinalLap()
+      -- Not a return: the session is still running, and the broadcast below
+      -- is what carries the final-lap flag to every client.
+    end
+  elseif race.phase == 'racing' and race.raceTimeLimit > 0 then
+    if not race.raceExpired then
+      -- THE CLOCK RUNNING OUT CHANGES NOTHING YET. It arms the wait; the
+      -- leader's next crossing is what starts the final lap. A driver reading
+      -- laps-to-go sees two at this point: finish this one, then run the last.
+      if race.time >= race.raceTimeLimit then
+        race.raceExpired   = true
+        race.raceExpiredAt = race.time
+        broadcastState()
+        MP.SendChatMessage(-1, '[RaceManager] TIME UP: the FINAL LAP starts when the '
+          .. 'leader next takes the line.')
+        print(string.format('[RaceManager] Timed race: %ds elapsed, waiting on the leader',
+          math.floor(race.raceTimeLimit)))
+      end
+    elseif not race.lastLapNum
+        and race.time - (race.raceExpiredAt or 0) >= CFG.finalLapGrace then
+      -- NO LEAD-LAP CROSSING SINCE THE CLOCK EXPIRED, for longer than a lap has
+      -- any business taking. The leader retired, or the field is stopped, and
+      -- the crossing this format waits on is never going to arrive. The flag
+      -- goes out directly: everyone still running is classified as they come
+      -- past, which is the same ending a lapped car always gets.
+      race.finalLap     = true
+      race.finalLapLeft = CFG.finalLapGrace
+      broadcastState()
+      MP.SendChatMessage(-1, '[RaceManager] CHECKERED FLAG: no leader crossing since the '
+        .. 'clock expired. Everyone still out is classified as they cross.')
+      print('[RaceManager] Timed race: no lead-lap crossing within the grace, flag out')
     end
   end
   tickCounter = tickCounter + 1
@@ -6736,7 +7298,7 @@ function RM_onPlayerJoin(pid)
   -- display identity must not carry over -- inheriting the previous player's
   -- alias would be impersonation by accident. Only the display fields are
   -- refreshed here; the record itself (and its lap data) is left alone, which is
-  -- the pre-existing behaviour Generate Grid purges.
+  -- the pre-existing behavior Generate Grid purges.
   pid = pidKey(pid)
   if not pid then return end
   local current = MP.GetPlayerName(pid)
@@ -6839,6 +7401,7 @@ function onInit()
   MP.RegisterEvent('RM_StartQualifying',  'RM_onStartQualifying')
   MP.RegisterEvent('RM_GenerateGrid',     'RM_onGenerateGrid')
   MP.RegisterEvent('RM_SetTotalLaps',     'RM_onSetTotalLaps')
+  MP.RegisterEvent('RM_SetRaceLimits',    'RM_onSetRaceLimits')
   MP.RegisterEvent('RM_SetAlias',         'RM_onSetAlias')
   MP.RegisterEvent('RM_SetNametags',      'RM_onSetNametags')
   -- Race entry (opt-in) + starting grid
@@ -6868,6 +7431,7 @@ function onInit()
   MP.RegisterEvent('RM_ClearGarage',      'RM_onClearGarage')
   MP.RegisterEvent('RM_RemoveGarageEntry','RM_onRemoveGarageEntry')
   MP.RegisterEvent('RM_SetGarageEnforce', 'RM_onSetGarageEnforce')
+  MP.RegisterEvent('RM_SetGarageMode',    'RM_onSetGarageMode')
   MP.RegisterEvent('RM_VehicleConfig',    'RM_onVehicleConfig')
   MP.RegisterEvent('onVehicleSpawn',      'RM_onVehicleSpawn')
   MP.RegisterEvent('onVehicleEdited',     'RM_onVehicleEdited')

@@ -2,7 +2,7 @@
 --
 -- Why this exists: every other suite asks whether the mod is CORRECT. This one
 -- asks what it COSTS per frame, because the two failure modes look nothing alike
--- and only one of them shows up in a test that checks behaviour. A feature can
+-- and only one of them shows up in a test that checks behavior. A feature can
 -- be perfectly correct and still put a push across the Lua/CEF boundary sixty
 -- times a second.
 --
@@ -16,7 +16,7 @@
 --      to onUpdate without a throttle would not fail any other test in the repo.
 --
 --   2. ALLOCATIONS PER FRAME in the draw path. Immediate-mode drawing rebuilds
---      nothing per frame by design: the gate geometry and colours are cached.
+--      nothing per frame by design: the gate geometry and colors are cached.
 --      Churning tables here hands work to the collector on the render thread.
 --
 --   3. DRAW CALLS PER FRAME. A driver sees two gates, not the circuit. If this
@@ -175,15 +175,15 @@ check(steadyDraws <= 24, string.format(
     .. '(budget 24)', steadyDraws))
 
 -- Immediate-mode drawing that allocates is drawing that feeds the collector on
--- the render thread. The geometry and the colours are both cached.
+-- the render thread. The geometry and the colors are both cached.
 -- ONE, and it is not the drawing. checkGates keeps last frame's position so it
 -- has a segment to test gates against, and that carry-over sample is the single
 -- allocation: `prevPos = vec3(pos.x, pos.y, pos.z)`. It is inherent to crossing
 -- detection and predates every visual feature here. The gate geometry and the
--- colours themselves allocate NOTHING, which is the property this pins: if this
+-- colors themselves allocate NOTHING, which is the property this pins: if this
 -- climbs, something in the draw path has started rebuilding per frame.
 check(steadyAllocs <= 1, string.format(
-  'a steady frame allocates %d vectors/colours, and the budget is 1: the '
+  'a steady frame allocates %d vectors/colors, and the budget is 1: the '
     .. 'crossing detector carries a position, the draw path caches everything '
     .. 'else', steadyAllocs))
 

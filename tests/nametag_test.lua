@@ -5,7 +5,7 @@
 -- BeamMP's nametag API, and the whole point of the feature is how LITTLE it
 -- says. BeamMP renders nametags itself and players are attached to that
 -- rendering -- the distance fade, the hide-behind-objects setting, the
--- spectator list, the colours. There is a way to take the whole thing over
+-- spectator list, the colors. There is a way to take the whole thing over
 -- (hideNicknames + draw your own, which is what BeamJoy does) and it is
 -- deliberately not taken: owning the render means owning every setting a player
 -- has already chosen. So this appends text through BeamMP's own

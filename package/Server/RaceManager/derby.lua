@@ -73,7 +73,7 @@ function D.init(h)
 end
 
 -- The cup installs itself at the bottom of main.lua, after this module has
--- loaded and been initialised, so these cannot come through init: they would
+-- loaded and been initialized, so these cannot come through init: they would
 -- be nil at that point and captured nil forever.
 function D.setCupHooks(onDerbyComplete, resultsLines)
   cupOnDerbyComplete, cupResultsLines = onDerbyComplete, resultsLines
@@ -107,10 +107,10 @@ local DERBY_UNLIMITED_RESETS = -1
 local DERBY_MAX_RESET_LIMIT  = 99
 local DERBY_MAX_STARTS       = 64
 
--- Rectangle arenas. A rectangle is authored from its centre outward, so these
+-- Rectangle arenas. A rectangle is authored from its center outward, so these
 -- are HALF-extents: the sliders show the full width and length, which is what an
 -- admin measures an arena in, and the half is what the corner maths wants.
-local DERBY_MIN_EXTENT     = 5    -- metres; full width/length floor is 10 m
+local DERBY_MIN_EXTENT     = 5    -- meters; full width/length floor is 10 m
 local DERBY_MAX_EXTENT     = 250  -- ceiling is 500 m a side
 local DERBY_DEFAULT_EXTENT = 60
 -- Wall height is a VISUAL property of either arena kind, never a gameplay one:
@@ -127,8 +127,8 @@ local DERBY_DEFAULT_WALL = 6
 
 local derby = {
   phase     = 'idle',   -- idle | running | finished
-  -- Who is in a derby. 'all' (the default) is the historical behaviour: every
-  -- connected session becomes a participant. 'join' honours the same Join Race
+  -- Who is in a derby. 'all' (the default) is the historical behavior: every
+  -- connected session becomes a participant. 'join' honors the same Join Race
   -- opt-in the circuit races use, so somebody who only wants to watch is not
   -- dragged in -- being entered means losing your car to freecam the moment you
   -- are eliminated, which is a poor thing to do to a spectator.
@@ -175,7 +175,7 @@ local derby = {
   mode      = 'lms',
   -- HOW MANY TIMES A DRIVER MAY BE COUNTED OUT BEFORE THEY ARE OUT FOR GOOD.
   --
-  -- 1 is exactly the behaviour that existed before this: the first time the
+  -- 1 is exactly the behavior that existed before this: the first time the
   -- stopped timer expires, you are eliminated. Set it higher and the timer
   -- expiring spends a life and puts the driver back on their start slot instead,
   -- so a derby becomes a scrap you can come back from rather than one mistake.
@@ -219,7 +219,7 @@ local derby = {
   --   'polygon'  drive the perimeter and drop a marker at each corner. Arbitrary
   --              shapes, which is the whole point: a demo arena is rarely a
   --              rectangle, and this is the mode that has always worked.
-  --   'rect'     pick a centre and pull the extents out with sliders. Four
+  --   'rect'     pick a center and pull the extents out with sliders. Four
   --              corners are DERIVED from `shape` below, so the markers are not
   --              individually editable while this is on.
   --
@@ -290,9 +290,9 @@ local function derbyWrapRot(n, default)
   return n
 end
 
--- The four corners of a rectangle authored from its centre.
+-- The four corners of a rectangle authored from its center.
 --
--- All four sit at the CENTRE's z. That is deliberate and not a shortcut waiting
+-- All four sit at the CENTER's z. That is deliberate and not a shortcut waiting
 -- to be fixed: the out-of-bounds test ignores z entirely, so corner height
 -- changes nothing about who is in the arena, and sampling terrain per corner
 -- would make the walls agree with the ground on a slope while still enclosing
@@ -350,7 +350,7 @@ end
 
 -- Validate a rectangle off the wire (or out of a saved arena). `base` supplies
 -- the value for anything the payload leaves out, so a slider can send just the
--- field it changed. Returns nil when there is no centre to work from at all.
+-- field it changed. Returns nil when there is no center to work from at all.
 local function sanitizeDerbyShape(raw, base)
   if type(raw) ~= 'table' then return nil end
   base = base or {}
@@ -656,7 +656,7 @@ function RM_onDerbySetConfig(pid, rawData)
   if not ok or type(data) ~= 'table' then return end
   derby.oobLimit  = derbyClampLimit(data.oobLimit,  derby.oobLimit)
   derby.demoLimit = derbyClampLimit(data.demoLimit, derby.demoLimit)
-  -- Mode. Anything unrecognised leaves it alone rather than falling back to a
+  -- Mode. Anything unrecognized leaves it alone rather than falling back to a
   -- default: a garbled payload should not quietly change how the night is
   -- scored.
   if data.mode == 'lms' or data.mode == 'dm' then derby.mode = data.mode end
@@ -751,14 +751,14 @@ function RM_onDerbySetBoundaryMode(pid, rawData)
     derby.shape = nil
   else
     -- Fit the rectangle to whatever is already placed. With nothing to fit, the
-    -- client sends its own vehicle position as the centre -- the same "stand
+    -- client sends its own vehicle position as the center -- the same "stand
     -- where you want it and press the button" gesture every other placement in
     -- this mod uses.
     local shape = derbyShapeFromBoundary(derby.boundary)
     if not shape then
       local cx, cy, cz = tonumber(data.cx), tonumber(data.cy), tonumber(data.cz)
       if not (cx and cy and cz) then
-        print('[RaceManager] Derby rectangle mode needs a centre: '
+        print('[RaceManager] Derby rectangle mode needs a center: '
           .. 'nothing placed to fit, and no vehicle position sent')
         return
       end
@@ -774,7 +774,7 @@ function RM_onDerbySetBoundaryMode(pid, rawData)
     mode, MP.GetPlayerName(pid) or pid))
 end
 
--- The rectangle editor's one write path: centre, extents, rotation and wall
+-- The rectangle editor's one write path: center, extents, rotation and wall
 -- height all arrive here, and a payload may carry any subset of them (a slider
 -- sends only what it moved). Wall height is applied in either mode because it is
 -- a property of the arena's drawing, not of the rectangle.

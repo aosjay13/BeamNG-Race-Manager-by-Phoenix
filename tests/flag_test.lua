@@ -120,7 +120,7 @@ end
 -- five of them is a quarter of a second long and never counts: the gates all
 -- register, nextWp cycles correctly, and localLap sits on 1 forever.
 --
--- The time is burned at y=105 -- just past gate 1, and ninety-five metres from
+-- The time is burned at y=105 -- just past gate 1, and ninety-five meters from
 -- the line, which is well outside the white-flag radius. Coasting anywhere
 -- inside that radius would trip the very thing under test.
 local function coast(seconds)
@@ -172,7 +172,7 @@ completeLap()          -- now on lap 2 of 3
 clearLog()
 ontoTheApproach()
 
--- Still well clear of the line: the flag belongs to the last fifty metres.
+-- Still well clear of the line: the flag belongs to the last fifty meters.
 moveTo(120)
 check(#flagNotices() == 0, 'no white flag while still 80 m from the line')
 
@@ -181,7 +181,7 @@ moveTo(170)
 local white = flagNotices()
 check(#white == 1, 'the white flag is waved on the approach to the final lap')
 check(white[1] and white[1].msg == 'WHITE FLAG', 'and says so')
-check(white[1] and white[1].colour == 'white', 'and waves white')
+check(white[1] and white[1].color == 'white', 'and waves white')
 
 -- It does not re-arm every frame for the rest of the approach. The run down to
 -- a line takes seconds and this is sampled per frame, so a missing latch is a
@@ -199,7 +199,7 @@ ontoTheApproach()
 moveTo(175)
 check(flagsNamed('WHITE FLAG') == 0, 'and not a second time on the last lap')
 check(flagsNamed('CHECKERED FLAG') == 1,
-  'the run to the finish waves the checkered flag on the same fifty metres')
+  'the run to the finish waves the checkered flag on the same fifty meters')
 
 -- Once, like the white one: this is sampled every frame for the whole approach.
 clearLog()
@@ -296,10 +296,10 @@ handlers['RM_ForceSpectate']({ reason = 'Eliminated', source = 'derby', place = 
 check(#flagNotices() == 0, 'a derby elimination does not wave a checkered flag')
 
 -- ---------------------------------------------------------------------------
--- Session flags carry their own colour
+-- Session flags carry their own color
 -- ---------------------------------------------------------------------------
 -- Green, yellow and red are one kind ('flag') and each has to flash in its own
--- colour, so the colour travels on the notice rather than being looked up from
+-- color, so the color travels on the notice rather than being looked up from
 -- the kind.
 startRace(3)
 clearLog()
@@ -307,26 +307,126 @@ serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {},
   flag = 'yellow' })
 local y = flagNotices()
 check(#y == 1 and y[1].msg == 'YELLOW FLAG', 'a caution is announced')
-check(y[1] and y[1].colour == 'yellow', 'and waves yellow')
+check(y[1] and y[1].color == 'yellow', 'and waves yellow')
 
 clearLog()
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {},
   flag = 'red' })
 local r = flagNotices()
-check(#r == 1 and r[1].colour == 'red', 'a red flag waves red')
+check(#r == 1 and r[1].color == 'red', 'a red flag waves red')
 
 clearLog()
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {},
   flag = 'green' })
 local g = flagNotices()
 check(#g == 1 and g[1].msg == 'GREEN FLAG', 'and going back green is announced')
-check(g[1] and g[1].colour == 'green', 'and waves green')
+check(g[1] and g[1].color == 'green', 'and waves green')
 
 -- The same flag re-broadcast is not a new flag.
 clearLog()
 serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {},
   flag = 'green' })
 check(#flagNotices() == 0, 'a re-broadcast of the standing flag says nothing')
+
+-- ---------------------------------------------------------------------------
+-- A TIMED RACE COUNTS NO LAPS, so it waves no flags off the lap box
+-- ---------------------------------------------------------------------------
+-- THE BUG THIS REPLACES, reported from a live session: "the timed mode worked
+-- but the laps were also being counted. I had two white flag laps and two
+-- checkered flags."
+--
+-- Both flags are per-driver and can only be waved here, and both were being
+-- waved off session.totalLaps alone. In a timed race that number is INERT --
+-- the server drops the lap target entirely, because nobody knows how many laps
+-- ten minutes is -- but it was still on the broadcast and still being counted
+-- against, so the lap box waved a second pair of flags that nothing enforced.
+--
+-- ontoTheApproach() leaves the car NINETY-FIVE METERS out, which is outside the
+-- fifty-meter radius the flags are waved in. Every check below needs the
+-- moveTo(170) after it or it passes without the watcher ever having run --
+-- which is exactly how a test asserting "no flag" proves nothing at all.
+local function startTimedRace(extra)
+  -- BOTH SOURCES. The derby block above leaves a lock scoped to 'derby', and a
+  -- standing lock makes checkGates return before a single gate is read -- so
+  -- the laps never advance, no flag is ever waved, and a test asserting "no
+  -- flag" passes without the watcher having run at all.
+  handlers['RM_ReleaseSpectate']({ source = 'race' })
+  handlers['RM_ReleaseSpectate']({ source = 'derby' })
+  loadCircuit()
+  local st = { phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} }
+  for k, v in pairs(extra) do st[k] = v end
+  serverState(st)
+  moveTo(10)
+end
+-- Onto the approach AND inside the radius, which is where a flag is waved.
+local function ontoTheLine()
+  ontoTheApproach()
+  moveTo(170)
+end
+
+startTimedRace({ raceMode = 'timed', raceTimeLimit = 600 })
+-- Sanity: the harness reaches the radius at all. Without this a "no flag"
+-- result below could mean the fix works or could mean the car never got there.
+clearLog()
+completeLap()
+ontoTheLine()
+check(flagsNamed('WHITE FLAG') == 0,
+  'a timed race waves no white flag off the lap box (lap 2 of a 3-lap setting)')
+
+-- Reach the lap count itself. In a lap race this is the checkered flag.
+clearLog()
+moveTo(195); moveTo(205); moveTo(10)   -- across the line, onto lap 3
+ontoTheLine()
+check(flagsNamed('CHECKERED FLAG') == 0,
+  'and no checkered flag on reaching the lap count either')
+check(flagsNamed('WHITE FLAG') == 0, 'and still no white flag')
+
+-- The clock expiring on its own changes nothing: the field is waiting on the
+-- leader and nobody is on a last lap yet.
+startTimedRace({ raceMode = 'timed', raceTimeLimit = 600, raceExpired = true })
+clearLog()
+completeLap()
+ontoTheLine()
+check(flagsNamed('WHITE FLAG') + flagsNamed('CHECKERED FLAG') == 0,
+  'an expired clock with the leader not yet past waves nothing')
+
+-- THE LEADER HAS BEEN PAST. lastLapNum names the final lap and the flags are
+-- waved against THAT. The car has one lap complete, so it is on lap 2; naming
+-- lap 3 puts this approach one lap short of the end -- a white flag, exactly as
+-- a marshal would.
+startTimedRace({ raceMode = 'timed', raceTimeLimit = 600,
+  raceExpired = true, lastLapNum = 3 })
+clearLog()
+completeLap()
+ontoTheLine()
+check(flagsNamed('WHITE FLAG') == 1,
+  'the white flag is waved on the approach that starts the final lap')
+check(flagsNamed('CHECKERED FLAG') == 0, 'and not the checkered, which is a lap away')
+
+-- ...and one lap later, the finish.
+clearLog()
+moveTo(195); moveTo(205); moveTo(10)   -- across the line, onto the final lap
+ontoTheLine()
+check(flagsNamed('CHECKERED FLAG') == 1,
+  'and the checkered flag on the approach that ends it')
+check(flagsNamed('WHITE FLAG') == 0, 'with no second white flag')
+
+-- ---------------------------------------------------------------------------
+-- Endurance keeps its lap target, so it keeps its flags
+-- ---------------------------------------------------------------------------
+-- The other half of "whichever comes first". Dropping the lap flags here would
+-- be the same bug with the sign flipped: a 3-lap-or-10-minute race that reaches
+-- three laps has to wave both flags off the distance.
+startTimedRace({ raceMode = 'endurance', raceTimeLimit = 600 })
+clearLog()
+completeLap()
+ontoTheLine()
+check(flagsNamed('WHITE FLAG') == 1,
+  'an endurance race still waves the white flag on distance')
+clearLog()
+moveTo(195); moveTo(205); moveTo(10)
+ontoTheLine()
+check(flagsNamed('CHECKERED FLAG') == 1, 'and the checkered flag on reaching it')
 
 print(string.format('flag_test: %d checks, %d failures', checks, fails))
 os.exit(fails == 0 and 0 or 1)

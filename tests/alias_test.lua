@@ -191,7 +191,7 @@ for _, byte in ipairs({ 27, 1, 7 }) do
     'control byte ' .. byte .. ' is refused')
 end
 
--- Whitespace control characters are NORMALISED rather than refused: a tab
+-- Whitespace control characters are NORMALIZED rather than refused: a tab
 -- pasted into the box collapses to a space, which cannot break a column or
 -- inject anything, so there is nothing to reject.
 RM_onSetAlias(1, '{"target":3,"alias":"tab\there"}')

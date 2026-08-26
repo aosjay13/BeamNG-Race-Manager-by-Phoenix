@@ -6,6 +6,311 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.9.7 - No more "lap 8 of 5", and American spelling throughout
+
+### Fixed
+
+- **A timed race no longer reads `8/5` on the leaderboard.** The Lap column was
+  dividing by the lap box, which is inert in a timed race - so a driver eight
+  laps into a ten minute race was shown as being on lap 8 of a 5 that nothing
+  was counting towards.
+
+  There is no denominator when there is no target. Once the leader has been
+  past, the **final lap number** is the target and the column counts against
+  that instead. Endurance and Laps races are unchanged.
+
+  That is the third copy of this rule (the server's `sessionLapTarget`, the
+  client's `effectiveLapTarget`, and now the panel's `raceLapTarget`), and all
+  three name it deliberately: three copies that disagree is how a driver gets
+  told two different distances.
+
+### Changed
+
+- **American spelling throughout**, in code and prose alike: **checkered**,
+  color, center, meter, gray, behavior, honor, recognize, initialize, practice.
+  513 lines across 40 files.
+
+  **Identifiers moved with the prose.** `colour` was a field on the notice
+  payload crossing the Lua bridge into the Angular app, and `grey` was a CSS
+  class and the default notice color; leaving those British while everything
+  around them changed is the half-measure that reads as an oversight. Every side
+  of each lives in this repo, so they moved together, and the flash classes
+  still cover every value the bridge can send.
+
+  Historical CHANGELOG entries were reworded too, so the file does not switch
+  dialect halfway down.
+
+## 0.9.6 - A timed race stops counting laps, and the clock counts down
+
+### Fixed
+
+- **A timed race waved two white flags and two checkered flags.** Reported from a
+  live session, and the cause was on the client: both flags are per-driver
+  events, so only the client can wave them, and both were being waved off
+  `session.totalLaps` alone.
+
+  In a timed race that number is **inert** - the server drops the lap target
+  entirely, because nobody knows how many laps ten minutes is - but it was still
+  being broadcast and still being counted against. So the lap box waved its own
+  pair of flags, on a limit nothing was enforcing, alongside the pair the clock
+  waved.
+
+  The client now works out the **effective** lap target the same way the server
+  does: the final lap number once the leader has been past, no target at all in a
+  timed race before that, and the lap count in a Laps or Endurance race. The
+  enforcement mode rides on the state broadcast so the client can tell.
+
+### Changed
+
+- **The race clock counts DOWN in a timed or endurance race**, and up in a lap
+  race. "How long is left" is the question every driver in a timed race is
+  actually asking, and making them subtract the number on screen from ten
+  minutes at racing speed is not an answer. It is tinted while counting down, so
+  which direction it is running is visible at a glance rather than inferred from
+  two readings a second apart.
+
+  **Elapsed time comes back at the flag.** A finished race frozen on 0:00 says
+  nothing, and the elapsed time is what a result is read against.
+
+  This replaces the separate `R 4:12` readout added in 0.9.4, which put the same
+  number on screen twice.
+
+## 0.9.5 - Endurance: the distance or the clock, whichever comes first
+
+### Added
+
+- **An Endurance race length.** **Race length** is now three modes rather than
+  two, and Endurance is the one that runs to **both** limits at once: a
+  distance *and* a clock, whichever arrives first. Both boxes are shown, because
+  both are live.
+
+  - **The distance arrives first** - the flag falls on the car that completes it,
+    and everyone still out is classified as they come past. A car a lap down is
+    not made to keep circulating after the race has been won.
+  - **The clock arrives first** - the `+1 LAP` / `FINAL LAP` ending from 0.9.4,
+    with the lap target still armed underneath it. A 50-lap-or-60-minute race
+    that runs out of time on lap 31 ends on lap 32.
+
+  Which limits are live is now carried as a **named mode** rather than inferred
+  from which number happens to be non-zero. That reading stopped being safe the
+  moment a mode existed with both of them set, and inferring it is how a
+  50-lap-or-60-minute race quietly becomes a 60-minute one.
+
+  Picking **Laps** clears the clock on the server rather than trusting the panel
+  to send a zero: a lap race with a live time limit underneath it ends when
+  nobody expects it to.
+
+### Note
+
+The flag-falls-on-the-winner rule is **Endurance only**. A plain **Laps** race is
+unchanged - every driver runs the full distance, and a lapped car goes on
+circulating until it has. That is long-standing behavior a league's results are
+built on, and changing it is a decision about how races are scored rather than a
+detail of this mode. Say the word if you want the two unified.
+
+## 0.9.4 - Timed races: ten minutes plus a lap
+
+### Added
+
+- **A race can be run to a clock instead of a lap count.** **Race length** is now
+  a **Laps / Timed** toggle, the same shape and the same rule as the qualifying
+  control below it: one or the other, never both. Picking one sends the other as
+  zero, so they cannot both be armed by accident.
+
+  The format is **"10 minutes + 1 lap"**, and the whole of it is in what does
+  *not* happen when the clock runs out. Nothing does. A driver watching it reach
+  zero still has **two** laps to run:
+
+  | State | Header | What it means |
+  |---|---|---|
+  | Clock running | `R 4:12` | Time remaining. |
+  | Expired | `+1 LAP` | Time is up. The final lap starts when **the leader** next takes the line. |
+  | Leader past | `FINAL LAP` | The lap everyone still running finishes on. |
+  | Winner home | `FLAG OUT` | Checkered. Your next crossing is your last. |
+
+  **Everyone still running gets the whole final lap.** Not "your next crossing" -
+  that is qualifying's rule, and it would flag off a car two seconds behind the
+  leader a full lap early while the leader ran a complete one. A lapped car,
+  which will never reach the final lap number, is classified on its next crossing
+  once the winner is home, exactly as a real checkered flag classifies it.
+
+  **The leader is the car that reaches a lap number first**, not the first car
+  past the line after expiry. Those differ precisely when a backmarker comes
+  round, and the second rule would hand the final lap to one.
+
+  If no lead-lap crossing arrives within the 3 minute grace - the leader retired,
+  the field is stopped - the flag goes out anyway. The race cannot hang waiting
+  on a crossing that is never coming.
+
+  The lap count is remembered underneath a timed race, not discarded, so
+  switching back to Laps returns the distance that was set.
+
+## 0.9.3 - Free practice gets the timing screen it was already generating
+
+### Fixed
+
+- **Sector times and the running lap clock now show while practising.** A
+  practising driver saw one sector per lap, at the line, alongside the completed
+  lap time, and nothing in between.
+
+  The sectors were never missing. `checkGates` runs in practice - that is what
+  makes practice timed - and every crossing was being stamped and pushed. What
+  was missing was the **lap clock**: it ran on `sessionRunning()`, and practice
+  is deliberately not a session.
+
+  That mattered more than a missing clock should, because the app draws the
+  sector readout **inside** the lap-time block, and that block only appears when
+  a clock is running or a lap time is being held. With no clock, the single
+  moment anything could appear was the instant a lap completed and parked a time
+  there - by which point the sector on hold was the last one of the lap. Hence
+  "only the final sector and the lap time, at the line".
+
+  Fixed at both ends: the lap clock runs in free practice, and a held sector time
+  is now reason enough on its own to show the readout. The ticker underneath was
+  always written to keep a lone sector on screen and expire it; the test in front
+  of it was never letting one through.
+
+  The lap counter follows **practice** laps. `session.localLap` does not move in
+  practice, so the readout would otherwise have said LAP 1 all afternoon.
+
+## 0.9.2 - The Garage List stops refusing the car it was built from
+
+### Fixed
+
+- **A car was refused the moment it spawned, including the exact one the list
+  had just been captured from.** `onVehicleSpawned` declared the setup on the
+  frame the vehicle object appeared, and at that instant BeamNG has not finished
+  loading its parts: `getConfig()` answers with nothing, the signature comes out
+  as `model=X|parts=`, and that matches no entry on any list.
+
+  It had been doing this all along and cost nothing, because the deletion was
+  broken (0.9.1's other fix). The moment the client started honoring the
+  removal order, the same spurious rejection deleted the car.
+
+  Fixed on both sides, because either alone would do: the client will not report
+  a configuration with an empty part list, and the server will not rule on one.
+  A spawn now arms the poll instead of answering immediately.
+
+- **The model is matched on the bare jbeam name.** The list stores whatever
+  `veh:getJBeamFilename()` returned and the spawn packet carries `jbm`, and
+  nothing promises those agree on case, on a leading path, or on the `.jbeam`
+  extension. A disagreement refused a car that was plainly listed, with a
+  message blaming the model.
+
+- **A capture refused for size now says so.** An oversized configuration
+  signature printed to the server console and returned, so the button did
+  nothing visible and the car was believed to be on a list it had never reached.
+
+### Changed
+
+- **Nobody is exempt from the Garage List any more, admins included.** This
+  reverses 0.9.1, where an admin was told and listed but kept the car.
+
+  **Build the list with Enforcing switched off.** That is the whole of the
+  workaround for the case the exemption existed for, and an empty list never
+  enforces anything, so the first capture of a session needs no special case.
+  The panel says this next to the switch rather than leaving it to the docs, and
+  an admin without a car can always still reach the panel to switch enforcement
+  back off.
+
+  Admins still appear in the grid audit.
+
+### Added
+
+- **A refusal prints both signatures to the server console.** A driver is told
+  the rule they broke, which is all a driver can act on. An admin looking at a
+  car that ought to be on the list needs the two signatures side by side, and
+  there was nowhere to get them.
+
+## 0.9.1 - The Garage List learns the difference between parts and tuning
+
+### Added
+
+- **The Garage List locks parts and tuning separately.** A capture used to mean
+  one thing: this car, these parts, this exact tune. That is one of the two
+  rules a league actually runs, and the panel now carries both under **Locks**:
+
+  - **Parts** (the default) matches the model and the part config. Tuning is the
+    driver's business.
+  - **Strict** matches the tune as well.
+
+  Paint was never matched and still is not, under either mode.
+
+  Several allowed builds of the same car - a choice of engine, say - is **not** a
+  third mode. It is several entries under Parts, one per build, which is the same
+  thing the capture button has always done.
+
+  The mode is one switch for the whole session, persists in `garage.json`, and is
+  named in every refusal: a driver is told whether the thing to undo is a part
+  swap or a tune, because those are different evenings.
+
+- **Admins in an unapproved car are flagged and listed, never removed.** An admin
+  has to be able to drive an unapproved setup - it is how a car gets captured -
+  but an admin quietly starting a race in one used to be invisible everywhere.
+  They now get the same message every driver gets, appear in a **Not on the list**
+  block in the Garage panel, and are named in the line **Start Countdown** sends
+  to whoever pressed it.
+
+  The audit **reports and does not act**. Pulling a car off the grid during the
+  countdown does more damage to the race than starting with one wrong setup in
+  it, and it is the admin's call either way.
+
+- **Driver notices reach BeamNG's Messages HUD app.** Every surface this mod had
+  was its own: the notice strip, the full-panel flash and the red vehicle banner
+  are drawn by the Race Manager app, and the server's chat lines need the chat
+  window open. A driver running with the app minimised and chat closed saw none
+  of them, and **"RED FLAG: stop where you are"** is not a message that can
+  depend on which windows somebody happens to have up.
+
+  Every driver-facing notice already passes through one funnel, so the HUD copy
+  is decided there by kind rather than bolted onto forty call sites. What goes
+  out is what a driver would have to **act** on: the flags, the out lap, being
+  put out of a session, running out of resets, a refused car, a joker ruling,
+  where you start, a pit call, and the derby. The running commentary (a reset
+  count, a fastest lap, a ghost state, a name change) does not - pushing that
+  through as well is how a channel that must be read becomes one that is not.
+
+  Each kind gets its own icon and its own message slot, so a repeat replaces
+  rather than stacks, and a pit call cannot wipe a red flag.
+
+  **The chat lines stay.** They are the scrollback an admin reads after the
+  fact; this is the copy that reaches a driver at the wheel.
+
+### Fixed
+
+- **A refused setup is now actually deleted.** This is why the Garage List could
+  be walked straight past: spawn a listed car, change whatever you liked, and the
+  server noticed within two seconds, said so, and did nothing at all.
+
+  `MP.RemoveVehicle` wants BeamMP's own per-player vehicle id. The id the client
+  was reporting is `veh:getID()`, a BeamNG game object id from an unrelated
+  numbering space, so the call matched nothing and failed silently inside its
+  `pcall`. The client knows which car is its own without any id, so it is sent
+  the order and does the deletion. The old call is kept on the one path that
+  does carry a real BeamMP id (the spawn hook).
+
+- **A race that owes an out lap now says so on screen.** `onOutLap()` dropped its
+  qualifying-only test when a race gridded away from the start/finish line
+  started owing one too, but the notice at GO kept it - so for a race the
+  message existed **only** as the server's chat line, on the reasoning that chat
+  "reaches a driver who has not opened the app". It does not reach one who has
+  not opened chat, which is most of them.
+
+- **A driver's setup is only reported while they are in their own car.** The
+  capture read whatever vehicle the client was ATTACHED to, and in multiplayer
+  that comes apart the moment somebody spectates - filing a rival's parts under
+  their own name, or whitelisting a rival's car when an admin pressed capture.
+  Nothing is reported while the camera is on somebody else's car, which leaves
+  the last good declaration standing.
+
+### Upgrading
+
+**No re-capture needed.** A `garage.json` written by an earlier release has no
+mode and no per-entry parts signature; it loads in **Parts** mode (the looser of
+the two, so an upgrade cannot silently start rejecting tunes a league was
+already allowing) and the parts half of every entry is recovered from the
+signature already on disk.
+
 ## 0.9.0 - A board for the person holding the camera, and how far back everyone is
 
 ### Added
@@ -19,7 +324,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   auth and the plugin cannot reach it.
 
   **Nothing but the text changes.** It goes through BeamMP's own
-  `setPlayerNickSuffix`, so distance fade, hide-behind-objects, colour, alpha,
+  `setPlayerNickSuffix`, so distance fade, hide-behind-objects, color, alpha,
   the spectator list and role tags are all still BeamMP's, obeying whatever each
   player has set. Hiding BeamMP's nametags and drawing our own would have allowed
   a full replacement, and was rejected: owning the render means owning every
@@ -169,7 +474,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
   **The board does not outlive the spell that showed it.** Being out of the field
   is two things wearing one name: pressing Spectate is a decision that lasts,
-  while taking the chequered flag makes you a spectator for the few seconds
+  while taking the checkered flag makes you a spectator for the few seconds
   between your finish and the results. The switch is cleared when you rejoin the
   field, so a driver who merely finished is never thrown into a stream graphic
   and back out again -- press it once per session you sit out. It is still
@@ -283,7 +588,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   539.
 
   One of its checks was also matching `===`. `$scope.spectating` may only ever be
-  assigned twice -- the initialiser and the server's own `youSpectating` -- and
+  assigned twice -- the initializer and the server's own `youSpectating` -- and
   the counter looked for `$scope.spectating` followed by an `=`, which a
   comparison begins with too. The first predicate to *read* the flag made the
   count say three.
@@ -302,7 +607,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 - **Derby lives.** A driver counted out by the stopped timer now spends a life
   and goes back to the slot they started from, instead of being out of the derby
   on the first mistake. Set **Lives** in the derby rules; 1 is exactly the
-  behaviour that existed before.
+  behavior that existed before.
 
   The respawn goes through the same placement queue the form-up uses, so the car
   is ghosted on the way in and gets its collisions back only once it has settled
@@ -322,7 +627,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 ### Fixed
 
 - **Checkpoints no longer fly into the sky, and can be brought back if they
-  have.** The ground probe added in 0.8.3 started fifty metres *above* a gate and
+  have.** The ground probe added in 0.8.3 started fifty meters *above* a gate and
   took the first surface on the way down. That is not the ground: it is whatever
   is highest in that column, so a gate under a bridge got the bridge deck, one
   beside a building got the roof, one under trees got the canopy -- and the gate
@@ -338,7 +643,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 - **Clicking a gate no longer moves it.** Dragging moved the gate *to* wherever
   the cursor ray landed, and the ray does not stop on a gate -- a debug drawing
   has no collision -- so it carried on to the ground behind, which from any
-  raised camera is metres away and at whatever height was under *there*. Picking
+  raised camera is meters away and at whatever height was under *there*. Picking
   a gate therefore teleported it, reported as "I clicked it and it went all the
   way under the map".
 
@@ -356,7 +661,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   CEF overlay and ImGui's mouse-capture flag knows nothing about it, so pressing
   Up, Down or a turn button also registered as a click on the world. The ray
   behind the panel hit no gate, the miss cleared the selection, and the buttons
-  greyed out -- pressing Up disabled Up.
+  grayed out -- pressing Up disabled Up.
 
   A click that picks nothing now leaves the selection alone, which is the better
   rule anyway: a miss is ambiguous (the panel, a mis-aim, a gate hidden behind
@@ -367,7 +672,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 - **A drag is now purely horizontal, and follows the cursor across a plane at the
   gate's own height.** It used to follow the raycast against the world, which
   jumps: drag across a treeline and the hit flips between the ground and a canopy
-  twenty metres up, so a centimetre of mouse movement reads as metres of travel
+  twenty meters up, so a centimeter of mouse movement reads as meters of travel
   in a direction nobody asked for, and the height came out wrong at the end --
   first climbing the trees, then dropping to the floor. A plane has none of that.
   It ignores trees, roofs and terrain completely, and it makes a drag mean the
@@ -392,7 +697,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 - **A drag that catches the horizon no longer flings a gate out of sight.** The
   cursor ray lands on whatever it hits, and aimed near the skyline that is
-  terrain kilometres away. A drag beyond reach is now ignored rather than
+  terrain kilometers away. A drag beyond reach is now ignored rather than
   followed, so the gate stays where you last had control of it.
 
 - **Start position markers now say which way they face.** The direction line
@@ -412,7 +717,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   under itself. What is preserved is the anchor's height *above ground*, so a
   grid laid out on a bridge stays on the bridge.
 - **Ctrl+click no longer places gates in the dirt.** A gate placed by driving
-  takes the car's origin, about half a metre up; a clicked one took the raycast
+  takes the car's origin, about half a meter up; a clicked one took the raycast
   hit, which is the terrain surface itself. Clicked gates therefore sat lower
   than driven ones on the same road, far enough to disappear into a slope.
 - **Shift+scroll raises and lowers the selected gate in nudge mode.** There was
@@ -441,7 +746,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   crossing still counts in every other way; only the time is dropped. A **one-lap
   race is exempt**, because there the standing lap is the only lap there is.
 
-  `docs/REFERENCE.md` already described the corrected behaviour, so the code and
+  `docs/REFERENCE.md` already described the corrected behavior, so the code and
   the docs had been disagreeing.
 
 - **The last lap no longer lights CP 1 ahead of the finish.** The look-ahead gate
@@ -461,7 +766,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 - **Taking the flag no longer despawns your car.** It is ghosted in place
   instead, and you go on driving it to watch the rest of the race.
 
-  The old behaviour deleted the finisher's vehicle and respawned the whole field
+  The old behavior deleted the finisher's vehicle and respawned the whole field
   on the grid when the race ended. That is an entity destroy and an entity create
   per driver, plus the network sync churn each drags behind it, all landing at
   the one moment a field is coming home together and hitting hardest on the
@@ -479,7 +784,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   shunt one another into the racing line. World and terrain collision are
   untouched, so nobody falls through the map.
 
-  A finisher gets a **chequered flag** for the rest of the session, a count of
+  A finisher gets a **checkered flag** for the rest of the session, a count of
   the drivers they are still waiting on, and a one-off "you placed 3rd" message.
   Their place is locked at the crossing. Resets still work, still cost nothing,
   and the car comes back still ghosted -- a reset reloads the vehicle's Lua VM,
@@ -580,7 +885,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   box it actually tests, with semi-transparent walls. The joker shows an arrow
   while it is open, a cross when it is closed and a tick once it has been taken,
   so it reads at speed without stopping to think.
-- **Height and depth are separate.** A gate used to be one measurement centred on
+- **Height and depth are separate.** A gate used to be one measurement centerd on
   the placement point, so half of every gate hung under the road and making one
   tall enough to see buried an equal amount. Height raises the top bar, depth
   lowers the bottom. The derby arena walls got the same split.
@@ -605,8 +910,8 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   finish line and checkpoint 1, instead of checkpoints 1 and 2.
 - **Loading a layout told the panel nothing**, so a joker track had to be loaded
   twice before the joker lap setting unlocked.
-- **The flag never changed colour.** It was a glyph the font renders as an emoji,
-  which carries its own colour and ignores CSS. It asks for the text form now.
+- **The flag never changed color.** It was a glyph the font renders as an emoji,
+  which carries its own color and ignores CSS. It asks for the text form now.
 - **The Race Entry row did not render at all** on account of an apostrophe inside
   a single-quoted Angular string, which is a parse error rather than a warning.
 - Ending a derby put everyone on the last race's start line; a ghost timer
@@ -652,7 +957,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   **drag** to move it along the ground, **scroll** to turn it, **ctrl+click**
   open ground to place a new one. Works on whichever editor tab you are on, so
   checkpoints, joker gates, pit stalls, lane gates and start positions are all
-  movable. A placed gate faces the way the route is already travelling, so
+  movable. A placed gate faces the way the route is already traveling, so
   clicking along a road in order gives gates that face the way the road goes.
   With a gate picked, a placement goes in *after* it, which is how a gap noticed
   halfway round gets filled. Driving to a gate and pressing the button is
@@ -693,7 +998,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   session. Unlimited resets is `-1` (a blank box used to mean it too, which
   cannot survive auto-apply).
 - **Every checkpoint is brighter, in both of the ways one is drawn.** The hues
-  are unchanged throughout - what a colour means here is learned, and a driver
+  are unchanged throughout - what a color means here is learned, and a driver
   who has learned that green is the gate they are heading for should not have to
   learn it twice.
   - **The editor rectangles** (white line, orange route, green next target,
@@ -705,7 +1010,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   - **The race poles** are BeamNG's own markers, and its palette is built for
     its own races: `default` is a deep red-orange that reads as a silhouette
     against a bright map. Every mode is now lifted to the luminous version of
-    the same colour as the marker is created - once, on its own private copy of
+    the same color as the marker is created - once, on its own private copy of
     the table, so re-pointing a marker at the next gate can never wash it out
     further.
   - **The gate after the one you are on is no longer invisible.** The engine
@@ -714,15 +1019,15 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
     the corner reads before the driver arrives - a job a black pole cannot do.
     It is painted the orange of the route ahead, a shade under the gate actually
     being aimed at.
-  - The joker's on-track pole colour moved with its editor colour, and a test
+  - The joker's on-track pole color moved with its editor color, and a test
     now pins the two together - a comment had claimed for a long time that they
-    were the same colour with nothing checking it.
+    were the same color with nothing checking it.
 
 ### Changed (defaults)
 
 - **Everyone on the server races by default.** Race entry used to default to
   opt-in, so a server nobody had configured started with a field of nobody. That
-  is the setting that fails unsafe: an admin who has not realised it exists
+  is the setting that fails unsafe: an admin who has not realized it exists
   presses Generate Grid and forms an empty grid, leaving every driver standing
   while the one person who could fix it works out that a button they have never
   needed was the problem. The other way round, the mistake is that somebody who
@@ -876,7 +1181,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   never collect a fastest-lap bonus; **Last Man Standing** is the derby one, and
   it pays only when somebody actually survived. Turning derby points off leaves
   derbies out of the cup entirely.
-- **Standings keep race and derby apart and summarise them together.** The
+- **Standings keep race and derby apart and summarize them together.** The
   Combined table totals both; once a cup has held both kinds of event, Races and
   Derbies tabs show each championship on its own, each ranked on its own total.
 - **Cup points.** A cup scores a championship across several races: position
@@ -896,10 +1201,10 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   bonus achievements and the panel builds a control per entry from it, so
   adding another kind of bonus later needs no UI work.
 
-- **Rectangle arenas.** A derby boundary can now be pulled out from a centre
+- **Rectangle arenas.** A derby boundary can now be pulled out from a center
   instead of driven corner by corner: stand where the middle should be, then set
   Width, Length and Rotation on sliders (with **Square** linking the first two).
-  The four corners are derived from the shape and all sit at the centre's
+  The four corners are derived from the shape and all sit at the center's
   height - the out-of-bounds test has always ignored height, so a flat plane is
   what the rule actually is.
 - **The drive-and-place editor is unchanged and still there**, as the other half
@@ -950,7 +1255,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   panel per edge, drawn from both sides so it is there from inside the arena as
   well as outside it.
 - **An active derby no longer looks like an editor.** Authoring visuals - the
-  filled floor, corner numbers, the arena label, the centre crosshair, the full
+  filled floor, corner numbers, the arena label, the center crosshair, the full
   set of numbered start slots - belong to an admin with the Derby Editor open.
   Everyone else, including that admin once a field has formed up, gets faint
   walls and a ground rail. The boundary itself is still always drawn during a
@@ -1144,7 +1449,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   fire-and-forget freeze issued at placement, with nothing verifying it and
   nothing re-asserting it - and BeamNG reports the placement teleport back as a
   vehicle reset, which reloads the vehicle's Lua VM and takes the freeze with
-  it. The re-apply only ran when that report was recognised as the mod's own
+  it. The re-apply only ran when that report was recognized as the mod's own
   echo, inside a 0.6 s window, so three ordinary things left a car free for the
   whole countdown: the report arriving late (likelier the more loaded the
   client), the driver pressing reset on the grid, and the driver reloading their

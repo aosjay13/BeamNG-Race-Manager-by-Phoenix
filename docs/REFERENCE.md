@@ -120,12 +120,12 @@ course you want to race:
    **up** on **high-banked tracks** so the rectangle covers the banking; what you
    see drawn in the world *is* the trigger, so you can verify it at a glance.
 
-   > **Why the vertical is two numbers.** It used to be one, centred on the
+   > **Why the vertical is two numbers.** It used to be one, centerd on the
    > placement point, so half of every gate hung below the road. Making a gate
    > tall enough to see from a distance buried an equal amount of it under the
    > map, and there was no way to have one without the other. Splitting them
    > costs nothing and fixes both. The default is weighted upward for the same
-   > reason: 8 metres up, 2 down, the same 10 metres of gate in a more useful
+   > reason: 8 meters up, 2 down, the same 10 meters of gate in a more useful
    > place.
    >
    > A layout saved before the split carries one height that meant the full
@@ -162,7 +162,7 @@ course you want to race:
    ended up in the terrain could not be recovered with them. It will not let you
    push a gate below the ground under it.
 
-   A placed gate faces the way the route is already travelling, from the previous
+   A placed gate faces the way the route is already traveling, from the previous
    gate toward the point you clicked, so clicking along a road in order gives you
    gates that face the way the road goes. The first gate on an empty route has no
    previous one and faces where the camera looks, which the scroll wheel fixes.
@@ -179,7 +179,7 @@ course you want to race:
 
    Driving to a spot and pressing the button is still how a track gets built: it
    puts a gate where a car actually fits, facing the way one actually travels.
-   Nudge is for the pass afterwards, where a gate is ten metres late or a few
+   Nudge is for the pass afterwards, where a gate is ten meters late or a few
    degrees off and re-driving the corner is the expensive part.
 6. There is no local scratch copy. Tracks live on the server, where everyone
    races on the same one - save as you go with **Overwrite**.
@@ -225,10 +225,10 @@ and is never carried into the next one.
 #### Pit stalls
 
 Switch the editor to the **Pit Stalls** tab, drive into each stall and press
-**+ Place Pit Stall Here**. Stalls are drawn amber and labelled `PIT 1`, `PIT 2`.
+**+ Place Pit Stall Here**. Stalls are drawn amber and labeled `PIT 1`, `PIT 2`.
 
 **The box is drawn, because the box is the rule.** A stall is not a gate you
-cross, it is a volume you occupy: the gate's width across, three metres either
+cross, it is a volume you occupy: the gate's width across, three meters either
 way along it, measured on the stall's own axes so an angled stall still reads
 correctly. On track it appears as a translucent amber floor with low side walls
 and a corner post at each corner, open front and back because a stall is driven
@@ -248,7 +248,7 @@ seized, nothing is spent - no cooldown is started, so the stall is live again on
 the very next visit and you can come round. Making the box alone the trigger is
 what used to make a pit stop something that *happened to* a driver: clip a
 corner of a stall at racing speed and the car was frozen where it stood,
-mid-lane, at whatever angle it was travelling.
+mid-lane, at whatever angle it was traveling.
 
 **A car serving a stop is ghosted.** It is frozen, so it cannot move out of the
 way, and it is parked in the one part of the track everybody else arrives at
@@ -424,10 +424,65 @@ the stragglers are taken where they stand and the session closes normally.
 
 ### Step 6 - Grid and race
 
-1. Set the race distance in the **Laps** field. It applies as you type - there
-   is no Set button (see [Settings apply
-   themselves](#settings-apply-themselves)) - and the value in force is shown
-   beside the box, and to everyone else, as `race: N`.
+1. Set the **Race length**. A race runs to a **lap count** or to a **clock**,
+   never both - one toggle, and picking one sends the other as zero, so they
+   cannot both be armed by accident. It applies as you type; there is no Set
+   button (see [Settings apply themselves](#settings-apply-themselves)), and the
+   value in force is shown beside the box and to everyone else.
+
+   - **Laps** - a fixed distance. The race ends as the last car completes them.
+   - **Timed** - minutes, run as **"10 minutes + 1 lap"** (below). The lap count
+     is inert while this is set; it is remembered, not used.
+   - **Endurance** - **both**, whichever comes first: the distance, or the clock
+     plus one lap. Both boxes are shown, because both are live.
+
+   #### Endurance
+
+   Set a distance *and* a clock. Whichever arrives first ends the race:
+
+   - **The distance first** - the flag falls on the car that completes it, and
+     everyone still out is classified as they come past. A car a lap down is not
+     made to keep circulating after the race has been won.
+   - **The clock first** - the "+1 lap" ending below, with the lap target still
+     armed underneath it. A 50-lap-or-60-minute race that runs out of time at
+     lap 31 ends on lap 32.
+
+   The flag-falls-on-the-winner rule is **endurance only**. A plain **Laps** race
+   is unchanged: every driver runs the full distance, and a lapped car goes on
+   circulating until it has. That is long-standing behavior a league's results
+   are built on, and changing it is a decision about how races are scored rather
+   than a detail of this mode.
+
+   #### Timed races: "10 minutes + 1 lap"
+
+   **The clock running out ends nothing.** That is the whole format. A driver
+   watching it reach zero still has **two** laps to run: the one they are on,
+   and the last one.
+
+   | State | Header | What it means |
+   |---|---|---|
+   | Clock running | `4:12` | Time **remaining** - the race clock counts down in a timed or endurance race, and is tinted while it does. |
+   | Expired | `+1 LAP` | Time is up. The final lap starts when **the leader** next takes the line. Nothing is terminal yet. |
+   | Leader past | `FINAL LAP` | The lap everyone still running finishes on. |
+   | Winner home | `FLAG OUT` | The checkered flag. Your next crossing is your last. |
+
+   **Everyone still running gets the whole final lap**, not "your next
+   crossing". A car two seconds behind the leader has not reached the line when
+   the leader starts the last lap; flagging it off there would end its race a lap
+   early while the leader ran a full one.
+
+   **A lapped car is classified where it got to.** It will never reach the final
+   lap number, so once the winner is home its next crossing is its last - which
+   is what a real checkered flag does to a car a lap down.
+
+   **The leader is the car that reaches a lap number first**, not the first car
+   past the line after expiry. Those differ exactly when a lapped car comes
+   round, and using the second rule would hand the final lap to a backmarker.
+
+   If **no** lead-lap crossing arrives within the 3 minute grace - the leader
+   retired, the field is stopped - the flag goes out anyway and everyone still
+   out is classified as they come past. The race cannot hang waiting on a
+   crossing that is never coming.
 2. Choose the **Grid order**:
    - **Quali** - fastest-first from quali bests; drivers without a time go to
      the back (the default, and with no qualifying at all it falls back to
@@ -546,8 +601,8 @@ Positions are decided by three metrics, in this exact order:
    lap counter (`RM_Lap`), never from client telemetry, so a client cannot
    invent a lap.
 2. **Checkpoints cleared** - on the current lap, more gates passed is ahead.
-3. **Distance to the next checkpoint** - straight-line metres from the car to
-   the centre of the gate it is driving towards. Shortest is ahead.
+3. **Distance to the next checkpoint** - straight-line meters from the car to
+   the center of the gate it is driving towards. Shortest is ahead.
 
 Metrics 2 and 3 can only be measured where the physics live, so each client
 computes its distance to the next gate every frame and reports
@@ -690,7 +745,7 @@ their auth, and the plugin cannot reach it - so what this switches on is BeamMP'
 own `setPlayerNickSuffix`, which adds text to a nametag and does nothing else to
 it.
 
-**Nothing but the text changes.** Distance fade, hide-behind-objects, colour,
+**Nothing but the text changes.** Distance fade, hide-behind-objects, color,
 alpha, the spectator list, role tags: all of it is still BeamMP's, rendered by
 BeamMP, obeying whatever each player has set. There is a way to take the whole
 nametag over - hide BeamMP's and draw your own, which is what some mods do - and
@@ -799,7 +854,7 @@ limit is locked once a countdown or race starts.
 **Reset mode** (Race settings, admin only) decides what a *legal* reset does
 while racing:
 
-| Mode | Behaviour |
+| Mode | Behavior |
 |------|-----------|
 | **In place** | BeamNG's normal repair-where-you-stand (the default) |
 | **Last checkpoint** | The car is respawned at the last checkpoint it crossed, facing the direction of travel |
@@ -811,7 +866,7 @@ regulation it is locked once the countdown starts.
 Two details keep a spent allowance from turning into a stuck car. BeamNG
 reports every teleport as a vehicle reset, including the ones the mod performs
 itself, so the car being put back - and being stood on its grid slot - is
-recognised as the mod's own doing and never counted, blocked or reported.
+recognized as the mod's own doing and never counted, blocked or reported.
 And because the reset key repeats while it is held, the block is applied to
 every press but the notice, the console line and the server report are limited
 to one a second.
@@ -911,7 +966,7 @@ resetting into somebody is the same physical problem in both.
 | `ghostMaxDurationSec` | `15.0` | Ceiling on the timer when a driver resets repeatedly |
 | `ghostAlpha` | `0.35` | How translucent a ghosted car looks to everyone else |
 | `ghostFadeOutSec` | `1.0` | Seconds spent fading back to solid before contact resumes |
-| `ghostOverlapMargin` | `0.25` | Metres of clearance required around a car before it goes solid |
+| `ghostOverlapMargin` | `0.25` | Meters of clearance required around a car before it goes solid |
 | `ghostOverlapWarnSec` | `10.0` | How long a driver may sit blocked before being told to move clear |
 
 The first three are **server** settings (near the top of
@@ -1001,7 +1056,7 @@ still racing:
   worst of it on a low-end machine, and it is gone: finishing is now a change of
   state and nothing else.
 
-  You get a **chequered flag** for the rest of the session, with a count of how
+  You get a **checkered flag** for the rest of the session, with a count of how
   many drivers you are still waiting on, and a one-off message telling you where
   you placed. Resets still work if you land in the water, they cost you nothing,
   and the car comes back still ghosted.
@@ -1018,7 +1073,7 @@ still racing:
   ends.
 - **When the field comes back, it comes back on the starting grid.** Cars are
   removed as they take the flag, so every one of them is removed within a few
-  metres of the start/finish line - putting them all back where they were removed
+  meters of the start/finish line - putting them all back where they were removed
   is what used to respawn the whole field inside itself. The grid is spaced by
   construction, so that is where they return.
 - **When the session ends, every removed car is put back.** The same applies
@@ -1037,7 +1092,7 @@ with the track layout - one layout carries both routes.
 reclassifies anyone who did not complete the route exactly once, so with no route
 that is every driver who finishes - disqualified for missing something that was
 never there, and not told why until the results file is written. The toggle is
-greyed out until gates are placed, the server refuses it if asked anyway, and
+grayed out until gates are placed, the server refuses it if asked anyway, and
 loading a track without a joker route switches it back off.
 
 Switch **Joker lap** on in Race settings and the rule is enforced:
@@ -1055,13 +1110,13 @@ Switch **Joker lap** on in Race settings and the rule is enforced:
 #### Seeing the checkpoints
 
 A driver gets **two poles** at the gate they are aiming at and two more, dimmed,
-at the one after it - drawn by the mod in its own colours rather than BeamNG's
+at the one after it - drawn by the mod in its own colors rather than BeamNG's
 markers, which could not be made bright enough to see.
 
-**No text on them.** The poles say where the gate is and the colour says which
+**No text on them.** The poles say where the gate is and the color says which
 one is next; "CP 3" read at racing speed tells a driver nothing they can act on,
 and it is one more thing painted across the racing line. Pit stalls are the same:
-amber, unlabelled, drawn as the box they test.
+amber, unlabeled, drawn as the box they test.
 
 **The joker is marked out, but not with words either.** It is the one gate whose
 state changes what you should *do* - owed, taken, or forbidden on lap 1 - and
@@ -1088,7 +1143,7 @@ click it in the editor and raise its Width - and the poles follow.
 
 **On track the joker stays violet**, painted the same violet the editor uses
 rather than BeamNG's stock alternate-route orange - which sits close enough to
-the main route's colour that the joker read as more of the same lap, and this is
+the main route's color that the joker read as more of the same lap, and this is
 the one route where that mistake is a disqualification. The pole stays up after
 the joker has been taken, dimmed and wearing its tick - *"you have taken it"* is
 as much a thing a driver needs to know as *"you still owe it"*.
@@ -1197,7 +1252,7 @@ grid from there and leaves every slot before it alone.
 
 **Rows can be any width from single file to eight abreast.** Two is a road-race
 grid and an oval's, three and four are short-track and dirt formats, and one is a
-stage start. Each row is **centred on the anchor**, so an odd width puts a car on
+stage start. Each row is **centerd on the anchor**, so an odd width puts a car on
 the spot you stood and the rest either side, and an even width straddles it
 changing the width never walks the grid sideways off the track.
 
@@ -1226,30 +1281,92 @@ that belonged to it, and says so.
 
 ### Vehicle & setup locking (the Garage List)
 
-The **Garage** panel (admin only) locks the session down to exact cars *and*
-exact tunes:
+The **Garage** panel (admin only) locks the session down to approved cars:
 
-1. Drive the car you want to allow, with the setup you want to allow, and
-   press **+ Whitelist Current Vehicle**. The client fingerprints the exact
-   configuration (jbeam model + every part in the part config + every tuning
-   variable) and sends it to the server.
+1. Drive the car you want to allow and press **+ Whitelist Current Vehicle**.
+   The client fingerprints it (jbeam model + every part in the part config +
+   every tuning variable) and sends it to the server.
 2. Repeat to build a Garage List of allowed cars. The list persists in
    `Resources/Server/RaceManager/garage.json` across restarts.
-3. Flip the panel's toggle to **Enforcing**.
+3. Pick what a capture **Locks** (below), then flip the toggle to **Enforcing**.
+
+### What a capture locks
+
+| Mode | Model | Parts | Tuning | Paint |
+|---|---|---|---|---|
+| **Parts** (default) | locked | locked | free | free |
+| **Strict** | locked | locked | locked | free |
+
+Paint is not matched under either mode: it has never been part of the
+signature.
+
+One switch for the whole session, not per entry. **Several allowed builds of
+the same car - a choice of engine, a choice of gearbox - is not a third mode**;
+it is several entries under **Parts**, one per build. Capture each variant you
+want to permit.
+
+Refusals name the mode in force, so a driver is told whether the thing to undo
+is a part swap or a tune.
+
+### How it is enforced
 
 Enforcement runs on two layers, because the server has no vehicle
 introspection of its own:
 
 - BeamMP's `onVehicleSpawn` / `onVehicleEdited` hooks cancel any car whose
   **model** is not on the list before it exists for other players.
-- Each client reports its exact configuration signature on spawn and whenever
-  its setup changes; a signature that is not on the list gets the vehicle
-  **deleted** and pushes **"Vehicle/Setup not allowed in this session."** to
-  that player's UI.
+- Each client reports its configuration signature on spawn and whenever its
+  setup changes. One that the current mode does not match gets the vehicle
+  **deleted**, and the driver told through three channels: the panel banner,
+  the notice strip, and BeamNG's own **Messages** HUD app (which needs nothing
+  open, so it reaches a driver running without the app or the chat).
 
-Authenticated admins are exempt (otherwise you could never spawn the car you
-are about to whitelist), and an empty list never enforces anything, so it is
-impossible to lock the whole server out by accident.
+The deletion happens **on the client**, which is not where it looks like it
+should. `MP.RemoveVehicle` wants BeamMP's own per-player vehicle id, and the id
+traveling on the config report is `veh:getID()` - a BeamNG game object id from
+an unrelated numbering space. The client knows which car is its own without any
+id, so it is sent the order instead.
+
+**A client can lie.** The parts live on the client, so this is a rule for a
+league running in good faith, not anti-cheat: what it costs a driver is
+modifying the mod, rather than opening the parts menu.
+
+### Admins, and the grid audit
+
+**Nobody is exempt, admins included.** An admin in a car that is not on the list
+is refused and has it deleted on exactly the same terms as any driver.
+
+**So build the list with Enforcing switched off.** With it on, an unapproved car
+is deleted a second or two after it spawns, which is before there is time to
+press capture. The panel warns about this next to the switch. An admin without a
+car can always still reach the panel to turn enforcement back off, so this
+cannot lock anybody out of their own server.
+
+An empty list never enforces anything either, so the first capture of a session
+needs no special handling.
+
+Non-compliant drivers appear in the panel's **Not on the list** block, and are
+named in the line **Start Countdown** sends to whoever pressed it. That audit
+**reports and does not act**: taking a car off the grid during the countdown
+does more damage to the race than starting with one wrong setup in it.
+
+### When a car that should be allowed is refused
+
+The refusal a driver sees names the rule, which is all a driver can act on. The
+**server console** prints the two signatures side by side - what the driver is
+in, and what the list holds for that model - which is the comparison that
+actually failed. Start there.
+
+The usual causes are a BeamNG update that renamed parts (the rejection says so
+if the entry recorded a different build) and a capture that was never stored,
+which now reports itself rather than failing quietly.
+
+### Upgrading an existing garage.json
+
+Nothing to re-capture. A file written before parts and tuning were split loads
+in **Parts** mode - the looser of the two, so an upgrade cannot silently start
+rejecting tunes that were already being allowed - and the parts half of every
+entry is recovered from the signature already on disk.
 
 ### Settings apply themselves
 
@@ -1290,8 +1407,8 @@ Two different drawings of the same checkpoint, for two different jobs:
   either side of the racing line, on the gate you are heading for and the one
   after it. Only those two: a whole circuit wearing poles is a wall of gates.
 
-Both are as bright as their colour allows. The poles take BeamNG's palette and
-lift each colour to the luminous version of itself - the hue is the engine's,
+Both are as bright as their color allows. The poles take BeamNG's palette and
+lift each color to the luminous version of itself - the hue is the engine's,
 and the meanings a BeamNG driver already knows still hold, but a marker that was
 a dark silhouette against a pale road or a low sun is now plainly a marker. The
 one pole that is not merely brightened is **the gate after the one you are on**:
@@ -1320,6 +1437,20 @@ instead - visible, and a shade under the gate actually being aimed at.
   rejected vehicle, a pit or ghost readout and the regulation notices all keep
   showing: collapsing hides the panels you go looking for, never the messages
   that come to find you.
+
+  **And the ones that matter leave the app entirely.** Every surface above is
+  drawn by Race Manager, and the server's chat lines need the chat window open,
+  so a driver running with the app minimised and chat closed saw none of it.
+  Notices a driver would have to **act** on are mirrored to BeamNG's own
+  **Messages** HUD app, which needs nothing open: the flags, the out lap, being
+  put out of a session, running out of resets, a refused car, a joker ruling,
+  where you start, a pit call and the derby.
+
+  The running commentary is deliberately *not* mirrored - a reset count, a
+  fastest lap, a ghost state, a name change. Pushing everything through is how a
+  channel that has to be read becomes one that is not. Each kind gets its own
+  icon and its own slot there, so a repeat replaces rather than stacks and a pit
+  call cannot wipe a red flag.
 
   The state is remembered in `localStorage` like the size and the opacity, so
   it survives the pause menu and the next session.
@@ -1390,7 +1521,7 @@ the fastest lap. **✕** on that strip is the way back.
 
 **The board does not outlive the spell that showed it.** Being out of the field
 is two things wearing one name: pressing **Spectate** is a decision that lasts,
-while taking the chequered flag makes you a spectator for the few seconds
+while taking the checkered flag makes you a spectator for the few seconds
 between your finish and the results. So the switch is cleared when you rejoin
 the field - press **📺** once per session you sit out, and merely finishing a
 race never puts you in the board.
@@ -1457,7 +1588,7 @@ behave exactly as they do without the feature. Everything below lives on the
 1. Give every driver a **display name** first (Admin tab). Points attach to the
    saved driver, not to a connection - see [Display names](#display-names).
 2. **After any reconnect or server restart, assign them again.** BeamMP reissues
-   guest names at random, so nobody is recognised automatically and the Cup
+   guest names at random, so nobody is recognized automatically and the Cup
    tab's **Drivers** panel warns you how many are unidentified. A driver who
    races unassigned still scores, into a placeholder; assigning them afterwards
    moves those points onto them, so being late costs nothing.
@@ -1594,7 +1725,7 @@ change. It is deliberately **not** in the `results/` folder, because
 
 ### Standings
 
-**Race and derby are kept separate, and summarised together.** The default
+**Race and derby are kept separate, and summarized together.** The default
 **Combined** table shows events scored, wins, race points, derby points, manual
 adjustments and the grand total - so a total can always be accounted for.
 
@@ -1742,7 +1873,7 @@ and derby controls are not shown while you are in Race - see
    polices against - so pick whichever suits the ground:
 
    **▭ Rectangle.** Stand your car where the middle of the arena should be and
-   the four corners are pulled out around you. **Set Centre Here** re-centres it
+   the four corners are pulled out around you. **Set Center Here** re-centers it
    on your car at any time, keeping the size. Three sliders do the rest, each
    with a number box beside it, the same pairing the per-gate size editor uses:
 
@@ -1751,7 +1882,7 @@ and derby controls are not shown while you are in Race - see
    - **Rotation**, 0–90°, to line the arena up with the ground it sits on. A
      rectangle repeats every quarter turn - 90° just swaps width and length.
 
-   The four corners all sit at the **centre's height**, so on a slope the arena
+   The four corners all sit at the **center's height**, so on a slope the arena
    is a flat plane cut through the hill rather than a boundary that climbs it.
    That matches the rule being enforced: the out-of-bounds test has always
    ignored height, so a corner drawn further up the slope would not change who
@@ -1781,7 +1912,7 @@ and derby controls are not shown while you are in Race - see
    **Clear Start Grid** starts over). **Hide/Show Arena** keeps the setup view
    clean.
 
-   A rectangle's corners are **derived** from its centre and extents, so they are
+   A rectangle's corners are **derived** from its center and extents, so they are
    not individually editable - the sliders are how it is changed, and the marker
    list is only shown for a drive-and-place arena. Those markers are listed under
    the controls - `M1…Mn`, with `P1…Pn` for the start slots - and every entry
@@ -1826,7 +1957,7 @@ and derby controls are not shown while you are in Race - see
    | Walls | Solid enough to read as a surface | **Translucent** - you can see the car on the other side of one |
    | Corner posts and rails | Full height, bright | A dim ground rail and a short post |
    | Floor | The enclosed area filled in, so the limits are exact - *rectangles only; filling an arbitrary polygon safely means triangulating it, and the cheap way paints outside a concave shape* | None |
-   | Labels, corner numbers, centre crosshair, size readout | Shown | **None** |
+   | Labels, corner numbers, center crosshair, size readout | Shown | **None** |
    | Start slots | All of them, numbered | Only your own, and only until the derby starts |
 
    The **boundary itself is always drawn** during a derby - leaving it is what

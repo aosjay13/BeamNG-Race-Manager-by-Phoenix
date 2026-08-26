@@ -197,11 +197,11 @@ check(lastDerby.derbyMode == 'dm' and lastDerby.lives == 4,
 -- the mode where the admin left it.
 RM_onDerbySetConfig(1, '{"mode":"nonsense"}')
 check(lastDerby.derbyMode == 'dm',
-  'an unrecognised mode leaves the setting alone rather than defaulting (got '
+  'an unrecognized mode leaves the setting alone rather than defaulting (got '
     .. tostring(lastDerby.derbyMode) .. ')')
 check(lastDerby.lives == 4, 'and does not disturb the lives behind it')
 
--- LEFT IN DM AT ONE LIFE, which is exactly the behaviour every check below this
+-- LEFT IN DM AT ONE LIFE, which is exactly the behavior every check below this
 -- point was written against: lives configurable, and a single stopped timer
 -- ends a driver.
 --
@@ -276,7 +276,7 @@ for _ = 1, 6 do RM_DerbyTick() end   -- past the 5 s cool-down
 check(lastDerby.derbyPhase == 'finished', 'derby finished when one remains')
 check(derbyPlayer('Alice').status == 'winner', 'Alice is the winner')
 check(lastDerby.winner == 'Alice', 'winner broadcast')
-check(timers['RM_DerbyTick'] == nil, 'derby tick timer cancelled')
+check(timers['RM_DerbyTick'] == nil, 'derby tick timer canceled')
 check(type(lastChat) == 'string' and lastChat:find('WINNER: Alice', 1, true),
   'chat announces the winner')
 
@@ -436,14 +436,14 @@ check(lastDerby.boundaryMode == 'polygon',
   'a cleared arena is back to the drive-and-place editor')
 
 -- With nothing placed there is nothing to fit a rectangle around, so the client
--- sends the position of the admin's car as the centre.
+-- sends the position of the admin's car as the center.
 RM_onDerbySetBoundaryMode(9, '{"mode":"rect","cx":0,"cy":0,"cz":5}')
 check(lastDerby.boundaryMode == 'polygon', 'mode switch ignored before authentication')
 RM_onDerbySetBoundaryMode(1, '{"mode":"rect","cx":10,"cy":20,"cz":5}')
 check(lastDerby.boundaryMode == 'rect', 'the rectangle editor can be switched on')
 check(#lastDerby.boundary == 4, 'a rectangle is four derived corners')
 check(lastDerby.shape.cx == 10 and lastDerby.shape.cy == 20,
-  'centred where the car was standing')
+  'centerd where the car was standing')
 
 -- Size. The client sends half-extents; the panel's sliders are the full span.
 RM_onDerbySetShape(1, '{"halfW":50,"halfL":30}')
@@ -457,11 +457,11 @@ end
 check(maxx - minx == 100 and maxy - miny == 60,
   'the extents come out as a 100 x 60 m rectangle')
 check(zs[1] == 5 and zs[2] == 5 and zs[3] == 5 and zs[4] == 5,
-  'every corner sits at the centre z -- the arena is a flat plane')
+  'every corner sits at the center z -- the arena is a flat plane')
 
 -- The corners have to be a RING. A bowtie would still enclose an area to the
 -- eye and would fail point-in-polygon in the middle of it.
-check(pointInPolygon(10, 20, lastDerby.boundary), 'the centre is inside the arena')
+check(pointInPolygon(10, 20, lastDerby.boundary), 'the center is inside the arena')
 check(pointInPolygon(55, 20, lastDerby.boundary), 'and so is a point near the long edge')
 check(not pointInPolygon(70, 20, lastDerby.boundary), 'a point beyond the edge is outside')
 
@@ -567,7 +567,7 @@ check(#lastArenas.layouts == 0, 'an arena can be deleted')
 RM_onDerbySetConfig(1, '{"oobLimit":5,"demoLimit":10,"maxResets":2}')
 check(lastDerby.maxResets == 2, 'derby reset allowance is configurable')
 RM_onDerbySetConfig(1, '{"oobLimit":5,"demoLimit":10,"maxResets":-5}')
-check(lastDerby.maxResets == -1, 'any negative allowance normalises to unlimited')
+check(lastDerby.maxResets == -1, 'any negative allowance normalizes to unlimited')
 RM_onDerbySetConfig(1, '{"oobLimit":5,"demoLimit":10,"maxResets":2}')
 
 RM_onDerbyAddStart(9, '{"x":1,"y":1,"z":0,"hx":0,"hy":1}')  -- not authenticated

@@ -134,7 +134,7 @@ for event, handler in plugin:gmatch("MP%.RegisterEvent%s*%(%s*'([%w_]+)'%s*,%s*'
 end
 
 -- ---------------------------------------------------------------------------
--- 5. The four build stamps must agree.
+-- 5. The five build stamps must agree.
 --
 -- This mod ships as three separately-deployed pieces -- the server plugin is
 -- copied to Resources/Server, the client zip is pushed by BeamMP, and BeamNG
@@ -151,7 +151,14 @@ end
 local appJs   = readFile('ui/modules/apps/RaceManager/app.js')
 local appJson = readFile('ui/modules/apps/RaceManager/app.json')
 
+-- FIVE places, not four. tools/deploy.py names the release zip after the
+-- version too, and being outside the mod it was outside this check -- so the
+-- build was already once produced as RaceManager-v0.9.0.zip from a 0.9.1 tree.
+-- A zip whose name disagrees with the stamp inside it is exactly the confusion
+-- the stamp exists to prevent.
 local stamps = {
+  ['tools/deploy.py']                      =
+    readFile('tools/deploy.py'):match("RELEASE_NAME%s*=%s*'RaceManager%-v([^']+)%.zip'"),
   ['server/RaceManager/main.lua']          = server:match("RM_BUILD%s*=%s*'([^']+)'"),
   ['lua/ge/extensions/raceManager.lua']    = client:match("RM_BUILD%s*=%s*'([^']+)'"),
   ['ui/modules/apps/RaceManager/app.js']   = appJs:match("APP_BUILD%s*=%s*'([^']+)'"),

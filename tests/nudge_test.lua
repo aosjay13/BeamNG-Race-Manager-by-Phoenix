@@ -187,7 +187,7 @@ local function frame() RM.onUpdate(1 / 60) end
 local function serverState(t) t.rmProtocol = 2; t.raceTime = 0; handlers['RM_Update'](t) end
 local function gates() return (routeState or {}).waypoints or {} end
 
--- Point the cursor ray at a spot on flat ground, from 50 metres up and behind.
+-- Point the cursor ray at a spot on flat ground, from 50 meters up and behind.
 local function aimAt(x, y)
   ray.pos = { x = x, y = y - 50, z = 50 }
   local d = math.sqrt(50 * 50 + 50 * 50)
@@ -218,7 +218,7 @@ local function letGo()
   mouse.released = false
 end
 
--- A three-gate circuit, 100 metres apart on the Y axis, all facing +Y.
+-- A three-gate circuit, 100 meters apart on the Y axis, all facing +Y.
 RM.setEditorTarget('main')
 for i = 1, 3 do
   veh.x, veh.y, veh.z = 0, i * 100, 0
@@ -310,7 +310,7 @@ cursorOn = nil
 RM.setNudgeMode(true)
 clickAt(0, 200)
 check(routeState and routeState.nudgeSel == 2,
-  'clicking near a gate selects it, by its CENTRE: two overlapping rectangles '
+  'clicking near a gate selects it, by its CENTER: two overlapping rectangles '
     .. 'are exactly where a generous pick radius chooses the wrong one')
 
 dragTo(40, 240)
@@ -329,7 +329,7 @@ check(math.abs(gates()[2].x - 40) < 0.01,
 clickAt(900, 900)
 -- A CLICK THAT PICKS NOTHING NOW KEEPS THE SELECTION.
 --
--- It used to clear it, and that greyed the panel's movement buttons out the
+-- It used to clear it, and that grayed the panel's movement buttons out the
 -- moment one was pressed: the HUD app is a CEF overlay, so a button press
 -- arrives here as a world click too, the ray behind the panel hits no gate, and
 -- the gate being worked on was dropped. Pressing Up disabled Up.
@@ -358,7 +358,7 @@ check(math.abs(math.sqrt(after.hx ^ 2 + after.hy ^ 2) - 1) < 1e-9,
     .. 'circle silently changes how wide the gate tests')
 
 -- Turning is reversible, and 72 notches of 5 degrees is a full circle back to
--- where it started. Drift shows up here if the renormalise is ever dropped.
+-- where it started. Drift shows up here if the renormalize is ever dropped.
 for _ = 1, 71 do mouse.wheel = 1; frame() end
 mouse.wheel = 0
 local round = gates()[2]
@@ -379,7 +379,7 @@ check(placed and math.abs(placed.x - 0) < 0.01 and math.abs(placed.y - 500) < 0.
   'exactly where the cursor hit the ground')
 
 -- A click has no direction of its own, so the gate takes the one the route is
--- already travelling. Clicking along a road in order is then a route that faces
+-- already traveling. Clicking along a road in order is then a route that faces
 -- the way the road goes, which is the entire reason this beats driving.
 check(placed and math.abs(placed.hy - 1) < 1e-6 and math.abs(placed.hx) < 1e-6,
   'facing the way the route travels: from the previous gate toward this point')
@@ -487,7 +487,7 @@ check(math.abs(last.x - 12) < 1e-6 and math.abs(last.y - 34) < 1e-6,
 
 -- --- 1. A CLICKED GATE SITS AT DRIVING HEIGHT, NOT ON THE DIRT ---------------
 -- The raycast lands ON the terrain. A gate placed by DRIVING takes the car's
--- origin, which is about half a metre up, so a clicked gate used to sit lower
+-- origin, which is about half a meter up, so a clicked gate used to sit lower
 -- than a driven one on the same piece of road.
 RM.setEditorTarget('main')
 RM.editorClear()
@@ -596,7 +596,7 @@ check(g[2] ~= nil and g[2].hy > 0.9,
 -- Reported from a live session with a screenshot of a checkpoint hanging in the
 -- sky: "my checkpoints sometimes fly into the sky and I can't retrieve them".
 --
--- The first ground probe started fifty metres ABOVE the gate and took the first
+-- The first ground probe started fifty meters ABOVE the gate and took the first
 -- surface on the way down. That is not the ground, it is whatever is HIGHEST in
 -- the column: a bridge deck, a roof, a tree canopy. liftAboveGround then
 -- teleported the gate up onto it -- and because that function only ever raises,
@@ -607,7 +607,7 @@ RM.editorClear()
 RM.setNudgeMode(true)
 frame()
 terrainAt = function (x, y) return 0 end
-ceilingAt = function (x, y) return 40 end     -- a roof forty metres up, everywhere
+ceilingAt = function (x, y) return 40 end     -- a roof forty meters up, everywhere
 
 veh.x, veh.y, veh.z = 0, 0, 0.5
 RM.editorAdd()
@@ -660,7 +660,7 @@ check(gates()[1] and gates()[1].z > 39,
     .. tostring(gates()[1] and gates()[1].z) .. ')')
 
 -- A DRAG THAT CATCHES THE HORIZON IS IGNORED, not followed. The cursor ray
--- lands on whatever it hits, and near the skyline that is terrain kilometres
+-- lands on whatever it hits, and near the skyline that is terrain kilometers
 -- away -- somewhere an admin cannot see the gate, let alone drag it back.
 RM.editorClear()
 ceilingAt = function (x, y) return nil end
@@ -711,7 +711,7 @@ aimAt(0, 100)
 rayHit.pos = { x = 0, y = 100, z = 25 }
 mouse.clicked, mouse.down, mouse.released = false, true, false
 frame()
--- Well into the wood. Not asserted to the metre: the grab plane was taken at the
+-- Well into the wood. Not asserted to the meter: the grab plane was taken at the
 -- gate's height before it was lifted, so the travel carries a small constant
 -- offset. What this case is about is the HEIGHT below, not the landing spot.
 check(gates()[1] and gates()[1].y > 50, 'the drag moves it into the wood (y='
@@ -742,7 +742,7 @@ letGo()
 -- on that same frame with that same cursor hit -- so picking a gate teleported
 -- it to wherever the ray landed. The ray does not stop on the gate (a debug
 -- drawing has no collision), it carries on to the ground behind it, which from
--- any raised camera is metres away. Reported as "I clicked it and it went all
+-- any raised camera is meters away. Reported as "I clicked it and it went all
 -- the way under the map".
 RM.editorClear()
 terrainAt = function (x, y) return 0 end
@@ -810,7 +810,7 @@ RM.editorClear()
 -- Ground that falls away behind the anchor: 1 in 10 down the -Y axis, which is
 -- the direction a grid is laid back along.
 terrainAt = function (x, y) return y * 0.1 end
-veh.x, veh.y, veh.z = 0, 0, 0.5     -- anchor half a metre up, as a car sits
+veh.x, veh.y, veh.z = 0, 0, 0.5     -- anchor half a meter up, as a car sits
 veh.hx, veh.hy = 0, 1               -- facing +Y, so the grid runs back down -Y
 RM.generateStartPositions(6, 10, 4, 0, 2)
 frame()
@@ -818,9 +818,9 @@ frame()
 local slots = (routeState or {}).startPositions or {}
 check(#slots == 6, 'six slots are generated (got ' .. #slots .. ')')
 
--- Row 0 is at the anchor, row 1 ten metres back, row 2 twenty. The ground there
--- is -1 and -2 metres, so a grid that ignored terrain would leave those rows one
--- and two metres in the air -- or buried, on ground that rises.
+-- Row 0 is at the anchor, row 1 ten meters back, row 2 twenty. The ground there
+-- is -1 and -2 meters, so a grid that ignored terrain would leave those rows one
+-- and two meters in the air -- or buried, on ground that rises.
 local ok = true
 for i, sp in ipairs(slots) do
   local g = terrainAt(sp.x, sp.y)
@@ -831,14 +831,14 @@ for i, sp in ipairs(slots) do
       i, sp.z, g, clear))
   end
 end
-check(ok, 'every slot sits the same half metre above the ground UNDER IT, '
+check(ok, 'every slot sits the same half meter above the ground UNDER IT, '
   .. 'rather than all sharing the anchor height')
 
 -- The anchor's height above ground is what is preserved, not its absolute z. A
 -- grid generated from a car up on a bridge stays on the bridge.
 RM.editorClear()
 terrainAt = function (x, y) return 0 end
-veh.x, veh.y, veh.z = 0, 0, 20      -- twenty metres up, on a flyover
+veh.x, veh.y, veh.z = 0, 0, 20      -- twenty meters up, on a flyover
 RM.generateStartPositions(3, 10, 4, 0, 1)
 frame()
 slots = (routeState or {}).startPositions or {}

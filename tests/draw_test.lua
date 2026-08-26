@@ -38,7 +38,7 @@ vec3 = function (x, y, z)
 end
 quat = function (x, y, z, w) return { x = x, y = y, z = z, w = w } end
 
--- BeamNG's packed-colour builder, from lua/common/utils.lua. Components are
+-- BeamNG's packed-color builder, from lua/common/utils.lua. Components are
 -- 0..255 and the result is one integer, which is what the solid-fill calls take.
 color = function (r, g, b, a)
   local function chan(v) return math.max(0, math.min(255, math.floor(v or 0))) end
@@ -67,7 +67,7 @@ debugDrawer = {
   -- Filled triangles: how a direction marker's chevrons are painted.
   --
   -- THE STUB ENFORCES THE ENGINE'S SIGNATURE, and it did not the first time.
-  -- drawTriSolid takes a PACKED colour -- one integer from the global
+  -- drawTriSolid takes a PACKED color -- one integer from the global
   -- color(r,g,b,a) -- where every other drawer call in this mod takes a ColorF.
   -- The first version was handed a ColorF, which is a hard error inside the C++
   -- drawer, once per triangle per frame: a wall of exceptions and no marker.
@@ -77,7 +77,7 @@ debugDrawer = {
   -- agrees with itself -- so this one asserts what BeamNG actually asks for.
   drawTriSolid = function (_, a, b, c, packedCol)
     if type(packedCol) ~= 'number' then
-      error('drawTriSolid wants a PACKED colour (a number from color(r,g,b,a)), got '
+      error('drawTriSolid wants a PACKED color (a number from color(r,g,b,a)), got '
         .. type(packedCol), 2)
     end
     tris[#tris + 1] = { a = a, b = b, c = c, packed = packedCol }
@@ -210,9 +210,9 @@ check(#quads == 0,
     .. 'authoring view, and a plain gate means one thing and needs no help '
     .. 'saying it. The joker and the pit box are the exceptions, below')
 check(#texts == 0,
-  'and NO text on them: the poles say where the gate is and the colour says which '
+  'and NO text on them: the poles say where the gate is and the color says which '
     .. 'one is next, so "CP 3" at racing speed is one more thing painted across '
-    .. 'the racing line for nothing. Not even the joker is labelled now -- its '
+    .. 'the racing line for nothing. Not even the joker is labeled now -- its '
     .. 'glyph carries the state faster than the sentence did')
 check(#cylinders == 4,
   'drawn as TWO POLES each and nothing else -- no top bar, because the thing '
@@ -234,16 +234,16 @@ check(#cylinders == 21, 'three gates draw four edges and an arrow each')
 check(#texts == 3, 'and one label each')
 
 -- Gate 1 faces +Y, so its lateral axis is +X and it spans ±10 m across,
--- ±5 m vertically, centred on (0, 100, 5).
+-- ±5 m vertically, centerd on (0, 100, 5).
 local bl, tl = cylinders[1].a, cylinders[1].b
 check(near(bl.x, -10) and near(bl.y, 100) and near(bl.z, 0),
   'bottom-left corner is half a width across and half a height down')
 check(near(tl.x, -10) and near(tl.y, 100) and near(tl.z, 10),
   'top-left corner is directly above it')
 local br = cylinders[2].a
-check(near(br.x, 10) and near(br.z, 0), 'bottom-right is the other side of centre')
+check(near(br.x, 10) and near(br.z, 0), 'bottom-right is the other side of center')
 check(near(texts[1].at.z, 10.8), 'the label sits just above the top edge')
-check(texts[1].text == 'CP 1', 'an intermediate gate is labelled by number')
+check(texts[1].text == 'CP 1', 'an intermediate gate is labeled by number')
 check(texts[3].text == '3 START/FINISH', 'the last gate is the start/finish line')
 
 -- ===========================================================================
@@ -255,7 +255,7 @@ vec3Allocs, colorAllocs = 0, 0
 frame()
 check(vec3Allocs <= 1,
   'a steady frame allocates no gate geometry at all (got ' .. vec3Allocs .. ')')
-check(colorAllocs == 0, 'and no colours (got ' .. colorAllocs .. ')')
+check(colorAllocs == 0, 'and no colors (got ' .. colorAllocs .. ')')
 
 vec3Allocs = 0
 for _ = 1, 10 do frame() end
@@ -301,7 +301,7 @@ check(near(cylinders[1].b.z, 25),
 -- is index 8.
 check(near(cylinders[8].a.x, -10) and near(cylinders[8].a.z, 0),
   'and leaves the gates that did not change alone, at the size they were loaded '
-    .. 'with: this layout predates depth, so its 10 was a full centred span and '
+    .. 'with: this layout predates depth, so its 10 was a full centerd span and '
     .. 'migrates to 5 up and 5 down, which is the same gate it always was')
 
 -- Clearing the override falls back to the global default again.
@@ -397,7 +397,7 @@ vec3Allocs, colorAllocs = 0, 0
 frame()
 check(vec3Allocs <= 1, 'a steady derby frame allocates no arena geometry (got '
   .. vec3Allocs .. ')')
-check(colorAllocs == 0, 'and no colours')
+check(colorAllocs == 0, 'and no colors')
 
 -- A broadcast that changes nothing must not invalidate anything. This is the
 -- part that makes the cache worth having: the server pushes derby state once a
@@ -488,12 +488,12 @@ derbyState({ derbyPhase = 'idle', boundary = markers(), players = {},
 RM.setDerbyEditorOpen(true)
 cylinders, texts, quads = {}, {}, {}
 RM.onUpdate(0.016)
-local labelled, numbered = false, 0
+local labeled, numbered = false, 0
 for _, t in ipairs(texts) do
-  if t.text == 'DERBY BOUNDARY (4)' then labelled = true end
+  if t.text == 'DERBY BOUNDARY (4)' then labeled = true end
   if t.text:match('^M%d+$') then numbered = numbered + 1 end
 end
-check(labelled, 'the editor names the arena and its marker count')
+check(labeled, 'the editor names the arena and its marker count')
 check(numbered == 4, 'and numbers every corner (got ' .. numbered .. ')')
 
 -- The editor draws no floor for a hand-driven arena: filling an arbitrary
@@ -502,7 +502,7 @@ check(numbered == 4, 'and numbers every corner (got ' .. numbered .. ')')
 check(#quads == 8, 'a drive-and-place arena is walls only, no floor')
 
 -- --- The rectangle ----------------------------------------------------------
--- Four corners derived from a centre, and the one shape convex enough to fill
+-- Four corners derived from a center, and the one shape convex enough to fill
 -- safely. The dimensions go in the label, so the sliders have a readout.
 local rectBoundary = {
   { x = -50, y = -30, z = 4 }, { x = 50, y = -30, z = 4 },
@@ -518,7 +518,7 @@ local sized = false
 for _, t in ipairs(texts) do
   if t.text == 'DERBY ARENA: 100 x 60 m' then sized = true end
 end
-check(sized, 'the editor reads the rectangle back in metres')
+check(sized, 'the editor reads the rectangle back in meters')
 
 -- Closing the editor drops every authoring visual, even standing still in an
 -- idle derby -- the panel is the gate, not the phase.
@@ -551,7 +551,7 @@ serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {},
 RM.setEditorOpen(true)
 frame()
 check(#cylinders == 21, 'three gates are drawn')
-check(near(cylinders[1].a.x, -22), 'a resized gate is 22 m either side of centre')
+check(near(cylinders[1].a.x, -22), 'a resized gate is 22 m either side of center')
 check(near(cylinders[8].a.x, -22), 'the gate placed after it inherited that size')
 check(near(cylinders[15].a.x, -22), 'and so did the one after that')
 
@@ -620,7 +620,7 @@ check(#quads > 0,
 -- Lap 1 with the joker enabled is the forbidden state, and a cross says so
 -- faster than a sentence read at racing speed.
 -- The glyph strokes are the only cylinders passing through the gate's own
--- CENTRE: its poles stand at the edges, ten metres out either side.
+-- CENTER: its poles stand at the edges, ten meters out either side.
 local through = 0
 for _, c in ipairs(cylinders) do
   local mx = (c.a.x + c.b.x) * 0.5
@@ -631,7 +631,7 @@ for _, c in ipairs(cylinders) do
 end
 check(through >= 2,
   'a CROSS is drawn across a joker that is shut on lap 1: two strokes through '
-    .. 'the gate centre, where its poles never reach (got ' .. through .. ')')
+    .. 'the gate center, where its poles never reach (got ' .. through .. ')')
 
 -- An OPEN joker gets a faded arrow up. Same place, fewer strokes, and much
 -- fainter: this one sits on a gate the driver is aiming THROUGH, where the
@@ -654,12 +654,12 @@ for _, c in ipairs(cylinders) do
   end
 end
 check(openStrokes >= 3,
-  'an open joker draws an arrow: a shaft and two barbs through the gate centre '
+  'an open joker draws an arrow: a shaft and two barbs through the gate center '
     .. '(got ' .. openStrokes .. ')')
 check(faintest < 0.35,
   'and it is drawn faint enough to see the road through (alpha ' .. faintest .. ')')
 
--- ...and NOT labelled at all, which is what this check has become.
+-- ...and NOT labeled at all, which is what this check has become.
 --
 -- It was `== 1`, and it was worth having: drawJokerLabel and drawPoleGate both
 -- drew the label at the same point, so the duplication was invisible until the
@@ -727,7 +727,7 @@ check(#tris > 0, 'a marker is painted with filled triangles, not lines (got '
 -- ...AND THEY HAVE AREA. Every check around this one counts triangles, and a
 -- count is blind to the one failure that matters most here: a stroke whose
 -- thickness collapses still emits its two triangles, in the right place, in the
--- right colour, with three points in a line. The marker vanishes and the whole
+-- right color, with three points in a line. The marker vanishes and the whole
 -- suite goes green.
 --
 -- Found by breaking the stroke normal on purpose and watching nothing fail.
@@ -750,7 +750,7 @@ check(flattest > 1e-4,
     .. 'collapsed to a line (thinnest was ' .. string.format('%.6f', flattest) .. ')')
 -- Two passes: a dark outline and the mark on top, so it reads over pale gravel
 -- and dark tarmac alike.
--- Packed colours, so the two passes are told apart by their red channel: the
+-- Packed colors, so the two passes are told apart by their red channel: the
 -- outline is near-black, the mark is bright cyan.
 local edgeSeen, faceSeen = false, false
 for _, t in ipairs(tris) do

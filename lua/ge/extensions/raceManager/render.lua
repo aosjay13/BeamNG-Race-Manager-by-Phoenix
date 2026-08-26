@@ -54,10 +54,10 @@ local PALETTE = nil
 
 local function palette()
   if PALETTE then return PALETTE end
-  -- Every gate colour is at FULL VALUE: the brightest form of its own hue,
+  -- Every gate color is at FULL VALUE: the brightest form of its own hue,
   -- rather than that hue mixed with black. The hues themselves are unchanged --
   -- green next, orange route, white line, violet joker, amber pit -- because
-  -- what a colour means here is learned, and a driver who has learned that
+  -- what a color means here is learned, and a driver who has learned that
   -- green is the gate they are heading for should not have to learn it twice.
   --
   -- What moved is value and alpha. These are drawn over whatever the map
@@ -112,7 +112,7 @@ local function palette()
     -- The chevron on the floor: which way the stall faces, and therefore which
     -- way the car is stood when it stops.
     pitArrow     = ColorF(1, 0.88, 0.35, 0.85),
-    -- Direction markers. Cyan, because every other colour on a track already
+    -- Direction markers. Cyan, because every other color on a track already
     -- means something a driver has learned -- green is the gate they are
     -- driving at, orange the rest of the route, violet the joker, amber the
     -- pits -- and a sign that is not any of those must not borrow one of them.
@@ -141,7 +141,7 @@ local function palette()
     -- THROUGH, where the cross and the tick sit on one they must not take.
     glyphOpen    = ColorF(0.85, 0.7, 1, 0.28),
     -- Demo derby arena. Its own entries rather than its own table: the derby
-    -- module keeps its state and its logic separate, but a colour is a colour,
+    -- module keeps its state and its logic separate, but a color is a color,
     -- and building these per frame is what this exists to stop.
     derbyLive    = ColorF(0.9, 0.15, 0.15, 0.9),  -- live arena edges: red
     derbySetup   = ColorF(0.9, 0.6, 0.1, 0.8),    -- setup/finished edges: amber
@@ -190,7 +190,7 @@ local function gateGeometry(wp)
 
   local hw = w * 0.5
   local rx, ry = wp.hy, -wp.hx          -- lateral (width) axis
-  -- corner(sr, up): centre + lateral*sr*hw, then h ABOVE or d BELOW. The
+  -- corner(sr, up): center + lateral*sr*hw, then h ABOVE or d BELOW. The
   -- vertical is no longer symmetric, so the two ends are named rather than
   -- signed: `up` true is the top bar, false the bottom.
   local function corner(sr, up)
@@ -207,7 +207,7 @@ local function gateGeometry(wp)
   -- The middle of the gate's own face. `mid` floats above the top edge, which is
   -- right for an editor label sitting clear of the rectangle and wrong for a
   -- driver's, where the words want to be ON the gate they describe.
-  g.centre = (g.bl + g.tr) * 0.5
+  g.center = (g.bl + g.tr) * 0.5
   -- The authoring direction arrow, cached with the corners for the same reason
   -- they are: it is fixed by the gate's placement, and rebuilding four vec3 per
   -- gate per frame is precisely the garbage this cache exists to stop.
@@ -402,7 +402,7 @@ end
 --
 -- The stock markers are the right shape but could not be made bright enough, so
 -- the shape is redrawn out of the editor's own cylinders: full opacity, this
--- mod's colours, the gate's own height, label floating between them.
+-- mod's colors, the gate's own height, label floating between them.
 --
 -- TWO VERTICALS AND NOTHING ELSE. No top bar, because a hoop reads as something
 -- to aim through at one height and what is marked is the LINE between the poles
@@ -419,13 +419,13 @@ local paint = {}
 -- Drawn rather than written because the two states are read at speed from a
 -- distance, and "JOKER 1/2: closed" is a sentence at the moment a driver has
 -- least attention to give a sentence. Sized off the gate but capped, so a
--- twenty-metre gate gets a symbol rather than scaffolding across the road.
+-- twenty-meter gate gets a symbol rather than scaffolding across the road.
 function paint.glyph(g, kind)
   local p = palette()
   local half = math.min(g.w, g.h) * 0.22
   if half > 2.2 then half = 2.2 end
   if half < 0.6 then half = 0.6 end
-  local c  = g.centre
+  local c  = g.center
   -- The gate's own axes, so the glyph lies IN the gate's plane at any angle.
   local rx, ry = g.hy, -g.hx
   local function at(sr, su)
@@ -453,14 +453,14 @@ end
 -- A DIRECTION MARKER: a translucent panel with its symbol repeated across it.
 --
 -- REPEATED, because the panel is as wide as the admin drew it and a stage
--- marker gets drawn wide -- one arrow floating in the middle of a forty metre
--- board is a dot, and a single arrow STRETCHED to forty metres is a line with
+-- marker gets drawn wide -- one arrow floating in the middle of a forty meter
+-- board is a dot, and a single arrow STRETCHED to forty meters is a line with
 -- a bend in it. A fixed-size symbol tiled across the span keeps the same shape
 -- at every width, which is what a real sign does.
 --
 -- Built from segments rather than text: debugDrawer text does not shrink with
 -- distance the way geometry does, so a glyph sized to read in the editor is a
--- speck at the two hundred metres where a marker actually has to work.
+-- speck at the two hundred meters where a marker actually has to work.
 -- MARKER GEOMETRY, BUILT ONCE AND CACHED.
 --
 -- Every mark is a filled polygon rather than a line, which is the whole
@@ -536,7 +536,7 @@ local function markerGeometry(wp)
       local q = glyph[k]
       -- The outline goes down FIRST and slightly fatter. Marks are drawn over
       -- whatever the map happens to be -- pale gravel, dark tarmac, grass at
-      -- noon -- and a single flat colour disappears against one of them. A dark
+      -- noon -- and a single flat color disappears against one of them. A dark
       -- border means the mark carries its own contrast everywhere.
       stroke(g.edge, cx + q[1] * size, cv + q[2] * size,
                      cx + q[3] * size, cv + q[4] * size, t * TUNE.MARKER_EDGE)
@@ -564,7 +564,7 @@ local function markerGeometry(wp)
     end
   else
     -- A U turn or a fork is a diagram, not a repeating mark: one of them,
-    -- centred, as large as the board allows.
+    -- centerd, as large as the board allows.
     place(0, (top + bot) * 0.5, math.min(w, span) * 0.42)
   end
 
@@ -575,7 +575,7 @@ local function markerGeometry(wp)
 end
 
 -- A direction marker: a translucent board carrying filled, outlined marks.
--- `lineCol` rather than `color`: the engine's packed-colour builder is a GLOBAL
+-- `lineCol` rather than `color`: the engine's packed-color builder is a GLOBAL
 -- called color(), and a parameter of that name shadows it inside this function.
 -- That is how the first version came to hand a ColorF to drawTriSolid.
 function paint.markerPanel(wp, lineCol, fill)
@@ -589,7 +589,7 @@ function paint.markerPanel(wp, lineCol, fill)
   -- Outline first, mark on top. Both are solid fills; the only difference is
   -- that the outline was built fatter.
   --
-  -- Skipped entirely when the packed colours are missing, which is the whole
+  -- Skipped entirely when the packed colors are missing, which is the whole
   -- fallback: a build with no global color() draws the board, the posts and
   -- nothing else rather than throwing per triangle per frame.
   if p.markerFace and p.markerEdgeP then
@@ -618,7 +618,7 @@ end
 -- draws the actual test.
 --
 -- The walls are low on purpose. The height half of the test excludes nobody -- a
--- car on the road is always within a few metres of the stall vertically -- so
+-- car on the road is always within a few meters of the stall vertically -- so
 -- drawing it at full gate height would be a tall pair of walls implying a
 -- constraint that is not doing any work. The FOOTPRINT is the part that decides,
 -- so the footprint is what is drawn honestly and the rest is kept out of the way.
@@ -629,7 +629,7 @@ function paint.pitBox(wp, color)
   local fx, fy = wp.hx or 0, wp.hy or 1
   local rx, ry = fy, -fx
   local z = wp.z
-  -- corner(sr, sf): centre + lateral*sr*hw + forward*sf*d
+  -- corner(sr, sf): center + lateral*sr*hw + forward*sf*d
   local function corner(sr, sf, up)
     return vec3(wp.x + rx * sr * hw + fx * sf * d,
                 wp.y + ry * sr * hw + fy * sf * d,
@@ -692,7 +692,7 @@ local function drawPoleGate(wp, color, label, fill, glyph)
     -- ON the gate, not floating above it. A label at `mid` hangs over the top
     -- edge, which reads as a sign near the gate rather than a fact about it, and
     -- from a car it can sit against the sky with nothing behind it.
-    debugDrawer:drawTextAdvanced(fill and g.centre or g.mid,
+    debugDrawer:drawTextAdvanced(fill and g.center or g.mid,
       String(label), p.text, true, false, p.textBg)
   end
 end
@@ -710,7 +710,7 @@ local function drawDriverGate(derbyLive)
   local n = #track.route
 
   -- NO TEXT ON ANY GATE, INCLUDING THE JOKER. The poles say where a gate is and
-  -- the colour says which one is next; a driver reading "CP 3" at speed learns
+  -- the color says which one is next; a driver reading "CP 3" at speed learns
   -- nothing they can act on, and it is one more thing painted across the racing
   -- line.
   --
@@ -768,7 +768,7 @@ local function drawDriverGate(derbyLive)
     end
   end
 
-  -- The joker and the nearest pit stall, in the same style and the same colours
+  -- The joker and the nearest pit stall, in the same style and the same colors
   -- they have always had. They used to be the stock markers' job (slots 3 and 4)
   -- and are drawn here now so a track has ONE checkpoint visual rather than two
   -- that do not match.
@@ -801,7 +801,7 @@ local function drawDriverGate(derbyLive)
         if d < bestD then best, bestD = i, d end
       end
     end
-    -- Amber, and unlabelled like the rest: a pit stall is somewhere you either
+    -- Amber, and unlabeled like the rest: a pit stall is somewhere you either
     -- meant to go or did not. Drawn as the BOX pit.inside actually tests, so
     -- "come to a stop inside the box" refers to something the driver can see.
     if track.pitRoute[best] then paint.pitBox(track.pitRoute[best], p.pit) end
@@ -842,7 +842,7 @@ local function drawGates(derbyLive)
     else
       color = p.route
     end
-    -- A checkpoint with branch gates is labelled with how many, so an admin can
+    -- A checkpoint with branch gates is labeled with how many, so an admin can
     -- see at a glance which corners are shared and which are taken two ways.
     local label = routeLabel(i, n)
     local alts = branch.bySlot[i]
@@ -851,7 +851,7 @@ local function drawGates(derbyLive)
     drawGate(wp, color, label, authoring)
   end
 
-  -- Branch gates: cyan, so they never read as part of the main lap, and labelled
+  -- Branch gates: cyan, so they never read as part of the main lap, and labeled
   -- with the CHECKPOINT they belong to rather than their position in this list --
   -- a branch gate is not a checkpoint of its own, it is the other way of taking
   -- one that already exists, and the number has to say so.
@@ -866,7 +866,7 @@ local function drawGates(derbyLive)
     drawGate(g, color, 'CP ' .. slot .. ' branch', authoring)
   end
 
-  -- Pit stalls. Amber, and labelled as stalls rather than numbered gates: they
+  -- Pit stalls. Amber, and labeled as stalls rather than numbered gates: they
   -- are not part of the checkpoint sequence and must not look as though they
   -- are. Editor only -- a driver gets a pole on the nearest one instead.
   -- Direction markers. Drawn in the editor with a number, so an admin can tell
@@ -900,7 +900,7 @@ local function drawGates(derbyLive)
   end
 
   -- Joker route: violet, so it never reads as part of the main lap. The next
-  -- joker gate lights up green like the main route, and the whole set greys out
+  -- joker gate lights up green like the main route, and the whole set grays out
   -- once the joker has been used (or while it is still forbidden on lap 1).
   local jn = #track.jokerRoute
   local state = session.jokerTaken and 'used'

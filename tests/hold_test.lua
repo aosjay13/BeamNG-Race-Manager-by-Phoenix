@@ -8,7 +8,7 @@
 -- grid placement, with nothing verifying it and nothing re-asserting it. The
 -- placement teleport is reported back by BeamNG as a vehicle reset, and a reset
 -- reloads the vehicle's Lua VM and takes the freeze with it. The re-apply only
--- ran when that report was recognised as our own echo - inside a 0.6 s window
+-- ran when that report was recognized as our own echo - inside a 0.6 s window
 -- so three ordinary things left the car free for the whole countdown:
 --
 --   * the report arriving later than the window (a loaded client on a full grid)
@@ -192,14 +192,14 @@ check(teleports == 0, 'and is NOT teleported, so no vehicle reset is provoked')
 veh.vy = 0
 
 -- 4. Sinking further after it has settled is still not creeping. Measured in
---    three dimensions this would read as a metre of movement and drag the car
+--    three dimensions this would read as a meter of movement and drag the car
 --    back up; measured across the ground, which is the only direction a car can
 --    steal a start in, it reads as nothing.
 gridUp()
 teleports = 0
 veh.z = veh.z - 1.20
 frames(1.0)
-check(teleports == 0, 'sinking a metre on its suspension is not creeping')
+check(teleports == 0, 'sinking a meter on its suspension is not creeping')
 check(veh.x == SLOT_X and veh.y == SLOT_Y, 'and the car is left where it stands')
 
 -- 5. The settle grace is not a window in which the hold is off: a car that
@@ -272,7 +272,7 @@ check(onSlot(), 'and pulled back onto the slot')
 -- A car that has lost its freeze but has not gone anywhere yet is caught by its
 -- VELOCITY, before it has covered the drift tolerance. A frozen car has none, so
 -- any movement at all means the freeze is already gone - and at launch speeds a
--- third of a metre of grace is half a car length of stolen start.
+-- third of a meter of grace is half a car length of stolen start.
 gridUp()
 frozen = false
 veh.vy = 3.0                            -- rolling, but still on the slot

@@ -58,16 +58,24 @@ angular.module('beamng.apps')
         laps: 5,
         resets: -1,            // -1 unlimited, 0 none, N per driver per session
         width: 20,             // checkpoint rectangle: lateral span
-        height: 8,             // metres the gate rises ABOVE where it was placed
-        depth: 2,              // metres it drops BELOW; the two are independent
+        height: 8,             // meters the gate rises ABOVE where it was placed
+        depth: 2,              // meters it drops BELOW; the two are independent
         qualiLaps: 0,          // qualifying lap allowance (0 = unlimited)
-        qualiMins: 0           // qualifying time limit in minutes (0 = none)
+        qualiMins: 0,          // qualifying time limit in minutes (0 = none)
+        raceMins: 0            // race time limit in minutes (0 = run to laps)
       };
 
       // ----------------------------------------------------------------
       // League regulations (Modules 1, 2 & 4)
       // ----------------------------------------------------------------
       // Vehicle resets: -1 unlimited, 0 none, N per driver per session.
+      // Timed races: the server's limit, the live countdown, and the two
+      // post-expiry states. See raceEndState below for what the header says.
+      $scope.raceMode = 'laps';   // 'laps' | 'timed' | 'endurance'
+      $scope.raceTimeLimit = 0;   // seconds, 0 = the race runs to a lap count
+      $scope.raceLeft = null;     // seconds remaining, null when not a timed race
+      $scope.raceExpired = false; // clock out, waiting on the leader's crossing
+      $scope.lastLapNum = null;   // the lap everyone still running finishes on
       $scope.maxResets = -1;      // authoritative value mirrored from the server
       $scope.resetsUsed = 0;      // what THIS client has spent
       // What a legal reset does: repair in place, or respawn at the last
@@ -83,7 +91,7 @@ angular.module('beamng.apps')
       // Which list the checkpoint editor appends to and shows. Three targets:
       // the main lap, the joker route and the starting grid. Anything else is
       // not a target the client Lua knows about, so it falls back to the main
-      // lap - the same normalisation raceManager.setEditorTarget applies.
+      // lap - the same normalization raceManager.setEditorTarget applies.
       // Every tab the editor offers. A tab missing from here silently falls back
       // to the main route, which looks like the button doing nothing.
       var EDITOR_TARGETS = { main: true, joker: true, pit: true, start: true,
@@ -118,6 +126,11 @@ angular.module('beamng.apps')
       // Garage list (approved vehicles/setups).
       $scope.garage = [];             // [{ model, label }]
       $scope.garageEnforce = false;
+      // Which half of a setup the list is matched on: 'parts' locks the parts
+      // and leaves tuning and paint alone, 'strict' locks the tuning too. The
+      // server owns this; the value here is what the panel shows until the
+      // first broadcast lands.
+      $scope.garageMode = 'parts';
       // Race entry: everyone connected is in the field by default, and an admin
       // can switch to opt-in when it should be a subset of who is on the server.
       // Only ever a mirror of the server's answer - this is the value the panel
@@ -218,8 +231,15 @@ angular.module('beamng.apps')
       };
       $scope.lapHolding = function () { return !!$scope.lapHold; };
       // Only worth showing when there is a clock running or a time being held.
+      //
+      // A HELD SECTOR COUNTS AS ONE. The sector readout is drawn inside this
+      // block, so without it a sector could only ever appear when a lap clock or
+      // a lap time happened to be up alongside it - which in free practice meant
+      // the last sector of the lap and nothing else. The ticker below was always
+      // written to keep a lone sector on screen and expire it; this is the test
+      // that was not letting it.
       $scope.showLapTime = function () {
-        return !!$scope.lapLive || !!$scope.lapHold;
+        return !!$scope.lapLive || !!$scope.lapHold || !!$scope.sectorHold;
       };
       // Is this driver on the out lap right now? The lap clock feed carries it,
       // which is what makes this instant: the bridge knows the moment the car
@@ -258,7 +278,7 @@ angular.module('beamng.apps')
       //
       // An out lap arrives here with NO time, deliberately: it was not timed, so
       // there is nothing to hold, and the slot says what the lap was instead. A
-      // time shown for it - even a greyed-out one - is a number a driver will
+      // time shown for it - even a grayed-out one - is a number a driver will
       // try to beat.
       $scope.$on('RaceManagerLapDone', function (event, data) {
         if (!data) { return; }
@@ -319,7 +339,7 @@ angular.module('beamng.apps')
       // CLOSED until somebody asks for it.
       //
       // It used to open itself, which was fine while it was also suppressed for
-      // the whole of a live session -- the two wrongs cancelled. Removing that
+      // the whole of a live session -- the two wrongs canceled. Removing that
       // suppression (it was a dead end: the button that opens the panel lives in
       // the driver bar, which only exists in that mode) left it opening itself
       // over the top of a race instead. A login prompt is something you go and
@@ -548,7 +568,7 @@ angular.module('beamng.apps')
       // must not wipe a table being typed.
       $scope.cupUi = {
         name: '',
-        // Name typed into "Save as". Initialised here so the object owns it
+        // Name typed into "Save as". Initialized here so the object owns it
         // before any child scope can shadow it.
         saveName: '',
         preset: '',
@@ -1119,7 +1139,7 @@ angular.module('beamng.apps')
         phase: 'idle',        // idle | running | finished (server authoritative)
         time: 0,
         // The lives RULE in force this derby, mirrored from the server. 1 is the
-        // behaviour that has always existed: counted out once and you are out.
+        // behavior that has always existed: counted out once and you are out.
         lives: 1,
         // The arena itself, mirrored from the server so the setup panel can
         // list and edit it entry by entry. The counts are kept alongside
@@ -1131,13 +1151,13 @@ angular.module('beamng.apps')
         // Which of the two boundary editors authored that polygon. 'polygon' is
         // the drive-and-place one that has always existed and is still the only
         // way to build a non-rectangular arena; 'rect' derives four corners from
-        // a centre and a pair of extents. Gameplay reads `boundary` either way.
+        // a center and a pair of extents. Gameplay reads `boundary` either way.
         boundaryMode: 'polygon',
         shape: null,          // { cx, cy, cz, halfW, halfL, rot } while 'rect'
         wallHeight: 6,        // how tall the arena walls are drawn (visual only)
         wallDepth: 1.5,       // how far they drop below the boundary (visual only)
         // Who takes part: 'all' (every connected player, the historical
-        // behaviour) or 'join' (only drivers who pressed Join Race).
+        // behavior) or 'join' (only drivers who pressed Join Race).
         entrants: 0,          // how many would be in a derby started right now
         maxResets: -1,        // resets per driver per derby (-1 = unlimited)
         visualize: true,      // boundary/grid visuals shown (client-local)
@@ -1147,7 +1167,7 @@ angular.module('beamng.apps')
       // Dot rule again: these inputs live inside the ng-if derby panel.
       $scope.derbyUi = { oob: 5, demo: 10, lives: 1, resets: -1, mode: 'lms',
                          name: '', selected: '' };
-      // The rectangle sliders. Width and length are the FULL span in metres,
+      // The rectangle sliders. Width and length are the FULL span in meters,
       // which is what an admin measures an arena in - the server stores half
       // extents and the conversion happens in the Lua command. `square` links
       // the two so one slider drives both.
@@ -1262,7 +1282,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.9.0';
+      var APP_BUILD = '0.9.7';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -1304,7 +1324,23 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           if (q < 1) { q = 1; }
           return q + '/' + $scope.totalLaps;
         }
-        return row.currentLap + '/' + $scope.totalLaps;
+        // NO TARGET, NO DENOMINATOR. A timed race has no lap count to be on
+        // lap 8 of 5 of: totalLaps is inert there (nobody knows how many laps
+        // ten minutes is) and dividing by it produced exactly that reading.
+        // Once the leader has been past, the final lap number IS the target and
+        // the cell counts against that instead.
+        var target = $scope.raceLapTarget();
+        return target ? (row.currentLap + '/' + target) : String(row.currentLap);
+      };
+
+      // The lap target the leaderboard counts against, or null when there is
+      // none yet. The same rule as the client extension's effectiveLapTarget and
+      // the server's sessionLapTarget, which is why all three name it: three
+      // copies that disagree is how a driver gets told two different distances.
+      $scope.raceLapTarget = function () {
+        if ($scope.lastLapNum) { return $scope.lastLapNum; }
+        if ($scope.raceMode === 'timed') { return null; }
+        return $scope.totalLaps > 0 ? $scope.totalLaps : null;
       };
 
       $scope.phaseLabel = function () {
@@ -1389,7 +1425,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         return row.position ? ('P' + row.position) : '-';
       };
 
-      // Metres to this client's next checkpoint, for the header readout.
+      // Meters to this client's next checkpoint, for the header readout.
       $scope.formatDistance = function (d) {
         if (d === null || d === undefined) { return ''; }
         return (d >= 1000) ? ((d / 1000).toFixed(2) + ' km') : (Math.round(d) + ' m');
@@ -1450,7 +1486,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       //
       // The button was disabled for every session under way, which includes
       // qualifying -- so the one control that takes a host from qualifying to the
-      // race was greyed out for exactly as long as they needed it. The server
+      // race was grayed out for exactly as long as they needed it. The server
       // supersedes a running qualifying session now (RM_onGenerateGrid), but a
       // disabled button never reaches it, and the only control still lit was
       // Start Quali. That is what "Generate Grid starts qualifying" looked like
@@ -1588,7 +1624,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // THE BOARD DOES NOT OUTLIVE THE SPELL THAT SHOWED IT.
       //
       // Being out of the field is two different things wearing one name. Pressing
-      // Spectate is a decision that lasts; taking the chequered flag makes you a
+      // Spectate is a decision that lasts; taking the checkered flag makes you a
       // spectator for the few seconds between your finish and the results, by
       // accident of timing rather than by choice. `broadcast.on` is remembered
       // across a teardown, and with both states feeding broadcastMode() that
@@ -1825,7 +1861,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // makes green the NEGATIVE number: a lap that took less time.
       //
       // Zero counts as neither. An exact tie to the thousandth is not an
-      // improvement, and colouring it green would overstate it.
+      // improvement, and coloring it green would overstate it.
       $scope.deltaClass = function (d) {
         if (d === null || d === undefined || d === 0) { return ''; }
         return d < 0 ? 'rm-delta-faster' : 'rm-delta-slower';
@@ -1962,8 +1998,27 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           // cross the line, so the header says so rather than showing a clock
           // frozen on zero and nothing else.
           $scope.finalLap = data.finalLap === true;
+          // Timed race. raceLeft is the countdown; raceExpired means the clock
+          // is out and the field is waiting on the leader; lastLapNum is the lap
+          // everyone still running finishes on once the leader has been past.
+          $scope.raceLeft = (typeof data.raceLeft === 'number') ? data.raceLeft : null;
+          if (typeof data.raceMode === 'string') { $scope.raceMode = data.raceMode; }
+          $scope.raceExpired = data.raceExpired === true;
+          $scope.lastLapNum = (typeof data.lastLapNum === 'number') ? data.lastLapNum : null;
+          if (typeof data.raceTimeLimit === 'number'
+              && $scope.raceTimeLimit !== data.raceTimeLimit) {
+            $scope.raceTimeLimit = data.raceTimeLimit;
+            // Follow the server, the same way the quali boxes do: an admin on a
+            // second panel must not go on showing their own stale number.
+            if (!$scope.raceUi || $scope.raceUi.mode !== 'timed' || data.raceTimeLimit > 0) {
+              $scope.settingsUi.raceMins = Math.round(data.raceTimeLimit / 60);
+            }
+          }
           $scope.garage = toArray(data.garage);
           $scope.garageEnforce = !!data.garageEnforce;
+          if (data.garageMode === 'parts' || data.garageMode === 'strict') {
+            $scope.garageMode = data.garageMode;
+          }
           // Track whether an admin is running the session. When one appears and
           // we're just a spectator who hasn't pinned the login open, auto-hide
           // the prompt so the app is fully visible (a header Login button stays).
@@ -2285,7 +2340,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       };
       // The glyph the BUTTON shows. Deliberately not the same drawing as the
       // one on the board: this is a 12px label in a row of seven, and the
-      // in-world symbol is line geometry sized to read at two hundred metres.
+      // in-world symbol is line geometry sized to read at two hundred meters.
       $scope.markerGlyph = function (kind) {
         return ({ right: '→', left: '←', up: '↑', down: '↓',
                   uturn: '↰', splitRight: '⤴', splitLeft: '⤳' })[kind] || '?';
@@ -2367,14 +2422,14 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // Presentation is decided per kind, in NOTICE_STYLE below, so that adding
       // a notification later is one row there rather than another timer and
       // another slot in this controller.
-      var NOTICE_DEFAULT = { rank: 0, flash: false, ms: 6000, colour: 'grey' };
+      var NOTICE_DEFAULT = { rank: 0, flash: false, ms: 6000, color: 'gray' };
       var NOTICE_STYLE = {
         // Flags outrank everything: a caution is a fact about the session and
         // has to reach a driver whose eyes are on the road, ahead of any
         // informational message competing for the same strip.
-        // The flash, and the colour comes from the notice rather than from
-        // here: green, yellow, red, white and chequered are all kind 'flag'
-        // and each waves in its own colour.
+        // The flash, and the color comes from the notice rather than from
+        // here: green, yellow, red, white and checkered are all kind 'flag'
+        // and each waves in its own color.
         flag:     { rank: 40, flash: true,  ms: 2600 },
         // Being removed from the session, or having a car refused, is the other
         // class a driver cannot afford to miss.
@@ -2385,12 +2440,12 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         // the rest of the session, so it flashes rather than scrolling past in
         // the strip. Amber, not the flag yellow: a caution is about the
         // session and this is about one car.
-        resetsout: { rank: 25, flash: true, ms: 2600, colour: 'amber' },
+        resetsout: { rank: 25, flash: true, ms: 2600, color: 'amber' },
         // Gold, and a flash rather than the strip. On a driver's panel the
         // strip painted 16% gold over a transparent root, which is to say over
         // the road going past: legible on an admin's dark panel and very nearly
         // invisible on everybody else's, which is how it went unnoticed.
-        fastest:  { rank: 10, flash: true,  ms: 2600, colour: 'gold' },
+        fastest:  { rank: 10, flash: true,  ms: 2600, color: 'gold' },
         // Everything else (grid, joker, pit, reset, ghost, finish, server)
         // takes NOTICE_DEFAULT. They are the running commentary.
       };
@@ -2400,7 +2455,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           rank:   s.rank   !== undefined ? s.rank   : NOTICE_DEFAULT.rank,
           flash:  s.flash  !== undefined ? s.flash  : NOTICE_DEFAULT.flash,
           ms:     s.ms     !== undefined ? s.ms     : NOTICE_DEFAULT.ms,
-          colour: s.colour !== undefined ? s.colour : NOTICE_DEFAULT.colour
+          color: s.color !== undefined ? s.color : NOTICE_DEFAULT.color
         };
       }
 
@@ -2448,7 +2503,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       function noticePush(kind, msg, sub) {
         var st = noticeStyle(kind);
         var item = { kind: kind, msg: msg, sub: sub || null, rank: st.rank,
-                     flash: st.flash, ms: st.ms, colour: st.colour };
+                     flash: st.flash, ms: st.ms, color: st.color };
         // Nothing showing: straight up.
         if (!$scope.notice) {
           noticeQueue.push(item);
@@ -2459,7 +2514,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         //
         // The displaced notice goes back in the queue ONLY if it has not really
         // been seen yet. Requeueing unconditionally is what made a fastest lap
-        // replay itself a few seconds after the race ended: the chequered flag
+        // replay itself a few seconds after the race ended: the checkered flag
         // preempted it, the fastest lap went back in the queue, and it came
         // round again when the flag expired. From the driver's seat that reads
         // as the notification firing twice.
@@ -3115,7 +3170,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       };
       $scope.flagTitle = function () {
         if ($scope.driverFlag === 'checkered') {
-          return 'Chequered flag: your race is over. Your car is a ghost, so you can '
+          return 'Checkered flag: your race is over. Your car is a ghost, so you can '
             + 'drive anywhere and nobody still racing can touch you.';
         }
         if ($scope.driverFlag === 'red') { return 'Red flag: stop where you are and wait'; }
@@ -3243,6 +3298,25 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.toggleGarageEnforce = function () {
         bngApi.engineLua('raceManager.setGarageEnforce(' + (!$scope.garageEnforce) + ')');
       };
+      $scope.setGarageMode = function (mode) {
+        bngApi.engineLua('raceManager.setGarageMode("' + mode + '")');
+      };
+
+      // Drivers the server has ruled are in a car the list does not cover.
+      //
+      // Reads carOk off the driver rows, which is three-valued: false is an
+      // offender, true is approved, and NULL IS NOT AN ANSWER YET (nothing
+      // declared, or enforcement off). Only false counts, so a grid does not
+      // light up red for the second between switching Enforcing on and the
+      // clients re-declaring.
+      $scope.garageOffenders = function () {
+        var out = [];
+        for (var i = 0; i < $scope.drivers.length; i++) {
+          var d = $scope.drivers[i];
+          if (d.carOk === false && !d.spectating) { out.push(d); }
+        }
+        return out;
+      };
 
       // No applyWidth / applyHeight: the global gate size is gone. A gate takes
       // its size when it is placed, inherits it from the gate before, and is
@@ -3336,6 +3410,102 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         savePref('qualiLimitMode', mode);
         pushQualiLimits();
       };
+      // ------------------------------------------------------------------
+      // Race length: a lap count OR a clock, never both
+      // ------------------------------------------------------------------
+      // Same shape as the qualifying control above, and for the same reason:
+      // the server holds both numbers and treats 0 as "not this one", so two
+      // boxes side by side is how both get armed by accident. Pick one; the
+      // other is sent as 0.
+      var RACE_MODES = { laps: true, timed: true, endurance: true };
+      $scope.raceUi = { mode: RACE_MODES[loadPref('raceLimitMode', 'laps')] ? loadPref('raceLimitMode', 'laps') : 'laps' };
+      $scope.isRaceLimitMode = function (mode) { return $scope.raceUi.mode === mode; };
+      // Endurance runs to BOTH limits, so it is the one mode that shows both
+      // boxes. The other two show the one they govern.
+      $scope.raceShowLaps = function () { return $scope.raceUi.mode !== 'timed'; };
+      $scope.raceShowMins = function () { return $scope.raceUi.mode !== 'laps'; };
+
+      function raceLapsInput() {
+        var n = parseInt($scope.settingsUi.laps, 10);
+        return (isNaN(n) || n < 1) ? 1 : n;
+      }
+      function raceSecondsInput() {
+        var n = parseFloat($scope.settingsUi.raceMins);
+        return (isNaN(n) || n < 0) ? 0 : Math.round(n * 60);
+      }
+      function pushRaceLimits() {
+        var laps = raceLapsInput();
+        var secs = $scope.raceUi.mode === 'laps' ? 0 : raceSecondsInput();
+        bngApi.engineLua('raceManager.setRaceLimits('
+          + laps + ', ' + secs + ', "' + $scope.raceUi.mode + '")');
+      }
+      // An empty box is skipped, exactly as on the laps and resets fields: it
+      // means "still typing", and here it would read as 0 minutes, which turns a
+      // timed race back into a lap race for the half second between clearing
+      // "10" and typing "15".
+      // An empty box is skipped: it means "still typing". In endurance BOTH
+      // boxes are live, and either being mid-edit is reason enough to wait -
+      // sending a half-typed pair would arm a limit nobody asked for.
+      $scope.applyRaceLimits = function () {
+        var empty = function (v) { return v === '' || v === null || v === undefined; };
+        if ($scope.raceShowLaps() && empty($scope.settingsUi.laps)) { return; }
+        if ($scope.raceShowMins() && empty($scope.settingsUi.raceMins)) { return; }
+        pushRaceLimits();
+      };
+      // Switching mode applies immediately. Waiting would leave the old limit
+      // live underneath a panel showing the new mode's box, which is the state
+      // this control exists to make impossible.
+      $scope.setRaceLimitMode = function (mode) {
+        if (!RACE_MODES[mode]) { mode = 'laps'; }
+        if ($scope.raceUi.mode === mode) { return; }
+        $scope.raceUi.mode = mode;
+        savePref('raceLimitMode', mode);
+        pushRaceLimits();
+      };
+      // The server's answer, not the boxes'. Reads raceMode so endurance says
+      // what it actually is rather than being mistaken for a timed race by the
+      // fact that it has a clock.
+      $scope.raceLimitLabel = function () {
+        if ($scope.pointToPoint) { return 'point to point: driven once'; }
+        var mins = Math.round($scope.raceTimeLimit / 60);
+        if ($scope.raceMode === 'timed') { return 'race: ' + mins + ' min + 1 lap'; }
+        if ($scope.raceMode === 'endurance') {
+          return 'race: ' + $scope.totalLaps + ' laps or ' + mins + ' min, first of the two';
+        }
+        return 'race: ' + $scope.totalLaps + ' laps';
+      };
+      // THE SESSION CLOCK, and which direction it runs.
+      //
+      // A race to a lap count counts UP: elapsed time is the only thing it has
+      // to say. A race to a clock counts DOWN, because "how long is left" is the
+      // question every driver in one is actually asking, and making them do
+      // 10:00 minus the number on screen at racing speed is not an answer.
+      //
+      // Only while RACING. Once it is over, the elapsed time is what a result
+      // is read against, and a finished race frozen at 0:00 says nothing at all.
+      $scope.sessionClock = function () {
+        if ($scope.phase === 'racing'
+            && $scope.raceLeft !== null && $scope.raceLeft !== undefined) {
+          return $scope.formatRaceTime($scope.raceLeft);
+        }
+        return $scope.formatRaceTime($scope.raceTime);
+      };
+      // So the readout can say which way it is running rather than leaving a
+      // driver to work it out from whether the digits are going up or down.
+      $scope.sessionClockDown = function () {
+        return $scope.phase === 'racing'
+          && $scope.raceLeft !== null && $scope.raceLeft !== undefined;
+      };
+      // What the header says once the clock is out. Three states, three
+      // sentences: waiting on the leader, the final lap running, the flag out.
+      $scope.raceEndState = function () {
+        if ($scope.phase !== 'racing') { return null; }
+        if ($scope.finalLap) { return 'FLAG OUT'; }
+        if ($scope.lastLapNum) { return 'FINAL LAP'; }
+        if ($scope.raceExpired) { return '+1 LAP'; }
+        return null;
+      };
+
       // Remaining qualifying time for the header readout.
       $scope.qualiClock = function () {
         if ($scope.qualiLeft === null || $scope.qualiLeft === undefined) { return ''; }
@@ -3662,7 +3832,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         }, 0);
       }
 
-      // Custom dropdown behaviour (see $scope.layoutDropdownOpen above for why
+      // Custom dropdown behavior (see $scope.layoutDropdownOpen above for why
       // this isn't a native <select>). Opening only makes sense when there are
       // layouts to choose from; selecting an option mirrors the old
       // ng-model + ng-change pair (set the name, redraw the preview).

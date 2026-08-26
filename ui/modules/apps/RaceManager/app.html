@@ -20,7 +20,9 @@
     <span class="rm-wp-progress" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">CP {{ nextWp }}/{{ routeWaypoints.length }}</span>
     <!-- Live distance to your own next checkpoint (the third position metric) -->
     <span class="rm-dist" ng-if="phase === 'racing' && progress && progress.dist != null">{{ formatDistance(progress.dist) }}</span>
-    <span class="rm-clock" ng-if="phase === 'racing' || phase === 'finished'">{{ formatRaceTime(raceTime) }}</span>
+    <span class="rm-clock" ng-if="phase === 'racing' || phase === 'finished'"
+          ng-class="{'rm-clock-down': sessionClockDown()}"
+          title="{{ sessionClockDown() ? 'Race time remaining' : 'Race time elapsed' }}">{{ sessionClock() }}</span>
     <!-- Own lap clock (same feed the driver bar uses; the header is the
          admin/spectator equivalent, since minimal mode removes it). -->
     <span class="rm-laptime" ng-if="showLapTime()">
@@ -59,6 +61,20 @@
             title="Time on the current lap">
         LAP {{ formatLapLive(lapElapsed()) }}
       </span>
+    </span>
+    <!-- Timed race: the clock, then what replaces it. Three states after it
+         runs out, because they are three different things to a driver:
+           +1 LAP     the clock is out and the leader has not been past yet, so
+                      there are two laps to go, not one;
+           FINAL LAP  the leader has been past. Finish this lap;
+           FLAG OUT   the winner is home and the next line you cross is yours. -->
+    <span class="rm-clock rm-final-lap" ng-if="raceEndState()"
+          title="{{ raceEndState() === '+1 LAP'
+                   ? 'Time is up: the final lap starts when the leader takes the line'
+                   : (raceEndState() === 'FINAL LAP'
+                      ? 'Finish this lap to take the flag'
+                      : 'The winner is home: your race ends as you cross the line') }}">
+      {{ raceEndState() }}
     </span>
     <!-- Qualifying countdown when the session has a time limit -->
     <span class="rm-clock rm-quali-clock" ng-if="phase === 'qualifying' && qualiLeft !== null && !finalLap"
@@ -183,7 +199,7 @@
            placeholder="Password…"
            ng-keydown="$event.keyCode === 13 && login()">
     <button class="rm-btn rm-btn-start" ng-click="login()">Login</button>
-    <!-- THIS ONLY EVER CLOSED THE BOX. It used to be labelled as spectating, so
+    <!-- THIS ONLY EVER CLOSED THE BOX. It used to be labeled as spectating, so
          racers pressed it expecting to watch a race and got a dismissed dialog.
          Sitting out is its own control now, in the entry row where entry
          decisions belong, and this is a close button that looks like one. -->
@@ -373,7 +389,7 @@
     <button class="rm-btn rm-btn-quali" ng-click="startQualifying()" ng-disabled="sessionUnderWay()"
             title="Stand every entrant on a start position and hold. Then Start Countdown.">Start Quali</button>
     <!-- Enabled DURING qualifying on purpose: it is the control that takes you
-         from qualifying to the race, and gating it on sessionUnderWay() greyed
+         from qualifying to the race, and gating it on sessionUnderWay() grayed
          it out for exactly as long as a host needed it. -->
     <button class="rm-btn rm-btn-grid"  ng-click="generateGrid()"    ng-disabled="raceUnderWay()"
             title="Grid the field by qualifying time or your chosen order. Ends qualifying first, keeping the times.">Generate Grid</button>
@@ -498,9 +514,9 @@
        The set shown depends on the mode picked above. -->
   <div class="rm-admin-tabs" ng-if="isAdmin && isMode('race')">
     <!-- WHICH MODE THE PANEL IS IN, said out loud.
-         Half the editor controls below grey out while a session is running, and
+         Half the editor controls below gray out while a session is running, and
          without this the only thing telling an admin why is the controls being
-         grey - which reads as the app having broken rather than as a rule. It
+         gray - which reads as the app having broken rather than as a rule. It
          sits first in the tab row because that is where the eye lands before it
          reaches the control that is not responding. -->
     <!-- Three states, because the grid is genuinely its own: the field is
@@ -559,14 +575,46 @@
          after typing stops (or instantly on leaving the field), and the
          authoritative value the server holds is displayed beside the box, so
          what is in force is always readable. -->
-    <span class="rm-setting" title="Race distance. Applies as you type.">
-      <label>Laps</label>
-      <input type="number" min="1" max="500" ng-model="settingsUi.laps"
-             ng-model-options="{ debounce: { default: 500, blur: 0 } }"
-             ng-change="applyTotalLaps()"
-             ng-disabled="pointToPoint || !canSetRules()">
-      <span class="rm-setting-val" ng-if="!pointToPoint">race: {{ totalLaps }}</span>
-      <span class="rm-setting-val rm-p2p-note" ng-if="pointToPoint">point to point: driven once</span>
+    <!-- A race is run to a LAP COUNT or to a CLOCK, not both - the same rule
+         and the same control as the qualifying length below it. The server
+         holds both numbers and treats 0 seconds as "run to laps", so two boxes
+         side by side is how both get armed by accident.
+
+         TIMED IS "10 MINUTES + 1 LAP": when the clock expires nothing changes
+         yet. The final lap begins when the LEADER next takes the line, and
+         everyone still running finishes at the end of it. -->
+    <span class="rm-setting" title="Race distance: a lap count, or a clock plus one lap.">
+      <label>Race length</label>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': isRaceLimitMode('laps')}"
+              ng-click="setRaceLimitMode('laps')"
+              ng-disabled="pointToPoint || !canSetRules()"
+              title="A fixed number of laps. The race ends as the last car completes them.">Laps</button>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': isRaceLimitMode('timed')}"
+              ng-click="setRaceLimitMode('timed')"
+              ng-disabled="pointToPoint || !canSetRules()"
+              title="Runs to a clock. The final lap starts when the leader next crosses the line.">Timed</button>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': isRaceLimitMode('endurance')}"
+              ng-click="setRaceLimitMode('endurance')"
+              ng-disabled="pointToPoint || !canSetRules()"
+              title="Both limits: the distance, or the clock plus one lap, whichever comes first.">Endurance</button>
+
+      <span class="rm-setting-sub" ng-if="raceShowLaps()"
+            title="Laps the race runs to. In Endurance this is the distance half of the limit.">
+        <label>Laps</label>
+        <input type="number" class="rm-width-num" min="1" max="500" ng-model="settingsUi.laps"
+               ng-model-options="{ debounce: { default: 500, blur: 0 } }"
+               ng-change="applyRaceLimits()"
+               ng-disabled="pointToPoint || !canSetRules()">
+      </span>
+      <span class="rm-setting-sub" ng-if="raceShowMins()"
+            title="Minutes the race runs before the final lap is armed. 0 goes back to laps.">
+        <label>Minutes</label>
+        <input type="number" class="rm-width-num" min="0" max="360" step="1" ng-model="settingsUi.raceMins"
+               ng-model-options="{ debounce: { default: 500, blur: 0 } }"
+               ng-change="applyRaceLimits()"
+               ng-disabled="pointToPoint || !canSetRules()">
+      </span>
+      <span class="rm-setting-val">{{ raceLimitLabel() }}</span>
     </span>
     <!-- Module 1: vehicle reset ruleset -->
     <span class="rm-setting" title="Resets per driver. 0 = none, -1 = unlimited. Past the allowance the car is put back where it was, no penalty.">
@@ -1100,7 +1148,7 @@
             </div>
             <!-- The ledger. Every adjustment keeps its reason and its author, so
                  a total can be accounted for and the wrong entry removed rather
-                 than cancelled out by another one. -->
+                 than canceled out by another one. -->
             <div class="rm-cup-ledger" ng-if="s.adjustments.length">
               <div class="rm-cup-ledrow" ng-repeat="a in s.adjustments track by $index">
                 <span class="rm-cup-leddelta" ng-class="{'rm-cup-adj': a.delta}">{{ a.delta > 0 ? '+' : '' }}{{ a.delta }}</span>
@@ -1174,7 +1222,7 @@
       races behave exactly as they do today.
       Points attach to a <b>saved driver</b>, not to a connection. Give everyone a
       display name before the first round, and assign them again after a
-      reconnect: BeamMP reissues guest names at random, so nobody is recognised
+      reconnect: BeamMP reissues guest names at random, so nobody is recognized
       automatically. The <b>Drivers</b> panel above does both.
     </div>
   </div>
@@ -1185,14 +1233,39 @@
       <span class="rm-garage-title">Garage: allowed vehicles &amp; setups</span>
       <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': garageEnforce}"
               ng-click="toggleGarageEnforce()"
-              title="Cars and tunes not on this list are deleted on spawn. Admins are exempt.">
+              title="Cars not on this list are deleted. Nobody is exempt, admins included.">
         {{ garageEnforce ? '✓ Enforcing' : 'Not enforced' }}
       </button>
       <span class="rm-garage-count">{{ garage.length }} approved</span>
     </div>
+    <!-- What a captured entry actually locks. One switch per race, not per car:
+         several allowed builds of the same vehicle are several entries under
+         Parts, not a third mode. -->
+    <div class="rm-garage-mode">
+      <span class="rm-garage-mode-label">Locks</span>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': garageMode === 'parts'}"
+              ng-click="setGarageMode('parts')"
+              title="Parts are locked. Tuning and paint are the driver's.">Parts</button>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': garageMode === 'strict'}"
+              ng-click="setGarageMode('strict')"
+              title="Parts and tuning both locked. Paint is still free.">Strict</button>
+      <span class="rm-garage-mode-note">
+        {{ garageMode === 'strict'
+           ? 'Exact tune must match. Paint free.'
+           : 'Tuning and paint free, parts locked.' }}
+      </span>
+    </div>
+    <!-- Nobody is exempt any more, admins included, so an unapproved car is
+         deleted a second or two after it spawns - before there is time to press
+         capture. Building the list is therefore done with the switch off, and
+         the panel says so at the moment it matters rather than in the docs. -->
+    <div class="rm-garage-warn" ng-if="garageEnforce">
+      Enforcing is ON: unapproved cars are deleted for everyone, admins included.
+      Switch it off to add cars to the list.
+    </div>
     <div class="rm-garage-controls">
       <button class="rm-btn rm-btn-grid" ng-click="whitelistCurrentVehicle()"
-              title="Capture the exact vehicle + part config you are driving right now and add it to the list">
+              title="Capture the car you are driving right now and add it to the list">
         + Whitelist Current Vehicle
       </button>
       <button class="rm-btn rm-btn-end" ng-click="clearGarage()" ng-disabled="!garage.length">Clear Garage</button>
@@ -1205,10 +1278,27 @@
         <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="removeGarageEntry($index)">✕</button>
       </div>
     </div>
+    <!-- Who is in a car the list does not cover. Admins appear here and are
+         never removed from their car, so this is the only place an admin's own
+         unapproved setup is visible before the lights go out.
+
+         NO ADMIN BADGE ON THESE ROWS, on purpose. Which driver is an admin is
+         not on the state broadcast and must not be put there for this: the
+         payload goes to every client, and the panel it would decorate is only
+         drawn for admins anyway. Start Countdown names the exempt ones in the
+         line it sends the admin who pressed it, which is the private channel
+         that question belongs on. -->
+    <div class="rm-garage-bad" ng-if="garageEnforce && garageOffenders().length">
+      <span class="rm-garage-bad-title">Not on the list</span>
+      <div class="rm-garage-bad-row" ng-repeat="d in garageOffenders() track by d.id">
+        <span class="rm-garage-bad-name">{{ d.alias || d.name }}</span>
+      </div>
+    </div>
     <div class="rm-garage-hint" ng-if="!garage.length">
-      Drive the car you want to allow (with the exact tune), then press
-      <b>+ Whitelist Current Vehicle</b>. Repeat for every allowed car. Enforcement
-      only starts once the list has at least one entry and is switched on.
+      Drive the car you want to allow, then press <b>+ Whitelist Current Vehicle</b>.
+      Repeat for every allowed build, including each engine or parts variant you
+      want to permit. Enforcement only starts once the list has at least one entry
+      and is switched on.
     </div>
   </div>
 
@@ -1522,7 +1612,7 @@
           </span>
           <!-- The same pair the starting grid has: stand the car on a placed
                gate, or move the gate to where the car is. Without them a gate
-               that landed a metre wide meant deleting and re-driving the route.
+               that landed a meter wide meant deleting and re-driving the route.
                ng-click stopPropagation so they do not also toggle the row's
                width/height editor open and shut. -->
           <!-- OPEN ROW ONLY. These three used to sit on every gate in the
@@ -1795,20 +1885,20 @@
         ✎ Drive &amp; Place ({{ derby.boundaryCount }})
       </button>
       <span class="rm-route-tab-note" ng-if="derby.boundaryMode === 'rect'">
-        Four corners are derived from the centre: move the sliders, not the markers.
+        Four corners are derived from the center: move the sliders, not the markers.
       </span>
       <span class="rm-route-tab-note" ng-if="derby.boundaryMode === 'polygon'">
         Markers connect in order into a closed perimeter. 3 or more make an arena.
       </span>
     </div>
 
-    <!-- ===== Rectangle mode: a centre and three sliders ===== -->
+    <!-- ===== Rectangle mode: a center and three sliders ===== -->
     <div class="rm-derby-rect" ng-if="derby.boundaryMode === 'rect'">
       <div class="rm-editor-controls">
         <button class="rm-btn rm-btn-grid" ng-click="derbySetShapeCenter()"
                 ng-disabled="derbyActive()"
-                title="Move the arena centre to your car. Size and rotation are kept.">
-          ◎ Set Centre Here
+                title="Move the arena center to your car. Size and rotation are kept.">
+          ◎ Set Center Here
         </button>
         <span class="rm-setting" title="Link width and length so the arena stays square.">
           <button class="rm-btn rm-btn-mini rm-btn-toggle"
@@ -1819,7 +1909,7 @@
           </button>
         </span>
         <span class="rm-setting-val" ng-if="derby.shape">
-          centre {{ derby.shape.cx.toFixed(1) }}, {{ derby.shape.cy.toFixed(1) }}
+          center {{ derby.shape.cx.toFixed(1) }}, {{ derby.shape.cy.toFixed(1) }}
         </span>
       </div>
       <!-- Same slider-plus-number pairing the per-gate size editor uses, so an
@@ -1902,7 +1992,7 @@
          still read off the arena during a live derby. -->
     <div class="rm-derby-lists" ng-if="derby.boundary.length || derby.startPositions.length">
       <!-- The marker list is the drive-and-place editor's, and only its. A
-           rectangle's four corners are derived from its centre and extents, so
+           rectangle's four corners are derived from its center and extents, so
            there is no answer to "move corner 2 over there" that leaves it a
            rectangle - the sliders are how it is edited, and the server refuses
            these commands in that mode anyway. -->
@@ -1925,7 +2015,7 @@
                       title="Move this marker to where your car is standing now">Move Here</button>
               <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="derbyRemoveMarker($index + 1)"
                       ng-disabled="derbyActive()"
-                      title="Delete this marker; the perimeter closes up between its neighbours">✕</button>
+                      title="Delete this marker; the perimeter closes up between its neighbors">✕</button>
             </div>
           </div>
         </div>
@@ -2004,7 +2094,7 @@
     </div>
 
     <div class="rm-derby-hint" ng-if="derby.boundaryMode === 'rect' && derby.boundaryCount">
-      The four corners follow the centre and the sliders. Leaving the arena during
+      The four corners follow the center and the sliders. Leaving the arena during
       the derby starts the out-of-bounds countdown; stopping starts the demolished
       countdown. Place a starting grid with <b>+ Start Position</b> (slot 1 first,
       facing the way the car should point): Form Up stands every driver on a slot.
@@ -2082,12 +2172,12 @@
            rename this cannot do. BeamMP has no server-side way to rename anyone
            -- the guest identity comes from their auth -- so what this switches on
            is its own setPlayerNickSuffix, which appends text to the tag and
-           touches nothing else about it: no fade, no colour, no occlusion. -->
+           touches nothing else about it: no fade, no color, no occlusion. -->
       <div class="rm-alias-row rm-alias-tagrow">
         <button class="rm-btn rm-btn-mini rm-btn-toggle"
                 ng-class="{'rm-btn-toggle-on': nametags}"
                 ng-click="toggleNametags()"
-                title="Append each driver's display name to their BeamMP nametag. It is added after their guest name, not instead of it: BeamMP owns the nametag and this only adds text to it, leaving fade, colour and everything else alone. Only players running Race Manager see it.">{{ nametags ? 'On' : 'Off' }}</button>
+                title="Append each driver's display name to their BeamMP nametag. It is added after their guest name, not instead of it: BeamMP owns the nametag and this only adds text to it, leaving fade, color and everything else alone. Only players running Race Manager see it.">{{ nametags ? 'On' : 'Off' }}</button>
         <span class="rm-alias-real">Show display names on nametags</span>
         <span class="rm-alias-current" ng-if="nametags">guest1234 <b>(Name)</b></span>
       </div>
@@ -2162,7 +2252,7 @@
        queue, same timer, same ranking: only the presentation differs, decided
        per kind in NOTICE_STYLE. Nothing opts in yet, so this draws nothing
        until a later change flips a kind over. -->
-  <div class="rm-flash" ng-class="'rm-flash-' + (notice.colour || 'grey')"
+  <div class="rm-flash" ng-class="'rm-flash-' + (notice.color || 'gray')"
        ng-if="notice && notice.flash">
     <div class="rm-flash-title">{{ notice.msg }}</div>
     <div class="rm-flash-sub" ng-if="notice.sub">{{ notice.sub }}</div>
@@ -2209,7 +2299,8 @@
       NEXT <b>{{ formatDistance(progress.dist) }}</b>
     </span>
     <span class="rm-driverbar-label" ng-if="phase === 'racing' || phase === 'finished'">
-      RACE <b>{{ formatRaceTime(raceTime) }}</b>
+      RACE <b ng-class="{'rm-clock-down': sessionClockDown()}"
+              title="{{ sessionClockDown() ? 'Time remaining' : 'Time elapsed' }}">{{ sessionClock() }}</b>
     </span>
     <!-- Own lap clock. A held time (just-completed lap) takes the slot for a few
          seconds and is styled differently so it never reads as a stalled clock;
@@ -2356,10 +2447,11 @@
       <span class="rm-phase rm-bc-phase rm-phase-racing" ng-if="derbyActive()">{{ derbyPhaseLabel() }}</span>
       <span class="rm-bc-stat" ng-if="broadcastLap()">LAP <b>{{ broadcastLap() }}</b></span>
       <span class="rm-bc-stat" ng-if="!derbyActive() && (phase === 'racing' || phase === 'finished')">
-        <b>{{ formatRaceTime(raceTime) }}</b>
+        <b ng-class="{'rm-clock-down': sessionClockDown()}"
+           title="{{ sessionClockDown() ? 'Time remaining' : 'Time elapsed' }}">{{ sessionClock() }}</b>
       </span>
       <!-- A DERBY OWNS THE STRIP WHILE ONE IS ON, and every readout above and
-           below honours that. Nothing stops an admin forming a derby up with a
+           below honors that. Nothing stops an admin forming a derby up with a
            qualifying session still open (RM_onDerbyFormUp does not refuse one),
            so the two clocks really can be live at the same moment -- and the one
            the board is showing a field for is the one worth reading. -->
@@ -2470,7 +2562,7 @@
     </table>
 
     <!-- ---------------- Out of the race ----------------
-         Its own block below the field rather than grey rows at the bottom of
+         Its own block below the field rather than gray rows at the bottom of
          it. A retirement is a story of its own on a broadcast, and the ruling
          that caused it is the part worth reading - which is why this shows the
          server's own reason text, the same string the results file records. -->
@@ -2907,7 +2999,7 @@
   }
   .rm-practice-note { font-size: 11px; color: #9aa0a6; }
   .rm-laptime-hold b { font-weight: 700; }
-  /* DELTA COLOURS. Green is faster, red is slower -- the way round every timing
+  /* DELTA COLORS. Green is faster, red is slower -- the way round every timing
      screen in racing does it, which is what makes it readable at a glance and
      at speed. Green is therefore the NEGATIVE number.
      Both tokens are already the app's own green and red, used throughout for
@@ -2929,15 +3021,15 @@
     background: rgba(154, 160, 166, 0.14);
     border: 1px solid rgba(154, 160, 166, 0.4);
   }
-  /* A personal best for that sector: the one case worth the extra colour. */
+  /* A personal best for that sector: the one case worth the extra color. */
   .rm-sector-best {
     color: #ce93d8;
     background: rgba(206, 147, 216, 0.16);
     border-color: rgba(206, 147, 216, 0.55);
   }
   /* The out lap takes the same slot as both of those and must not be mistaken
-     for either: not the quiet grey of a clock that is running, and not the amber
-     box of a time that was set. Purple is qualifying's colour throughout this
+     for either: not the quiet gray of a clock that is running, and not the amber
+     box of a time that was set. Purple is qualifying's color throughout this
      app (the phase chip, the session clock), and this is a qualifying rule. */
   .rm-laptime-out {
     display: inline-block;
@@ -3064,8 +3156,8 @@
     border-color: #ff6600;
     color: #ffb380;
   }
-  /* Running or configuring, in the admin tab row. Deliberately not colour
-     alone: the word is the signal and the colour only agrees with it, because
+  /* Running or configuring, in the admin tab row. Deliberately not color
+     alone: the word is the signal and the color only agrees with it, because
      the two states have to be told apart at a glance by somebody who is also
      driving. */
   .rm-mode-badge {
@@ -3243,7 +3335,7 @@
      one. */
   .rm-editor-wp-over { box-shadow: inset 0 2px 0 0 #ff8c1a; }
   /* Direction markers: cyan, matching what they draw in the world, and not any
-     of the colours a driver has already learned to read as a gate. */
+     of the colors a driver has already learned to read as a gate. */
   .rm-route-tab-marker { border-color: rgba(45, 220, 255, 0.55); color: #9fe9ff; }
   .rm-route-tab-marker-active {
     background: rgba(45, 220, 255, 0.22);
@@ -3503,6 +3595,10 @@
 
   /* Header badges for the new session state */
   .rm-quali-clock { color: #ce93d8; }
+  /* The session clock running DOWN rather than up: a timed race. Colored so
+     the direction is visible at a glance instead of having to be inferred from
+     two readings a second apart. */
+  .rm-clock-down  { color: #8ab4f8; }
   /* Time is up but the session is still running: read as urgent, not as over. */
   .rm-final-lap { color: #ffd54f; font-weight: 700; letter-spacing: 0.06em; }
   .rm-ghost-badge {
@@ -3561,7 +3657,7 @@
     border-color: #4285f4;
     color: #c3d9ff;
   }
-  /* Branch gates: cyan, matching the colour they are drawn in the world. Far
+  /* Branch gates: cyan, matching the color they are drawn in the world. Far
      enough from the joker's violet and the route's orange to be told apart at a
      glance: a branch gate is another way through a checkpoint and must never read
      as an extra checkpoint on the same lap. */
@@ -3670,15 +3766,15 @@
   /* DRAWN, NOT TYPED.
      
      This was the ⚑ character, and the font renders it as an EMOJI: it carries
-     its own colour and ignores `color` completely, so the flag sat there green
+     its own color and ignores `color` completely, so the flag sat there green
      while a yellow was out. The chat line and the notice were right the whole
      time, which is what made it look like a state bug rather than a font one.
      
-     A pole and a cloth, both from CSS, so the colour is ours. Static on purpose:
+     A pole and a cloth, both from CSS, so the color is ours. Static on purpose:
      the lamp this replaced pulsed, and a symbol that flickers is harder to read
      at speed than one that simply is. */
   /* U+2691 plus U+FE0E. The variation selector requests the TEXT form of the
-     glyph; without it this arrives as an emoji, which carries its own colour and
+     glyph; without it this arrives as an emoji, which carries its own color and
      ignores `color` entirely. The font stack is the same request made a second
      way: name symbol fonts so the emoji font is not the one that answers.
      NO PSEUDO-ELEMENTS. They used to draw a pole and cloth over the element,
@@ -3697,7 +3793,7 @@
   .rm-flag-white  { color: #ffffff; }
   .rm-flag-red    { color: #ff5252; }
   /* Checkered: the flag glyph is monochrome, so it takes the plain foreground
-     rather than a colour of its own. It is the one flag that is about THIS
+     rather than a color of its own. It is the one flag that is about THIS
      driver rather than the session, which is why it outranks the rest. */
   .rm-flag-checkered { color: #e8eaed; }
   .rm-waiting {
@@ -3706,7 +3802,7 @@
     white-space: nowrap;
   }
   .rm-waiting b { color: #e8eaed; }
-  /* The phase pill in the driver bar: same colours as the header's, smaller,
+  /* The phase pill in the driver bar: same colors as the header's, smaller,
      so both panels open their status run the same way. */
   .rm-driverbar-phase { font-size: 9px; padding: 1px 5px; }
   .rm-driverbar-act { display: inline-flex; gap: 4px; align-items: center; font-size: 10px; }
@@ -4123,6 +4219,49 @@
   }
   .rm-garage-model { color: #9aa0a6; font-size: 10px; }
   .rm-garage-hint { margin-top: 5px; font-size: 11px; color: #9aa0a6; }
+  .rm-garage-warn {
+    margin-bottom: 5px;
+    padding: 3px 6px;
+    font-size: 10px;
+    color: #f5c26b;
+    border-left: 2px solid #f5c26b;
+    background: rgba(245, 194, 107, 0.1);
+  }
+  .rm-garage-mode {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 5px;
+  }
+  .rm-garage-mode-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #9aa0a6;
+  }
+  .rm-garage-mode-note {
+    font-size: 10px;
+    color: #9aa0a6;
+    margin-left: auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rm-garage-bad {
+    margin-top: 5px;
+    padding: 4px 6px;
+    border-left: 2px solid #e06c5f;
+    background: rgba(224, 108, 95, 0.1);
+  }
+  .rm-garage-bad-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #e06c5f;
+    font-weight: 700;
+  }
+  .rm-garage-bad-row { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+  .rm-garage-bad-name { color: #e8eaed; }
 
   /* Regulation banners */
   .rm-spectator-bar {
@@ -4298,7 +4437,7 @@
     border: 1px solid rgba(255, 255, 255, 0.18);
     border-radius: 4px;
     /* Native corner grip as well as the JS one, for mouse-driven resizing in
-       any CEF build that honours it. */
+       any CEF build that honors it. */
     resize: both;
   }
   .rm-minimal .rm-table th { background: transparent; }
@@ -4556,7 +4695,7 @@
     color: #bdc1c6;
   }
   .rm-bc-int { color: #9aa0a6; }
-  /* A lapped driver's "gap" is a count of laps, not a time. Coloured apart so it
+  /* A lapped driver's "gap" is a count of laps, not a time. Colored apart so it
      is never read as a very large number of seconds. */
   .rm-bc-lapped { color: #fdd663; font-weight: 600; }
   .rm-bc-gain { color: #7ee2a8; }
@@ -4704,7 +4843,7 @@
   .rm-derby-warning-oob  { background: rgba(180, 15, 15, 0.55); }
   .rm-derby-warning-stop { background: rgba(190, 110, 0, 0.55); }
 
-  /* Flash colours. Opaque enough to read against a bright sky and a dark tunnel
+  /* Flash colors. Opaque enough to read against a bright sky and a dark tunnel
      alike, which the 16%-alpha notice strip never was on a driver's panel: the
      root goes transparent in minimal mode, so a wash that faint had nothing
      behind it but the road going past. */
@@ -4714,17 +4853,17 @@
   .rm-flash-white  { background: rgba(235, 235, 235, 0.5); }
   .rm-flash-gold   { background: rgba(150, 110, 0, 0.6); }
   .rm-flash-amber  { background: rgba(175, 85, 0, 0.6); }
-  .rm-flash-grey   { background: rgba(40, 44, 52, 0.72); }
-  /* An actual checkered flag rather than a word on a grey wash. Two offset
+  .rm-flash-gray   { background: rgba(40, 44, 52, 0.72); }
+  /* An actual checkered flag rather than a word on a gray wash. Two offset
      gradients make the squares; the dark base underneath keeps the text legible
      where a square happens to be white. 18px reads as a flag at a glance and
-     does not turn into grey mush on a driver's narrow panel. */
+     does not turn into gray mush on a driver's narrow panel. */
   /* A REAL CHECKERBOARD, and it stays black and white.
      Two things were wrong with the first attempt. The 45deg two-gradient recipe
      draws DIAMONDS rather than squares -- it is the standard trick and it is the
      standard trick for a diagonal check. And the base .rm-flash animation fades
      opacity to 0.35 every half second, which over a dark panel is precisely how
-     black and white average out to the grey that was reported.
+     black and white average out to the gray that was reported.
      One conic gradient gives four true squares per tile, and the animation is
      overridden below so the flag waves instead of fading. */
   .rm-flash-checkered {
@@ -4734,8 +4873,8 @@
       #14161a 180deg 270deg, #f2f2f2 270deg 360deg);
     background-size: 44px 44px;
     /* Squares SWAP rather than the whole panel dimming. Reads as a flag being
-       waved, and never spends half its life grey. steps(1) keeps the edges hard;
-       a smooth slide would smear into grey again on a moving panel. */
+       waved, and never spends half its life gray. steps(1) keeps the edges hard;
+       a smooth slide would smear into gray again on a moving panel. */
     animation: rm-checker-wave 0.45s steps(1) infinite;
   }
   @keyframes rm-checker-wave {

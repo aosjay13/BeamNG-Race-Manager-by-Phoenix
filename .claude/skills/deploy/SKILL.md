@@ -18,7 +18,7 @@ Useful flags: `--dry-run` (say what it would do, write nothing), `--build-only`
 ## Before deploying
 
 Run the suites. A deploy that installs a broken build costs a server restart and
-a round of confusing live behaviour:
+a round of confusing live behavior:
 
 ```bash
 for f in tests/*.lua; do lua "$f" || echo "FAILED: $f"; done

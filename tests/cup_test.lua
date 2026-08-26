@@ -250,7 +250,7 @@ bootPlugin()
 -- 1. Disabled, the cup does not exist.
 --
 -- The default has to be total inertness: a server that never touches this
--- feature must not gain a file, a table or a line of behaviour.
+-- feature must not gain a file, a table or a line of behavior.
 -- ---------------------------------------------------------------------------
 runRace(1, { 0, 1, 2, 3 })
 check(readCup() == nil, 'a race with no cup running writes no cup file at all')
@@ -699,7 +699,7 @@ local function raceWithRetirement()
   -- Past the hold at the flag: the round is banked when the session closes.
   for _ = 1, 70 do RM_Tick() end
   -- Back for the next one. The guest name is unchanged, so the roster
-  -- recognises him and hands his display name (and his entry) straight back.
+  -- recognizes him and hands his display name (and his entry) straight back.
   RM_onPlayerJoin(1)
 end
 
@@ -868,7 +868,7 @@ check(driver(1) ~= nil and driver(1).alias == nil, 'the returning driver is unas
 runQuali(1, { [0] = 95.0, [1] = 90.0, [2] = 92.0, [3] = 99.0 })
 check(#readCup().pendingQuali > 0, 'qualifying is held for the race that follows')
 
--- The admin recognises them BEFORE the race, which is the whole point of the
+-- The admin recognizes them BEFORE the race, which is the whole point of the
 -- panel: it should cost them nothing.
 if ryderId then RM_onCupBindDriver(ADMIN, '{"pid":1,"entryId":' .. ryderId .. '}') end
 check(driver(1).alias == 'Ryder', 'and is assigned to their saved driver')

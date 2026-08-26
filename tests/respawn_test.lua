@@ -164,7 +164,7 @@ local function serverState(t) t.rmProtocol = 2; handlers['RM_Update'](t) end
 -- gain and a parked car on the racing line is an obstacle for everyone still
 -- running. What was wrong was everything AROUND that: the camera was forced into
 -- freecam and re-forced every second, and the whole field was respawned back
--- onto the few metres of road they had all just been removed from.
+-- onto the few meters of road they had all just been removed from.
 --
 -- The grid this driver was given, so the respawn has a slot to go to.
 handlers['RM_ApplyLayout']({
@@ -229,8 +229,8 @@ check(freeCam == false, 'still without the mod ever touching the camera mode')
 -- THE WELD FIX IS NOW MOOT, and that is worth recording rather than deleting.
 --
 -- A race used to remove cars as they took the flag, so every snapshot sat within
--- a few metres of the start/finish line -- and respawning each car at its own
--- snapshot put the whole field back into that same few metres, inside each
+-- a few meters of the start/finish line -- and respawning each car at its own
+-- snapshot put the whole field back into that same few meters, inside each
 -- other. The grid slots existed to spread them out again. Nothing is removed and
 -- nothing is respawned now, so there is no pile to avoid and no slot to stand
 -- anyone on: every car is already where its driver left it, spaced by having

@@ -276,7 +276,7 @@ check(takeMsg and takeMsg.success == false
 -- 4. Assigning carries the driver's points with them.
 --
 -- A driver who reconnects mid-cup scores under a placeholder until an admin
--- recognises them. Assigning has to move that, or an admin who gets to them
+-- recognizes them. Assigning has to move that, or an admin who gets to them
 -- after a race has stranded everything they won.
 -- ---------------------------------------------------------------------------
 RM_onCupStart(9, '{"name":"Roster Cup"}')
@@ -305,7 +305,7 @@ check(placeholder ~= nil, 'an unassigned driver is scored under a placeholder en
 check(placeholder.provisional == true, 'which is marked a placeholder, not a claim')
 check(cupTotal(placeholder.id) == 30, 'and holds the points they won')
 
--- Now the admin recognises them. Ryder's entry is free -- nobody is on it.
+-- Now the admin recognizes them. Ryder's entry is free -- nobody is on it.
 local ryderId = entryNamed('Ryder').id
 assign(1, ryderId)
 check(driver(1).alias == 'Ryder', 'the admin assigns them to the right driver')

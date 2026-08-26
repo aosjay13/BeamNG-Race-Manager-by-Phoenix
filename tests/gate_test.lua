@@ -6,14 +6,14 @@
 -- BeamNG GE environment and cannot be dofile'd here). A checkpoint is an
 -- upright rectangle centered on wp.x/y/z, standing perpendicular to the
 -- heading (hx, hy), with local axes:
---   forward f = (hx, hy)   the direction the car must be travelling
+--   forward f = (hx, hy)   the direction the car must be traveling
 --   lateral r = (hy, -hx)  span = width
 --   up      z              span = height  (covers banking)
 -- The gate scores when the frame-to-frame segment crosses the rectangle's
 -- plane -- in EITHER direction unless the gate is marked one-way -- and the
 -- intersection lands inside the width/height extents. Returns (crossed,
 -- backwards); the second value is what lets a respawn face the way the car was
--- travelling rather than the way a shared gate happens to point.
+-- traveling rather than the way a shared gate happens to point.
 local function rectCrossesGate(wp, prev, cur, w, h, d)
   local fx, fy = wp.hx, wp.hy
 
@@ -40,7 +40,7 @@ end
 -- Default rectangle: 20 wide, and 5 up / 5 down about the placement point.
 --
 -- These cases were written when height was one number meaning the FULL span,
--- centred, so the 10 they assumed is spelled out here as the 5 and 5 it always
+-- centerd, so the 10 they assumed is spelled out here as the 5 and 5 it always
 -- was. Every expectation below is unchanged, which is the point: splitting the
 -- vertical in two must not move a single gate that already exists.
 local W, H, D = 20, 5, 5
@@ -135,7 +135,7 @@ expect(rectCrossesGate(gate, P(12, 3), P(12, -3), 30, 5, 5) == true,
 -- ---------------------------------------------------------------------------
 -- Height is UP, depth is DOWN, and they are independent
 -- ---------------------------------------------------------------------------
--- A gate used to be one height CENTRED on the point it was placed at, so making
+-- A gate used to be one height CENTERD on the point it was placed at, so making
 -- it tall enough to see buried an equal amount of it under the road. Reported
 -- from under the map, looking up at gates hanging below the terrain.
 --
@@ -145,9 +145,9 @@ expect(rectCrossesGate(gate, P(0, -3, 110), P(0, 3, 110), 20, 12, 1) == true,
 expect(rectCrossesGate(gate, P(0, -3, 113), P(0, 3, 113), 20, 12, 1) == false,
   'and one above the top bar does not')
 expect(rectCrossesGate(gate, P(0, -3, 99.5), P(0, 3, 99.5), 20, 12, 1) == true,
-  'half a metre below still scores: depth is 1')
+  'half a meter below still scores: depth is 1')
 expect(rectCrossesGate(gate, P(0, -3, 98), P(0, 3, 98), 20, 12, 1) == false,
-  'two metres below does not, even though the gate reaches 12 m the other way')
+  'two meters below does not, even though the gate reaches 12 m the other way')
 
 -- The old shape is still expressible, which is what every saved layout becomes.
 expect(rectCrossesGate(gate, P(0, -3, 104), P(0, 3, 104), 20, 5, 5) == true,

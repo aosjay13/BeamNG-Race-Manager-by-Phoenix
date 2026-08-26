@@ -5,7 +5,7 @@
 -- Why this is its own file: it is the only suite that cares what the CLOCK read
 -- when something happened. positions_test drives the same handlers and never
 -- advances race.time at all, because the running order it checks is built from
--- laps, checkpoints and metres and none of those is a time. Sharing its world
+-- laps, checkpoints and meters and none of those is a time. Sharing its world
 -- would have meant every existing check running against a clock that suddenly
 -- moves.
 --

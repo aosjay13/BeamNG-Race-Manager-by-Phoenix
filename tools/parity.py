@@ -3,7 +3,7 @@
 
 Captures the whole suite's output, and compares it to a capture taken before
 the change. A pure refactor must produce a byte-identical result; anything
-that differs is either a behaviour change or a bug, and either way it is
+that differs is either a behavior change or a bug, and either way it is
 something to look at rather than something to explain away.
 
     python tools/parity.py before      # on the unmodified tree

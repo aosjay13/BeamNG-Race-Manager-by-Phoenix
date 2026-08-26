@@ -145,7 +145,7 @@ end
 -- is QUEUED so a whole field can be ghosted and staggered rather than landing on
 -- one another. Pumping a few very short frames here runs this client's turn in
 -- that queue, and the steps are deliberately tiny -- the placement teleport is
--- recognised as our own for TUNE-sized window afterwards, and burning that
+-- recognized as our own for TUNE-sized window afterwards, and burning that
 -- window in the harness would make the echo look like a driver reset.
 local function gridAssign(slot, order, count)
   handlers['RM_GridAssign']({ slot = slot, order = order, count = count })
@@ -500,13 +500,29 @@ veh.vx, veh.vy, veh.vz = 0, 0, 0
 -- stopped matching after a game update renamed vehicle parts.
 clearLog()
 RM.onVehicleSpawned(veh.id)
-local report = nil
-for _, e in ipairs(sent) do
-  if e.event == 'RM_VehicleConfig' then report = e.payload end
+
+-- NOT ON THE SPAWN FRAME. BeamNG has not finished loading the vehicle's parts
+-- when the object appears, so getConfig() answers with nothing and the
+-- signature comes out as 'model=X|parts=' - which matches no Garage List entry
+-- and got the car deleted as soon as the deletion started working. The spawn
+-- arms the poll; the poll asks once the answer is knowable.
+local function configReport()
+  local found = nil
+  for _, e in ipairs(sent) do
+    if e.event == 'RM_VehicleConfig' then found = e.payload end
+  end
+  return found
 end
-check(report ~= nil, 'the vehicle configuration is reported to the server')
+check(configReport() == nil, 'nothing is declared on the frame the vehicle appears')
+frames(1.2)
+local report = configReport()
+check(report ~= nil, 'the vehicle configuration is reported once the poll comes round')
+check(report.partsSig == 'model=etk800|parts=body=etk800_body',
+  'the parts half is sent separately, so tuning can be left free')
+check(report.sig == report.partsSig .. '|vars=camber=-1.5000',
+  'and the full signature is still the parts half plus the tuning')
 check(report.label == 'etk800 - Cup Spec',
-  'the setup is labelled with its real name, not the .pc filename stem')
+  'the setup is labeled with its real name, not the .pc filename stem')
 check(report.game == '0.39.0.0', 'and the report carries the BeamNG build')
 
 -- Ghost qualifying walks the spawned cars through getAllVehicles() and fades
