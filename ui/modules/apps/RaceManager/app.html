@@ -17,6 +17,21 @@
   <div class="rm-header" ng-if="!minimalMode()">
     <span class="rm-title">RACE MANAGER</span>
     <span class="rm-phase" ng-class="'rm-phase-' + phase">{{ phaseLabel() }}</span>
+    <!-- WHAT IS LOCKED RIGHT NOW, for an admin. Half the editor controls gray
+         out while a session runs, and without this the only thing saying why is
+         the controls being gray -- which reads as the app having broken rather
+         than as a rule. Three states, because the grid is genuinely its own:
+         the field is placed and frozen so the TRACK is locked, but the rules
+         are not and the server has never thought they were. -->
+    <span class="rm-mode-badge" ng-if="isAdmin"
+          ng-class="sessionRunning() ? (canSetRules() ? 'rm-mode-grid' : 'rm-mode-running') : 'rm-mode-config'"
+          title="{{ !sessionRunning()
+            ? 'No session running. The track and the rules can both be changed.'
+            : (canSetRules()
+               ? 'On the grid. The track is locked because cars are standing on it, but laps, resets, the joker and the qualifying rules can still be changed.'
+               : 'A session is running. Track and rule changes are locked until it ends.') }}">
+      {{ !sessionRunning() ? 'CONFIG' : (canSetRules() ? 'ON GRID' : 'RUNNING') }}
+    </span>
     <span class="rm-wp-progress" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">CP {{ nextWp }}/{{ routeWaypoints.length }}</span>
     <!-- Live distance to your own next checkpoint (the third position metric) -->
     <span class="rm-dist" ng-if="phase === 'racing' && progress && progress.dist != null">{{ formatDistance(progress.dist) }}</span>
@@ -361,24 +376,6 @@
     </div>
   </div>
 
-  <!-- ================= Mode tabs (admin only) ============================
-       Race and Derby are two independent game modes. They used to share one
-       flat tab strip, with the race session controls and the track layout
-       picker pinned above all of it - so an admin setting up a derby was
-       looking at a Load Layout button for a race, and the Derby tab read as one
-       more race panel. Everything below this bar belongs to the mode picked
-       here: its controls, and its own editor. -->
-  <div class="rm-mode-tabs" ng-if="isAdmin">
-    <button class="rm-btn rm-mode-tab" ng-class="{'rm-mode-tab-active': isMode('race')}"
-            ng-click="selectMode('race')"
-            title="Circuit racing: session controls, rules, the garage and the track editor">🏁 Race</button>
-    <button class="rm-btn rm-mode-tab" ng-class="{'rm-mode-tab-active': isMode('derby')}"
-            ng-click="selectMode('derby')"
-            title="Demo Derby: arena, rules, standings and the arena editor">💥 Derby</button>
-    <button class="rm-btn rm-mode-tab" ng-class="{'rm-mode-tab-active': isMode('admin')}"
-            ng-click="selectMode('admin')"
-            title="Master password and results housekeeping">⚙ Admin</button>
-  </div>
 
   <!-- ================= Session controls (race mode, admin only) ==========
        These stay outside the tab bar on purpose: they are the buttons an
@@ -421,9 +418,13 @@
        and opening the editor is what replaces the race checkpoint visuals with
        the authoring ones. Building layouts stays in the editor; choosing one
        to race belongs next to Generate Grid and Start Countdown. It is a RACE
-       layout, though, so it lives in race mode with the rest of them - this
-       row being visible on the Derby tab is exactly the mixing the mode bar
-       above exists to end. -->
+       layout, though, so it lives in race mode with the rest of them, and the
+       Derby tab puts the panel in derby mode - so this row is gone while a
+       derby is being set up, which is the mixing that mattered.
+
+       IT KEEPS ITS ROW in the main flow, deliberately, and it is the one place
+       the tab fold did not reclaim height. Behind the Track tab it would cost a
+       click on the critical path of every single race. -->
   <div class="rm-controls rm-controls-layout" ng-if="isAdmin && isMode('race')">
     <span class="rm-controls-label">Track<span ng-if="layoutMap">: {{ layoutMap }}</span></span>
     <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': layoutDropdownOpen}">
@@ -506,66 +507,66 @@
     </button>
   </div>
 
-  <!-- ================= Sub-tab bar =======================================
-       Every admin panel used to stack vertically, which overflowed the app
-       window - .rm-root is overflow:hidden, so whatever ran past the bottom
-       edge was simply unreachable. One panel shows at a time now, and the
-       body below scrolls as a safety net for the tall ones.
-       The set shown depends on the mode picked above. -->
-  <div class="rm-admin-tabs" ng-if="isAdmin && isMode('race')">
-    <!-- WHICH MODE THE PANEL IS IN, said out loud.
-         Half the editor controls below gray out while a session is running, and
-         without this the only thing telling an admin why is the controls being
-         gray - which reads as the app having broken rather than as a rule. It
-         sits first in the tab row because that is where the eye lands before it
-         reaches the control that is not responding. -->
-    <!-- Three states, because the grid is genuinely its own: the field is
-         placed and frozen, so the TRACK is locked, but the rules are not and
-         the server has never thought they were. A badge that said everything
-         was locked there would be describing controls that plainly still
-         work. -->
-    <span class="rm-mode-badge"
-          ng-class="sessionRunning() ? (canSetRules() ? 'rm-mode-grid' : 'rm-mode-running') : 'rm-mode-config'"
-          title="{{ !sessionRunning()
-            ? 'No session running. The track and the rules can both be changed.'
-            : (canSetRules()
-               ? 'On the grid. The track is locked because cars are standing on it, but laps, resets, the joker and the qualifying rules can still be changed.'
-               : 'A session is running. Track and rule changes are locked until it ends.') }}">
-      {{ !sessionRunning() ? 'CONFIG' : (canSetRules() ? 'ON GRID' : 'RUNNING') }}
-    </span>
+  <!-- ================= Tab bar (admin only) ==============================
+       ONE ROW, where there used to be two. The mode row and the sub-tab row
+       were answering the same question -- which panel am I looking at -- so an
+       admin picked twice to reach one place and paid a row of height for each
+       question. `mode` is now a consequence of the tab (see TAB_MODE in app.js)
+       and only the derby is a mode in any real sense: it swaps the session
+       controls and the board underneath.
+
+       Two duplications went with the fold. Cup was listed under Race AND Derby
+       purely because it had to exist in both modes. And "editor" meant the
+       checkpoint editor or the arena editor depending on where you were, which
+       is a name that only works while something else disambiguates it -- the
+       race editor is under Track now and the arena editor under Derby, beside
+       the controls each belongs to.
+
+       LABELS ARE SHORT ON PURPOSE. Seven tabs have to hold one line at the
+       app's default 560px or the fold buys nothing; "Quali & Grid" was the
+       widest tab in the old row and is simply Grid. -->
+  <div class="rm-admin-tabs" ng-if="isAdmin && !setupHidden()">
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('race')}"
             ng-click="selectAdminTab('race')"
             title="Race distance, reset ruleset and the joker lap">Race</button>
-    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('quali')}"
-            ng-click="selectAdminTab('quali')"
-            title="Qualifying rules and how the starting grid is filled">Quali &amp; Grid</button>
-    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('cup')}"
-            ng-click="selectAdminTab('cup')"
-            title="Championship points across several races: scoring, bonuses and standings">Cup <span class="rm-tab-count" ng-if="cup.enabled">R{{ cup.round }}</span></button>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('grid')}"
+            ng-click="selectAdminTab('grid')"
+            title="Qualifying rules and how the starting grid is filled">Grid</button>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('track')}"
+            ng-click="selectAdminTab('track')"
+            title="Track layouts, the checkpoint editor, the starting grid and free practice">Track <span class="rm-tab-count" ng-if="routeWaypoints.length">{{ routeWaypoints.length }}</span></button>
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('garage')}"
             ng-click="selectAdminTab('garage')"
             title="Allowed vehicles and setups">Garage <span class="rm-tab-count" ng-if="garage.length">{{ garage.length }}</span></button>
-    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('editor')}"
-            ng-click="selectAdminTab('editor')"
-            title="Checkpoint editor, starting grid and saved track layouts">Race Editor <span class="rm-tab-count" ng-if="routeWaypoints.length">{{ routeWaypoints.length }}</span></button>
-  </div>
-  <div class="rm-admin-tabs" ng-if="isAdmin && isMode('derby')">
-    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('derby')}"
-            ng-click="selectAdminTab('derby')"
-            title="Derby rules, entry and the live standings">Derby</button>
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('cup')}"
             ng-click="selectAdminTab('cup')"
             title="Championship points across several races and derbies: scoring, bonuses and standings">Cup <span class="rm-tab-count" ng-if="cup.enabled">R{{ cup.round }}</span></button>
-    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('editor')}"
-            ng-click="selectAdminTab('editor')"
-            title="Arena boundary, start grid and saved arenas">Derby Editor <span class="rm-tab-count" ng-if="derby.boundaryCount">{{ derby.boundaryCount }}</span></button>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('derby')}"
+            ng-click="selectAdminTab('derby')"
+            title="Demo Derby: rules, entry, live standings and the arena editor">Derby <span class="rm-tab-count" ng-if="derby.boundaryCount">{{ derby.boundaryCount }}</span></button>
+    <!-- A GEAR, NOT A WORD. The master password and the results housekeeping
+         are touched about twice a season, and a full-width label for them is
+         the row's whole margin at 560px. -->
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('admin')}"
+            ng-click="selectAdminTab('admin')"
+            title="Master password and results housekeeping">⚙</button>
+  </div>
+
+  <!-- The setup body is folded away for the session. One click brings it back
+       for as long as this session lasts (see setupOpen). -->
+  <div class="rm-setup-strip" ng-if="isAdmin && setupHidden()">
+    <span>Setup hidden while the session runs</span>
+    <button class="rm-btn rm-btn-mini" ng-click="toggleSetup()"
+            title="Show the settings and editor panels for this session">Show ▾</button>
+    <button class="rm-btn rm-btn-mini" ng-click="toggleAutoSlim()"
+            title="Stop hiding the setup panels during a session. Remembered.">Keep open</button>
   </div>
 
   <!-- ================= Admin tab body (scrolls) ========================== -->
   <div class="rm-admin-body" ng-if="isAdmin && !broadcastMode()">
 
   <!-- ================= Race settings ================= -->
-  <div class="rm-settings" ng-if="isMode('race') && isAdminTab('race')">
+  <div class="rm-settings" ng-if="isAdminTab('race')">
     <!-- Laps mean nothing on a sprint stage, so the field says so rather than
          sitting there accepting a number that will be ignored. The setting is
          kept, not clamped, so switching a circuit layout back in restores it.
@@ -655,7 +656,7 @@
   </div>
 
   <!-- ================= Qualifying &amp; grid settings ===================== -->
-  <div class="rm-settings" ng-if="isMode('race') && isAdminTab('quali')">
+  <div class="rm-settings" ng-if="isAdminTab('grid')">
     <span class="rm-setting" title="Rivals stop being obstacles in qualifying, so traffic can't ruin a lap.">
       <label>Ghost quali</label>
       <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': ghostQuali}"
@@ -1228,7 +1229,7 @@
   </div>
 
   <!-- ================= Garage list (Module 4: vehicle & setup locking) ==== -->
-  <div class="rm-garage" ng-if="isMode('race') && isAdminTab('garage')">
+  <div class="rm-garage" ng-if="isAdminTab('garage')">
     <div class="rm-garage-head">
       <span class="rm-garage-title">Garage: allowed vehicles &amp; setups</span>
       <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': garageEnforce}"
@@ -1303,7 +1304,7 @@
   </div>
 
   <!-- ================= Checkpoint editor ================= -->
-  <div class="rm-editor" ng-if="isMode('race') && isAdminTab('editor')">
+  <div class="rm-editor" ng-if="isAdminTab('track')">
     <!-- Which route is being built: the main lap or the rallycross joker -->
     <div class="rm-route-tabs">
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-route-tab-active': editorTarget === 'main'}"
@@ -1785,7 +1786,7 @@
   </div>
 
   <!-- ================= DEMO DERBY (isolated module) ================= -->
-  <div class="rm-derby" ng-if="isMode('derby') && isAdminTab('derby')">
+  <div class="rm-derby" ng-if="isAdminTab('derby')">
     <div class="rm-derby-title">
       Demo Derby
       <span class="rm-derby-phase rm-derby-phase-{{ derby.phase }}">{{ derbyPhaseLabel() }}</span>
@@ -1854,7 +1855,7 @@
        cannot move under a field that is already standing on its grid - so the
        rows go read-only rather than disappearing, and the admin can still read
        the arena off during a live derby. -->
-  <div class="rm-derby rm-derby-editor" ng-if="isMode('derby') && isAdminTab('editor')">
+  <div class="rm-derby rm-derby-editor" ng-if="isAdminTab('derby')">
     <div class="rm-derby-title">
       Arena
       <span class="rm-derby-markers">{{ derby.boundaryCount }} boundary marker{{ derby.boundaryCount === 1 ? '' : 's' }}</span>
@@ -2110,7 +2111,7 @@
   </div>
 
   <!-- ================= Admin housekeeping ================================= -->
-  <div class="rm-adminbar-panel" ng-if="isMode('admin')">
+  <div class="rm-adminbar-panel" ng-if="isAdminTab('admin')">
     <div class="rm-adminbar">
       <span class="rm-adminbar-label">Change password</span>
       <input type="text" class="rm-login-input" ng-model="authUi.newPassword"
@@ -3113,35 +3114,6 @@
   /* One admin panel at a time. Before this, every panel stacked and the app
      window (overflow:hidden) simply clipped whatever ran past the bottom edge,
      with no scrollbar anywhere to reach it. */
-  /* Mode bar: the level above the sub-tabs. Deliberately heavier than they are
-     -- taller, bolder, its own top border -- because it switches which game
-     mode the whole panel below belongs to, and reading it as just another tab
-     is exactly the confusion that let a Load Layout button sit over a derby. */
-  .rm-mode-tabs {
-    display: flex;
-    align-items: stretch;
-    gap: 4px;
-    padding: 4px 8px 0;
-    background: rgba(0, 0, 0, 0.25);
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
-  }
-  .rm-mode-tab {
-    flex: 1;
-    justify-content: center;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.4px;
-    padding: 5px 8px;
-    border-bottom: 2px solid transparent;
-    border-radius: 4px 4px 0 0;
-    color: #9aa0a6;
-  }
-  .rm-mode-tab-active {
-    background: rgba(255, 102, 0, 0.22);
-    border-color: rgba(255, 102, 0, 0.5);
-    border-bottom-color: #ff6600;
-    color: #ffb380;
-  }
   .rm-admin-tabs {
     display: flex;
     align-items: center;
@@ -3219,6 +3191,40 @@
   }
   /* Admin only: the driver (minimal) view is deliberately left alone. */
   .rm-admin .rm-table-wrap { min-height: 84px; }
+
+  /* ------------------------------------------------------------------------
+     THE BOARD COMES UP, THE SETUP GOES DOWN -- for admins only.
+
+     The leaderboard was the last child in the DOM, after every admin panel, so
+     it took whatever was left: about a tenth of the panel, with a race running
+     in it. Everything named below is already a direct child of .rm-root, which
+     is a flex column, so `order` re-stacks them without moving a line of
+     markup -- no ng-if, no binding and none of the editor wiring has to know.
+     Moving 180 lines of table to do the same thing is the version of this
+     change that breaks something.
+
+     Reading order becomes: header, entry, controls and the track picker, then
+     the BOARD, then the tabs and whatever panel is open under them. Practice
+     lands last, which is where a between-sessions control belongs -- it used to
+     sit between the entry bar and the controls an admin reaches for.
+     ------------------------------------------------------------------------ */
+  .rm-admin > .rm-table-wrap  { order: 1; }
+  .rm-admin > .rm-admin-tabs  { order: 2; }
+  .rm-admin > .rm-setup-strip { order: 2; }
+  .rm-admin > .rm-admin-body  { order: 3; }
+  .rm-admin > .rm-practice    { order: 4; }
+
+  /* The strip that stands in for the setup panels while a session runs. */
+  .rm-setup-strip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    font-size: 10px;
+    color: #9aa0a6;
+  }
+  .rm-setup-strip button:first-of-type { margin-left: auto; }
   /* Gate sizing sits inside the editor panel, so it drops the settings row's
      own divider and outer padding. */
   .rm-editor-defaults {

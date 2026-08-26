@@ -1815,23 +1815,54 @@ they survive a reconnect and a server restart like everything else.
 > what actually happened. The cup's round count is deliberately left alone;
 > renumbering later rounds to close the gap would hide the correction.
 
-## Race and Derby are separate
+## The admin panel
 
-The admin panel is grouped by **mode** first. The bar under the session header
-picks one, and everything below it belongs to that mode:
+**One tab row**, and the panel a tab opens decides everything under it:
 
-| Mode | Controls above the tabs | Sub-tabs |
-|---|---|---|
-| **🏁 Race** | Start Quali, Generate Grid, Start Countdown, End Session, Reset, and the **Track** layout picker | Race · Quali & Grid · Garage · **Race Editor** |
-| **💥 Derby** | Form Up, Start Derby, End Derby, and the live phase | Derby · **Derby Editor** |
-| **⚙ Admin** | - | Master password, results housekeeping |
+| Tab | What it holds |
+|---|---|
+| **Race** | Race length, reset ruleset, joker lap |
+| **Grid** | Qualifying rules and how the starting grid is filled |
+| **Track** | The checkpoint editor, the starting-grid builder, and saved layouts |
+| **Garage** | Allowed vehicles and setups |
+| **Cup** | Championship scoring, bonuses and standings |
+| **Derby** | Demo Derby rules, entry, live standings and the arena editor |
+| **⚙** | Master password, results housekeeping |
 
-This is a change from earlier builds, where every panel shared one flat tab
-strip and the race session controls sat above all of them. That put the **Track
-layout picker over the Derby tab** - a *Load Layout* button for a race nobody was
-setting up - and made Derby read as one more race panel rather than the separate
-game mode it is. Nothing was removed in the regrouping: every control is still
-there, under the mode it belongs to.
+**Session controls stay above the tabs** and are never one click away: Start
+Quali, Generate Grid, Start Countdown, End Session, Reset, and the **Track
+layout picker**. Selecting **Derby** swaps them for Form Up, Start Derby and End
+Derby, and swaps the board underneath for the derby standings - so a *Load
+Layout* button never sits over a derby nobody is setting up.
+
+This replaces a two-row arrangement: a mode bar (Race / Derby / Admin) over a
+per-mode sub-tab strip. Both rows were answering the same question - which panel
+am I looking at - so an admin picked twice to reach one place and paid a row of
+height for each question. Two duplications went with the fold: **Cup** was
+listed under Race *and* Derby purely because it had to exist in both modes, and
+**Editor** meant the checkpoint editor or the arena editor depending on where
+you were. The race editor is under **Track** now and the arena editor under
+**Derby**, beside the controls each belongs to.
+
+Nothing was removed. The tab you were last on is remembered.
+
+### The board sits above the setup
+
+The leaderboard used to be the last thing in the panel, under every settings and
+editor panel, so it took whatever height was left - about a tenth of the app,
+with a race running in it. It now sits directly under the session controls, and
+the setup panels scroll below it.
+
+**And it folds away entirely while a session runs.** Once the lights go out, an
+admin's settings and editor panels are replaced by a one-line strip, and the
+board fills the panel. Drivers have had this since free practice shipped (their
+panel becomes the board and their own numbers); admins never did, and an admin
+is the one person who cannot simply close the app.
+
+The strip carries two ways out: **Show** opens the setup for the session in
+front of you (and closes again when the session changes), and **Keep open**
+turns the behavior off for good. Like the collapse and the opacity, it is
+remembered.
 
 Both modes have an **Editor** sub-tab, and each one is a *render gate* as well as
 a panel: opening it is what puts that mode's authoring visuals in the world, and
@@ -1844,23 +1875,19 @@ race (or qualifying) table; in Derby mode it is the **derby standings**, on both
 derby sub-tabs - so the field stays on screen while you are building an arena.
 There is one copy of each board in the app, not one per panel.
 
-A **driver's** leaderboard is not driven by the mode bar, which they never see:
+A **driver's** leaderboard is not driven by the tab row, which they never see:
 it follows the session. Once a derby forms up, their board is the derby
 standings, through the countdown and the derby itself.
-
-The mode you were last in, and the sub-tab you were last on **within each mode**,
-are both remembered - switching to Derby and back lands on the race panel you
-left.
 
 ## Demo Derby (parallel game mode)
 
 A completely separate last-man-standing mode, isolated from the circuit
 racing systems above (own server events, own UI panel, own results files
-running a derby never touches qualifying/race state). Pick **💥 Derby** on the
-mode bar; its controls sit above the tab strip and its authoring tools are on
-the **Derby Editor** sub-tab. Race controls are not shown while you are in it,
-and derby controls are not shown while you are in Race - see
-[Race and Derby are separate](#race-and-derby-are-separate).
+running a derby never touches qualifying/race state). Pick the **Derby** tab;
+its controls take the place of the race controls above the tab row, and its
+arena editor is on the same tab. Race controls are not shown while you are on
+it, and derby controls are not shown anywhere else - see
+[The admin panel](#the-admin-panel).
 
 1. **Set the rules**: *OOB timer* (seconds allowed outside the arena,
    default 5), *Demolished timer* (seconds a car may sit stopped before

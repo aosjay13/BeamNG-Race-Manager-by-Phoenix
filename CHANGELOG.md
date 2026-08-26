@@ -6,6 +6,59 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.9.8 - One tab row, and the board above the setup
+
+### Changed
+
+- **The admin panel has one tab row instead of two.** A mode bar (Race / Derby /
+  Admin) sat over a per-mode sub-tab strip, and both rows were answering the same
+  question - which panel am I looking at. An admin picked twice to reach one
+  place and paid a row of height for each question.
+
+  | Now | Was |
+  |---|---|
+  | Race · Grid · Track · Garage · Cup · Derby · ⚙ | 🏁 Race / 💥 Derby / ⚙ Admin, then Race · Quali & Grid · Cup · Garage · Race Editor |
+
+  Two duplications went with the fold. **Cup** was listed under Race *and* Derby
+  purely because it had to exist in both modes. And **Editor** meant the
+  checkpoint editor or the arena editor depending on which mode you were in,
+  which is a name that only works while something else carries the meaning - the
+  race editor is under **Track** now, the arena editor under **Derby**.
+
+  Selecting Derby still swaps the session controls and the board, exactly as the
+  mode did; the mode is a consequence of the tab rather than a second choice.
+  Opening **⚙** no longer takes the race controls off screen, which making it a
+  third mode used to do.
+
+- **The leaderboard sits above the setup panels.** It was the last child in the
+  DOM, after every admin panel, so it took whatever was left - about a tenth of
+  the app with a race running in it. Done with flex `order` rather than moving
+  180 lines of table markup: every one of those blocks is already a direct child
+  of the panel's flex column, so the stack changes and no binding, guard or
+  editor wiring has to know.
+
+- **Setup folds away while a session runs.** Admins get what drivers have had
+  since practice shipped: once the lights go out the panel is the board. A
+  one-line strip replaces the settings, with **Show** for this session and
+  **Keep open** to turn it off permanently. Remembered, like the collapse and
+  the opacity.
+
+- **The CONFIG / ON GRID / RUNNING badge moved to the header.** It is status, not
+  a destination, and at tab size in the tab row it read as a selected tab.
+
+- **Free practice moved to the bottom of an admin's panel.** It sat between the
+  race entry bar and the controls an admin reaches for during setup. Drivers are
+  untouched - they have no tabs and it is their only control, so it stays exactly
+  where it was for them.
+
+### Note
+
+The **Track layout picker keeps its row** above the tabs. The mockup put it
+under the Track tab and the comment sitting on the code argued the opposite,
+convincingly: picking a saved layout is part of starting a race, not authoring
+one, and behind a tab it would cost a click on the critical path of every race.
+It is the one row the fold did not reclaim.
+
 ## 0.9.7 - No more "lap 8 of 5", and American spelling throughout
 
 ### Fixed

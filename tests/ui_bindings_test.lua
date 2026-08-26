@@ -595,20 +595,23 @@ end
 -- the scoring table and derby points in every preset. An admin running an
 -- evening of derbies could see none of it without switching modes.
 --
--- So the panel is gated on the TAB alone. Both mode tab bars must offer the
--- button, or the tab is selectable in a mode with no way back to it.
+-- So the panel is gated on the TAB alone. It used to need a Cup button in BOTH
+-- mode tab bars, because a tab selectable in a mode with no way back to it is a
+-- panel you cannot reach. There is one tab row now, so there is one button --
+-- and duplicating it is the bug rather than the requirement.
 local cupButtons = 0
 for _ in html:gmatch('selectAdminTab%(\'cup\'%)') do
   cupButtons = cupButtons + 1
 end
-expect(cupButtons == 2,
-  'both the race and derby tab bars offer a Cup button (found ' .. cupButtons .. ')')
+expect(cupButtons == 1,
+  'the single tab row offers exactly one Cup button (found ' .. cupButtons .. ')')
 expect(html:find('ng-if="isAdminTab(\'cup\')"', 1, true) ~= nil,
   'the cup panel is gated on the tab alone, not on the mode')
 expect(html:find("isMode('race') && isAdminTab('cup')", 1, true) == nil,
   'and the old race-mode gate is gone rather than merely bypassed')
-expect(js:find('derby: { derby: true, cup: true, editor: true }', 1, true) ~= nil,
-  'derby mode lists cup as a selectable tab, so selectAdminTab cannot fall back')
+expect(js:find('var TABS = {', 1, true) ~= nil
+  and js:find('cup: true', 1, true) ~= nil,
+  'cup is a tab in the single row, so selectAdminTab cannot fall back off it')
 
 -- ---------------------------------------------------------------------------
 -- LMS / DM
@@ -942,13 +945,26 @@ for _, row in ipairs({ 'rm%-controls"', 'rm%-controls rm%-controls%-layout"' }) 
     'the ' .. row:gsub('%%', '') .. ' row is not scoped to race mode')
 end
 
--- Both modes have an Editor sub-tab, so a panel keyed on the tab name alone
--- would render both editors at once.
-for _, panel in ipairs({ 'rm%-editor', 'rm%-derby rm%-derby%-editor' }) do
+-- THE TWO EDITORS ARE TOLD APART BY THEIR TAB NAME NOW.
+--
+-- Both used to be called 'editor' and were disambiguated by the mode, which is
+-- a name that can only work while something else is carrying the meaning. With
+-- one tab row there is nothing else, so the race editor is 'track' and the
+-- arena editor is 'derby' -- and keying each panel on its own tab is enough.
+-- The old rule (every editor panel must name its mode) would now be asking for
+-- a mode that no longer decides anything.
+local EDITOR_TAB = {
+  ['rm%-editor']                  = "isAdminTab('track')",
+  ['rm%-derby rm%-derby%-editor'] = "isAdminTab('derby')",
+}
+for panel, wanted in pairs(EDITOR_TAB) do
   local cond = html:match('<div class="' .. panel .. '" ng%-if="([^"]*)"')
-  expect(cond ~= nil and cond:find('isMode(', 1, true) ~= nil,
-    'the ' .. panel:gsub('%%', '') .. ' panel does not name its mode')
+  expect(cond ~= nil and cond:find(wanted, 1, true) ~= nil,
+    'the ' .. panel:gsub('%%', '') .. ' panel is keyed on ' .. wanted)
 end
+-- ...and the two tab names are genuinely different, which is the whole point.
+expect(EDITOR_TAB['rm%-editor'] ~= EDITOR_TAB['rm%-derby rm%-derby%-editor'],
+  'the race editor and the arena editor answer to different tabs')
 
 -- Each editor is a render gate in Lua. Both have to be pushed, or closing one
 -- panel leaves its authoring furniture drawn in the world for every driver.

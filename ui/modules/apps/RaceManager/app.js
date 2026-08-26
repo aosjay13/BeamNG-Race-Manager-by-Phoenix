@@ -366,36 +366,38 @@ angular.module('beamng.apps')
       // tab, offering an admin a Load Layout button for a race they were not
       // setting up. Mode picks the world; the sub-tabs below pick the panel
       // within it.
-      var MODES = { race: true, derby: true, admin: true };
-      var MODE_TABS = {
-        // Cup sits under Race rather than beside it as a fourth mode: a cup is
-        // a property of a race night, not a parallel game mode the way a derby
-        // is, and it wraps the races that the other tabs here configure.
-        //
-        // It appears under Derby TOO, showing the same panel. A derby banks a
-        // cup round like a race does -- there is a derby column in the scoring
-        // table and derby points in every preset -- so an admin running an
-        // evening of derbies needs the standings and the adjustment controls
-        // without switching modes to reach them. Reported from a race night:
-        // the leaderboard was only reachable from the race side.
-        race:  { race: true, quali: true, cup: true, garage: true, editor: true },
-        derby: { derby: true, cup: true, editor: true },
-        admin: { admin: true }
-      };
-      var DEFAULT_TAB = { race: 'race', derby: 'derby', admin: 'admin' };
+      // ONE TAB ROW, and `mode` is derived from it rather than chosen
+      // separately.
+      //
+      // The mode row and the sub-tab row were answering the same question --
+      // which panel am I looking at -- so an admin picked twice to get to one
+      // place, and the two rows cost a row of height each. Folding them removes
+      // the second question and gives the leaderboard the space back.
+      //
+      // Two things fall out of the fold. `cup` was listed under Race AND Derby
+      // purely because it had to exist in both modes, and is now one tab. And
+      // `editor` meant two different panels depending on the mode you were in,
+      // which is a name that could only work while the mode was a separate
+      // choice; the race editor lives under `track` and the arena editor under
+      // `derby`, beside the controls each belongs to.
+      var TABS = { race: true, grid: true, track: true, garage: true,
+                   cup: true, derby: true, admin: true };
+      var DEFAULT_TAB = 'race';
 
-      function modeOf(value) { return MODES[value] ? value : 'race'; }
-      function adminTabOf(mode, value) {
-        return MODE_TABS[mode][value] ? value : DEFAULT_TAB[mode];
-      }
-      // Persisted so an admin returns to the panel they were working in - and
-      // per mode, so switching to Derby and back lands on the race panel they
-      // left rather than resetting to the first one.
-      // (loadPref/savePref are declared further down; both are hoisted function
-      // declarations, so calling them here is safe.)
-      $scope.mode = modeOf(loadPref('adminMode', 'race'));
-      $scope.adminTab = adminTabOf($scope.mode,
-        loadPref('adminTab.' + $scope.mode, DEFAULT_TAB[$scope.mode]));
+      // WHICH MODE A TAB PUTS THE PANEL IN. Only the derby is a mode in any
+      // real sense: it swaps the session controls and the board underneath.
+      // Everything else is a race, INCLUDING the admin tab -- opening the
+      // password panel is not a reason to take the race controls off screen,
+      // which is what making it a third mode used to do.
+      var TAB_MODE = { derby: 'derby' };
+
+      function tabOf(value) { return TABS[value] ? value : DEFAULT_TAB; }
+      function modeForTab(tab) { return TAB_MODE[tab] || 'race'; }
+
+      // Persisted so an admin returns to the panel they were working in. One
+      // key now, not one per mode: there is one row to remember a place in.
+      $scope.adminTab = tabOf(loadPref('adminTab', DEFAULT_TAB));
+      $scope.mode = modeForTab($scope.adminTab);
       $scope.isMode = function (mode) { return $scope.mode === mode; };
       $scope.isAdminTab = function (tab) { return $scope.adminTab === tab; };
 
@@ -459,10 +461,13 @@ angular.module('beamng.apps')
         // but the drawing it gates lives in the world and Lua only hears about
         // the panel -- so an admin broadcasting from the Editor tab would stream
         // gate rectangles and start-slot outlines over the race.
-        var editing = $scope.isAdmin && $scope.adminTab === 'editor'
-          && !$scope.broadcastMode();
-        var race  = editing && $scope.mode === 'race';
-        var derby = editing && $scope.mode === 'derby';
+        // TWO TABS NOW, not one tab in two modes. `editor` could only ever
+        // mean one thing at a time because the mode disambiguated it; with one
+        // row the race editor lives under `track` and the arena editor under
+        // `derby`, beside the controls each of them belongs to.
+        var editing = $scope.isAdmin && !$scope.broadcastMode();
+        var race  = editing && $scope.adminTab === 'track';
+        var derby = editing && $scope.adminTab === 'derby';
         bngApi.engineLua('raceManager.setEditorOpen(' + (!!race) + ')');
         bngApi.engineLua('raceManager.setDerbyEditorOpen(' + (!!derby) + ')');
       }
@@ -471,7 +476,7 @@ angular.module('beamng.apps')
       // state over its own channel.
       function afterTabChange() {
         pushEditorOpen();
-        if ($scope.mode === 'race' && $scope.adminTab === 'editor') { schedulePreview(); }
+        if ($scope.adminTab === 'track') { schedulePreview(); }
         if ($scope.mode === 'derby') {
           bngApi.engineLua('raceManager.derbyRequestState()');
         }
@@ -484,17 +489,22 @@ angular.module('beamng.apps')
           bngApi.engineLua('raceManager.cupRequestState()');
         }
       }
-      $scope.selectMode = function (mode) {
-        $scope.mode = modeOf(mode);
-        savePref('adminMode', $scope.mode);
-        $scope.adminTab = adminTabOf($scope.mode,
-          loadPref('adminTab.' + $scope.mode, DEFAULT_TAB[$scope.mode]));
+      // The one entry point. Kept named selectAdminTab because every caller in
+      // the template already says that, and because what it selects IS the tab
+      // -- the mode is a consequence.
+      $scope.selectAdminTab = function (tab) {
+        tab = tabOf(tab);
+        if ($scope.adminTab === tab) { return; }
+        $scope.adminTab = tab;
+        $scope.mode = modeForTab(tab);
+        savePref('adminTab', tab);
         afterTabChange();
       };
-      $scope.selectAdminTab = function (tab) {
-        $scope.adminTab = adminTabOf($scope.mode, tab);
-        savePref('adminTab.' + $scope.mode, $scope.adminTab);
-        afterTabChange();
+      // selectMode survives as a thin alias: a mode is now reached by opening
+      // the tab that puts the panel in it. Kept rather than deleted because the
+      // derby module and the console helpers both reach for it by name.
+      $scope.selectMode = function (mode) {
+        $scope.selectAdminTab(mode === 'derby' ? 'derby' : DEFAULT_TAB);
       };
 
       // Checkpoint editor state
@@ -1282,7 +1292,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.9.7';
+      var APP_BUILD = '0.9.8';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -1897,7 +1907,13 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.$on('RaceManagerUpdate', function (event, data) {
         if (!data) { return; }
         $scope.$evalAsync(function () {
+          var prevPhase = $scope.phase;
           $scope.phase = data.phase || 'waiting';
+          // The manual "show me the setup anyway" override belongs to the
+          // session it was opened during. Cleared on any phase change, so an
+          // admin who opened the settings mid-race to change one thing is not
+          // still looking at them through the next one.
+          if (prevPhase !== $scope.phase) { $scope.setupOpen = false; }
           $scope.flag = (data.flag === 'yellow' || data.flag === 'red') ? data.flag : 'green';
           // READ HERE, on the state broadcast, which is the one that arrives on a
           // clock. It was read only in the ROUTE handler, and that fires on
@@ -4058,6 +4074,33 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // ng-model needs a property to write through from an ng-if child scope,
       // and this is set by a click handler on the parent scope instead.
       $scope.hudCollapsed = loadPref('collapsed', false) === true;
+
+      // SETUP OUT OF THE WAY WHILE THE SESSION RUNS.
+      //
+      // A driver has had this since minimalMode() existed: once the lights go
+      // out their panel is the board and their own numbers. An admin never got
+      // it, and an admin is the one person who cannot close the app -- so they
+      // watched a race through a tenth of a panel with the settings that set it
+      // up filling the rest.
+      //
+      // A PREFERENCE, not a rule, and remembered like the collapse and the
+      // opacity beside it: an admin who wants the old behavior turns it off
+      // once. `setupOpen` is the manual override for the session in front of
+      // you, and it resets when the session does, so reopening the settings to
+      // change one thing does not leave them open for the next race.
+      $scope.autoSlim = loadPref('autoSlim', true) === true;
+      $scope.setupOpen = false;
+      $scope.toggleAutoSlim = function () {
+        $scope.autoSlim = !$scope.autoSlim;
+        savePref('autoSlim', $scope.autoSlim);
+      };
+      $scope.toggleSetup = function () { $scope.setupOpen = !$scope.setupOpen; };
+      // Is the setup body hidden right now? The tab row goes with it, because a
+      // row of tabs over nothing is a row of height buying nothing.
+      $scope.setupHidden = function () {
+        return $scope.isAdmin && $scope.autoSlim
+          && $scope.sessionLive() && !$scope.setupOpen;
+      };
       $scope.toggleCollapsed = function () {
         $scope.hudCollapsed = !$scope.hudCollapsed;
         savePref('collapsed', $scope.hudCollapsed);
