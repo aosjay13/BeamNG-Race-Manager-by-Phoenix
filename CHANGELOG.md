@@ -6,7 +6,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
-## 0.9.11 - A car shoved on the grid no longer floods the UI
+## 0.10.0 - A car shoved on the grid no longer floods the UI
 
 ### Fixed
 
