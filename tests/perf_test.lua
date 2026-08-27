@@ -157,6 +157,43 @@ check(pushTotal <= 6, string.format(
   'a second of countdown costs %d UI pushes (budget 6)', pushTotal))
 
 -- ---------------------------------------------------------------------------
+-- 2b. A HELD GRID, with a car drifting off its slot
+-- ---------------------------------------------------------------------------
+-- The grid hold is the one steady state with a NOTICE inside a per-frame
+-- function: a car off its slot is put back every frame (deliberately -- landing
+-- on the same anchor is idempotent, and a car whose freeze will not take must
+-- not be allowed to ratchet forward), and only the talking about it is
+-- throttled, on hold.correctLeft.
+--
+-- That throttle got twice as important when notices started reaching BeamNG's
+-- Messages HUD app as well as the app's own strip: every pushNotice is two
+-- pushes across the boundary now, not one. A regression here would be a driver
+-- on the grid taking a hundred and twenty pushes a second while the lights are
+-- still out -- the worst possible moment, and the one nothing else measures.
+--
+-- ui_message is deliberately NOT stubbed anywhere in this file. Without it
+-- hudMessage falls through to guihooks.trigger('Message', ...), which this
+-- harness counts like any other push -- so the HUD channel is inside every
+-- budget here rather than invisible to all of them.
+serverState({ phase = 'grid', sessionKind = 'race', totalLaps = 5,
+  maxResets = -1, flag = 'green', drivers = {} })
+handlers['RM_GridAssign']({ slot = 1, x = 0, y = 0, z = 0, hx = 0, hy = 1, hold = true })
+resetCounters()
+for _ = 1, 60 do
+  -- Shoved off the slot every frame, which is the worst case the hold sees.
+  veh.x = veh.x + 2
+  RM.onUpdate(1 / 60)
+end
+check(pushTotal <= 12, string.format(
+  'a second of a held grid with a drifting car costs %d UI pushes (budget 12): '
+    .. 'the correction runs per frame, the notice about it does not', pushTotal))
+check((pushes['Message'] or 0) <= 4, string.format(
+  'and reaches the Messages HUD app %d times (budget 4): a notice is two '
+    .. 'pushes now, so an unthrottled one costs double',
+  pushes['Message'] or 0))
+local heldPushes, heldMessages = pushTotal, pushes['Message'] or 0
+
+-- ---------------------------------------------------------------------------
 -- 3. The draw loop: two gates, and nothing rebuilt per frame
 -- ---------------------------------------------------------------------------
 serverState({ phase = 'racing', sessionKind = 'race', totalLaps = 5,
@@ -203,6 +240,8 @@ check(draws <= steadyDraws, string.format(
     .. 'circuit did (%d)', draws, steadyDraws))
 
 print(string.format('perf_test: %d checks, %d failures', checks, fails))
+print(string.format('  held grid: %d UI pushes/sec (%d to the Messages app)',
+  heldPushes, heldMessages))
 print(string.format('  racing: %d UI pushes/sec, %d draws/frame, %d allocs/frame',
   racingPushes, steadyDraws, steadyAllocs))
 if fails > 0 then os.exit(1) end

@@ -6,6 +6,44 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.9.11 - A car shoved on the grid no longer floods the UI
+
+### Fixed
+
+- **A held car off its slot pushed 120 UI updates a second.** The grid hold
+  corrects a drifting car every frame, deliberately: landing on the same slot is
+  idempotent, and a car whose freeze will not take must not ratchet forward
+  between corrections. Only the *talking about it* is meant to be rationed, and
+  on two of the three correction paths it was not.
+
+  The settle-window branch had no throttle at all, and it is the one a car being
+  shoved actually sits in - `hold.restore` re-arms the settle window every time
+  it runs, so the car never leaves that window and the notice fired on **every
+  frame**. The drift branch had a throttle it never armed.
+
+  That cost doubled when notices started reaching BeamNG's Messages HUD app in
+  0.9.1: one notice is two crossings of the Lua/CEF boundary now, and each wakes
+  an AngularJS digest over the whole template. 120 pushes a second, on the grid,
+  at the one moment a panel most needs to be responsive.
+
+  **Measured: 120/sec before, 6/sec after.** The corrections themselves are
+  unchanged - a car still gets put back every frame.
+
+  Drift corrections are also counted in `hold.corrections` now. They were
+  missing from the tally reported to the server, so a car being pushed around on
+  the grid reported none of it.
+
+### Added
+
+- **A frame-cost budget for the held grid.** `perf_test` measured a racing frame
+  and a countdown frame; the grid hold is the one steady state with a notice
+  inside a per-frame function, and nothing was watching it. Two budgets now: 12
+  pushes a second, and 4 of them to the Messages app.
+
+  `ui_message` is deliberately left unstubbed in that harness, so `hudMessage`
+  falls through to `guihooks.trigger` and the HUD channel is counted inside
+  every budget in the file rather than being invisible to all of them.
+
 ## 0.9.10 - The race clock stays put
 
 ### Fixed

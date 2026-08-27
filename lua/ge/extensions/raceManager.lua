@@ -225,7 +225,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.9.10'
+local RM_BUILD = '0.9.11'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -4251,8 +4251,28 @@ local function holdUpdate(dt)
       away = math.sqrt(ax * ax + ay * ay)
     end
     if away > TUNE.HOLD_DRIFT then
+      -- THROTTLED, on the same cooldown the other two correction paths use.
+      --
+      -- This one had no throttle at all, and it is the branch a car being
+      -- shoved on the grid actually sits in: hold.restore re-arms the settle
+      -- window every time it runs, so the car never leaves this window and the
+      -- notice fired on EVERY FRAME. Measured at 120 UI pushes a second -- one
+      -- notice is two crossings now (the app's strip and BeamNG's Messages
+      -- app), each waking a digest over the whole template, at the one moment
+      -- a panel most needs to be responsive.
+      --
+      -- The correction itself stays per frame, deliberately: landing on the
+      -- same slot is idempotent, and a car whose freeze will not take must not
+      -- ratchet forward between corrections. Only the talking is rationed.
+      local announce = hold.correctLeft <= 0
+      if announce then
+        hold.correctLeft = TUNE.HOLD_CORRECT_COOLDOWN
+        hold.corrections = hold.corrections + 1
+      end
       hold.restore(string.format('left the slot (%.2fm) before settling', away))
-      pushNotice('grid', 'Hold the car, the countdown has not finished')
+      if announce then
+        pushNotice('grid', 'Hold the car, the countdown has not finished')
+      end
       return
     end
     local waited = TUNE.HOLD_SETTLE_GRACE - hold.settleLeft
@@ -4281,7 +4301,23 @@ local function holdUpdate(dt)
       -- anchor every time is idempotent and a car whose freeze cannot be applied
       -- at all must not be allowed to ratchet forward between corrections. Only
       -- the talking about it is throttled.
+      --
+      -- AND THE THROTTLE HAS TO BE ARMED HERE, which it was not. This branch
+      -- read correctLeft and never set it, so `announce` was true on every
+      -- frame a car sat off its slot -- a driver being shoved on the grid cost
+      -- a notice at 60 Hz, and a notice is TWO pushes across the boundary now
+      -- (the app's own strip and BeamNG's Messages app), each waking a digest
+      -- over the whole template. Measured at 120 pushes a second before this,
+      -- at the one moment a panel most needs to be responsive. The other
+      -- correction branch below has always armed it; this one is the odd path.
       local announce = hold.correctLeft <= 0
+      if announce then
+        hold.correctLeft = TUNE.HOLD_CORRECT_COOLDOWN
+        -- Counted here too. Drift corrections were missing from the tally the
+        -- server is told about, so a car being pushed around on the grid
+        -- reported none of it.
+        hold.corrections = hold.corrections + 1
+      end
       hold.restore(string.format('%.2fm off the slot at %.1f m/s', drift, speed))
       if announce then
         pushNotice('grid', 'Hold the car, the countdown has not finished')
