@@ -5330,7 +5330,17 @@ function ghost.applyRemote(pid, endsAt)
     ghost.apply(vehId, veh, true, ghost.alphaFor(vehId))
   else
     ghost.left[vehId] = nil
-    ghost.reason(vehId, 'reset', false)
+    -- THE RIG AGAIN, and it has to be the same reach as the line above. Applied
+    -- to the whole rig and lifted from the car alone, the trailer keeps a reason
+    -- nothing will ever clear: it stays intangible for the rest of the session
+    -- on every client except its owner's, who sees it solid. Cars drive through
+    -- it, and no sweep or roster undoes it -- `reset` is only ever cleared here
+    -- and in the owner's own restore, which is rig-wide already.
+    --
+    -- The two halves being different functions is what let them drift apart, so
+    -- they are named the same way now: whatever a ghost is applied to is what it
+    -- comes off.
+    ghost.reasonRig(vehId, 'reset', false)
   end
 end
 

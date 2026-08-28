@@ -8,6 +8,40 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 ## 0.11.0 - Races can start behind a pace car
 
+### Fixed
+
+- **A rival's trailer stayed a ghost for the rest of the session.** When another
+  driver reset, their reset ghost was applied to their whole rig -- the car and
+  whatever was coupled to it -- but lifted from the **car alone**. The trailer
+  kept a `reset` reason nothing would ever clear: `reset` is only cleared in two
+  places, the owner's own restore (already rig-wide) and this one. So on every
+  client except its owner's, that trailer was intangible for the rest of the
+  session -- you drove straight through it -- while its owner saw it solid.
+
+  The two halves had drifted apart because they were different calls,
+  `reasonRig` to apply and `reason` to lift. They are the same call now:
+  whatever a ghost is applied to is what it comes off. The un-ghost still goes
+  through the weld gate per vehicle, so nothing is handed its collisions back
+  with a car inside it.
+
+- **Three checks in `ghost_test` had been failing since the trailer support
+  landed**, and they were failing on the harness rather than on the mod. The
+  stubbed BeamMP vehicle map filed *anything it did not recognise* under the
+  rival's player id. That was harmless until the trailer was added to the test
+  world -- from then on two vehicles answered to `RIVAL_PID`, `vehicleForPid`
+  returned whichever `pairs` reached first, and a rival's reset ghost landed on
+  the trailer instead of their car.
+
+  So the three checks that exist to prove a remote rig ghost works were reading
+  as broken while it worked perfectly -- and, worse, they were the checks that
+  should have caught the real bug above. The map is an explicit table now and an
+  unmapped vehicle belongs to nobody rather than silently to the rival.
+
+  The lift is now asserted **with the coupling still in place**, which is the
+  real case: a trailer is on the hitch when the ghost expires just as it was
+  when it began. The old test dropped the coupling first, so there was no rig
+  left to lift the ghost off and nothing to catch.
+
 ### Added
 
 - **The pace lap.** Switch **Pace lap** on in Race settings and **Start

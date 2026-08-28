@@ -38,6 +38,14 @@ local world    = {}    -- [id] = vehicle, the vehicles that currently exist
 
 local OWN_ID, RIVAL_ID, THIRD_ID = 7, 42, 43
 local OWN_PID, RIVAL_PID, THIRD_PID = 1, 2, 3
+-- The trailer's own ids. It is a separate VEHICLE as far as BeamNG and BeamMP
+-- are concerned, so it is filed under a player like any other -- and it needs a
+-- player of its own here, because the map below files anything it does not
+-- recognise under the rival. See the note on getVehicles.
+local TRAILER_ID, TRAILER_PID = 77, 4
+-- A car that turns up mid-respawn, further down. Declared with the rest so the
+-- owner map below is complete rather than half of it living at the use site.
+local LATE_ID, LATE_PID = 44, 5
 
 -- A minimal vec3 with just the arithmetic the bounds code performs on it.
 local Vec = {}
@@ -141,15 +149,33 @@ getObjectByID = function (id) return world[id] end
 -- under, and gameVehicleID is this client's local scene id for that car -- the
 -- two are different numbers, which is the whole reason ghost broadcasts carry a
 -- player id and never a vehicle id.
+--
+-- EVERY VEHICLE NEEDS ITS OWN OWNER HERE, and the fallback below is why. This
+-- map used to file anything it did not recognise under the rival, which was
+-- harmless right up until the trailer was added to `world`: from then on TWO
+-- vehicles answered to RIVAL_PID, ghost.vehicleForPid returned whichever
+-- `pairs` reached first, and a rival's reset ghost landed on the trailer. The
+-- three trailer checks at the bottom of this file have been failing on it ever
+-- since -- reading as the rig ghost being broken when it works perfectly.
+--
+-- So the mapping is a table, and an unmapped vehicle is nobody's rather than
+-- silently the rival's. Add a vehicle to `world` and you add it here.
+local VEHICLE_OWNER = {
+  [OWN_ID]     = OWN_PID,
+  [RIVAL_ID]   = RIVAL_PID,
+  [THIRD_ID]   = THIRD_PID,
+  [TRAILER_ID] = TRAILER_PID,
+  [LATE_ID]    = LATE_PID,
+}
 MPVehicleGE = {
   isOwn = function (id) return id == OWN_ID end,
   getVehicles = function ()
     local list = {}
     for _, v in pairs(world) do
-      local ownerId = RIVAL_PID
-      if v.id == OWN_ID then ownerId = OWN_PID
-      elseif v.id == THIRD_ID then ownerId = THIRD_PID end
-      list[#list + 1] = { ownerID = ownerId, gameVehicleID = v.id }
+      -- nil ownerID for an unmapped vehicle: it belongs to no player, which is
+      -- what a scene object nobody has claimed actually is. vehicleForPid
+      -- compares with tostring(), so nil simply never matches a real pid.
+      list[#list + 1] = { ownerID = VEHICLE_OWNER[v.id], gameVehicleID = v.id }
     end
     return list
   end,
@@ -601,7 +627,6 @@ check(rival.ghosted == true,
 -- A car that appears DURING the respawn is ghosted on the spot, not whenever
 -- the slow re-assert sweep next comes round -- a mass respawn is exactly when
 -- cars appear, and two seconds solid in the middle of one is the whole problem.
-local LATE_ID = 44
 world[LATE_ID] = makeVehicle(LATE_ID, 5, 0)
 RM.onVehicleSpawned(LATE_ID)
 check(world[LATE_ID].ghosted == true,
@@ -999,7 +1024,6 @@ end
 -- respawned and ghosted at the flag, and this pair had no way back.
 --
 -- core_vehicles.attachedCouplers is the engine's live list of coupled pairs.
-local TRAILER_ID = 77
 world[TRAILER_ID] = makeVehicle(TRAILER_ID, 0, 0)
 local trailer = world[TRAILER_ID]
 core_vehicles = { attachedCouplers = { { OWN_ID, TRAILER_ID, 12, 34 } } }
@@ -1079,9 +1103,24 @@ handlers['RM_Ghost']({ pid = RIVAL_PID, active = true,
                        startedAt = raceTime, duration = 5.0 })
 check(rival.ghosted == true, 'a rival reset ghost still reaches their car')
 check(third.ghosted == true, 'and the trailer on their hitch')
-core_vehicles = { attachedCouplers = { { OWN_ID, TRAILER_ID, 12, 34 } } }
+
+-- ...AND IT COMES OFF THE WHOLE RIG AGAIN, which is the half that was missing.
+-- Asserted with the coupling STILL IN PLACE, because that is the real case: a
+-- trailer is on the hitch when the ghost expires just as it was when it began.
+-- Dropping the coupling first (which this test used to do) tests nothing --
+-- there is no rig left to lift the ghost off.
+--
+-- Applying to the rig and lifting from the car alone leaves the rival's trailer
+-- intangible for the rest of the session, on every client but theirs: you drive
+-- straight through it, and nothing in the mod is ever going to put it back.
 rival.ghosted, third.ghosted = nil, nil
 handlers['RM_Ghost']({ pid = RIVAL_PID, active = false })
+check(rival.ghosted == false, 'the rival\'s ghost lifts from their car')
+check(third.ghosted == false,
+  'and from the trailer on their hitch: a ghost applied to a rig has to come '
+    .. 'off the rig, or half of it stays intangible for the rest of the session')
+
+core_vehicles = { attachedCouplers = { { OWN_ID, TRAILER_ID, 12, 34 } } }
 
 -- THE SAFETY INVARIANT IS UNTOUCHED. Skipping our own rig must not become
 -- skipping everybody: a real car overlapping still blocks, with no time limit.
