@@ -225,7 +225,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.10.0'
+local RM_BUILD = '0.11.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -253,6 +253,18 @@ local session = {
   maxResets  = -1,          -- -1 unlimited, 0 none, N per driver per session
   resetMode  = 'inplace',   -- inplace | checkpoint
   jokerEnabled = false,
+  -- THE PACE LAP, mirrored from the server in its two halves (see the note on
+  -- the server's race.paceLap).
+  --
+  --   paceLap  the RULE: this race is started behind the pace car. Needed here
+  --            and not only in the panel, because the lap that ends the race is
+  --            one crossing further out than the lap box says and the white and
+  --            checkered flags are waved from this side -- see effectiveLapTarget.
+  --   pacing   the CONDITION: the formation lap is running right now. Yellow is
+  --            already on screen for it, but yellow also means "there has been
+  --            an incident", and those are not the same instruction.
+  paceLap      = false,
+  pacing       = false,
   -- This driver's own lap, measured here because only the client sees the car
   -- cross anything. The server scores what this reports.
   localLap     = 1,
@@ -1262,7 +1274,12 @@ local function effectiveLapTarget()
   -- A timed race has no lap target at all until the leader has been past.
   -- Endurance keeps one: it is the other half of "whichever comes first".
   if session.raceMode == 'timed' then return nil end
-  return session.totalLaps > 0 and session.totalLaps or nil
+  if session.totalLaps <= 0 then return nil end
+  -- A PACE LAP IS A CROSSING NOBODY IS SCORED FOR, so it goes on top of the
+  -- distance -- exactly as the server's sessionLapTarget adds it. Waving off the
+  -- lap box alone would put the white flag out a lap early on every race started
+  -- behind the pace car, and the checkered one a lap early behind it.
+  return session.totalLaps + (session.paceLap and 1 or 0)
 end
 
 -- GREEN, YELLOW or WHITE, for this driver, right now.
@@ -1408,6 +1425,11 @@ local function pushRouteState()
     jokerTaken   = session.jokerTaken,
     jokerLap     = session.jokerLapUsed,
     jokerEnabled = session.jokerEnabled,
+    -- The pace lap rides here as well as on the server broadcast, so the panel
+    -- has it in single player and the instant the switch is thrown rather than
+    -- on the next state push.
+    paceLap      = session.paceLap,
+    pacing       = session.pacing,
     editorTarget = edit.target,
     -- Which flag is out FOR THIS DRIVER. Resolved here rather than in the UI
     -- because the white flag is a fact about one driver's own lap, and the panel
@@ -7522,6 +7544,17 @@ local function onServerUpdate(rawData)
   end
   if type(data.youSpectating) == 'boolean' then selfSpectating = data.youSpectating end
   session.jokerEnabled = data.jokerEnabled == true
+  -- THE PACE LAP, and the notice on its edge.
+  --
+  -- Announced from here rather than from the phase change below, because the
+  -- phase does not change: a pace lap IS the racing phase, released under
+  -- yellow. The flag notice a line further down fires too and says YELLOW FLAG,
+  -- which is true and is not the instruction -- "caution, race back to the line"
+  -- is the opposite of what a driver forming up should do. This one is pushed
+  -- second so it is the one left on screen.
+  local wasPacing = session.pacing
+  session.paceLap = data.paceLap == true
+  session.pacing  = data.pacing == true
   -- The flag, and a notice the moment it CHANGES. A caution that only appears
   -- on a panel is a caution the driver watching the road never sees.
   local wasFlag = session.raceFlag
@@ -7541,6 +7574,14 @@ local function onServerUpdate(rawData)
     else
       pushNotice('flag', 'GREEN FLAG', { sub = 'Racing', color = 'green' })
     end
+  end
+  -- ...and the pace lap's own, over the top of the yellow it was released under.
+  -- Both units, because this is a league with drivers on both sides of the
+  -- Atlantic and a speed half the grid has to convert is a speed half the grid
+  -- guesses at.
+  if session.pacing and not wasPacing then
+    pushNotice('flag', 'PACE LAP',
+      { sub = 'Hold position - 40 mph / 64 km/h', color = 'yellow' })
   end
   -- Per-player admin status. Present only on a targeted reply (RM_RequestState),
   -- so the global broadcast never disturbs it. The server is the authority here:
@@ -8337,6 +8378,19 @@ function M.setResetMode(mode)
   end
 end
 
+-- Module 5: arm/disarm the pace lap. With it on, the race is started with Start
+-- Race rather than Start Countdown: the field is released under yellow and the
+-- green falls as the leader comes back to the line.
+function M.setPaceLap(enabled)
+  enabled = enabled and true or false
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetPaceLap', jsonEncode({ enabled = enabled }))
+  else
+    session.paceLap = enabled
+    pushRouteState()
+  end
+end
+
 -- Module 2: arm/disarm the joker lap requirement for the next race.
 function M.setJokerEnabled(enabled)
   enabled = enabled and true or false
@@ -8435,6 +8489,12 @@ end
 
 function M.startCountdown()
   if inMultiplayer() then TriggerServerEvent('RM_StartCountdown', '') end
+end
+
+-- Start the race behind the pace car. The alternative to a countdown rather than
+-- a step before one -- the server refuses it unless the pace lap is armed.
+function M.startRace()
+  if inMultiplayer() then TriggerServerEvent('RM_StartRace', '') end
 end
 
 function M.endRace()
@@ -8824,6 +8884,11 @@ local function resetToIdle(reason)
   selfTeleport.left = 0
   blockNoticeLeft = 0
   session.jokerEnabled    = false
+  -- Both halves of the pace lap. The rule as much as the condition: it belongs
+  -- to the server that granted it, and a client that carried it to the next
+  -- server would count that server's races one lap long.
+  session.paceLap         = false
+  session.pacing          = false
   track.pitRoute        = {}
   pit.active      = false
   pit.left        = 0

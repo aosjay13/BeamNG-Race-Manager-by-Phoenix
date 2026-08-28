@@ -225,6 +225,30 @@ wired('setSpectating',      'setSpectating',      'Sit out / rejoin')
 wired('setGridMode',        'setGridMode',        'Grid order')
 wired('setDriverGridSlot',  'pinGridSlot',        'Custom grid slot')
 wired('setGhostQuali',      'toggleGhostQuali',   'Ghost qualifying')
+wired('setPaceLap',         'togglePaceLap',      'Pace lap')
+wired('startRace',          'startRace',          'Start Race (the pace-lap start)')
+
+-- THE TWO START BUTTONS ARE MUTUALLY EXCLUSIVE, and that is the feature rather
+-- than a detail of it. A standing start and a formation lap are alternatives:
+-- counting a field down to GO and then telling it to hold position at 40 mph is
+-- two instructions for the same moment, and a driver obeys whichever they read.
+-- Both on screen at once is that failure, and it is one an `ng-if` typo makes.
+do
+  local countdownIf = html:match('ng%-click="startCountdown%(%)"%s*ng%-if="([^"]*)"')
+  local raceIf      = html:match('ng%-click="startRace%(%)"%s*ng%-if="([^"]*)"')
+  expect(countdownIf ~= nil, 'Start Countdown is behind an ng-if')
+  expect(raceIf ~= nil, 'Start Race is behind an ng-if')
+  expect(countdownIf ~= nil and countdownIf:find('!paceStart()', 1, true) ~= nil,
+    'Start Countdown is hidden when the race starts behind the pace car')
+  expect(raceIf ~= nil and raceIf:find('paceStart()', 1, true) ~= nil
+    and raceIf:find('!paceStart()', 1, true) == nil,
+    'and Start Race is shown only then, so the two can never both be offered')
+  -- Both still only ever ON the grid, which is the rule that was already there.
+  for _, cond in ipairs({ countdownIf or '', raceIf or '' }) do
+    expect(cond:find("phase === 'grid'", 1, true) ~= nil,
+      'a start button is only pressable on the grid: ' .. cond)
+  end
+end
 -- NO HANDLER MAY BE DEFINED TWICE ON $scope.
 --
 -- Assigning the same key twice is last-one-wins and silent: no error, no console

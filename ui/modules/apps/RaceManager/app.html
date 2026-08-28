@@ -28,7 +28,7 @@
           title="{{ !sessionRunning()
             ? 'No session running. The track and the rules can both be changed.'
             : (canSetRules()
-               ? 'On the grid. The track is locked because cars are standing on it, but laps, resets, the joker and the qualifying rules can still be changed.'
+               ? 'On the grid. The track is locked because cars are standing on it, but laps, resets, the joker, the pace lap and the qualifying rules can still be changed.'
                : 'A session is running. Track and rule changes are locked until it ends.') }}">
       {{ !sessionRunning() ? 'CONFIG' : (canSetRules() ? 'ON GRID' : 'RUNNING') }}
     </span>
@@ -167,7 +167,7 @@
          qualifying's alone. onOutLap() comes off the bridge's 250 ms lap feed, so
          it goes out on the crossing rather than a broadcast later. -->
     <span class="rm-out-badge" ng-if="sessionUnderWay() && qualiOutLap && onOutLap()"
-          title="{{ sessionKind === 'quali' ? 'Out lap: not timed, not scored, not counted.' : 'Counts toward the distance, but sets no lap time.' }}">{{ sessionKind === 'quali' ? 'OUT LAP' : 'LAP 1: NOT TIMED' }}</span>
+          title="{{ outLapNote() }}">{{ outLapLabel() }}</span>
     <!-- SAME THREE READOUTS THE DRIVER BAR CARRIES, in the same order, because
          an admin running the session is usually driving it as well. -->
     <span class="rm-driverbar-label" ng-if="jokerEnabled">
@@ -196,6 +196,12 @@
     <span class="rm-gridslot" ng-if="gridSlot && (phase === 'grid' || phase === 'countdown')">
       START P{{ gridSlot }}<b ng-if="gridFrozen"> HOLD</b>
     </span>
+    <!-- THE FORMATION LAP, for as long as it lasts. The yellow flag is already
+         on screen, but yellow is also what a caution looks like, and "form up
+         and hold position" is very nearly the opposite of "race back to the
+         line" -- so the instruction gets said rather than inferred. -->
+    <span class="rm-pace-badge" ng-if="pacing"
+          title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. The green flag falls as the leader reaches the line.">PACE LAP 40 MPH / 64 KM/H</span>
     <span class="rm-p2p-badge" ng-if="pointToPoint"
           title="This track is a point-to-point stage: driven once, first gate to last. Laps do not apply.">POINT TO POINT</span>
     <span class="rm-derby-badge" ng-if="derby.phase === 'running'">DERBY LIVE {{ formatDerbyTime(derby.time) }}</span>
@@ -416,9 +422,20 @@
          it out for exactly as long as a host needed it. -->
     <button class="rm-btn rm-btn-grid"  ng-click="generateGrid()"    ng-if="!raceUnderWay()"
             title="Grid the field by qualifying time or your chosen order. Ends qualifying first, keeping the times.">Generate Grid</button>
-    <!-- Only ever pressable on the grid, so it is only ever ON the grid. -->
-    <button class="rm-btn rm-btn-start" ng-click="startCountdown()"  ng-if="phase === 'grid'"
+    <!-- Only ever pressable on the grid, so it is only ever ON the grid.
+
+         TWO BUTTONS, NEVER BOTH. A standing start and a formation lap are
+         alternatives: counting a field down to GO and then telling it to hold
+         position at 40 mph is two instructions for one moment, and a driver
+         obeys whichever they read. So the pace lap REPLACES the countdown here
+         rather than sitting beside it, and the server refuses whichever of the
+         two the session is not set up for. -->
+    <button class="rm-btn rm-btn-start" ng-click="startCountdown()"
+            ng-if="phase === 'grid' && !paceStart()"
             title="Count the field down and release the hold. Starts whichever session is on the grid.">Start Countdown</button>
+    <button class="rm-btn rm-btn-start rm-btn-pace" ng-click="startRace()"
+            ng-if="phase === 'grid' && paceStart()"
+            title="Release the field under yellow for a pace lap. The green flag falls as the leader comes back to the line.">Start Race</button>
     <!-- ALL THREE, ALWAYS. A single toggle hid whichever flag was not next, so
          the sequence a marshal actually runs -- red to clean up, yellow to pack
          them up, green to go -- meant guessing which button would appear. The
@@ -555,7 +572,7 @@
   <div class="rm-admin-tabs" ng-if="isAdmin && !setupHidden()">
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('race')}"
             ng-click="selectAdminTab('race')"
-            title="Race distance, reset ruleset and the joker lap">Race</button>
+            title="Race distance, reset ruleset, the pace lap and the joker lap">Race</button>
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('grid')}"
             ng-click="selectAdminTab('grid')"
             title="Qualifying rules and how the starting grid is filled">Grid</button>
@@ -661,6 +678,25 @@
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': resetMode === 'checkpoint'}"
               ng-click="setResetMode('checkpoint')"
               ng-disabled="!canSetRules()">Last checkpoint</button>
+    </span>
+    <!-- Module 5: the pace lap -->
+    <span class="rm-setting" title="Start the race behind a pace car: the field is released under yellow, forms up, and the green falls as the leader returns to the line.">
+      <label>Pace lap</label>
+      <!-- Never armable on a sprint stage, which is driven once from the first
+           gate to the last and so has no lap to form up on. The server refuses
+           it too; this is so the switch does not look available in the first
+           place. -->
+      <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': paceLap}"
+              ng-click="togglePaceLap()"
+              ng-disabled="!canSetRules() || pointToPoint">
+        {{ paceLap ? '&#10003; Enabled' : 'Disabled' }}
+      </button>
+      <span class="rm-setting-val" ng-if="paceLap &amp;&amp; !pointToPoint">
+        Start Race, not Start Countdown &middot; formation lap is not scored
+      </span>
+      <span class="rm-setting-warn" ng-if="pointToPoint">
+        A sprint stage is driven once: there is no lap to form up on.
+      </span>
     </span>
     <!-- Module 2: rallycross joker lap -->
     <span class="rm-setting" title="Every finisher must take the Joker Route once, never on lap 1, or they are disqualified.">
@@ -2418,6 +2454,12 @@
     <span class="rm-bar-break"></span>
     <!-- Which way round this driver is going. On a head-on layout it is the one
          thing they most need to be sure of. -->
+    <!-- THE FORMATION LAP, for as long as it lasts. The yellow flag is already
+         on screen, but yellow is also what a caution looks like, and "form up
+         and hold position" is very nearly the opposite of "race back to the
+         line" -- so the instruction gets said rather than inferred. -->
+    <span class="rm-pace-badge" ng-if="pacing"
+          title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. The green flag falls as the leader reaches the line.">PACE LAP 40 MPH / 64 KM/H</span>
     <span class="rm-driverbar-label" ng-if="jokerEnabled">
       JOKER <b ng-class="{'rm-joker-done': jokerTaken}">{{ jokerTaken ? 'DONE (lap ' + jokerLap + ')' : 'PENDING' }}</b>
     </span>
@@ -2904,7 +2946,8 @@
           <td colspan="10" class="rm-empty">
             No drivers yet: join a BeamMP server running the RaceManager plugin, then press
             <b>Start Quali</b> (or <b>Generate Grid</b> to go straight to a race),
-            followed by <b>Start Countdown</b>.
+            followed by <b>Start Countdown</b> &mdash; or <b>Start Race</b>, if the
+            pace lap is on.
           </td>
         </tr>
       </tbody>
@@ -3005,6 +3048,10 @@
   .rm-btn-quali { border-color: #ab47bc; color: #ce93d8; }
   .rm-btn-grid  { border-color: #4285f4; color: #8ab4f8; }
   .rm-btn-start { border-color: #34a853; color: #7ee2a8; }
+  /* Start Race releases the field under YELLOW, so it is not painted with the
+     green that every other start button carries. An admin reaching for it under
+     time pressure should be able to tell the two starts apart without reading. */
+  .rm-btn-pace { border-color: rgba(251, 188, 5, 0.85); color: #fdd663; }
   .rm-btn-end   { border-color: #ea4335; color: #f28b82; }
   .rm-btn-reset { border-color: #9aa0a6; color: #bdc1c6; }
   .rm-btn-mini  { padding: 2px 7px; font-size: 10px; }
@@ -3499,6 +3546,18 @@
     letter-spacing: 0.4px;
     background: rgba(126, 226, 168, 0.18);
     color: #7ee2a8;
+  }
+  /* PACE LAP, while the field is forming up. Yellow, because that is the flag
+     it is run under -- and a badge rather than a notice because it is a state
+     that lasts a whole lap, not a thing that is said once. */
+  .rm-pace-badge {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    background: rgba(251, 188, 5, 0.2);
+    color: #fdd663;
   }
   .rm-route-tab-pit-active { background: rgba(255, 184, 26, 0.22); color: #ffb81a; }
   .rm-pit {

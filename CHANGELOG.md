@@ -6,6 +6,91 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.11.0 - Races can start behind a pace car
+
+### Added
+
+- **The pace lap.** Switch **Pace lap** on in Race settings and **Start
+  Countdown** becomes **Start Race** on the grid. The field is released
+  immediately under a **yellow flag** -- no countdown -- and told, in chat and on
+  screen, to maintain position at **40 mph / 64 km/h**. It runs a formation lap,
+  and the **green flag falls automatically** as the leader comes back within
+  **10 m** of the start/finish line: waved on the approach, which is what a
+  marshal does, rather than once the leader is already past.
+
+  **The two start buttons are alternatives and only one is ever on screen.**
+  Counting a field down to GO and then telling it to hold position at 40 mph is
+  two instructions for the same moment, and a driver obeys whichever of them they
+  read. The server refuses whichever button the session is not set up for.
+
+  **Mechanically the formation lap is an out lap**, which is a rule this plugin
+  already had -- a lap that is driven and not scored, ending at the line for each
+  driver in turn. That is what settles the awkward part on its own: the green
+  falls once, for everybody, while the field is strung out around the circuit,
+  and each driver's own crossing is still what starts their lap 1.
+
+  It is **not one of your laps**, and this is the one place it differs from the
+  out lap a head-on grid owes. That one is a *racing* lap that merely sets no
+  time, so it comes out of the distance; a formation lap is not a racing lap at
+  all, so it goes on top. A 5-lap race behind the pace car is a formation lap
+  plus 5 racing laps -- six crossings. The results file says so in its header,
+  because otherwise `Race distance: 5 laps` sits above a `6` in the Laps column
+  of every finisher with nothing on the page to settle it.
+
+  **A timed race's clock starts at the green, not at the release.** Ninety
+  seconds of forming up still leaves the full ten minutes of racing, and the
+  header's countdown does not move until the green falls. The *session* clock
+  keeps running underneath it and is never wound back -- reset-ghost end times
+  are expressed on it, and a client that re-anchored to a clock that had gone
+  backwards would show a car ghosted with a countdown that never reached zero.
+
+  **Two things stop it hanging.** A red flag holds the green, so a leader who
+  coasts the last few meters to the line under one does not start the race by
+  arriving; and the **Green flag** button ends the pace lap at any time, which is
+  why there is no timeout to guess at -- a field that has crashed or stopped
+  never brings its leader back to the line, and the marshal who can see the track
+  is better at judging that than a clock. If every driver has already crossed the
+  line the green falls on its own: a yellow nothing can lift is worse than an
+  early green.
+
+  **Races on circuits only.** Qualifying has no field to form up, so a grid
+  formed by *Start Quali* keeps its countdown with the rule still armed for the
+  race after it. A point-to-point sprint stage has no lap to form up on: the
+  switch is grayed out, the server refuses it, and loading a sprint stage
+  switches it back off and says so -- a switch reading ENABLED above a button
+  that has silently changed back is worse than either state.
+
+  Two server settings in `config.json` beside the lap count: `paceGreenAt`
+  (10 m) and `paceArmAt` (50 m). The second is not a tuning knob but a
+  correctness one -- **the field starts the pace lap standing on the line**, so
+  "the leader is within ten meters of the line" is true at the release as well as
+  at the end of the lap. The trigger arms only once the leader has genuinely got
+  away, and it is being away and coming back that means the lap has been run.
+  Without it the green falls on the tick the cars are let go, and it would look
+  like a working feature to anyone testing with a car already circulating. The
+  two are kept in order at load: a file with them crossed over gets the arming
+  distance pushed clear rather than the pair swapped, because swapping would
+  produce a working pace lap the admin never asked for.
+
+- **`tests/pace_test.lua`**, 82 checks over the whole of it: the arming latch,
+  the ticks before any client has reported a position (a leader search that
+  skipped those drivers finds nobody, reads it as "the field has all crossed"
+  and answers with an instant green), the distance arithmetic, the timed-race
+  clock, the red-flag hold, the manual green, qualifying declining to pace, and
+  Reset Session dropping the running pace lap while keeping the league setting
+  that armed it.
+
+### Changed
+
+- **The release path is shared.** There are two start procedures now -- the
+  lights and the pace car -- and everything they have in common (one release,
+  one clock reset, one wipe of every per-driver counter) is one function rather
+  than two copies. A second release path that forgot a line of it would be a
+  race carrying last week's lap counts. The garage audit went the same way, for
+  the same reason: an audit that ran on only one of the two buttons would be an
+  audit that silently stopped happening for every race started behind the pace
+  car.
+
 ## 0.10.0 - A car shoved on the grid no longer floods the UI
 
 ### Fixed

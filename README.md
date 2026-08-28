@@ -64,6 +64,7 @@ Everything happens inside the **Race Manager** window in game:
 ```
 Build/Load a track  →  Start Quali  →  Start Countdown  →  Qualifying
                     →  Generate Grid  →  Start Countdown  →  Race  →  Results
+                                       (or Start Race, behind a pace lap)
 ```
 
 Qualifying and the race run the **same** lifecycle: form the grid, hold the
@@ -133,6 +134,15 @@ and **held** there, so nobody can jump the start. **Start Countdown** gives
 everyone a synchronised 3‑2‑1‑**GO!** and releases the whole field on the same
 broadcast. The table re-sorts leader-first in real time as places change.
 
+Turn on **Pace lap** and that button becomes **Start Race** instead. The field is
+released under a **yellow flag** with no countdown, told to hold position at
+40 mph / 64 km/h, and runs a formation lap; the **green flag** falls
+automatically as the leader comes back within 10 m of the start/finish line. The
+pace lap is not scored and is not one of your laps — a 5-lap race behind the
+pace car is a formation lap plus 5 racing laps. A red flag holds the green, and
+the **Green flag** button ends the pace lap at any time if the field never makes
+it round.
+
 **7. Results.** At the flag the server writes a results file to
 `Resources/Server/RaceManager/results/` and announces the path in chat, ready for
 league standings, with the cup round it just banked appended if a cup is running.
@@ -153,6 +163,7 @@ expect without touching any of it.
 | **[Reset ghosting](docs/REFERENCE.md#reset-ghosting)** | A driver who resets is intangible for a few seconds rather than reappearing solid in the racing line. Collisions return only once the space around them is provably clear. |
 | **[Branch gates](docs/REFERENCE.md#branch-gates-two-ways-through-a-checkpoint)** | Give a checkpoint a second gate and either one clears it. Split lanes and head-on "suicide" ovals, scored together on one leaderboard, with nothing to assign anyone to. |
 | **[Mouse track editing](docs/REFERENCE.md#tutorial-running-a-race-night)** | Nudge mode: click, drag and scroll to move and turn gates from free cam, ctrl+click to place new ones. Driving to a gate still works and still builds the track. |
+| **[Pace lap](docs/REFERENCE.md#pace-lap)** | Start the race behind a pace car instead of from the lights: released under yellow, one formation lap at 40 mph / 64 km/h, green flag as the leader returns to the line. The formation lap is not scored and does not count against the distance. |
 | **[Rallycross joker laps](docs/REFERENCE.md#rallycross-joker-laps)** | A second gate route that must be taken exactly once per race. Lap 1 is closed, and the server disqualifies anyone who missed it or took it twice. |
 | **[Garage List](docs/REFERENCE.md#vehicle--setup-locking-the-garage-list)** | Lock the session to exact cars *and* exact tunes. Anything else is deleted on spawn and the driver is told why. |
 | **[Cup points](docs/REFERENCE.md#cup-points)** | Championship points across several events: races, derbies or both. Scoring presets, qualifying points and bonuses, and standings that survive a server restart. |

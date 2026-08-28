@@ -519,6 +519,13 @@ the stragglers are taken where they stand and the session closes normally.
    The hold is **enforced, not just requested** - see
    [Holding the grid](#holding-the-grid) for what that means and what gets
    logged.
+
+   **Or press Start Race**, if the [pace lap](#pace-lap) is armed. There is no
+   countdown: the field is released under yellow and forms up for a lap, and the
+   green falls as the leader comes back to the line. The two buttons are
+   alternatives and only one is ever on screen -- counting a field down to GO and
+   then telling it to hold position at 40 mph is two instructions for the same
+   moment, and a driver obeys whichever they read.
 5. Race. The table now shows **Pos** (live position), the starting grid slot,
    current lap, best race lap and **Led** (laps led), and it re-sorts itself
    leader-first in real time as places change (see *Live position tracking*
@@ -1080,6 +1087,67 @@ still racing:
   to a driver **eliminated in a Demo Derby** - their car returns when the derby
   finishes. The spectator lock is scoped per mode, so a race and a derby can
   never release each other's spectators.
+
+### Pace lap
+
+Start the race **behind a pace car** instead of from the lights. Switch
+**Pace lap** on in Race settings and **Start Countdown** is replaced by
+**Start Race** on the grid.
+
+Press it and:
+
+1. The field is released **immediately**, with no countdown, under a **yellow
+   flag**. Chat and the on-screen notice both say: *maintain position and limit
+   your speed to 40 mph / 64 km/h*, and the driver bar carries a
+   `PACE LAP 40 MPH / 64 KM/H` badge for as long as it lasts.
+2. The field runs a **formation lap**.
+3. The **green flag falls automatically** as the leader comes back within
+   **10 m** of the start/finish line -- waved on the approach, not once the
+   leader is already past, which is what a marshal actually does.
+4. Every driver's own crossing of the line then starts **their** lap 1. The
+   green is one event for the whole field, but the field is strung out, so the
+   lap each driver is on is still decided at the line by that driver.
+
+**The formation lap is not one of your laps.** It is driven and not scored, so a
+5-lap race behind the pace car is a formation lap **plus** 5 racing laps -- six
+crossings in total. The results file says so in its header, because otherwise
+`Race distance: 5 laps` sits above a `6` in the Laps column of every finisher
+with nothing on the page to settle it. It sets no lap time and cannot take
+fastest lap.
+
+This is the one place the pace lap differs from the out lap a
+[head-on grid](#branch-gates-two-ways-through-a-checkpoint) owes. That one is a
+*racing* lap that merely sets no time, so it comes **out** of the distance; a
+formation lap is not a racing lap at all, so it goes **on top**.
+
+**A timed race's clock starts at the green**, not at the release. Ninety seconds
+of forming up still leaves the full ten minutes of racing, and the header's
+countdown does not move until the green falls.
+
+Two things stop a pace lap from hanging:
+
+- **A red flag holds the green.** Red means stop where you are and wait, so a
+  leader who coasts the last few meters to the line under one does not start the
+  race by arriving. Lift it the usual way -- red, yellow, green.
+- **The Green flag button ends it at any time.** A field that has crashed,
+  spun or simply stopped never brings its leader back to the line, and rather
+  than guess how long a formation lap may take, the marshal who can see the
+  track calls it with the same button they would use for any other green. If
+  every driver has already crossed the line, the green falls on its own: a
+  yellow that nothing can lift is worse than an early green.
+
+**Races only, and circuits only.** Qualifying has no field to form up -- drivers
+go out when they choose and the lap that matters is a solo one -- so a grid
+formed by *Start Quali* keeps its countdown even with the rule armed. A
+point-to-point sprint stage is driven once from the first gate to the last and
+has no lap to form up on, so the switch is grayed out there, the server refuses
+it if asked anyway, and loading a sprint stage switches it back off.
+
+The trigger distances are server settings: `paceGreenAt` (10 m, where the green
+falls) and `paceArmAt` (50 m, how far the leader must first get *away* from the
+line before that means anything -- the field starts the lap standing on the line,
+so without it the green would fall the instant the cars were let go). Both live
+in `config.json` beside the lap count.
 
 ### Rallycross joker laps
 

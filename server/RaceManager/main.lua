@@ -72,6 +72,20 @@ local CFG = {
   countdownFrom = 3,         -- 3, 2, 1, GO!
   endDelay      = 5,         -- seconds the results are held after the last car home
 
+  -- THE PACE LAP. A race started behind a pace car instead of from the lights:
+  -- the field is released under yellow, forms up, and the green falls as the
+  -- leader comes back to the line. See paceLapArmed and RM_onStartRace.
+  paceLap       = false,
+  -- Meters from the leader to the start/finish line when the green flag falls.
+  -- The flag is waved as the leader ARRIVES, not once they are past: a green
+  -- thrown at the line is a green nobody at the front can react to.
+  paceGreenAt   = 10.0,
+  -- ...and how far the leader must first get AWAY from the line before that
+  -- means anything. The field starts the pace lap standing at the line, so
+  -- distance-to-line is near zero at the release as well as at the end of the
+  -- lap, and without this the green would fall on the tick the field was let go.
+  paceArmAt     = 50.0,
+
   -- Qualifying, as a session starts.
   qualiLapLimit  = 0,        -- timed laps per driver, 0 = unlimited
   qualiTimeLimit = 0,        -- seconds, 0 = no limit
@@ -146,6 +160,39 @@ local race = {
   maxResets    = CFG.unlimitedResets,  -- vehicle resets allowed per driver per session
   resetMode    = 'inplace',  -- what a legal reset does: 'inplace' | 'checkpoint'
   jokerEnabled = false,      -- rallycross joker lap required exactly once per race
+  -- ---------------------------------------------------------------------
+  -- THE PACE LAP
+  -- ---------------------------------------------------------------------
+  -- `paceLap` is the RULE -- an admin's switch, set before the grid forms and
+  -- locked once the field is released, like every other regulation.
+  --
+  -- `pacing` is the CONDITION: the field is on the pace lap right now. It is a
+  -- field and not a phase for the same reason `flag` is one (see the note
+  -- there): the phase underneath is a perfectly ordinary 'racing', because
+  -- everything the running phase gives a driver -- released cars, armed gates,
+  -- live telemetry, a reported crossing -- is exactly what a pace lap needs.
+  -- Fifty-odd `phase ==` tests would each have had to learn a new answer;
+  -- reading `pacing` in the four places that care costs nothing anywhere else.
+  --
+  -- WHAT THE PACE LAP ACTUALLY IS, mechanically: an out lap. Every driver gives
+  -- their first crossing away and starts lap 1 from the line, which is what a
+  -- formation lap means and is a rule this plugin already has (outLapOwed).
+  -- Because the out lap is PER DRIVER it also settles the awkward part on its
+  -- own: the green falls once, for everybody, while the field is strung out, and
+  -- each driver's own crossing is still the one that starts their race.
+  paceLap      = CFG.paceLap,
+  pacing       = false,
+  -- Has the leader got away from the line yet? The arming latch described on
+  -- CFG.paceArmAt: until this is set, being near the line means the field has
+  -- not left it rather than that it has come back to it.
+  paceArmed    = false,
+  -- The race.time the green flag fell at, and the reason it is kept rather than
+  -- zeroing the clock there. race.time is the session clock -- ghost end times
+  -- are expressed on it and it is re-anchored on every client from the
+  -- broadcast, so winding it back mid-session would leave a car ghosted with a
+  -- countdown that never reaches zero. The pace lap is simply subtracted where
+  -- it must not count: the TIMED race's limit. 0 whenever no pace lap ran.
+  greenAt      = 0.0,
   -- Joker gates the loaded track actually has. The joker lap cannot be armed
   -- without them: the rule disqualifies anyone who did not complete the route,
   -- and with no route that is the whole field.
@@ -257,6 +304,13 @@ local race = {
   qualiOutLapRun = false,
   -- The same record for a race that gave one away (see race.gridOffLine).
   raceOutLapRun  = false,
+  -- ...and whether that lap was a PACE LAP, which is a different fact from the
+  -- one above and cannot be derived from it. A head-on grid's out lap comes OUT
+  -- of the distance -- ten laps is ten crossings, the first of them untimed --
+  -- while a formation lap goes ON TOP of it, so ten laps is eleven crossings.
+  -- The results file has to be able to tell a reader which, or the Laps column
+  -- disagrees with the stated distance and nothing on the page settles it.
+  racePaceLapRun = false,
   -- Post-expiry state for a TIMED session, and the one piece of the lifecycle a
   -- lap-limited session has no equivalent of.
   --
@@ -383,11 +437,47 @@ end
 --
 -- It belongs to the TRACK, so it travels with the layout (race.gridOffLine)
 -- rather than being a switch an admin has to remember on the night.
+-- IS THIS SESSION RUNNING BEHIND A PACE CAR?
+--
+-- The admin's switch, narrowed to the sessions it can mean anything in. A
+-- QUALIFYING session has no field to form up -- drivers go out when they choose
+-- and the lap that matters is a solo one -- and a SPRINT STAGE is driven once
+-- from first gate to last, so there is no lap to form up ON.
+--
+-- Asked rather than stored, so it stays true of the session in front of it: an
+-- admin who arms the pace lap and then runs qualifying gets the qualifying they
+-- asked for, and the race after it still starts behind the pace car.
+local function paceLapArmed()
+  if race.pointToPoint then return false end
+  return race.paceLap == true and race.sessionKind == 'race'
+end
+
+-- HOW LONG THE RACE HAS BEEN RUNNING, which is not how long the session has.
+--
+-- race.time is the session clock and starts at the release, because it has to:
+-- ghost end times are expressed on it and every client re-anchors its own copy
+-- from the broadcast, so winding it back mid-session would leave a car ghosted
+-- with a countdown that never reaches zero.
+--
+-- A TIMED RACE is run to this instead. The formation lap is not race time -- ten
+-- minutes behind the pace car and then ten minutes of racing is a twenty minute
+-- race -- so the pace lap reads zero and everything after it is measured from
+-- the green. Identical to race.time for every race that never paces, which is
+-- what keeps this free at the two places that ask.
+local function raceElapsed()
+  if race.pacing then return 0.0 end
+  return race.time - race.greenAt
+end
+
 local function outLapOwed()
   -- A sprint stage never owes one: it is driven once, first gate to last, so a
   -- lap given away is the whole session given away.
   if race.pointToPoint then return false end
-  return race.sessionKind == 'quali' or race.gridOffLine == true
+  -- THE PACE LAP IS AN OUT LAP, and reusing this is the whole of how it works.
+  -- A formation lap is a lap that is driven and not scored, ending at the line
+  -- for each driver in turn -- which is this rule exactly, already written,
+  -- already honored by the crossing code on both sides of the wire.
+  return race.sessionKind == 'quali' or race.gridOffLine == true or paceLapArmed()
 end
 
 
@@ -1130,7 +1220,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.10.0'
+local RM_BUILD = '0.11.0'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -1286,6 +1376,17 @@ local function broadcastState(targetPid)
     -- offering a switch the server is going to refuse.
     jokerGates   = race.jokerGates,
     flag         = race.flag,
+    -- THE PACE LAP, in its two halves. `paceLap` is the rule -- the panel grays
+    -- its own switch off it and swaps Start Countdown for Start Race -- and the
+    -- CLIENT needs it too: the lap that ends the race is one crossing further
+    -- out than the lap box says, and the white and checkered flags are waved
+    -- client-side off that number (see effectiveLapTarget there).
+    --
+    -- `pacing` is the condition, and it says what no flag can: yellow is shown
+    -- for a caution as well, and "form up behind the leader" and "there has been
+    -- an incident" are not the same instruction to a driver.
+    paceLap      = race.paceLap,
+    pacing       = race.pacing,
     -- Fastest lap of the session: whose row the leaderboard paints gold, and
     -- how quick it was. One driver id on a payload that already goes out.
     bestLapPid   = race.bestLapPid,
@@ -1328,8 +1429,12 @@ local function broadcastState(targetPid)
     -- the lap everyone still running finishes on once the leader has been past.
     raceMode       = race.raceMode,
     raceTimeLimit  = race.raceTimeLimit,
+    -- Measured from the GREEN, not from the release. A ten minute race that
+    -- spent ninety seconds forming up is still a ten minute race; the clock the
+    -- header counts down and the limit RM_Tick enforces are the same number and
+    -- have to be subtracted the same way.
     raceLeft       = race.raceTimeLimit > 0
-      and math.max(race.raceTimeLimit - race.time, 0) or nil,
+      and math.max(race.raceTimeLimit - raceElapsed(), 0) or nil,
     raceExpired    = race.raceExpired,
     lastLapNum     = race.lastLapNum,
     -- Approved vehicle/setup list (Module 4).
@@ -1677,8 +1782,15 @@ local function buildResultsText(cupRound)
   add('==================================================')
   add(' RACE MANAGER - SESSION RESULTS')
   add(' ' .. os.date('%Y-%m-%d %H:%M:%S'))
-  add(string.format(' Race distance: %d lap%s | Drivers: %d',
-    race.totalLaps, race.totalLaps == 1 and '' or 's', #final))
+  -- THE PACE LAP IS NAMED, because without it the header and the Laps column
+  -- disagree: a three lap race run behind the pace car puts 4 beside every
+  -- finisher, and a results file is read months later by somebody who was not
+  -- there to know why. Same reason the qualifying Format line spells out its own
+  -- out lap, a few lines below.
+  add(string.format(' Race distance: %d lap%s%s | Drivers: %d',
+    race.totalLaps, race.totalLaps == 1 and '' or 's',
+    race.racePaceLapRun and ' + pace lap (not scored, so the Laps column reads one higher)' or '',
+    #final))
   add(string.format(' Regulations: resets %s | joker lap %s',
     race.maxResets < 0 and 'unlimited'
       or (race.maxResets == 0 and 'not allowed' or tostring(race.maxResets) .. ' per driver'),
@@ -1870,7 +1982,11 @@ local function sessionLapTarget()
   -- first", and dropping it here is how a 50-lap-or-60-minute race quietly
   -- becomes a 60-minute one.
   if race.raceMode == 'timed' then return nil end
-  return race.totalLaps
+  -- A PACE LAP IS GIVEN AWAY, and this is the one place it differs from the out
+  -- lap a head-on grid owes. That one is a RACING lap that merely sets no time,
+  -- so it comes out of the ten; a formation lap is not a racing lap at all, so
+  -- it goes on top. Five laps behind the pace car is six crossings.
+  return race.totalLaps + (paceLapArmed() and 1 or 0)
 end
 
 -- The status a driver carries while they are circulating. Presentation only --
@@ -2076,6 +2192,13 @@ end
 -- removed car back, then apply whichever rules belong to that session.
 local function finishSession(reason)
   MP.CancelEventTimer('RM_CountdownTick')
+  -- A session ended DURING its pace lap -- an admin standing the field down
+  -- after a start that fell apart -- must not leave `pacing` set. The next
+  -- release reads it (releaseField sets it from its own argument) but the
+  -- broadcast between now and then does not, and a finished session showing the
+  -- field a pace lap is a panel that has to be argued with.
+  race.pacing    = false
+  race.paceArmed = false
   race.finalLap     = false
   race.finalLapLeft = 0
   race.raceExpired  = false
@@ -2837,6 +2960,16 @@ function RM_onSetPointToPoint(pid, rawData)
   local data = adminPayload(pid, rawData, true)
   if not data then return end
   race.pointToPoint = data.enabled == true or data.enabled == 1
+  -- SWITCHING TO A SPRINT STAGE TURNS THE PACE LAP OFF, and says so. The rule is
+  -- inert on a point-to-point run either way (paceLapArmed refuses it), so the
+  -- damage is not to the race -- it is a switch left reading ENABLED on a panel,
+  -- above a Start Race button that has quietly gone back to Start Countdown.
+  if race.pointToPoint and race.paceLap then
+    race.paceLap = false
+    MP.SendChatMessage(-1, '[RaceManager] Pace lap switched off: a sprint stage '
+      .. 'is driven once and has no lap to form up on.')
+    print('[RaceManager] Pace lap auto-disabled: the track is point-to-point')
+  end
   broadcastState()
   print('[RaceManager] Track mode: ' .. (race.pointToPoint and 'POINT TO POINT' or 'circuit')
     .. ' (by ' .. (MP.GetPlayerName(pid) or pid) .. ')')
@@ -3276,6 +3409,35 @@ function RM_onSetJokerEnabled(pid, rawData)
     .. ' by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
+-- Module 5: the pace lap. Arm/disarm the formation start for the next race.
+--
+-- Idle-locked like every other regulation: an admin may set it on the grid, and
+-- it stops moving the moment the field is released. Changing it mid-race would
+-- change sessionLapTarget under cars already running to a distance -- a five lap
+-- race would silently become four or six laps depending on which way it moved.
+--
+-- REFUSED ON A SPRINT STAGE, and said out loud rather than accepted and quietly
+-- ignored. A point-to-point run is driven once from the first gate to the last;
+-- there is no lap to form up on, and paceLapArmed() would go on returning false
+-- with the panel showing the switch as on.
+function RM_onSetPaceLap(pid, rawData)
+  local data = adminPayload(pid, rawData, true)
+  if not data then return end
+  local want = data.enabled == true or data.enabled == 1
+  if want and race.pointToPoint then
+    MP.SendChatMessage(pid, '[RaceManager] This track is a sprint stage, which is '
+      .. 'driven once from the first gate to the last. There is no lap to form '
+      .. 'up on, so a pace lap cannot be run on it.')
+    print('[RaceManager] Pace lap refused: the loaded track is point-to-point')
+    broadcastState()
+    return
+  end
+  race.paceLap = want
+  broadcastState()
+  print('[RaceManager] Pace lap ' .. (race.paceLap and 'ENABLED' or 'disabled')
+    .. ' by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
 -- Client completed the joker route. It already enforced "not on lap 1" and
 -- "only once" locally; the server records the count (and the lap it happened
 -- on) and rules on it when the race ends.
@@ -3292,28 +3454,35 @@ function RM_onJokerLap(pid, rawData)
   broadcastState()
 end
 
+-- Grid audit (Module 4). REPORTS, and deliberately does nothing else: the
+-- live check has already taken the car off any non-admin who declared an
+-- illegal setup, so anyone still listed here is either an admin (exempt by
+-- design) or a case the live check could not act on. Deleting a car in the
+-- last seconds before GO would do more damage to the race than starting with
+-- one wrong setup in it, and it is the admin's call either way.
+--
+-- Its own function because there are TWO ways to start a session now, and an
+-- audit that ran on only one of them would be an audit that silently stopped
+-- happening for every race started behind the pace car.
+local function reportGridAudit(pid)
+  local bad = garageAudit and garageAudit() or {}
+  if #bad == 0 then return end
+  local names = {}
+  for i, b in ipairs(bad) do
+    names[i] = b.name .. (b.admin and ' (admin)' or '') .. ' [' .. b.label .. ']'
+  end
+  local line = 'Starting with ' .. #bad .. ' car(s) not on the Garage List: '
+    .. table.concat(names, ', ')
+  print('[RaceManager] ' .. line)
+  MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+    added = false, message = line,
+  }))
+end
+
 function RM_onStartCountdown(pid)
   if not requireAuth(pid) then return end
   if race.phase ~= 'grid' then return end
-  -- Grid audit (Module 4). REPORTS, and deliberately does nothing else: the
-  -- live check has already taken the car off any non-admin who declared an
-  -- illegal setup, so anyone still listed here is either an admin (exempt by
-  -- design) or a case the live check could not act on. Deleting a car in the
-  -- last seconds before GO would do more damage to the race than starting with
-  -- one wrong setup in it, and it is the admin's call either way.
-  local bad = garageAudit and garageAudit() or {}
-  if #bad > 0 then
-    local names = {}
-    for i, b in ipairs(bad) do
-      names[i] = b.name .. (b.admin and ' (admin)' or '') .. ' [' .. b.label .. ']'
-    end
-    local line = 'Starting with ' .. #bad .. ' car(s) not on the Garage List: '
-      .. table.concat(names, ', ')
-    print('[RaceManager] ' .. line)
-    MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
-      added = false, message = line,
-    }))
-  end
+  reportGridAudit(pid)
   race.phase = 'countdown'
   countdownValue = CFG.countdownFrom
   broadcastState()
@@ -3322,26 +3491,35 @@ function RM_onStartCountdown(pid)
   print('[RaceManager] Countdown started by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
-function RM_CountdownTick()
-  if race.phase ~= 'countdown' then
-    MP.CancelEventTimer('RM_CountdownTick')
-    return
-  end
-  countdownValue = countdownValue - 1
-  if countdownValue > 0 then
-    broadcastCountdown(countdownValue)
-    return
-  end
-  -- GO! One release for both kinds of session: every held car is let go by the
-  -- same broadcast, and lap 1 starts at the line for everybody.
-  MP.CancelEventTimer('RM_CountdownTick')
-  broadcastCountdown(0)
+-- GO. THE ONE PLACE THE FIELD IS RELEASED, whichever start procedure got here.
+--
+-- There are two: the lights (RM_CountdownTick, at the end of the countdown) and
+-- the pace car (RM_onStartRace, immediately). Everything below is the same for
+-- both -- one release, one clock reset, one wipe of every per-driver counter --
+-- and it is shared rather than copied because a second release path that
+-- forgot one line of this would be a race with last week's lap counts in it.
+--
+-- `pacing` is the only thing that differs, and it changes exactly two things
+-- here: the flag the field is released under, and whether the green has already
+-- fallen. The pace lap itself is an out lap, and outLapOwed() has already been
+-- taught that, so every rule about a lap that is driven and not scored applies
+-- to it without another branch anywhere.
+local function releaseField(pacing)
   race.phase = runningStatus()   -- 'qualifying' or 'racing'
-  -- Every session starts green. A caution belongs to the session it was called
-  -- in, and carrying one into the next race is the kind of state nobody thinks
-  -- to check.
-  race.flag = 'green'
+  -- A pace lap is run under yellow BY DEFINITION: that is what "hold position,
+  -- no overtaking" is. Every other session starts green -- a caution belongs to
+  -- the session it was called in, and carrying one into the next race is the
+  -- kind of state nobody thinks to check.
+  race.pacing = pacing == true
+  race.flag   = race.pacing and 'yellow' or 'green'
+  -- The latch on CFG.paceArmAt starts closed: the field is standing at the line.
+  race.paceArmed = false
   race.time = 0.0
+  -- The green is now, unless a pace lap is about to be run -- in which case it
+  -- is stamped when the flag actually falls, and until then a timed race's
+  -- clock has not started. 0 either way for a race that never paces, which is
+  -- what makes the subtraction free everywhere else.
+  race.greenAt = 0.0
   -- The hold goes with the clock it was measured against.
   race.endsAt, race.endReason = nil, nil
   race.qualiTime = 0.0
@@ -3384,13 +3562,26 @@ function RM_CountdownTick()
   -- The same record for the race half of the file. A ten lap race that ran
   -- eleven crossings should say which one it gave away, or the lap column and
   -- the setting an admin typed disagree with nothing to explain it.
-  if not isQualiSession() then race.raceOutLapRun = outLapOwed() end
+  if not isQualiSession() then
+    race.raceOutLapRun  = outLapOwed()
+    race.racePaceLapRun = race.pacing
+  end
   broadcastState()
   -- The out lap is the first thing that happens in a qualifying session, so it
   -- is announced at GO rather than left for drivers to work out from a clock
   -- that never started. Chat, because it reaches a driver who has not opened the
   -- app; the app itself says it again on the driver's own timing readout.
-  if outLapOwed() and isQualiSession() then
+  --
+  -- THE PACE LAP GETS THE FIRST WORD, because it is an instruction rather than a
+  -- notice: a driver who reads "your first lap is not timed" and nothing else
+  -- will race it. The speed is stated in both units on purpose -- this is a
+  -- league with drivers either side of the Atlantic, and a number that means
+  -- nothing to half the grid is a number half the grid ignores.
+  if race.pacing then
+    MP.SendChatMessage(-1, '[RaceManager] PACE LAP: maintain position and limit '
+      .. 'your speed to 40 mph / 64 km/h. No overtaking. The GREEN FLAG falls as '
+      .. 'the leader reaches the start/finish line.')
+  elseif outLapOwed() and isQualiSession() then
     MP.SendChatMessage(-1, '[RaceManager] GO! Your first lap is an OUT LAP: it is '
       .. 'not timed and does not count. Timing starts as you cross the line.')
   elseif outLapOwed() then
@@ -3414,10 +3605,156 @@ function RM_CountdownTick()
     lapNote = (target and (target .. ' laps') or 'unlimited laps')
       .. (outLapOwed() and ' (incl. out lap)' or '')
   end
-  print('[RaceManager] GO! (' .. (isQualiSession() and 'qualifying' or 'race') .. ', '
+  print('[RaceManager] ' .. (race.pacing and 'PACE LAP!' or 'GO!')
+    .. ' (' .. (isQualiSession() and 'qualifying' or 'race') .. ', '
     .. lapNote .. ')'
     .. (race.jokerEnabled and not isQualiSession() and ': JOKER LAP REQUIRED' or '')
     .. (race.maxResets >= 0 and (': resets limited to ' .. race.maxResets) or ''))
+end
+
+-- THE GREEN FLAG, at the end of a pace lap. One way in and one way out, so the
+-- manual green an admin can always call (RM_onSetFlag) and the automatic one
+-- below end the pace lap identically rather than leaving `pacing` set on one of
+-- the two paths.
+--
+-- Nothing about the field changes here beyond the flag: the cars are already
+-- released, the gates are already armed and every driver still owes the crossing
+-- that starts their lap 1. What the green does is start the RACE -- the clock a
+-- timed race is run to begins at this moment and not at the release.
+local function dropGreenFlag(why)
+  if not race.pacing then return false end
+  race.pacing  = false
+  race.flag    = 'green'
+  race.greenAt = race.time
+  MP.SendChatMessage(-1, '[RaceManager] GREEN FLAG - GO! The pace lap is over '
+    .. 'and the race is on.')
+  print(string.format('[RaceManager] GREEN FLAG at %.1fs: %s', race.time,
+    why or 'pace lap complete'))
+  broadcastState()
+  return true
+end
+
+-- WHO IS LEADING THE PACE LAP, and how far they still are from the line.
+--
+-- "The leader" is the same question raceOrderLess already answers, asked over
+-- the drivers who are still ON the pace lap -- the ones who still owe the
+-- crossing that starts their lap 1. Restricting it to those matters on a track
+-- that grids its cars away from the start/finish line: there a car gridded
+-- short of the line ends its out lap almost at once (see the out-lap branch in
+-- checkGates on the client), and it would otherwise rank first on lap count
+-- while its reported distance had quietly become a distance to checkpoint 1.
+--
+-- Returns nil when nobody is left on the pace lap, which is a real state (the
+-- whole field has crossed) and is handled by the caller rather than here.
+local function paceLeader()
+  local best = nil
+  for _, rec in pairs(players) do
+    -- NOT gated on having reported a distance yet, and that is the difference
+    -- between a pace lap and no pace lap at all. The field is released before
+    -- any client's first telemetry arrives, so for the first fraction of a
+    -- second nobody has a distNext -- and a leader search that skipped them
+    -- would find nothing, which the caller reads as "the field has all crossed"
+    -- and answers with an immediate green. raceOrderLess already treats a driver
+    -- with no distance as infinitely far away, so they sort last and cost
+    -- nothing; the caller waits for a distance rather than for a driver.
+    if onTrack(rec) and rec.outLap then
+      if not best or raceOrderLess(rec, best) then best = rec end
+    end
+  end
+  return best
+end
+
+-- The pace lap, one tick at a time.
+--
+-- Two thresholds and a latch, and the latch is the part that is not obvious.
+-- The field STARTS the pace lap standing at the start/finish line, so "the
+-- leader is within ten meters of the line" is true at the release as well as at
+-- the end of the lap -- the green would fall on the tick the cars were let go.
+-- So the trigger is armed only once the leader has genuinely got away from the
+-- line, and it is being away and coming back that means the lap is run.
+--
+-- That also makes it right on a grid placed anywhere: a head-on layout that
+-- grids its field half a lap out arms on the first tick and still waits for the
+-- leader to come round, and a grid five meters short of the line arms as soon as
+-- the field has driven fifty.
+local function paceLapWatch()
+  -- A RED FLAG HOLDS EVERYTHING. Red means stop where you are and wait, so a
+  -- leader who coasts the last few meters to the line under one must not start
+  -- the race by arriving -- and an empty track under a red is a field that has
+  -- been told to stop, not one that has finished forming up. The admin who threw
+  -- it lifts it, and their manual green ends the pace lap through the same
+  -- function the automatic one does, so nothing here can get stuck.
+  if race.flag == 'red' then return end
+  local leader = paceLeader()
+  if not leader then
+    -- NOBODY IS ON THE PACE LAP. Either the whole field has already crossed the
+    -- line or there is nobody circulating at all; in both cases there is no
+    -- longer anything to hold the green up, and holding it anyway would leave a
+    -- race running under a yellow that could never be lifted.
+    dropGreenFlag('no driver left on the pace lap')
+    return
+  end
+  -- Released, but this driver's first telemetry has not landed yet. Nothing can
+  -- be judged from a distance we do not have, so the pace lap simply waits.
+  if not leader.distNext then return end
+  if not race.paceArmed then
+    if leader.distNext > CFG.paceArmAt then
+      race.paceArmed = true
+      print(string.format('[RaceManager] Pace lap under way: %s leads, %.0fm from the line',
+        leader.name, leader.distNext))
+    end
+    return
+  end
+  if leader.distNext <= CFG.paceGreenAt then
+    dropGreenFlag(string.format('%s is %.1fm from the line', leader.name, leader.distNext))
+  end
+end
+
+function RM_CountdownTick()
+  if race.phase ~= 'countdown' then
+    MP.CancelEventTimer('RM_CountdownTick')
+    return
+  end
+  countdownValue = countdownValue - 1
+  if countdownValue > 0 then
+    broadcastCountdown(countdownValue)
+    return
+  end
+  -- GO! One release for both kinds of session: every held car is let go by the
+  -- same broadcast, and lap 1 starts at the line for everybody.
+  MP.CancelEventTimer('RM_CountdownTick')
+  broadcastCountdown(0)
+  releaseField(false)
+end
+
+-- START THE RACE BEHIND THE PACE CAR, with no countdown at all.
+--
+-- The other half of the pace lap rule: with it armed the panel offers this
+-- INSTEAD of Start Countdown, because a formation lap and a standing start are
+-- alternatives rather than a sequence. Counting a field down to GO and then
+-- telling it to hold position at 40 mph is two instructions for one moment, and
+-- a driver obeys whichever of them they read.
+--
+-- Guarded exactly as Start Countdown is -- admin, on the grid, garage audited --
+-- and refused outright when the rule is NOT armed. Releasing the field with no
+-- countdown, no yellow and no green to come is nobody's idea of a start, and
+-- refusing it here is what makes the two buttons a genuine either/or rather than
+-- a second way to start whatever is on the grid.
+function RM_onStartRace(pid)
+  if not requireAuth(pid) then return end
+  if race.phase ~= 'grid' then return end
+  if not paceLapArmed() then
+    MP.SendChatMessage(pid, '[RaceManager] Start Race runs a PACE LAP, and the '
+      .. 'pace lap is not armed for this session. Use Start Countdown, or turn '
+      .. 'the pace lap on in Race settings.')
+    return
+  end
+  reportGridAudit(pid)
+  -- No countdown overlay to hide, but one may be up from an aborted start.
+  broadcastCountdown(-1)
+  releaseField(true)
+  print('[RaceManager] Race started behind the pace car by '
+    .. (MP.GetPlayerName(pid) or pid))
 end
 
 -- End Session: during a race anyone still on track becomes DNF; during
@@ -3475,6 +3812,15 @@ function RM_onResetLeaderboard(pid)
   race.endsAt, race.endReason = nil, nil
   race.qualiTime = 0.0
   race.qualiOutLapRun = false
+  race.racePaceLapRun = false
+  -- The pace lap's CONDITION goes; the RULE stays. Reset Session starts the
+  -- evening again, and an admin who set the league up to run formation starts
+  -- has not changed their mind by pressing it -- but a session left mid-pace-lap
+  -- must not come back as one, or the next race would be released under a yellow
+  -- with its arming latch already tripped.
+  race.pacing    = false
+  race.paceArmed = false
+  race.greenAt   = 0.0
   race.finalLap     = false
   race.finalLapLeft = 0
   race.raceExpired  = false
@@ -3601,12 +3947,24 @@ function RM_onLap(pid, rawData)
   -- they got to, and it carries exactly the value finishTime does.
   progress.record(rec, (rec.currentLap or 0) + 1, 0)
 
+  --
+  -- A PACE LAP IS ALWAYS THE UNTIMED ONE, whatever the distance. The one-lap
+  -- exemption above exists so a single-lap race is not left with no times in it
+  -- at all -- and behind the pace car a one-lap race has TWO crossings, the
+  -- formation lap and the racing lap, so the time it needs is still there.
+  local paced = paceLapArmed()
   local untimedFirstLap = false
-  if not quali and (rec.currentLap or 0) <= 1 and (race.totalLaps or 0) > 1 then
+  if not quali and (rec.currentLap or 0) <= 1
+      and ((race.totalLaps or 0) > 1 or paced) then
     rec.outLap = false
     untimedFirstLap = true
-    MP.SendChatMessage(rec.id,
-      '[RaceManager] First lap done: it counts, but it set no lap time.')
+    -- Said differently for a formation lap, because it is a different fact. "It
+    -- counts but set no lap time" describes a standing start; a driver who has
+    -- just followed the field round under yellow needs to hear that the lap they
+    -- are STARTING is lap 1 of the race.
+    MP.SendChatMessage(rec.id, paced
+      and '[RaceManager] Pace lap complete: you are racing. This is lap 1.'
+      or  '[RaceManager] First lap done: it counts, but it set no lap time.')
   end
   if rec.outLap and quali then
     rec.outLap = false
@@ -4036,6 +4394,12 @@ local function applyConfigTable(data)
   bool('nametags')
   num('countdownFrom', 1, 60)
   num('endDelay', 0, 120)
+  bool('paceLap')
+  -- The green distance is bounded well below the arming distance on purpose:
+  -- with the two crossed over, the latch could never trip before the trigger
+  -- did and the green would fall on the tick the field was released.
+  num('paceGreenAt', 1, 100)
+  num('paceArmAt', 20, 1000)
   num('qualiLapLimit', 0, CFG.maxQualiLaps)
   num('qualiTimeLimit', 0, CFG.maxQualiTime)
   num('finalLapGrace', 10, 3600)
@@ -4049,6 +4413,18 @@ local function applyConfigTable(data)
   if CFG.ghostMinSeconds > CFG.ghostMaxSeconds then
     print('[RaceManager] config.json: ghostMinSeconds is above ghostMaxSeconds; swapping them')
     CFG.ghostMinSeconds, CFG.ghostMaxSeconds = CFG.ghostMaxSeconds, CFG.ghostMinSeconds
+  end
+  -- The pace lap's two distances have to stay in order for the same kind of
+  -- reason: a green threshold at or above the arming one means the leader is
+  -- inside the trigger before the latch can ever trip, so the flag falls at the
+  -- release and the field never runs the lap. Not swapped -- the two numbers
+  -- mean different things and swapping would produce a working pace lap the
+  -- admin did not ask for -- so the arming distance is pushed clear instead.
+  if CFG.paceArmAt <= CFG.paceGreenAt then
+    CFG.paceArmAt = CFG.paceGreenAt * 2
+    print(string.format('[RaceManager] config.json: paceArmAt must be above '
+      .. 'paceGreenAt or the green falls at the release; raised it to %.0fm',
+      CFG.paceArmAt))
   end
   return applied
 end
@@ -4070,6 +4446,9 @@ saveConfigToDisk = function ()
     nametags       = CFG.nametags,
     countdownFrom  = CFG.countdownFrom,
     endDelay       = CFG.endDelay,
+    paceLap        = CFG.paceLap,
+    paceGreenAt    = CFG.paceGreenAt,
+    paceArmAt      = CFG.paceArmAt,
     qualiLapLimit  = CFG.qualiLapLimit,
     qualiTimeLimit = CFG.qualiTimeLimit,
     finalLapGrace  = CFG.finalLapGrace,
@@ -4093,6 +4472,7 @@ local function applyConfigToRace()
   race.resetMode      = CFG.resetMode
   race.nametags       = CFG.nametags
   race.endDelay       = CFG.endDelay
+  race.paceLap        = CFG.paceLap
   race.qualiLapLimit  = CFG.qualiLapLimit
   race.qualiTimeLimit = CFG.qualiTimeLimit
   adminPassword       = CFG.adminPassword
@@ -4121,10 +4501,11 @@ local function loadConfigFromDisk()
   end
   local n = applyConfigTable(data)
   print(string.format('[RaceManager] Settings loaded from config.json (%d value%s): '
-    .. '%d laps, resets %s, countdown %d, ghost %.0f-%.0fs',
+    .. '%d laps, resets %s, countdown %d, ghost %.0f-%.0fs, pace lap %s',
     n, n == 1 and '' or 's', CFG.totalLaps,
     CFG.maxResets < 0 and 'unlimited' or tostring(CFG.maxResets),
-    CFG.countdownFrom, CFG.ghostMinSeconds, CFG.ghostMaxSeconds))
+    CFG.countdownFrom, CFG.ghostMinSeconds, CFG.ghostMaxSeconds,
+    CFG.paceLap and string.format('on (green at %.0fm)', CFG.paceGreenAt) or 'off'))
 end
 
 
@@ -4616,6 +4997,16 @@ function RM_onSetFlag(pid, rawData)
     MP.SendChatMessage(pid, '[RaceManager] No session is running, so there is nothing to flag.')
     return
   end
+  -- THE MANUAL GREEN IS THE PACE LAP'S OVERRIDE, and it is the reason no timeout
+  -- is needed here. A field that has crashed, spun or simply stopped will never
+  -- bring its leader back to the line, and rather than guess at how long a
+  -- formation lap is allowed to take, the marshal who can see the track calls it
+  -- -- with the same button they would use for any other green. Routed through
+  -- dropGreenFlag so the automatic and the manual green leave identical state.
+  if want == 'green' and race.pacing then
+    dropGreenFlag('green called by ' .. tostring(MP.GetPlayerName(pid) or pid))
+    return
+  end
   if want == race.flag then return end
   race.flag = want
   local who = MP.GetPlayerName(pid) or pid
@@ -4800,6 +5191,16 @@ function RM_onLoadLayout(pid, rawData)
         MP.SendChatMessage(-1, '[RaceManager] Joker lap switched off: "' .. l.name
           .. '" has no Joker Route.')
         print('[RaceManager] Joker lap auto-disabled: the loaded track has no joker gates')
+      end
+      -- ...and the same for the pace lap on a sprint stage, for the same reason
+      -- as in RM_onSetPointToPoint: the rule is inert there, so what is left
+      -- behind is a switch that reads ENABLED and a Start button that has
+      -- changed back underneath it.
+      if race.pointToPoint and race.paceLap then
+        race.paceLap = false
+        MP.SendChatMessage(-1, '[RaceManager] Pace lap switched off: "' .. l.name
+          .. '" is a sprint stage, driven once, with no lap to form up on.')
+        print('[RaceManager] Pace lap auto-disabled: the loaded track is point-to-point')
       end
       race.layout = l
       print(string.format('[RaceManager] Broadcasting RM_ApplyLayout: "%s", %d checkpoint(s), %d start position(s), width %s',
@@ -7256,12 +7657,16 @@ function RM_Tick()
       -- Not a return: the session is still running, and the broadcast below
       -- is what carries the final-lap flag to every client.
     end
-  elseif race.phase == 'racing' and race.raceTimeLimit > 0 then
+  elseif race.phase == 'racing' and race.raceTimeLimit > 0 and not race.pacing then
     if not race.raceExpired then
       -- THE CLOCK RUNNING OUT CHANGES NOTHING YET. It arms the wait; the
       -- leader's next crossing is what starts the final lap. A driver reading
       -- laps-to-go sees two at this point: finish this one, then run the last.
-      if race.time >= race.raceTimeLimit then
+      --
+      -- Measured from the GREEN. A pace lap is not race time, and a ten minute
+      -- race that spent ninety seconds forming up would otherwise be an eight
+      -- and a half minute one.
+      if raceElapsed() >= race.raceTimeLimit then
         race.raceExpired   = true
         race.raceExpiredAt = race.time
         broadcastState()
@@ -7285,6 +7690,17 @@ function RM_Tick()
       print('[RaceManager] Timed race: no lead-lap crossing within the grace, flag out')
     end
   end
+  -- THE PACE LAP'S ONE JOB: watch the leader home and drop the green.
+  --
+  -- Every tick rather than every broadcast, because this is a distance the field
+  -- closes at pace speed -- ten meters is about half a second at 64 km/h, and
+  -- resolving that on a three-tick cadence would wave the flag anywhere in the
+  -- ten meters after the line as easily as before it.
+  --
+  -- A scan, not a sort. The full running order is built three times a second by
+  -- buildDrivers; asking for it ten times a second to read one row off the top
+  -- would cost a sort of the whole field for a comparison of one number.
+  if race.pacing then paceLapWatch() end
   tickCounter = tickCounter + 1
   if tickCounter >= CFG.pushEveryTicks then
     tickCounter = 0
@@ -7436,6 +7852,8 @@ function onInit()
   MP.RegisterEvent('onVehicleSpawn',      'RM_onVehicleSpawn')
   MP.RegisterEvent('onVehicleEdited',     'RM_onVehicleEdited')
   MP.RegisterEvent('RM_StartCountdown',   'RM_onStartCountdown')
+  MP.RegisterEvent('RM_StartRace',        'RM_onStartRace')      -- pace-lap start
+  MP.RegisterEvent('RM_SetPaceLap',       'RM_onSetPaceLap')
   MP.RegisterEvent('RM_EndRace',          'RM_onEndRace')
   MP.RegisterEvent('RM_ResetLeaderboard', 'RM_onResetLeaderboard')
   MP.RegisterEvent('RM_ClearResults',     'RM_onClearResults')

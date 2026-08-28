@@ -81,6 +81,12 @@ angular.module('beamng.apps')
       // What a legal reset does: repair in place, or respawn at the last
       // checkpoint the driver crossed. Mirrored from the server.
       $scope.resetMode = 'inplace';
+      // The pace lap. `paceLap` is the rule an admin arms before the grid
+      // forms; `pacing` is the formation lap actually running. The panel needs
+      // both: the rule decides which Start button it offers, and the condition
+      // is what it says on screen while the field forms up.
+      $scope.paceLap = false;
+      $scope.pacing = false;
       // Rallycross joker lap.
       $scope.jokerEnabled = false;
       $scope.jokerGates = 0;      // joker gates the LOADED TRACK has (server's count)
@@ -1299,7 +1305,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.10.0';
+      var APP_BUILD = '0.11.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -1976,6 +1982,8 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
             $scope.resetMode = data.resetMode;
           }
           $scope.jokerEnabled = !!data.jokerEnabled;
+          $scope.paceLap = !!data.paceLap;
+          $scope.pacing = !!data.pacing;
           // Does the loaded track have other lanes at all? Decides whether the
           // leaderboard shows a Line column - on an ordinary circuit it is a
           // column that would say the same thing on every row.
@@ -3181,6 +3189,20 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.startCountdown = function () {
         bngApi.engineLua('raceManager.startCountdown()');
       };
+      // Start the race behind the pace car. The ALTERNATIVE to the countdown,
+      // not a step before it -- see paceStart() for which of the two the panel
+      // puts on screen.
+      $scope.startRace = function () {
+        bngApi.engineLua('raceManager.startRace()');
+      };
+      // Does this grid start behind the pace car? Qualifying never does: there
+      // is no field to form up, and the server refuses it -- so a grid formed by
+      // Start Quali keeps the countdown even with the rule armed, and the button
+      // an admin is looking at is the one that will work.
+      $scope.paceStart = function () {
+        return $scope.paceLap && !$scope.pointToPoint
+          && $scope.sessionKind !== 'quali';
+      };
       // Advisory only: it is shown to the field and announced in chat, and the
       // server decides whether the session is in a state to be flagged at all.
       // Shown once a session is actually running. On the grid the red lamp says
@@ -3301,6 +3323,42 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.setResetMode = function (mode) {
         bngApi.engineLua('raceManager.setResetMode("'
           + (mode === 'checkpoint' ? 'checkpoint' : 'inplace') + '")');
+      };
+
+      // THE BADGE ON A LAP THAT IS NOT SCORED, in its three forms -- and they
+      // are three different facts, not three wordings of one.
+      //
+      //   quali    the lap is thrown away entirely: not timed, not scored, and
+      //            not one of the timed laps the allowance promised.
+      //   pace     the formation lap. Not timed and NOT one of the race laps --
+      //            it goes on top of the distance, so five laps behind the pace
+      //            car is six crossings.
+      //   standing an ordinary race's first lap off a standing grid. It COUNTS
+      //            toward the distance; only its time is dropped.
+      //
+      // The middle one used to be shown with the third one's words, which told a
+      // driver on a formation lap that the lap counted. In a ternary in the
+      // template this is unreadable, and it is the sort of thing that gets left
+      // wrong because nobody wants to touch it.
+      $scope.outLapLabel = function () {
+        if ($scope.sessionKind === 'quali') { return 'OUT LAP'; }
+        if ($scope.paceLap) { return 'PACE LAP: NOT SCORED'; }
+        return 'LAP 1: NOT TIMED';
+      };
+      $scope.outLapNote = function () {
+        if ($scope.sessionKind === 'quali') {
+          return 'Out lap: not timed, not scored, not counted.';
+        }
+        if ($scope.paceLap) {
+          return 'The formation lap: not timed, and not one of the race laps. '
+            + 'Your lap 1 starts as you cross the line.';
+        }
+        return 'Counts toward the distance, but sets no lap time.';
+      };
+
+      // Module 5: arm/disarm the pace lap for the next race.
+      $scope.togglePaceLap = function () {
+        bngApi.engineLua('raceManager.setPaceLap(' + (!$scope.paceLap) + ')');
       };
 
       // Module 2: arm/disarm the joker lap requirement.
