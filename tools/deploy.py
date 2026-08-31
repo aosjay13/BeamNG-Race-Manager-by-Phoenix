@@ -14,11 +14,16 @@ Two rules this script will not break, because both have cost real work:
 
   * It writes Resources/Client/RaceManager.zip and the plugin's .lua files,
     and NOTHING ELSE. The .lua set is discovered from server/RaceManager rather
-    than listed, so a new module cannot be left behind -- but the rule that
-    matters is the other half: everything under Resources/Server/RaceManager
-    that is not a .lua is LIVE DATA the server owns. layouts.json is every
-    track you have built, and cup.json, roster.json, garage.json,
-    derbyArenas.json, config.json and results/ are the rest of a race night.
+    than listed, so a new module cannot be left behind.
+
+    THE SERVER'S OWN DATA NOW LIVES IN ITS OWN FOLDER, Resources/Server/
+    RaceManager/Data/: the tracks you have built, the championship, the roster,
+    the garage, the settings and the results. This script has never written
+    anything in there and now it could not do so by accident either -- code and
+    data are two folders rather than two filename conventions in one.
+
+    The pre-Data copies are left where they were as a backup, so an older
+    layouts.json beside main.lua is expected and is not read.
 
   * It backs up whatever it replaces first, and verifies by hash afterwards.
     A stale file fails silently in this mod: a button just stops working.

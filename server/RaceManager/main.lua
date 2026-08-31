@@ -2093,7 +2093,22 @@ end
 -- ---------------------------------------------------------------------------
 -- Written automatically when a race session ends; one .txt per session so
 -- league standings / broadcast scripts can pick them up.
-local RESULTS_DIR = 'Resources/Server/RaceManager/results'
+-- CODE AND DATA, IN TWO PLACES THAT CANNOT BE CONFUSED.
+--
+-- The plugin's .lua files sit in SERVER_DIR and are REPLACED by every deploy.
+-- Everything the server owns -- the tracks an admin built, the championship, the
+-- roster, the garage, the settings, the results -- sits under DATA_DIR and is
+-- never written by a release.
+--
+-- They used to be the same folder, with layouts.json and cup.json sitting beside
+-- main.lua, and the only thing keeping a deploy off a league's season was a
+-- deploy script that knew which filenames to avoid. That is a rule living in the
+-- wrong place: it has to be re-remembered by anything that ever writes here, and
+-- a season is not the thing to protect with a list of exceptions. A folder says
+-- it once, to everything, for good.
+local SERVER_DIR  = 'Resources/Server/RaceManager'
+local DATA_DIR    = SERVER_DIR .. '/Data'
+local RESULTS_DIR = DATA_DIR .. '/results'
 
 local function fmtLap(t)
   if not t then return 'no time' end
@@ -5437,7 +5452,10 @@ end
 -- by the BeamNG level name; the UI only ever sees layouts for the map this
 -- server is currently hosting. Loading a layout broadcasts the checkpoints to
 -- every connected client at once so the whole grid races the same track.
-local LAYOUTS_DIR  = 'Resources/Server/RaceManager'
+-- Everything with a path hangs off this, on both sides of the plugin: the derby
+-- module is handed it too. Pointing it at Data moved the whole store in one
+-- line, which is the reason it was worth one constant in the first place.
+local LAYOUTS_DIR  = DATA_DIR
 local LAYOUTS_FILE = LAYOUTS_DIR .. '/layouts.json'
 -- ONE FILE PER MAP, in a folder, and it is what layouts.json used to be.
 --
@@ -5465,7 +5483,7 @@ local layouts = nil  -- lazy-loaded array of { name, map, width, checkpoints }
 -- Self-contained JSON encode/decode for the layouts file. Util.JsonEncode is
 -- still used for network payloads, but persistence gets its own (strict,
 -- mock-independent) codec so the headless tests exercise the real file format.
-local function jsonStringify(v)
+local function jsonStringify(v, indent)
   local t = type(v)
   if v == nil then return 'null' end
   if t == 'boolean' then return v and 'true' or 'false' end
@@ -5480,20 +5498,58 @@ local function jsonStringify(v)
       return string.format('\\u%04x', c:byte())
     end) .. '"'
   end
-  if t == 'table' then
-    local parts = {}
-    if #v > 0 or next(v) == nil then  -- array (empty tables encode as [])
-      for _, item in ipairs(v) do parts[#parts + 1] = jsonStringify(item) end
-      return '[' .. table.concat(parts, ',') .. ']'
+  if t ~= 'table' then return 'null' end
+
+  -- LAID OUT FOR SOMEBODY TO OPEN. Every file this writes is one an admin is now
+  -- expected to hand-edit -- a map's tracks, the garage, the roster -- and a
+  -- single line three hundred kilobytes long is not a file, it is a blob with a
+  -- .json on it.
+  --
+  -- COMPACT LEAVES, and that is the part that makes this readable rather than
+  -- merely long. An object or array whose values are ALL scalars prints on one
+  -- line, so a checkpoint is one line and not six:
+  --
+  --     "checkpoints": [
+  --       {"hx": 0, "hy": 1, "width": 20, "x": 10, "y": 0, "z": 0},
+  --       {"hx": 0, "hy": 1, "width": 20, "x": 20, "y": 0, "z": 0}
+  --     ]
+  --
+  -- Fully expanded, a twelve-gate track would be a hundred lines of one number
+  -- each and nobody could see the track for the coordinates.
+  --
+  -- KEYS ARE SORTED, which is not cosmetic. Lua's `pairs` gives no order, so the
+  -- old writer emitted the same data in a different key order on every save --
+  -- and a file that rewrites itself differently each time cannot be diffed, which
+  -- is most of the point of laying it out at all.
+  --
+  -- The parser skips whitespace between tokens, so everything this writes still
+  -- reads back, and so does a file somebody has reformatted by hand.
+  local pad   = indent or ''
+  local inner = pad .. '  '
+  local parts, leaf = {}, true
+
+  if #v > 0 or next(v) == nil then  -- array (empty tables encode as [])
+    for _, item in ipairs(v) do
+      if type(item) == 'table' then leaf = false end
+      parts[#parts + 1] = jsonStringify(item, inner)
     end
-    for k, item in pairs(v) do
-      if type(k) == 'string' then
-        parts[#parts + 1] = jsonStringify(k) .. ':' .. jsonStringify(item)
-      end
-    end
-    return '{' .. table.concat(parts, ',') .. '}'
+    if #parts == 0 then return '[]' end
+    if leaf then return '[' .. table.concat(parts, ', ') .. ']' end
+    return '[\n' .. inner .. table.concat(parts, ',\n' .. inner) .. '\n' .. pad .. ']'
   end
-  return 'null'
+
+  local keys = {}
+  for k in pairs(v) do
+    if type(k) == 'string' then keys[#keys + 1] = k end
+  end
+  table.sort(keys)
+  for _, k in ipairs(keys) do
+    if type(v[k]) == 'table' then leaf = false end
+    parts[#parts + 1] = jsonStringify(k) .. ': ' .. jsonStringify(v[k], inner)
+  end
+  if #parts == 0 then return '{}' end
+  if leaf then return '{' .. table.concat(parts, ', ') .. '}' end
+  return '{\n' .. inner .. table.concat(parts, ',\n' .. inner) .. '\n' .. pad .. '}'
 end
 
 local function jsonParse(text)
@@ -5615,6 +5671,73 @@ end
 
 local function ensureLayoutsDir()
   makeDirectory(LAYOUTS_DIR)
+end
+
+-- Copy one file, bytes for bytes. Used only by the migration below, which is why
+-- it is allowed to be this blunt: the files are JSON and results text, none of
+-- them large enough for reading one whole into memory to matter.
+local function copyFile(from, to)
+  local src = io.open(from, 'rb')
+  if not src then return false end
+  local body = src:read('*a')
+  src:close()
+  local dst = io.open(to, 'wb')
+  if not dst then return false end
+  dst:write(body)
+  dst:close()
+  return true
+end
+
+-- MOVE THE SERVER'S OWN DATA UNDER Data/, once.
+--
+-- Runs before anything is read -- see onInit -- because every path in this file
+-- now points into Data and the files are not there yet on the first start after
+-- the upgrade.
+--
+-- COPIES, AND LEAVES THE ORIGINALS. The same rule the layout store's own
+-- migration follows and for the same reason: a migration that deletes the only
+-- copy of what it is migrating is not a migration. Nothing reads the old paths
+-- afterwards, so the leftovers are inert -- and if somebody deletes Data/ they
+-- get their last known-good season back rather than an empty server.
+--
+-- Keyed on Data/ being ABSENT, not on it being empty. A server that has been
+-- migrated and then had everything deleted must stay deleted.
+local function migrateToDataFolder()
+  local probe = io.open(DATA_DIR .. '/.rm', 'a')
+  if probe then
+    probe:close()
+    removeFile(DATA_DIR .. '/.rm')
+    return                      -- already migrated
+  end
+  makeDirectory(DATA_DIR)
+  local moved = 0
+  for _, name in ipairs({ 'config.json', 'cup.json', 'roster.json', 'garage.json',
+                          'layouts.json', 'derbyArenas.json' }) do
+    if copyFile(SERVER_DIR .. '/' .. name, DATA_DIR .. '/' .. name) then
+      moved = moved + 1
+    end
+  end
+  -- The folders: per-map tracks and arenas from an earlier upgrade, and the
+  -- results history. Copied file by file, because there is no recursive copy
+  -- here and these are flat folders of small text files.
+  for _, sub in ipairs({ 'Race Layout', 'Derby Arena', 'results' }) do
+    local from = SERVER_DIR .. '/' .. sub
+    local names = listDirectory(from)
+    if #names > 0 then
+      makeDirectory(DATA_DIR .. '/' .. sub)
+      for _, name in ipairs(names) do
+        if copyFile(from .. '/' .. name, DATA_DIR .. '/' .. sub .. '/' .. name) then
+          moved = moved + 1
+        end
+      end
+    end
+  end
+  if moved > 0 then
+    print(string.format('[RaceManager] Moved %d server file(s) into %s/. The '
+      .. 'originals are kept as a backup and are no longer read.', moved, DATA_DIR))
+  else
+    print('[RaceManager] Created ' .. DATA_DIR .. '/ (nothing to migrate)')
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -9355,6 +9478,10 @@ function RM_onPlayerDisconnect(pid)
 end
 
 function onInit()
+  -- THE DATA FOLDER BEFORE THE SETTINGS, because the settings are in it. Every
+  -- path in this file points into Data/, and on the first start after the
+  -- upgrade nothing is there yet.
+  migrateToDataFolder()
   -- SETTINGS FIRST, before any of it is read. The race table below was seeded
   -- from CFG when the file loaded, so anything config.json overrides has to be
   -- pushed into the live state as well -- see applyConfigToRace.

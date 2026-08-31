@@ -67,7 +67,7 @@ local function driver(name)
 end
 local function adminLogin(pid) RM_onLogin(pid, '{"password":"phoenix"}') end
 
-local RESULTS_DIR = 'Resources/Server/RaceManager/results'
+local RESULTS_DIR = 'Resources/Server/RaceManager/Data/results'
 local function readResults()
   local path = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
   if not path then return nil, nil end
@@ -277,7 +277,7 @@ local SIG_B = 'model=etk800|parts=body=etk800_body;engine=etk800_engine|vars=cam
 -- START FROM A KNOWN GARAGE. This section persists to garage.json by design, so
 -- a run that dies partway leaves entries behind and the next run fails its first
 -- four checks for reasons that have nothing to do with the code being tested.
-os.remove('Resources/Server/RaceManager/garage.json')
+os.remove('Resources/Server/RaceManager/Data/garage.json')
 dofile('server/RaceManager/main.lua')
 onInit()
 adminLogin(1)
@@ -635,7 +635,7 @@ check(lastState.garageMode == 'strict', 'and so does the enforcement mode')
 -- per-entry `partsSig`. It must load, default to the LOOSER mode, and recover
 -- the parts half from the full signature rather than demanding a re-capture:
 -- an upgrade that silently starts rejecting legal tunes is worse than useless.
-local legacy = io.open('Resources/Server/RaceManager/garage.json', 'w')
+local legacy = io.open('Resources/Server/RaceManager/Data/garage.json', 'w')
 legacy:write('{"version":1,"enforce":true,"list":[{"model":"etk800",'
   .. '"label":"ETK 800 - Legacy","sig":"' .. SIG_A .. '"}]}')
 legacy:close()

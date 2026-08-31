@@ -26,9 +26,20 @@
 --
 -- Run from the repo root: lua5.3 tests/layout_store_test.lua
 
+-- TWO MIGRATIONS RUN HERE, one after the other, and this file exercises both:
+--
+--   1. the server's own data moves under Data/, away from the .lua a release
+--      replaces;
+--   2. the flat layouts.json inside it splits into one file per map.
+--
+-- So the legacy file is seeded where an UPGRADING server actually has it -- at
+-- the top level, beside main.lua -- and the store it ends up being read from is
+-- the copy inside Data/.
 local DIR    = 'Resources/Server/RaceManager'
-local FLAT   = DIR .. '/layouts.json'
-local FOLDER = DIR .. '/Race Layout'
+local DATA   = DIR .. '/Data'
+local LEGACY = DIR .. '/layouts.json'
+local FLAT   = DATA .. '/layouts.json'
+local FOLDER = DATA .. '/Race Layout'
 
 local checks, fails = 0, 0
 local function check(cond, msg)
@@ -60,7 +71,7 @@ os.execute(package.config:sub(1, 1) == '\\'
 
 -- Two tracks on two different maps, in the old flat file.
 local function gate(x) return string.format('{"x":%d,"y":0,"z":0,"hx":0,"hy":1}', x) end
-writeFile(FLAT, '{"version":1,"layouts":[' ..
+writeFile(LEGACY, '{"version":1,"layouts":[' ..
   '{"name":"Club","map":"italy","width":20,"checkpoints":[' .. gate(10) .. ',' .. gate(20) .. ']},' ..
   '{"name":"Oval","map":"italy","width":20,"checkpoints":[' .. gate(30) .. ']},' ..
   '{"name":"Coast","map":"west_coast_usa","width":20,"checkpoints":[' .. gate(40) .. ']}' ..
@@ -112,9 +123,12 @@ check(exists(FOLDER .. '/italy.json'), 'italy has a file of its own')
 check(exists(FOLDER .. '/west_coast_usa.json'),
   'and so does the map the server is not even on: a migration moves the whole '
     .. 'store, not the part that happens to be loaded')
+check(exists(LEGACY),
+  'the original is KEPT where it was: a migration that deletes the only copy of '
+    .. 'what it is migrating is not a migration')
 check(exists(FLAT),
-  'the flat file is KEPT: a migration that deletes the only copy of what it is '
-    .. 'migrating is not a migration')
+  'and a copy of it landed in Data/ on the way past, which is what the layout '
+    .. 'store then split per map')
 
 -- ...and the file is named after the map, which is the whole point: the track
 -- list is a directory listing.

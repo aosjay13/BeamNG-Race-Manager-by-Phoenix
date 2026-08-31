@@ -338,7 +338,7 @@ for _ = 1, 20 do runRace(1, { endRace = true }) end
 
 local cupRounds = nil
 do
-  local f = io.open('Resources/Server/RaceManager/cup.json', 'r')
+  local f = io.open('Resources/Server/RaceManager/Data/cup.json', 'r')
   local data = f and jsonDecode(f:read('*a'))
   if f then f:close() end
   cupRounds = data and data.round or 0

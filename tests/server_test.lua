@@ -378,7 +378,7 @@ check(lastState.drivers[1].name == 'Bob' and lastState.drivers[2].name == 'Cara'
   'final order: Bob, Cara')
 
 -- Results export: chat announcement names the saved file's directory
-local RESULTS_DIR = 'Resources/Server/RaceManager/results'
+local RESULTS_DIR = 'Resources/Server/RaceManager/Data/results'
 check(type(lastChat) == 'string' and lastChat:find('Session complete', 1, true)
   and lastChat:find(RESULTS_DIR, 1, true),
   'chat broadcast announces results path')
@@ -445,9 +445,9 @@ check(type(lastChat) == 'string' and lastChat:find('GP Circuit', 1, true)
 -- ONE FILE PER MAP, in a folder, which is what layouts.json used to be. The
 -- filename is the map, so "which tracks do we have races for" is a directory
 -- listing rather than a parse of a single growing blob.
-check(fileExists('Resources/Server/RaceManager/Race Layout/gridmap_v2.json'),
+check(fileExists('Resources/Server/RaceManager/Data/Race Layout/gridmap_v2.json'),
   'the track file for this map is written to disk')
-check(not fileExists('Resources/Server/RaceManager/layouts.json'),
+check(not fileExists('Resources/Server/RaceManager/Data/layouts.json'),
   'and the flat layouts.json is not recreated: a save that wrote both would '
     .. 'leave two stores to disagree')
 check(lastLayouts ~= nil and lastLayouts.map == 'gridmap_v2'
@@ -1846,7 +1846,7 @@ end
 -- count a league starts with meant editing code and redeploying. They are one
 -- table now, seeded from a file that sits beside layouts.json.
 do
-  local CONFIG = 'Resources/Server/RaceManager/config.json'
+  local CONFIG = 'Resources/Server/RaceManager/Data/config.json'
   local function readConfig()
     local f = io.open(CONFIG, 'r')
     if not f then return nil end

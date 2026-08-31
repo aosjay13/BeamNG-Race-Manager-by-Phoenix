@@ -523,6 +523,40 @@ Four new settings in `config.json`, beside the lap count:
   every connected driver in the season and fill the standings with people who
   have never scored.
 
+### Code and data in two folders, and JSON you can read
+
+#### Changed
+
+- **The server's own data moved to `Resources/Server/RaceManager/Data/`.** The
+  tracks, the championship, the roster, the garage, the settings and the results
+  all live there; the plugin's `.lua` stay above it and are what a release
+  replaces.
+
+  They used to share one folder, and the only thing keeping a deploy off a
+  league's season was a deploy script that knew which filenames to avoid. That is
+  a rule in the wrong place: it has to be re-remembered by anything that ever
+  writes there, and a season is not the thing to protect with a list of
+  exceptions. A folder says it once, to everything.
+
+  It migrates itself on the first start, copying the old files across and
+  **leaving the originals** as a backup. Nothing reads them afterwards, so they
+  are inert -- and deleting `Data/` recovers from them rather than coming up
+  empty. Keyed on `Data/` being absent rather than empty, so a server that was
+  migrated and then had everything deleted stays deleted.
+
+- **The JSON files are written to be read.** One line per checkpoint, structure
+  broken across lines, and **keys in a stable order**.
+
+  A checkpoint stays on one line deliberately: fully expanded, a twelve-gate
+  track is a hundred lines of one number each and the track disappears into the
+  coordinates. The sorting is the part that is not cosmetic -- Lua's `pairs` has
+  no order, so the old writer emitted the same data in a different key order on
+  every save, and a file that rewrites itself differently each time cannot be
+  diffed, which is most of the point of laying it out at all.
+
+  The parser already skipped whitespace between tokens, so every existing file
+  still loads and so does one somebody has reformatted by hand.
+
 ## 0.10.0 - A car shoved on the grid no longer floods the UI
 
 ### Fixed

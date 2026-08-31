@@ -1183,13 +1183,59 @@ Some details worth knowing:
   under them**. A race with four yellows in it used to read exactly like a clean
   one, which makes a lap chart impossible to explain afterwards.
 
-### Where tracks and arenas are stored
+### Where the server keeps its data
+
+**Code and data are two folders**, not two filename conventions in one:
 
 ```
 Resources/Server/RaceManager/
-    Race Layout/<map>.json      every race on that map
-    Derby Arena/<map>.json      every arena on that map
+    main.lua  derby.lua          the plugin. REPLACED by every deploy.
+    Data/                        everything the server owns. Never written by a release.
+        Race Layout/<map>.json   every race on that map
+        Derby Arena/<map>.json   every arena on that map
+        config.json              server settings
+        cup.json                 the championship
+        roster.json              display names
+        garage.json              the allowed vehicles
+        results/                 one .txt per session
 ```
+
+Everything under `Data/` belongs to the server: the tracks an admin built, the
+season, the roster. Nothing a release ships ever writes there. It used to sit
+beside `main.lua`, with the only thing protecting a league's season being a
+deploy script that knew which filenames to avoid &mdash; a rule in the wrong
+place, since it has to be re-remembered by anything that ever writes there.
+
+**It migrates itself** on the first start after upgrading: the old files are
+copied into `Data/` and **the originals are left where they were** as a backup.
+Nothing reads them afterwards, so they are inert; delete `Data/` and the server
+recovers from them rather than coming up empty.
+
+**The JSON is written to be read.** One line per checkpoint, keys in a stable
+order, and structure broken across lines:
+
+```json
+{
+  "map": "italy",
+  "layouts": [
+    {
+      "name": "Club",
+      "checkpoints": [
+        {"hx": 0, "hy": 1, "width": 20, "x": 10, "y": 0, "z": 0},
+        {"hx": 1, "hy": 0, "width": 24, "x": 20, "y": 5, "z": 1}
+      ]
+    }
+  ]
+}
+```
+
+A checkpoint stays on one line on purpose: fully expanded, a twelve-gate track
+would be a hundred lines of one number each and you could not see the track for
+the coordinates. Sorted keys matter for a different reason &mdash; Lua's `pairs`
+has no order, so the old writer emitted the same data differently on every save,
+and a file that rewrites itself each time cannot be diffed.
+
+### Where tracks and arenas are stored
 
 **One file per map, named after the map.** "Which tracks do we have races for" is
 a directory listing; editing one track opens one small file instead of scrolling

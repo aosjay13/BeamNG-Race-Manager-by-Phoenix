@@ -149,7 +149,7 @@ local function check(cond, msg)
   if not cond then fails = fails + 1; print('FAIL: ' .. msg) end
 end
 
-local ROSTER = 'Resources/Server/RaceManager/roster.json'
+local ROSTER = 'Resources/Server/RaceManager/Data/roster.json'
 local function readRoster()
   local f = io.open(ROSTER, 'r')
   if not f then return nil end
@@ -198,7 +198,7 @@ end
 
 -- Total race points held by one cup entry, read back off cup.json.
 local function cupTotal(entryId)
-  local f = io.open('Resources/Server/RaceManager/cup.json', 'r')
+  local f = io.open('Resources/Server/RaceManager/Data/cup.json', 'r')
   if not f then return nil end
   local okp, data = pcall(jsonDecode, f:read('*a'))
   f:close()

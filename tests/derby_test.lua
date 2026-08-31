@@ -310,7 +310,7 @@ check(lastDerby.players[2].name == 'Cara',  'P2 Cara (out last)')
 check(lastDerby.players[3].name == 'Bob',   'P3 Bob (out first)')
 
 -- Results .txt export
-local RESULTS_DIR = 'Resources/Server/RaceManager/results'
+local RESULTS_DIR = 'Resources/Server/RaceManager/Data/results'
 local resultsPath = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
 check(resultsPath ~= nil and resultsPath:find('derby_results_', 1, true),
   'derby results saved as derby_results_*.txt')

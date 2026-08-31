@@ -211,7 +211,7 @@ seconds(7)
 
 local path = nil
 for _, m in ipairs(chatLog) do
-  local p = m:match('(Resources/Server/RaceManager/results/[%w%-_%./]+%.txt)')
+  local p = m:match('(Resources/Server/RaceManager/Data/results/[%w%-_%./]+%.txt)')
   if p then path = p end
 end
 check(path ~= nil, 'a results file was written')

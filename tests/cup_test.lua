@@ -144,7 +144,7 @@ local function check(cond, msg)
   if not cond then fails = fails + 1; print('FAIL: ' .. msg) end
 end
 
-local CUP = 'Resources/Server/RaceManager/cup.json'
+local CUP = 'Resources/Server/RaceManager/Data/cup.json'
 local function readCup()
   local f = io.open(CUP, 'r')
   if not f then return nil end
@@ -441,7 +441,7 @@ check(totalFor('Falcon') == flBefore + falconRound.racePts + 5 + 3,
 -- The section is written from the cup's own tables, so the file and the panel
 -- can never disagree about a total.
 -- ---------------------------------------------------------------------------
-local RESULTS_DIR = 'Resources/Server/RaceManager/results'
+local RESULTS_DIR = 'Resources/Server/RaceManager/Data/results'
 local resultsPath = lastChat and lastChat:match('(' .. RESULTS_DIR .. '/[%w%-_%.]+%.txt)')
 check(resultsPath ~= nil, 'the race announced a results file')
 local rf = resultsPath and io.open(resultsPath, 'r')
@@ -510,7 +510,7 @@ check(readCup().round == 0, 'and the round count')
 
 -- The roster is NOT cup property: ending a championship must not make an admin
 -- re-name their whole grid.
-local rf = io.open('Resources/Server/RaceManager/roster.json', 'r')
+local rf = io.open('Resources/Server/RaceManager/Data/roster.json', 'r')
 local rtext = rf and rf:read('*a') or ''
 if rf then rf:close() end
 check(rtext:find('Phoenix', 1, true) ~= nil,
@@ -661,7 +661,7 @@ check((pRound.bonus.fastestLap or 0) == 0,
 -- the same section. A league reading two files from one evening should not have
 -- to learn two formats -- or find the championship in only one of them.
 do
-  local path = lastChat and lastChat:match('(Resources/Server/RaceManager/results/[%w%-_%.]+%.txt)')
+  local path = lastChat and lastChat:match('(Resources/Server/RaceManager/Data/results/[%w%-_%.]+%.txt)')
   check(path ~= nil and path:find('derby_results', 1, true),
     'the derby announced a derby results file')
   local f = path and io.open(path, 'r')
