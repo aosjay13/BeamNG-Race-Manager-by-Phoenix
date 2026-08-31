@@ -6,230 +6,21 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
-## 0.15.0 - The season can seed the night
-
-### Added
-
-- **The heat draw has a Seed.** It decides what the serpentine walks, which is
-  which HEAT a driver lands in -- a different question from where they start in
-  it, and that is still Grid order at Generate Grid.
-
-  | Seed | Order |
-  |---|---|
-  | Quali (default) | Qualifying best lap, fastest first. Unchanged behaviour. |
-  | Random | A shuffle, for a night with no qualifying behind it. |
-  | Points | Championship standings, leader first. |
-
-  Before this the draw always sorted on qualifying times and fell back, with no
-  times to sort on, to **join order** -- the order people happened to connect in,
-  which is not a draw and does not look like one from the outside.
-
-  **Two refusals rather than silent fallbacks.** A Points draw with nobody scored
-  is refused outright, naming the alternatives, instead of quietly becoming join
-  order. A Quali draw with no times still draws in join order -- the behaviour is
-  left alone so a league that has always drawn that way keeps what it had -- but
-  now says so in chat.
-
-- **Points and Points rev as grid orders.** The championship as a starting grid:
-  the leader takes pole, or starts last of the drivers who have scored.
-
-  **An unscored driver lines up at the BACK in both directions**, which is the
-  half worth stating. Reversing them onto pole would make "never race a round"
-  the quickest route to the front row -- the same trap the quali reverse grid
-  documents, and the same answer. A driver on zero points has raced and scored
-  nothing; one with no cup entry has not raced at all, and the first still starts
-  ahead of the second.
-
-  `cupSeasonPoints` reads the standings without creating anything, deliberately:
-  the cup's own `cupEntryFor` opens an entry for a driver who has none, which is
-  right when banking a round and wrong when building a grid -- it would enrol
-  every connected driver in the season and fill the standings with people who
-  have never scored.
-
-## 0.14.0 - A folder per kind, a file per map
-
-### Changed
-
-- **Tracks and arenas are stored one file per map**, in `Race Layout/` and
-  `Derby Arena/` under `Resources/Server/RaceManager/`.
-
-  `layouts.json` had grown to every track ever built on the server in one blob:
-  to see which maps had races you parsed it, to hand-edit one gate you scrolled
-  past three hundred KB of others, and every save rewrote the lot so a diff of
-  one track moved the whole file. A folder answers all three at once.
-
-  **The migration runs itself** on the first start after upgrading: both flat
-  files are read, split per map and written into the folders. They are then
-  **kept on disk and never read again**. Both halves of that matter -- a
-  migration that deleted the only copy of the data would not be one, and a
-  legacy file that went on being merged would resurrect every layout anybody
-  ever deleted.
-
-  Hand-editing is expected, so an entry in a file named after its map needs no
-  `map` field of its own; one that carries a map keeps it, and moving a file
-  between folders never silently re-homes the tracks in it. A map whose last
-  track is deleted loses its file, which is the one bug a per-map store can have
-  that a single file cannot.
-
-- **`tools/import_scenarii.py` writes the same two folders**, so its output can
-  be copied straight into place, and **`--merge` now takes a whole server
-  folder** as well as a flat file. A duplicate name renames the IMPORT and never
-  what you built: the server resolves a layout by name within a map, so two
-  tracks called "Race" on one map is one quietly shadowing the other.
-
-### Added
-
-- **`tests/layout_store_test.lua`** (24 checks), which is about the migration,
-  because that is the half that can lose a league's season. The check that took
-  two attempts to get right: an EMPTY folder is not a MISSING folder. "No
-  folder" means migrate; "a folder with nothing in it" means somebody deleted
-  their last layout and must not have it handed back. The first version of the
-  test never drove the folder all the way to empty, so the naive implementation
-  passed it -- the failure only appears on the boot after the last track on the
-  last map is deleted.
-
-## 0.13.0 - Two classes on one grid
-
-### Added
-
-- **Multi-class racing.** There was no class concept anywhere: no field on a
-  driver record, no per-class positions, no per-class results section. A league
-  running two car types either scored them together or ran two separate events,
-  with the Garage List locked to a single car as the workaround.
-
-  **A class is a property of the car**, so it is tagged on the **Garage List
-  entry** rather than assigned to a driver. Type `GT3` into the box on a garage
-  row and every driver in that car is GT3, for every race, with no per-driver
-  bookkeeping -- and a driver who switches car switches class by doing so, with
-  nobody having to remember. The alternative, assigning a class to each driver at
-  each event, is a list somebody has to maintain and eventually gets wrong.
-
-  It gives a **Class column** on the leaderboard carrying the class and the place
-  within it, **per-class positions** counted inside the class, and a **section
-  per class** in the results file with its own finishing order and its own class
-  winner. The overall table is untouched and still names the real race winner: a
-  class is a way of reading the race, not a change to it.
-
-  Leave every box blank and nothing changes at all -- no class, no column, no
-  section. Class positions cost one table and no second sort: the classification
-  is already in order, and a class is a subset of it.
-
-  Classes work with **enforcement off**, because "what class is this car" and "is
-  this car legal" are different questions. Tagging an entry re-classes everyone
-  in that car on the next broadcast rather than the next time each driver happens
-  to touch their setup. A class survives a disconnect, mirrored into the driver
-  roster the way a heat is.
-
-- **`tests/class_test.lua`** (28 checks), including the two that keep the feature
-  out of a season that never asked for it: a garage with no class on any entry
-  produces no class and no class position, and the overall order is asserted
-  unchanged while the leading car of the slower class reads P1 in class. The
-  suite clears the garage on the way in and out, because `garage.json` is real
-  persisted state that outlives a test run -- without that the first checks pass
-  or fail depending on whether anybody has run it before.
-
-### Fixed
-
-- **The pace lap broke the joker lap's "not on lap 1" rule.** The rule is
-  enforced against the driver's own lap counter, and that counter counts
-  CROSSINGS: behind the pace car the first crossing ends the formation lap, so
-  the rule closed the joker on the lap run under yellow -- where nobody was going
-  to take it anyway -- and left it wide open on the first racing lap, which is
-  the one lap it exists to close.
-
-  The joker now measures the racing lap, exactly as the leaderboard does. The lap
-  it REPORTS is the racing lap too, so the results file no longer prints "joker:
-  lap 4" beside a board that said lap 3 at the moment it happened; the server's
-  fallback for a payload without a lap in it was moved onto the same footing.
-
-- **`tests/joker_test.lua`** (10 checks) covers both, and is written so that
-  reintroducing the bug fails it: the paced case asserts that racing lap 1 is
-  refused even though the raw crossing counter reads 2 there.
-
-- **The results header was four characters out of line with its own columns.**
-  `Finish` was written through a bare `%s` in the header row and `%-10s` in the
-  data rows, so every optional column after it -- Joker, Resets, and now Class --
-  sat left of its own values. Padded only when something follows it, so a plain
-  race still exports byte-for-byte the table it always did rather than gaining
-  trailing spaces.
-
-## 0.12.0 - Lapped traffic gets signalled, not just displayed
-
-### Added
-
-- **The blue flag.** The board has always read `+1 LAP` and neither driver was
-  ever told anything about it. Now, when a car a lap or more up comes within a
-  couple of seconds of a backmarker, the backmarker is shown **blue** in the
-  header with a notice to hold their line and let them by, and the car doing the
-  lapping is told there is a backmarker ahead.
-
-  The second half is a notice rather than a flag on purpose: no series waves
-  anything at the car doing the passing.
-
-  **The classification was the wrong list to read this off**, which is the whole
-  of why it needed writing rather than reading. A lapped car sorts *below* the
-  entire lead lap, so the car directly above it on the timing screen is another
-  backmarker -- while the car physically behind it on the road, the one actually
-  about to come past, is somewhere near the top of the sheet. The server sorts a
-  second list by how far round the lap each car is and ignores which lap that is;
-  two cars adjacent in it are adjacent on the track.
-
-  **The gap is the gap column's own subtraction**, with one difference that
-  matters: each stamp is taken on the lap its driver was actually running, so a
-  pair a lap apart compares at the checkpoint they have both physically passed.
-  Nothing is estimated and nothing depends on how many checkpoints a lap has.
-
-  Two thresholds, not one: out inside `blueFlagWithin` (2.0s) and not away again
-  until the gap opens past `blueFlagClear` (4.0s). A single threshold makes a
-  flag that strobes, and a flag that blinks is one a driver learns to ignore.
-
-  It clears the moment it stops being true, a caution outranks it (nobody is
-  letting anybody by under a yellow), the white flag outranks it (a driver on
-  their last lap is being told something that matters more), and qualifying never
-  raises it -- a car "a lap down" there is just a car that went out later.
-
-- **`tests/blue_flag_test.lua`** (31 checks), and it is written against the two
-  ways this goes wrong rather than against the happy path. Reading the board
-  instead of the road passes a naive test and fails here: two cars nose to tail
-  on the same lap get nothing, a lapped car on the far side of the circuit gets
-  nothing, and the flag lands on the car being caught rather than the one below
-  it in the classification.
-
-  The hysteresis check is the other one worth having. "A wide gap keeps the flag"
-  passes against a merely wide threshold; the test is that the *same* three-second
-  gap does different things depending on whether the flag was already out. It
-  caught both real bugs below.
-
-### Fixed
-
-- **The hysteresis could never see its own previous state.** `assignPositions`
-  clears every driver's flag before recomputing -- it has to, or a flag would
-  outlive the moment that earned it -- so the "is this flag already out" test was
-  reading a field that had just been set to nil, and the wider band was dead
-  code. The previous answer is moved aside rather than dropped.
-
-- **A negative gap was being clamped to zero, and it meant the opposite.**
-  `progress.delta` clamps, which is right for the gap column -- a minus sign in a
-  column headed "behind" reads as a bug -- and exactly wrong here. A negative
-  means the car on the higher lap reached that point *before* the backmarker,
-  which is to say it is ahead of them and not closing on anything. Clamped to
-  zero it read as nose to tail, and the flag came out for a pair that had been
-  drawing apart since they crossed. Subtracted directly now, with the sign kept.
-
-### Config
-
-- `blueFlagWithin` (2.0s) and `blueFlagClear` (4.0s). A file with them crossed
-  over gets the clear threshold pushed clear rather than the pair swapped, for
-  the reason the pace lap's two distances get the same treatment: swapping would
-  silently invert what the admin typed.
-
 ## 0.11.0 - Race control: the pace lap, the caution, and heats into a feature
+
+Everything below shipped as one release. The pace lap, the caution and
+heats came first; the blue flag, multi-class, the per-map layout store
+and the championship seeding all followed before anything was
+published, so they are one entry rather than five versions nobody ever
+ran.
+
+### Race control: the pace lap, the caution, and heats into a feature
 
 Three ways to run a race night that this mod could not run before, and they are
 meant to be run together: heats into a feature, started behind the pace car,
 neutralised by a caution the field races back to the line for.
 
-### Added
+#### Added
 
 - **The pace lap.** Switch **Pace lap** on in Race settings and **Start
   Countdown** becomes **Start Race** on the grid. The field is released
@@ -422,7 +213,7 @@ neutralised by a caution the field races back to the line for.
   **`tests/heats_test.lua`** (106 checks): three full heats and a feature, which
   is what caught the position bug below. A single-heat test passes either way.
 
-### Changed
+#### Changed
 
 - **One instrument per instruction.** The advisory Yellow and Green flag buttons
   used to show throughout a race. Beside the Caution and Restart buttons that
@@ -449,7 +240,7 @@ neutralised by a caution the field races back to the line for.
   audit that silently stopped happening for every race started behind the pace
   car.
 
-### Fixed
+#### Fixed
 
 - **A rival's trailer stayed a ghost for the rest of the session.** When another
   driver reset, their reset ghost was applied to their whole rig -- the car and
@@ -498,7 +289,7 @@ neutralised by a caution the field races back to the line for.
   button once already; `ui_bindings_test` now derives the list from the template
   and checks the client names every one of them.
 
-### Config
+#### Config
 
 Four new settings in `config.json`, beside the lap count:
 
@@ -514,6 +305,223 @@ Four new settings in `config.json`, beside the lap count:
   the admin never asked for.
 - `luckyDog` (false) -- the free pass rule as a server default.
 - `heatLaps` (0) -- the heat distance as a server default.
+
+### Lapped traffic gets signalled, not just displayed
+
+#### Added
+
+- **The blue flag.** The board has always read `+1 LAP` and neither driver was
+  ever told anything about it. Now, when a car a lap or more up comes within a
+  couple of seconds of a backmarker, the backmarker is shown **blue** in the
+  header with a notice to hold their line and let them by, and the car doing the
+  lapping is told there is a backmarker ahead.
+
+  The second half is a notice rather than a flag on purpose: no series waves
+  anything at the car doing the passing.
+
+  **The classification was the wrong list to read this off**, which is the whole
+  of why it needed writing rather than reading. A lapped car sorts *below* the
+  entire lead lap, so the car directly above it on the timing screen is another
+  backmarker -- while the car physically behind it on the road, the one actually
+  about to come past, is somewhere near the top of the sheet. The server sorts a
+  second list by how far round the lap each car is and ignores which lap that is;
+  two cars adjacent in it are adjacent on the track.
+
+  **The gap is the gap column's own subtraction**, with one difference that
+  matters: each stamp is taken on the lap its driver was actually running, so a
+  pair a lap apart compares at the checkpoint they have both physically passed.
+  Nothing is estimated and nothing depends on how many checkpoints a lap has.
+
+  Two thresholds, not one: out inside `blueFlagWithin` (2.0s) and not away again
+  until the gap opens past `blueFlagClear` (4.0s). A single threshold makes a
+  flag that strobes, and a flag that blinks is one a driver learns to ignore.
+
+  It clears the moment it stops being true, a caution outranks it (nobody is
+  letting anybody by under a yellow), the white flag outranks it (a driver on
+  their last lap is being told something that matters more), and qualifying never
+  raises it -- a car "a lap down" there is just a car that went out later.
+
+- **`tests/blue_flag_test.lua`** (31 checks), and it is written against the two
+  ways this goes wrong rather than against the happy path. Reading the board
+  instead of the road passes a naive test and fails here: two cars nose to tail
+  on the same lap get nothing, a lapped car on the far side of the circuit gets
+  nothing, and the flag lands on the car being caught rather than the one below
+  it in the classification.
+
+  The hysteresis check is the other one worth having. "A wide gap keeps the flag"
+  passes against a merely wide threshold; the test is that the *same* three-second
+  gap does different things depending on whether the flag was already out. It
+  caught both real bugs below.
+
+#### Fixed
+
+- **The hysteresis could never see its own previous state.** `assignPositions`
+  clears every driver's flag before recomputing -- it has to, or a flag would
+  outlive the moment that earned it -- so the "is this flag already out" test was
+  reading a field that had just been set to nil, and the wider band was dead
+  code. The previous answer is moved aside rather than dropped.
+
+- **A negative gap was being clamped to zero, and it meant the opposite.**
+  `progress.delta` clamps, which is right for the gap column -- a minus sign in a
+  column headed "behind" reads as a bug -- and exactly wrong here. A negative
+  means the car on the higher lap reached that point *before* the backmarker,
+  which is to say it is ahead of them and not closing on anything. Clamped to
+  zero it read as nose to tail, and the flag came out for a pair that had been
+  drawing apart since they crossed. Subtracted directly now, with the sign kept.
+
+#### Config
+
+- `blueFlagWithin` (2.0s) and `blueFlagClear` (4.0s). A file with them crossed
+  over gets the clear threshold pushed clear rather than the pair swapped, for
+  the reason the pace lap's two distances get the same treatment: swapping would
+  silently invert what the admin typed.
+
+### Two classes on one grid
+
+#### Added
+
+- **Multi-class racing.** There was no class concept anywhere: no field on a
+  driver record, no per-class positions, no per-class results section. A league
+  running two car types either scored them together or ran two separate events,
+  with the Garage List locked to a single car as the workaround.
+
+  **A class is a property of the car**, so it is tagged on the **Garage List
+  entry** rather than assigned to a driver. Type `GT3` into the box on a garage
+  row and every driver in that car is GT3, for every race, with no per-driver
+  bookkeeping -- and a driver who switches car switches class by doing so, with
+  nobody having to remember. The alternative, assigning a class to each driver at
+  each event, is a list somebody has to maintain and eventually gets wrong.
+
+  It gives a **Class column** on the leaderboard carrying the class and the place
+  within it, **per-class positions** counted inside the class, and a **section
+  per class** in the results file with its own finishing order and its own class
+  winner. The overall table is untouched and still names the real race winner: a
+  class is a way of reading the race, not a change to it.
+
+  Leave every box blank and nothing changes at all -- no class, no column, no
+  section. Class positions cost one table and no second sort: the classification
+  is already in order, and a class is a subset of it.
+
+  Classes work with **enforcement off**, because "what class is this car" and "is
+  this car legal" are different questions. Tagging an entry re-classes everyone
+  in that car on the next broadcast rather than the next time each driver happens
+  to touch their setup. A class survives a disconnect, mirrored into the driver
+  roster the way a heat is.
+
+- **`tests/class_test.lua`** (28 checks), including the two that keep the feature
+  out of a season that never asked for it: a garage with no class on any entry
+  produces no class and no class position, and the overall order is asserted
+  unchanged while the leading car of the slower class reads P1 in class. The
+  suite clears the garage on the way in and out, because `garage.json` is real
+  persisted state that outlives a test run -- without that the first checks pass
+  or fail depending on whether anybody has run it before.
+
+#### Fixed
+
+- **The pace lap broke the joker lap's "not on lap 1" rule.** The rule is
+  enforced against the driver's own lap counter, and that counter counts
+  CROSSINGS: behind the pace car the first crossing ends the formation lap, so
+  the rule closed the joker on the lap run under yellow -- where nobody was going
+  to take it anyway -- and left it wide open on the first racing lap, which is
+  the one lap it exists to close.
+
+  The joker now measures the racing lap, exactly as the leaderboard does. The lap
+  it REPORTS is the racing lap too, so the results file no longer prints "joker:
+  lap 4" beside a board that said lap 3 at the moment it happened; the server's
+  fallback for a payload without a lap in it was moved onto the same footing.
+
+- **`tests/joker_test.lua`** (10 checks) covers both, and is written so that
+  reintroducing the bug fails it: the paced case asserts that racing lap 1 is
+  refused even though the raw crossing counter reads 2 there.
+
+- **The results header was four characters out of line with its own columns.**
+  `Finish` was written through a bare `%s` in the header row and `%-10s` in the
+  data rows, so every optional column after it -- Joker, Resets, and now Class --
+  sat left of its own values. Padded only when something follows it, so a plain
+  race still exports byte-for-byte the table it always did rather than gaining
+  trailing spaces.
+
+### A folder per kind, a file per map
+
+#### Changed
+
+- **Tracks and arenas are stored one file per map**, in `Race Layout/` and
+  `Derby Arena/` under `Resources/Server/RaceManager/`.
+
+  `layouts.json` had grown to every track ever built on the server in one blob:
+  to see which maps had races you parsed it, to hand-edit one gate you scrolled
+  past three hundred KB of others, and every save rewrote the lot so a diff of
+  one track moved the whole file. A folder answers all three at once.
+
+  **The migration runs itself** on the first start after upgrading: both flat
+  files are read, split per map and written into the folders. They are then
+  **kept on disk and never read again**. Both halves of that matter -- a
+  migration that deleted the only copy of the data would not be one, and a
+  legacy file that went on being merged would resurrect every layout anybody
+  ever deleted.
+
+  Hand-editing is expected, so an entry in a file named after its map needs no
+  `map` field of its own; one that carries a map keeps it, and moving a file
+  between folders never silently re-homes the tracks in it. A map whose last
+  track is deleted loses its file, which is the one bug a per-map store can have
+  that a single file cannot.
+
+- **`tools/import_scenarii.py` writes the same two folders**, so its output can
+  be copied straight into place, and **`--merge` now takes a whole server
+  folder** as well as a flat file. A duplicate name renames the IMPORT and never
+  what you built: the server resolves a layout by name within a map, so two
+  tracks called "Race" on one map is one quietly shadowing the other.
+
+#### Added
+
+- **`tests/layout_store_test.lua`** (24 checks), which is about the migration,
+  because that is the half that can lose a league's season. The check that took
+  two attempts to get right: an EMPTY folder is not a MISSING folder. "No
+  folder" means migrate; "a folder with nothing in it" means somebody deleted
+  their last layout and must not have it handed back. The first version of the
+  test never drove the folder all the way to empty, so the naive implementation
+  passed it -- the failure only appears on the boot after the last track on the
+  last map is deleted.
+
+### The season can seed the night
+
+#### Added
+
+- **The heat draw has a Seed.** It decides what the serpentine walks, which is
+  which HEAT a driver lands in -- a different question from where they start in
+  it, and that is still Grid order at Generate Grid.
+
+  | Seed | Order |
+  |---|---|
+  | Quali (default) | Qualifying best lap, fastest first. Unchanged behaviour. |
+  | Random | A shuffle, for a night with no qualifying behind it. |
+  | Points | Championship standings, leader first. |
+
+  Before this the draw always sorted on qualifying times and fell back, with no
+  times to sort on, to **join order** -- the order people happened to connect in,
+  which is not a draw and does not look like one from the outside.
+
+  **Two refusals rather than silent fallbacks.** A Points draw with nobody scored
+  is refused outright, naming the alternatives, instead of quietly becoming join
+  order. A Quali draw with no times still draws in join order -- the behaviour is
+  left alone so a league that has always drawn that way keeps what it had -- but
+  now says so in chat.
+
+- **Points and Points rev as grid orders.** The championship as a starting grid:
+  the leader takes pole, or starts last of the drivers who have scored.
+
+  **An unscored driver lines up at the BACK in both directions**, which is the
+  half worth stating. Reversing them onto pole would make "never race a round"
+  the quickest route to the front row -- the same trap the quali reverse grid
+  documents, and the same answer. A driver on zero points has raced and scored
+  nothing; one with no cup entry has not raced at all, and the first still starts
+  ahead of the second.
+
+  `cupSeasonPoints` reads the standings without creating anything, deliberately:
+  the cup's own `cupEntryFor` opens an entry for a driver who has none, which is
+  right when banking a round and wrong when building a grid -- it would enrol
+  every connected driver in the season and fill the standings with people who
+  have never scored.
 
 ## 0.10.0 - A car shoved on the grid no longer floods the UI
 
