@@ -1327,7 +1327,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.11.0';
+      var APP_BUILD = '0.12.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -3327,6 +3327,10 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         if ($scope.driverFlag === 'red') { return 'Red flag: stop where you are and wait'; }
         if ($scope.driverFlag === 'yellow') { return 'Yellow flag: caution, race back to the line'; }
         if ($scope.driverFlag === 'white') { return 'White flag: last lap'; }
+        if ($scope.driverFlag === 'blue') {
+          return 'Blue flag: a car a lap up is close behind you. Hold your line '
+            + 'and let them past.';
+        }
         return 'Green flag: racing';
       };
 

@@ -98,6 +98,18 @@ local CFG = {
   -- this was before the number existed.
   heatLaps      = 0,
 
+  -- THE BLUE FLAG. Seconds a lapping car may be behind a backmarker before the
+  -- backmarker is shown blue and the lapping car is told there is one ahead.
+  --
+  -- TWO NUMBERS, AND THE SECOND IS NOT A DUPLICATE. A single threshold makes a
+  -- flag that strobes: a car hovering either side of it turns the flag on and
+  -- off several times a second, and a flag that blinks is one a driver learns
+  -- to ignore. It comes out inside `blueFlagWithin` and does not go away again
+  -- until the gap opens past `blueFlagClear`, so the band it lives in is wider
+  -- than the band it appears in.
+  blueFlagWithin = 2.0,
+  blueFlagClear  = 4.0,
+
   -- Qualifying, as a session starts.
   qualiLapLimit  = 0,        -- timed laps per driver, 0 = unlimited
   qualiTimeLimit = 0,        -- seconds, 0 = no limit
@@ -699,6 +711,21 @@ local function newRecord(pid)
     -- caution; the comparator sorts them live behind the cars already home.
     cautionPos = nil,
     cautionDown = nil,
+    -- THE BLUE FLAG, from both ends. Recomputed on every broadcast and held on
+    -- the record between them, which is what gives the hysteresis above
+    -- something to read: `blue` being already set is what widens the band.
+    --
+    --   blue     a car a lap or more up is close behind: let them by.
+    --   lapping  the car close ahead is a lap or more down: they are being
+    --            shown blue, and you are about to come past them.
+    --
+    -- Both are nil for everyone the moment the race is neutralised. Nobody is
+    -- letting anybody by under a yellow.
+    blue       = nil,
+    lapping    = nil,
+    -- What `blue` was on the previous broadcast, and the only reader is the
+    -- hysteresis. Not on the wire: no client has any use for last tick's answer.
+    blueWas    = nil,
     -- THE HEAT PROGRAM, per driver. Held on the record rather than in a table of
     -- its own so it travels with the driver through every path that already
     -- knows how to move a record -- and mirrored into the identity registry, so
@@ -1303,12 +1330,104 @@ function progress.delta(other, lap, cp, mine)
   return math.floor(d * 1000 + 0.5) / 1000
 end
 
+-- WHO IS ABOUT TO BE LAPPED, AND BY WHOM.
+--
+-- The board has always shown "+1 LAP" and neither driver was ever told anything
+-- about it: the backmarker got no blue flag, and the car catching them got no
+-- warning that the car it was closing on was not racing it.
+--
+-- THE CLASSIFICATION IS THE WRONG LIST TO READ THIS OFF, and that is the whole
+-- reason this is a second walk. A lapped car sorts BELOW the entire lead lap, so
+-- the car directly above it on the board is another backmarker -- while the car
+-- physically behind it on the road, the one actually about to come past, is
+-- somewhere near the top. Adjacency on the timing screen and adjacency on the
+-- track are different questions once anybody has been lapped.
+--
+-- So this sorts by HOW FAR ROUND THE LAP a car is and ignores which lap that is:
+-- checkpoints cleared, then meters to the next one. That IS track order, and two
+-- cars next to each other in it are next to each other on the road. Where the
+-- one behind is on a higher lap, it is lapping the one in front.
+--
+-- THE GAP IS THE SAME SUBTRACTION THE GAP COLUMN USES, with one difference that
+-- matters: each driver's stamp is taken on THEIR OWN lap. progress.delta already
+-- does exactly that -- it is handed the lap to look up -- so a pair a lap apart
+-- compares at the checkpoint they have both physically passed, which is the only
+-- honest way to say how far apart two cars on different laps are.
+local function markBlueFlags(list)
+  local track = {}
+  for _, rec in ipairs(list) do
+    -- Circulating cars only, and only ones that have reported a position. A
+    -- finisher, a retirement and a driver who has not sent telemetry yet have no
+    -- place in a track order.
+    if (rec.status == 'racing') and rec.splitLap and rec.cpCleared then
+      track[#track + 1] = rec
+    end
+  end
+  table.sort(track, function (a, b)
+    local ca, cb = a.cpCleared or 0, b.cpCleared or 0
+    if ca ~= cb then return ca > cb end
+    local da, db = a.distNext or math.huge, b.distNext or math.huge
+    if da ~= db then return da < db end
+    return (a.id or 0) < (b.id or 0)
+  end)
+
+  for i = 1, #track - 1 do
+    local ahead, behind = track[i], track[i + 1]
+    -- A lap or more between them, with the car BEHIND on the higher lap: that is
+    -- one car lapping another rather than two cars racing.
+    if (behind.currentLap or 0) > (ahead.currentLap or 0) then
+      local cp    = behind.splitCp
+      local onLap = behind.splits and behind.splits[behind.splitLap]
+      local mine  = onLap and onLap[cp]
+      -- The backmarker's stamp for that same point on THEIR lap. They are
+      -- physically in front, so they have already passed it on the lap they are
+      -- running now.
+      local theirs = ahead.splits and ahead.splits[ahead.currentLap]
+      theirs = theirs and theirs[cp]
+      --
+      -- SUBTRACTED HERE RATHER THAN THROUGH progress.delta, and the difference is
+      -- the sign. That function CLAMPS a negative to zero, which is right for the
+      -- gap column -- a minus sign in a column headed "behind" reads as a bug --
+      -- and exactly wrong here. A negative means the car on the higher lap
+      -- reached this point BEFORE the backmarker did, which is to say it is not
+      -- behind them at all and is not closing on anything. Clamped to zero that
+      -- reads as nose to tail, and the flag comes out for a pair that has been
+      -- drawing apart since they crossed.
+      local gap = (mine and theirs) and (mine - theirs) or nil
+      if gap and gap >= 0 then
+        -- Wider to stay lit than to light, so a car sitting on the threshold
+        -- does not strobe the flag.
+        --
+        -- OFF `blueWas`, NOT `blue`. assignPositions clears `blue` on every car
+        -- before this runs -- it has to, or a flag would outlive the moment that
+        -- earned it -- so by the time we get here `blue` is always nil and a
+        -- hysteresis reading it would be reading a constant. `blueWas` is what
+        -- the last broadcast concluded, moved aside rather than overwritten.
+        local band = ahead.blueWas and CFG.blueFlagClear or CFG.blueFlagWithin
+        if gap <= band then
+          ahead.blue    = true
+          behind.lapping = true
+        end
+      end
+    end
+  end
+end
+
 local function assignPositions(list)
   local leader = list[1]
   local quali  = race.sessionKind == 'quali'
   for i, rec in ipairs(list) do
     rec.position = i
     rec.gap, rec.intv = nil, nil
+    -- CLEARED EVERY PASS and set again below, so a flag can never outlive the
+    -- moment that earned it: a driver who is let by, or who pits, or whose
+    -- lapping car retires, must stop being shown blue on the next broadcast.
+    --
+    -- The old answer is moved aside rather than dropped, because the hysteresis
+    -- in markBlueFlags is the one thing that needs it: "is this flag already
+    -- out" cannot be asked of a field that has just been cleared.
+    rec.blueWas = rec.blue
+    rec.blue, rec.lapping = nil, nil
     -- A retirement or a disqualification has no meaningful distance to anybody:
     -- they are classified by ruling rather than by where they got to.
     if not quali and rec.status ~= 'dnf' and rec.status ~= 'dsq' and rec.splitLap then
@@ -1320,6 +1439,14 @@ local function assignPositions(list)
         rec.intv = progress.delta(list[i - 1], lap, cp, mine)
       end
     end
+  end
+  -- NOT IN QUALIFYING, and not while the race is neutralised. Qualifying has no
+  -- lapping in it -- drivers are on their own laps and a car a lap "down" is
+  -- just a car that went out later. Under a caution or on the pace lap nobody is
+  -- letting anybody by, and a blue flag next to a yellow is two instructions
+  -- that contradict each other.
+  if not quali and not race.caution and not race.cautionPending and not race.pacing then
+    markBlueFlags(list)
   end
   return list
 end
@@ -1350,6 +1477,9 @@ local DRIVER_WIRE_FIELDS = {
   -- Laps down at the caution. The board paints a lapped car's row differently
   -- under yellow, and a driver wants to know whether they are the free pass.
   'cautionDown',
+  -- The blue flag, from both ends. Each client reads its OWN row for these and
+  -- shows the flag or the warning off it -- the same way it reads `bystander`.
+  'blue', 'lapping',
   -- The heat program, per driver: which heat they were drawn into, where they
   -- finished it, and whether that was a transfer spot. All three are columns on
   -- the board during a heat program and mean nothing outside one.
@@ -1462,7 +1592,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.11.0'
+local RM_BUILD = '0.12.0'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -5278,6 +5408,8 @@ local function applyConfigTable(data)
   bool('luckyDog')
   -- 0 is a value here and not a floor: it means "a heat runs the race distance".
   num('heatLaps', 0, CFG.maxTotalLaps)
+  num('blueFlagWithin', 0.2, 60)
+  num('blueFlagClear', 0.2, 120)
   num('qualiLapLimit', 0, CFG.maxQualiLaps)
   num('qualiTimeLimit', 0, CFG.maxQualiTime)
   num('finalLapGrace', 10, 3600)
@@ -5304,6 +5436,17 @@ local function applyConfigTable(data)
       .. 'paceGreenAt or the green falls at the release; raised it to %.0fm',
       CFG.paceArmAt))
   end
+  -- The blue flag's two thresholds, and the same treatment for the same reason.
+  -- A clear distance at or below the show distance is no hysteresis at all: the
+  -- flag lights and clears within one broadcast of itself and strobes, which is
+  -- exactly the thing the second number exists to prevent. Pushed clear rather
+  -- than swapped, because swapping would silently invert what the admin typed.
+  if CFG.blueFlagClear <= CFG.blueFlagWithin then
+    CFG.blueFlagClear = CFG.blueFlagWithin * 2
+    print(string.format('[RaceManager] config.json: blueFlagClear must be above '
+      .. 'blueFlagWithin or the flag strobes; raised it to %.1fs',
+      CFG.blueFlagClear))
+  end
   return applied
 end
 
@@ -5329,6 +5472,8 @@ saveConfigToDisk = function ()
     paceArmAt      = CFG.paceArmAt,
     luckyDog       = CFG.luckyDog,
     heatLaps       = CFG.heatLaps,
+    blueFlagWithin = CFG.blueFlagWithin,
+    blueFlagClear  = CFG.blueFlagClear,
     qualiLapLimit  = CFG.qualiLapLimit,
     qualiTimeLimit = CFG.qualiTimeLimit,
     finalLapGrace  = CFG.finalLapGrace,

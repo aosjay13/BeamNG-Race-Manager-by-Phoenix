@@ -1393,6 +1393,34 @@ do
     'and it calls the green through the same handler as any other flag')
 end
 
+-- THE BLUE FLAG, and both halves of it reach a driver through the panel.
+--
+-- The flag glyph is painted by class off driverFlag, and the notice is painted
+-- by the colour the CLIENT chooses. Either one can be added on the Lua side and
+-- silently render as nothing here, which is the failure this block exists for: a
+-- flag with no colour rule inherits the header's, and a notice with no colour
+-- rule comes up with no background at all.
+expect(html:find('rm%-flag%-blue') ~= nil,
+  'the blue flag glyph has a colour of its own')
+expect(js:find("$scope.driverFlag === 'blue'", 1, true) ~= nil,
+  'and the panel explains it, like every other flag')
+
+-- EVERY NOTICE COLOUR THE CLIENT PUSHES HAS A RULE, derived from the Lua rather
+-- than listed here -- a list would go stale the first time somebody adds one.
+-- The same shape as the setGridMode check above and for the same reason: this is
+-- a value crossing from Lua into CSS with nothing in between to catch a typo.
+do
+  local client = readFile('lua/ge/extensions/raceManager.lua')
+  local colours = {}
+  for colour in client:gmatch("color = '([%a]+)'") do colours[colour] = true end
+  expect(next(colours) ~= nil, 'found notice colours in the client extension')
+  for colour in pairs(colours) do
+    expect(html:find('rm%-flash%-' .. colour) ~= nil,
+      'the client pushes a "' .. colour .. '" notice but the stylesheet has no '
+        .. 'rm-flash-' .. colour .. ', so it renders with no background')
+  end
+end
+
 -- RED IS ITS OWN INSTRUMENT, in both sessions, and it is MARKED rather than
 -- removed while it is out: one button, lit when the red is flying, and pressing
 -- it again lifts the red. The control that threw it is the control that clears

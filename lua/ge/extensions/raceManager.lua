@@ -225,7 +225,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.11.0'
+local RM_BUILD = '0.12.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -275,6 +275,14 @@ local session = {
   -- TO THE LINE. A different instruction from the frozen caution that follows
   -- it, and the one a driver has to act on first.
   cautionPending = false,
+  -- THE BLUE FLAG, from both ends, read off this client's own driver row. The
+  -- server decides both (it is the only side that can see where every car is);
+  -- these are what the flag and the two notices are driven from.
+  --
+  --   beingLapped   a car a lap or more up is close behind. Blue flag.
+  --   lappingAhead  the car close ahead is a lap or more down.
+  beingLapped  = false,
+  lappingAhead = false,
   -- A restart is called and the green falls as the leader reaches the line.
   restartPending = false,
   -- The heat program, for one reason only: a heat can run a distance of its own,
@@ -1335,6 +1343,14 @@ local function driverFlag()
      and session.localLap >= target then
     return 'white'
   end
+  -- BLUE, below white and above green. Below white because a driver on their own
+  -- last lap is being told their race is ending, which outranks being told to
+  -- move over; above green because green is the absence of anything to say.
+  --
+  -- It sits under the yellow above for a reason a driver would give: nobody is
+  -- letting anybody by under a caution. The server stops setting it there too,
+  -- so this is agreement rather than a second rule.
+  if session.beingLapped then return 'blue' end
   return 'green'
 end
 
@@ -7729,13 +7745,37 @@ local function onServerUpdate(rawData)
   -- own driver row. ghostUpdate acts on this: a car that is not in the race is a
   -- ghost to the cars that are.
   local myId = localServerId()
+  local wasLapped  = session.beingLapped
+  local wasLapping = session.lappingAhead
+  session.beingLapped, session.lappingAhead = false, false
   if myId and type(data.drivers) == 'table' then
     for _, d in ipairs(data.drivers) do
       if tonumber(d.id) == myId then
         isBystander = d.bystander == true
+        -- The blue flag rides on the row rather than on a field of its own,
+        -- because it is a fact about ONE driver and this loop is already here
+        -- looking for that driver. A top-level field would be a second walk of
+        -- the same array, or a targeted send per driver, for two booleans.
+        session.beingLapped  = d.blue == true
+        session.lappingAhead = d.lapping == true
         break
       end
     end
+  end
+  -- TOLD ON THE EDGE, both of them. The flag itself sits in the header for as
+  -- long as it applies (see driverFlag), but a driver whose eyes are on the road
+  -- is not reading the header -- and this is the one instruction in the mod that
+  -- is aimed at somebody who is, by definition, about to be caught.
+  if session.beingLapped and not wasLapped and sessionRunning() then
+    pushNotice('flag', 'BLUE FLAG',
+      { sub = 'Faster car a lap up behind you - let them by', color = 'blue' })
+  end
+  -- The other half, and it is not a flag: no series waves anything at the car
+  -- doing the lapping. It is a heads-up, so it goes on the strip rather than
+  -- flashing over the road -- the driver it is aimed at is the one with room to
+  -- read it.
+  if session.lappingAhead and not wasLapping and sessionRunning() then
+    pushNotice('session', 'Backmarker ahead: they are being shown the blue flag')
   end
 
   -- Display names on BeamMP's nametags. The switch is the server's so every
@@ -9052,6 +9092,8 @@ local function resetToIdle(reason)
   session.cautionLaps     = 0
   session.cautionPending  = false
   session.restartPending  = false
+  session.beingLapped     = false
+  session.lappingAhead    = false
   session.heatCount       = 0
   session.heatCurrent     = 0
   session.heatLaps        = 0

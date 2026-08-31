@@ -1183,6 +1183,62 @@ Some details worth knowing:
   under them**. A race with four yellows in it used to read exactly like a clean
   one, which makes a lap chart impossible to explain afterwards.
 
+### The blue flag
+
+Lapped traffic was displayed and never signalled. The board read `+1 LAP` and
+neither driver was told anything: the backmarker got no blue flag, and the car
+closing on them got no warning that the car ahead was not racing it.
+
+Now, when a car a lap or more up comes within a couple of seconds of a
+backmarker:
+
+- **the backmarker is shown the blue flag** in the header, and gets a notice
+  telling them to hold their line and let the faster car by;
+- **the car doing the lapping is told there is a backmarker ahead**, on the
+  notice strip rather than as a flag, because no series waves anything at the
+  car doing the passing.
+
+**The classification is the wrong list to read this off**, and that is the whole
+of why it needed writing rather than reading. A lapped car sorts *below* the
+entire lead lap, so the car directly above it on the timing screen is another
+backmarker &mdash; while the car physically behind it on the road, the one
+actually about to come past, is somewhere near the top of the sheet. Adjacency on
+the board and adjacency on the track stop being the same question the moment
+anybody is lapped. So the server sorts a second list by how far round the lap
+each car is, ignoring *which* lap that is, and two cars next to each other in
+that list are next to each other on the road.
+
+**The gap is measured at a point both cars have physically passed**, on each
+car's own lap: the backmarker went through checkpoint 7 of lap 4 at 214.6s, the
+lapping car went through checkpoint 7 of *lap 5* at 216.1s, so it is 1.5s behind
+them on the road. That is the same subtraction the gap column is built from, with
+each stamp taken on the lap its driver was actually running. Nothing is
+estimated and nothing depends on how many checkpoints a lap has.
+
+Details:
+
+- **Two thresholds, not one.** The flag comes out inside `blueFlagWithin` (2.0s)
+  and does not go away until the gap opens past `blueFlagClear` (4.0s). A single
+  threshold makes a flag that strobes: a car hovering either side of it turns the
+  flag on and off several times a second, and a flag that blinks is one a driver
+  learns to ignore. Both live in `config.json`, and a file with them crossed over
+  gets the clear distance pushed clear rather than the pair swapped.
+- **It clears the moment it stops being true.** Let the car by, pit, or watch the
+  car chasing you retire, and the flag is gone on the next broadcast. Nothing
+  holds it open.
+- **A caution outranks it.** Nobody is letting anybody by under a yellow, and a
+  blue flag next to a yellow is two instructions that contradict each other. The
+  server stops setting it under caution and on the pace lap, and the client ranks
+  yellow above blue, so the two agree rather than one overriding the other.
+- **Below the white flag.** A driver on their own last lap is being told their
+  race is ending, which outranks being told to move over.
+- **Not in qualifying.** Drivers are on their own laps and a car "a lap down" is
+  just a car that went out later. There is nothing to let by.
+- **It is a signal, not a ruling.** Nobody is penalised for ignoring it, and the
+  classification does not change. It is the same choice the flags have always
+  made here: a marshal who can see the incident is better at judging it than a
+  distance comparison.
+
 ### Heats and transfers
 
 Run the night as several short **heats** and then a **feature**, with the heat

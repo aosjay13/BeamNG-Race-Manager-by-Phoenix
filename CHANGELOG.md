@@ -6,6 +6,76 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.12.0 - Lapped traffic gets signalled, not just displayed
+
+### Added
+
+- **The blue flag.** The board has always read `+1 LAP` and neither driver was
+  ever told anything about it. Now, when a car a lap or more up comes within a
+  couple of seconds of a backmarker, the backmarker is shown **blue** in the
+  header with a notice to hold their line and let them by, and the car doing the
+  lapping is told there is a backmarker ahead.
+
+  The second half is a notice rather than a flag on purpose: no series waves
+  anything at the car doing the passing.
+
+  **The classification was the wrong list to read this off**, which is the whole
+  of why it needed writing rather than reading. A lapped car sorts *below* the
+  entire lead lap, so the car directly above it on the timing screen is another
+  backmarker -- while the car physically behind it on the road, the one actually
+  about to come past, is somewhere near the top of the sheet. The server sorts a
+  second list by how far round the lap each car is and ignores which lap that is;
+  two cars adjacent in it are adjacent on the track.
+
+  **The gap is the gap column's own subtraction**, with one difference that
+  matters: each stamp is taken on the lap its driver was actually running, so a
+  pair a lap apart compares at the checkpoint they have both physically passed.
+  Nothing is estimated and nothing depends on how many checkpoints a lap has.
+
+  Two thresholds, not one: out inside `blueFlagWithin` (2.0s) and not away again
+  until the gap opens past `blueFlagClear` (4.0s). A single threshold makes a
+  flag that strobes, and a flag that blinks is one a driver learns to ignore.
+
+  It clears the moment it stops being true, a caution outranks it (nobody is
+  letting anybody by under a yellow), the white flag outranks it (a driver on
+  their last lap is being told something that matters more), and qualifying never
+  raises it -- a car "a lap down" there is just a car that went out later.
+
+- **`tests/blue_flag_test.lua`** (31 checks), and it is written against the two
+  ways this goes wrong rather than against the happy path. Reading the board
+  instead of the road passes a naive test and fails here: two cars nose to tail
+  on the same lap get nothing, a lapped car on the far side of the circuit gets
+  nothing, and the flag lands on the car being caught rather than the one below
+  it in the classification.
+
+  The hysteresis check is the other one worth having. "A wide gap keeps the flag"
+  passes against a merely wide threshold; the test is that the *same* three-second
+  gap does different things depending on whether the flag was already out. It
+  caught both real bugs below.
+
+### Fixed
+
+- **The hysteresis could never see its own previous state.** `assignPositions`
+  clears every driver's flag before recomputing -- it has to, or a flag would
+  outlive the moment that earned it -- so the "is this flag already out" test was
+  reading a field that had just been set to nil, and the wider band was dead
+  code. The previous answer is moved aside rather than dropped.
+
+- **A negative gap was being clamped to zero, and it meant the opposite.**
+  `progress.delta` clamps, which is right for the gap column -- a minus sign in a
+  column headed "behind" reads as a bug -- and exactly wrong here. A negative
+  means the car on the higher lap reached that point *before* the backmarker,
+  which is to say it is ahead of them and not closing on anything. Clamped to
+  zero it read as nose to tail, and the flag came out for a pair that had been
+  drawing apart since they crossed. Subtracted directly now, with the sign kept.
+
+### Config
+
+- `blueFlagWithin` (2.0s) and `blueFlagClear` (4.0s). A file with them crossed
+  over gets the clear threshold pushed clear rather than the pair swapped, for
+  the reason the pace lap's two distances get the same treatment: swapping would
+  silently invert what the admin typed.
+
 ## 0.11.0 - Race control: the pace lap, the caution, and heats into a feature
 
 Three ways to run a race night that this mod could not run before, and they are
