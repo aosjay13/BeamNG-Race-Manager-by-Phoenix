@@ -557,6 +557,28 @@ Four new settings in `config.json`, beside the lap count:
   The parser already skipped whitespace between tokens, so every existing file
   still loads and so does one somebody has reformatted by hand.
 
+- **config.json rewrites itself once, complete and laid out.** It is the file an
+  admin is most likely to open and the one least likely to be rewritten: every
+  other store is saved by ordinary use, while this one is written on exactly two
+  occasions -- a fresh server's first boot, and a password change. A server that
+  has done neither keeps a one-line file forever.
+
+  It is now rewritten whenever what is on disk is not what the plugin would
+  write, which happens once and then never again. The formatting is the smaller
+  half: the file also gains **every setting added since it was written**. One
+  listing eight of the twenty-two knobs is a file an admin cannot use to find out
+  what is tunable, because the missing ones are silently on their defaults with
+  nothing on the page to say they exist.
+
+  A key the plugin does not know is dropped and **named in the log**. It was
+  already being ignored, so the rewrite only makes that visible -- which is the
+  kindest moment to learn a hand-typed setting was a typo.
+
+- **The root of a file never collapses onto one line**, however scalar it is.
+  The compact-leaf rule that keeps a checkpoint on one line had swallowed the
+  whole of config.json, which is precisely backwards: a value inside a list is
+  something you read across, and the root of a file is something you read down.
+
 ## 0.10.0 - A car shoved on the grid no longer floods the UI
 
 ### Fixed

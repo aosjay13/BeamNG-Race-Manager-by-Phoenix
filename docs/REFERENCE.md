@@ -1229,7 +1229,15 @@ order, and structure broken across lines:
 }
 ```
 
-A checkpoint stays on one line on purpose: fully expanded, a twelve-gate track
+`config.json` gets special care, being the file most likely to be edited by
+hand: it is rewritten once, whenever what is on disk is not what the plugin would
+write, so it gains **every setting added since it was written** as well as the
+layout. A settings file listing eight of the twenty-two knobs cannot tell you
+what is tunable. A key the plugin does not recognise is dropped and named in the
+log &mdash; it was already being ignored, so this only makes it visible.
+
+The root of a file never collapses to one line, however scalar it is. A
+checkpoint stays on one line on purpose: fully expanded, a twelve-gate track
 would be a hundred lines of one number each and you could not see the track for
 the coordinates. Sorted keys matter for a different reason &mdash; Lua's `pairs`
 has no order, so the old writer emitted the same data differently on every save,

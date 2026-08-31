@@ -5506,8 +5506,8 @@ local function jsonStringify(v, indent)
   -- .json on it.
   --
   -- COMPACT LEAVES, and that is the part that makes this readable rather than
-  -- merely long. An object or array whose values are ALL scalars prints on one
-  -- line, so a checkpoint is one line and not six:
+  -- merely long. A NESTED object or array whose values are all scalars prints on
+  -- one line, so a checkpoint is one line and not six:
   --
   --     "checkpoints": [
   --       {"hx": 0, "hy": 1, "width": 20, "x": 10, "y": 0, "z": 0},
@@ -5516,6 +5516,12 @@ local function jsonStringify(v, indent)
   --
   -- Fully expanded, a twelve-gate track would be a hundred lines of one number
   -- each and nobody could see the track for the coordinates.
+  --
+  -- NESTED, though, and never the root. config.json is a flat object of scalars,
+  -- so the leaf rule collapsed the entire file onto one line -- and that is the
+  -- file an admin opens most, because it is the one they are meant to edit. The
+  -- root of a file is a thing you read down; a value inside a list is a thing you
+  -- read across.
   --
   -- KEYS ARE SORTED, which is not cosmetic. Lua's `pairs` gives no order, so the
   -- old writer emitted the same data in a different key order on every save --
@@ -5534,7 +5540,7 @@ local function jsonStringify(v, indent)
       parts[#parts + 1] = jsonStringify(item, inner)
     end
     if #parts == 0 then return '[]' end
-    if leaf then return '[' .. table.concat(parts, ', ') .. ']' end
+    if leaf and pad ~= '' then return '[' .. table.concat(parts, ', ') .. ']' end
     return '[\n' .. inner .. table.concat(parts, ',\n' .. inner) .. '\n' .. pad .. ']'
   end
 
@@ -5548,7 +5554,7 @@ local function jsonStringify(v, indent)
     parts[#parts + 1] = jsonStringify(k) .. ': ' .. jsonStringify(v[k], inner)
   end
   if #parts == 0 then return '{}' end
-  if leaf then return '{' .. table.concat(parts, ', ') .. '}' end
+  if leaf and pad ~= '' then return '{' .. table.concat(parts, ', ') .. '}' end
   return '{\n' .. inner .. table.concat(parts, ',\n' .. inner) .. '\n' .. pad .. '}'
 end
 
@@ -5842,14 +5848,11 @@ end
 
 -- Write the current settings out. Called when the file is missing, and again
 -- whenever something durable changes (the admin password).
-saveConfigToDisk = function ()
-  ensureLayoutsDir()
-  local f = io.open(CONFIG_FILE, 'w')
-  if not f then
-    print('[RaceManager] Could not write ' .. CONFIG_FILE)
-    return false
-  end
-  f:write(jsonStringify({
+-- WHAT config.json SHOULD SAY, as text. One definition, so the writer below and
+-- the "is the file already this" test in loadConfigFromDisk can never drift into
+-- disagreeing -- which would rewrite the file on every single boot.
+local function configFileText()
+  return jsonStringify({
     adminPassword  = CFG.adminPassword,
     totalLaps      = CFG.totalLaps,
     maxResets      = CFG.maxResets,
@@ -5872,7 +5875,17 @@ saveConfigToDisk = function ()
     ghostMaxSeconds = CFG.ghostMaxSeconds,
     holdTolerance   = CFG.holdTolerance,
     holdCorrectEvery = CFG.holdCorrectEvery,
-  }))
+  })
+end
+
+saveConfigToDisk = function ()
+  ensureLayoutsDir()
+  local f = io.open(CONFIG_FILE, 'w')
+  if not f then
+    print('[RaceManager] Could not write ' .. CONFIG_FILE)
+    return false
+  end
+  f:write(configFileText())
   f:close()
   return true
 end
@@ -5917,12 +5930,49 @@ local function loadConfigFromDisk()
     return
   end
   local n = applyConfigTable(data)
+  -- REWRITTEN IF IT IS NOT ALREADY WHAT WE WOULD WRITE, and this is the one file
+  -- that genuinely needs it. Every other store is rewritten by ordinary use --
+  -- save a track, bank a cup round, set a name -- so it reaches the readable
+  -- layout on its own within an evening. config.json is written on exactly two
+  -- occasions: the first boot on a fresh server, and an admin changing the
+  -- password. A server that has done neither since the layout changed keeps a
+  -- one-line file forever, and it is the file most likely to be opened by hand.
+  --
+  -- Two things come out of the rewrite, and the second matters more than the
+  -- formatting: the file gains every setting added since it was written. A
+  -- config listing eight of the twenty-two knobs is one an admin cannot use to
+  -- find out what is tunable -- the missing ones are silently on their defaults
+  -- and there is nothing on the page to say they exist.
+  --
+  -- ONLY WHEN THE BYTES DIFFER, so this happens once and then never again rather
+  -- than on every boot. The values written are the ones just loaded, so nothing
+  -- an admin set is changed by it.
+  --
+  -- A KEY THIS PLUGIN DOES NOT KNOW IS DROPPED, and is named in the log rather
+  -- than vanishing quietly. It was already being ignored -- applyConfigTable
+  -- reads a fixed set -- so the rewrite only makes that visible, which is the
+  -- kindest moment to find out a hand-typed setting was a typo.
+  local unknown = {}
+  for k in pairs(data) do
+    if CFG[k] == nil then unknown[#unknown + 1] = tostring(k) end
+  end
+  if #unknown > 0 then
+    table.sort(unknown)
+    print('[RaceManager] config.json: ' .. table.concat(unknown, ', ')
+      .. ' are not settings this plugin has; they do nothing and are not kept')
+  end
   print(string.format('[RaceManager] Settings loaded from config.json (%d value%s): '
     .. '%d laps, resets %s, countdown %d, ghost %.0f-%.0fs, pace lap %s',
     n, n == 1 and '' or 's', CFG.totalLaps,
     CFG.maxResets < 0 and 'unlimited' or tostring(CFG.maxResets),
     CFG.countdownFrom, CFG.ghostMinSeconds, CFG.ghostMaxSeconds,
     CFG.paceLap and string.format('on (green at %.0fm)', CFG.paceGreenAt) or 'off'))
+  if text ~= configFileText() then
+    if saveConfigToDisk() then
+      print('[RaceManager] Rewrote ' .. CONFIG_FILE
+        .. ' with every setting, laid out to be edited')
+    end
+  end
 end
 
 
