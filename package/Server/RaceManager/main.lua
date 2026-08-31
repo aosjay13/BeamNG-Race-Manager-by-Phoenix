@@ -1631,7 +1631,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.13.0'
+local RM_BUILD = '0.14.0'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -5316,6 +5316,26 @@ end
 -- every connected client at once so the whole grid races the same track.
 local LAYOUTS_DIR  = 'Resources/Server/RaceManager'
 local LAYOUTS_FILE = LAYOUTS_DIR .. '/layouts.json'
+-- ONE FILE PER MAP, in a folder, and it is what layouts.json used to be.
+--
+-- The flat file grew to every track ever built on the server in one blob: to
+-- see which maps had races you parsed it, to hand-edit one gate you scrolled
+-- past three hundred KB of others, and every save rewrote the lot so a diff of
+-- one track moved the whole file. A folder answers all three -- `ls` is the
+-- track list, one file opens one map, and a save touches only the map it
+-- changed.
+--
+-- layouts.json IS STILL READ, exactly once: when this folder does not exist
+-- yet, the flat file is loaded and written out per map. After that the folder
+-- is the truth and the old file is never read again -- kept on disk as the
+-- backup a migration ought to leave, but ignored, because a legacy file that
+-- went on being merged would resurrect every layout anybody deleted.
+--
+-- NAMED FOR WHAT IT HOLDS, spaces and all: an admin poking around the server's
+-- files should find "Race Layout" and "Derby Arena" next to each other, not
+-- `layouts` beside `derbyArenas.json`. Every path this file builds is quoted at
+-- the point it reaches a shell (see listDirectory), so the space costs nothing.
+local LAYOUTS_TRACKS = LAYOUTS_DIR .. '/Race Layout'
 local MAX_LAYOUT_NAME = 40
 local layouts = nil  -- lazy-loaded array of { name, map, width, checkpoints }
 
@@ -5660,41 +5680,148 @@ local function loadConfigFromDisk()
 end
 
 
-local function loadLayoutsFromDisk()
-  local f = io.open(LAYOUTS_FILE, 'r')
+-- The file a map's tracks live in. Sanitised because a map name comes out of a
+-- level PATH -- `normalizeMapName` takes whatever sits between /levels/ and the
+-- next slash -- and a name with a slash or a colon in it would either escape the
+-- folder or refuse to open, silently, on one platform and not the other.
+local function layoutFileFor(map)
+  local safe = tostring(map or 'unknown'):gsub('[^%w%-_%.]', '_')
+  if safe == '' then safe = 'unknown' end
+  return LAYOUTS_TRACKS .. '/' .. safe .. '.json'
+end
+
+-- Read one map's file. `fallbackMap` is the map its FILENAME claims, and it is
+-- used only for an entry that carries no map of its own -- which is what a
+-- hand-written file looks like when somebody sensibly declines to repeat the
+-- map on every entry in a file named after it. An entry that DOES carry one
+-- keeps it, so moving a file does not silently re-home the tracks in it.
+local function readLayoutFile(path, fallbackMap)
+  local f = io.open(path, 'r')
   if not f then return {} end
   local text = f:read('*a')
   f:close()
   local ok, data = pcall(jsonParse, text)
   if not ok or type(data) ~= 'table' or type(data.layouts) ~= 'table' then
-    print('[RaceManager] Could not parse ' .. LAYOUTS_FILE .. ', starting with no layouts')
+    print('[RaceManager] Could not parse ' .. path .. ', skipping it')
     return {}
   end
   local out = {}
   for _, l in ipairs(data.layouts) do
-    if type(l) == 'table' and type(l.name) == 'string' and type(l.map) == 'string'
+    if type(l) == 'table' and type(l.name) == 'string'
         and type(l.checkpoints) == 'table' and #l.checkpoints > 0 then
-      out[#out + 1] = l
+      if type(l.map) ~= 'string' or l.map == '' then l.map = fallbackMap end
+      if type(l.map) == 'string' and l.map ~= '' then out[#out + 1] = l end
     end
   end
   return out
 end
 
-local function getLayouts()
-  if not layouts then
-    layouts = loadLayoutsFromDisk()
-    print('[RaceManager] Loaded ' .. #layouts .. ' saved layout(s) from ' .. LAYOUTS_FILE)
+-- Every track file in the folder. Returns nil -- not an empty list -- when the
+-- folder does not exist at all, because those are different answers: "no folder"
+-- means migrate, and "a folder with nothing in it" means somebody deleted their
+-- last layout and must not have it handed back.
+local function readLayoutFolder()
+  local names = listDirectory(LAYOUTS_TRACKS)
+  if #names == 0 then
+    -- listDirectory cannot tell an empty folder from a missing one, so ask the
+    -- filesystem the only way that works on both: try to open a file in it.
+    local probe = io.open(LAYOUTS_TRACKS .. '/.rm', 'a')
+    if not probe then return nil end
+    probe:close()
+    removeFile(LAYOUTS_TRACKS .. '/.rm')
+    return {}
   end
-  return layouts
+  local out = {}
+  for _, name in ipairs(names) do
+    local base = name:match('^(.*)%.json$')
+    if base then
+      for _, l in ipairs(readLayoutFile(LAYOUTS_TRACKS .. '/' .. name, base)) do
+        out[#out + 1] = l
+      end
+    end
+  end
+  return out
 end
+
+-- The legacy flat file, read only when the folder is not there yet.
+local function readLegacyLayouts()
+  local f = io.open(LAYOUTS_FILE, 'r')
+  if not f then return {} end
+  f:close()
+  return readLayoutFile(LAYOUTS_FILE, nil)
+end
+
+-- FORWARD DECLARED, because these two now call each other: a save reads the
+-- live list through getLayouts, and the first getLayouts writes the migrated
+-- folder out through a save. Declared here rather than reordered because there
+-- is no order that satisfies both -- and a local resolved before its `local`
+-- line is a nil GLOBAL that compiles perfectly and throws when pressed.
+local getLayouts
 
 local function saveLayoutsToDisk()
   ensureLayoutsDir()
-  local f, ferr = io.open(LAYOUTS_FILE, 'w')
-  if not f then return false, tostring(ferr) end
-  f:write(jsonStringify({ version = 1, layouts = getLayouts() }))
-  f:close()
+  makeDirectory(LAYOUTS_TRACKS)
+  -- Grouped first, so a map with no layouts left is visible as an absence and
+  -- can have its file removed below.
+  local byMap = {}
+  for _, l in ipairs(getLayouts()) do
+    local m = l.map or 'unknown'
+    if not byMap[m] then byMap[m] = {} end
+    table.insert(byMap[m], l)
+  end
+  local failed = nil
+  for map, list in pairs(byMap) do
+    local path = layoutFileFor(map)
+    local f, ferr = io.open(path, 'w')
+    if not f then
+      failed = failed or tostring(ferr)
+    else
+      f:write(jsonStringify({ version = 1, map = map, layouts = list }))
+      f:close()
+    end
+  end
+  -- A MAP WHOSE LAST LAYOUT WAS DELETED loses its file. Left behind, it would be
+  -- read again on the next boot and hand back the track that was just deleted --
+  -- which is the one bug a per-map store can have that a single file cannot.
+  for _, name in ipairs(listDirectory(LAYOUTS_TRACKS)) do
+    local base = name:match('^(.*)%.json$')
+    if base then
+      local live = false
+      for map in pairs(byMap) do
+        if layoutFileFor(map) == LAYOUTS_TRACKS .. '/' .. name then live = true break end
+      end
+      if not live then removeFile(LAYOUTS_TRACKS .. '/' .. name) end
+    end
+  end
+  if failed then return false, failed end
   return true
+end
+
+getLayouts = function ()
+  if not layouts then
+    local folder = readLayoutFolder()
+    if folder then
+      layouts = folder
+      print(string.format('[RaceManager] Loaded %d saved layout(s) from %s/',
+        #layouts, LAYOUTS_TRACKS))
+    else
+      -- FIRST BOOT AFTER THE UPGRADE. The flat file is read, split per map and
+      -- written out; from here the folder is the store and this branch is never
+      -- taken again.
+      layouts = readLegacyLayouts()
+      print(string.format('[RaceManager] Migrating %d layout(s) from %s into %s/',
+        #layouts, LAYOUTS_FILE, LAYOUTS_TRACKS))
+      local ok, err = saveLayoutsToDisk()
+      if ok then
+        print('[RaceManager] Migration done. ' .. LAYOUTS_FILE
+          .. ' is kept as a backup and is no longer read.')
+      else
+        print('[RaceManager] Migration FAILED (' .. tostring(err)
+          .. '); still running from ' .. LAYOUTS_FILE)
+      end
+    end
+  end
+  return layouts
 end
 
 -- Checkpoints as the client editor stores them: position + normalized travel
@@ -7108,6 +7235,11 @@ derbyMod.init({
   RM_PROTOCOL = RM_PROTOCOL,
   aliasNote = aliasNote, decodeString = decodeString, displayName = displayName,
   ensureLayoutsDir = ensureLayoutsDir, ensureResultsDir = ensureResultsDir,
+  -- The filesystem three, for the derby module's own per-map arena store. It
+  -- runs the same migration this file does and there is no reason for a second
+  -- copy of "list a folder on either platform".
+  listDirectory = listDirectory, makeDirectory = makeDirectory,
+  removeFile = removeFile,
   forceSpectate = forceSpectate, getCurrentMap = getCurrentMap,
   isEntrant = isEntrant, jsonParse = jsonParse, jsonStringify = jsonStringify,
   onlinePlayers = onlinePlayers, releaseSpectators = releaseSpectators,

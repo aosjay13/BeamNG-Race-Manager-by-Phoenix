@@ -6,6 +6,48 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.14.0 - A folder per kind, a file per map
+
+### Changed
+
+- **Tracks and arenas are stored one file per map**, in `Race Layout/` and
+  `Derby Arena/` under `Resources/Server/RaceManager/`.
+
+  `layouts.json` had grown to every track ever built on the server in one blob:
+  to see which maps had races you parsed it, to hand-edit one gate you scrolled
+  past three hundred KB of others, and every save rewrote the lot so a diff of
+  one track moved the whole file. A folder answers all three at once.
+
+  **The migration runs itself** on the first start after upgrading: both flat
+  files are read, split per map and written into the folders. They are then
+  **kept on disk and never read again**. Both halves of that matter -- a
+  migration that deleted the only copy of the data would not be one, and a
+  legacy file that went on being merged would resurrect every layout anybody
+  ever deleted.
+
+  Hand-editing is expected, so an entry in a file named after its map needs no
+  `map` field of its own; one that carries a map keeps it, and moving a file
+  between folders never silently re-homes the tracks in it. A map whose last
+  track is deleted loses its file, which is the one bug a per-map store can have
+  that a single file cannot.
+
+- **`tools/import_scenarii.py` writes the same two folders**, so its output can
+  be copied straight into place, and **`--merge` now takes a whole server
+  folder** as well as a flat file. A duplicate name renames the IMPORT and never
+  what you built: the server resolves a layout by name within a map, so two
+  tracks called "Race" on one map is one quietly shadowing the other.
+
+### Added
+
+- **`tests/layout_store_test.lua`** (24 checks), which is about the migration,
+  because that is the half that can lose a league's season. The check that took
+  two attempts to get right: an EMPTY folder is not a MISSING folder. "No
+  folder" means migrate; "a folder with nothing in it" means somebody deleted
+  their last layout and must not have it handed back. The first version of the
+  test never drove the folder all the way to empty, so the naive implementation
+  passed it -- the failure only appears on the boot after the last track on the
+  last map is deleted.
+
 ## 0.13.0 - Two classes on one grid
 
 ### Added

@@ -1183,6 +1183,34 @@ Some details worth knowing:
   under them**. A race with four yellows in it used to read exactly like a clean
   one, which makes a lap chart impossible to explain afterwards.
 
+### Where tracks and arenas are stored
+
+```
+Resources/Server/RaceManager/
+    Race Layout/<map>.json      every race on that map
+    Derby Arena/<map>.json      every arena on that map
+```
+
+**One file per map, named after the map.** "Which tracks do we have races for" is
+a directory listing; editing one track opens one small file instead of scrolling
+past every other track on the server; and a save rewrites only the map it
+changed, so a diff of one gate is a diff of one gate.
+
+**The old flat files migrate themselves.** On the first start after upgrading,
+`layouts.json` and `derbyArenas.json` are read, split per map, and written into
+the two folders. Both old files are **kept on disk as a backup and never read
+again** &mdash; a migration that deleted the only copy of what it was migrating
+would not be one, and a legacy file that went on being merged would resurrect
+every layout anybody deleted.
+
+Hand-editing is expected, and two things make it safe:
+
+- **An entry needs no `map` field** in a file named after the map; it is taken
+  from the filename. An entry that *does* carry one keeps it, so moving a file
+  between folders never silently re-homes the tracks inside it.
+- **A map whose last track is deleted loses its file.** Left behind, it would be
+  read again on the next restart and hand back the track that was just deleted.
+
 ### Importing BeamMP scenarii races and derbies
 
 `tools/import_scenarii.py` converts the races and derbies from a BeamMP
@@ -1193,13 +1221,20 @@ python tools/import_scenarii.py ~/Downloads/scenarii --list   # say what it find
 python tools/import_scenarii.py ~/Downloads/scenarii          # write import/
 ```
 
-It writes `import/layouts.json` and `import/derbyArenas.json` (the formats the
-server loads), `import/by-map/<map>.json` (the same content split one file per
-track, which is the readable half: "which tracks do we have races for" becomes
-`ls`), and `import/INDEX.md` listing every race with its gate count and any
-caveat. **Nothing is installed** &mdash; `layouts.json` is every track an admin
-has ever built, so the merge is left to a human. `--merge path/to/layouts.json`
-folds an existing file in, imports second.
+It writes `import/Race Layout/<map>.json` and `import/Derby Arena/<map>.json`
+&mdash; the same two folders the server reads, so the output can be copied
+straight into `Resources/Server/RaceManager/` &mdash; plus `import/INDEX.md`
+listing every race with its gate count and any caveat.
+
+**Nothing is installed.** Those folders are every track an admin has ever built,
+so the copy is left to a human.
+
+**`--merge PATH` folds an existing store in first.** PATH can be a flat
+`layouts.json`, a `derbyArenas.json`, or a whole `Resources/Server/RaceManager`
+folder. **A duplicate name renames the IMPORT, never what you built**: the server
+resolves a layout by name within a map, so two tracks called "Race" on one map is
+one quietly shadowing the other. A colliding import becomes `Race (2)`, `Race (3)`
+and so on, and every rename is printed as it happens.
 
 **What converts exactly.** A scenarii race is a list of *steps*, and each step is
 a list of waypoints that are alternatives to each other. That is precisely a

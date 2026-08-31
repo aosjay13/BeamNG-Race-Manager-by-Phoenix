@@ -59,6 +59,11 @@ local derbyUnderWay, derbyEntryListChanged
 -- write to a nil global and every read got nil. Lua resolves names at compile
 -- time, and a declaration below its use is not a declaration at all.
 local DERBY_LAYOUTS_FILE
+-- ONE FILE PER MAP, in a folder, exactly as the racing layouts are stored. The
+-- flat derbyArenas.json is read once, split per map, and then never read again
+-- while the folder exists -- see getDerbyLayouts.
+local DERBY_ARENAS_DIR
+local listDirectory, makeDirectory, removeFile
 
 function D.init(h)
   LAYOUTS_DIR, MAX_LAYOUT_NAME, RM_PROTOCOL = h.LAYOUTS_DIR, h.MAX_LAYOUT_NAME, h.RM_PROTOCOL
@@ -69,7 +74,10 @@ function D.init(h)
   onlinePlayers, releaseSpectators = h.onlinePlayers, h.releaseSpectators
   requireAuth, respawnField, uniqueResultsPath = h.requireAuth, h.respawnField, h.uniqueResultsPath
   players, race, sanitizeCheckpoints = h.players, h.race, h.sanitizeCheckpoints
+  listDirectory, makeDirectory = h.listDirectory, h.makeDirectory
+  removeFile = h.removeFile
   DERBY_LAYOUTS_FILE = LAYOUTS_DIR .. '/derbyArenas.json'
+  DERBY_ARENAS_DIR   = LAYOUTS_DIR .. '/Derby Arena'
 end
 
 -- The cup installs itself at the bottom of main.lua, after this module has
@@ -957,46 +965,126 @@ end
 -- LAYOUTS_DIR, which is nil until the host hands it over.
 local derbyLayouts = nil   -- lazy-loaded array of { name, map, boundary, ... }
 
-local function loadDerbyLayoutsFromDisk()
-  local f = io.open(DERBY_LAYOUTS_FILE, 'r')
+-- THE ARENA STORE, one file per map. The mirror of the racing layouts' own, and
+-- deliberately the same shape down to the migration: an admin who understands
+-- one folder understands the other.
+local function derbyFileFor(map)
+  local safe = tostring(map or 'unknown'):gsub('[^%w%-_%.]', '_')
+  if safe == '' then safe = 'unknown' end
+  return DERBY_ARENAS_DIR .. '/' .. safe .. '.json'
+end
+
+-- `fallbackMap` is the map the FILENAME claims, used only for an entry that
+-- carries none of its own -- which is what a hand-written file looks like when
+-- somebody declines to repeat the map on every arena in a file named after it.
+local function readDerbyFile(path, fallbackMap)
+  local f = io.open(path, 'r')
   if not f then return {} end
   local text = f:read('*a')
   f:close()
   local ok, data = pcall(jsonParse, text)
   if not ok or type(data) ~= 'table' or type(data.layouts) ~= 'table' then
-    print('[RaceManager] Could not parse ' .. DERBY_LAYOUTS_FILE .. ', starting with no arenas')
+    print('[RaceManager] Could not parse ' .. path .. ', skipping it')
     return {}
   end
   local out = {}
   for _, l in ipairs(data.layouts) do
-    if type(l) == 'table' and type(l.name) == 'string' and type(l.map) == 'string'
+    if type(l) == 'table' and type(l.name) == 'string'
         and type(l.boundary) == 'table' and #l.boundary >= 3 then
-      out[#out + 1] = l
+      if type(l.map) ~= 'string' or l.map == '' then l.map = fallbackMap end
+      if type(l.map) == 'string' and l.map ~= '' then out[#out + 1] = l end
     end
   end
   return out
 end
 
-local function getDerbyLayouts()
-  if not derbyLayouts then
-    derbyLayouts = loadDerbyLayoutsFromDisk()
-    print('[RaceManager] Loaded ' .. #derbyLayouts .. ' saved derby arena(s) from '
-      .. DERBY_LAYOUTS_FILE)
+-- nil when the folder is not there at all, which means MIGRATE. An empty list
+-- means the folder exists and holds nothing -- somebody deleted their last arena
+-- -- and handing the old file back there would resurrect it.
+local function readDerbyFolder()
+  local names = listDirectory(DERBY_ARENAS_DIR)
+  if #names == 0 then
+    local probe = io.open(DERBY_ARENAS_DIR .. '/.rm', 'a')
+    if not probe then return nil end
+    probe:close()
+    removeFile(DERBY_ARENAS_DIR .. '/.rm')
+    return {}
   end
-  return derbyLayouts
+  local out = {}
+  for _, name in ipairs(names) do
+    local base = name:match('^(.*)%.json$')
+    if base then
+      for _, l in ipairs(readDerbyFile(DERBY_ARENAS_DIR .. '/' .. name, base)) do
+        out[#out + 1] = l
+      end
+    end
+  end
+  return out
 end
+
+-- Forward declared: a save reads the live list through getDerbyLayouts, and the
+-- first getDerbyLayouts writes the migrated folder out through a save.
+local getDerbyLayouts
 
 local function saveDerbyLayoutsToDisk()
   ensureLayoutsDir()
-  local f, ferr = io.open(DERBY_LAYOUTS_FILE, 'w')
-  if not f then return false, tostring(ferr) end
-  -- version 2 added the optional boundaryMode/shape/wallHeight fields. A v1
-  -- entry is still a valid v2 entry -- it simply has none of them and loads as
-  -- the drive-and-place arena it always was -- so nothing migrates and an older
-  -- plugin reading this file still finds the `boundary` it cares about.
-  f:write(jsonStringify({ version = 2, layouts = getDerbyLayouts() }))
-  f:close()
+  makeDirectory(DERBY_ARENAS_DIR)
+  local byMap = {}
+  for _, l in ipairs(getDerbyLayouts()) do
+    local m = l.map or 'unknown'
+    if not byMap[m] then byMap[m] = {} end
+    table.insert(byMap[m], l)
+  end
+  local failed = nil
+  for map, list in pairs(byMap) do
+    local f, ferr = io.open(derbyFileFor(map), 'w')
+    if not f then
+      failed = failed or tostring(ferr)
+    else
+      -- version 2 added the optional boundaryMode/shape/wallHeight fields. A v1
+      -- entry is still a valid v2 entry -- it simply has none of them and loads
+      -- as the drive-and-place arena it always was.
+      f:write(jsonStringify({ version = 2, map = map, layouts = list }))
+      f:close()
+    end
+  end
+  -- A map whose last arena was deleted loses its file, or the next boot reads it
+  -- and hands the arena back.
+  for _, name in ipairs(listDirectory(DERBY_ARENAS_DIR)) do
+    local base = name:match('^(.*)%.json$')
+    if base then
+      local live = false
+      for map in pairs(byMap) do
+        if derbyFileFor(map) == DERBY_ARENAS_DIR .. '/' .. name then live = true break end
+      end
+      if not live then removeFile(DERBY_ARENAS_DIR .. '/' .. name) end
+    end
+  end
+  if failed then return false, failed end
   return true
+end
+
+getDerbyLayouts = function ()
+  if not derbyLayouts then
+    local folder = readDerbyFolder()
+    if folder then
+      derbyLayouts = folder
+      print(string.format('[RaceManager] Loaded %d saved derby arena(s) from %s/',
+        #derbyLayouts, DERBY_ARENAS_DIR))
+    else
+      derbyLayouts = readDerbyFile(DERBY_LAYOUTS_FILE, nil)
+      print(string.format('[RaceManager] Migrating %d derby arena(s) from %s into %s/',
+        #derbyLayouts, DERBY_LAYOUTS_FILE, DERBY_ARENAS_DIR))
+      local ok, err = saveDerbyLayoutsToDisk()
+      if ok then
+        print('[RaceManager] Migration done. ' .. DERBY_LAYOUTS_FILE
+          .. ' is kept as a backup and is no longer read.')
+      else
+        print('[RaceManager] Arena migration FAILED (' .. tostring(err) .. ')')
+      end
+    end
+  end
+  return derbyLayouts
 end
 
 -- Boundary markers are plain points; no heading, no dimensions.

@@ -442,8 +442,14 @@ lastChat = nil
 RM_onSaveLayout(1, '{"name":"GP Circuit","width":24,"checkpoints":' .. cpJson .. '}')
 check(type(lastChat) == 'string' and lastChat:find('GP Circuit', 1, true)
   and lastChat:find('gridmap_v2', 1, true), 'chat announces layout save with map name')
-check(fileExists('Resources/Server/RaceManager/layouts.json'),
-  'layouts.json written to disk')
+-- ONE FILE PER MAP, in a folder, which is what layouts.json used to be. The
+-- filename is the map, so "which tracks do we have races for" is a directory
+-- listing rather than a parse of a single growing blob.
+check(fileExists('Resources/Server/RaceManager/Race Layout/gridmap_v2.json'),
+  'the track file for this map is written to disk')
+check(not fileExists('Resources/Server/RaceManager/layouts.json'),
+  'and the flat layouts.json is not recreated: a save that wrote both would '
+    .. 'leave two stores to disagree')
 check(lastLayouts ~= nil and lastLayouts.map == 'gridmap_v2'
   and #lastLayouts.layouts == 1, 'save broadcasts refreshed layout list')
 check(lastLayouts.layouts[1].width == 24
@@ -677,7 +683,7 @@ RM_onRequestLayouts(1)
 check(lastLayouts ~= nil and #lastLayouts.layouts == 1
   and lastLayouts.layouts[1].name == 'gp circuit'
   and lastLayouts.layouts[1].checkpoints[1].y == 200.25,
-  'layouts survive a server restart via layouts.json')
+  'layouts survive a server restart via the per-map track files')
 
 -- Gate dimensions + per-checkpoint overrides round-trip through save/persist.
 -- A checkpoint is a flat width x height rectangle: there is no depth field any

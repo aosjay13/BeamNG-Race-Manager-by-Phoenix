@@ -5,20 +5,28 @@
     python tools/import_scenarii.py ~/Downloads/scenarii --out import
     python tools/import_scenarii.py ~/Downloads/scenarii --list
 
-Writes, under --out (default `import/`):
+Writes, under --out (default `import/`), the two folders the server reads:
 
-    layouts.json          every converted race, in the format the server loads
-    derbyArenas.json      every converted derby arena, likewise
-    by-map/<map>.json     the same races and arenas split one file per map,
-                          which is the readable half: one file per track, so
-                          "which tracks do we have races for" is `ls`.
-    INDEX.md              a table of every map, race and arena that came out
+    Race Layout/<map>.json    every race on that map, one file per map
+    Derby Arena/<map>.json    every derby arena on that map, likewise
+    INDEX.md                  a table of every map, race and arena that came out
 
-NOTHING IS INSTALLED. The two top-level files are drop-in replacements for the
-ones under Resources/Server/RaceManager/, and layouts.json in particular is
-every track an admin has ever built -- so this writes them somewhere else and
-leaves the merge to a human. Use --merge to fold an existing layouts.json in
-rather than starting from the imported set alone.
+That IS the server's own layout store -- since the per-map migration these two
+folders are what it loads -- so the output can be copied straight into
+Resources/Server/RaceManager/ once you have looked at it.
+
+NOTHING IS INSTALLED ANYWAY. These folders are every track an admin has ever
+built, so this writes them somewhere else and leaves the copy to a human.
+
+    --merge PATH    fold an existing store in FIRST, so imports never displace
+                    anything you built. PATH may be a flat layouts.json, a
+                    derbyArenas.json, or a Resources/Server/RaceManager folder
+                    holding any of them.
+
+DUPLICATE NAMES ARE KEPT, BOTH OF THEM. The server matches a layout by name
+within a map, so two tracks called "Race" on one map is one track that quietly
+shadows another. An imported name that collides gets " (2)", " (3)" and so on
+appended -- the import moves, never the thing that was already there.
 
 --------------------------------------------------------------------------
 What converts cleanly, and what does not
@@ -280,6 +288,81 @@ def load(path):
         return json.load(f)
 
 
+def read_store(path, kind):
+    """Read an existing store: a flat file, or a folder of per-map files.
+
+    `kind` is "layouts" or "arenas", and it only decides which names are looked
+    for inside a folder -- both file formats are the same `{"layouts": [...]}`
+    the server has always written.
+    """
+    if not path:
+        return []
+    flat_names = {"layouts": "layouts.json", "arenas": "derbyArenas.json"}[kind]
+    dir_names = {"layouts": "Race Layout", "arenas": "Derby Arena"}[kind]
+    out = []
+    if os.path.isfile(path):
+        out.extend(load(path).get("layouts", []))
+        return out
+    if not os.path.isdir(path):
+        return out
+    # A server folder: prefer the per-map folder, fall back to the flat file,
+    # exactly as the server itself does -- reading both would double every entry
+    # that had been migrated.
+    sub = os.path.join(path, dir_names)
+    if os.path.isdir(sub):
+        for name in sorted(os.listdir(sub)):
+            if name.endswith(".json"):
+                base = name[:-5]
+                for entry in load(os.path.join(sub, name)).get("layouts", []):
+                    entry.setdefault("map", base)
+                    out.append(entry)
+        return out
+    flat = os.path.join(path, flat_names)
+    if os.path.isfile(flat):
+        out.extend(load(flat).get("layouts", []))
+    # The folder may itself be a per-map folder handed in directly.
+    if not out:
+        for name in sorted(os.listdir(path)):
+            if name.endswith(".json") and name not in flat_names:
+                base = name[:-5]
+                for entry in load(os.path.join(path, name)).get("layouts", []):
+                    entry.setdefault("map", base)
+                    out.append(entry)
+    return out
+
+
+def merge_unique(existing, incoming):
+    """Append `incoming` to `existing`, renaming any name that already exists.
+
+    THE INCOMING ONE MOVES. The server resolves a layout by name within a map,
+    so a collision is not a merge conflict to be resolved by picking a winner --
+    it is one track silently shadowing another, and the one that was already
+    there is the one somebody built. An import that renamed the local track
+    would break every reference to it in a league's own notes.
+
+    Case-insensitively, because that is how the server matches.
+    """
+    taken = set()
+    for e in existing:
+        taken.add((e.get("map", ""), str(e.get("name", "")).lower()))
+    merged = list(existing)
+    renamed = []
+    for e in incoming:
+        m = e.get("map", "")
+        base = str(e.get("name", "Unnamed"))
+        name = base
+        n = 1
+        while (m, name.lower()) in taken:
+            n += 1
+            name = "%s (%d)" % (base, n)
+        if name != base:
+            renamed.append((m, base, name))
+            e["name"] = name
+        taken.add((m, name.lower()))
+        merged.append(e)
+    return merged, renamed
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -287,8 +370,11 @@ def main():
     ap.add_argument("--out", default="import", help="output folder (default: import)")
     ap.add_argument("--list", action="store_true",
                     help="say what would be converted and write nothing")
-    ap.add_argument("--merge", metavar="LAYOUTS_JSON",
-                    help="fold an existing layouts.json in, imports second")
+    ap.add_argument("--merge", metavar="PATH",
+                    help="fold an existing store in first: a layouts.json, a "
+                         "derbyArenas.json, or a Resources/Server/RaceManager "
+                         "folder. Imports go second, so a duplicate name "
+                         "renames the IMPORT and never what you built.")
     args = ap.parse_args()
 
     if not os.path.isdir(args.source):
@@ -347,36 +433,54 @@ def main():
         return 0
 
     out = args.out
-    os.makedirs(os.path.join(out, "by-map"), exist_ok=True)
+    race_dir = os.path.join(out, "Race Layout")
+    arena_dir = os.path.join(out, "Derby Arena")
+    os.makedirs(race_dir, exist_ok=True)
+    os.makedirs(arena_dir, exist_ok=True)
 
-    layouts = []
+    # LOCAL FIRST, IMPORTS SECOND, so a collision renames the import and leaves
+    # what somebody built exactly where it was.
+    local_races = read_store(args.merge, "layouts")
+    local_arenas = read_store(args.merge, "arenas")
     if args.merge:
-        existing = load(args.merge)
-        layouts.extend(existing.get("layouts", []))
-        print("merged %d existing layout(s) from %s" % (len(layouts), args.merge))
-    for m in sorted(races_by_map):
-        layouts.extend(races_by_map[m])
-    arenas = []
-    for m in sorted(arenas_by_map):
-        arenas.extend(arenas_by_map[m])
+        print("merging %d existing layout(s) and %d arena(s) from %s"
+              % (len(local_races), len(local_arenas), args.merge))
+
+    incoming_races = [r for m in sorted(races_by_map) for r in races_by_map[m]]
+    incoming_arenas = [a for m in sorted(arenas_by_map) for a in arenas_by_map[m]]
+    layouts, renamed_r = merge_unique(local_races, incoming_races)
+    arenas, renamed_a = merge_unique(local_arenas, incoming_arenas)
+    for m, was, now in renamed_r + renamed_a:
+        print('  renamed %s: "%s" -> "%s" (a track of that name was already there)'
+              % (m, was, now))
 
     def write(path, obj):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(obj, f, indent=1)
             f.write("\n")
 
-    write(os.path.join(out, "layouts.json"), {"version": 1, "layouts": layouts})
-    write(os.path.join(out, "derbyArenas.json"), {"version": 2, "layouts": arenas})
+    def by_map(entries):
+        grouped = {}
+        for e in entries:
+            grouped.setdefault(e.get("map", "unknown"), []).append(e)
+        return grouped
 
-    # ONE FILE PER MAP, and this is the half that answers "which tracks do we
-    # have races for". The server reads the two files above; these are for
-    # people, and for diffing an edit to one track without a 300 KB blob moving.
-    for m in maps:
-        write(os.path.join(out, "by-map", m + ".json"), {
-            "map": m,
-            "layouts": races_by_map.get(m, []),
-            "derbyArenas": arenas_by_map.get(m, []),
-        })
+    def safe(name):
+        return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in name) or "unknown"
+
+    # ONE FILE PER MAP, in the two folders the server reads. "Which tracks do we
+    # have races for" is a directory listing, and an edit to one track moves one
+    # small file rather than a 300 KB blob.
+    grouped_races = by_map(layouts)
+    grouped_arenas = by_map(arenas)
+    for m, entries in sorted(grouped_races.items()):
+        write(os.path.join(race_dir, safe(m) + ".json"),
+              {"version": 1, "map": m, "layouts": entries})
+    for m, entries in sorted(grouped_arenas.items()):
+        write(os.path.join(arena_dir, safe(m) + ".json"),
+              {"version": 2, "map": m, "layouts": entries})
+    print("%d layout(s) over %d map file(s); %d arena(s) over %d map file(s)"
+          % (len(layouts), len(grouped_races), len(arenas), len(grouped_arenas)))
 
     with open(os.path.join(out, "INDEX.md"), "w", encoding="utf-8") as f:
         f.write("# Imported scenarii\n\n")
@@ -384,8 +488,8 @@ def main():
         f.write("| Map | Kind | Name | Gates | Notes |\n|---|---|---|--:|---|\n")
         for m, kind, nm, count, note in report:
             f.write("| %s | %s | %s | %d | %s |\n" % (m, kind, nm, count, note or ""))
-    print("wrote %s/layouts.json, %s/derbyArenas.json, %s/by-map/*.json, %s/INDEX.md"
-          % (out, out, out, out))
+    print('wrote %s/"Race Layout"/*.json, %s/"Derby Arena"/*.json, %s/INDEX.md'
+          % (out, out, out))
     return 0
 
 
