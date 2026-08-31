@@ -200,6 +200,12 @@
          on screen, but yellow is also what a caution looks like, and "form up
          and hold position" is very nearly the opposite of "race back to the
          line" -- so the instruction gets said rather than inferred. -->
+    <!-- THE RACE IS NEUTRALISED, said in the one place a driver is looking. The
+         yellow flag alone does not say it: an advisory yellow means "hazard,
+         race back to the line" and a caution means very nearly the opposite. The
+         frozen board has to announce that it is frozen, or it reads as broken. -->
+    <span class="rm-pace-badge" ng-if="caution"
+          title="Full-course caution: hold position, no overtaking. Places are frozen as they were when the yellow came out.">CAUTION &middot; POSITIONS FROZEN<b ng-if="cautionLaps"> &middot; LAP {{ cautionLaps }}</b></span>
     <span class="rm-pace-badge" ng-if="pacing"
           title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. The green flag falls as the leader reaches the line.">PACE LAP 40 MPH / 64 KM/H</span>
     <span class="rm-p2p-badge" ng-if="pointToPoint"
@@ -451,6 +457,18 @@
               ng-class="{'rm-flag-on': flag === 'green'}"
               title="Green flag: racing.">Green flag</button>
     </span>
+    <!-- THE CAUTION AND THE RESTART, and they are one control that swaps rather
+         than two side by side: a race is either neutralised or it is not, and
+         offering "Caution" during a caution is offering to do the thing that is
+         already done. The flag buttons beside them are the ADVISORY yellow the
+         mod has always had -- a local hazard -- which is a different instrument
+         and freezes nothing. -->
+    <button class="rm-btn rm-btn-caution rm-btn-fcy" ng-click="callCaution()"
+            ng-if="cautionAvailable() &amp;&amp; !caution"
+            title="Full-course yellow: neutralise the race and FREEZE the running order where it stands.">Caution</button>
+    <button class="rm-btn rm-btn-green rm-btn-restart" ng-click="callRestart()"
+            ng-if="cautionAvailable() &amp;&amp; caution"
+            title="Green flag: end the caution and go racing again. Positions unfreeze from here.">Restart</button>
     <button class="rm-btn rm-btn-end"   ng-click="endRace()"         ng-if="phase === 'racing' || phase === 'countdown' || phase === 'qualifying'">End Session</button>
     <button class="rm-btn rm-btn-reset" ng-click="resetLeaderboard()">Reset</button>
   </div>
@@ -758,6 +776,50 @@
       </span>
       <span class="rm-setting-val">{{ qualiLimitLabel() }}</span>
     </span>
+    <!-- Module 6: heats and transfers.
+
+         Placed in the GRID tab and not a tab of its own, because that is what a
+         heat program is: a way of deciding the feature grid. Everything here
+         answers "who is on the track when I press Generate Grid", which is the
+         question the rest of this panel answers too. -->
+    <span class="rm-setting" title="Run the night as heats, then a feature. The heat results set the feature grid.">
+      <label>Heats</label>
+      <input type="number" class="rm-width-num" min="0" max="12" step="1" ng-model="settingsUi.heats"
+             ng-model-options="{ debounce: { default: 500, blur: 0 } }"
+             ng-change="applyHeats()"
+             ng-disabled="!canSetRules()"
+             title="How many heats the night is split into. 0 turns the program off.">
+      <span class="rm-setting-sub" ng-if="heatCount">
+        <label>Transfer</label>
+        <input type="number" class="rm-width-num" min="0" max="99" step="1" ng-model="settingsUi.transfer"
+               ng-model-options="{ debounce: { default: 500, blur: 0 } }"
+               ng-change="applyHeats()"
+               ng-disabled="!canSetRules()"
+               title="Drivers transferring out of each heat. They start the feature ahead of everyone who did not.">
+      </span>
+      <button class="rm-btn rm-btn-mini" ng-click="drawHeats()"
+              ng-if="heatCount > 1"
+              ng-disabled="!canSetRules()"
+              title="Split the field into heats by qualifying time, serpentine, so every heat gets a comparable spread.">{{ heatsDrawn ? 'Redraw' : 'Draw heats' }}</button>
+      <span class="rm-setting-val">{{ heatLabel() }}</span>
+    </span>
+    <!-- WHICH SESSION IS NEXT, and it decides who ends up on the track. The one
+         control here an admin touches between every race of the night. -->
+    <span class="rm-setting" ng-if="heatCount &amp;&amp; heatsDrawn"
+          title="Which session Generate Grid will form. A heat grids only that heat; the feature grids everyone.">
+      <label>Next up</label>
+      <button class="rm-btn rm-btn-mini" ng-repeat="h in heatList()"
+              ng-class="{'rm-btn-toggle-on': heatCurrent === h}"
+              ng-click="setHeatCurrent(h)"
+              ng-disabled="!canSetRules()">Heat {{ h }}</button>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': heatCurrent === 0}"
+              ng-click="setHeatCurrent(0)"
+              ng-disabled="!canSetRules()"
+              title="The feature: the whole field, gridded by the transfers.">Feature</button>
+    </span>
+    <span class="rm-setting-warn" ng-if="heatCount > 1 &amp;&amp; !heatsDrawn">
+      Heats are set but the field is not drawn: press Draw heats, or Generate Grid will form the whole field.
+    </span>
     <span class="rm-setting" title="How the starting grid is filled when you press Generate Grid.">
       <label>Grid order</label>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': gridMode === 'quali'}"
@@ -776,6 +838,13 @@
               ng-click="setGridMode('custom')"
               ng-disabled="!canSetRules()"
               title="Type a slot number in the Start column. Everyone else falls in behind by quali time.">Custom</button>
+      <!-- Only offered once there is a program behind it: with no heats run,
+           nobody has a heat position and the mode reads as doing nothing. -->
+      <button class="rm-btn rm-btn-mini" ng-if="heatCount"
+              ng-class="{'rm-btn-toggle-on': gridMode === 'heats'}"
+              ng-click="setGridMode('heats')"
+              ng-disabled="!canSetRules()"
+              title="The feature grid from the heat results: winners on the front row, then the seconds, interleaved by heat.">Heats</button>
       <span class="rm-setting-val">{{ startSlots }} start position{{ startSlots === 1 ? '' : 's' }}</span>
     </span>
     <span class="rm-setting-warn" ng-if="startSlots > 0 && entrants > startSlots">
@@ -2458,6 +2527,12 @@
          on screen, but yellow is also what a caution looks like, and "form up
          and hold position" is very nearly the opposite of "race back to the
          line" -- so the instruction gets said rather than inferred. -->
+    <!-- THE RACE IS NEUTRALISED, said in the one place a driver is looking. The
+         yellow flag alone does not say it: an advisory yellow means "hazard,
+         race back to the line" and a caution means very nearly the opposite. The
+         frozen board has to announce that it is frozen, or it reads as broken. -->
+    <span class="rm-pace-badge" ng-if="caution"
+          title="Full-course caution: hold position, no overtaking. Places are frozen as they were when the yellow came out.">CAUTION &middot; POSITIONS FROZEN<b ng-if="cautionLaps"> &middot; LAP {{ cautionLaps }}</b></span>
     <span class="rm-pace-badge" ng-if="pacing"
           title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. The green flag falls as the leader reaches the line.">PACE LAP 40 MPH / 64 KM/H</span>
     <span class="rm-driverbar-label" ng-if="jokerEnabled">
@@ -2886,6 +2961,10 @@
                here that would mislead. -->
           <th class="rm-col-time" title="Time behind the leader at this driver's last checkpoint">Gap</th>
           <th class="rm-col-led">Led</th>
+          <!-- Which heat this driver ran, where they finished it, and whether
+               that was a transfer. Present only during a heat program, because
+               outside one every cell would be empty. -->
+          <th class="rm-col-heat" ng-if="heatCount" title="Heat, finishing position in it, and a tick for a transfer">Heat</th>
           <th class="rm-col-joker" ng-if="jokerEnabled" title="Joker route: the lap it was taken on">Joker</th>
           <th class="rm-col-reset" ng-if="resetsLimited()" title="Vehicle resets used / allowed, plus any attempts blocked after the allowance ran out">Rst</th>
           <th class="rm-col-status">Status</th>
@@ -2930,6 +3009,8 @@
                two cars at opposite ends of a head-on oval are ranked next to each
                other because they have cleared the same checkpoints, which is the
                whole claim the leaderboard is making. -->
+          <td class="rm-col-heat" ng-if="heatCount"
+              ng-class="{'rm-heat-transfer': row.transferred === true}">{{ myHeatLabel(row) }}</td>
           <td class="rm-col-joker" ng-if="jokerEnabled"
               ng-class="{'rm-joker-missing': !row.jokerTaken, 'rm-joker-done': row.jokerTaken === 1}">
             {{ jokerLabel(row) }}
@@ -2943,7 +3024,7 @@
           </td>
         </tr>
         <tr ng-if="!drivers.length">
-          <td colspan="10" class="rm-empty">
+          <td colspan="11" class="rm-empty">
             No drivers yet: join a BeamMP server running the RaceManager plugin, then press
             <b>Start Quali</b> (or <b>Generate Grid</b> to go straight to a race),
             followed by <b>Start Countdown</b> &mdash; or <b>Start Race</b>, if the
@@ -3925,6 +4006,14 @@
   .rm-entryset { display: inline-flex; gap: 4px; }
   .rm-btn-redflag { border-color: rgba(255, 82, 82, 0.85); color: #ff8a8a; }
   .rm-btn-caution { border-color: rgba(251, 188, 5, 0.85); color: #fdd663; }
+  /* The full-course yellow and the restart out of it. Heavier than the advisory
+     flag buttons beside them, because they change what the race IS rather than
+     what is being shown to it. */
+  .rm-btn-fcy { font-weight: 700; border-width: 2px; }
+  .rm-btn-restart { font-weight: 700; border-width: 2px; }
+  /* A driver who took a transfer spot out of their heat. Green, because it is
+     the same "you are through" the checkered column means. */
+  .rm-heat-transfer { color: #7ee2a8; font-weight: 700; }
   .rm-btn-green   { border-color: rgba(52, 168, 83, 0.85); color: #7ee2a8; }
   /* The flag currently out. Marked rather than hidden, so the sequence is
      always visible and the current state is never a guess. */

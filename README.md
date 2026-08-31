@@ -134,6 +134,13 @@ and **held** there, so nobody can jump the start. **Start Countdown** gives
 everyone a synchronised 3‑2‑1‑**GO!** and releases the whole field on the same
 broadcast. The table re-sorts leader-first in real time as places change.
 
+Once the race is running, **Caution** throws a full-course yellow: the field is
+told to hold station and **the running order freezes** where it stood, so a
+driver who closes up under the caution &mdash; which is what they have been told
+to do &mdash; is not shown losing or making places for it. **Restart** goes green
+again and live positions resume. The advisory **Yellow flag** button beside it is
+a different instrument: a local hazard, and it freezes nothing.
+
 Turn on **Pace lap** and that button becomes **Start Race** instead. The field is
 released under a **yellow flag** with no countdown, told to hold position at
 40 mph / 64 km/h, and runs a formation lap; the **green flag** falls
@@ -163,6 +170,8 @@ expect without touching any of it.
 | **[Reset ghosting](docs/REFERENCE.md#reset-ghosting)** | A driver who resets is intangible for a few seconds rather than reappearing solid in the racing line. Collisions return only once the space around them is provably clear. |
 | **[Branch gates](docs/REFERENCE.md#branch-gates-two-ways-through-a-checkpoint)** | Give a checkpoint a second gate and either one clears it. Split lanes and head-on "suicide" ovals, scored together on one leaderboard, with nothing to assign anyone to. |
 | **[Mouse track editing](docs/REFERENCE.md#tutorial-running-a-race-night)** | Nudge mode: click, drag and scroll to move and turn gates from free cam, ctrl+click to place new ones. Driving to a gate still works and still builds the track. |
+| **[Caution and restart](docs/REFERENCE.md#caution-and-restart)** | A full-course yellow that **freezes the running order** where it stands, so closing up under the caution costs nobody a place. Restart when the track is clear and live positions resume. Cautions and the laps run under them go into the results file. |
+| **[Heats and transfers](docs/REFERENCE.md#heats-and-transfers)** | Run the night as heats into a feature. The field is split by a serpentine draw off qualifying, the top N from each heat transfer, and the feature grid is built from the results &mdash; winners on the front row, interleaved by heat. |
 | **[Pace lap](docs/REFERENCE.md#pace-lap)** | Start the race behind a pace car instead of from the lights: released under yellow, one formation lap at 40 mph / 64 km/h, green flag as the leader returns to the line. The formation lap is not scored and does not count against the distance. |
 | **[Rallycross joker laps](docs/REFERENCE.md#rallycross-joker-laps)** | A second gate route that must be taken exactly once per race. Lap 1 is closed, and the server disqualifies anyone who missed it or took it twice. |
 | **[Garage List](docs/REFERENCE.md#vehicle--setup-locking-the-garage-list)** | Lock the session to exact cars *and* exact tunes. Anything else is deleted on spawn and the driver is told why. |

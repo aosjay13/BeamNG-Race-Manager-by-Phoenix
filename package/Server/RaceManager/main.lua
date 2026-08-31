@@ -106,6 +106,7 @@ local CFG = {
   pushEveryTicks  = 3,       -- broadcasts are one in this many ticks
   maxTotalLaps    = 500,
   maxResetLimit   = 99,
+  maxHeats        = 12,      -- ceiling on the heat count, so a typo is not a hang
   maxQualiLaps    = 99,
   maxQualiTime    = 7200,    -- seconds (2 h)
   maxRaceTime     = 21600,   -- seconds (6 h), so an endurance race is expressible
@@ -186,6 +187,55 @@ local race = {
   -- CFG.paceArmAt: until this is set, being near the line means the field has
   -- not left it rather than that it has come back to it.
   paceArmed    = false,
+  -- ---------------------------------------------------------------------
+  -- THE CAUTION
+  -- ---------------------------------------------------------------------
+  -- A full-course yellow called mid-race, and what makes it a caution rather
+  -- than the advisory yellow beside it (see race.flag) is ONE thing: it FREEZES
+  -- THE RUNNING ORDER.
+  --
+  -- That is the only half of a real caution this plugin can enforce. The server
+  -- has no physics: it cannot slow a car, cannot close a gap and cannot line a
+  -- field up behind the leader. What it CAN do is decide that positions stop
+  -- changing the moment the yellow comes out -- which is exactly what a real
+  -- caution does to the timing sheet, and is a scoring rule rather than a
+  -- movement one. The instruction to close up and hold station goes out in chat
+  -- and on screen; the order that instruction protects is enforced here.
+  --
+  -- The flag note above says an automatic ruling on overtakes under yellow
+  -- needs "a second running order that survives the caution and reconciles on
+  -- green". This IS that order. It is not a ruling on any individual overtake --
+  -- no incident is judged, nobody is penalised -- it simply stops the board
+  -- from re-sorting until the green.
+  caution      = false,
+  -- The lap the leader was on when the yellow came out, and how many laps the
+  -- field has run under it. Caution laps COUNT, as they do in most oval racing:
+  -- the distance does not pause because the racing has.
+  cautionLap   = nil,
+  cautionLaps  = 0,
+  -- How many cautions this race has seen, for the results file. A race with
+  -- four yellows in it read exactly like a clean one once it was over.
+  cautionCount = 0,
+  -- ---------------------------------------------------------------------
+  -- THE HEAT PROGRAM
+  -- ---------------------------------------------------------------------
+  -- A night run as several short heats and then a feature, with the heat
+  -- results setting the feature grid. The whole of it is four numbers and one
+  -- field per driver, because the session machinery underneath does not change:
+  -- a heat IS an ordinary race, run by a subset of the field.
+  --
+  --   heatCount     how many heats the night is split into. 0 = no heat
+  --                 program at all, and every rule below is inert -- which is
+  --                 what keeps a server that never runs heats untouched.
+  --   heatTransfer  how many drivers transfer out of each heat. They start the
+  --                 feature ahead of everyone who did not.
+  --   heatCurrent   which heat is being set up or run right now. 0 means the
+  --                 FEATURE (or an ordinary race), 1..heatCount a heat.
+  --   heatsDrawn    whether the field has been split yet.
+  heatCount    = 0,
+  heatTransfer = 0,
+  heatCurrent  = 0,
+  heatsDrawn   = false,
   -- The race.time the green flag fell at, and the reason it is kept rather than
   -- zeroing the clock there. race.time is the session clock -- ghost end times
   -- are expressed on it and it is re-anchored on every client from the
@@ -380,6 +430,15 @@ local race = {
   lastLapNum     = nil,      -- the lap number that is the final one
 }
 local players = {}          -- [playerID] = per-player record
+
+-- Release a frozen caution order. Declared HERE, immediately below the table it
+-- walks, because three callers want it and the earliest of them (finishSession)
+-- sits two thousand lines above the caution code it belongs to. A local
+-- declared after its caller resolves as a GLOBAL instead -- which compiles
+-- perfectly and is nil at the moment it is called.
+local function thawOrder()
+  for _, rec in pairs(players) do rec.cautionPos = nil end
+end
 -- Authoritative reset-ghost state: [playerID] = { startedAt, duration }, both on
 -- race.time. Held here and not only on the clients that happened to be listening
 -- so that a driver joining or reconnecting DURING a ghost is told about it --
@@ -562,6 +621,20 @@ local function newRecord(pid)
     holdCorrectedAt = nil,   -- race.time of the last correction (rate limiting)
     jokerTaken = 0,          -- completed runs of the joker route this race
     jokerLap   = nil,        -- lap the joker route was taken on
+    -- WHERE THIS DRIVER WAS RUNNING WHEN THE YELLOW CAME OUT. Set for every car
+    -- on track at the moment a caution is called and cleared at the green; while
+    -- it is set it is the FIRST thing the running order compares, which is what
+    -- freezes the board. nil for a driver who joined the race after the caution,
+    -- and they sort behind everyone who has one.
+    cautionPos = nil,
+    -- THE HEAT PROGRAM, per driver. Held on the record rather than in a table of
+    -- its own so it travels with the driver through every path that already
+    -- knows how to move a record -- and mirrored into the identity registry, so
+    -- a driver who drops out between two heats does not come back having lost
+    -- the transfer they earned in the first one.
+    heat        = nil,       -- which heat this driver was drawn into
+    heatPos     = nil,       -- where they finished it
+    transferred = nil,       -- true once they took a transfer spot out of it
     -- Connected while a session was already running: not a participant, and
     -- ghosted for everyone until the next grid forms. See RM_onPlayerJoin.
     bystander  = nil,
@@ -836,6 +909,14 @@ local function rememberIdentity(rec)
     name   = rec.name,
     alias  = rec.alias,
     spectating = rec.spectating == true,
+    -- THE HEAT PROGRAM RIDES HERE TOO, and it has to. Generate Grid purges every
+    -- record that is not a connected player, so a driver who drops out between
+    -- heat two and the feature would come back having lost the heat they were
+    -- drawn into and the transfer they earned in it -- and would be gridded at
+    -- the back of a feature they had qualified for the front of.
+    heat        = rec.heat,
+    heatPos     = rec.heatPos,
+    transferred = rec.transferred,
   }
 end
 
@@ -868,6 +949,9 @@ local function ensurePlayer(pid)
     if ident then
       rec.alias  = ident.alias
       rec.spectating = ident.spectating == true
+      rec.heat        = ident.heat
+      rec.heatPos     = ident.heatPos
+      rec.transferred = ident.transferred
     end
     players[pid] = rec
     rememberIdentity(rec)
@@ -950,9 +1034,32 @@ local rosterWarm, cupWarm
 -- Spectating is the only switch now. It covers what opt-in was for -- a one on
 -- one where two people race and the rest watch is two entrants and everybody
 -- else pressing Spectate -- without an admin having to set a mode first.
+-- IS THIS DRIVER IN THE SESSION ABOUT TO BE RUN?
+--
+-- A HEAT IS AN ORDINARY RACE RUN BY A SUBSET OF THE FIELD, and this function is
+-- the whole of what makes that true. Everything downstream -- forming the grid,
+-- the online purge, the respawn, the garage audit, the entrant count -- already
+-- asks this question and needs no idea that heats exist.
+--
+-- Three conditions, and all three matter:
+--
+--   heatCount > 0    there is a heat program at all. A server that never runs
+--                    heats is untouched by every line below, which is what
+--                    makes this safe to put in the one function the whole
+--                    plugin routes through.
+--   heatCurrent > 0  a HEAT is being run rather than the feature. The feature
+--                    (0) is the whole field, which is the point of it.
+--   sessionKind      QUALIFYING IS NEVER SPLIT. The draw is made from
+--                    qualifying times, so a qualifying session that only let
+--                    one heat's drivers out would be drawing heats from times
+--                    set by the drivers it had already drawn.
 local function isEntrant(rec)
   if not rec then return false end
-  return not rec.spectating
+  if rec.spectating then return false end
+  if race.heatCount > 0 and race.heatCurrent > 0 and race.sessionKind == 'race' then
+    return rec.heat == race.heatCurrent
+  end
+  return true
 end
 
 local function entrantCount()
@@ -1013,6 +1120,26 @@ local function raceOrderLess(a, b)
   -- Finishers (and drivers excluded after finishing) are ordered by the flag.
   if (ra == 0 or ra == 2) and a.finishTime and b.finishTime and a.finishTime ~= b.finishTime then
     return a.finishTime < b.finishTime
+  end
+  -- THE CAUTION FREEZE, and it is deliberately the first thing compared for two
+  -- cars still circulating. Under a full-course yellow the field holds station,
+  -- so the board must stop re-sorting -- otherwise a driver who closes up under
+  -- the caution (which they have been TOLD to do) is shown gaining places for
+  -- obeying the instruction, and the restart order is whatever the pack happened
+  -- to look like on the last broadcast.
+  --
+  -- Placed after the finisher rules above on purpose: a driver who took the flag
+  -- before the yellow came out is classified by their finish and not by where
+  -- they were running. A driver with no frozen position joined after the caution
+  -- and sorts behind everyone who has one, the same way an unreported distance
+  -- does further down.
+  if race.caution then
+    local pa, pb = a.cautionPos, b.cautionPos
+    if pa and pb then
+      if pa ~= pb then return pa < pb end
+    elseif pa ~= pb then
+      return pa ~= nil
+    end
   end
   -- 1. Laps completed.
   if a.currentLap ~= b.currentLap then return a.currentLap > b.currentLap end
@@ -1112,6 +1239,10 @@ local DRIVER_WIRE_FIELDS = {
   'qualiBest', 'qualiLaps', 'outLap', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
   'finishTime', 'resets', 'resetsBlocked',
   'jokerTaken', 'jokerLap', 'outReason', 'dnfPos', 'heldPos', 'bystander',
+  -- The heat program, per driver: which heat they were drawn into, where they
+  -- finished it, and whether that was a transfer spot. All three are columns on
+  -- the board during a heat program and mean nothing outside one.
+  'heat', 'heatPos', 'transferred',
   -- Seconds behind the leader and behind the car ahead. Two numbers, and the
   -- panel does no arithmetic on them beyond formatting.
   'gap', 'intv',
@@ -1220,7 +1351,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.11.0'
+local RM_BUILD = '0.12.0'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -1387,6 +1518,19 @@ local function broadcastState(targetPid)
     -- an incident" are not the same instruction to a driver.
     paceLap      = race.paceLap,
     pacing       = race.pacing,
+    -- THE CAUTION, and its lap count. `caution` is what tells a driver that the
+    -- yellow on their screen is a neutralised race rather than a local hazard,
+    -- and what tells the panel to say POSITIONS FROZEN over the board it is
+    -- showing -- a frozen board that does not say so reads as a broken one.
+    caution      = race.caution,
+    cautionLaps  = race.caution and race.cautionLaps or nil,
+    -- The heat program. Every client needs it: the panel builds its heat picker
+    -- from the count, and a driver wants to know which heat they are in and
+    -- whether they transferred out of it.
+    heatCount    = race.heatCount,
+    heatTransfer = race.heatTransfer,
+    heatCurrent  = race.heatCurrent,
+    heatsDrawn   = race.heatsDrawn,
     -- Fastest lap of the session: whose row the leaderboard paints gold, and
     -- how quick it was. One driver id on a payload that already goes out.
     bestLapPid   = race.bestLapPid,
@@ -1791,6 +1935,14 @@ local function buildResultsText(cupRound)
     race.totalLaps, race.totalLaps == 1 and '' or 's',
     race.racePaceLapRun and ' + pace lap (not scored, so the Laps column reads one higher)' or '',
     #final))
+  -- HOW NEUTRALISED THE RACE WAS. A race with four yellows in it read exactly
+  -- like a clean one once it was over, which makes a lap chart impossible to
+  -- explain afterwards -- and a caution is the single most common reason a
+  -- finishing order looks wrong to somebody reading it cold.
+  if race.cautionCount > 0 then
+    add(string.format(' Cautions: %d, over %d lap%s',
+      race.cautionCount, race.cautionLaps, race.cautionLaps == 1 and '' or 's'))
+  end
   add(string.format(' Regulations: resets %s | joker lap %s',
     race.maxResets < 0 and 'unlimited'
       or (race.maxResets == 0 and 'not allowed' or tostring(race.maxResets) .. ' per driver'),
@@ -2199,6 +2351,11 @@ local function finishSession(reason)
   -- field a pace lap is a panel that has to be argued with.
   race.pacing    = false
   race.paceArmed = false
+  -- The caution goes with the session, but cautionCount does NOT: the results
+  -- file is written further down this function and it is the one place a race
+  -- with four yellows in it can be told apart from a clean one afterwards.
+  race.caution   = false
+  thawOrder()
   race.finalLap     = false
   race.finalLapLeft = 0
   race.raceExpired  = false
@@ -2230,6 +2387,47 @@ local function finishSession(reason)
 
   local excluded = applyJokerRuling()
   race.phase = 'finished'
+  -- THE HEAT RESULT, RECORDED THE MOMENT IT IS FINAL.
+  --
+  -- Here, and not at the grid the feature is built from, because THIS is where
+  -- the classification exists: applyJokerRuling has just run, so a driver
+  -- excluded from the heat is excluded from the transfer too rather than taking
+  -- a front-row start out of a race they were disqualified from.
+  --
+  -- Written onto the record and into the identity registry together, so it
+  -- survives both the next Generate Grid purge and a driver dropping out
+  -- between two of the night's races.
+  if race.heatCount > 0 and race.heatCurrent > 0 then
+    local order = raceClassification()
+    local pos, transferred = 0, 0
+    for _, rec in ipairs(order) do
+      -- Only the drivers who were IN this heat. The classification is built from
+      -- every record the server holds, and the rest of the field -- waiting for
+      -- their own heat -- must not be given a position in somebody else's.
+      if rec.heat == race.heatCurrent then
+        -- COUNTED WITHIN THE HEAT, not taken from the index in that list. The
+        -- classification is the whole night's field, so by heat 2 the drivers
+        -- who already raced heat 1 sort above it and the index is somewhere in
+        -- the middle of the list -- which makes every position wrong and, worse,
+        -- silently transfers nobody, because that index is then compared against
+        -- "top 2". Heat 1 alone would pass either way: its drivers are the only
+        -- ones with laps, so they sort to the top and the two counts agree.
+        pos = pos + 1
+        rec.heatPos = pos
+        -- A DISQUALIFICATION NEVER TRANSFERS, whatever place the sort left it
+        -- in. classRank puts dsq below the finishers already, so this only has
+        -- to refuse the spot rather than re-sort anything.
+        rec.transferred = (rec.status ~= 'dsq') and (pos <= race.heatTransfer) or false
+        if rec.transferred then transferred = transferred + 1 end
+        rememberIdentity(rec)
+      end
+    end
+    print(string.format('[RaceManager] Heat %d classified: %d transfer to the feature',
+      race.heatCurrent, transferred))
+    MP.SendChatMessage(-1, string.format(
+      '[RaceManager] HEAT %d COMPLETE: %d driver%s transferred to the feature.',
+      race.heatCurrent, transferred, transferred == 1 and '' or 's'))
+  end
   -- Score the cup AFTER the joker ruling and not before: that ruling is what
   -- turns a finisher into a disqualification, and a driver scored ahead of it
   -- would bank winner's points for a race they were excluded from. Does nothing
@@ -2581,6 +2779,36 @@ local function orderForGrid(ordered)
     end
     return a.id < b.id
   end
+  -- THE FEATURE GRID, BUILT FROM THE HEATS. The transfer order, which in every
+  -- form of heat racing means: the heat winners on the front row, then all the
+  -- seconds, then all the thirds, with heat number breaking the tie inside each
+  -- row. So a four-heat night lines up 1st-of-heat-1, 1st-of-heat-2,
+  -- 1st-of-heat-3, 1st-of-heat-4, 2nd-of-heat-1... which is what makes a heat
+  -- win worth having and keeps one strong heat from filling the whole front.
+  --
+  -- Drivers who did NOT transfer still race, and they line up behind everyone
+  -- who did, in their own heat order. Excluding them outright is the other
+  -- reading of a transfer and it is the wrong default for a league night: it
+  -- sends half the server to the spectator seats for the main event. An admin
+  -- who wants a strict transfer has Sit Out for exactly that.
+  --
+  -- A driver with no heat at all -- joined after the draw, or the draw was never
+  -- made -- falls in behind on qualifying time, which is what byQuali is for.
+  if race.gridMode == 'heats' then
+    table.sort(ordered, function (a, b)
+      local ta, tb = a.transferred == true, b.transferred == true
+      if ta ~= tb then return ta end
+      local pa, pb = a.heatPos, b.heatPos
+      if pa and pb then
+        if pa ~= pb then return pa < pb end
+        return (a.heat or math.huge) < (b.heat or math.huge)
+      elseif pa ~= pb then
+        return pa ~= nil
+      end
+      return byQuali(a, b)
+    end)
+    return ordered
+  end
   if race.gridMode == 'custom' then
     table.sort(ordered, function (a, b)
       local ca, cb = a.customGrid, b.customGrid
@@ -2808,7 +3036,18 @@ function RM_onSetGridMode(pid, rawData)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
   local mode = decodeString(rawData, 'mode')
-  if mode ~= 'quali' and mode ~= 'reverse' and mode ~= 'random' and mode ~= 'custom' then
+  if mode ~= 'quali' and mode ~= 'reverse' and mode ~= 'random'
+     and mode ~= 'custom' and mode ~= 'heats' then
+    return
+  end
+  -- HEATS ORDER IS ONLY AN ANSWER WHEN HEATS HAVE BEEN RUN. Accepting it with no
+  -- program behind it would build a feature grid where nobody has a heat
+  -- position, every driver falls through to the qualifying tie-break, and the
+  -- mode reads as doing nothing at all.
+  if mode == 'heats' and race.heatCount == 0 then
+    MP.SendChatMessage(pid, '[RaceManager] Heats order needs a heat program: set the '
+      .. 'number of heats and draw the field first.')
+    broadcastState()
     return
   end
   race.gridMode = mode
@@ -3514,6 +3753,15 @@ local function releaseField(pacing)
   race.flag   = race.pacing and 'yellow' or 'green'
   -- The latch on CFG.paceArmAt starts closed: the field is standing at the line.
   race.paceArmed = false
+  -- NOTHING CARRIES A CAUTION INTO A NEW SESSION. A yellow belongs to the race
+  -- it was called in, and a frozen order that outlived it would silently decide
+  -- the running order of the next one -- the same class of state the flag reset
+  -- above exists to prevent.
+  race.caution      = false
+  race.cautionLap   = nil
+  race.cautionLaps  = 0
+  race.cautionCount = 0
+  thawOrder()
   race.time = 0.0
   -- The green is now, unless a pace lap is about to be run -- in which case it
   -- is stamped when the flag actually falls, and until then a timed race's
@@ -3646,6 +3894,29 @@ end
 --
 -- Returns nil when nobody is left on the pace lap, which is a real state (the
 -- whole field has crossed) and is handled by the caller rather than here.
+-- THROW THE CAUTION. The order freezes here and nowhere else.
+--
+-- Snapshotting BEFORE the flag changes is what makes the freeze honest: the
+-- order recorded is the one that existed at the moment the marshal decided,
+-- not the one that existed a broadcast later, after the field had already
+-- reacted to a yellow appearing on their screens.
+--
+-- Only cars actually circulating get a frozen position. A finisher keeps their
+-- finish, a retirement keeps its retirement place, and a driver who joins the
+-- race afterwards has none -- all three are handled by the comparator rather
+-- than by exceptions here.
+local function freezeOrder()
+  local order = raceClassification()
+  local n = 0
+  for _, rec in ipairs(order) do
+    if onTrack(rec) then
+      n = n + 1
+      rec.cautionPos = n
+    end
+  end
+  return n
+end
+
 local function paceLeader()
   local best = nil
   for _, rec in pairs(players) do
@@ -3740,6 +4011,225 @@ end
 -- countdown, no yellow and no green to come is nobody's idea of a start, and
 -- refusing it here is what makes the two buttons a genuine either/or rather than
 -- a second way to start whatever is on the grid.
+-- ---------------------------------------------------------------------------
+-- Module 6: heats and transfers
+-- ---------------------------------------------------------------------------
+-- How many heats the night runs, and how many drivers transfer out of each.
+-- Idle-locked like every other regulation: the shape of the night must not
+-- change while one of its races is being run.
+--
+-- Setting the count to 0 ends the program and forgets every draw with it. That
+-- is deliberate and it is the way out: a half-configured heat night that cannot
+-- be cleared would leave Generate Grid quietly forming a grid of one heat.
+function RM_onSetHeats(pid, rawData)
+  local data = adminPayload(pid, rawData, true)
+  if not data then return end
+  local count    = math.floor(tonumber(data.count) or 0)
+  local transfer = math.floor(tonumber(data.transfer) or 0)
+  if count < 0 then count = 0 elseif count > CFG.maxHeats then count = CFG.maxHeats end
+  if transfer < 0 then transfer = 0 end
+  -- A heat that transfers its whole field has transferred nobody: the feature
+  -- grid it builds is the heat order with no cut in it. Left as the admin typed
+  -- it rather than clamped to the heat size, because the field size is not known
+  -- until the draw and an admin who types 4 into a night that turns out to have
+  -- 3-car heats has still said something meaningful about what they want.
+  race.heatCount    = count
+  race.heatTransfer = transfer
+  if count == 0 then
+    -- The program is off, so nothing may still be pointing into it: a stale
+    -- heatCurrent would keep isEntrant filtering to a heat that no longer
+    -- exists, and Generate Grid would form a grid of nobody.
+    race.heatCurrent = 0
+    race.heatsDrawn  = false
+    for _, rec in pairs(players) do
+      rec.heat, rec.heatPos, rec.transferred = nil, nil, nil
+      rememberIdentity(rec)
+    end
+    if race.gridMode == 'heats' then race.gridMode = 'quali' end
+  end
+  broadcastState()
+  print(string.format('[RaceManager] Heat program: %s (by %s)',
+    count == 0 and 'off' or (count .. ' heats, top ' .. transfer .. ' transfer'),
+    MP.GetPlayerName(pid) or pid))
+end
+
+-- SPLIT THE FIELD INTO HEATS.
+--
+-- Serpentine off qualifying time, which is how every form of heat racing draws
+-- them: 1st to heat 1, 2nd to heat 2, ... Nth to heat N, and then BACK along the
+-- row -- (N+1)th to heat N, (N+2)th to heat N-1. A straight round-robin would
+-- put the four fastest drivers on four different poles and the four slowest all
+-- at the back of their own heats; the serpentine gives every heat one quick
+-- driver and one slow one, which is what makes the heats comparable and the
+-- transfer worth the same out of each.
+--
+-- Drivers with no qualifying time are drawn last, in join order, exactly as
+-- they are gridded last. A field that never qualified draws in join order
+-- throughout, which is a fair-enough draw and is at least a repeatable one.
+function RM_onDrawHeats(pid)
+  if not requireAuth(pid) then return end
+  if sessionUnderWay() then
+    MP.SendChatMessage(pid, '[RaceManager] Cannot redraw the heats while a session is under way.')
+    return
+  end
+  if race.heatCount < 2 then
+    MP.SendChatMessage(pid, '[RaceManager] Set the number of heats to 2 or more first.')
+    return
+  end
+  -- The whole field, not the current heat's: the draw is what CREATES the
+  -- heats, so it has to look at everybody who is racing tonight. isEntrant
+  -- would filter to a heat that has not been drawn yet.
+  local field = {}
+  for _, rec in pairs(players) do
+    if not rec.spectating then field[#field + 1] = rec end
+  end
+  if #field == 0 then
+    MP.SendChatMessage(pid, '[RaceManager] Nobody to draw: every connected driver is sitting out.')
+    return
+  end
+  table.sort(field, function (a, b)
+    local ta, tb = a.qualiBest, b.qualiBest
+    if ta and tb then
+      if ta ~= tb then return ta < tb end
+    elseif ta ~= tb then
+      return ta ~= nil
+    end
+    return a.id < b.id
+  end)
+  local n = race.heatCount
+  for i, rec in ipairs(field) do
+    -- The serpentine, as arithmetic rather than a direction flag: every pass of
+    -- 2n drivers goes out along the row and back again, so the position within
+    -- one such pass decides the heat and nothing has to remember which way it
+    -- was going last.
+    local k = (i - 1) % (2 * n)
+    rec.heat = (k < n) and (k + 1) or (2 * n - k)
+    rec.heatPos     = nil
+    rec.transferred = nil
+    rememberIdentity(rec)
+  end
+  race.heatsDrawn  = true
+  race.heatCurrent = 1
+  -- Say what was drawn, per heat, because "the heats are drawn" is not something
+  -- a driver can check any other way until a grid forms.
+  local sizes = {}
+  for h = 1, n do
+    local c = 0
+    for _, rec in ipairs(field) do if rec.heat == h then c = c + 1 end end
+    sizes[#sizes + 1] = 'H' .. h .. ':' .. c
+  end
+  MP.SendChatMessage(-1, string.format(
+    '[RaceManager] HEATS DRAWN: %d drivers into %d heats (%s). Top %d from each '
+    .. 'transfer to the feature.', #field, n, table.concat(sizes, ' '), race.heatTransfer))
+  print(string.format('[RaceManager] Heats drawn by %s: %d drivers, %d heats (%s)',
+    MP.GetPlayerName(pid) or pid, #field, n, table.concat(sizes, ' ')))
+  broadcastState()
+end
+
+-- Which heat is being set up next -- or 0 for the feature. The one control that
+-- decides who Generate Grid puts on the track, through isEntrant.
+function RM_onSetHeatCurrent(pid, rawData)
+  local data = adminPayload(pid, rawData, true)
+  if not data then return end
+  local heat = math.floor(tonumber(data.heat) or 0)
+  if heat < 0 or heat > race.heatCount then return end
+  race.heatCurrent = heat
+  broadcastState()
+  print(string.format('[RaceManager] Next session: %s (by %s)',
+    heat == 0 and 'the FEATURE' or ('heat ' .. heat), MP.GetPlayerName(pid) or pid))
+end
+
+-- ---------------------------------------------------------------------------
+-- The caution and the restart
+-- ---------------------------------------------------------------------------
+-- END THE CAUTION AND GO RACING AGAIN. One way out, like dropGreenFlag, so the
+-- admin's Green flag button and the Restart button leave identical state.
+local function restartRace(why)
+  if not race.caution then return false end
+  race.caution = false
+  race.flag    = 'green'
+  thawOrder()
+  MP.SendChatMessage(-1, string.format(
+    '[RaceManager] GREEN FLAG - RESTART! Racing resumes after %d lap%s under caution.',
+    race.cautionLaps, race.cautionLaps == 1 and '' or 's'))
+  print(string.format('[RaceManager] RESTART at %.1fs after %d caution lap(s): %s',
+    race.time, race.cautionLaps, why or 'called by an admin'))
+  broadcastState()
+  return true
+end
+
+-- Throw a full-course yellow. Admin only, and only while a race is actually
+-- being run: there is nothing to freeze in qualifying (drivers are on solo laps
+-- and the classification is a best time, not a running order) and nothing to
+-- freeze before the lights.
+function RM_onCaution(pid)
+  if not requireAuth(pid) then return end
+  if not sessionRunning() then
+    MP.SendChatMessage(pid, '[RaceManager] No race is running, so there is nothing to neutralise.')
+    return
+  end
+  -- ...and qualifying is a running session that still cannot take one, for a
+  -- different reason, which is why this is a second test and not a tighter
+  -- first one. Written as `phase ~= 'racing'` it was unreachable: qualifying
+  -- failed the phase test above and got told no session was running.
+  if isQualiSession() then
+    MP.SendChatMessage(pid, '[RaceManager] Qualifying has no running order to freeze: '
+      .. 'drivers are on their own laps and the board is a list of best times.')
+    return
+  end
+  -- ALREADY UNDER YELLOW FORMING UP. The pace lap is a neutralised field with a
+  -- green still to come, which is what a caution would be asking for -- so this
+  -- would freeze an order nobody is racing for and add a second thing for the
+  -- admin to cancel before the race could start.
+  if race.pacing then
+    MP.SendChatMessage(pid, '[RaceManager] The field is already under yellow on the '
+      .. 'pace lap. The green flag is what ends it.')
+    return
+  end
+  if race.caution then
+    MP.SendChatMessage(pid, '[RaceManager] The race is already under caution. '
+      .. 'Restart when the track is clear.')
+    return
+  end
+  local held = freezeOrder()
+  race.caution     = true
+  race.flag        = 'yellow'
+  -- THE LAP THE LEADER WAS ON, taken from the order that was just frozen rather
+  -- than from race.lastLapNum -- which is the final lap of a TIMED race and has
+  -- nothing to do with when a yellow came out. It is what the console line and
+  -- the chat announcement below both say, so a marshal reading the log can place
+  -- the caution in the race afterwards.
+  race.cautionLap  = nil
+  for _, rec in pairs(players) do
+    if rec.cautionPos == 1 then race.cautionLap = rec.currentLap break end
+  end
+  race.cautionLaps = 0
+  race.cautionCount = race.cautionCount + 1
+  local who = MP.GetPlayerName(pid) or pid
+  MP.SendChatMessage(-1, string.format(
+    '[RaceManager] CAUTION - FULL COURSE YELLOW%s: slow down, hold your position '
+    .. 'and close up. NO OVERTAKING. Positions are FROZEN as they were when the '
+    .. 'yellow came out. By %s.',
+    race.cautionLap and (' on lap ' .. race.cautionLap) or '', tostring(who)))
+  print(string.format(
+    '[RaceManager] CAUTION #%d thrown by %s at %.1fs on lap %s: %d car(s) frozen',
+    race.cautionCount, tostring(who), race.time, tostring(race.cautionLap or '?'), held))
+  broadcastState()
+end
+
+-- The restart, as its own control. The admin's judgement and not a timer: a
+-- marshal who can see the track knows when it is clear, which is the same
+-- reasoning the flag has always been advisory for.
+function RM_onRestart(pid)
+  if not requireAuth(pid) then return end
+  if not race.caution then
+    MP.SendChatMessage(pid, '[RaceManager] The race is not under caution, so there is '
+      .. 'nothing to restart.')
+    return
+  end
+  restartRace('restart called by ' .. tostring(MP.GetPlayerName(pid) or pid))
+end
+
 function RM_onStartRace(pid)
   if not requireAuth(pid) then return end
   if race.phase ~= 'grid' then return end
@@ -3821,6 +4311,20 @@ function RM_onResetLeaderboard(pid)
   race.pacing    = false
   race.paceArmed = false
   race.greenAt   = 0.0
+  race.caution      = false
+  race.cautionLap   = nil
+  race.cautionLaps  = 0
+  race.cautionCount = 0
+  thawOrder()
+  -- The heat program goes with the evening. Reset Session is "start the night
+  -- again", and a night starts with an undrawn field -- the records that held
+  -- the draw are wiped a few lines above, so leaving the count set would leave
+  -- Generate Grid filtering to a heat nobody is in any more.
+  race.heatCount    = 0
+  race.heatTransfer = 0
+  race.heatCurrent  = 0
+  race.heatsDrawn   = false
+  if race.gridMode == 'heats' then race.gridMode = 'quali' end
   race.finalLap     = false
   race.finalLapLeft = 0
   race.raceExpired  = false
@@ -4016,6 +4520,16 @@ function RM_onLap(pid, rawData)
     lapFirsts[completed] = pid
     rec.lapsLed = rec.lapsLed + 1
     ledThisLap = true
+    -- A LAP UNDER CAUTION IS STILL A LAP. The distance does not pause because
+    -- the racing has -- that is how most oval racing scores a yellow, and a
+    -- caution that stopped the count would let a long one run the race out of
+    -- daylight without ever reaching the flag. Counted off the LEADER's crossing
+    -- so it is one number for the whole field, not one per driver.
+    if race.caution then
+      race.cautionLaps = race.cautionLaps + 1
+      print(string.format('[RaceManager] Caution lap %d (leader %s on lap %d)',
+        race.cautionLaps, rec.name, completed))
+    end
   end
   -- New lap (or the flag): the checkpoint/distance telemetry from the lap just
   -- completed must not linger and rank this driver against the next one.
@@ -5005,6 +5519,14 @@ function RM_onSetFlag(pid, rawData)
   -- dropGreenFlag so the automatic and the manual green leave identical state.
   if want == 'green' and race.pacing then
     dropGreenFlag('green called by ' .. tostring(MP.GetPlayerName(pid) or pid))
+    return
+  end
+  -- ...and the same for a caution. A green called by hand IS the restart, so it
+  -- goes through the one function that ends one -- otherwise the flag would turn
+  -- green with the order still frozen, and the board would sit on a stale
+  -- classification for the rest of the race with nothing left to unfreeze it.
+  if want == 'green' and race.caution then
+    restartRace('green flag called by ' .. tostring(MP.GetPlayerName(pid) or pid))
     return
   end
   if want == race.flag then return end
@@ -7854,6 +8376,11 @@ function onInit()
   MP.RegisterEvent('RM_StartCountdown',   'RM_onStartCountdown')
   MP.RegisterEvent('RM_StartRace',        'RM_onStartRace')      -- pace-lap start
   MP.RegisterEvent('RM_SetPaceLap',       'RM_onSetPaceLap')
+  MP.RegisterEvent('RM_Caution',          'RM_onCaution')        -- full-course yellow
+  MP.RegisterEvent('RM_Restart',          'RM_onRestart')
+  MP.RegisterEvent('RM_SetHeats',         'RM_onSetHeats')       -- Module 6
+  MP.RegisterEvent('RM_DrawHeats',        'RM_onDrawHeats')
+  MP.RegisterEvent('RM_SetHeatCurrent',   'RM_onSetHeatCurrent')
   MP.RegisterEvent('RM_EndRace',          'RM_onEndRace')
   MP.RegisterEvent('RM_ResetLeaderboard', 'RM_onResetLeaderboard')
   MP.RegisterEvent('RM_ClearResults',     'RM_onClearResults')

@@ -1088,6 +1088,118 @@ still racing:
   finishes. The spectator lock is scoped per mode, so a race and a derby can
   never release each other's spectators.
 
+### Caution and restart
+
+A **full-course yellow** called mid-race. Press **Caution** while a race is
+running and:
+
+1. The flag goes yellow and the field is told, in chat and on screen, to slow
+   down, hold position and close up. **No overtaking.**
+2. **The running order freezes** where it stood at the moment the caution was
+   called.
+3. Laps run under the caution still count toward the distance, and are counted
+   separately so you can see how neutralised the race was.
+4. **Restart** goes green and live positions resume from there.
+
+**The freeze is the feature, and it is the only half of a caution this mod can
+enforce.** The server has no physics access: it cannot slow a car, close a gap or
+line a field up behind the leader. What it *can* do is stop positions changing
+from the moment the yellow comes out &mdash; which is exactly what a real caution
+does to the timing sheet, and is a scoring rule rather than a movement one.
+
+That matters more than it sounds. Without it, a driver who obeys the instruction
+to close up is shown *gaining places for obeying it*, and the restart order is
+whatever the pack happened to look like on the last broadcast. With it, closing
+up is free and the order you restart in is the order you were running in.
+
+It is **not** a ruling on any individual overtake. Nobody is penalised and no
+incident is judged &mdash; the board simply stops re-sorting until the green. A
+marshal who can see the incident is still better at judging it than a distance
+comparison, which is why the [flags](#step-6---grid-and-race) stay advisory.
+
+**The advisory Yellow flag button is a different instrument.** It is a local
+hazard &mdash; shown, announced, written into the results, and it freezes
+nothing. The Caution button is the one that neutralises the race. Both exist
+because they mean different things to a driver.
+
+Some details worth knowing:
+
+- **The Green flag button is the restart.** Calling green by hand goes through
+  exactly the same path as pressing Restart, so the two leave identical state. A
+  green that only changed the flag would go racing with the order still frozen.
+- **A red flag does not lift the caution.** Red means stop; the sequence out of
+  it is red, yellow, green, and the green is still the restart.
+- **A caution never outlives its session.** Ending or resetting a session drops
+  it and clears every frozen position &mdash; one left standing would silently
+  order the *next* race, which is invisible until somebody wins a race they ran
+  fourth in.
+- **Qualifying cannot be neutralised.** Drivers are on their own laps and the
+  board is a list of best times, so there is no running order to freeze.
+- **Not during the pace lap.** The field is already under yellow with a green to
+  come, which is what a caution would be asking for.
+- The results file records **how many cautions there were and how many laps ran
+  under them**. A race with four yellows in it used to read exactly like a clean
+  one, which makes a lap chart impossible to explain afterwards.
+
+### Heats and transfers
+
+Run the night as several short **heats** and then a **feature**, with the heat
+results setting the feature grid &mdash; the format most oval and dirt leagues
+actually run.
+
+Set it up in the **Grid** tab:
+
+1. **Heats** &mdash; how many the night is split into. 0 turns the program off.
+2. **Transfer** &mdash; how many drivers get out of each heat. They start the
+   feature ahead of everyone who did not.
+3. **Draw heats** &mdash; splits the field.
+4. **Next up** &mdash; pick a heat, or the feature. This decides who **Generate
+   Grid** puts on the track.
+5. Set **Grid order** to **Heats** for the feature.
+
+**The draw is a serpentine off qualifying time**, which is how heat racing has
+always drawn them: 1st to heat 1, 2nd to heat 2, ... Nth to heat N, and then
+*back along the row* &mdash; (N+1)th to heat N, (N+2)th to heat N-1. A straight
+round-robin would put the four fastest drivers on four different poles and the
+four slowest all at the back of their own heats, which makes the heats
+incomparable and a transfer worth more out of one than another. The serpentine
+gives every heat a comparable spread. With no qualifying behind it the draw falls
+back to join order, which is at least repeatable.
+
+**A heat is an ordinary race run by a subset of the field.** Everything else
+works exactly as it always did &mdash; the grid, the hold, the countdown or pace
+lap, the flags, the results file. Generate Grid simply forms a grid of that
+heat's drivers, and the entrant count reads the heat rather than the night.
+
+**The feature grid is the transfer order:** the heat winners on the front row,
+then all the seconds, then all the thirds, with heat number breaking the tie
+inside each row. So a three-heat night lines up 1st-of-H1, 1st-of-H2, 1st-of-H3,
+2nd-of-H1... which is what makes a heat win worth having and stops one strong
+heat filling the whole front of the grid.
+
+**Drivers who did not transfer still race**, lining up behind everyone who did,
+in their own heat order. Excluding them outright is the other reading of a
+transfer and it is the wrong default for a league night &mdash; it sends half the
+server to the spectator seats for the main event. An admin who wants a strict
+transfer has **Sit Out** for exactly that.
+
+Details:
+
+- **A disqualification never transfers**, whatever place the sort left it in.
+  The heat result is recorded after the joker ruling has run, so a driver
+  excluded from a heat does not take a front-row start out of it.
+- **Transfers survive a disconnect.** Generate Grid purges every record that is
+  not a connected player, so heat results are mirrored into the driver roster:
+  a driver who drops out between heat two and the feature comes back with the
+  heat they were drawn into and the transfer they earned.
+- **Qualifying is never split.** The draw is made *from* qualifying times, so a
+  qualifying session that only let one heat out would be drawing heats from
+  times set by the drivers it had already drawn. Qualifying always grids the
+  whole field, even with a heat selected.
+- **Setting the heat count to 0 ends the program** and forgets every draw with
+  it, so a half-configured heat night can always be cleared. Reset Session does
+  the same &mdash; a new evening starts with an undrawn field.
+
 ### Pace lap
 
 Start the race **behind a pace car** instead of from the lights. Switch

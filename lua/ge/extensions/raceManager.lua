@@ -225,7 +225,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.11.0'
+local RM_BUILD = '0.12.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -265,6 +265,12 @@ local session = {
   --            an incident", and those are not the same instruction.
   paceLap      = false,
   pacing       = false,
+  -- THE CAUTION. Distinct from raceFlag being yellow, and the distinction is
+  -- the whole point: an advisory yellow is a local hazard, a caution is a
+  -- neutralised race with the running order frozen. A driver who cannot tell
+  -- them apart does not know whether the places they are making count.
+  caution      = false,
+  cautionLaps  = 0,
   -- This driver's own lap, measured here because only the client sees the car
   -- cross anything. The server scores what this reports.
   localLap     = 1,
@@ -7565,6 +7571,13 @@ local function onServerUpdate(rawData)
   local wasPacing = session.pacing
   session.paceLap = data.paceLap == true
   session.pacing  = data.pacing == true
+  -- The caution, and its own notice on the edge. The yellow flash a line below
+  -- says CAUTION already, but "race back to the line" is what an advisory
+  -- yellow means and it is the opposite of what a neutralised race wants -- so
+  -- the caution's own instruction is pushed over the top of it.
+  local wasCaution = session.caution
+  session.caution = data.caution == true
+  if type(data.cautionLaps) == 'number' then session.cautionLaps = data.cautionLaps end
   -- The flag, and a notice the moment it CHANGES. A caution that only appears
   -- on a panel is a caution the driver watching the road never sees.
   local wasFlag = session.raceFlag
@@ -7592,6 +7605,16 @@ local function onServerUpdate(rawData)
   if session.pacing and not wasPacing then
     pushNotice('flag', 'PACE LAP',
       { sub = 'Hold position - 40 mph / 64 km/h', color = 'yellow' })
+  end
+  if session.caution and not wasCaution then
+    pushNotice('flag', 'CAUTION',
+      { sub = 'Hold position, no overtaking - places are frozen', color = 'yellow' })
+  elseif wasCaution and not session.caution and sessionRunning() then
+    -- The restart gets its own word rather than leaving the plain GREEN FLAG
+    -- notice to carry it: coming out of a caution is the one green a driver has
+    -- to be READY for, and "racing" does not say that.
+    pushNotice('flag', 'RESTART - GREEN FLAG',
+      { sub = 'Racing resumes', color = 'green' })
   end
   -- Per-player admin status. Present only on a targeted reply (RM_RequestState),
   -- so the global broadcast never disturbs it. The server is the authority here:
@@ -8468,7 +8491,8 @@ function M.setGridMode(mode)
   -- behind when reverse grids were added, so pressing Reverse normalized to
   -- 'quali' on the way out and the panel lit Quali back up -- a dead button that
   -- looked like it had picked the wrong one.
-  if mode ~= 'random' and mode ~= 'custom' and mode ~= 'reverse' then mode = 'quali' end
+  if mode ~= 'random' and mode ~= 'custom' and mode ~= 'reverse'
+     and mode ~= 'heats' then mode = 'quali' end
   if inMultiplayer() then
     TriggerServerEvent('RM_SetGridMode', jsonEncode({ mode = mode }))
   end
@@ -8505,6 +8529,38 @@ end
 -- a step before one -- the server refuses it unless the pace lap is armed.
 function M.startRace()
   if inMultiplayer() then TriggerServerEvent('RM_StartRace', '') end
+end
+
+-- Throw a full-course yellow, and end it again. Both are admin controls the
+-- server polices; this end only forwards the intention.
+function M.caution()
+  if inMultiplayer() then TriggerServerEvent('RM_Caution', '') end
+end
+
+function M.restart()
+  if inMultiplayer() then TriggerServerEvent('RM_Restart', '') end
+end
+
+-- Module 6: the heat program. How many heats and how many transfer from each,
+-- the draw that splits the field, and which heat is set up next (0 = feature).
+function M.setHeats(count, transfer)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetHeats', jsonEncode({
+      count    = math.max(0, math.floor(tonumber(count) or 0)),
+      transfer = math.max(0, math.floor(tonumber(transfer) or 0)),
+    }))
+  end
+end
+
+function M.drawHeats()
+  if inMultiplayer() then TriggerServerEvent('RM_DrawHeats', '') end
+end
+
+function M.setHeatCurrent(heat)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetHeatCurrent',
+      jsonEncode({ heat = math.max(0, math.floor(tonumber(heat) or 0)) }))
+  end
 end
 
 function M.endRace()
@@ -8899,6 +8955,8 @@ local function resetToIdle(reason)
   -- server would count that server's races one lap long.
   session.paceLap         = false
   session.pacing          = false
+  session.caution         = false
+  session.cautionLaps     = 0
   track.pitRoute        = {}
   pit.active      = false
   pit.left        = 0

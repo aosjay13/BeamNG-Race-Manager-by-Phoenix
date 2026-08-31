@@ -226,6 +226,42 @@ wired('setGridMode',        'setGridMode',        'Grid order')
 wired('setDriverGridSlot',  'pinGridSlot',        'Custom grid slot')
 wired('setGhostQuali',      'toggleGhostQuali',   'Ghost qualifying')
 wired('setPaceLap',         'togglePaceLap',      'Pace lap')
+wired('caution',            'callCaution',        'Caution')
+wired('restart',            'callRestart',        'Restart')
+wired('setHeats',           'applyHeats',         'Heat program')
+wired('drawHeats',          'drawHeats',          'Draw heats')
+wired('setHeatCurrent',     'setHeatCurrent',     'Which heat is next')
+
+-- CAUTION AND RESTART ARE ONE CONTROL THAT SWAPS, not two side by side.
+-- A race is either neutralised or it is not; offering Caution during a caution
+-- is offering to do the thing that is already done, and offering Restart when
+-- there is nothing to restart is a button that answers with a chat refusal.
+do
+  local cautionIf = html:match('ng%-click="callCaution%(%)"%s*ng%-if="([^"]*)"')
+  local restartIf = html:match('ng%-click="callRestart%(%)"%s*ng%-if="([^"]*)"')
+  expect(cautionIf ~= nil and restartIf ~= nil, 'both race-control buttons are behind an ng-if')
+  expect(cautionIf ~= nil and cautionIf:find('!caution', 1, true) ~= nil,
+    'Caution is offered only when the race is NOT already under one')
+  expect(restartIf ~= nil and restartIf:find('caution', 1, true) ~= nil
+    and restartIf:find('!caution', 1, true) == nil,
+    'and Restart only when it is, so the two can never both be on screen')
+end
+
+-- The heats grid order must be named in the CLIENT relay as well as the
+-- template and the server. M.setGridMode sanitises the mode on the way out, so
+-- a mode missing from that list is rewritten before the server ever sees it --
+-- which is exactly how Reverse shipped as a dead button once already.
+do
+  local client = readFile('lua/ge/extensions/raceManager.lua')
+  local modes = {}
+  for mode in html:gmatch("setGridMode%('([%w_]+)'%)") do modes[mode] = true end
+  expect(next(modes) ~= nil, 'found grid order buttons in the template')
+  for mode in pairs(modes) do
+    expect(client:find("'" .. mode .. "'", 1, true) ~= nil,
+      'the panel offers the "' .. mode .. '" grid order but M.setGridMode never '
+        .. 'names it, so the client rewrites it before the server ever sees it')
+  end
+end
 wired('startRace',          'startRace',          'Start Race (the pace-lap start)')
 
 -- THE TWO START BUTTONS ARE MUTUALLY EXCLUSIVE, and that is the feature rather

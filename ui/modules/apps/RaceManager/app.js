@@ -62,7 +62,9 @@ angular.module('beamng.apps')
         depth: 2,              // meters it drops BELOW; the two are independent
         qualiLaps: 0,          // qualifying lap allowance (0 = unlimited)
         qualiMins: 0,          // qualifying time limit in minutes (0 = none)
-        raceMins: 0            // race time limit in minutes (0 = run to laps)
+        raceMins: 0,           // race time limit in minutes (0 = run to laps)
+        heats: 0,              // heats the night is split into (0 = no program)
+        transfer: 0            // drivers transferring out of each heat
       };
 
       // ----------------------------------------------------------------
@@ -87,6 +89,16 @@ angular.module('beamng.apps')
       // is what it says on screen while the field forms up.
       $scope.paceLap = false;
       $scope.pacing = false;
+      // The caution. Separate from `flag === 'yellow'` on purpose: an advisory
+      // yellow is a local hazard, a caution is a neutralised race with the
+      // running order frozen, and the board has to say which it is showing.
+      $scope.caution = false;
+      $scope.cautionLaps = 0;
+      // Module 6: the heat program.
+      $scope.heatCount = 0;
+      $scope.heatTransfer = 0;
+      $scope.heatCurrent = 0;
+      $scope.heatsDrawn = false;
       // Rallycross joker lap.
       $scope.jokerEnabled = false;
       $scope.jokerGates = 0;      // joker gates the LOADED TRACK has (server's count)
@@ -1305,7 +1317,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.11.0';
+      var APP_BUILD = '0.12.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -1984,6 +1996,22 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.jokerEnabled = !!data.jokerEnabled;
           $scope.paceLap = !!data.paceLap;
           $scope.pacing = !!data.pacing;
+          $scope.caution = !!data.caution;
+          $scope.cautionLaps = data.cautionLaps || 0;
+          // Re-seeded the same way the laps and resets boxes are, and for the
+          // same reason: only when the server's value actually MOVED, compared
+          // before the mirror is updated, so an admin typing into the box does
+          // not have it yanked out from under them three times a second.
+          if ($scope.heatCount !== (data.heatCount || 0)) {
+            $scope.settingsUi.heats = data.heatCount || 0;
+          }
+          if ($scope.heatTransfer !== (data.heatTransfer || 0)) {
+            $scope.settingsUi.transfer = data.heatTransfer || 0;
+          }
+          $scope.heatCount = data.heatCount || 0;
+          $scope.heatTransfer = data.heatTransfer || 0;
+          $scope.heatCurrent = data.heatCurrent || 0;
+          $scope.heatsDrawn = !!data.heatsDrawn;
           // Does the loaded track have other lanes at all? Decides whether the
           // leaderboard shows a Line column - on an ordinary circuit it is a
           // column that would say the same thing on every row.
@@ -3354,6 +3382,59 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
             + 'Your lap 1 starts as you cross the line.';
         }
         return 'Counts toward the distance, but sets no lap time.';
+      };
+
+      // Race control: neutralise the race, and go racing again.
+      $scope.callCaution = function () {
+        bngApi.engineLua('raceManager.caution()');
+      };
+      $scope.callRestart = function () {
+        bngApi.engineLua('raceManager.restart()');
+      };
+      // Shown only while a race is actually running: there is nothing to
+      // neutralise before the lights, and qualifying has no running order to
+      // freeze. The server refuses both cases; this is so the buttons are not
+      // offered in the first place.
+      $scope.cautionAvailable = function () {
+        return $scope.phase === 'racing' && $scope.sessionKind !== 'quali'
+          && !$scope.pacing;
+      };
+
+      // Module 6: the heat program.
+      $scope.applyHeats = function () {
+        bngApi.engineLua('raceManager.setHeats('
+          + (parseInt($scope.settingsUi.heats, 10) || 0) + ', '
+          + (parseInt($scope.settingsUi.transfer, 10) || 0) + ')');
+      };
+      $scope.drawHeats = function () {
+        bngApi.engineLua('raceManager.drawHeats()');
+      };
+      $scope.setHeatCurrent = function (heat) {
+        bngApi.engineLua('raceManager.setHeatCurrent(' + (parseInt(heat, 10) || 0) + ')');
+      };
+      // The heats to offer in the picker, as a real array: ng-repeat cannot
+      // count, and building it here keeps the template free of arithmetic.
+      $scope.heatList = function () {
+        var out = [];
+        for (var i = 1; i <= $scope.heatCount; i++) { out.push(i); }
+        return out;
+      };
+      // What the next session IS, said in words. "Heat 2 of 3" and "Feature"
+      // are the two things an admin needs to be sure of before pressing
+      // Generate Grid, and the difference is who ends up on the track.
+      $scope.heatLabel = function () {
+        if (!$scope.heatCount) { return 'No heat program'; }
+        if (!$scope.heatCurrent) { return 'Feature - the whole field'; }
+        return 'Heat ' + $scope.heatCurrent + ' of ' + $scope.heatCount;
+      };
+      // A driver's own line: which heat they are in and whether they got out of
+      // it. Nothing at all when no program is running.
+      $scope.myHeatLabel = function (row) {
+        if (!$scope.heatCount || !row || !row.heat) { return ''; }
+        var s = 'H' + row.heat;
+        if (row.heatPos) { s += ' P' + row.heatPos; }
+        if (row.transferred === true) { s += ' \u2713'; }
+        return s;
       };
 
       // Module 5: arm/disarm the pace lap for the next race.

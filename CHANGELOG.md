@@ -6,6 +6,100 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.12.0 - Race control: the caution, and heats into a feature
+
+### Added
+
+- **The caution, and the restart.** A full-course yellow called mid-race. The
+  field is told to slow down, hold position and close up, and **the running
+  order freezes** where it stood when the yellow came out. Restart when the
+  track is clear and live positions resume from there.
+
+  **The freeze is the feature**, and it is the only half of a caution this
+  plugin can enforce. The server has no physics: it cannot slow a car, close a
+  gap or line a field up behind the leader. What it *can* do is stop positions
+  changing from the moment the yellow comes out -- which is exactly what a real
+  caution does to the timing sheet, and is a scoring rule rather than a movement
+  one.
+
+  That matters more than it sounds. Without it a driver who obeys the
+  instruction to close up is shown **gaining places for obeying it**, and the
+  restart order is whatever the pack happened to look like on the last
+  broadcast. With it, closing up is free.
+
+  It is deliberately **not** a ruling on any individual overtake -- nobody is
+  penalised and no incident is judged. The flag note in `main.lua` said an
+  automatic ruling would need "a second running order that survives the caution
+  and reconciles on green"; this is that order, and it does only that. The
+  advisory **Yellow flag** button is untouched and still means a local hazard.
+
+  The Green flag button *is* the restart, routed through the same function, so
+  the two leave identical state -- a green that only changed the flag would go
+  racing with the board still frozen and nothing left to unfreeze it. A red does
+  not lift a caution. A caution never outlives its session: one frozen position
+  left standing is the first thing the comparator reads, so it would silently
+  order the next race, which is invisible until somebody wins a race they ran
+  fourth in.
+
+  The results file now records **how many cautions there were and how many laps
+  ran under them**. A race with four yellows in it read exactly like a clean one
+  once it was over.
+
+- **Heats and transfers.** Run the night as several short heats and then a
+  feature, with the heat results setting the feature grid.
+
+  **The draw is a serpentine off qualifying time** -- 1st to heat 1, 2nd to heat
+  2, ... Nth to heat N, then *back along the row*. A straight round-robin puts
+  the four fastest drivers on four different poles and the four slowest all at
+  the back of their own heats, which makes the heats incomparable and a transfer
+  worth more out of one than another.
+
+  **A heat is an ordinary race run by a subset of the field**, and one function
+  carries the whole idea: `isEntrant` returns false for a driver who is not in
+  the heat being run. Everything downstream -- forming the grid, the online
+  purge, the respawn, the garage audit, the entrant count -- already routes
+  through it and needed no idea heats exist. A server with no heat program
+  configured is untouched by every line of it.
+
+  The feature grid is the transfer order: **heat winners on the front row, then
+  all the seconds**, interleaved by heat, which is what makes a heat win worth
+  having and stops one strong heat filling the whole front. Drivers who did not
+  transfer still race, behind those who did -- excluding them is the other
+  reading and it is the wrong default for a league night, because it sends half
+  the server to the spectator seats for the main event.
+
+  A disqualification never transfers, whatever place the sort left it in: the
+  heat result is recorded after the joker ruling runs. Heat results are mirrored
+  into the driver roster, so a driver who drops out between heat two and the
+  feature comes back with the transfer they earned rather than a back-row start
+  and no explanation. Qualifying is never split -- the draw is made *from*
+  qualifying times, so a qualifying session that let one heat out would be
+  drawing heats from times set by the drivers it had already drawn.
+
+- **`tests/caution_test.lua`** (47 checks) and **`tests/heats_test.lua`**
+  (95 checks). The caution suite tests the freeze by making the field *overtake*
+  under the yellow and asserting the board does not move -- a test that only
+  checked the flag colour would pass against a caution that froze nothing. The
+  heats suite runs three full heats and a feature, which is what caught the
+  position bug below; a single-heat test passes either way.
+
+### Fixed
+
+- **Heat positions were taken from the whole field's classification.** The
+  result walk indexed into `raceClassification()`, which is every record the
+  server holds -- so by heat 2 the drivers who had already raced heat 1 sorted
+  above it, every position was wrong, and because that index was then compared
+  against "top 2", **nobody transferred at all**. Counted within the heat now.
+
+  Heat 1 alone passed either way, which is the whole reason the test runs three.
+
+- **`M.setGridMode` would have silently rewritten the new Heats order.** The
+  client sanitises the mode on the way out against a list that has to name every
+  mode the server accepts, and a mode missing from it is normalised to `quali`
+  before the server ever sees it. That is exactly how Reverse shipped as a dead
+  button once already; `ui_bindings_test` now derives the list from the template
+  and checks the client names every one of them.
+
 ## 0.11.0 - Races can start behind a pace car
 
 ### Fixed
