@@ -64,7 +64,8 @@ angular.module('beamng.apps')
         qualiMins: 0,          // qualifying time limit in minutes (0 = none)
         raceMins: 0,           // race time limit in minutes (0 = run to laps)
         heats: 0,              // heats the night is split into (0 = no program)
-        transfer: 0            // drivers transferring out of each heat
+        transfer: 0,           // drivers transferring out of each heat
+        heatLaps: 0            // laps a heat runs (0 = the race distance)
       };
 
       // ----------------------------------------------------------------
@@ -94,6 +95,15 @@ angular.module('beamng.apps')
       // running order frozen, and the board has to say which it is showing.
       $scope.caution = false;
       $scope.cautionLaps = 0;
+      // Called and not yet official: the field is racing back to the line and
+      // the board is still live. A different thing to say from POSITIONS FROZEN.
+      $scope.cautionPending = false;
+      // A restart is called and the green falls as the leader reaches the line.
+      $scope.restartPending = false;
+      // The free pass: the rule, and the driver who took it this caution.
+      $scope.luckyDog = false;
+      $scope.cautionLucky = null;
+      $scope.heatLaps = 0;
       // Module 6: the heat program.
       $scope.heatCount = 0;
       $scope.heatTransfer = 0;
@@ -1317,7 +1327,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.12.0';
+      var APP_BUILD = '0.13.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -1359,23 +1369,76 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           if (q < 1) { q = 1; }
           return q + '/' + $scope.totalLaps;
         }
+        // A FORMATION LAP IS NOT LAP 1, and it is the same give-away qualifying's
+        // out lap is: it is driven, it is not scored, and it is not one of the
+        // laps the race promised. While it is being run the cell says so.
+        if ($scope.pacedRace() && row.outLap) { return 'PACE'; }
         // NO TARGET, NO DENOMINATOR. A timed race has no lap count to be on
         // lap 8 of 5 of: totalLaps is inert there (nobody knows how many laps
         // ten minutes is) and dividing by it produced exactly that reading.
         // Once the leader has been past, the final lap number IS the target and
         // the cell counts against that instead.
         var target = $scope.raceLapTarget();
-        return target ? (row.currentLap + '/' + target) : String(row.currentLap);
+        var n = $scope.raceLapNumber(row);
+        return target ? (n + '/' + target) : String(n);
+      };
+
+      // IS THIS RACE BEING RUN BEHIND THE PACE CAR. `paceLap` is the RULE and it
+      // holds for the whole session, which is what makes the subtraction below
+      // stable rather than flickering as the formation lap ends. Mirrors the
+      // server's paceLapArmed: the rule, plus the two sessions it cannot apply to.
+      $scope.pacedRace = function () {
+        return !!$scope.paceLap && $scope.sessionKind !== 'quali'
+          && !$scope.pointToPoint;
+      };
+
+      // THE RACING LAP A DRIVER IS ON, which is not the number of times they have
+      // crossed the line.
+      //
+      // currentLap counts CROSSINGS, and behind the pace car the first of those
+      // is the formation lap -- so a five lap race read "6/5" as the leader took
+      // the flag. One number was counting crossings and the other was counting
+      // laps of the race, which are not the same number the moment a lap is
+      // given away.
+      $scope.raceLapNumber = function (row) {
+        var n = (row && row.currentLap) || 0;
+        if ($scope.pacedRace()) {
+          n = n - 1;
+          if (n < 1) { n = 1; }
+        }
+        return n;
       };
 
       // The lap target the leaderboard counts against, or null when there is
       // none yet. The same rule as the client extension's effectiveLapTarget and
       // the server's sessionLapTarget, which is why all three name it: three
       // copies that disagree is how a driver gets told two different distances.
+      //
+      // IN RACING LAPS, not crossings, because that is what the numerator beside
+      // it counts. lastLapNum is a crossing number off the server, so the pace
+      // lap comes back out of it -- otherwise a timed race behind the pace car
+      // would fix the same "6/5" a lap-limited one used to show.
+      //
+      // A HEAT MAY RUN ITS OWN DISTANCE, and the board has to count against the
+      // session actually on track rather than the feature's lap box.
       $scope.raceLapTarget = function () {
-        if ($scope.lastLapNum) { return $scope.lastLapNum; }
+        var paced = $scope.pacedRace() ? 1 : 0;
+        if ($scope.lastLapNum) {
+          return Math.max(1, $scope.lastLapNum - paced);
+        }
         if ($scope.raceMode === 'timed') { return null; }
-        return $scope.totalLaps > 0 ? $scope.totalLaps : null;
+        var laps = $scope.sessionRaceLaps();
+        return laps > 0 ? laps : null;
+      };
+
+      // The distance the session on track is being run to. The server's
+      // raceDistance, said here: a heat runs heatLaps when that is set, and
+      // everything else runs the race's lap count.
+      $scope.sessionRaceLaps = function () {
+        if ($scope.heatCount > 0 && $scope.heatCurrent > 0 && $scope.heatLaps > 0) {
+          return $scope.heatLaps;
+        }
+        return $scope.totalLaps;
       };
 
       $scope.phaseLabel = function () {
@@ -1718,8 +1781,13 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         if ($scope.sessionKind === 'quali' || !$scope.bcRunning.length) { return ''; }
         var leader = $scope.bcRunning[0];
         if (!leader || !leader.currentLap) { return ''; }
-        var total = $scope.totalLaps || 0;
-        return total > 0 ? (leader.currentLap + '/' + total) : String(leader.currentLap);
+        // Through the same two helpers the leaderboard counts on, so the number a
+        // commentator reads out is the number on the board behind them. Saying
+        // "lap 6 of 5" on stream is worse than saying it in a table.
+        if ($scope.pacedRace() && leader.outLap) { return 'PACE'; }
+        var total = $scope.raceLapTarget();
+        var n = $scope.raceLapNumber(leader);
+        return total ? (n + '/' + total) : String(n);
       };
 
       // ------------------------------------------------------------------
@@ -1921,7 +1989,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.formatFinish = function (row) {
         if (row.status === 'dnf') { return 'DNF'; }
         if (row.finishTime === null || row.finishTime === undefined) {
-          return row.currentLap ? ('Lap ' + row.currentLap + '/' + $scope.totalLaps) : '-';
+          if (!row.currentLap) { return '-'; }
+          return 'Lap ' + $scope.raceLapNumber(row) + '/'
+            + ($scope.raceLapTarget() || $scope.sessionRaceLaps());
         }
         return $scope.formatLap(row.finishTime);
       };
@@ -1998,6 +2068,10 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.pacing = !!data.pacing;
           $scope.caution = !!data.caution;
           $scope.cautionLaps = data.cautionLaps || 0;
+          $scope.cautionPending = !!data.cautionPending;
+          $scope.restartPending = !!data.restartPending;
+          $scope.luckyDog = !!data.luckyDog;
+          $scope.cautionLucky = data.cautionLucky || null;
           // Re-seeded the same way the laps and resets boxes are, and for the
           // same reason: only when the server's value actually MOVED, compared
           // before the mirror is updated, so an admin typing into the box does
@@ -2012,6 +2086,10 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.heatTransfer = data.heatTransfer || 0;
           $scope.heatCurrent = data.heatCurrent || 0;
           $scope.heatsDrawn = !!data.heatsDrawn;
+          if ($scope.heatLaps !== (data.heatLaps || 0)) {
+            $scope.settingsUi.heatLaps = data.heatLaps || 0;
+          }
+          $scope.heatLaps = data.heatLaps || 0;
           // Does the loaded track have other lanes at all? Decides whether the
           // leaderboard shows a Line column - on an ordinary circuit it is a
           // column that would say the same thing on every row.
@@ -3391,6 +3469,15 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.callRestart = function () {
         bngApi.engineLua('raceManager.restart()');
       };
+      // Wave a called restart off. Only the call goes: the race stays under
+      // caution and the board stays frozen.
+      $scope.cancelRestart = function () {
+        bngApi.engineLua('raceManager.cancelRestart()');
+      };
+      // The free pass rule, for the next caution called.
+      $scope.toggleLuckyDog = function () {
+        bngApi.engineLua('raceManager.setLuckyDog(' + (!$scope.luckyDog) + ')');
+      };
       // Shown only while a race is actually running: there is nothing to
       // neutralise before the lights, and qualifying has no running order to
       // freeze. The server refuses both cases; this is so the buttons are not
@@ -3404,7 +3491,8 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.applyHeats = function () {
         bngApi.engineLua('raceManager.setHeats('
           + (parseInt($scope.settingsUi.heats, 10) || 0) + ', '
-          + (parseInt($scope.settingsUi.transfer, 10) || 0) + ')');
+          + (parseInt($scope.settingsUi.transfer, 10) || 0) + ', '
+          + (parseInt($scope.settingsUi.heatLaps, 10) || 0) + ')');
       };
       $scope.drawHeats = function () {
         bngApi.engineLua('raceManager.drawHeats()');
@@ -3424,8 +3512,12 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // Generate Grid, and the difference is who ends up on the track.
       $scope.heatLabel = function () {
         if (!$scope.heatCount) { return 'No heat program'; }
-        if (!$scope.heatCurrent) { return 'Feature - the whole field'; }
-        return 'Heat ' + $scope.heatCurrent + ' of ' + $scope.heatCount;
+        var laps = $scope.heatLaps > 0
+          ? (' \u00b7 ' + $scope.heatLaps + ' laps') : '';
+        if (!$scope.heatCurrent) {
+          return 'Feature - the whole field \u00b7 ' + $scope.totalLaps + ' laps';
+        }
+        return 'Heat ' + $scope.heatCurrent + ' of ' + $scope.heatCount + laps;
       };
       // A driver's own line: which heat they are in and whether they got out of
       // it. Nothing at all when no program is running.

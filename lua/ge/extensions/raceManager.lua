@@ -225,7 +225,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.12.0'
+local RM_BUILD = '0.13.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -271,6 +271,18 @@ local session = {
   -- them apart does not know whether the places they are making count.
   caution      = false,
   cautionLaps  = 0,
+  -- Called and not yet official: the yellow is out and the field is RACING BACK
+  -- TO THE LINE. A different instruction from the frozen caution that follows
+  -- it, and the one a driver has to act on first.
+  cautionPending = false,
+  -- A restart is called and the green falls as the leader reaches the line.
+  restartPending = false,
+  -- The heat program, for one reason only: a heat can run a distance of its own,
+  -- and the white and checkered flags are waved from this side. See
+  -- effectiveLapTarget.
+  heatCount    = 0,
+  heatCurrent  = 0,
+  heatLaps     = 0,
   -- This driver's own lap, measured here because only the client sees the car
   -- cross anything. The server scores what this reports.
   localLap     = 1,
@@ -1280,12 +1292,21 @@ local function effectiveLapTarget()
   -- A timed race has no lap target at all until the leader has been past.
   -- Endurance keeps one: it is the other half of "whichever comes first".
   if session.raceMode == 'timed' then return nil end
-  if session.totalLaps <= 0 then return nil end
+  -- A HEAT MAY RUN A DISTANCE OF ITS OWN, and the server's raceDistance is the
+  -- rule this mirrors: heatLaps when a heat is being run and the number is set,
+  -- the race's laps otherwise. Waving these flags off the race's lap box during
+  -- an eight-lap heat of a thirty-lap night would end the heat twenty-two laps
+  -- late, on this client only.
+  local laps = session.totalLaps
+  if session.heatCount > 0 and session.heatCurrent > 0 and session.heatLaps > 0 then
+    laps = session.heatLaps
+  end
+  if laps <= 0 then return nil end
   -- A PACE LAP IS A CROSSING NOBODY IS SCORED FOR, so it goes on top of the
   -- distance -- exactly as the server's sessionLapTarget adds it. Waving off the
   -- lap box alone would put the white flag out a lap early on every race started
   -- behind the pace car, and the checkered one a lap early behind it.
-  return session.totalLaps + (session.paceLap and 1 or 0)
+  return laps + (session.paceLap and 1 or 0)
 end
 
 -- GREEN, YELLOW or WHITE, for this driver, right now.
@@ -7576,8 +7597,18 @@ local function onServerUpdate(rawData)
   -- yellow means and it is the opposite of what a neutralised race wants -- so
   -- the caution's own instruction is pushed over the top of it.
   local wasCaution = session.caution
+  local wasPending = session.cautionPending
+  local wasRestart = session.restartPending
   session.caution = data.caution == true
+  session.cautionPending = data.cautionPending == true
+  session.restartPending = data.restartPending == true
   if type(data.cautionLaps) == 'number' then session.cautionLaps = data.cautionLaps end
+  -- The heat program, and only the parts the lap target needs. The panel gets
+  -- the rest straight off the broadcast; this side wants the distance because it
+  -- is the side that waves the white and checkered flags.
+  session.heatCount   = tonumber(data.heatCount) or 0
+  session.heatCurrent = tonumber(data.heatCurrent) or 0
+  session.heatLaps    = tonumber(data.heatLaps) or 0
   -- The flag, and a notice the moment it CHANGES. A caution that only appears
   -- on a panel is a caution the driver watching the road never sees.
   local wasFlag = session.raceFlag
@@ -7606,9 +7637,25 @@ local function onServerUpdate(rawData)
     pushNotice('flag', 'PACE LAP',
       { sub = 'Hold position - 40 mph / 64 km/h', color = 'yellow' })
   end
+  -- THREE EDGES, THREE DIFFERENT INSTRUCTIONS, and the order they are written in
+  -- is the order a driver meets them. Collapsing them into one CAUTION notice is
+  -- how a driver ends up holding station on a lap they were supposed to race
+  -- back on, or coasting through a green they were never warned about.
+  if session.cautionPending and not wasPending then
+    pushNotice('flag', 'CAUTION - RACE BACK TO THE LINE',
+      { sub = 'Positions lock as you complete this lap', color = 'yellow' })
+  end
   if session.caution and not wasCaution then
     pushNotice('flag', 'CAUTION',
       { sub = 'Hold position, no overtaking - places are frozen', color = 'yellow' })
+  elseif session.restartPending and not wasRestart then
+    -- The one warning that matters under a caution: the green is coming, and it
+    -- is coming at the line rather than whenever the marshal pressed a button.
+    pushNotice('flag', 'RESTART THIS LAP',
+      { sub = 'Green as the leader reaches the line - get ready', color = 'green' })
+  elseif wasRestart and not session.restartPending and session.caution then
+    pushNotice('flag', 'RESTART WAVED OFF',
+      { sub = 'Stay under caution, hold your position', color = 'yellow' })
   elseif wasCaution and not session.caution and sessionRunning() then
     -- The restart gets its own word rather than leaving the plain GREEN FLAG
     -- notice to carry it: coming out of a caution is the one green a driver has
@@ -7871,6 +7918,35 @@ local function onHoldCorrect(rawData)
   hold.correctLeft = 0        -- a server correction is never rate-limited away
   hold.restore('server correction: ' .. tostring(data.reason or 'moved off the grid'))
   pushNotice('grid', 'Held on the grid, wait for the lights')
+end
+
+-- THE SERVER HAS GIVEN THIS DRIVER A LAP. The free pass under a caution, today;
+-- anything that credits a lap without a crossing, tomorrow.
+--
+-- IT IS NOT A NOTIFICATION, it is a correction, and skipping it would break more
+-- than a message. localLap is this client's own lap counter: it stamps every
+-- progress report (the server DROPS any whose lap number disagrees with its
+-- own), it decides the joker lap number, and it is what the white and checkered
+-- flags are waved off. Leaving it a lap behind the server would silently kill
+-- this driver's live position and gap for the rest of the race and then hand
+-- them their flags a lap late.
+--
+-- The server sends the lap it has arrived at rather than a delta, so a message
+-- that goes missing is corrected by the next one instead of compounding.
+local function onLapCredit(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local lap = math.floor(tonumber(data.lap) or 0)
+  if lap <= 0 or lap == session.localLap then return end
+  session.localLap = lap
+  if data.reason == 'luckydog' then
+    pushNotice('flag', 'FREE PASS - YOU GET YOUR LAP BACK',
+      { sub = 'Restart at the tail of the lead lap', color = 'green' })
+  else
+    pushNotice('session', 'Lap credited: you are on lap ' .. lap)
+  end
+  log('I', 'raceManager', 'Server credited a lap: now on lap ' .. lap
+    .. ' (' .. tostring(data.reason or 'no reason given') .. ')')
 end
 
 -- --- Module 1: forced spectator mode (server -> client) --------------------
@@ -8541,13 +8617,28 @@ function M.restart()
   if inMultiplayer() then TriggerServerEvent('RM_Restart', '') end
 end
 
+-- Wave a called restart off. Only the CALL goes: the race stays neutralised.
+function M.cancelRestart()
+  if inMultiplayer() then TriggerServerEvent('RM_CancelRestart', '') end
+end
+
+-- The free pass rule: whether the first car a lap down takes its lap back.
+function M.setLuckyDog(enabled)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetLuckyDog', jsonEncode({ enabled = enabled == true }))
+  end
+end
+
 -- Module 6: the heat program. How many heats and how many transfer from each,
 -- the draw that splits the field, and which heat is set up next (0 = feature).
-function M.setHeats(count, transfer)
+function M.setHeats(count, transfer, laps)
   if inMultiplayer() then
     TriggerServerEvent('RM_SetHeats', jsonEncode({
       count    = math.max(0, math.floor(tonumber(count) or 0)),
       transfer = math.max(0, math.floor(tonumber(transfer) or 0)),
+      -- 0 is "run the race distance", so it is sent as a value. nil is left out
+      -- entirely and the server keeps whatever is already set.
+      laps     = laps ~= nil and math.max(0, math.floor(tonumber(laps) or 0)) or nil,
     }))
   end
 end
@@ -8831,6 +8922,8 @@ local DISPATCH = {
   RM_DerbyGhost      = ghost.onDerbyRespawn,
   -- Grid hold: the server pulling a car back onto its slot.
   RM_HoldCorrect     = onHoldCorrect,
+  -- A lap handed to this driver without a crossing (the caution's free pass).
+  RM_LapCredit       = onLapCredit,
   -- Cup / series points
   RM_CupUpdate       = onCupUpdate,
   -- Demo Derby module
@@ -8957,6 +9050,11 @@ local function resetToIdle(reason)
   session.pacing          = false
   session.caution         = false
   session.cautionLaps     = 0
+  session.cautionPending  = false
+  session.restartPending  = false
+  session.heatCount       = 0
+  session.heatCurrent     = 0
+  session.heatLaps        = 0
   track.pitRoute        = {}
   pit.active      = false
   pit.left        = 0

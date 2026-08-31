@@ -204,8 +204,16 @@
          yellow flag alone does not say it: an advisory yellow means "hazard,
          race back to the line" and a caution means very nearly the opposite. The
          frozen board has to announce that it is frozen, or it reads as broken. -->
-    <span class="rm-pace-badge" ng-if="caution"
-          title="Full-course caution: hold position, no overtaking. Places are frozen as they were when the yellow came out.">CAUTION &middot; POSITIONS FROZEN<b ng-if="cautionLaps"> &middot; LAP {{ cautionLaps }}</b></span>
+    <!-- THREE BADGES, THREE STATES, and only ever one of them up. Racing back to
+         the line, frozen, and being restarted are three different instructions
+         to a driver, and the one badge that used to say POSITIONS FROZEN for all
+         of them was telling two thirds of a caution the wrong thing. -->
+    <span class="rm-pace-badge" ng-if="cautionPending"
+          title="The yellow is out and the field is racing back to the line. Positions lock as you complete this lap, on the lap the leader is on.">CAUTION &middot; RACE BACK TO THE LINE</span>
+    <span class="rm-pace-badge" ng-if="caution &amp;&amp; !restartPending"
+          title="Full-course caution: hold position, no overtaking. Places are locked in the order the field came back to the line.">CAUTION &middot; POSITIONS FROZEN<b ng-if="cautionLaps"> &middot; LAP {{ cautionLaps }}</b></span>
+    <span class="rm-restart-badge" ng-if="caution &amp;&amp; restartPending"
+          title="A restart is called: the green flag falls as the leader reaches the start/finish line.">RESTART THIS LAP &middot; GREEN AT THE LINE</span>
     <span class="rm-pace-badge" ng-if="pacing"
           title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. The green flag falls as the leader reaches the line.">PACE LAP 40 MPH / 64 KM/H</span>
     <span class="rm-p2p-badge" ng-if="pointToPoint"
@@ -442,33 +450,67 @@
     <button class="rm-btn rm-btn-start rm-btn-pace" ng-click="startRace()"
             ng-if="phase === 'grid' && paceStart()"
             title="Release the field under yellow for a pace lap. The green flag falls as the leader comes back to the line.">Start Race</button>
-    <!-- ALL THREE, ALWAYS. A single toggle hid whichever flag was not next, so
-         the sequence a marshal actually runs -- red to clean up, yellow to pack
-         them up, green to go -- meant guessing which button would appear. The
-         one that is out is marked rather than removed. -->
+    <!-- RED IS ITS OWN INSTRUMENT and it is the only flag button a RACE offers.
+         Red is a condition laid over the session -- stop, something is being
+         cleaned up -- and it is the one thing neither the caution nor the
+         restart can say. Lifting it returns the field to whatever it was under:
+         green in a clean race, the caution in a neutralised one. -->
     <span class="rm-flagset" ng-if="phase === 'racing' || phase === 'qualifying'">
-      <button class="rm-btn rm-btn-redflag" ng-click="setFlag('red')"
+      <!-- MARKED, NOT SWAPPED. One button, and while the red is out it is lit and
+           pressing it lifts the red -- so the control that threw it is the
+           control that clears it, and the state is never a guess. Lifting it
+           returns the field to what it was already under: a neutralised race
+           goes back to its caution, a clean one goes green. -->
+      <button class="rm-btn rm-btn-redflag"
+              ng-click="setFlag(flag === 'red' ? 'green' : 'red')"
               ng-class="{'rm-flag-on': flag === 'red'}"
-              title="Red flag: stop where you are. The session keeps running; go yellow, then green.">Red flag</button>
-      <button class="rm-btn rm-btn-caution" ng-click="setFlag('yellow')"
-              ng-class="{'rm-flag-on': flag === 'yellow'}"
-              title="Yellow flag: caution called, race back to the line.">Yellow flag</button>
+              title="Red flag: stop where you are. The session keeps running. Press again to lift it.">{{ flag === 'red' ? 'Lift red' : 'Red flag' }}</button>
+      <!-- THE ADVISORY YELLOW AND GREEN BELONG TO QUALIFYING ALONE now, and that
+           is the whole of why they used to sit beside the Caution button showing
+           two yellows and two greens at once. In a RACE the caution IS the
+           yellow and the restart IS the green: offering a second pair that
+           freezes nothing and restarts nothing was offering a marshal two
+           buttons for one instruction and letting them pick the wrong one.
+           Qualifying keeps them because it has no running order to freeze --
+           drivers are on their own laps and the board is a list of best times,
+           so a yellow there really is only a hazard being pointed at. -->
+      <span ng-if="sessionKind === 'quali'">
+        <button class="rm-btn rm-btn-caution" ng-click="setFlag('yellow')"
+                ng-class="{'rm-flag-on': flag === 'yellow'}"
+                title="Yellow flag: hazard on track, take care.">Yellow flag</button>
+        <button class="rm-btn rm-btn-green" ng-click="setFlag('green')"
+                ng-class="{'rm-flag-on': flag === 'green'}"
+                title="Green flag: the track is clear.">Green flag</button>
+      </span>
+      <!-- THE PACE LAP'S OVERRIDE, and it is the reason the formation lap needs
+           no timeout. A field that has crashed, spun or simply stopped never
+           brings its leader back to the line, and rather than guess how long a
+           formation lap may take, the marshal who can see the track calls it.
+           Offered only while the field is actually forming up: outside that, a
+           race's green is the Restart button. -->
       <button class="rm-btn rm-btn-green" ng-click="setFlag('green')"
-              ng-class="{'rm-flag-on': flag === 'green'}"
-              title="Green flag: racing.">Green flag</button>
+              ng-if="pacing"
+              title="End the formation lap now and go racing. Use it when the field will never bring its leader back to the line.">Green flag</button>
     </span>
-    <!-- THE CAUTION AND THE RESTART, and they are one control that swaps rather
-         than two side by side: a race is either neutralised or it is not, and
-         offering "Caution" during a caution is offering to do the thing that is
-         already done. The flag buttons beside them are the ADVISORY yellow the
-         mod has always had -- a local hazard -- which is a different instrument
-         and freezes nothing. -->
+    <!-- THE CAUTION AND THE RESTART: ONE CONTROL IN FOUR STATES, never two at
+         once. A race is racing, racing back to the line, neutralised, or being
+         restarted, and each of those has exactly one thing a marshal can do
+         next. Showing Caution during a caution, or Restart beside a Green flag
+         that also restarts, is offering to do a thing that is already done. -->
     <button class="rm-btn rm-btn-caution rm-btn-fcy" ng-click="callCaution()"
-            ng-if="cautionAvailable() &amp;&amp; !caution"
-            title="Full-course yellow: neutralise the race and FREEZE the running order where it stands.">Caution</button>
+            ng-if="cautionAvailable() &amp;&amp; !caution &amp;&amp; !cautionPending"
+            title="Full-course yellow. The field races back to the line and positions lock as each driver completes the lap the leader is on.">Caution</button>
+    <!-- Called, waiting on the leader. Deliberately NOT a button: there is
+         nothing useful to press between the call and the leader taking the
+         line, and a second press of Caution would only count a second yellow. -->
+    <span class="rm-race-pending" ng-if="cautionAvailable() &amp;&amp; cautionPending"
+          title="The yellow is out and the field is racing back to the line. The caution goes official when the leader crosses.">RACING BACK TO THE LINE</span>
     <button class="rm-btn rm-btn-green rm-btn-restart" ng-click="callRestart()"
-            ng-if="cautionAvailable() &amp;&amp; caution"
-            title="Green flag: end the caution and go racing again. Positions unfreeze from here.">Restart</button>
+            ng-if="cautionAvailable() &amp;&amp; caution &amp;&amp; !restartPending"
+            title="Restart on this lap: the green falls as the leader reaches the line.">Restart</button>
+    <button class="rm-btn rm-btn-caution rm-btn-waveoff" ng-click="cancelRestart()"
+            ng-if="cautionAvailable() &amp;&amp; caution &amp;&amp; restartPending"
+            title="Wave the restart off. The race stays under caution and the board stays frozen.">Cancel restart</button>
     <button class="rm-btn rm-btn-end"   ng-click="endRace()"         ng-if="phase === 'racing' || phase === 'countdown' || phase === 'qualifying'">End Session</button>
     <button class="rm-btn rm-btn-reset" ng-click="resetLeaderboard()">Reset</button>
   </div>
@@ -716,6 +758,21 @@
         A sprint stage is driven once: there is no lap to form up on.
       </span>
     </span>
+    <!-- THE FREE PASS. Not idle-locked, unlike the pace lap above it: this one
+         changes nothing until a yellow is actually called, and a marshal
+         deciding mid-race that an incident does or does not deserve one is
+         making exactly the call the switch is for. -->
+    <span class="rm-setting" title="Under a caution, the first car a lap down takes its lap back and restarts at the tail of the lead lap.">
+      <label>Free pass</label>
+      <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': luckyDog}"
+              ng-click="toggleLuckyDog()"
+              ng-disabled="!isAdmin">
+        {{ luckyDog ? '&#10003; Enabled' : 'Disabled' }}
+      </button>
+      <span class="rm-setting-val" ng-if="luckyDog">
+        Lucky dog &middot; one car per caution, the highest placed a lap down
+      </span>
+    </span>
     <!-- Module 2: rallycross joker lap -->
     <span class="rm-setting" title="Every finisher must take the Joker Route once, never on lap 1, or they are disqualified.">
       <label>Joker lap</label>
@@ -796,6 +853,19 @@
                ng-change="applyHeats()"
                ng-disabled="!canSetRules()"
                title="Drivers transferring out of each heat. They start the feature ahead of everyone who did not.">
+      </span>
+      <!-- A HEAT'S OWN DISTANCE. Heats are short and features are long, and one
+           shared lap box meant retyping the number between every session of the
+           night -- a thing to forget once and run the feature over eight laps.
+           0 means "the same as the race", which is how the box says it is not
+           being used. -->
+      <span class="rm-setting-sub" ng-if="heatCount">
+        <label>Heat laps</label>
+        <input type="number" class="rm-width-num" min="0" max="500" step="1" ng-model="settingsUi.heatLaps"
+               ng-model-options="{ debounce: { default: 500, blur: 0 } }"
+               ng-change="applyHeats()"
+               ng-disabled="!canSetRules()"
+               title="Laps a heat runs. 0 runs the heats over the race distance.">
       </span>
       <button class="rm-btn rm-btn-mini" ng-click="drawHeats()"
               ng-if="heatCount > 1"
@@ -2531,8 +2601,16 @@
          yellow flag alone does not say it: an advisory yellow means "hazard,
          race back to the line" and a caution means very nearly the opposite. The
          frozen board has to announce that it is frozen, or it reads as broken. -->
-    <span class="rm-pace-badge" ng-if="caution"
-          title="Full-course caution: hold position, no overtaking. Places are frozen as they were when the yellow came out.">CAUTION &middot; POSITIONS FROZEN<b ng-if="cautionLaps"> &middot; LAP {{ cautionLaps }}</b></span>
+    <!-- THREE BADGES, THREE STATES, and only ever one of them up. Racing back to
+         the line, frozen, and being restarted are three different instructions
+         to a driver, and the one badge that used to say POSITIONS FROZEN for all
+         of them was telling two thirds of a caution the wrong thing. -->
+    <span class="rm-pace-badge" ng-if="cautionPending"
+          title="The yellow is out and the field is racing back to the line. Positions lock as you complete this lap, on the lap the leader is on.">CAUTION &middot; RACE BACK TO THE LINE</span>
+    <span class="rm-pace-badge" ng-if="caution &amp;&amp; !restartPending"
+          title="Full-course caution: hold position, no overtaking. Places are locked in the order the field came back to the line.">CAUTION &middot; POSITIONS FROZEN<b ng-if="cautionLaps"> &middot; LAP {{ cautionLaps }}</b></span>
+    <span class="rm-restart-badge" ng-if="caution &amp;&amp; restartPending"
+          title="A restart is called: the green flag falls as the leader reaches the start/finish line.">RESTART THIS LAP &middot; GREEN AT THE LINE</span>
     <span class="rm-pace-badge" ng-if="pacing"
           title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. The green flag falls as the leader reaches the line.">PACE LAP 40 MPH / 64 KM/H</span>
     <span class="rm-driverbar-label" ng-if="jokerEnabled">
@@ -3640,6 +3718,18 @@
     background: rgba(251, 188, 5, 0.2);
     color: #fdd663;
   }
+  /* THE RESTART, CALLED. Green and not yellow, and that is the whole job of it:
+     it replaces the yellow CAUTION badge in the same slot, so the color change
+     alone tells a driver glancing at the strip that the green is coming. */
+  .rm-restart-badge {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    background: rgba(52, 168, 83, 0.22);
+    color: #7ee2a8;
+  }
   .rm-route-tab-pit-active { background: rgba(255, 184, 26, 0.22); color: #ffb81a; }
   .rm-pit {
     display: flex;
@@ -4011,6 +4101,15 @@
      what is being shown to it. */
   .rm-btn-fcy { font-weight: 700; border-width: 2px; }
   .rm-btn-restart { font-weight: 700; border-width: 2px; }
+  .rm-btn-waveoff { font-weight: 700; border-width: 2px; }
+  /* Called, waiting on the leader: a state, not a control. Styled as text and
+     not as a disabled button, because a grayed-out button reads as "this is
+     the thing to press once it wakes up" and there is nothing to press. */
+  .rm-race-pending {
+    display: inline-flex; align-items: center;
+    padding: 0 8px; font-weight: 700; font-size: 11px;
+    letter-spacing: 0.04em; color: #fdd663;
+  }
   /* A driver who took a transfer spot out of their heat. Green, because it is
      the same "you are through" the checkered column means. */
   .rm-heat-transfer { color: #7ee2a8; font-weight: 700; }

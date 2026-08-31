@@ -228,23 +228,76 @@ wired('setGhostQuali',      'toggleGhostQuali',   'Ghost qualifying')
 wired('setPaceLap',         'togglePaceLap',      'Pace lap')
 wired('caution',            'callCaution',        'Caution')
 wired('restart',            'callRestart',        'Restart')
+wired('cancelRestart',      'cancelRestart',      'Cancel restart')
+wired('setLuckyDog',        'toggleLuckyDog',     'Free pass')
 wired('setHeats',           'applyHeats',         'Heat program')
 wired('drawHeats',          'drawHeats',          'Draw heats')
 wired('setHeatCurrent',     'setHeatCurrent',     'Which heat is next')
 
--- CAUTION AND RESTART ARE ONE CONTROL THAT SWAPS, not two side by side.
--- A race is either neutralised or it is not; offering Caution during a caution
--- is offering to do the thing that is already done, and offering Restart when
--- there is nothing to restart is a button that answers with a chat refusal.
+-- RACE CONTROL IS ONE CONTROL IN FOUR STATES, never two on screen at once.
+--
+-- A race is racing, racing back to the line, neutralised, or being restarted,
+-- and each of those has exactly one thing a marshal can do next. Offering
+-- Caution during a caution is offering to do a thing that is already done;
+-- offering Restart and Cancel restart together is offering both halves of one
+-- decision.
 do
   local cautionIf = html:match('ng%-click="callCaution%(%)"%s*ng%-if="([^"]*)"')
   local restartIf = html:match('ng%-click="callRestart%(%)"%s*ng%-if="([^"]*)"')
-  expect(cautionIf ~= nil and restartIf ~= nil, 'both race-control buttons are behind an ng-if')
+  local cancelIf  = html:match('ng%-click="cancelRestart%(%)"%s*ng%-if="([^"]*)"')
+  expect(cautionIf ~= nil and restartIf ~= nil and cancelIf ~= nil,
+    'every race-control button is behind an ng-if')
   expect(cautionIf ~= nil and cautionIf:find('!caution', 1, true) ~= nil,
     'Caution is offered only when the race is NOT already under one')
+  expect(cautionIf ~= nil and cautionIf:find('!cautionPending', 1, true) ~= nil,
+    '...nor while one is called and the field is still racing back to the line')
   expect(restartIf ~= nil and restartIf:find('caution', 1, true) ~= nil
     and restartIf:find('!caution', 1, true) == nil,
     'and Restart only when it is, so the two can never both be on screen')
+  expect(restartIf ~= nil and restartIf:find('!restartPending', 1, true) ~= nil,
+    'Restart goes once one is called')
+  expect(cancelIf ~= nil and cancelIf:find('restartPending', 1, true) ~= nil
+    and cancelIf:find('!restartPending', 1, true) == nil,
+    'and Cancel restart takes its place, so a called restart can always be waved off')
+end
+
+-- THE THREE CAUTION STATES SAY THREE DIFFERENT THINGS to a driver, and the
+-- badge is where they read them. One badge saying POSITIONS FROZEN for all of
+-- them told two thirds of a caution the wrong thing: a field racing back to the
+-- line is not frozen, and a field about to be restarted needs to know that
+-- before the green rather than at it.
+do
+  expect(html:find('RACE BACK TO THE LINE', 1, true) ~= nil,
+    'a pending caution says the field is racing back to the line')
+  expect(html:find('POSITIONS FROZEN', 1, true) ~= nil,
+    'an official one says the board is frozen')
+  expect(html:find('GREEN AT THE LINE', 1, true) ~= nil,
+    'and a called restart says where the green falls')
+  expect(js:find('$scope.cautionPending = !!data.cautionPending', 1, true) ~= nil
+    and js:find('$scope.restartPending = !!data.restartPending', 1, true) ~= nil,
+    'and all three are read off the state broadcast, not guessed at')
+end
+
+-- THE PACE LAP IS NOT ONE OF THE LAPS THE RACE PROMISED, and the leaderboard has
+-- to count it out. currentLap counts CROSSINGS, so a five lap race behind the
+-- pace car read "6/5" as the leader took the flag: one number counting crossings
+-- against another counting laps of the race.
+do
+  expect(js:find('$scope.raceLapNumber = function', 1, true) ~= nil,
+    'the racing lap number is its own helper, not repeated arithmetic')
+  expect(js:find('$scope.pacedRace = function', 1, true) ~= nil,
+    'and it asks one question about whether a lap was given away')
+  local target = js:match('%$scope%.raceLapTarget = function %(%)(.-)\n      };')
+  expect(target ~= nil, 'the lap target is a function')
+  expect(target ~= nil and target:find('pacedRace', 1, true) ~= nil,
+    'and it takes the pace lap out of the DENOMINATOR too, or the two numbers '
+      .. 'would go on measuring different things')
+  expect(target ~= nil and target:find('sessionRaceLaps', 1, true) ~= nil,
+    'and counts against the session actually on track, so a heat with its own '
+      .. 'distance is not scored against the feature lap box')
+  expect(html:find("{{ lapLabel(row) }}", 1, true) ~= nil
+    or js:find('$scope.lapLabel = function', 1, true) ~= nil,
+    'the leaderboard cell goes through the helper')
 end
 
 -- The heats grid order must be named in the CLIENT relay as well as the
@@ -1298,11 +1351,20 @@ expect(html:find("ng%-click=\"setFlag%('yellow'%)\"") ~= nil
 expect(js:find('$scope.setFlag = function', 1, true) ~= nil,
   'setFlag has a handler in app.js')
 
--- ALL THREE FLAGS ARE ALWAYS PRESENT while a session runs, and the one that is
--- out is MARKED rather than removed. A single toggle hid whichever flag was not
--- next, so the sequence a marshal actually runs (red to clean up, yellow to pack
--- them up, green to go) meant guessing which button would appear.
-for _, color in ipairs({ 'red', 'yellow', 'green' }) do
+-- THE ADVISORY YELLOW AND GREEN BELONG TO QUALIFYING ALONE, and that is a
+-- correction to what this block used to assert.
+--
+-- All three flag buttons used to show throughout a race, next to the Caution and
+-- Restart buttons -- so a marshal calling a yellow saw TWO yellow buttons and a
+-- marshal going green saw TWO green ones, and only one of each pair actually
+-- neutralised or restarted the race. Two buttons for one instruction is two ways
+-- to press the wrong one.
+--
+-- In a race the caution IS the yellow and the restart IS the green. Qualifying
+-- keeps the advisory pair because it has no running order to freeze: drivers are
+-- on their own laps and the board is a list of best times, so a yellow there
+-- really is only a hazard being pointed at.
+for _, color in ipairs({ 'yellow', 'green' }) do
   expect(html:find("ng%-click=\"setFlag%('" .. color .. "'%)\"") ~= nil,
     'the ' .. color .. ' flag has its own button')
 end
@@ -1310,6 +1372,33 @@ local flagset = html:match('<span class="rm%-flagset"[^>]-ng%-if="([^"]*)"')
 expect(flagset ~= nil, 'the flag buttons are grouped')
 expect(flagset and flagset:find('racing', 1, true) ~= nil,
   'and the group is only shown during a session')
+local advisory = html:match("<span ng%-if=\"sessionKind === 'quali'\">(.-)</span>")
+expect(advisory ~= nil, 'the advisory pair is fenced off for qualifying')
+expect(advisory and advisory:find("setFlag%('yellow'%)") ~= nil
+  and advisory and advisory:find("setFlag%('green'%)") ~= nil,
+  'and it is the yellow and green that live behind that fence, not the red')
+
+-- THE PACE LAP KEEPS ITS MANUAL GREEN, and it is the reason a formation lap
+-- needs no timeout: a field that has crashed or stopped never brings its leader
+-- back to the line, and the marshal who can see the track calls it. Removing the
+-- advisory green from a race must not take that override with it.
+do
+  local paceGreen = nil
+  for attrs in html:gmatch('<button class="rm%-btn rm%-btn%-green"(.-)>') do
+    if attrs:find('ng%-if="pacing"') then paceGreen = attrs end
+  end
+  expect(paceGreen ~= nil,
+    'a green flag button is still offered while the field is on the pace lap')
+  expect(paceGreen and paceGreen:find("setFlag%('green'%)") ~= nil,
+    'and it calls the green through the same handler as any other flag')
+end
+
+-- RED IS ITS OWN INSTRUMENT, in both sessions, and it is MARKED rather than
+-- removed while it is out: one button, lit when the red is flying, and pressing
+-- it again lifts the red. The control that threw it is the control that clears
+-- it, so the state is never a guess.
+expect(html:find("setFlag%(flag === 'red' %? 'green' : 'red'%)") ~= nil,
+  'the red flag button throws and lifts the red')
 expect(html:find("'rm%-flag%-on': flag === 'red'") ~= nil,
   'the flag currently out is marked, not hidden')
 

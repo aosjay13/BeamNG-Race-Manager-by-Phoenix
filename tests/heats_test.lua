@@ -325,12 +325,67 @@ check(#gridded() == 12,
 RM_onEndRace(0)
 
 -- ---------------------------------------------------------------------------
+-- A HEAT RUNS ITS OWN DISTANCE
+-- ---------------------------------------------------------------------------
+-- Heats are short and features are long, which is the ordinary shape of a heat
+-- night: eight-lap heats into a thirty-lap feature. With one shared lap box the
+-- number had to be retyped between every session of the evening -- a thing to
+-- forget once and run the feature over eight laps.
+--
+-- 0 is the setting's way of being absent, and it is the default: a server that
+-- never fills it in behaves exactly as it did before the number existed.
+RM_onResetLeaderboard(0)
+RM_onSetSpectating(0, '{"spectating":true}')
+RM_onSetTotalLaps(0, '{"laps":30}')
+check(lastState.heatLaps == 0, 'a heat has no distance of its own by default')
+
+RM_onSetHeats(0, '{"count":3,"transfer":2,"laps":8}')
+RM_onDrawHeats(0)
+check(lastState.heatLaps == 8, 'the heats are set to eight laps')
+
+-- The FEATURE is heatCurrent 0, and it runs the race's distance whatever the
+-- heats were set to.
+RM_onSetHeatCurrent(0, '{"heat":0}')
+check(lastState.sessionLaps == 30,
+  'the feature runs the race distance (got ' .. tostring(lastState.sessionLaps) .. ')')
+
+RM_onSetHeatCurrent(0, '{"heat":2}')
+check(lastState.sessionLaps == 8,
+  'and a heat runs its own (got ' .. tostring(lastState.sessionLaps) .. ')')
+
+-- The number reaches the CLIENT, and it has to: the white and checkered flags
+-- are waved from that side, off its own copy of the lap target. A heat whose
+-- distance never crossed the wire would be flagged at the feature's lap count.
+check(lastState.heatLaps == 8, 'and the distance is broadcast for the client to flag off')
+
+-- 0 puts it back, rather than being clamped away as an out-of-range number.
+RM_onSetHeats(0, '{"count":3,"transfer":2,"laps":0}')
+check(lastState.heatLaps == 0, '0 means "the same as the race" and is a value, not a floor')
+check(lastState.sessionLaps == 30,
+  'so the heat runs the race distance again (got ' .. tostring(lastState.sessionLaps) .. ')')
+
+-- A payload with no laps field at all leaves it alone: a client that predates
+-- the setting must not silently wipe a distance somebody set.
+RM_onSetHeats(0, '{"count":3,"transfer":2,"laps":12}')
+RM_onSetHeats(0, '{"count":3,"transfer":3}')
+check(lastState.heatLaps == 12, 'an absent laps field leaves the heat distance alone')
+check(lastState.heatTransfer == 3, 'while the rest of the program still applies')
+
+-- Ending the program forgets the distance with it: left set, it would sit in
+-- the panel describing a night nobody is running.
+RM_onSetHeats(0, '{"count":0,"transfer":0}')
+check(lastState.heatLaps == 0, 'switching the program off forgets the heat distance')
+
+-- ---------------------------------------------------------------------------
 -- Reset Session ends the night
 -- ---------------------------------------------------------------------------
+RM_onSetHeats(0, '{"count":3,"transfer":2,"laps":8}')
+RM_onDrawHeats(0)
 RM_onResetLeaderboard(0)
 check(lastState.heatCount == 0, 'Reset Session ends the heat program')
 check(lastState.heatsDrawn == false, 'and the draw with it')
 check(lastState.heatCurrent == 0, 'leaving nothing pointing into a heat nobody is in')
+check(lastState.heatLaps == 0, 'and the heat distance goes with the night')
 
 if fails == 0 then
   print(string.format('heats_test: %d checks, 0 failures', checks))

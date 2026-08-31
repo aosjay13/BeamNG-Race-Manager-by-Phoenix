@@ -86,6 +86,18 @@ local CFG = {
   -- lap, and without this the green would fall on the tick the field was let go.
   paceArmAt     = 50.0,
 
+  -- THE FREE PASS. The highest-placed lapped car gets its lap back before the
+  -- restart, which is what every oval series means by "lucky dog".
+  --
+  -- OFF BY DEFAULT, like every other rule that changes how a race is scored. A
+  -- league that has never asked for a free pass must not find its server handing
+  -- laps out the first time somebody calls a yellow.
+  luckyDog      = false,
+  -- Laps a HEAT runs, when the night is split into them. 0 means "the same as
+  -- the race", which is what a server that never runs heats wants and is what
+  -- this was before the number existed.
+  heatLaps      = 0,
+
   -- Qualifying, as a session starts.
   qualiLapLimit  = 0,        -- timed laps per driver, 0 = unlimited
   qualiTimeLimit = 0,        -- seconds, 0 = no limit
@@ -207,7 +219,18 @@ local race = {
   -- green". This IS that order. It is not a ruling on any individual overtake --
   -- no incident is judged, nobody is penalised -- it simply stops the board
   -- from re-sorting until the green.
+  --
+  -- IT IS RACED BACK TO, AND THAT IS THE WHOLE SHAPE OF IT. Calling the yellow
+  -- does NOT freeze anything: it sets `cautionPending`, and the field races back
+  -- to the line. THE LEADER DICTATES THE LAP -- when they take the line the
+  -- caution is on, that lap is `cautionLap`, and every other driver locks their
+  -- own place as they complete that same lap. A snapshot taken at the button
+  -- instead would score the field where it happened to be at a moment nobody on
+  -- track could see, and hand a place to whoever was mid-overtake.
   caution      = false,
+  -- Called, and waiting on the leader. The yellow is already flying and the
+  -- board is still live: nothing is frozen until the lap turns over.
+  cautionPending = false,
   -- The lap the leader was on when the yellow came out, and how many laps the
   -- field has run under it. Caution laps COUNT, as they do in most oval racing:
   -- the distance does not pause because the racing has.
@@ -216,6 +239,23 @@ local race = {
   -- How many cautions this race has seen, for the results file. A race with
   -- four yellows in it read exactly like a clean one once it was over.
   cautionCount = 0,
+  -- The order cars have taken the line in since the caution went official. Handed
+  -- out one at a time as they cross, and it IS the frozen order within a lap:
+  -- first back to the line is first, which is what "race back to the line" pays.
+  cautionSeq   = 0,
+  -- THE FREE PASS: the rule, and who has had it this caution.
+  --
+  -- `luckyDog` is the admin's switch. `cautionLucky` is the driver id awarded a
+  -- lap back under the caution being run right now -- ONE per caution, which is
+  -- what the field being locked is checked for rather than a timer.
+  luckyDog     = CFG.luckyDog,
+  cautionLucky = nil,
+  -- THE RESTART, CALLED AND NOT YET TAKEN. Same shape as the caution above it
+  -- and for the same reason: an admin decides there is going to be one, and the
+  -- LEADER decides when. The green falls as they come back to the line, so the
+  -- field is packed up and looking at it rather than strung out round a corner.
+  -- Cancellable for as long as it has not fallen.
+  restartPending = false,
   -- ---------------------------------------------------------------------
   -- THE HEAT PROGRAM
   -- ---------------------------------------------------------------------
@@ -232,10 +272,15 @@ local race = {
   --   heatCurrent   which heat is being set up or run right now. 0 means the
   --                 FEATURE (or an ordinary race), 1..heatCount a heat.
   --   heatsDrawn    whether the field has been split yet.
+  --   heatLaps      laps a HEAT runs. 0 means "the same as the race", which is
+  --                 the setting's own way of being absent -- and heats are
+  --                 short where a feature is long, so a night that shares one
+  --                 lap box means retyping it between every session.
   heatCount    = 0,
   heatTransfer = 0,
   heatCurrent  = 0,
   heatsDrawn   = false,
+  heatLaps     = CFG.heatLaps,
   -- The race.time the green flag fell at, and the reason it is kept rather than
   -- zeroing the clock there. race.time is the session clock -- ghost end times
   -- are expressed on it and it is re-anchored on every client from the
@@ -437,7 +482,7 @@ local players = {}          -- [playerID] = per-player record
 -- declared after its caller resolves as a GLOBAL instead -- which compiles
 -- perfectly and is nil at the moment it is called.
 local function thawOrder()
-  for _, rec in pairs(players) do rec.cautionPos = nil end
+  for _, rec in pairs(players) do rec.cautionPos, rec.cautionDown = nil, nil end
 end
 -- Authoritative reset-ghost state: [playerID] = { startedAt, duration }, both on
 -- race.time. Held here and not only on the clients that happened to be listening
@@ -509,6 +554,25 @@ end
 local function paceLapArmed()
   if race.pointToPoint then return false end
   return race.paceLap == true and race.sessionKind == 'race'
+end
+
+-- HOW MANY LAPS THIS RACE RUNS, before the pace lap is added on top.
+--
+-- A HEAT IS SHORT AND A FEATURE IS LONG, which is the whole reason this is not
+-- just race.totalLaps. Eight-lap heats into a thirty-lap feature is the ordinary
+-- shape of a heat night, and one shared lap box meant retyping the number
+-- between every session of the evening -- a thing to forget once and run the
+-- feature over eight laps.
+--
+-- 0 means "the same as the race", which is how the setting says it is absent:
+-- a server that never fills it in behaves exactly as it did before the number
+-- existed, and so does the feature, which is heatCurrent 0.
+local function raceDistance()
+  if race.heatCount > 0 and race.heatCurrent > 0 and race.heatLaps > 0
+      and race.sessionKind == 'race' then
+    return race.heatLaps
+  end
+  return race.totalLaps
 end
 
 -- HOW LONG THE RACE HAS BEEN RUNNING, which is not how long the session has.
@@ -621,12 +685,20 @@ local function newRecord(pid)
     holdCorrectedAt = nil,   -- race.time of the last correction (rate limiting)
     jokerTaken = 0,          -- completed runs of the joker route this race
     jokerLap   = nil,        -- lap the joker route was taken on
-    -- WHERE THIS DRIVER WAS RUNNING WHEN THE YELLOW CAME OUT. Set for every car
-    -- on track at the moment a caution is called and cleared at the green; while
-    -- it is set it is the FIRST thing the running order compares, which is what
-    -- freezes the board. nil for a driver who joined the race after the caution,
-    -- and they sort behind everyone who has one.
+    -- WHERE THIS DRIVER LOCKED UNDER THE CAUTION, in two numbers, and BOTH are
+    -- stamped at their own crossing of the line rather than at the button.
+    --
+    --   cautionDown  laps down on the leader at the caution lap. 0 is the lead
+    --                lap. This is compared FIRST, which is what puts the lapped
+    --                cars at the bottom of the board in their own order instead
+    --                of scattered through a field they are not racing.
+    --   cautionPos   the order they came back to the line in, within that. First
+    --                back is first, which is what racing back to the line means.
+    --
+    -- Both nil for a driver still racing back and for one who joined after the
+    -- caution; the comparator sorts them live behind the cars already home.
     cautionPos = nil,
+    cautionDown = nil,
     -- THE HEAT PROGRAM, per driver. Held on the record rather than in a table of
     -- its own so it travels with the driver through every path that already
     -- knows how to move a record -- and mirrored into the identity registry, so
@@ -1114,6 +1186,26 @@ end
 -- Drivers who have not reported yet share the same defaults (0 checkpoints, no
 -- distance), so the pre-existing laps-led / grid-position tie-breaks still
 -- decide those cases exactly as they did before.
+-- HOW MANY LAPS DOWN THIS DRIVER IS ON THE CAUTION LAP, or nil when no caution
+-- has gone official yet.
+--
+-- One formula for two states, which is the point of it. Once a driver has locked
+-- the answer is the stamp taken at their own crossing; until then it is the same
+-- arithmetic against the lap they are currently running -- and the two agree,
+-- because a driver ON lap L completes lap L at their next crossing. So nobody
+-- moves between groups by locking, and the board does not jump as the field
+-- comes back to the line one car at a time.
+--
+-- Clamped at zero: a driver cannot be ahead of the lead lap, and a car that
+-- takes its lap back (the free pass) is stamped rather than recomputed.
+local function cautionDownOf(rec)
+  if rec.cautionDown then return rec.cautionDown end
+  if not race.cautionLap then return nil end
+  local d = race.cautionLap - (rec.currentLap or 0)
+  if d < 0 then d = 0 end
+  return d
+end
+
 local function raceOrderLess(a, b)
   local ra, rb = classRank(a), classRank(b)
   if ra ~= rb then return ra < rb end
@@ -1121,19 +1213,35 @@ local function raceOrderLess(a, b)
   if (ra == 0 or ra == 2) and a.finishTime and b.finishTime and a.finishTime ~= b.finishTime then
     return a.finishTime < b.finishTime
   end
-  -- THE CAUTION FREEZE, and it is deliberately the first thing compared for two
+  -- THE CAUTION ORDER, and it is deliberately the first thing compared for two
   -- cars still circulating. Under a full-course yellow the field holds station,
   -- so the board must stop re-sorting -- otherwise a driver who closes up under
   -- the caution (which they have been TOLD to do) is shown gaining places for
   -- obeying the instruction, and the restart order is whatever the pack happened
   -- to look like on the last broadcast.
   --
+  -- TWO KEYS, IN THIS ORDER, and the first of them is the one a lapped driver
+  -- cares about:
+  --
+  --   1. LAPS DOWN at the caution lap. A car a lap down is behind the whole
+  --      lead lap, wherever it happens to be on the road -- which is how a
+  --      caution board reads everywhere and is what stops a lapped car
+  --      appearing to run third because it is physically third in the queue.
+  --   2. THE ORDER THEY CAME BACK TO THE LINE IN, within that. First back is
+  --      first. A car that has not reached the line yet has no place yet, so it
+  --      sorts behind the cars that have and is ranked live against the others
+  --      still racing back -- which is exactly what is happening on the road.
+  --
+  -- Laps down is ASKED, not only read, so a driver still racing back is grouped
+  -- with the cars they are going to lock beside rather than jumping up the board
+  -- for one lap and then dropping.
+  --
   -- Placed after the finisher rules above on purpose: a driver who took the flag
   -- before the yellow came out is classified by their finish and not by where
-  -- they were running. A driver with no frozen position joined after the caution
-  -- and sorts behind everyone who has one, the same way an unreported distance
-  -- does further down.
+  -- they were running.
   if race.caution then
+    local da, db = cautionDownOf(a), cautionDownOf(b)
+    if da and db and da ~= db then return da < db end
     local pa, pb = a.cautionPos, b.cautionPos
     if pa and pb then
       if pa ~= pb then return pa < pb end
@@ -1239,6 +1347,9 @@ local DRIVER_WIRE_FIELDS = {
   'qualiBest', 'qualiLaps', 'outLap', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
   'finishTime', 'resets', 'resetsBlocked',
   'jokerTaken', 'jokerLap', 'outReason', 'dnfPos', 'heldPos', 'bystander',
+  -- Laps down at the caution. The board paints a lapped car's row differently
+  -- under yellow, and a driver wants to know whether they are the free pass.
+  'cautionDown',
   -- The heat program, per driver: which heat they were drawn into, where they
   -- finished it, and whether that was a transfer spot. All three are columns on
   -- the board during a heat program and mean nothing outside one.
@@ -1351,7 +1462,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.12.0'
+local RM_BUILD = '0.13.0'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -1482,7 +1593,7 @@ local function broadcastState(targetPid)
     -- the lifecycle we are; this says what it is a lifecycle OF.
     sessionKind  = race.sessionKind,
     sessionLaps  = (race.sessionKind == 'quali')
-      and (race.qualiLapLimit > 0 and race.qualiLapLimit or 0) or race.totalLaps,
+      and (race.qualiLapLimit > 0 and race.qualiLapLimit or 0) or raceDistance(),
     raceTime     = race.time,
     totalLaps    = race.totalLaps,
     -- League regulations (Module 1 + 2): clients enforce these locally, the
@@ -1524,13 +1635,31 @@ local function broadcastState(targetPid)
     -- showing -- a frozen board that does not say so reads as a broken one.
     caution      = race.caution,
     cautionLaps  = race.caution and race.cautionLaps or nil,
+    -- CALLED AND NOT YET OFFICIAL. The yellow is flying, the board is still live
+    -- and the field is racing back to the line -- which is a different sentence
+    -- on a driver's screen from "positions are frozen", and saying the frozen one
+    -- while the order is still moving is how a driver learns not to trust it.
+    cautionPending = race.cautionPending,
+    -- A restart is called and the green is coming as the leader reaches the
+    -- line. The panel offers Cancel instead of Restart off this, and a driver
+    -- gets the one warning that matters: get ready.
+    restartPending = race.restartPending,
+    -- The free pass: the rule, and who has taken it under this caution.
+    luckyDog     = race.luckyDog,
+    cautionLucky = race.cautionLucky,
     -- The heat program. Every client needs it: the panel builds its heat picker
     -- from the count, and a driver wants to know which heat they are in and
     -- whether they transferred out of it.
+    --
+    -- heatLaps rides along because the WHITE AND CHECKERED FLAGS ARE WAVED
+    -- CLIENT-SIDE: effectiveLapTarget there has to reach the same number this
+    -- server's sessionLapTarget does, and a heat that runs a distance of its own
+    -- is a second way for those two to disagree.
     heatCount    = race.heatCount,
     heatTransfer = race.heatTransfer,
     heatCurrent  = race.heatCurrent,
     heatsDrawn   = race.heatsDrawn,
+    heatLaps     = race.heatLaps,
     -- Fastest lap of the session: whose row the leaderboard paints gold, and
     -- how quick it was. One driver id on a payload that already goes out.
     bestLapPid   = race.bestLapPid,
@@ -2138,7 +2267,7 @@ local function sessionLapTarget()
   -- lap a head-on grid owes. That one is a RACING lap that merely sets no time,
   -- so it comes out of the ten; a formation lap is not a racing lap at all, so
   -- it goes on top. Five laps behind the pace car is six crossings.
-  return race.totalLaps + (paceLapArmed() and 1 or 0)
+  return raceDistance() + (paceLapArmed() and 1 or 0)
 end
 
 -- The status a driver carries while they are circulating. Presentation only --
@@ -2355,6 +2484,11 @@ local function finishSession(reason)
   -- file is written further down this function and it is the one place a race
   -- with four yellows in it can be told apart from a clean one afterwards.
   race.caution   = false
+  -- ...and neither of the two CALLS outlives it. A pending yellow or a pending
+  -- restart is an instruction waiting on a leader who is no longer running.
+  race.cautionPending = false
+  race.restartPending = false
+  race.cautionLucky   = nil
   thawOrder()
   race.finalLap     = false
   race.finalLapLeft = 0
@@ -3677,6 +3811,24 @@ function RM_onSetPaceLap(pid, rawData)
     .. ' by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
+-- THE FREE PASS RULE. Whether the first car a lap down takes its lap back under
+-- a caution.
+--
+-- NOT idle-locked, unlike the pace lap beside it, and the difference is what
+-- each one changes. A pace lap changes the DISTANCE (sessionLapTarget adds a
+-- crossing), so moving it mid-race would silently make a five lap race four or
+-- six. The free pass changes nothing until a yellow is called, and a marshal who
+-- decides mid-race that this incident deserves one -- or that it does not -- is
+-- making exactly the call this switch is for.
+function RM_onSetLuckyDog(pid, rawData)
+  local data = adminPayload(pid, rawData)
+  if not data then return end
+  race.luckyDog = data.enabled == true or data.enabled == 1
+  broadcastState()
+  print('[RaceManager] Lucky dog ' .. (race.luckyDog and 'ENABLED' or 'disabled')
+    .. ' by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
 -- Client completed the joker route. It already enforced "not on lap 1" and
 -- "only once" locally; the server records the count (and the lap it happened
 -- on) and rules on it when the race ends.
@@ -3758,8 +3910,12 @@ local function releaseField(pacing)
   -- the running order of the next one -- the same class of state the flag reset
   -- above exists to prevent.
   race.caution      = false
+  race.cautionPending = false
+  race.restartPending = false
+  race.cautionLucky = nil
   race.cautionLap   = nil
   race.cautionLaps  = 0
+  race.cautionSeq   = 0
   race.cautionCount = 0
   thawOrder()
   race.time = 0.0
@@ -3894,29 +4050,6 @@ end
 --
 -- Returns nil when nobody is left on the pace lap, which is a real state (the
 -- whole field has crossed) and is handled by the caller rather than here.
--- THROW THE CAUTION. The order freezes here and nowhere else.
---
--- Snapshotting BEFORE the flag changes is what makes the freeze honest: the
--- order recorded is the one that existed at the moment the marshal decided,
--- not the one that existed a broadcast later, after the field had already
--- reacted to a yellow appearing on their screens.
---
--- Only cars actually circulating get a frozen position. A finisher keeps their
--- finish, a retirement keeps its retirement place, and a driver who joins the
--- race afterwards has none -- all three are handled by the comparator rather
--- than by exceptions here.
-local function freezeOrder()
-  local order = raceClassification()
-  local n = 0
-  for _, rec in ipairs(order) do
-    if onTrack(rec) then
-      n = n + 1
-      rec.cautionPos = n
-    end
-  end
-  return n
-end
-
 local function paceLeader()
   local best = nil
   for _, rec in pairs(players) do
@@ -4026,8 +4159,15 @@ function RM_onSetHeats(pid, rawData)
   if not data then return end
   local count    = math.floor(tonumber(data.count) or 0)
   local transfer = math.floor(tonumber(data.transfer) or 0)
+  -- Absent rather than zero when the panel does not send it, so a client that
+  -- predates the field cannot silently reset a heat distance somebody set.
+  local laps     = data.laps ~= nil and math.floor(tonumber(data.laps) or 0) or race.heatLaps
   if count < 0 then count = 0 elseif count > CFG.maxHeats then count = CFG.maxHeats end
   if transfer < 0 then transfer = 0 end
+  -- 0 is the way to say "the same as the race", so it is a value and not a
+  -- floor to be clamped away. The ceiling is the race's own.
+  if laps < 0 then laps = 0 elseif laps > CFG.maxTotalLaps then laps = CFG.maxTotalLaps end
+  race.heatLaps = laps
   -- A heat that transfers its whole field has transferred nobody: the feature
   -- grid it builds is the heat order with no cut in it. Left as the admin typed
   -- it rather than clamped to the heat size, because the field size is not known
@@ -4041,6 +4181,9 @@ function RM_onSetHeats(pid, rawData)
     -- exists, and Generate Grid would form a grid of nobody.
     race.heatCurrent = 0
     race.heatsDrawn  = false
+    -- The heat distance goes with the program. Left set, it would sit in the
+    -- panel describing a night that is no longer being run.
+    race.heatLaps    = 0
     for _, rec in pairs(players) do
       rec.heat, rec.heatPos, rec.transferred = nil, nil, nil
       rememberIdentity(rec)
@@ -4049,7 +4192,8 @@ function RM_onSetHeats(pid, rawData)
   end
   broadcastState()
   print(string.format('[RaceManager] Heat program: %s (by %s)',
-    count == 0 and 'off' or (count .. ' heats, top ' .. transfer .. ' transfer'),
+    count == 0 and 'off' or (count .. ' heats, top ' .. transfer .. ' transfer, '
+      .. (laps > 0 and (laps .. ' laps each') or 'race distance')),
     MP.GetPlayerName(pid) or pid))
 end
 
@@ -4142,12 +4286,108 @@ end
 -- ---------------------------------------------------------------------------
 -- The caution and the restart
 -- ---------------------------------------------------------------------------
+-- WHO LEADS THE FIELD UNDER CAUTION, and it is the same question raceOrderLess
+-- answers -- asked over the cars still circulating, because a winner already
+-- parked leads nothing.
+--
+-- Under a caution raceOrderLess is comparing the frozen keys, so this returns
+-- the driver at the top of the FROZEN board rather than whoever is physically
+-- in front. That is the car the restart is waiting on: the one who will be
+-- leading when the green falls.
+local function cautionLeader()
+  local best = nil
+  for _, rec in pairs(players) do
+    if onTrack(rec) then
+      if not best or raceOrderLess(rec, best) then best = rec end
+    end
+  end
+  return best
+end
+
+-- THE FREE PASS. One car gets its lap back before the green.
+--
+-- WHO: the highest-placed car that is a lap or more down -- the first car a lap
+-- down, which is what every series that runs this rule means by it. NOT the car
+-- furthest back: handing the pass to whoever is deepest in the field would give
+-- it to the same slowest car every single yellow, and it would never be the car
+-- that was actually racing the leader when the caution fell.
+--
+-- WHAT IT IS WORTH: one lap, and a place at the TAIL of the lap they join. They
+-- do not inherit a position from the group they left -- they take the last slot
+-- on the lead lap, which is the whole bargain.
+--
+-- THE CLIENT IS TOLD, and that is not decoration. RM_onProgress drops any
+-- telemetry whose lap number disagrees with the server's, so a lap credited on
+-- one side and not the other would silently kill this driver's live position and
+-- gap for the rest of the race.
+local function awardLuckyDog(why)
+  if not race.luckyDog or race.cautionLucky or not race.caution then return nil end
+  local order = raceClassification()
+  for _, rec in ipairs(order) do
+    if onTrack(rec) and (rec.cautionDown or 0) >= 1 then
+      race.cautionSeq  = race.cautionSeq + 1
+      rec.cautionPos   = race.cautionSeq
+      rec.cautionDown  = rec.cautionDown - 1
+      rec.currentLap   = (rec.currentLap or 0) + 1
+      race.cautionLucky = rec.id
+      -- The lap has moved, so the checkpoint telemetry from the old one must not
+      -- linger and rank this driver against a lap they are no longer on.
+      progress.clear(rec)
+      MP.TriggerClientEvent(rec.id, 'RM_LapCredit', Util.JsonEncode({
+        lap = rec.currentLap, reason = 'luckydog',
+      }))
+      MP.SendChatMessage(-1, string.format(
+        '[RaceManager] FREE PASS: %s takes their lap back and restarts at the '
+        .. 'tail of the lead lap.', displayName(rec)))
+      print(string.format('[RaceManager] Lucky dog: %s now on lap %d (%s)',
+        rec.name, rec.currentLap, why or 'field locked'))
+      return rec
+    end
+  end
+  return nil
+end
+
+-- LOCK ONE DRIVER'S CAUTION PLACE, at their own crossing of the line.
+--
+-- `completed` is the lap they have just finished, so the arithmetic is the same
+-- one cautionDownOf does for a car still on its way: the leader completed
+-- race.cautionLap, and anybody completing a lower number is that many down.
+--
+-- ONCE ONLY. The field goes on circulating under the yellow and goes on crossing
+-- the line; a second stamp would hand a car a fresh sequence number and send it
+-- to the back of its own group for obeying the caution.
+--
+-- Awards the free pass as soon as the last car is home, which is what "before
+-- the restart" means when the restart is the marshal's to call: the board has to
+-- show the pass before it shows the green, or the driver finds out by being a
+-- lap better off than the screen said.
+local function lockCaution(rec, completed)
+  if not race.caution or rec.cautionPos then return end
+  local down = (race.cautionLap or completed) - completed
+  if down < 0 then down = 0 end
+  race.cautionSeq = race.cautionSeq + 1
+  rec.cautionPos  = race.cautionSeq
+  rec.cautionDown = down
+  for _, other in pairs(players) do
+    if onTrack(other) and not other.cautionPos then return end
+  end
+  awardLuckyDog('field locked')
+end
+
 -- END THE CAUTION AND GO RACING AGAIN. One way out, like dropGreenFlag, so the
 -- admin's Green flag button and the Restart button leave identical state.
 local function restartRace(why)
   if not race.caution then return false end
-  race.caution = false
-  race.flag    = 'green'
+  -- THE FALLBACK AWARD, and it is not dead code. lockCaution hands the pass out
+  -- when the last car is home, and a car that spun out of the race, or whose
+  -- final crossing never arrived, means that moment never comes. A marshal who
+  -- has seen enough and calls the green anyway must not take the free pass away
+  -- with it.
+  awardLuckyDog('restart called before the field was fully locked')
+  race.caution        = false
+  race.cautionPending = false
+  race.restartPending = false
+  race.flag           = 'green'
   thawOrder()
   MP.SendChatMessage(-1, string.format(
     '[RaceManager] GREEN FLAG - RESTART! Racing resumes after %d lap%s under caution.',
@@ -4156,6 +4396,35 @@ local function restartRace(why)
     race.time, race.cautionLaps, why or 'called by an admin'))
   broadcastState()
   return true
+end
+
+-- THE RESTART, WAITING ON THE LEADER. Run on the tick while one is called, and
+-- it is the pace lap's watch with one difference: there is no arming latch,
+-- because the gate that opens it is the leader being on the LAST leg of the lap.
+--
+-- A restart called the instant after the leader took the line would otherwise
+-- fire on the same tick -- they are ten meters past it -- and the field would
+-- get a green with the pack still strung out behind an incident nobody has
+-- cleared. Requiring the last checkpoint to be behind them makes "approaching
+-- the line" mean the end of a lap rather than the start of one, and it needs no
+-- extra state to say so.
+--
+-- race.slotCount is 0 for a route built in the editor and never saved, so the
+-- distance gate cannot be trusted there. That case is not left to hang: the
+-- leader's CROSSING triggers the green instead, in RM_onLap. One tick later than
+-- ideal and always correct.
+local function restartWatch()
+  -- A RED FLAG HOLDS EVERYTHING, for the reason the pace lap's watch says: red
+  -- means stop where you are, and a leader who rolls the last few meters to the
+  -- line under one must not restart the race by arriving.
+  if race.flag == 'red' then return end
+  if race.slotCount <= 0 then return end
+  local leader = cautionLeader()
+  if not leader or not leader.distNext then return end
+  if (leader.cpCleared or 0) < race.slotCount - 1 then return end
+  if leader.distNext <= CFG.paceGreenAt then
+    restartRace(string.format('%s is %.1fm from the line', leader.name, leader.distNext))
+  end
 end
 
 -- Throw a full-course yellow. Admin only, and only while a race is actually
@@ -4186,48 +4455,89 @@ function RM_onCaution(pid)
       .. 'pace lap. The green flag is what ends it.')
     return
   end
-  if race.caution then
+  if race.caution or race.cautionPending then
     MP.SendChatMessage(pid, '[RaceManager] The race is already under caution. '
       .. 'Restart when the track is clear.')
     return
   end
-  local held = freezeOrder()
-  race.caution     = true
-  race.flag        = 'yellow'
-  -- THE LAP THE LEADER WAS ON, taken from the order that was just frozen rather
-  -- than from race.lastLapNum -- which is the final lap of a TIMED race and has
-  -- nothing to do with when a yellow came out. It is what the console line and
-  -- the chat announcement below both say, so a marshal reading the log can place
-  -- the caution in the race afterwards.
-  race.cautionLap  = nil
-  for _, rec in pairs(players) do
-    if rec.cautionPos == 1 then race.cautionLap = rec.currentLap break end
-  end
-  race.cautionLaps = 0
-  race.cautionCount = race.cautionCount + 1
+  -- CALLED, NOT FROZEN. The yellow flies now and the board stays live: the
+  -- caution goes official when the LEADER takes the line, and each driver's
+  -- place is settled by their own crossing of that same lap. See RM_onLap.
+  race.cautionPending = true
+  race.restartPending = false
+  race.cautionLucky   = nil
+  race.flag           = 'yellow'
+  race.cautionLap     = nil
+  race.cautionLaps    = 0
+  race.cautionSeq     = 0
+  race.cautionCount   = race.cautionCount + 1
   local who = MP.GetPlayerName(pid) or pid
   MP.SendChatMessage(-1, string.format(
-    '[RaceManager] CAUTION - FULL COURSE YELLOW%s: slow down, hold your position '
-    .. 'and close up. NO OVERTAKING. Positions are FROZEN as they were when the '
-    .. 'yellow came out. By %s.',
-    race.cautionLap and (' on lap ' .. race.cautionLap) or '', tostring(who)))
-  print(string.format(
-    '[RaceManager] CAUTION #%d thrown by %s at %.1fs on lap %s: %d car(s) frozen',
-    race.cautionCount, tostring(who), race.time, tostring(race.cautionLap or '?'), held))
+    '[RaceManager] CAUTION - FULL COURSE YELLOW: RACE BACK TO THE LINE. Positions '
+    .. 'lock as you complete this lap, and the leader decides which lap that is. '
+    .. 'Slow down and hold station once you are past. By %s.', tostring(who)))
+  print(string.format('[RaceManager] CAUTION #%d called by %s at %.1fs: racing back to the line',
+    race.cautionCount, tostring(who), race.time))
   broadcastState()
 end
 
--- The restart, as its own control. The admin's judgement and not a timer: a
--- marshal who can see the track knows when it is clear, which is the same
--- reasoning the flag has always been advisory for.
+-- The restart, as its own control, and it is CALLED rather than taken: the
+-- admin's judgement decides there is going to be one, the leader decides when.
+--
+-- "The lap we are on is the restart" -- the green falls as the leader comes back
+-- to the line at the end of it, so the field is packed up and looking at it
+-- rather than being waved off round the back of the circuit at whatever moment
+-- the marshal happened to press the button.
 function RM_onRestart(pid)
   if not requireAuth(pid) then return end
   if not race.caution then
-    MP.SendChatMessage(pid, '[RaceManager] The race is not under caution, so there is '
-      .. 'nothing to restart.')
+    MP.SendChatMessage(pid, race.cautionPending
+      and '[RaceManager] The field is still racing back to the line. The restart '
+          .. 'can be called once the caution is official.'
+      or  '[RaceManager] The race is not under caution, so there is nothing to restart.')
     return
   end
-  restartRace('restart called by ' .. tostring(MP.GetPlayerName(pid) or pid))
+  if race.restartPending then
+    MP.SendChatMessage(pid, '[RaceManager] A restart is already called: the green '
+      .. 'falls as the leader reaches the line. Cancel it to hold the caution.')
+    return
+  end
+  race.restartPending = true
+  local who = MP.GetPlayerName(pid) or pid
+  MP.SendChatMessage(-1, string.format(
+    '[RaceManager] RESTART THIS LAP: the green flag falls as the leader reaches '
+    .. 'the line. Close up, hold position until then. By %s.', tostring(who)))
+  print(string.format('[RaceManager] Restart called by %s at %.1fs, waiting on the leader',
+    tostring(who), race.time))
+  broadcastState()
+  -- Judged immediately as well as on the tick, for the leader who is ALREADY on
+  -- the last leg when the button is pressed. Waiting a tick is harmless; waiting
+  -- a whole extra lap because the call landed 90 meters from the line is not.
+  restartWatch()
+end
+
+-- WAVE THE RESTART OFF. A marshal who calls one and then sees the track is not
+-- clear after all needs the call back, and the alternative -- pressing Caution
+-- again -- would count a second yellow and re-freeze an order that never thawed.
+--
+-- Only the CALL is cancelled. The race stays neutralised, the board stays
+-- frozen and the caution laps go on counting, which is what "hold the caution"
+-- means. Nothing to cancel once the green has actually fallen.
+function RM_onCancelRestart(pid)
+  if not requireAuth(pid) then return end
+  if not race.restartPending then
+    MP.SendChatMessage(pid, '[RaceManager] No restart is called, so there is nothing '
+      .. 'to wave off.')
+    return
+  end
+  race.restartPending = false
+  local who = MP.GetPlayerName(pid) or pid
+  MP.SendChatMessage(-1, string.format(
+    '[RaceManager] RESTART WAVED OFF: stay under caution, hold your position. '
+    .. 'By %s.', tostring(who)))
+  print(string.format('[RaceManager] Restart cancelled by %s at %.1fs',
+    tostring(who), race.time))
+  broadcastState()
 end
 
 function RM_onStartRace(pid)
@@ -4312,8 +4622,12 @@ function RM_onResetLeaderboard(pid)
   race.paceArmed = false
   race.greenAt   = 0.0
   race.caution      = false
+  race.cautionPending = false
+  race.restartPending = false
+  race.cautionLucky = nil
   race.cautionLap   = nil
   race.cautionLaps  = 0
+  race.cautionSeq   = 0
   race.cautionCount = 0
   thawOrder()
   -- The heat program goes with the evening. Reset Session is "start the night
@@ -4324,6 +4638,7 @@ function RM_onResetLeaderboard(pid)
   race.heatTransfer = 0
   race.heatCurrent  = 0
   race.heatsDrawn   = false
+  race.heatLaps     = 0
   if race.gridMode == 'heats' then race.gridMode = 'quali' end
   race.finalLap     = false
   race.finalLapLeft = 0
@@ -4525,12 +4840,58 @@ function RM_onLap(pid, rawData)
     -- caution that stopped the count would let a long one run the race out of
     -- daylight without ever reaching the flag. Counted off the LEADER's crossing
     -- so it is one number for the whole field, not one per driver.
+    --
+    -- Counted BEFORE the promotion below, deliberately: the crossing that starts
+    -- a caution is not a lap run under it. Caution lap 1 is the leader's NEXT
+    -- one, which is what a marshal counting laps under yellow means.
     if race.caution then
       race.cautionLaps = race.cautionLaps + 1
       print(string.format('[RaceManager] Caution lap %d (leader %s on lap %d)',
         race.cautionLaps, rec.name, completed))
     end
+    -- THE LEADER MAKES THE CAUTION OFFICIAL, and this crossing is the lap it is
+    -- called on. Everyone else locks their own place as they complete the SAME
+    -- lap number, which is what racing back to the line pays out: first back is
+    -- first, and a car a lap down is a lap down however close behind it sits.
+    if race.cautionPending then
+      race.cautionPending = false
+      race.caution        = true
+      race.cautionLap     = completed
+      race.cautionSeq     = 0
+      MP.SendChatMessage(-1, string.format(
+        '[RaceManager] CAUTION IS OUT on lap %d: %s leads it. Positions lock as '
+        .. 'you complete this lap. Hold station once you are past the line.',
+        completed, displayName(rec)))
+      print(string.format('[RaceManager] Caution official on lap %d, led by %s',
+        completed, rec.name))
+    end
   end
+  -- THIS DRIVER'S CAUTION PLACE, settled by their own arrival at the line. Once
+  -- only: the field goes on circulating under the yellow, and a second stamp
+  -- would send a car to the back of its group for obeying the caution.
+  lockCaution(rec, completed)
+  -- THE RESTART THE DISTANCE WATCH MISSED. restartWatch normally drops the green
+  -- about ten meters before the line, but it needs race.slotCount (0 for a route
+  -- built in the editor and never saved) and it needs telemetry to have landed
+  -- near the line. Neither is guaranteed, and a restart that was called and then
+  -- never fell would leave the field circulating under a yellow forever. The
+  -- leader's crossing is the backstop: a tick late, and always there.
+  --
+  -- THE FROZEN LEADER, not ledThisLap. Under a caution the two are different
+  -- questions: ledThisLap asks who reached a lap NUMBER first, and a car that
+  -- was a lap down when the yellow fell goes on circulating and claiming lap
+  -- numbers nobody at the front has reached yet. cautionLeader asks who is top
+  -- of the board, which is the car the restart is actually waiting on -- and it
+  -- answers correctly when that car retires under the yellow, which a stored
+  -- position would not.
+  --
+  -- A RED FLAG HOLDS IT, the same way it holds the distance watch and the pace
+  -- lap's. Red means stop where you are, and a leader who rolls the last few
+  -- meters to the line under one must not restart the race by arriving.
+  if race.restartPending and race.flag ~= 'red' and rec == cautionLeader() then
+    restartRace(string.format('%s took the line (distance watch did not fire)', rec.name))
+  end
+
   -- New lap (or the flag): the checkpoint/distance telemetry from the lap just
   -- completed must not linger and rank this driver against the next one.
   progress.clear(rec)
@@ -4914,6 +5275,9 @@ local function applyConfigTable(data)
   -- did and the green would fall on the tick the field was released.
   num('paceGreenAt', 1, 100)
   num('paceArmAt', 20, 1000)
+  bool('luckyDog')
+  -- 0 is a value here and not a floor: it means "a heat runs the race distance".
+  num('heatLaps', 0, CFG.maxTotalLaps)
   num('qualiLapLimit', 0, CFG.maxQualiLaps)
   num('qualiTimeLimit', 0, CFG.maxQualiTime)
   num('finalLapGrace', 10, 3600)
@@ -4963,6 +5327,8 @@ saveConfigToDisk = function ()
     paceLap        = CFG.paceLap,
     paceGreenAt    = CFG.paceGreenAt,
     paceArmAt      = CFG.paceArmAt,
+    luckyDog       = CFG.luckyDog,
+    heatLaps       = CFG.heatLaps,
     qualiLapLimit  = CFG.qualiLapLimit,
     qualiTimeLimit = CFG.qualiTimeLimit,
     finalLapGrace  = CFG.finalLapGrace,
@@ -4987,6 +5353,8 @@ local function applyConfigToRace()
   race.nametags       = CFG.nametags
   race.endDelay       = CFG.endDelay
   race.paceLap        = CFG.paceLap
+  race.luckyDog       = CFG.luckyDog
+  race.heatLaps       = CFG.heatLaps
   race.qualiLapLimit  = CFG.qualiLapLimit
   race.qualiTimeLimit = CFG.qualiTimeLimit
   adminPassword       = CFG.adminPassword
@@ -5517,6 +5885,30 @@ function RM_onSetFlag(pid, rawData)
   -- formation lap is allowed to take, the marshal who can see the track calls it
   -- -- with the same button they would use for any other green. Routed through
   -- dropGreenFlag so the automatic and the manual green leave identical state.
+  --
+  -- LIFTING A RED IS NOT A GREEN. Checked FIRST, above both the pace lap and the
+  -- caution below it, because red is a condition laid over the session rather
+  -- than a state change: whatever the field was under before the stoppage, it is
+  -- still under it after. A formation lap goes back to forming up and a
+  -- neutralised race goes back to its caution -- rather than the wreck being
+  -- moved and the field being waved off in the same keystroke.
+  --
+  -- Neither the pace lap nor the caution can be ended THROUGH a red, and that is
+  -- the point: lift it, then call the green (or the restart) when the track is
+  -- actually clear.
+  if want == 'green' and race.flag == 'red' and (race.pacing or race.caution) then
+    race.flag = 'yellow'
+    MP.SendChatMessage(-1, string.format(
+      '[RaceManager] The red is lifted: %s. By %s.',
+      race.pacing and 'the PACE LAP resumes, hold position'
+                  or  'the race is STILL UNDER CAUTION, hold your position',
+      tostring(MP.GetPlayerName(pid) or pid)))
+    print('[RaceManager] Red lifted back to '
+      .. (race.pacing and 'the pace lap' or 'the caution') .. ' by '
+      .. tostring(MP.GetPlayerName(pid) or pid))
+    broadcastState()
+    return
+  end
   if want == 'green' and race.pacing then
     dropGreenFlag('green called by ' .. tostring(MP.GetPlayerName(pid) or pid))
     return
@@ -5525,6 +5917,15 @@ function RM_onSetFlag(pid, rawData)
   -- goes through the one function that ends one -- otherwise the flag would turn
   -- green with the order still frozen, and the board would sit on a stale
   -- classification for the rest of the race with nothing left to unfreeze it.
+  --
+  -- The red case is handled above, so what is left here is a plain green called
+  -- on a neutralised race, and that IS the restart.
+  --
+  -- The panel no longer offers a plain green during a race at all (Restart is
+  -- its own button), so this path now serves a chat command and any older client
+  -- still sending one. Guarded rather than removed: this is the keystroke a
+  -- marshal has been using, and a green that only changed the flag would go
+  -- racing with the order still frozen and nothing left to unfreeze it.
   if want == 'green' and race.caution then
     restartRace('green flag called by ' .. tostring(MP.GetPlayerName(pid) or pid))
     return
@@ -8223,6 +8624,10 @@ function RM_Tick()
   -- buildDrivers; asking for it ten times a second to read one row off the top
   -- would cost a sort of the whole field for a comparison of one number.
   if race.pacing then paceLapWatch() end
+  -- The called restart, waiting on its leader. Same shape as the pace lap's
+  -- watch above and gated the same way: it costs one loop over the field, and
+  -- only while an admin has actually called one.
+  if race.restartPending then restartWatch() end
   tickCounter = tickCounter + 1
   if tickCounter >= CFG.pushEveryTicks then
     tickCounter = 0
@@ -8378,6 +8783,8 @@ function onInit()
   MP.RegisterEvent('RM_SetPaceLap',       'RM_onSetPaceLap')
   MP.RegisterEvent('RM_Caution',          'RM_onCaution')        -- full-course yellow
   MP.RegisterEvent('RM_Restart',          'RM_onRestart')
+  MP.RegisterEvent('RM_CancelRestart',    'RM_onCancelRestart')  -- wave the restart off
+  MP.RegisterEvent('RM_SetLuckyDog',      'RM_onSetLuckyDog')    -- the free pass rule
   MP.RegisterEvent('RM_SetHeats',         'RM_onSetHeats')       -- Module 6
   MP.RegisterEvent('RM_DrawHeats',        'RM_onDrawHeats')
   MP.RegisterEvent('RM_SetHeatCurrent',   'RM_onSetHeatCurrent')

@@ -1090,49 +1090,91 @@ still racing:
 
 ### Caution and restart
 
-A **full-course yellow** called mid-race. Press **Caution** while a race is
-running and:
+A **full-course yellow** called mid-race, and **the field races back to the
+line**. Press **Caution** while a race is running and:
 
-1. The flag goes yellow and the field is told, in chat and on screen, to slow
-   down, hold position and close up. **No overtaking.**
-2. **The running order freezes** where it stood at the moment the caution was
-   called.
-3. Laps run under the caution still count toward the distance, and are counted
-   separately so you can see how neutralised the race was.
-4. **Restart** goes green and live positions resume from there.
+1. The flag goes yellow and the field is told, in chat and on screen, to **race
+   back to the line**. Nothing is frozen yet: on the road the race is still on,
+   and the board goes on re-sorting to say so.
+2. **The leader dictates the lap.** Their crossing makes the caution official
+   and names the lap it was called on.
+3. **Every other driver locks their place as they complete that same lap.**
+   First back to the line is first. From there the board holds station: closing
+   up under the yellow costs and gains nobody a place.
+4. **Cars a lap or more down sort to the bottom**, in the order the lapped cars
+   came back &mdash; wherever they happen to be on the road.
+5. Optionally the **free pass** gives the first car a lap down its lap back
+   before the green.
+6. **Restart** is *called*, and the green falls as the leader reaches the line.
+   It can be waved off until it does.
 
 **The freeze is the feature, and it is the only half of a caution this mod can
 enforce.** The server has no physics access: it cannot slow a car, close a gap or
 line a field up behind the leader. What it *can* do is stop positions changing
-from the moment the yellow comes out &mdash; which is exactly what a real caution
-does to the timing sheet, and is a scoring rule rather than a movement one.
+&mdash; which is exactly what a real caution does to the timing sheet, and is a
+scoring rule rather than a movement one.
 
-That matters more than it sounds. Without it, a driver who obeys the instruction
-to close up is shown *gaining places for obeying it*, and the restart order is
-whatever the pack happened to look like on the last broadcast. With it, closing
-up is free and the order you restart in is the order you were running in.
+**Why it is raced back to rather than snapshot at the button.** A snapshot scores
+the field at a moment nobody on track can see, and hands a place to whoever
+happened to be mid-overtake when a marshal reached for the mouse. Racing back to
+the line is the rule drivers already understand and the one they can act on: get
+to the line, and where you are when you arrive is where you restart.
 
 It is **not** a ruling on any individual overtake. Nobody is penalised and no
-incident is judged &mdash; the board simply stops re-sorting until the green. A
-marshal who can see the incident is still better at judging it than a distance
-comparison, which is why the [flags](#step-6---grid-and-race) stay advisory.
+incident is judged &mdash; the board simply stops re-sorting once you are past
+the line. A marshal who can see the incident is still better at judging it than a
+distance comparison.
 
-**The advisory Yellow flag button is a different instrument.** It is a local
-hazard &mdash; shown, announced, written into the results, and it freezes
-nothing. The Caution button is the one that neutralises the race. Both exist
-because they mean different things to a driver.
+#### The free pass ("lucky dog")
+
+Off by default; switch **Free pass** on in Race settings. When the last car has
+locked, **the highest-placed car a lap down takes its lap back** and restarts at
+the **tail of the lead lap**.
+
+It goes to the *first car a lap down*, not the car furthest back &mdash; the car
+that was actually racing the leader when the yellow fell. Handing it to whoever
+is deepest in the field would give it to the same slowest car every single
+caution, which is not a prize anybody is racing for.
+
+One car per caution. The whole field is told, and so is the driver's own client:
+the credited lap has to reach both sides, or the driver's live position and gap
+would quietly stop working for the rest of the race.
+
+#### The restart, and calling it off
+
+Pressing **Restart** does not go green. It says **the current lap is the
+restart** and the green falls as the **leader reaches the start/finish line**, so
+the field is packed up and looking at it rather than being waved off round the
+back of the circuit at whatever moment the marshal decided.
+
+**Cancel restart** waves the call off. Only the call goes: the race stays
+neutralised, the board stays frozen and the caution laps go on counting. Pressing
+Caution again would count a second yellow and re-freeze an order that never
+thawed, which is why the wave-off is its own control.
 
 Some details worth knowing:
 
-- **The Green flag button is the restart.** Calling green by hand goes through
-  exactly the same path as pressing Restart, so the two leave identical state. A
-  green that only changed the flag would go racing with the order still frozen.
-- **A red flag does not lift the caution.** Red means stop; the sequence out of
-  it is red, yellow, green, and the green is still the restart.
+- **In a race, the caution *is* the yellow and the restart *is* the green.** The
+  advisory Yellow and Green flag buttons used to sit beside them, so a marshal
+  calling a yellow saw two yellow buttons and only one of them neutralised
+  anything. They now belong to **qualifying**, which has no running order to
+  freeze &mdash; there a yellow really is only a hazard being pointed at.
+- **Red is its own instrument, in both sessions.** It means stop where you are;
+  the session keeps running. Pressing it again lifts it, and **lifting a red
+  returns the field to whatever it was already under** &mdash; a neutralised race
+  goes back to its caution rather than being waved off the instant the wreck is
+  moved. A red also holds the restart: a leader who rolls the last few meters to
+  the line under one does not start the race by arriving.
+- **The Green flag button is still the restart** where it is reachable (a chat
+  command, an older panel), so a green called by hand can never leave the race
+  running with the order frozen and nothing to unfreeze it.
+- **Laps run under the caution count** toward the distance, and are counted
+  separately. The first is the leader's *next* crossing: the lap the yellow came
+  out on is not a lap run under it.
 - **A caution never outlives its session.** Ending or resetting a session drops
-  it and clears every frozen position &mdash; one left standing would silently
-  order the *next* race, which is invisible until somebody wins a race they ran
-  fourth in.
+  it, the pending call, the restart call and every locked position &mdash; one
+  left standing would silently order the *next* race, which is invisible until
+  somebody wins a race they ran fourth in.
 - **Qualifying cannot be neutralised.** Drivers are on their own laps and the
   board is a list of best times, so there is no running order to freeze.
 - **Not during the pace lap.** The field is already under yellow with a green to
@@ -1152,10 +1194,18 @@ Set it up in the **Grid** tab:
 1. **Heats** &mdash; how many the night is split into. 0 turns the program off.
 2. **Transfer** &mdash; how many drivers get out of each heat. They start the
    feature ahead of everyone who did not.
-3. **Draw heats** &mdash; splits the field.
-4. **Next up** &mdash; pick a heat, or the feature. This decides who **Generate
+3. **Heat laps** &mdash; how long a heat is. 0 runs them over the race distance.
+4. **Draw heats** &mdash; splits the field.
+5. **Next up** &mdash; pick a heat, or the feature. This decides who **Generate
    Grid** puts on the track.
-5. Set **Grid order** to **Heats** for the feature.
+6. Set **Grid order** to **Heats** for the feature.
+
+**Heats get their own lap count** because heats are short and features are long
+&mdash; eight-lap heats into a thirty-lap feature is the ordinary shape of a heat
+night. With one shared lap box the number had to be retyped between every session
+of the evening, which is a thing to forget once and run the feature over eight
+laps. Set **Heat laps** and the feature keeps the **Laps** box in Race settings;
+leave it at 0 and both run the same distance, exactly as before.
 
 **The draw is a serpentine off qualifying time**, which is how heat racing has
 always drawn them: 1st to heat 1, 2nd to heat 2, ... Nth to heat N, and then
@@ -1196,9 +1246,13 @@ Details:
   qualifying session that only let one heat out would be drawing heats from
   times set by the drivers it had already drawn. Qualifying always grids the
   whole field, even with a heat selected.
-- **Setting the heat count to 0 ends the program** and forgets every draw with
-  it, so a half-configured heat night can always be cleared. Reset Session does
-  the same &mdash; a new evening starts with an undrawn field.
+- **Setting the heat count to 0 ends the program** and forgets every draw and the
+  heat distance with it, so a half-configured heat night can always be cleared.
+  Reset Session does the same &mdash; a new evening starts with an undrawn field.
+- **The heat distance is enforced on both sides.** The server ends the heat at
+  it, and every client waves its own white and checkered flags off the same
+  number &mdash; a heat whose length only the server knew would be flagged at the
+  feature's lap count on every screen.
 
 ### Pace lap
 
@@ -1222,10 +1276,15 @@ Press it and:
 
 **The formation lap is not one of your laps.** It is driven and not scored, so a
 5-lap race behind the pace car is a formation lap **plus** 5 racing laps -- six
-crossings in total. The results file says so in its header, because otherwise
-`Race distance: 5 laps` sits above a `6` in the Laps column of every finisher
-with nothing on the page to settle it. It sets no lap time and cannot take
-fastest lap.
+crossings in total. It sets no lap time and cannot take fastest lap.
+
+**The leaderboard counts racing laps, not crossings.** During the formation lap
+the Lap cell reads `PACE`, and after it the leader on the last lap of a five-lap
+race reads `5/5`. It used to read `6/5`: the numerator was counting crossings
+while the denominator counted laps of the race, which are only the same number
+when no lap is given away. Qualifying's out lap has always been counted out the
+same way. The results file still says so in its header, because
+`Race distance: 5 laps` above a Laps column is worth settling on the page.
 
 This is the one place the pace lap differs from the out lap a
 [head-on grid](#branch-gates-two-ways-through-a-checkpoint) owes. That one is a
@@ -1240,7 +1299,9 @@ Two things stop a pace lap from hanging:
 
 - **A red flag holds the green.** Red means stop where you are and wait, so a
   leader who coasts the last few meters to the line under one does not start the
-  race by arriving. Lift it the usual way -- red, yellow, green.
+  race by arriving. **Lifting the red resumes the formation lap** rather than
+  ending it -- whatever the field was under before the stoppage, it is under it
+  again afterwards. Call the green separately when the track is clear.
 - **The Green flag button ends it at any time.** A field that has crashed,
   spun or simply stopped never brings its leader back to the line, and rather
   than guess how long a formation lap may take, the marshal who can see the

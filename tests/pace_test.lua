@@ -316,8 +316,19 @@ check(lastState.pacing == true,
   'and the leader arriving at the line under a red does NOT start the race')
 check(lastState.flag == 'red', 'the red is still out')
 
--- The way out is the admin's, in the sequence they already know: red, yellow,
--- green. The yellow leaves the pace lap running...
+-- LIFTING A RED IS NOT A GREEN. Red is a condition laid over the session rather
+-- than a state change, so whatever the field was under before the stoppage it is
+-- still under afterwards: the formation lap goes back to forming up. Waving the
+-- field off in the same keystroke that moved the wreck is the opposite of what
+-- red means, and the panel offers this as one lit button that lifts what it
+-- threw -- so the green it sends must not end the pace lap.
+RM_onSetFlag(0, '{"flag":"green"}')
+check(lastState.pacing == true, 'lifting the red does NOT end the pace lap')
+check(lastState.flag == 'yellow', 'it goes back to the yellow the field was under')
+
+-- ...and the same by the older route, in the sequence an admin already knows:
+-- red, yellow, green. The yellow leaves the pace lap running...
+RM_onSetFlag(0, '{"flag":"red"}')
 RM_onSetFlag(0, '{"flag":"yellow"}')
 check(lastState.pacing == true, 'going back to yellow resumes the pace lap')
 -- ...and with the leader already inside the trigger, the next tick greens it.

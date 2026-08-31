@@ -6,6 +6,106 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.13.0 - The field races back to the line
+
+### Changed
+
+- **The caution is raced back to, and the leader dictates the lap.** Calling it
+  used to freeze the board on the spot. It now goes out in two halves:
+
+  1. **Caution** puts the yellow out and tells the field to **race back to the
+     line**. Nothing is frozen -- the board goes on re-sorting, because on the
+     road the race is still on.
+  2. **The leader's crossing makes it official** and names the lap it was called
+     on. Every other driver locks their own place as they complete that same
+     lap, first back to the line first.
+
+  A snapshot at the button scores the field at a moment nobody on track can see,
+  and hands a place to whoever happened to be mid-overtake when a marshal
+  reached for the mouse. Racing back to the line is the rule drivers already
+  understand and the one they can act on.
+
+- **Lapped cars go to the bottom of the board**, in the order the lapped cars
+  came back, however close behind they are sitting. Laps down at the caution lap
+  is now the first key the frozen order compares, so a car a lap down cannot
+  appear to be running third because it is physically third in the queue. That
+  is how a caution board reads everywhere.
+
+- **The restart is called, not taken.** Pressing **Restart** says *the current
+  lap is the restart*; the green falls as the **leader reaches the line**, so the
+  field is packed up and looking at it rather than being waved off round the back
+  of the circuit at whatever moment the marshal decided. Two paths drop it, and
+  the second exists because the first can be starved: the distance watch greens
+  the field ten meters short of the line, and the leader's crossing is the
+  backstop for a track whose length the server never learned or telemetry that
+  never landed near the line.
+
+- **In a race, the caution IS the yellow and the restart IS the green.** The
+  advisory Yellow and Green flag buttons used to sit beside them, so a marshal
+  calling a yellow saw two yellow buttons and only one of them neutralised
+  anything, and going green saw two greens with only one of them unfreezing the
+  board. They now belong to **qualifying**, which has no running order to freeze.
+  The pace lap keeps its own manual green -- that override is the reason a
+  formation lap needs no timeout.
+
+- **Red is one button that lifts what it threw**, in both sessions, and lifting
+  it returns the field to whatever it was already under: a neutralised race goes
+  back to its caution and a formation lap goes back to forming up. Clearing a red
+  used to green a paced field outright, which waved the race off in the same
+  keystroke that moved the wreck.
+
+- **The leaderboard counts racing laps, not crossings.** A five lap race behind
+  the pace car read **`6/5`** on the last lap: the numerator counted crossings
+  while the denominator counted laps of the race, and those are only the same
+  number when no lap is given away. The formation lap now reads `PACE` while it
+  runs and comes out of both numbers after it, exactly as qualifying's out lap
+  always has. The board, the broadcast strip and the results table all go through
+  the same two helpers, so a commentator never reads out a lap the table does not
+  show.
+
+### Added
+
+- **The free pass ("lucky dog").** Off by default; switch **Free pass** on in
+  Race settings. When the last car has locked, the **highest-placed car a lap
+  down** takes its lap back and restarts at the **tail of the lead lap**.
+
+  It goes to the *first car a lap down* rather than the car furthest back -- the
+  car that was actually racing the leader when the yellow fell. Handing it to
+  whoever is deepest in the field would give it to the same slowest car every
+  single caution, which is not a prize anybody is racing for.
+
+  The credited lap is sent to that driver's client as well as counted on the
+  server. That is not decoration: the server drops any progress report whose lap
+  number disagrees with its own, so a lap credited on one side only would have
+  quietly killed the driver's live position and gap for the rest of the race.
+
+- **Cancel restart.** A marshal who calls a restart and then sees the track is
+  not clear needs the call back. Only the call goes -- the race stays
+  neutralised, the board stays frozen and the caution laps go on counting.
+  Pressing Caution again would have counted a second yellow and re-frozen an
+  order that never thawed, which is why this is its own control.
+
+- **Heats get their own lap count.** **Heat laps** in the Grid tab, 0 meaning
+  "the same as the race". Heats are short and features are long -- eight-lap
+  heats into a thirty-lap feature is the ordinary shape of a heat night -- and
+  one shared lap box meant retyping the number between every session of the
+  evening, which is a thing to forget once and run the feature over eight laps.
+
+  Enforced on both sides. The client waves its own white and checkered flags off
+  its copy of the lap target, so a heat whose length only the server knew would
+  have been flagged at the feature's distance on every screen.
+
+- Three header badges instead of one. **CAUTION - RACE BACK TO THE LINE**,
+  **CAUTION - POSITIONS FROZEN** and **RESTART THIS LAP - GREEN AT THE LINE** are
+  three different instructions to a driver, and the single POSITIONS FROZEN badge
+  was telling two thirds of a caution the wrong thing. Each has its own on-screen
+  notice on the edge it happens.
+
+### Config
+
+- `luckyDog` (false) -- the free pass rule as a server default.
+- `heatLaps` (0) -- the heat distance as a server default.
+
 ## 0.12.0 - Race control: the caution, and heats into a feature
 
 ### Added
