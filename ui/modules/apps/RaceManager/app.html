@@ -1478,6 +1478,17 @@
         <span class="rm-garage-idx">{{ $index + 1 }}</span>
         <span class="rm-garage-label" title="{{ g.label }}">{{ g.label }}</span>
         <span class="rm-garage-model">{{ g.model }}</span>
+        <!-- THE CLASS THIS CAR RUNS IN. On the entry rather than on the driver
+             because a class is a property of the car: set it once here and every
+             driver in that car is scored in it, for every race, with no
+             per-driver bookkeeping. Blank is unclassified, and a list with no
+             class on any entry behaves exactly as it always did. -->
+        <input type="text" class="rm-garage-class" maxlength="12"
+               ng-model="garageClassUi.input[$index]"
+               ng-model-options="{ debounce: { default: 600, blur: 0 } }"
+               ng-change="applyGarageClass($index)"
+               placeholder="class"
+               title="The class this car runs in, e.g. GT3. Leave it blank for a single-class night.">
         <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="removeGarageEntry($index)">✕</button>
       </div>
     </div>
@@ -3042,6 +3053,10 @@
           <!-- Which heat this driver ran, where they finished it, and whether
                that was a transfer. Present only during a heat program, because
                outside one every cell would be empty. -->
+          <!-- THE CLASS COLUMN, present only when a class is actually being run.
+               Same rule as the Heat column beside it: a single-class night has
+               the board it has always had, with no empty column on it. -->
+          <th class="rm-col-class" ng-if="classesInUse()" title="Class, and this driver's position within it">Class</th>
           <th class="rm-col-heat" ng-if="heatCount" title="Heat, finishing position in it, and a tick for a transfer">Heat</th>
           <th class="rm-col-joker" ng-if="jokerEnabled" title="Joker route: the lap it was taken on">Joker</th>
           <th class="rm-col-reset" ng-if="resetsLimited()" title="Vehicle resets used / allowed, plus any attempts blocked after the allowance ran out">Rst</th>
@@ -3087,6 +3102,7 @@
                two cars at opposite ends of a head-on oval are ranked next to each
                other because they have cleared the same checkpoints, which is the
                whole claim the leaderboard is making. -->
+          <td class="rm-col-class" ng-if="classesInUse()">{{ classLabel(row) }}</td>
           <td class="rm-col-heat" ng-if="heatCount"
               ng-class="{'rm-heat-transfer': row.transferred === true}">{{ myHeatLabel(row) }}</td>
           <td class="rm-col-joker" ng-if="jokerEnabled"
@@ -3102,7 +3118,7 @@
           </td>
         </tr>
         <tr ng-if="!drivers.length">
-          <td colspan="11" class="rm-empty">
+          <td colspan="12" class="rm-empty">
             No drivers yet: join a BeamMP server running the RaceManager plugin, then press
             <b>Start Quali</b> (or <b>Generate Grid</b> to go straight to a race),
             followed by <b>Start Countdown</b> &mdash; or <b>Start Race</b>, if the
@@ -4116,6 +4132,19 @@
   /* A driver who took a transfer spot out of their heat. Green, because it is
      the same "you are through" the checkered column means. */
   .rm-heat-transfer { color: #7ee2a8; font-weight: 700; }
+  /* The class box on a garage row, and the class cell on the board. Sized for
+     the twelve characters the server accepts and no more, so a long name is
+     refused at the box rather than shearing the results table later. */
+  .rm-garage-class {
+    width: 76px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 3px;
+    color: #e8eaed;
+    font-size: 11px;
+    padding: 1px 4px;
+  }
+  .rm-col-class { color: #b0c4de; font-weight: 700; }
   .rm-btn-green   { border-color: rgba(52, 168, 83, 0.85); color: #7ee2a8; }
   /* The flag currently out. Marked rather than hidden, so the sequence is
      always visible and the current state is never a guess. */

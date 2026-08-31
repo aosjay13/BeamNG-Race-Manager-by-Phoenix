@@ -775,6 +775,15 @@ local function newRecord(pid)
     carPartsSig = nil,   -- model + parts, the half 'parts' mode matches on
     carLabel    = nil,   -- what to call it in the audit
     carGame     = nil,   -- BeamNG build, for the version-skew message
+    -- WHICH CLASS THIS DRIVER IS IN, derived from the Garage List entry their
+    -- car matches -- a class is a property of the car, so it is read off the car
+    -- rather than assigned per driver per event. nil is unclassified, which is
+    -- every driver on a server that has not tagged a single entry.
+    class       = nil,
+    -- Their place WITHIN their class, stamped beside `position` on every
+    -- broadcast. nil whenever no class is in use, so a single-class night has
+    -- exactly the board it always had.
+    classPos    = nil,
   }
 end
 
@@ -1015,6 +1024,12 @@ local function rememberIdentity(rec)
     -- the back of a feature they had qualified for the front of.
     heat        = rec.heat,
     heatPos     = rec.heatPos,
+    -- THE CLASS RIDES HERE TOO, for the reason the heat does: Generate Grid
+    -- purges every record that is not a connected player, and a driver who
+    -- reconnects between two races would come back unclassified and be scored
+    -- against the wrong field. It is re-derived on their next declaration
+    -- anyway, but "anyway" is up to a couple of seconds after the grid forms.
+    class       = rec.class,
     transferred = rec.transferred,
   }
 end
@@ -1050,6 +1065,7 @@ local function ensurePlayer(pid)
       rec.spectating = ident.spectating == true
       rec.heat        = ident.heat
       rec.heatPos     = ident.heatPos
+      rec.class       = ident.class
       rec.transferred = ident.transferred
     end
     players[pid] = rec
@@ -1416,8 +1432,28 @@ end
 local function assignPositions(list)
   local leader = list[1]
   local quali  = race.sessionKind == 'quali'
+  -- PER-CLASS POSITIONS COST ONE TABLE AND NOTHING ELSE. The list handed in is
+  -- already in classification order, and a class is a subset of it -- so walking
+  -- it once and counting per class gives each driver their place in their own
+  -- class without a second sort or a second comparator. Two classes on one board
+  -- are two boards that happen to be interleaved.
+  --
+  -- Built only when a class is actually in use. `nil` here is what makes every
+  -- line below it free on a server that never tagged an entry.
+  local seen = nil
+  for _, rec in ipairs(list) do
+    if rec.class then seen = {}; break end
+  end
   for i, rec in ipairs(list) do
     rec.position = i
+    rec.classPos = nil
+    if seen and rec.class then
+      -- DNFs and disqualifications keep a class place for the same reason they
+      -- keep an overall one: "was 2nd in class" and "was 9th in class" are
+      -- different afternoons, and the results file prints both.
+      seen[rec.class] = (seen[rec.class] or 0) + 1
+      rec.classPos = seen[rec.class]
+    end
     rec.gap, rec.intv = nil, nil
     -- CLEARED EVERY PASS and set again below, so a flag can never outlive the
     -- moment that earned it: a driver who is let by, or who pits, or whose
@@ -1484,6 +1520,9 @@ local DRIVER_WIRE_FIELDS = {
   -- finished it, and whether that was a transfer spot. All three are columns on
   -- the board during a heat program and mean nothing outside one.
   'heat', 'heatPos', 'transferred',
+  -- The class and the place within it. Both nil unless the Garage List has a
+  -- class on it, which is what keeps a one-class night's board unchanged.
+  'class', 'classPos',
   -- Seconds behind the leader and behind the car ahead. Two numbers, and the
   -- panel does no arithmetic on them beyond formatting.
   'gap', 'intv',
@@ -1592,7 +1631,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.12.0'
+local RM_BUILD = '0.13.0'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -2231,11 +2270,32 @@ local function buildResultsText(cupRound)
   -- so a plain race exports exactly the same table it always did.
   local jokerCol  = race.jokerEnabled and string.format(' %-7s', 'Joker') or ''
   local resetCol  = race.maxResets >= 0 and string.format(' %-6s', 'Resets') or ''
+  -- THE CLASS COLUMN, on the same terms as the two above it: present only when
+  -- there is one, so a single-class race exports byte-for-byte the table it
+  -- always did. Read off the classification rather than off the garage, because
+  -- what the file records is what was RUN -- an entry retagged after the flag
+  -- must not rewrite the race that has already happened.
+  local classed = false
+  for _, rec in ipairs(final) do
+    if rec.class then classed = true break end
+  end
+  local classCol = classed and string.format(' %-12s', 'Class') or ''
   -- NO "Line" COLUMN. A branch gate is another way through a checkpoint rather
   -- than a route a driver is on, so there is no lane to name -- and a track with
   -- branch gates now exports exactly the table an ordinary race does.
-  add(string.format('%-5s %-6s %-22s %-10s %-9s %s%s%s',
-    'Pos', 'Start', 'Driver', 'Best Lap', 'Laps Led', 'Finish', jokerCol, resetCol))
+  -- 'Finish' IS PADDED ONLY WHEN SOMETHING FOLLOWS IT, and that is not fussiness.
+  -- The data rows below write the finish through '%-10s'; this header wrote it
+  -- through a bare '%s', so every optional column after it sat four characters
+  -- left of its own values. That was true of Joker and Resets before a Class
+  -- column existed to make it obvious.
+  --
+  -- Padding it unconditionally would put four trailing spaces on the header of
+  -- every plain race that has no column after it at all, and a plain race is
+  -- supposed to export byte-for-byte the table it always did.
+  local tail = classCol .. jokerCol .. resetCol
+  add(string.format('%-5s %-6s %-22s %-10s %-9s %s%s',
+    'Pos', 'Start', 'Driver', 'Best Lap', 'Laps Led',
+    tail ~= '' and string.format('%-10s', 'Finish') or 'Finish', tail))
   -- Fastest lap, half-way leader and Hard Charger, decided once for this
   -- session (see sessionAwards) rather than worked out again here.
   local awards = sessionAwards(final)
@@ -2271,15 +2331,71 @@ local function buildResultsText(cupRound)
     local resetVal = race.maxResets >= 0
       and string.format(' %-6s', string.format('%d/%d%s', rec.resets or 0, race.maxResets,
         (rec.resetsBlocked or 0) > 0 and ('+' .. rec.resetsBlocked) or '')) or ''
-    add(string.format('%-5s %-6s %-22s %-10s %-9d %-10s%s%s%s%s',
+    -- "GT3 P2" in one cell: the class and the place in it are one fact and a
+    -- reader scanning the column wants them together. A classified race with an
+    -- unclassified driver in it prints a dash rather than a blank, so the column
+    -- never reads as a formatting fault.
+    local classVal = classed and string.format(' %-12s',
+      rec.class and (rec.class .. (rec.classPos and (' P' .. rec.classPos) or ''))
+        or '-') or ''
+    add(string.format('%-5s %-6s %-22s %-10s %-9d %-10s%s%s%s%s%s',
       pos, rec.gridPos and ('P' .. rec.gridPos) or '-',
       displayName(rec), fmtLap(rec.raceBest), rec.lapsLed or 0, finish,
-      jokerVal, resetVal, aliasNote(rec), tag))
+      classVal, jokerVal, resetVal, aliasNote(rec), tag))
   end
   if #final == 0 then add('(no drivers)') end
   -- The two award lines. Both are omitted rather than guessed at when there is
   -- no answer -- a race stopped before half distance has no half-way leader,
   -- and a race where nobody gained a place has no hard charger.
+  -- ---------------------------------------------------------------------
+  -- PER-CLASS RESULTS, and the reason they are a section rather than only a
+  -- column: a league running two classes publishes two results. The overall
+  -- order above is still the truth about who was on the road first -- a GT4
+  -- winner did not beat the GT3 field -- but the sheet a GT4 driver reads is the
+  -- one with GT4 cars on it and P1 at the top of it.
+  --
+  -- Built out of the SAME classification, walked once per class in the order it
+  -- is already in, so no second sort exists to disagree with the first.
+  if classed then
+    local order, seen = {}, {}
+    for _, rec in ipairs(final) do
+      if rec.class and not seen[rec.class] then
+        seen[rec.class] = true
+        order[#order + 1] = rec.class
+      end
+    end
+    -- Classes in the order their leading car finished, which puts the quickest
+    -- class first without anybody having to rank them. Alphabetical would put
+    -- GT4 above GT3.
+    for _, cls in ipairs(order) do
+      add('')
+      add('--- CLASS: ' .. cls .. ' ---')
+      add(string.format('%-5s %-6s %-22s %-10s %s',
+        'Pos', 'Start', 'Driver', 'Best Lap', 'Finish'))
+      local n = 0
+      for _, rec in ipairs(final) do
+        if rec.class == cls then
+          n = n + 1
+          local finish
+          if rec.status == 'dsq' then
+            finish = rec.outReason or 'Disqualified'
+          elseif rec.finishTime then
+            finish = fmtLap(rec.finishTime)
+          else
+            finish = (rec.outReason or 'DNF')
+              .. (rec.classPos and (' (was P' .. rec.classPos .. ' in class)') or '')
+          end
+          local cpos = (rec.status == 'dsq') and 'DSQ'
+            or (rec.finishTime and ('P' .. (rec.classPos or n)) or 'DNF')
+          add(string.format('%-5s %-6s %-22s %-10s %s%s',
+            cpos, rec.gridPos and ('P' .. rec.gridPos) or '-',
+            displayName(rec), fmtLap(rec.raceBest), finish,
+            (n == 1 and rec.finishTime) and '  << CLASS WINNER' or ''))
+        end
+      end
+    end
+    add('')
+  end
   local halfRec = awards.halfWayPid and players[awards.halfWayPid] or nil
   local hcRec   = awards.hardChargerPid and players[awards.hardChargerPid] or nil
   if halfRec or hcRec then add('') end
@@ -3969,7 +4085,15 @@ function RM_onJokerLap(pid, rawData)
   if not rec or rec.status ~= 'racing' then return end
   rec.jokerTaken = (rec.jokerTaken or 0) + 1
   local lap = decodeNumber(rawData, 'lap')
-  if rec.jokerLap == nil then rec.jokerLap = lap and math.floor(lap) or rec.currentLap end
+  -- THE FALLBACK HAS TO AGREE WITH WHAT THE CLIENT SENDS. The client reports the
+  -- RACING lap; rec.currentLap counts crossings, and behind the pace car those
+  -- differ by one. A payload that arrives without a lap in it (an older client)
+  -- would otherwise record the joker a lap later than the driver was told it
+  -- happened, in the same file that prints both.
+  if rec.jokerLap == nil then
+    rec.jokerLap = lap and math.floor(lap)
+      or math.max(1, (rec.currentLap or 1) - (paceLapArmed() and 1 or 0))
+  end
   print(string.format('[RaceManager] %s took the joker route on lap %s (total %d)',
     rec.name, tostring(rec.jokerLap), rec.jokerTaken))
   broadcastState()
@@ -6334,7 +6458,17 @@ local garage = {
   -- Several allowed builds of the same car (a choice of engine, say) is not a
   -- third mode - it is several entries under 'parts', one per build.
   mode    = 'parts',
-  -- { { model = 'etk800', label = 'ETK 800 - Race', sig = '...', game = '0.39' } }
+  -- { { model = 'etk800', label = 'ETK 800 - Race', sig = '...', game = '0.39',
+  --     class = 'GT3' } }
+  --
+  -- `class` IS THE MULTI-CLASS FEATURE, and it lives here rather than on the
+  -- driver because a class is a property of the CAR. GT3 cars are GT3 whoever is
+  -- driving them, so a league sets it once per entry and never again -- against
+  -- a per-driver assignment, which is bookkeeping every driver, every event.
+  --
+  -- Empty or absent means unclassified, which is what every existing entry is
+  -- and what keeps a server that never runs two classes untouched: with no entry
+  -- carrying one, classesInUse() is false and every rule below it is inert.
   -- `game` is the BeamNG build the entry was captured on. A game update can
   -- rename vehicle parts without the car changing (BeamNG v0.39 did exactly
   -- that), and a renamed part changes the signature, so every entry captured on
@@ -6380,6 +6514,9 @@ local function loadGarageFromDisk()
       garage.list[#garage.list + 1] = {
         model    = tostring(e.model or '?'),
         label    = tostring(e.label or e.model or 'Vehicle'),
+        -- nil rather than '' for an entry that has none, so "unclassified" is
+        -- one value everywhere instead of two that have to both be tested for.
+        class    = (type(e.class) == 'string' and e.class ~= '') and e.class or nil,
         sig      = e.sig,
         -- nil only if the signature had no vars marker at all, which no
         -- release has ever written. Such an entry still matches in strict
@@ -6433,10 +6570,12 @@ local function saveGarageToDisk()
   local f, ferr = io.open(GARAGE_FILE, 'w')
   if not f then return false, tostring(ferr) end
   f:write(jsonStringify({
-    -- version 2 added `mode` and the per-entry `partsSig`. A version 1 file
-    -- still loads: loadGarageFromDisk defaults the mode and derives the missing
-    -- signature half, so downgrading the plugin is the only thing this breaks.
-    version = 2, enforce = getGarage().enforce, mode = getGarage().mode,
+    -- version 2 added `mode` and the per-entry `partsSig`; version 3 added the
+    -- per-entry `class`. Every older file still loads: loadGarageFromDisk
+    -- defaults the mode, derives the missing signature half and treats a missing
+    -- class as unclassified, so downgrading the plugin is the only thing this
+    -- breaks.
+    version = 3, enforce = getGarage().enforce, mode = getGarage().mode,
     list = getGarage().list,
   }))
   f:close()
@@ -6460,7 +6599,7 @@ garageSnapshot = function ()
   -- compact view (the signature stays server-side).
   local list = {}
   for i, e in ipairs(g.list) do
-    list[i] = { model = e.model, label = e.label }
+    list[i] = { model = e.model, label = e.label, class = e.class }
   end
   garageView = { list = list, enforce = g.enforce, mode = g.mode }
   return garageView
@@ -6492,16 +6631,28 @@ end
 -- An entry with no partsSig is skipped rather than guessed at in parts mode.
 -- That only happens to a signature with no vars marker in it, which no release
 -- has ever written; loadGarageFromDisk derives the rest.
-local function garageAllows(partsSig, fullSig)
+-- WHICH ENTRY THIS CAR IS, or nil. The matcher garageAllows has always been,
+-- returning the row rather than a yes -- because the row is where the class
+-- lives and "is this car allowed" and "what class is this car" are the same
+-- lookup asked twice.
+local function garageMatch(partsSig, fullSig)
   local strict = getGarage().mode == 'strict'
   for _, e in ipairs(getGarage().list) do
     if strict then
-      if fullSig and fullSig ~= '' and e.sig == fullSig then return true end
+      if fullSig and fullSig ~= '' and e.sig == fullSig then return e end
     else
-      if partsSig and partsSig ~= '' and e.partsSig == partsSig then return true end
+      if partsSig and partsSig ~= '' and e.partsSig == partsSig then return e end
     end
   end
-  return false
+  return nil
+end
+
+-- The boolean every existing caller wants, kept as its own name rather than
+-- having a dozen call sites learn to compare against nil. `carOk` is
+-- three-valued and an entry table in it would read as true from Lua and as
+-- something else entirely from the wire.
+local function garageAllows(partsSig, fullSig)
+  return garageMatch(partsSig, fullSig) ~= nil
 end
 
 -- Re-rule every driver against the list as it stands now. Called from
@@ -6514,10 +6665,20 @@ end
 garageRejudge = function ()
   local enforcing = garageEnforcing()
   for _, rec in pairs(players) do
+    -- ONE LOOKUP, TWO ANSWERS. The class is re-derived whether or not the rule
+    -- is being enforced, because an admin who tags an entry "GT3" has to see the
+    -- drivers in that car become GT3 immediately -- not when they next happen to
+    -- touch their setup. This function already runs on every capture, removal,
+    -- mode switch and enforcement toggle, which is exactly the set of moments a
+    -- class can change.
+    local entry = rec.carSig and garageMatch(rec.carPartsSig, rec.carSig) or nil
+    local was = rec.class
+    rec.class = entry and entry.class or nil
+    if rec.class ~= was then rememberIdentity(rec) end
     if not enforcing or not rec.carSig then
       rec.carOk = nil
     else
-      rec.carOk = garageAllows(rec.carPartsSig, rec.carSig)
+      rec.carOk = entry ~= nil
     end
   end
 end
@@ -6737,6 +6898,40 @@ function RM_onRemoveGarageEntry(pid, rawData)
     .. (MP.GetPlayerName(pid) or pid))
 end
 
+-- TAG A GARAGE ENTRY WITH A CLASS, or clear it with an empty string.
+--
+-- NOT IDLE-LOCKED, and that is a deliberate difference from the regulations that
+-- are. Changing the lap count mid-race changes the distance under cars already
+-- running; changing a class changes how the board is GROUPED, which is a
+-- presentation of the same race and is exactly the correction an admin needs to
+-- be able to make when they notice mid-session that an entry was tagged wrong.
+-- saveGarageToDisk re-judges every driver, so the board regroups on the next
+-- broadcast rather than at the next declaration.
+function RM_onSetGarageClass(pid, rawData)
+  if not requireAuth(pid) then return end
+  if type(rawData) ~= 'string' or rawData == '' then return end
+  local ok, data = pcall(Util.JsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local idx = math.floor(tonumber(data.index) or 0)
+  local g = getGarage()
+  if idx < 1 or idx > #g.list then return end
+  local class = tostring(data.class or '')
+  -- Trimmed and capped. The results file pads this column to twelve, and a class
+  -- name longer than that would shear every row after it -- the same reason the
+  -- alias has a length limit.
+  class = class:gsub('^%s+', ''):gsub('%s+$', ''):sub(1, 12)
+  -- ASCII only, for the reason displayName is: the results file is a fixed-width
+  -- text table and a multi-byte character counts as more than one column.
+  class = class:gsub('[^%w%-%. ]', '')
+  g.list[idx].class = (class ~= '') and class or nil
+  saveGarageToDisk()
+  broadcastState()
+  print(string.format('[RaceManager] "%s" is now %s (by %s)',
+    g.list[idx].label,
+    g.list[idx].class and ('class ' .. g.list[idx].class) or 'unclassified',
+    MP.GetPlayerName(pid) or pid))
+end
+
 function RM_onSetGarageEnforce(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -6804,11 +6999,19 @@ function RM_onVehicleConfig(pid, rawData)
   if partsSig == '' or partsSig:match('|parts=$') then return end
 
   local rec = ensurePlayer(pid)
+  local entry = garageMatch(partsSig, sig)
   if rec then
     rec.carSig      = sig
     rec.carPartsSig = partsSig
     rec.carLabel    = data.label and tostring(data.label) or model
     rec.carGame     = data.game and tostring(data.game) or nil
+    -- THE CLASS, AND IT DOES NOT WAIT FOR ENFORCEMENT. Which class a car runs in
+    -- and whether that car is legal are different questions, and a league that
+    -- wants two classes scored separately without policing anybody's setup is an
+    -- ordinary thing to want. The verdict below is gated on enforcement; the
+    -- class is not.
+    rec.class = entry and entry.class or nil
+    rememberIdentity(rec)
   end
 
   if not garageEnforcing() then
@@ -6819,7 +7022,7 @@ function RM_onVehicleConfig(pid, rawData)
     return
   end
 
-  local allowed = garageAllows(partsSig, sig)
+  local allowed = entry ~= nil
   if rec then rec.carOk = allowed end
   if allowed then return end
 
@@ -8920,6 +9123,7 @@ function onInit()
   MP.RegisterEvent('RM_RemoveGarageEntry','RM_onRemoveGarageEntry')
   MP.RegisterEvent('RM_SetGarageEnforce', 'RM_onSetGarageEnforce')
   MP.RegisterEvent('RM_SetGarageMode',    'RM_onSetGarageMode')
+  MP.RegisterEvent('RM_SetGarageClass',   'RM_onSetGarageClass')  -- multi-class
   MP.RegisterEvent('RM_VehicleConfig',    'RM_onVehicleConfig')
   MP.RegisterEvent('onVehicleSpawn',      'RM_onVehicleSpawn')
   MP.RegisterEvent('onVehicleEdited',     'RM_onVehicleEdited')

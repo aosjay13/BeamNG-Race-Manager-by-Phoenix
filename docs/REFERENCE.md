@@ -1183,6 +1183,56 @@ Some details worth knowing:
   under them**. A race with four yellows in it used to read exactly like a clean
   one, which makes a lap chart impossible to explain afterwards.
 
+### Multi-class racing
+
+Two car types on one grid, scored as two races. There was no class concept
+anywhere before this: a league running GT3 and GT4 together either scored them
+in one list or ran two separate events, and locking the Garage List to a single
+car was the workaround.
+
+**A class is a property of the car**, so it is tagged on the **Garage List entry**
+rather than assigned to a driver. Open the **Garage** tab, whitelist the cars as
+usual, and type a class into the box on each row &mdash; `GT3`, `GT4`, whatever
+your league calls them. Every driver in that car is in that class, for every race,
+with no per-driver bookkeeping and nothing to remember when somebody switches car.
+
+Leave every box blank and nothing changes: no class on any driver, no Class
+column, no per-class section. That is what a single-class night is.
+
+What you get once a class is set:
+
+- **A Class column on the leaderboard**, showing the class and the driver's
+  position *within* it &mdash; `GT4 P1` on a car running third overall.
+- **Per-class positions** everywhere the board is drawn, counted within the
+  class, so the leading GT4 is P1 in class while still being P3 on the road.
+- **Per-class sections in the results file**, each with its own finishing order
+  and its own class winner, under the overall table.
+
+Details:
+
+- **The overall order never changes.** A class is a way of reading the race, not
+  a change to it: the GT4 winner did not beat the GT3 field, and the overall
+  table still says so with the real race winner at the top of it.
+- **Classes work with enforcement OFF.** "What class is this car" and "is this
+  car legal" are different questions, and a league that wants two classes scored
+  without policing anybody's setup is an ordinary thing to want. Tagging a class
+  does not switch enforcement on.
+- **Tagging an entry re-classes everyone in that car immediately**, on the next
+  broadcast rather than the next time each driver happens to touch their setup
+  &mdash; which for a driver already sitting on the grid is never.
+- **A class survives a disconnect**, like a heat does. Generate Grid purges every
+  record that is not a connected player, so the class is mirrored into the driver
+  roster: a driver who drops out between two races comes back in their class.
+- **A class name is capped at twelve characters** and stripped to plain ASCII.
+  The results file is a fixed-width text table, and a longer or multi-byte name
+  would shear every row after it.
+- **Not idle-locked.** Unlike the lap count, a class can be changed mid-session:
+  it changes how the board is *grouped*, not the distance under cars already
+  running, and correcting an entry tagged wrong is exactly what an admin needs to
+  be able to do the moment they notice.
+- **Cup points are still scored on the overall order.** A per-class championship
+  is a separate decision about how a season is scored, and it is not made here.
+
 ### The blue flag
 
 Lapped traffic was displayed and never signalled. The board read `+1 LAP` and

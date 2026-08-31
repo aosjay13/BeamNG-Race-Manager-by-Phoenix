@@ -152,7 +152,17 @@ angular.module('beamng.apps')
       $scope.gridGen = { count: 12, spacing: 8, stagger: 6, width: 2, from: 0 };
       $scope.gridGenerated = false;   // is there a generated grid the sliders may move?
       // Garage list (approved vehicles/setups).
-      $scope.garage = [];             // [{ model, label }]
+      $scope.garage = [];             // [{ model, label, class }]
+      // The class boxes, kept beside the list rather than bound straight into
+      // it: `garage` is replaced wholesale on every broadcast, and an ng-model
+      // pointed at a row would lose what was being typed three times a second.
+      // Same reason settingsUi exists.
+      //
+      // BEHIND A DOT, like aliasUi.input. The boxes are inside an ng-repeat, and
+      // a bare `garageClassUi[$index]` resolves on the repeat's CHILD scope --
+      // which shadows the parent on first write, so the control would edit a
+      // copy nobody reads. ui_bindings_test enforces this.
+      $scope.garageClassUi = { input: [] };
       $scope.garageEnforce = false;
       // Which half of a setup the list is matched on: 'parts' locks the parts
       // and leaves tuning and paint alone, 'strict' locks the tuning too. The
@@ -1327,7 +1337,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.12.0';
+      var APP_BUILD = '0.13.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -2152,6 +2162,17 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
             }
           }
           $scope.garage = toArray(data.garage);
+          // Seeded from the server, and only where the box is not being edited:
+          // overwriting a half-typed class on the next broadcast is the bug the
+          // separate array exists to avoid, and the debounce means "half-typed"
+          // lasts most of a second.
+          for (var gi = 0; gi < $scope.garage.length; gi++) {
+            var srv = $scope.garage[gi].class || '';
+            if ($scope.garageClassUi.input[gi] === undefined) {
+              $scope.garageClassUi.input[gi] = srv;
+            }
+          }
+          $scope.garageClassUi.input.length = $scope.garage.length;
           $scope.garageEnforce = !!data.garageEnforce;
           if (data.garageMode === 'parts' || data.garageMode === 'strict') {
             $scope.garageMode = data.garageMode;
@@ -3550,6 +3571,28 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.clearGarage = function () {
         bngApi.engineLua('raceManager.clearGarage()');
       };
+      // Tag an entry with the class its car runs in. Blank clears it.
+      $scope.applyGarageClass = function (index) {
+        var v = $scope.garageClassUi.input[index];
+        bngApi.engineLua('raceManager.setGarageClass(' + (index + 1) + ", '"
+          + String(v === undefined || v === null ? '' : v).replace(/'/g, '') + "')");
+      };
+      // Is this session running more than one class? Read off the DRIVERS rather
+      // than off the garage, because that is what the board is showing: a class
+      // tagged on an entry nobody is driving is not a class in this race.
+      $scope.classesInUse = function () {
+        for (var i = 0; i < $scope.drivers.length; i++) {
+          if ($scope.drivers[i].class) { return true; }
+        }
+        return false;
+      };
+      // A driver's class and their place in it, as one cell. The same shape
+      // myHeatLabel uses, for the same reason: two numbers that are one fact.
+      $scope.classLabel = function (row) {
+        if (!row || !row.class) { return ''; }
+        return row.class + (row.classPos ? (' P' + row.classPos) : '');
+      };
+
       $scope.removeGarageEntry = function (index) {
         bngApi.engineLua('raceManager.removeGarageEntry(' + (index + 1) + ')');
       };

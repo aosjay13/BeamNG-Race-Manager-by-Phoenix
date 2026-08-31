@@ -225,7 +225,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.12.0'
+local RM_BUILD = '0.13.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -1918,6 +1918,13 @@ end
 -- see the car move:
 --   * Lap 1 restriction - any joker attempt started on lap 1 is invalidated
 --     outright (progress thrown away, nothing reported to the server).
+--
+--     LAP 1 IS A RACING LAP, NOT A CROSSING. Behind the pace car the first
+--     crossing is the formation lap, so `localLap` 1 is the lap run under yellow
+--     and `localLap` 2 is the lap the race actually starts on. Tested against
+--     the raw counter, the rule closed the joker on the formation lap -- where
+--     nobody was going to take it anyway -- and left it OPEN on the first racing
+--     lap, which is the one lap it exists to close.
 --   * Once per race - a completed joker route is reported exactly once; every
 --     later run is ignored and flagged to the driver.
 local function checkJokerGates(prev, cur)
@@ -1926,7 +1933,11 @@ local function checkJokerGates(prev, cur)
   local wp = track.jokerRoute[session.jokerArmed]
   if not wp or not segmentCrossesGate(wp, prev, cur) then return end
 
-  if session.localLap <= 1 then
+  -- The lap of the RACE this driver is on. Behind the pace car that is one less
+  -- than the number of times they have crossed the line, because the first of
+  -- those crossings ended a lap nobody was scored for.
+  local lapNow = session.localLap - (session.paceLap and 1 or 0)
+  if lapNow <= 1 then
     -- Lap 1: the attempt never counts. Re-arm from the first joker gate so a
     -- legal run on a later lap still works.
     session.jokerArmed = 1
@@ -1944,14 +1955,17 @@ local function checkJokerGates(prev, cur)
   end
 
   if session.jokerArmed >= #track.jokerRoute then
+    -- REPORTED AS THE RACING LAP, for the same reason the leaderboard counts
+    -- them: the results file prints "joker: lap 4", and a driver whose board
+    -- said lap 3 at that moment has no way to reconcile the two.
     session.jokerTaken   = true
-    session.jokerLapUsed = session.localLap
+    session.jokerLapUsed = lapNow
     session.jokerArmed   = 1
     if inMultiplayer() then
-      TriggerServerEvent('RM_JokerLap', jsonEncode({ lap = session.localLap }))
+      TriggerServerEvent('RM_JokerLap', jsonEncode({ lap = lapNow }))
     end
-    pushNotice('joker', 'JOKER LAP COMPLETE (lap ' .. session.localLap .. ')')
-    log('I', 'raceManager', 'Joker route completed on lap ' .. session.localLap)
+    pushNotice('joker', 'JOKER LAP COMPLETE (lap ' .. lapNow .. ')')
+    log('I', 'raceManager', 'Joker route completed on lap ' .. lapNow)
   else
     session.jokerArmed = session.jokerArmed + 1
   end
@@ -2554,6 +2568,17 @@ end
 function M.setGarageMode(mode)
   if inMultiplayer() then
     TriggerServerEvent('RM_SetGarageMode', jsonEncode({ mode = tostring(mode or '') }))
+  end
+end
+
+-- Which class a Garage List entry runs in. An empty string clears it, which is
+-- how a league drops back to one class without deleting the entry.
+function M.setGarageClass(index, class)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetGarageClass', jsonEncode({
+      index = math.floor(tonumber(index) or 0),
+      class = tostring(class or ''),
+    }))
   end
 end
 

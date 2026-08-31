@@ -6,6 +6,71 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.13.0 - Two classes on one grid
+
+### Added
+
+- **Multi-class racing.** There was no class concept anywhere: no field on a
+  driver record, no per-class positions, no per-class results section. A league
+  running two car types either scored them together or ran two separate events,
+  with the Garage List locked to a single car as the workaround.
+
+  **A class is a property of the car**, so it is tagged on the **Garage List
+  entry** rather than assigned to a driver. Type `GT3` into the box on a garage
+  row and every driver in that car is GT3, for every race, with no per-driver
+  bookkeeping -- and a driver who switches car switches class by doing so, with
+  nobody having to remember. The alternative, assigning a class to each driver at
+  each event, is a list somebody has to maintain and eventually gets wrong.
+
+  It gives a **Class column** on the leaderboard carrying the class and the place
+  within it, **per-class positions** counted inside the class, and a **section
+  per class** in the results file with its own finishing order and its own class
+  winner. The overall table is untouched and still names the real race winner: a
+  class is a way of reading the race, not a change to it.
+
+  Leave every box blank and nothing changes at all -- no class, no column, no
+  section. Class positions cost one table and no second sort: the classification
+  is already in order, and a class is a subset of it.
+
+  Classes work with **enforcement off**, because "what class is this car" and "is
+  this car legal" are different questions. Tagging an entry re-classes everyone
+  in that car on the next broadcast rather than the next time each driver happens
+  to touch their setup. A class survives a disconnect, mirrored into the driver
+  roster the way a heat is.
+
+- **`tests/class_test.lua`** (28 checks), including the two that keep the feature
+  out of a season that never asked for it: a garage with no class on any entry
+  produces no class and no class position, and the overall order is asserted
+  unchanged while the leading car of the slower class reads P1 in class. The
+  suite clears the garage on the way in and out, because `garage.json` is real
+  persisted state that outlives a test run -- without that the first checks pass
+  or fail depending on whether anybody has run it before.
+
+### Fixed
+
+- **The pace lap broke the joker lap's "not on lap 1" rule.** The rule is
+  enforced against the driver's own lap counter, and that counter counts
+  CROSSINGS: behind the pace car the first crossing ends the formation lap, so
+  the rule closed the joker on the lap run under yellow -- where nobody was going
+  to take it anyway -- and left it wide open on the first racing lap, which is
+  the one lap it exists to close.
+
+  The joker now measures the racing lap, exactly as the leaderboard does. The lap
+  it REPORTS is the racing lap too, so the results file no longer prints "joker:
+  lap 4" beside a board that said lap 3 at the moment it happened; the server's
+  fallback for a payload without a lap in it was moved onto the same footing.
+
+- **`tests/joker_test.lua`** (10 checks) covers both, and is written so that
+  reintroducing the bug fails it: the paced case asserts that racing lap 1 is
+  refused even though the raw crossing counter reads 2 there.
+
+- **The results header was four characters out of line with its own columns.**
+  `Finish` was written through a bare `%s` in the header row and `%-10s` in the
+  data rows, so every optional column after it -- Joker, Resets, and now Class --
+  sat left of its own values. Padded only when something follows it, so a plain
+  race still exports byte-for-byte the table it always did rather than gaining
+  trailing spaces.
+
 ## 0.12.0 - Lapped traffic gets signalled, not just displayed
 
 ### Added
