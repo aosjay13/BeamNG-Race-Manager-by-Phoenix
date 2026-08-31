@@ -1183,6 +1183,53 @@ Some details worth knowing:
   under them**. A race with four yellows in it used to read exactly like a clean
   one, which makes a lap chart impossible to explain afterwards.
 
+### Importing BeamMP scenarii races and derbies
+
+`tools/import_scenarii.py` converts the races and derbies from a BeamMP
+**scenarii** folder into Race Manager layouts and arenas.
+
+```
+python tools/import_scenarii.py ~/Downloads/scenarii --list   # say what it finds
+python tools/import_scenarii.py ~/Downloads/scenarii          # write import/
+```
+
+It writes `import/layouts.json` and `import/derbyArenas.json` (the formats the
+server loads), `import/by-map/<map>.json` (the same content split one file per
+track, which is the readable half: "which tracks do we have races for" becomes
+`ls`), and `import/INDEX.md` listing every race with its gate count and any
+caveat. **Nothing is installed** &mdash; `layouts.json` is every track an admin
+has ever built, so the merge is left to a human. `--merge path/to/layouts.json`
+folds an existing file in, imports second.
+
+**What converts exactly.** A scenarii race is a list of *steps*, and each step is
+a list of waypoints that are alternatives to each other. That is precisely a
+Race Manager checkpoint plus [branch gates](#branch-gates-two-ways-through-a-checkpoint)
+on the same slot: any one of them clears the step. Start positions, names and
+`loopable` (which becomes a sprint stage when false) all carry over unchanged.
+
+**What is approximated**, and both are noted per race in the index:
+
+- **A radius becomes a width.** A scenarii waypoint is a sphere; a Race Manager
+  checkpoint is an upright rectangle with a direction. Width is the same span
+  across (`radius * 2`), but a sphere has no facing, so a car that used to clip
+  the old gate diagonally can miss the new one. Widen it in the editor if a gate
+  turns out to be missable.
+- **Headings come from the route, not the stored rotation.** The rotation on a
+  scenarii waypoint is wherever the author's car happened to point when they
+  dropped it, which at a hairpin can be most of a right angle off the direction
+  the field crosses it. The vector from the previous step to the next one is the
+  honest answer and is what gets used. Start positions are the exception and do
+  use the stored rotation, because there "which way does the car face" is the
+  whole content of the slot.
+
+Circular derby arenas become 16-sided polygons, which is what the mod polices
+against; they stay in polygon mode so the rectangle editor's sliders cannot
+silently square off a round arena.
+
+Imported tracks are **not** approved for practice. Practice lets a non-admin load
+a track on their own, and an import nobody has driven yet is not something to
+hand the whole server unreviewed.
+
 ### Multi-class racing
 
 Two car types on one grid, scored as two races. There was no class concept
