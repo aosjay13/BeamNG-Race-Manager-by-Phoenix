@@ -867,10 +867,29 @@
                ng-disabled="!canSetRules()"
                title="Laps a heat runs. 0 runs the heats over the race distance.">
       </span>
+      <!-- WHAT THE DRAW IS SEEDED ON, which is a different question from the
+           grid order above: this decides which HEAT a driver is in, not where
+           they start in it. Qualifying is the right answer whenever qualifying
+           was run -- the draw exists to spread the quick drivers evenly and has
+           to know who they are -- and the other two are for a night with no
+           qualifying behind it. -->
+      <span class="rm-setting-sub" ng-if="heatCount > 1"
+            title="What the serpentine draw is seeded on. It decides which heat a driver is in, not where they start in it.">
+        <label>Seed</label>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': heatDraw === 'quali'}"
+                ng-click="setHeatDraw('quali')" ng-disabled="!canSetRules()"
+                title="Qualifying times, fastest first.">Quali</button>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': heatDraw === 'random'}"
+                ng-click="setHeatDraw('random')" ng-disabled="!canSetRules()"
+                title="A shuffle, for a night with no qualifying behind it.">Random</button>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': heatDraw === 'points'}"
+                ng-click="setHeatDraw('points')" ng-disabled="!canSetRules()"
+                title="Championship standings, leader first. Refused if nobody has scored yet.">Points</button>
+      </span>
       <button class="rm-btn rm-btn-mini" ng-click="drawHeats()"
               ng-if="heatCount > 1"
               ng-disabled="!canSetRules()"
-              title="Split the field into heats by qualifying time, serpentine, so every heat gets a comparable spread.">{{ heatsDrawn ? 'Redraw' : 'Draw heats' }}</button>
+              title="Split the field into heats, serpentine off the seed above, so every heat gets a comparable spread.">{{ heatsDrawn ? 'Redraw' : 'Draw heats' }}</button>
       <span class="rm-setting-val">{{ heatLabel() }}</span>
     </span>
     <!-- WHICH SESSION IS NEXT, and it decides who ends up on the track. The one
@@ -910,6 +929,20 @@
               title="Type a slot number in the Start column. Everyone else falls in behind by quali time.">Custom</button>
       <!-- Only offered once there is a program behind it: with no heats run,
            nobody has a heat position and the mode reads as doing nothing. -->
+      <!-- THE SEASON AS A GRID. Offered whether or not a cup is running: a
+           league that has one wants it every week, and with none behind it the
+           server sorts everybody as unscored, which is join order and visibly
+           does nothing rather than silently doing something else. -->
+      <button class="rm-btn rm-btn-mini"
+              ng-class="{'rm-btn-toggle-on': gridMode === 'points'}"
+              ng-click="setGridMode('points')"
+              ng-disabled="!canSetRules()"
+              title="Championship order: the points leader takes pole. Drivers with no cup entry line up at the back.">Points</button>
+      <button class="rm-btn rm-btn-mini"
+              ng-class="{'rm-btn-toggle-on': gridMode === 'pointsrev'}"
+              ng-click="setGridMode('pointsrev')"
+              ng-disabled="!canSetRules()"
+              title="Championship order reversed: the points leader starts last of the drivers who have scored. Drivers with no cup entry still line up at the back.">Points rev</button>
       <button class="rm-btn rm-btn-mini" ng-if="heatCount"
               ng-class="{'rm-btn-toggle-on': gridMode === 'heats'}"
               ng-click="setGridMode('heats')"

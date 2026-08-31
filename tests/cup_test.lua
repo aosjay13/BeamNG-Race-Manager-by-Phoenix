@@ -277,6 +277,74 @@ check(totalFor('Falcon') == 23, 'P4 scores 23')
 check(cupEntry('Ryder').rounds[1].racePos == 1, 'the round records the finishing position')
 
 -- ---------------------------------------------------------------------------
+-- 2b. THE SEASON AS A GRID ORDER.
+-- ---------------------------------------------------------------------------
+-- Standings right now: Ryder 30, Phoenix 27, Nomad 25, Falcon 23. That is a
+-- strict order with no ties, which is what makes the two modes below assertable
+-- rather than "probably about right".
+--
+-- The check that matters is the REVERSE one, and specifically where a driver
+-- with no cup entry goes in it. Reversing them onto pole would make "never race
+-- a round" the quickest route to the front row -- the same trap the quali
+-- reverse grid documents, and the same answer: unscored drivers stay at the
+-- back in BOTH directions.
+do
+  local function gridOrder()
+    local out = {}
+    for _, d in ipairs(lastState.drivers) do
+      if d.gridPos then out[d.gridPos] = d.id end
+    end
+    local names = {}
+    for i = 1, #out do names[#names + 1] = tostring(out[i]) end
+    return table.concat(names, ',')
+  end
+
+  -- NOTHING HERE ENDS A SESSION, and that is deliberate: ending one banks a cup
+  -- round, which would shift every round number the rest of this file asserts
+  -- on. Generate Grid can be pressed again from the grid, which is all these
+  -- checks need.
+  local roundsBefore = readCup().round
+  RM_onSetGridMode(ADMIN, '{"mode":"points"}')
+  check(lastState.gridMode == 'points', 'the championship grid order is accepted')
+  RM_onGenerateGrid(ADMIN)
+  -- Ryder (1) on pole, then Phoenix (0), Nomad (2), Falcon (3).
+  check(gridOrder() == '1,0,2,3',
+    'the points leader takes pole (got ' .. gridOrder() .. ')')
+
+  RM_onSetGridMode(ADMIN, '{"mode":"pointsrev"}')
+  check(lastState.gridMode == 'pointsrev', 'and so is its reverse')
+  RM_onGenerateGrid(ADMIN)
+  check(gridOrder() == '3,2,0,1',
+    'reversed, the leader starts last of the drivers who have scored (got '
+      .. gridOrder() .. ')')
+
+  -- A DRIVER WITH NO CUP ENTRY. Never given an alias, so never bound to a
+  -- roster entry, so no championship entry exists for them -- which is a
+  -- different thing from having raced and scored nothing.
+  -- NOT pid 9: that is ADMIN in this file, and joining over it would drop the
+  -- authentication every call below depends on.
+  connected[12] = 'Newcomer'
+  RM_onPlayerJoin(12)
+  RM_onGenerateGrid(ADMIN)
+  local order = gridOrder()
+  check(order:sub(-2) == '12',
+    'an unscored driver lines up LAST on a reversed championship grid, not on '
+      .. 'pole: otherwise scoring nothing all season is the fastest way to the '
+      .. 'front row (got ' .. order .. ')')
+
+  RM_onSetGridMode(ADMIN, '{"mode":"points"}')
+  RM_onGenerateGrid(ADMIN)
+  order = gridOrder()
+  check(order:sub(-2) == '12', '...and last on an unreversed one too')
+
+  connected[12] = nil
+  RM_onPlayerDisconnect(12)
+  RM_onSetGridMode(ADMIN, '{"mode":"quali"}')
+  check(readCup().round == roundsBefore,
+    'and none of it banked a cup round: a grid is not a result')
+end
+
+-- ---------------------------------------------------------------------------
 -- 3. A DNF scores nothing.
 --
 -- The classification sorts non-finishers to the bottom, so without an explicit

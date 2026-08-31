@@ -104,6 +104,7 @@ angular.module('beamng.apps')
       $scope.luckyDog = false;
       $scope.cautionLucky = null;
       $scope.heatLaps = 0;
+      $scope.heatDraw = 'quali';
       // Module 6: the heat program.
       $scope.heatCount = 0;
       $scope.heatTransfer = 0;
@@ -1337,7 +1338,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.14.0';
+      var APP_BUILD = '0.15.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -2100,6 +2101,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
             $scope.settingsUi.heatLaps = data.heatLaps || 0;
           }
           $scope.heatLaps = data.heatLaps || 0;
+          $scope.heatDraw = data.heatDraw || 'quali';
           // Does the loaded track have other lanes at all? Decides whether the
           // leaderboard shows a Line column - on an ordinary circuit it is a
           // column that would say the same thing on every row.
@@ -3521,6 +3523,17 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       };
       $scope.drawHeats = function () {
         bngApi.engineLua('raceManager.drawHeats()');
+      };
+      // What the NEXT draw is seeded on. Changing it does not redraw: the draw
+      // is its own button, and a seed change with no draw behind it has changed
+      // nothing about tonight.
+      $scope.setHeatDraw = function (mode) {
+        bngApi.engineLua("raceManager.setHeatDraw('" + mode + "')");
+      };
+      $scope.heatDrawNote = function () {
+        if ($scope.heatDraw === 'random') { return 'a shuffle'; }
+        if ($scope.heatDraw === 'points') { return 'championship order, leader first'; }
+        return 'fastest qualifier first';
       };
       $scope.setHeatCurrent = function (heat) {
         bngApi.engineLua('raceManager.setHeatCurrent(' + (parseInt(heat, 10) || 0) + ')');

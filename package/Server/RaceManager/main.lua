@@ -288,11 +288,24 @@ local race = {
   --                 the setting's own way of being absent -- and heats are
   --                 short where a feature is long, so a night that shares one
   --                 lap box means retyping it between every session.
+  --   heatDraw      what the draw is SEEDED on. The serpentine below never
+  --                 changes; this decides the order it walks.
+  --
+  --                   'quali'   qualifying best lap, fastest first. The default
+  --                             and the right answer whenever qualifying was
+  --                             run: the draw exists to spread the quick
+  --                             drivers evenly, and it needs to know who they
+  --                             are.
+  --                   'random'  a shuffle, for a night with no qualifying
+  --                             behind it.
+  --                   'points'  championship standings, leader first, for a
+  --                             league whose season decides the seeding.
   heatCount    = 0,
   heatTransfer = 0,
   heatCurrent  = 0,
   heatsDrawn   = false,
   heatLaps     = CFG.heatLaps,
+  heatDraw     = 'quali',
   -- The race.time the green flag fell at, and the reason it is kept rather than
   -- zeroing the clock there. race.time is the session clock -- ghost end times
   -- are expressed on it and it is re-anchored on every client from the
@@ -1124,7 +1137,12 @@ race.derbyUnderWay = function () return false end
 --                         results file byte-for-byte what it always was.
 local rosterRemember, rosterUnbind, rosterEntryFor
 local rosterBindTo, rosterList, rosterForget
-local cupOnSessionComplete, cupOnDerbyComplete, cupResultsLines
+--   cupSeasonPoints(rec)  this driver's championship total, or nil if they have
+--                         no entry in the cup. Read by the heat draw, which can
+--                         seed itself off the standings -- and declared here for
+--                         the same reason the three above it are: the cup lives
+--                         at the bottom of this file and the draw does not.
+local cupOnSessionComplete, cupOnDerbyComplete, cupResultsLines, cupSeasonPoints
 -- Boot-time cache warm for the two, called from onInit. They exist because both
 -- modules are wrapped in a `do ... end` block: Lua allows 200 locals per
 -- function and this chunk was already close to it, so everything those modules
@@ -1631,7 +1649,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.14.0'
+local RM_BUILD = '0.15.0'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -1829,6 +1847,7 @@ local function broadcastState(targetPid)
     heatCurrent  = race.heatCurrent,
     heatsDrawn   = race.heatsDrawn,
     heatLaps     = race.heatLaps,
+    heatDraw     = race.heatDraw,
     -- Fastest lap of the session: whose row the leaderboard paints gold, and
     -- how quick it was. One driver id on a payload that already goes out.
     bestLapPid   = race.bestLapPid,
@@ -3133,6 +3152,36 @@ local function orderForGrid(ordered)
   if race.gridMode == 'random' then
     return shuffle(ordered)
   end
+  -- CHAMPIONSHIP ORDER, and its reverse. The same two rules as the quali grid
+  -- below, applied to the season instead of the session: the leader takes pole
+  -- in `points`, and starts last of the drivers who have scored in `pointsrev`.
+  --
+  -- A DRIVER WITH NO CUP ENTRY GOES TO THE BACK IN BOTH, exactly as a driver
+  -- with no qualifying time does, and for the same reason spelled out below:
+  -- reversing them onto pole would make "score nothing all season" the quickest
+  -- route to the front row. nil here is "has not raced a round", which is a
+  -- different thing from having raced and scored zero -- and the driver on zero
+  -- still sorts ahead of the one who was never there.
+  if race.gridMode == 'points' or race.gridMode == 'pointsrev' then
+    local rev = race.gridMode == 'pointsrev'
+    local pts = {}
+    for _, rec in ipairs(ordered) do
+      pts[rec.id] = cupSeasonPoints and cupSeasonPoints(rec) or nil
+    end
+    table.sort(ordered, function (a, b)
+      local pa, pb = pts[a.id], pts[b.id]
+      if pa and pb then
+        if pa ~= pb then
+          if rev then return pa < pb end
+          return pa > pb
+        end
+      elseif pa ~= pb then
+        return pa ~= nil
+      end
+      return a.id < b.id
+    end)
+    return ordered
+  end
   -- Reverse grids invert ONE of the two rules below, and which one is the whole
   -- design of the mode.
   --
@@ -3417,7 +3466,8 @@ function RM_onSetGridMode(pid, rawData)
   if sessionUnderWay() then return end
   local mode = decodeString(rawData, 'mode')
   if mode ~= 'quali' and mode ~= 'reverse' and mode ~= 'random'
-     and mode ~= 'custom' and mode ~= 'heats' then
+     and mode ~= 'custom' and mode ~= 'heats'
+     and mode ~= 'points' and mode ~= 'pointsrev' then
     return
   end
   -- HEATS ORDER IS ONLY AN ANSWER WHEN HEATS HAVE BEEN RUN. Accepting it with no
@@ -4485,15 +4535,66 @@ function RM_onDrawHeats(pid)
     MP.SendChatMessage(pid, '[RaceManager] Nobody to draw: every connected driver is sitting out.')
     return
   end
-  table.sort(field, function (a, b)
-    local ta, tb = a.qualiBest, b.qualiBest
-    if ta and tb then
-      if ta ~= tb then return ta < tb end
-    elseif ta ~= tb then
-      return ta ~= nil
+  -- WHAT THE DRAW IS SEEDED ON. The serpentine below is the same either way;
+  -- all that changes is the order it walks, which is the order of merit the
+  -- night is being spread by.
+  local mode = race.heatDraw or 'quali'
+  local seeded = 0          -- how many drivers the seed actually knows about
+  if mode == 'random' then
+    shuffle(field)
+    seeded = #field
+  elseif mode == 'points' then
+    -- CHAMPIONSHIP ORDER, leader first. Read without creating anything:
+    -- cupSeasonPoints returns nil for a driver with no entry rather than
+    -- opening one, because drawing heats is not the moment to enrol somebody in
+    -- a season.
+    local pts = {}
+    for _, rec in ipairs(field) do
+      local p = cupSeasonPoints and cupSeasonPoints(rec) or nil
+      pts[rec.id] = p
+      if p then seeded = seeded + 1 end
     end
-    return a.id < b.id
-  end)
+    if seeded == 0 then
+      -- REFUSED RATHER THAN QUIETLY DRAWN ANOTHER WAY. A points draw with no
+      -- points behind it would fall through to join order, which looks like a
+      -- deliberate seeding and is the order people happened to connect in.
+      MP.SendChatMessage(pid, '[RaceManager] Nobody in the field has any '
+        .. 'championship points, so there is no order to seed from. Run a cup '
+        .. 'round first, or draw on qualifying times or at random.')
+      return
+    end
+    table.sort(field, function (a, b)
+      local pa, pb = pts[a.id], pts[b.id]
+      if pa and pb then
+        if pa ~= pb then return pa > pb end
+      elseif pa ~= pb then
+        return pa ~= nil
+      end
+      return a.id < b.id
+    end)
+  else
+    for _, rec in ipairs(field) do if rec.qualiBest then seeded = seeded + 1 end end
+    table.sort(field, function (a, b)
+      local ta, tb = a.qualiBest, b.qualiBest
+      if ta and tb then
+        if ta ~= tb then return ta < tb end
+      elseif ta ~= tb then
+        return ta ~= nil
+      end
+      return a.id < b.id
+    end)
+    -- SAID OUT LOUD when the seed is empty, rather than drawn silently. With no
+    -- qualifying times at all this is a serpentine over JOIN ORDER -- the order
+    -- people happened to connect in, which is not a draw and does not look like
+    -- one from the outside. The behaviour is left alone (a league that has
+    -- always drawn this way keeps what it had); the admin is simply told, and
+    -- the other two modes are there to take instead.
+    if seeded == 0 then
+      MP.SendChatMessage(pid, '[RaceManager] Nobody set a qualifying time, so '
+        .. 'this draw is in join order. Draw at random or on championship '
+        .. 'points if you want a real seeding.')
+    end
+  end
   local n = race.heatCount
   for i, rec in ipairs(field) do
     -- The serpentine, as arithmetic rather than a direction flag: every pass of
@@ -4516,12 +4617,33 @@ function RM_onDrawHeats(pid)
     for _, rec in ipairs(field) do if rec.heat == h then c = c + 1 end end
     sizes[#sizes + 1] = 'H' .. h .. ':' .. c
   end
+  local SEED_WORDS = {
+    quali  = 'seeded on qualifying times',
+    random = 'drawn at random',
+    points = 'seeded on championship points',
+  }
   MP.SendChatMessage(-1, string.format(
-    '[RaceManager] HEATS DRAWN: %d drivers into %d heats (%s). Top %d from each '
-    .. 'transfer to the feature.', #field, n, table.concat(sizes, ' '), race.heatTransfer))
+    '[RaceManager] HEATS DRAWN: %d drivers into %d heats (%s), %s. Top %d from '
+    .. 'each transfer to the feature.', #field, n, table.concat(sizes, ' '),
+    SEED_WORDS[mode] or SEED_WORDS.quali, race.heatTransfer))
   print(string.format('[RaceManager] Heats drawn by %s: %d drivers, %d heats (%s)',
     MP.GetPlayerName(pid) or pid, #field, n, table.concat(sizes, ' ')))
   broadcastState()
+end
+
+-- WHAT THE HEAT DRAW IS SEEDED ON. Idle-locked like the rest of the heat
+-- program: the shape of the night must not move while one of its races is being
+-- run. Changing it does NOT redraw -- the draw is its own button, and an admin
+-- who changes the seed and does not press it has changed nothing.
+function RM_onSetHeatDraw(pid, rawData)
+  local data = adminPayload(pid, rawData, true)
+  if not data then return end
+  local mode = tostring(data.mode or '')
+  if mode ~= 'quali' and mode ~= 'random' and mode ~= 'points' then return end
+  race.heatDraw = mode
+  broadcastState()
+  print(string.format('[RaceManager] Heat draw seeded on %s (by %s)',
+    mode, MP.GetPlayerName(pid) or pid))
 end
 
 -- Which heat is being set up next -- or 0 for the feature. The one control that
@@ -4893,6 +5015,7 @@ function RM_onResetLeaderboard(pid)
   race.heatCurrent  = 0
   race.heatsDrawn   = false
   race.heatLaps     = 0
+  race.heatDraw     = 'quali'
   if race.gridMode == 'heats' then race.gridMode = 'quali' end
   race.finalLap     = false
   race.finalLapLeft = 0
@@ -8190,6 +8313,25 @@ local function cupEntryFor(rec)
   return e
 end
 
+-- THIS DRIVER'S CHAMPIONSHIP TOTAL, or nil if they have no entry.
+--
+-- READ-ONLY, and that is the whole reason it is not cupEntryFor. That function
+-- CREATES an entry for a driver who has none, which is right when a round is
+-- being banked and wrong here: drawing heats would quietly enrol every
+-- connected driver in the season, and a standings table would fill up with
+-- people who have never scored.
+--
+-- nil rather than 0 for "not in the cup", because the draw sorts those two
+-- differently: a driver on zero points has raced and scored nothing, and one
+-- with no entry has not raced at all.
+cupSeasonPoints = function (rec)
+  local rosterEntry = rosterEntryFor and rosterEntryFor(rec) or nil
+  if not rosterEntry then return nil end
+  local e = cupFindEntry(rosterEntry.id)
+  if not e then return nil end
+  return cupEntryTotals(e).total
+end
+
 local function cupPointsFor(tableRef, pos)
   if not pos or pos < 1 then return 0 end
   return tonumber(tableRef[pos]) or 0
@@ -9256,6 +9398,7 @@ function onInit()
   MP.RegisterEvent('RM_SetGarageEnforce', 'RM_onSetGarageEnforce')
   MP.RegisterEvent('RM_SetGarageMode',    'RM_onSetGarageMode')
   MP.RegisterEvent('RM_SetGarageClass',   'RM_onSetGarageClass')  -- multi-class
+  MP.RegisterEvent('RM_SetHeatDraw',      'RM_onSetHeatDraw')     -- heat seeding
   MP.RegisterEvent('RM_VehicleConfig',    'RM_onVehicleConfig')
   MP.RegisterEvent('onVehicleSpawn',      'RM_onVehicleSpawn')
   MP.RegisterEvent('onVehicleEdited',     'RM_onVehicleEdited')

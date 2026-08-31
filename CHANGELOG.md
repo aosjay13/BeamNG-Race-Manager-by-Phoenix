@@ -6,6 +6,46 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.15.0 - The season can seed the night
+
+### Added
+
+- **The heat draw has a Seed.** It decides what the serpentine walks, which is
+  which HEAT a driver lands in -- a different question from where they start in
+  it, and that is still Grid order at Generate Grid.
+
+  | Seed | Order |
+  |---|---|
+  | Quali (default) | Qualifying best lap, fastest first. Unchanged behaviour. |
+  | Random | A shuffle, for a night with no qualifying behind it. |
+  | Points | Championship standings, leader first. |
+
+  Before this the draw always sorted on qualifying times and fell back, with no
+  times to sort on, to **join order** -- the order people happened to connect in,
+  which is not a draw and does not look like one from the outside.
+
+  **Two refusals rather than silent fallbacks.** A Points draw with nobody scored
+  is refused outright, naming the alternatives, instead of quietly becoming join
+  order. A Quali draw with no times still draws in join order -- the behaviour is
+  left alone so a league that has always drawn that way keeps what it had -- but
+  now says so in chat.
+
+- **Points and Points rev as grid orders.** The championship as a starting grid:
+  the leader takes pole, or starts last of the drivers who have scored.
+
+  **An unscored driver lines up at the BACK in both directions**, which is the
+  half worth stating. Reversing them onto pole would make "never race a round"
+  the quickest route to the front row -- the same trap the quali reverse grid
+  documents, and the same answer. A driver on zero points has raced and scored
+  nothing; one with no cup entry has not raced at all, and the first still starts
+  ahead of the second.
+
+  `cupSeasonPoints` reads the standings without creating anything, deliberately:
+  the cup's own `cupEntryFor` opens an entry for a driver who has none, which is
+  right when banking a round and wrong when building a grid -- it would enrol
+  every connected driver in the season and fill the standings with people who
+  have never scored.
+
 ## 0.14.0 - A folder per kind, a file per map
 
 ### Changed

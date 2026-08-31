@@ -1395,14 +1395,34 @@ of the evening, which is a thing to forget once and run the feature over eight
 laps. Set **Heat laps** and the feature keeps the **Laps** box in Race settings;
 leave it at 0 and both run the same distance, exactly as before.
 
-**The draw is a serpentine off qualifying time**, which is how heat racing has
-always drawn them: 1st to heat 1, 2nd to heat 2, ... Nth to heat N, and then
-*back along the row* &mdash; (N+1)th to heat N, (N+2)th to heat N-1. A straight
-round-robin would put the four fastest drivers on four different poles and the
-four slowest all at the back of their own heats, which makes the heats
-incomparable and a transfer worth more out of one than another. The serpentine
-gives every heat a comparable spread. With no qualifying behind it the draw falls
-back to join order, which is at least repeatable.
+**The draw is a serpentine**, which is how heat racing has always drawn them:
+1st to heat 1, 2nd to heat 2, ... Nth to heat N, and then *back along the row*
+&mdash; (N+1)th to heat N, (N+2)th to heat N-1. A straight round-robin would put
+the four fastest drivers on four different poles and the four slowest all at the
+back of their own heats, which makes the heats incomparable and a transfer worth
+more out of one than another. The serpentine gives every heat a comparable
+spread.
+
+**What the serpentine walks is the Seed**, set beside the Draw heats button.
+This decides which *heat* a driver is in, not where they start in it &mdash;
+starting positions come from **Grid order** when you press Generate Grid, and
+the two are separate questions.
+
+| Seed | Order |
+|---|---|
+| **Quali** (default) | Qualifying best lap, fastest first. The right answer whenever qualifying was run: the draw exists to spread the quick drivers evenly and has to know who they are. Drivers with no time sort last. |
+| **Random** | A shuffle, for a night with no qualifying behind it. |
+| **Points** | Championship standings, leader first, for a league whose season decides the seeding. |
+
+Two refusals rather than silent fallbacks, because a draw that looks deliberate
+and is not is worse than one that says so:
+
+- **A Points draw with nobody scored is refused outright.** It would otherwise
+  fall through to join order &mdash; the order people happened to connect in.
+- **A Quali draw with no times says so in chat** and draws in join order, which
+  is what it has always done. The behaviour is unchanged so a league that has
+  always drawn this way keeps what it had; the admin is simply told, and the
+  other two seeds are there to take instead.
 
 **A heat is an ordinary race run by a subset of the field.** Everything else
 works exactly as it always did &mdash; the grid, the hold, the countdown or pace

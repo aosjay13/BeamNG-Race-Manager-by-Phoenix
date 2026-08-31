@@ -129,7 +129,7 @@ Optional: **Ghost quali** (rivals stop being obstacles), **Quali laps**, and
 **Quali mins** (which triggers a proper final lap rather than stopping dead).
 
 **6. Grid and race.** Set **Laps**, pick a **Grid order** (Quali, Reverse,
-Random or Custom), then **Generate Grid**. Every driver is placed on their slot
+Random, Points, Points rev or Custom), then **Generate Grid**. Every driver is placed on their slot
 and **held** there, so nobody can jump the start. **Start Countdown** gives
 everyone a synchronised 3‑2‑1‑**GO!** and releases the whole field on the same
 broadcast. The table re-sorts leader-first in real time as places change.

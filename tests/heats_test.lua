@@ -325,6 +325,76 @@ check(#gridded() == 12,
 RM_onEndRace(0)
 
 -- ---------------------------------------------------------------------------
+-- WHAT THE DRAW IS SEEDED ON
+-- ---------------------------------------------------------------------------
+-- The serpentine never changes; the seed decides the order it walks. Two things
+-- are easy to get wrong here and both are checked: the seed must not change WHO
+-- IS IN THE FIELD (only how they are spread), and a seed with no data behind it
+-- must not quietly become join order dressed up as a draw.
+RM_onResetLeaderboard(0)
+RM_onSetSpectating(0, '{"spectating":true}')
+RM_onSetHeats(0, '{"count":3,"transfer":2}')
+check(lastState.heatDraw == 'quali', 'qualifying times are the default seed')
+
+RM_onSetHeatDraw(5, '{"mode":"random"}')
+check(lastState.heatDraw == 'quali', 'changing the seed requires authentication')
+
+RM_onSetHeatDraw(0, '{"mode":"nonsense"}')
+check(lastState.heatDraw == 'quali', 'and an unknown seed is refused, not stored')
+
+-- RANDOM. The draw still has to place every driver in exactly one heat: a
+-- shuffle that dropped or duplicated somebody would be invisible in the sizes
+-- line and fatal on the night.
+RM_onSetHeatDraw(0, '{"mode":"random"}')
+check(lastState.heatDraw == 'random', 'the seed is set to random')
+chatClear()
+RM_onDrawHeats(0)
+check(lastState.heatsDrawn == true, 'a random draw works with no qualifying at all')
+check(chatHas('drawn at random'), 'and the announcement says what it was seeded on')
+local drawn, heats = 0, {}
+for _, d in ipairs(lastState.drivers) do
+  if not d.spectating then
+    drawn = drawn + 1
+    check(d.heat and d.heat >= 1 and d.heat <= 3, 'every driver is in a real heat')
+    heats[d.heat] = (heats[d.heat] or 0) + 1
+  end
+end
+check(drawn == 12, 'the whole field is drawn (got ' .. drawn .. ')')
+check(heats[1] == 4 and heats[2] == 4 and heats[3] == 4,
+  'and split evenly by the serpentine, whatever the seed was')
+
+-- POINTS, with nothing behind them. Refused outright rather than falling
+-- through to join order, which would look like a deliberate seeding and is the
+-- order people happened to connect in.
+RM_onSetHeatDraw(0, '{"mode":"points"}')
+chatClear()
+RM_onDrawHeats(0)
+check(chatHas('no order to seed from'),
+  'a points draw with no points behind it is refused, and says why')
+check(chatHas('qualifying times or at random'), 'and names the alternatives')
+
+-- ...and the previous draw is untouched by the refusal.
+local stillDrawn = 0
+for _, d in ipairs(lastState.drivers) do
+  if not d.spectating and d.heat then stillDrawn = stillDrawn + 1 end
+end
+check(stillDrawn == 12, 'a refused draw leaves the last one standing')
+
+-- Back to qualifying, and the no-times case says so rather than pretending.
+RM_onSetHeatDraw(0, '{"mode":"quali"}')
+chatClear()
+RM_onDrawHeats(0)
+check(chatHas('join order'),
+  'a quali draw with no times admits it is drawing in join order')
+check(chatHas('seeded on qualifying times'), 'while still announcing the seed it used')
+
+-- The seed goes with the night, like the rest of the program.
+RM_onSetHeatDraw(0, '{"mode":"random"}')
+RM_onResetLeaderboard(0)
+check(lastState.heatDraw == 'quali', 'Reset Session puts the seed back to qualifying')
+RM_onSetSpectating(0, '{"spectating":true}')
+
+-- ---------------------------------------------------------------------------
 -- A HEAT RUNS ITS OWN DISTANCE
 -- ---------------------------------------------------------------------------
 -- Heats are short and features are long, which is the ordinary shape of a heat

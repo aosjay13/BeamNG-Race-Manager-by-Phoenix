@@ -225,7 +225,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.14.0'
+local RM_BUILD = '0.15.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -8633,7 +8633,9 @@ function M.setGridMode(mode)
   -- 'quali' on the way out and the panel lit Quali back up -- a dead button that
   -- looked like it had picked the wrong one.
   if mode ~= 'random' and mode ~= 'custom' and mode ~= 'reverse'
-     and mode ~= 'heats' then mode = 'quali' end
+     and mode ~= 'heats' and mode ~= 'points' and mode ~= 'pointsrev' then
+    mode = 'quali'
+  end
   if inMultiplayer() then
     TriggerServerEvent('RM_SetGridMode', jsonEncode({ mode = mode }))
   end
@@ -8710,6 +8712,14 @@ end
 
 function M.drawHeats()
   if inMultiplayer() then TriggerServerEvent('RM_DrawHeats', '') end
+end
+
+-- What the next draw is seeded on: 'quali', 'random' or 'points'. Setting it
+-- does not redraw; the draw is its own button.
+function M.setHeatDraw(mode)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetHeatDraw', jsonEncode({ mode = tostring(mode or '') }))
+  end
 end
 
 function M.setHeatCurrent(heat)
