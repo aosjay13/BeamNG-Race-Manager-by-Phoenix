@@ -6,64 +6,129 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
-## 0.13.0 - The field races back to the line
+## 0.11.0 - Race control: the pace lap, the caution, and heats into a feature
 
-### Changed
-
-- **The caution is raced back to, and the leader dictates the lap.** Calling it
-  used to freeze the board on the spot. It now goes out in two halves:
-
-  1. **Caution** puts the yellow out and tells the field to **race back to the
-     line**. Nothing is frozen -- the board goes on re-sorting, because on the
-     road the race is still on.
-  2. **The leader's crossing makes it official** and names the lap it was called
-     on. Every other driver locks their own place as they complete that same
-     lap, first back to the line first.
-
-  A snapshot at the button scores the field at a moment nobody on track can see,
-  and hands a place to whoever happened to be mid-overtake when a marshal
-  reached for the mouse. Racing back to the line is the rule drivers already
-  understand and the one they can act on.
-
-- **Lapped cars go to the bottom of the board**, in the order the lapped cars
-  came back, however close behind they are sitting. Laps down at the caution lap
-  is now the first key the frozen order compares, so a car a lap down cannot
-  appear to be running third because it is physically third in the queue. That
-  is how a caution board reads everywhere.
-
-- **The restart is called, not taken.** Pressing **Restart** says *the current
-  lap is the restart*; the green falls as the **leader reaches the line**, so the
-  field is packed up and looking at it rather than being waved off round the back
-  of the circuit at whatever moment the marshal decided. Two paths drop it, and
-  the second exists because the first can be starved: the distance watch greens
-  the field ten meters short of the line, and the leader's crossing is the
-  backstop for a track whose length the server never learned or telemetry that
-  never landed near the line.
-
-- **In a race, the caution IS the yellow and the restart IS the green.** The
-  advisory Yellow and Green flag buttons used to sit beside them, so a marshal
-  calling a yellow saw two yellow buttons and only one of them neutralised
-  anything, and going green saw two greens with only one of them unfreezing the
-  board. They now belong to **qualifying**, which has no running order to freeze.
-  The pace lap keeps its own manual green -- that override is the reason a
-  formation lap needs no timeout.
-
-- **Red is one button that lifts what it threw**, in both sessions, and lifting
-  it returns the field to whatever it was already under: a neutralised race goes
-  back to its caution and a formation lap goes back to forming up. Clearing a red
-  used to green a paced field outright, which waved the race off in the same
-  keystroke that moved the wreck.
-
-- **The leaderboard counts racing laps, not crossings.** A five lap race behind
-  the pace car read **`6/5`** on the last lap: the numerator counted crossings
-  while the denominator counted laps of the race, and those are only the same
-  number when no lap is given away. The formation lap now reads `PACE` while it
-  runs and comes out of both numbers after it, exactly as qualifying's out lap
-  always has. The board, the broadcast strip and the results table all go through
-  the same two helpers, so a commentator never reads out a lap the table does not
-  show.
+Three ways to run a race night that this mod could not run before, and they are
+meant to be run together: heats into a feature, started behind the pace car,
+neutralised by a caution the field races back to the line for.
 
 ### Added
+
+- **The pace lap.** Switch **Pace lap** on in Race settings and **Start
+  Countdown** becomes **Start Race** on the grid. The field is released
+  immediately under a **yellow flag** -- no countdown -- and told, in chat and on
+  screen, to maintain position at **40 mph / 64 km/h**. It runs a formation lap,
+  and the **green flag falls automatically** as the leader comes back within
+  **10 m** of the start/finish line: waved on the approach, which is what a
+  marshal does, rather than once the leader is already past.
+
+  **The two start buttons are alternatives and only one is ever on screen.**
+  Counting a field down to GO and then telling it to hold position at 40 mph is
+  two instructions for the same moment, and a driver obeys whichever of them they
+  read. The server refuses whichever button the session is not set up for.
+
+  **Mechanically the formation lap is an out lap**, which is a rule this plugin
+  already had -- a lap that is driven and not scored, ending at the line for each
+  driver in turn. That is what settles the awkward part on its own: the green
+  falls once, for everybody, while the field is strung out around the circuit,
+  and each driver's own crossing is still what starts their lap 1.
+
+  It is **not one of your laps**, and this is the one place it differs from the
+  out lap a head-on grid owes. That one is a *racing* lap that merely sets no
+  time, so it comes out of the distance; a formation lap is not a racing lap at
+  all, so it goes on top. A 5-lap race behind the pace car is a formation lap
+  plus 5 racing laps -- six crossings.
+
+  **The board counts racing laps, not crossings.** The Lap cell reads `PACE`
+  while the formation lap runs, and the leader on the last lap of a five-lap race
+  reads `5/5`. Counting the crossing would have read `6/5`: the numerator
+  counting crossings against a denominator counting laps of the race, which are
+  only the same number when no lap is given away. Qualifying's out lap has always
+  been counted out the same way. The leaderboard, the broadcast strip and the
+  results table go through the same two helpers, so a commentator never reads out
+  a lap the table does not show. The results file still names the distance in its
+  header, because `Race distance: 5 laps` above a Laps column is worth settling
+  on the page.
+
+  **A timed race's clock starts at the green, not at the release.** Ninety
+  seconds of forming up still leaves the full ten minutes of racing, and the
+  header's countdown does not move until the green falls. The *session* clock
+  keeps running underneath it and is never wound back -- reset-ghost end times
+  are expressed on it, and a client that re-anchored to a clock that had gone
+  backwards would show a car ghosted with a countdown that never reached zero.
+
+  **Two things stop it hanging.** A red flag holds the green, so a leader who
+  coasts the last few meters to the line under one does not start the race by
+  arriving; and the **Green flag** button ends the pace lap at any time, which is
+  why there is no timeout to guess at -- a field that has crashed or stopped
+  never brings its leader back to the line, and the marshal who can see the track
+  is better at judging that than a clock. If every driver has already crossed the
+  line the green falls on its own: a yellow nothing can lift is worse than an
+  early green.
+
+  **Races on circuits only.** Qualifying has no field to form up, so a grid
+  formed by *Start Quali* keeps its countdown with the rule still armed for the
+  race after it. A point-to-point sprint stage has no lap to form up on: the
+  switch is grayed out, the server refuses it, and loading a sprint stage
+  switches it back off and says so -- a switch reading ENABLED above a button
+  that has silently changed back is worse than either state.
+
+- **The caution, and the field races back to the line.** A full-course yellow
+  called mid-race, in two halves:
+
+  1. **Caution** puts the yellow out and tells the field to **race back to the
+     line**. Nothing is frozen: the board goes on re-sorting, because on the road
+     the race is still on.
+  2. **The leader's crossing makes it official** and names the lap it was called
+     on. Every other driver locks their own place as they complete that same lap.
+     First back to the line is first.
+
+  Freezing the board at the button instead would score the field at a moment
+  nobody on track can see, and hand a place to whoever happened to be
+  mid-overtake when a marshal reached for the mouse. Racing back to the line is
+  the rule drivers already understand and the one they can act on.
+
+  **The freeze is the feature**, and it is the only half of a caution this plugin
+  can enforce. The server has no physics: it cannot slow a car, close a gap or
+  line a field up behind the leader. What it *can* do is stop positions changing
+  -- which is exactly what a real caution does to the timing sheet, and is a
+  scoring rule rather than a movement one. Without it, a driver who obeys the
+  instruction to close up is shown **gaining places for obeying it**.
+
+  **Lapped cars go to the bottom**, in the order the lapped cars came back,
+  however close behind they are sitting. Laps down at the caution lap is the
+  first key the frozen order compares, so a car a lap down cannot appear to be
+  running third because it is physically third in the queue. That is how a
+  caution board reads everywhere.
+
+  It is deliberately **not** a ruling on any individual overtake -- nobody is
+  penalised and no incident is judged. The flag note in `main.lua` said an
+  automatic ruling would need "a second running order that survives the caution
+  and reconciles on green"; this is that order, and it does only that.
+
+  **The restart is called, not taken.** Pressing **Restart** says *the current
+  lap is the restart*, and the green falls as the **leader reaches the line** --
+  so the field is packed up and looking at it rather than being waved off round
+  the back of the circuit at whatever moment the marshal decided. Two paths drop
+  it, and the second exists because the first can be starved: a distance watch
+  ten meters short of the line, and the leader's crossing as the backstop for a
+  track whose length the server never learned or telemetry that never landed near
+  the line.
+
+  **Cancel restart** waves the call off. Only the call goes -- the race stays
+  neutralised, the board stays frozen and the caution laps go on counting.
+  Pressing Caution again would count a second yellow and re-freeze an order that
+  never thawed, which is why the wave-off is its own control.
+
+  Three header badges rather than one, because **RACE BACK TO THE LINE**,
+  **POSITIONS FROZEN** and **RESTART THIS LAP** are three different instructions
+  to a driver, each with its own on-screen notice on the edge it happens.
+
+  A caution never outlives its session: one frozen position left standing is the
+  first thing the comparator reads, so it would silently order the next race,
+  which is invisible until somebody wins a race they ran fourth in. The results
+  file records **how many cautions there were and how many laps ran under them**
+  -- a race with four yellows in it used to read exactly like a clean one.
 
 - **The free pass ("lucky dog").** Off by default; switch **Free pass** on in
   Race settings. When the last car has locked, the **highest-placed car a lap
@@ -76,74 +141,8 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
   The credited lap is sent to that driver's client as well as counted on the
   server. That is not decoration: the server drops any progress report whose lap
-  number disagrees with its own, so a lap credited on one side only would have
-  quietly killed the driver's live position and gap for the rest of the race.
-
-- **Cancel restart.** A marshal who calls a restart and then sees the track is
-  not clear needs the call back. Only the call goes -- the race stays
-  neutralised, the board stays frozen and the caution laps go on counting.
-  Pressing Caution again would have counted a second yellow and re-frozen an
-  order that never thawed, which is why this is its own control.
-
-- **Heats get their own lap count.** **Heat laps** in the Grid tab, 0 meaning
-  "the same as the race". Heats are short and features are long -- eight-lap
-  heats into a thirty-lap feature is the ordinary shape of a heat night -- and
-  one shared lap box meant retyping the number between every session of the
-  evening, which is a thing to forget once and run the feature over eight laps.
-
-  Enforced on both sides. The client waves its own white and checkered flags off
-  its copy of the lap target, so a heat whose length only the server knew would
-  have been flagged at the feature's distance on every screen.
-
-- Three header badges instead of one. **CAUTION - RACE BACK TO THE LINE**,
-  **CAUTION - POSITIONS FROZEN** and **RESTART THIS LAP - GREEN AT THE LINE** are
-  three different instructions to a driver, and the single POSITIONS FROZEN badge
-  was telling two thirds of a caution the wrong thing. Each has its own on-screen
-  notice on the edge it happens.
-
-### Config
-
-- `luckyDog` (false) -- the free pass rule as a server default.
-- `heatLaps` (0) -- the heat distance as a server default.
-
-## 0.12.0 - Race control: the caution, and heats into a feature
-
-### Added
-
-- **The caution, and the restart.** A full-course yellow called mid-race. The
-  field is told to slow down, hold position and close up, and **the running
-  order freezes** where it stood when the yellow came out. Restart when the
-  track is clear and live positions resume from there.
-
-  **The freeze is the feature**, and it is the only half of a caution this
-  plugin can enforce. The server has no physics: it cannot slow a car, close a
-  gap or line a field up behind the leader. What it *can* do is stop positions
-  changing from the moment the yellow comes out -- which is exactly what a real
-  caution does to the timing sheet, and is a scoring rule rather than a movement
-  one.
-
-  That matters more than it sounds. Without it a driver who obeys the
-  instruction to close up is shown **gaining places for obeying it**, and the
-  restart order is whatever the pack happened to look like on the last
-  broadcast. With it, closing up is free.
-
-  It is deliberately **not** a ruling on any individual overtake -- nobody is
-  penalised and no incident is judged. The flag note in `main.lua` said an
-  automatic ruling would need "a second running order that survives the caution
-  and reconciles on green"; this is that order, and it does only that. The
-  advisory **Yellow flag** button is untouched and still means a local hazard.
-
-  The Green flag button *is* the restart, routed through the same function, so
-  the two leave identical state -- a green that only changed the flag would go
-  racing with the board still frozen and nothing left to unfreeze it. A red does
-  not lift a caution. A caution never outlives its session: one frozen position
-  left standing is the first thing the comparator reads, so it would silently
-  order the next race, which is invisible until somebody wins a race they ran
-  fourth in.
-
-  The results file now records **how many cautions there were and how many laps
-  ran under them**. A race with four yellows in it read exactly like a clean one
-  once it was over.
+  number disagrees with its own, so a lap credited on one side only would quietly
+  kill that driver's live position and gap for the rest of the race.
 
 - **Heats and transfers.** Run the night as several short heats and then a
   feature, with the heat results setting the feature grid.
@@ -161,6 +160,15 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   through it and needed no idea heats exist. A server with no heat program
   configured is untouched by every line of it.
 
+  **Heats get a lap count of their own.** **Heat laps** in the Grid tab, 0
+  meaning "the same as the race". Heats are short and features are long --
+  eight-lap heats into a thirty-lap feature is the ordinary shape of a heat night
+  -- and one shared lap box would mean retyping the number between every session
+  of the evening, which is a thing to forget once and run the feature over eight
+  laps. Enforced on both sides: the client waves its own white and checkered
+  flags off its copy of the lap target, so a heat whose length only the server
+  knew would be flagged at the feature's distance on every screen.
+
   The feature grid is the transfer order: **heat winners on the front row, then
   all the seconds**, interleaved by heat, which is what makes a heat win worth
   having and stops one strong heat filling the whole front. Drivers who did not
@@ -176,31 +184,53 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   qualifying times, so a qualifying session that let one heat out would be
   drawing heats from times set by the drivers it had already drawn.
 
-- **`tests/caution_test.lua`** (47 checks) and **`tests/heats_test.lua`**
-  (95 checks). The caution suite tests the freeze by making the field *overtake*
-  under the yellow and asserting the board does not move -- a test that only
-  checked the flag colour would pass against a caution that froze nothing. The
-  heats suite runs three full heats and a feature, which is what caught the
-  position bug below; a single-heat test passes either way.
+- **Three new suites**, and each one tests the thing that would otherwise pass by
+  accident.
 
-### Fixed
+  **`tests/pace_test.lua`** (84 checks): the arming latch, the ticks before any
+  client has reported a position (a leader search that skipped those drivers
+  finds nobody, reads it as "the field has all crossed" and answers with an
+  instant green), the distance arithmetic, the timed-race clock, the red-flag
+  hold, the manual green, qualifying declining to pace, and Reset Session
+  dropping the running pace lap while keeping the league setting that armed it.
 
-- **Heat positions were taken from the whole field's classification.** The
-  result walk indexed into `raceClassification()`, which is every record the
-  server holds -- so by heat 2 the drivers who had already raced heat 1 sorted
-  above it, every position was wrong, and because that index was then compared
-  against "top 2", **nobody transferred at all**. Counted within the heat now.
+  **`tests/caution_test.lua`** (104 checks): that calling the caution freezes
+  *nothing*, that a lapped car back to the line first is still classified last,
+  that a red holds both restart paths, and that no pending call or locked
+  position outlives its session. The freeze itself is tested by making the field
+  *overtake* under the yellow and asserting the board does not move -- a test
+  that only checked the flag colour would pass against a caution that froze
+  nothing at all.
 
-  Heat 1 alone passed either way, which is the whole reason the test runs three.
+  **`tests/heats_test.lua`** (106 checks): three full heats and a feature, which
+  is what caught the position bug below. A single-heat test passes either way.
 
-- **`M.setGridMode` would have silently rewritten the new Heats order.** The
-  client sanitises the mode on the way out against a list that has to name every
-  mode the server accepts, and a mode missing from it is normalised to `quali`
-  before the server ever sees it. That is exactly how Reverse shipped as a dead
-  button once already; `ui_bindings_test` now derives the list from the template
-  and checks the client names every one of them.
+### Changed
 
-## 0.11.0 - Races can start behind a pace car
+- **One instrument per instruction.** The advisory Yellow and Green flag buttons
+  used to show throughout a race. Beside the Caution and Restart buttons that
+  meant a marshal calling a yellow saw two yellow buttons, with only one of them
+  neutralising anything, and going green saw two greens with only one of them
+  unfreezing the board. In a race the caution *is* the yellow and the restart
+  *is* the green, so the advisory pair now belongs to **qualifying**, which has
+  no running order to freeze -- there a yellow really is only a hazard being
+  pointed at. The pace lap keeps its own manual green: that override is the
+  reason a formation lap needs no timeout.
+
+- **Red is one button that lifts what it threw**, in both sessions, and lifting
+  it returns the field to whatever it was already under: a neutralised race goes
+  back to its caution, a formation lap goes back to forming up. Clearing a red
+  used to be a plain green, which on a paced field ended the formation lap
+  outright -- waving the race off in the same keystroke that moved the wreck.
+
+- **The release path is shared.** There are two start procedures now -- the
+  lights and the pace car -- and everything they have in common (one release,
+  one clock reset, one wipe of every per-driver counter) is one function rather
+  than two copies. A second release path that forgot a line of it would be a
+  race carrying last week's lap counts. The garage audit went the same way, for
+  the same reason: an audit that ran on only one of the two buttons would be an
+  audit that silently stopped happening for every race started behind the pace
+  car.
 
 ### Fixed
 
@@ -236,88 +266,37 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   when it began. The old test dropped the coupling first, so there was no rig
   left to lift the ghost off and nothing to catch.
 
-### Added
+- **Heat positions were taken from the whole field's classification.** The
+  result walk indexed into `raceClassification()`, which is every record the
+  server holds -- so by heat 2 the drivers who had already raced heat 1 sorted
+  above it, every position was wrong, and because that index was then compared
+  against "top 2", **nobody transferred at all**. Counted within the heat now.
 
-- **The pace lap.** Switch **Pace lap** on in Race settings and **Start
-  Countdown** becomes **Start Race** on the grid. The field is released
-  immediately under a **yellow flag** -- no countdown -- and told, in chat and on
-  screen, to maintain position at **40 mph / 64 km/h**. It runs a formation lap,
-  and the **green flag falls automatically** as the leader comes back within
-  **10 m** of the start/finish line: waved on the approach, which is what a
-  marshal does, rather than once the leader is already past.
+  Heat 1 alone passed either way, which is the whole reason the test runs three.
 
-  **The two start buttons are alternatives and only one is ever on screen.**
-  Counting a field down to GO and then telling it to hold position at 40 mph is
-  two instructions for the same moment, and a driver obeys whichever of them they
-  read. The server refuses whichever button the session is not set up for.
+- **`M.setGridMode` would have silently rewritten the new Heats order.** The
+  client sanitises the mode on the way out against a list that has to name every
+  mode the server accepts, and a mode missing from it is normalised to `quali`
+  before the server ever sees it. That is exactly how Reverse shipped as a dead
+  button once already; `ui_bindings_test` now derives the list from the template
+  and checks the client names every one of them.
 
-  **Mechanically the formation lap is an out lap**, which is a rule this plugin
-  already had -- a lap that is driven and not scored, ending at the line for each
-  driver in turn. That is what settles the awkward part on its own: the green
-  falls once, for everybody, while the field is strung out around the circuit,
-  and each driver's own crossing is still what starts their lap 1.
+### Config
 
-  It is **not one of your laps**, and this is the one place it differs from the
-  out lap a head-on grid owes. That one is a *racing* lap that merely sets no
-  time, so it comes out of the distance; a formation lap is not a racing lap at
-  all, so it goes on top. A 5-lap race behind the pace car is a formation lap
-  plus 5 racing laps -- six crossings. The results file says so in its header,
-  because otherwise `Race distance: 5 laps` sits above a `6` in the Laps column
-  of every finisher with nothing on the page to settle it.
+Four new settings in `config.json`, beside the lap count:
 
-  **A timed race's clock starts at the green, not at the release.** Ninety
-  seconds of forming up still leaves the full ten minutes of racing, and the
-  header's countdown does not move until the green falls. The *session* clock
-  keeps running underneath it and is never wound back -- reset-ghost end times
-  are expressed on it, and a client that re-anchored to a clock that had gone
-  backwards would show a car ghosted with a countdown that never reached zero.
-
-  **Two things stop it hanging.** A red flag holds the green, so a leader who
-  coasts the last few meters to the line under one does not start the race by
-  arriving; and the **Green flag** button ends the pace lap at any time, which is
-  why there is no timeout to guess at -- a field that has crashed or stopped
-  never brings its leader back to the line, and the marshal who can see the track
-  is better at judging that than a clock. If every driver has already crossed the
-  line the green falls on its own: a yellow nothing can lift is worse than an
-  early green.
-
-  **Races on circuits only.** Qualifying has no field to form up, so a grid
-  formed by *Start Quali* keeps its countdown with the rule still armed for the
-  race after it. A point-to-point sprint stage has no lap to form up on: the
-  switch is grayed out, the server refuses it, and loading a sprint stage
-  switches it back off and says so -- a switch reading ENABLED above a button
-  that has silently changed back is worse than either state.
-
-  Two server settings in `config.json` beside the lap count: `paceGreenAt`
-  (10 m) and `paceArmAt` (50 m). The second is not a tuning knob but a
-  correctness one -- **the field starts the pace lap standing on the line**, so
-  "the leader is within ten meters of the line" is true at the release as well as
-  at the end of the lap. The trigger arms only once the leader has genuinely got
-  away, and it is being away and coming back that means the lap has been run.
-  Without it the green falls on the tick the cars are let go, and it would look
-  like a working feature to anyone testing with a car already circulating. The
-  two are kept in order at load: a file with them crossed over gets the arming
-  distance pushed clear rather than the pair swapped, because swapping would
-  produce a working pace lap the admin never asked for.
-
-- **`tests/pace_test.lua`**, 82 checks over the whole of it: the arming latch,
-  the ticks before any client has reported a position (a leader search that
-  skipped those drivers finds nobody, reads it as "the field has all crossed"
-  and answers with an instant green), the distance arithmetic, the timed-race
-  clock, the red-flag hold, the manual green, qualifying declining to pace, and
-  Reset Session dropping the running pace lap while keeping the league setting
-  that armed it.
-
-### Changed
-
-- **The release path is shared.** There are two start procedures now -- the
-  lights and the pace car -- and everything they have in common (one release,
-  one clock reset, one wipe of every per-driver counter) is one function rather
-  than two copies. A second release path that forgot a line of it would be a
-  race carrying last week's lap counts. The garage audit went the same way, for
-  the same reason: an audit that ran on only one of the two buttons would be an
-  audit that silently stopped happening for every race started behind the pace
-  car.
+- `paceGreenAt` (10 m) -- where the green falls, and `paceArmAt` (50 m), how far
+  the leader must first get *away* from the line before that means anything. The
+  second is not a tuning knob but a correctness one: **the field starts the pace
+  lap standing on the line**, so "the leader is within ten meters of the line" is
+  true at the release as well as at the end of the lap. Without it the green
+  falls on the tick the cars are let go, and it would look like a working feature
+  to anyone testing with a car already circulating. The two are kept in order at
+  load: a file with them crossed over gets the arming distance pushed clear
+  rather than the pair swapped, because swapping would produce a working pace lap
+  the admin never asked for.
+- `luckyDog` (false) -- the free pass rule as a server default.
+- `heatLaps` (0) -- the heat distance as a server default.
 
 ## 0.10.0 - A car shoved on the grid no longer floods the UI
 
