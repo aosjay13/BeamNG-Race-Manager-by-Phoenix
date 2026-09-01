@@ -93,10 +93,17 @@ end }
 ColorF = function () return {} end
 ColorI = function () return {} end
 String = function (s) return s end
+-- Label text as it reaches the screen. The joker's state is a DRAWN thing --
+-- 'JOKER 1/2' when it is takeable, 'JOKER 1/2 (lap 1: closed)' when it is not --
+-- so capturing the strings is what lets this file check the GATE agrees with the
+-- rule, instead of only checking the rule.
+local texts = {}
 debugDrawer = {
-  drawCylinder = function () end, drawTextAdvanced = function () end,
+  drawCylinder = function () end,
+  drawTextAdvanced = function (_, _, text) texts[#texts + 1] = tostring(text) end,
   drawSphere = function () end, drawLine = function () end,
   drawQuadSolid = function () end,
+  drawTriSolid = function () end,
 }
 MPGameNetwork = {}
 MPConfig = { getPlayerServerID = function () return 1 end }
@@ -176,6 +183,29 @@ local function jokerSent()
   return nil
 end
 
+-- IS THE JOKER DRAWN SHUT RIGHT NOW?
+--
+-- Asked at the same moments as the enforcement checks below, because the bug
+-- this guards was the two disagreeing: the crossing test subtracted the pace lap
+-- and the two gate-drawing sites in render.lua did not, so with a pace lap the
+-- joker was drawn OPEN for the whole of racing lap 1 while every attempt on it
+-- was being thrown away. Inviting a driver through a gate that will invalidate
+-- their run is worse than either half being wrong alone.
+--
+-- The editor's labels are read because they are the only place the state is put
+-- into words. `state` is computed once and feeds both the label and the driver's
+-- glyph, so pinning the label pins both.
+local function jokerDrawnShut()
+  texts = {}
+  RM.onUpdate(1 / 60)
+  for i = 1, #texts do
+    if texts[i]:find('JOKER', 1, true) then
+      return texts[i]:find('closed', 1, true) ~= nil
+    end
+  end
+  return nil        -- no joker gate drawn at all: not an answer either way
+end
+
 -- ---------------------------------------------------------------------------
 -- NO PACE LAP: the joker is closed on the first lap, open on the second
 -- ---------------------------------------------------------------------------
@@ -219,13 +249,19 @@ serverState({ phase = 'waiting', maxResets = -1, totalLaps = 5,
   jokerEnabled = true, drivers = {} })
 frames(0.3)
 serverState({ phase = 'racing', maxResets = -1, totalLaps = 5,
-  jokerEnabled = true, paceLap = true, pacing = true, drivers = {} })
+  jokerEnabled = true, paceLap = true, pacing = true,
+  youAreAdmin = true, drivers = {} })
+-- The labelled gates are the EDITOR's view, so the probe needs both of these.
+-- Neither touches the joker rule: it is read off the lap counter alone.
+RM.setEditorOpen(true)
 frames(0.5)
 veh.x, veh.y = 0, -50; frames(0.2)
 clearLog()
 driveJoker()
 check(jokerSent() == nil,
   'the formation lap refuses the joker, as it always did')
+check(jokerDrawnShut() == true,
+  'and the gate SAYS so on the formation lap')
 
 -- The green falls and the field crosses the line: everyone is now on RACING
 -- lap 1, which is the driver's second crossing.
@@ -238,8 +274,17 @@ driveJoker()
 check(jokerSent() == nil,
   'RACING LAP 1 refuses it too, which is the lap the rule is actually about '
     .. '(the raw crossing counter reads 2 here and used to let it through)')
+-- THE CHECK THIS FILE WAS MISSING. The rule refused the run above; the gate has
+-- to be drawn shut at the same moment. Drawn off the raw counter it read 2 here
+-- and painted itself OPEN, with no cross on it and no "closed" in the label,
+-- through the entire lap on which taking it throws the run away.
+check(jokerDrawnShut() == true,
+  'and the gate is STILL drawn shut on racing lap 1, which is the whole bug')
 
 driveLap()                            -- racing lap 2
+check(jokerDrawnShut() == false,
+  'on racing lap 2 the gate opens, so the picture follows the rule in BOTH '
+    .. 'directions rather than simply always looking shut')
 clearLog()
 driveJoker()
 p = jokerSent()
@@ -255,6 +300,7 @@ check(p and p.lap == 2,
 clearLog()
 driveJoker()
 check(jokerSent() == nil, 'a second run of the joker route reports nothing')
+RM.setEditorOpen(false)
 
 if fails == 0 then
   print(string.format('joker_test: %d checks, 0 failures', checks))

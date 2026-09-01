@@ -745,6 +745,55 @@ Four new settings in `config.json`, beside the lap count:
   and it is left as it is. The triangles are counted separately in the budget now
   so they cannot swamp the gate numbers and hide something that is a leak.
 
+### Two dead controls, and neither of them was the control
+
+#### Fixed
+
+- **The joker lap is drawn shut on the pace lap AND on racing lap 1**, which is
+  the rule it has always been enforced by. Behind the pace car it was drawn
+  OPEN for the whole of racing lap 1.
+
+  The rule and the picture had drifted apart. The crossing test subtracts the
+  formation lap -- it is a crossing nobody is scored for, so `localLap` 2 is
+  racing lap 1 -- and the two gate-drawing sites in `render.lua` did not. So the
+  gate showed no cross and no "closed" in its label, on the one lap where taking
+  it throws the run away. A driver who read the gate and drove through it lost
+  their joker; the notice told them afterwards.
+
+  Both halves now read one function. `joker_test.lua` had thorough coverage of
+  the RULE and none at all of the PICTURE, which is how they were able to
+  disagree: it now checks the drawn label at the same three moments it checks
+  the enforcement.
+
+- **"+ Whitelist Current Vehicle" had nowhere to say what it had done.**
+  Reported as a dead button, and the button was fine: the car was being
+  captured, sent, and answered for the whole time.
+
+  `editorMsg` is the shared admin-panel message channel. Thirty-four places in
+  the client write to it -- every refusal, every confirmation, and the server's
+  own reply to a whitelist -- and it was rendered in exactly ONE panel, the
+  track editor. The Garage tab had no message element at all, so pressing the
+  button produced a complete round trip and not one changed pixel, whether it
+  succeeded, refused, or found the car already on the list.
+
+  The Derby tab had the same gap for its nineteen messages, so both are fixed.
+  `ui_bindings_test.lua` now checks that a panel able to RAISE a message is also
+  able to SHOW one.
+
+#### Note
+
+- **A `pcall` optimization from the previous entry was wrong and is reverted.**
+  Rewriting `pcall(function () return veh:getID() end)` as
+  `pcall(veh.getID, veh)` looks like the same call without the closure. It is
+  not. `veh.getID` is an INDEX on the vehicle, and as an argument it is
+  evaluated before `pcall` runs -- so a vehicle deleted out from under the
+  caller, whose `__index` raises, throws past the very `pcall` written to
+  contain it. That is the only case the wrapper exists for.
+
+  Every other test in the repo stubs a vehicle as a plain Lua table whose index
+  cannot fail, which is why nothing caught it. `tests/vehicle_access_test.lua`
+  pins it now against an object that behaves like the real one.
+
 ## 0.10.0 - A car shoved on the grid no longer floods the UI
 
 ### Fixed

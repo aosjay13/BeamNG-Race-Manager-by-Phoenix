@@ -1519,6 +1519,15 @@
       </button>
       <button class="rm-btn rm-btn-end" ng-click="clearGarage()" ng-disabled="!garage.length">Clear Garage</button>
     </div>
+    <!-- THE ANSWER TO THE BUTTON ABOVE, and it used to have nowhere to appear.
+         `editorMsg` is the shared admin-panel message channel: 34 places in the
+         Lua write to it, including every outcome of Whitelist Current Vehicle
+         (captured, already on the list, still loading, no server) and the
+         server's own reply. It was rendered in exactly ONE panel, the track
+         editor, so from this tab the button refused, succeeded or was ignored
+         in complete silence -- which reads as a dead button, and is the reason
+         one was reported. -->
+    <div class="rm-editor-msg" ng-if="editorMsg">{{ editorMsg }}</div>
     <div class="rm-garage-list" ng-if="garage.length">
       <div class="rm-garage-row" ng-repeat="g in garage track by $index">
         <span class="rm-garage-idx">{{ $index + 1 }}</span>
@@ -2115,6 +2124,10 @@
        rows go read-only rather than disappearing, and the admin can still read
        the arena off during a live derby. -->
   <div class="rm-derby rm-derby-editor" ng-if="isAdminTab('derby')">
+    <!-- Same channel, same silence: the derby writes nineteen of these -- every
+         refusal from placing a boundary marker, a start slot or a shape -- and
+         none of them had anywhere to render either. -->
+    <div class="rm-editor-msg" ng-if="editorMsg">{{ editorMsg }}</div>
     <div class="rm-derby-title">
       Arena
       <span class="rm-derby-markers">{{ derby.boundaryCount }} boundary marker{{ derby.boundaryCount === 1 ? '' : 's' }}</span>

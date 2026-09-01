@@ -1090,13 +1090,21 @@ local function isOwnVehicle(vehId)
   return ok and own == true
 end
 
--- pcall(veh.getID, veh) rather than pcall(function () ... end): the closure
--- form allocates one every call, and this is called per frame, twice per
--- ownVehicle(). Same protection, no garbage. A veh with no getID still fails
--- into the `not ok` branch exactly as the closure did.
+-- THE CLOSURE IS NOT WASTE HERE, AND pcall(veh.getID, veh) IS NOT THE SAME.
+--
+-- That rewrite looks like a free win -- same protection, one less allocation --
+-- and it is wrong on the one case this pcall exists for. `veh.getID` is an
+-- INDEX on the vehicle, and a BeamNG vehicle is userdata whose __index is a
+-- binding function. Written as an argument it is evaluated BEFORE pcall is
+-- called, so a dangling or deleted vehicle whose __index raises takes the
+-- caller down instead of failing into `not ok`. Inside the closure the index
+-- happens under the protection, which is the whole point.
+--
+-- Verified rather than reasoned about: an object whose __index errors returns
+-- nil from this and throws from the argument form.
 local function vehicleId(veh)
   if not veh then return nil end
-  local ok, id = pcall(veh.getID, veh)
+  local ok, id = pcall(function () return veh:getID() end)
   if ok then return id end
   return nil
 end
@@ -1322,6 +1330,32 @@ end
 -- Order matters. lastLapNum wins whenever it is set: once the leader has started
 -- the final lap, THAT is the distance, whatever the lap box says and whichever
 -- mode armed it.
+-- WHICH LAP OF THE RACE THIS DRIVER IS ON, as opposed to how many times they
+-- have crossed the line.
+--
+-- Behind the pace car those are different numbers, and the difference is the
+-- whole bug this exists to stop. The formation lap is a crossing nobody is
+-- scored for, so `localLap` 1 is the lap run under yellow and `localLap` 2 is
+-- racing lap 1.
+--
+-- IT LIVED INLINE IN checkJokerGates AND NOWHERE ELSE, which is how the joker
+-- came to be enforced on one rule and DRAWN on another: the crossing test
+-- subtracted the pace lap and the two gate-drawing sites did not, so with a
+-- pace lap enabled the joker showed OPEN through the whole of racing lap 1
+-- while any attempt on it was being invalidated. A driver taking the gate it
+-- was inviting them through lost the run.
+--
+-- One rule, one function, handed to the renderer through init like the rest.
+local function racingLap()
+  return (session.localLap or 0) - (session.paceLap and 1 or 0)
+end
+
+-- Is the joker still shut for this driver? True on the pace lap and on racing
+-- lap 1, which is the rule the crossing test enforces.
+local function jokerClosed()
+  return racingLap() <= 1
+end
+
 local function effectiveLapTarget()
   if track.pointToPoint then return 1 end
   if session.lastLapNum then return session.lastLapNum end
@@ -2036,11 +2070,13 @@ local function checkJokerGates(prev, cur)
   local wp = track.jokerRoute[session.jokerArmed]
   if not wp or not segmentCrossesGate(wp, prev, cur) then return end
 
-  -- The lap of the RACE this driver is on. Behind the pace car that is one less
-  -- than the number of times they have crossed the line, because the first of
-  -- those crossings ended a lap nobody was scored for.
-  local lapNow = session.localLap - (session.paceLap and 1 or 0)
-  if lapNow <= 1 then
+  -- The lap of the RACE this driver is on, and the same rule the gates are DRAWN
+  -- with. Behind the pace car it is one less than the number of times they have
+  -- crossed the line, because the first of those crossings ended a lap nobody
+  -- was scored for. Reported as well as tested: the results file prints
+  -- "joker: lap 4", and a driver whose board said lap 3 cannot reconcile the two.
+  local lapNow = racingLap()
+  if jokerClosed() then
     -- Lap 1: the attempt never counts. Re-arm from the first joker gate so a
     -- legal run on a later lap still works.
     session.jokerArmed = 1
@@ -4970,9 +5006,9 @@ local function forEachVehicle(skipId, fn)
     if ok and type(list) == 'table' then
       for _, veh in ipairs(list) do
         if veh then
-          -- Method form, not a closure: this is a per-frame walk over the whole
-          -- field, so a closure here is one allocation per car per frame.
-          local gotId, id = pcall(veh.getID, veh)
+          -- The closure stays, for vehicleId's reason: the index has to happen
+          -- inside the pcall or a car deleted mid-walk takes the walk with it.
+          local gotId, id = pcall(function () return veh:getID() end)
           if gotId and id ~= skipId then fn(veh, id) end
         end
       end
@@ -4984,7 +5020,7 @@ local function forEachVehicle(skipId, fn)
   for i = 0, count - 1 do
     local veh = be:getObject(i)
     if veh then
-      local ok, id = pcall(veh.getID, veh)
+      local ok, id = pcall(function () return veh:getID() end)
       if ok and id ~= skipId then fn(veh, id) end
     end
   end
@@ -5016,9 +5052,9 @@ function ghost.fade(vehId, veh, alpha)
   local was = ghost.alpha[vehId]
   if was and math.abs(was - alpha) < 0.01 then return end
   ghost.alpha[vehId] = alpha
-  -- Method form, no closure: the guard above means this runs only while an
-  -- alpha is actually moving, but while one is it runs per frame per car.
-  pcall(veh.setMeshAlpha, veh, alpha, '', false)
+  -- Closure, for vehicleId's reason: the method lookup has to be inside the
+  -- pcall, or a car deleted between the fade starting and this frame throws.
+  pcall(function () veh:setMeshAlpha(alpha, '', false) end)
 end
 
 -- Apply (or lift) the ghost on one car: the collision toggle, then the fade that
@@ -5906,7 +5942,7 @@ render.init({
   track = track, session = session, edit = edit, TUNE = TUNE,
   marker = marker, nudge = nudge, branch = branch, pit = pit,
   gateDims = gateDims, sampledVehicle = sampledVehicle,
-  sessionRunning = sessionRunning,
+  sessionRunning = sessionRunning, jokerClosed = jokerClosed,
 })
 
 -- The two this file still calls directly, under the names it already used.

@@ -2375,6 +2375,58 @@ do
     'it takes the same fill every other surface here does')
 end
 
+-- ---------------------------------------------------------------------------
+-- A PANEL THAT PRODUCES MESSAGES HAS TO BE ABLE TO SHOW THEM
+-- ---------------------------------------------------------------------------
+-- `editorMsg` is the shared admin-panel message channel. Thirty-odd places in
+-- the Lua write to it -- refusals, confirmations, and the server's reply to
+-- Whitelist Current Vehicle -- but it is one scope property with one renderer,
+-- and the renderer lived only in the track editor.
+--
+-- So the Garage tab and the Derby tab wrote to a channel with no outlet. Every
+-- outcome of "+ Whitelist Current Vehicle" -- captured, already on the list,
+-- vehicle still loading, no BeamMP server -- was computed, sent, answered, and
+-- then discarded without a pixel changing. Reported as a dead button, which is
+-- exactly what it looks like: the one failure mode with no symptom to follow.
+--
+-- The panels are mutually exclusive ng-ifs, so a renderer in one is invisible
+-- from the others; each panel that can raise a message needs its own.
+do
+  -- Every panel belonging to one tab, joined.
+  --
+  -- A tab is not always one panel: the derby has two (the session controls and
+  -- the arena editor) under the same condition, so they are on screen together
+  -- and a renderer in either one serves both. Slicing only to the next
+  -- isAdminTab would call the first of them broken for the other's sake.
+  local function panelBody(tab)
+    local q = string.char(39)          -- a single quote, unescaped
+    local head = 'ng%-if="isAdminTab%(' .. q .. tab .. q .. '%)"'
+    local out, from = nil, 1
+    while true do
+      local at = html:find(head, from)
+      if not at then break end
+      local nextAt = html:find('ng%-if="isAdminTab%(', at + 10)
+      out = (out or '') .. html:sub(at, nextAt and (nextAt - 1) or #html)
+      if not nextAt then break end
+      from = nextAt
+    end
+    -- COMMENTS STRIPPED FIRST. The markup that fixed this bug explains itself
+    -- in a comment that names `editorMsg`, so a plain substring search finds
+    -- the explanation and passes whether or not the binding is still there.
+    -- Caught exactly that way: deleting the div left this check green.
+    if out then out = out:gsub('<!%-%-.-%-%->', '') end
+    return out
+  end
+
+  for _, tab in ipairs({ 'garage', 'track', 'derby' }) do
+    local body = panelBody(tab)
+    expect(body ~= nil, 'the ' .. tab .. ' panel exists in the template')
+    expect(body ~= nil and body:find('editorMsg', 1, true) ~= nil,
+      'the ' .. tab .. ' panel has nowhere to show editorMsg, so every message '
+        .. 'its own controls raise is discarded silently')
+  end
+end
+
 if fails == 0 then
   print('ui_bindings_test: ' .. checks .. ' checks, 0 failures ('
     .. #models .. ' ng-model bindings)')

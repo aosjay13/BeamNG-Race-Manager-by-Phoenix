@@ -27,7 +27,7 @@
 --   track, session, edit   the models, by reference
 --   marker, nudge, branch, pit   subsystem tables, by reference
 --   TUNE                   tuning constants
---   gateDims, sampledVehicle, sessionRunning   plain functions
+--   gateDims, sampledVehicle, sessionRunning, jokerClosed   plain functions
 --
 -- Nothing here writes host state. This file reads and draws, which is what
 -- makes it the cheapest thing in the file to move and the right one to move
@@ -39,7 +39,7 @@ local R = {}
 -- them: a value captured at file load would be nil, because the host has not
 -- called init yet when this chunk runs.
 local track, session, edit, TUNE, marker, nudge, branch, pit
-local gateDims, sampledVehicle, sessionRunning
+local gateDims, sampledVehicle, sessionRunning, jokerClosed
 
 function R.init(h)
   track, session, edit = h.track, h.session, h.edit
@@ -48,6 +48,10 @@ function R.init(h)
   gateDims       = h.gateDims
   sampledVehicle = h.sampledVehicle
   sessionRunning = h.sessionRunning
+  -- The joker's lap-1 rule, owned by the host so the gate is DRAWN on the same
+  -- terms the crossing test enforces. Drawing it on `localLap` alone showed the
+  -- joker open through racing lap 1 of every race started behind the pace car.
+  jokerClosed    = h.jokerClosed
 end
 
 local PALETTE = nil
@@ -930,7 +934,7 @@ local function drawDriverGate(derbyLive)
     local wp = track.jokerRoute[j]
     if wp then
       local state = session.jokerTaken and 'used'
-        or ((sessionRunning() and session.localLap <= 1) and 'closed' or 'open')
+        or ((sessionRunning() and jokerClosed()) and 'closed' or 'open')
       -- The joker is the one gate whose STATE changes what a driver must do, so
       -- it is the one gate that earns a fill and a symbol. NO LABEL: the glyph
       -- carries the state on its own and carries it faster (see the note above),
@@ -1056,7 +1060,7 @@ local function drawGates(derbyLive)
   -- once the joker has been used (or while it is still forbidden on lap 1).
   local jn = #track.jokerRoute
   local state = session.jokerTaken and 'used'
-    or ((active and session.localLap <= 1) and 'closed' or 'open')
+    or ((active and jokerClosed()) and 'closed' or 'open')
   for i, wp in ipairs(track.jokerRoute) do
     local color
     if session.jokerTaken then
