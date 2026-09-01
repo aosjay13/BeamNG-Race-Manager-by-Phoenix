@@ -3123,7 +3123,7 @@
           <!-- THE CLASS COLUMN, present only when a class is actually being run.
                Same rule as the Heat column beside it: a single-class night has
                the board it has always had, with no empty column on it. -->
-          <th class="rm-col-class" ng-if="classesInUse()" title="Class, and this driver's position within it">Class</th>
+          <th class="rm-col-class" ng-if="hasClasses" title="Class, and this driver's position within it">Class</th>
           <th class="rm-col-heat" ng-if="heatCount" title="Heat, finishing position in it, and a tick for a transfer">Heat</th>
           <th class="rm-col-joker" ng-if="jokerEnabled" title="Joker route: the lap it was taken on">Joker</th>
           <th class="rm-col-reset" ng-if="resetsLimited()" title="Vehicle resets used / allowed, plus any attempts blocked after the allowance ran out">Rst</th>
@@ -3170,7 +3170,7 @@
                two cars at opposite ends of a head-on oval are ranked next to each
                other because they have cleared the same checkpoints, which is the
                whole claim the leaderboard is making. -->
-          <td class="rm-col-class" ng-if="classesInUse()">{{ classLabel(row) }}</td>
+          <td class="rm-col-class" ng-if="hasClasses">{{ classLabel(row) }}</td>
           <td class="rm-col-heat" ng-if="heatCount"
               ng-class="{'rm-heat-transfer': row.transferred === true}">{{ myHeatLabel(row) }}</td>
           <td class="rm-col-joker" ng-if="jokerEnabled"

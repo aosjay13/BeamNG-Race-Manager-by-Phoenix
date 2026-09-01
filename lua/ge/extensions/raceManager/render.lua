@@ -157,6 +157,12 @@ local function palette()
     -- Editor floor: the same near-transparent blue the authoring gate fill uses,
     -- for the same reason -- show the extent without hiding the ground.
     derbyFloor   = ColorF(0.35, 0.65, 1, 0.10),
+    -- Start-slot outlines. Built here with everything else rather than per slot
+    -- per frame: three fixed colors selected by a condition is still three
+    -- ColorF a frame when it is done inside the draw loop.
+    slotMine     = ColorF(0.2, 0.85, 0.35, 0.95),   -- the slot that is yours
+    slotPole     = ColorF(1, 0.85, 0.2, 0.85),      -- P1
+    slotOther    = ColorF(0.35, 0.65, 1, 0.75),     -- everyone else
   }
   return PALETTE
 end
@@ -269,7 +275,136 @@ end
 -- editor is visible and during the grid/countdown phases so drivers can see
 -- where they are being placed.
 
-local function drawStartPosition(sp, index, mine)
+-- Gate labels, built once per route rather than per gate per frame.
+--
+-- Every label was a fresh string every frame, and the joker ones were three
+-- concatenations each. The text does not depend on anything that changes between
+-- frames -- only on the gate's index and the length of its route -- except for
+-- the two joker suffixes, which have exactly three states, so all three are
+-- precomputed and selected by lookup.
+--
+-- SIX KINDS NOW, not two. The route and joker labels were cached and the four
+-- authoring ones beside them were not, so an admin with the editor open still
+-- paid a fresh string per checkpoint, branch gate, marker and pit stall on every
+-- frame -- which is the exact cost this was written to remove, on the path that
+-- has the most items on it.
+local labelCache = {
+  routeLen = -1, jokerLen = -1,
+  route = {}, joker = {}, alt = {}, branch = {}, marker = {}, pit = {}, slot = {},
+}
+
+local function routeLabel(i, n)
+  if labelCache.routeLen ~= n or labelCache.p2p ~= track.pointToPoint then
+    labelCache.routeLen = n
+    labelCache.p2p = track.pointToPoint
+    labelCache.route = {}
+    labelCache.alt = {}
+  end
+  local l = labelCache.route[i]
+  if not l then
+    if track.pointToPoint then
+      -- A sprint stage has a start and a finish, not a line crossed twice.
+      l = (i == n) and (i .. ' FINISH') or (i == 1 and '1 START' or ('CP ' .. i))
+    else
+      l = (i == n) and (i .. ' START/FINISH') or ('CP ' .. i)
+    end
+    labelCache.route[i] = l
+  end
+  return l
+end
+
+-- A checkpoint that has branch gates, labeled with how many. Cached beside the
+-- plain label and invalidated with it, plus the COUNT: adding a branch gate in
+-- the editor has to change the label it decorates, and nothing else here would
+-- notice.
+local function routeAltLabel(i, n, alts)
+  local base = routeLabel(i, n)      -- runs first: it clears `alt` when stale
+  if alts == 0 then return base end
+  local e = labelCache.alt[i]
+  if not e or e.n ~= alts then
+    e = { n = alts, s = base .. ' (+' .. alts .. ')' }
+    labelCache.alt[i] = e
+  end
+  return e.s
+end
+
+-- A branch gate names the CHECKPOINT it belongs to, so its label is a pure
+-- function of that slot and never goes stale.
+local function branchLabel(slot)
+  local l = labelCache.branch[slot]
+  if not l then
+    l = 'CP ' .. slot .. ' branch'
+    labelCache.branch[slot] = l
+  end
+  return l
+end
+
+-- A marker's label carries its symbol, which an admin can change on a placed
+-- marker, so the kind is stored with the string and checked.
+local function markerLabel(i, kind)
+  local e = labelCache.marker[i]
+  if not e or e.kind ~= kind then
+    e = { kind = kind, s = 'MARKER ' .. i .. ' ' .. (marker.LABEL[kind] or '') }
+    labelCache.marker[i] = e
+  end
+  return e.s
+end
+
+local function pitLabel(i)
+  local l = labelCache.pit[i]
+  if not l then
+    l = 'PIT ' .. i
+    labelCache.pit[i] = l
+  end
+  return l
+end
+
+-- Two per slot, because which one is YOURS is the only thing that varies and it
+-- varies by one suffix.
+local function slotLabel(i, mine)
+  local e = labelCache.slot[i]
+  if not e then
+    e = { plain = 'P' .. i, mine = 'P' .. i .. ' (YOU)' }
+    labelCache.slot[i] = e
+  end
+  return mine and e.mine or e.plain
+end
+
+-- `state`: 'open' | 'used' | 'closed' (lap 1).
+local function jokerLabel(i, n, state)
+  if labelCache.jokerLen ~= n then
+    labelCache.jokerLen = n
+    labelCache.joker = {}
+  end
+  local set = labelCache.joker[i]
+  if not set then
+    local base = (i == n) and 'JOKER EXIT' or ('JOKER ' .. i .. '/' .. n)
+    set = {
+      open   = base,
+      used   = base .. ' (used)',
+      closed = base .. ' (lap 1: closed)',
+    }
+    labelCache.joker[i] = set
+  end
+  return set[state]
+end
+
+-- Start-slot geometry cache, on gateCache's terms and for its reason.
+--
+-- A slot's outline, arrow and barbs are fixed by its placement, and the whole
+-- set was rebuilt for every slot on every frame: nine vec3 and a closure each,
+-- which on a twenty-four car grid is the largest allocator in the editor. The
+-- slot dimensions are TUNE constants rather than per-item, so unlike a gate
+-- there is nothing to re-derive: placement alone decides whether this is stale.
+local slotCache = setmetatable({}, { __mode = 'k' })
+
+local function slotGeometry(sp)
+  local g = slotCache[sp]
+  if g and g.x == sp.x and g.y == sp.y and g.z == sp.z
+      and g.hx == sp.hx and g.hy == sp.hy then
+    return g
+  end
+
   local fx, fy = sp.hx, sp.hy
   local rx, ry = sp.hy, -sp.hx
   local hl, hw = TUNE.START_SLOT_LEN * 0.5, TUNE.START_SLOT_WIDE * 0.5
@@ -278,9 +413,32 @@ local function drawStartPosition(sp, index, mine)
                 sp.y + fy * sf * hl + ry * sr * hw,
                 sp.z + 0.05)
   end
-  local color = mine and ColorF(0.2, 0.85, 0.35, 0.95)
-    or (index == 1 and ColorF(1, 0.85, 0.2, 0.85) or ColorF(0.35, 0.65, 1, 0.75))
-  local c = { corner(-1, -1), corner(-1, 1), corner(1, 1), corner(1, -1) }
+  local head = vec3(sp.x + fx * hl * 0.9, sp.y + fy * hl * 0.9, sp.z + 0.06)
+  -- Barbs swept back from the head, across the slot rather than along it, so the
+  -- arrow reads from above (which is where an admin building a grid is looking)
+  -- and from inside a car on the slot.
+  local barb = hl * 0.42
+  g = {
+    x = sp.x, y = sp.y, z = sp.z, hx = sp.hx, hy = sp.hy,
+    c = { corner(-1, -1), corner(-1, 1), corner(1, 1), corner(1, -1) },
+    tail = vec3(sp.x - fx * hl * 0.6, sp.y - fy * hl * 0.6, sp.z + 0.06),
+    head = head,
+    barbL = vec3(head.x - fx * barb + rx * barb * 0.8,
+                 head.y - fy * barb + ry * barb * 0.8, head.z),
+    barbR = vec3(head.x - fx * barb - rx * barb * 0.8,
+                 head.y - fy * barb - ry * barb * 0.8, head.z),
+    label = vec3(sp.x, sp.y, sp.z + 1.4),
+  }
+  slotCache[sp] = g
+  return g
+end
+
+local function drawStartPosition(sp, index, mine)
+  local g = slotGeometry(sp)
+  local p = palette()
+  local color = mine and p.slotMine
+    or (index == 1 and p.slotPole or p.slotOther)
+  local c = g.c
   for i = 1, 4 do
     debugDrawer:drawCylinder(c[i], c[i % 4 + 1], 0.08, color)
   end
@@ -291,24 +449,13 @@ local function drawStartPosition(sp, index, mine)
   -- head to tail, so an admin laying out a grid could not tell a slot facing
   -- down the track from one facing back up it until they drove onto it. Two
   -- barbs off the head fix it, the same shape paint.glyph draws for the joker's
-  -- "take it" arrow.
-  local tail = vec3(sp.x - fx * hl * 0.6, sp.y - fy * hl * 0.6, sp.z + 0.06)
-  local head = vec3(sp.x + fx * hl * 0.9, sp.y + fy * hl * 0.9, sp.z + 0.06)
-  debugDrawer:drawCylinder(tail, head, 0.06, color)
-  -- Barbs swept back from the head, across the slot rather than along it, so the
-  -- arrow reads from above (which is where an admin building a grid is looking)
-  -- and from inside a car on the slot.
-  local barb = hl * 0.42
-  for _, sr in ipairs({ -1, 1 }) do
-    debugDrawer:drawCylinder(head,
-      vec3(head.x - fx * barb + rx * sr * barb * 0.8,
-           head.y - fy * barb + ry * sr * barb * 0.8,
-           head.z), 0.06, color)
-  end
+  -- "take it" arrow. All four points come out of the cache above.
+  debugDrawer:drawCylinder(g.tail, g.head, 0.06, color)
+  debugDrawer:drawCylinder(g.head, g.barbL, 0.06, color)
+  debugDrawer:drawCylinder(g.head, g.barbR, 0.06, color)
 
-  debugDrawer:drawTextAdvanced(vec3(sp.x, sp.y, sp.z + 1.4),
-    String('P' .. index .. (mine and ' (YOU)' or '')),
-    ColorF(1, 1, 1, 1), true, false, ColorI(0, 0, 0, 160))
+  debugDrawer:drawTextAdvanced(g.label, String(slotLabel(index, mine)),
+    p.text, true, false, p.textBg)
 end
 
 local function drawStartPositions()
@@ -332,52 +479,6 @@ end
 -- drawing is unconditional, because a driver who cannot see the gates cannot
 -- race. The Hide/Show Gates toggle only applies outside a session, where it
 -- exists to keep the editor view clean.
--- Gate labels, built once per route rather than per gate per frame.
---
--- Every label was a fresh string every frame, and the joker ones were three
--- concatenations each. The text does not depend on anything that changes between
--- frames -- only on the gate's index and the length of its route -- except for
--- the two joker suffixes, which have exactly three states, so all three are
--- precomputed and selected by lookup.
-local labelCache = { routeLen = -1, jokerLen = -1, route = {}, joker = {} }
-
-local function routeLabel(i, n)
-  if labelCache.routeLen ~= n or labelCache.p2p ~= track.pointToPoint then
-    labelCache.routeLen = n
-    labelCache.p2p = track.pointToPoint
-    labelCache.route = {}
-  end
-  local l = labelCache.route[i]
-  if not l then
-    if track.pointToPoint then
-      -- A sprint stage has a start and a finish, not a line crossed twice.
-      l = (i == n) and (i .. ' FINISH') or (i == 1 and '1 START' or ('CP ' .. i))
-    else
-      l = (i == n) and (i .. ' START/FINISH') or ('CP ' .. i)
-    end
-    labelCache.route[i] = l
-  end
-  return l
-end
-
--- `state`: 'open' | 'used' | 'closed' (lap 1).
-local function jokerLabel(i, n, state)
-  if labelCache.jokerLen ~= n then
-    labelCache.jokerLen = n
-    labelCache.joker = {}
-  end
-  local set = labelCache.joker[i]
-  if not set then
-    local base = (i == n) and 'JOKER EXIT' or ('JOKER ' .. i .. '/' .. n)
-    set = {
-      open   = base,
-      used   = base .. ' (used)',
-      closed = base .. ' (lap 1: closed)',
-    }
-    labelCache.joker[i] = set
-  end
-  return set[state]
-end
 
 -- The stock BeamNG race markers (scenario/race_marker) are gone.
 --
@@ -420,33 +521,52 @@ local paint = {}
 -- distance, and "JOKER 1/2: closed" is a sentence at the moment a driver has
 -- least attention to give a sentence. Sized off the gate but capped, so a
 -- twenty-meter gate gets a symbol rather than scaffolding across the road.
-function paint.glyph(g, kind)
-  local p = palette()
+-- The glyph's points hang off the GATE's cache rather than one of their own:
+-- they are derived from the same corners, they go stale on exactly the same
+-- terms, and gateGeometry already rebuilds `g` from scratch when it does. Six
+-- points, which is the most any one glyph uses.
+local function glyphPoints(g)
+  local gp = g.glyph
+  if gp then return gp end
   local half = math.min(g.w, g.h) * 0.22
   if half > 2.2 then half = 2.2 end
   if half < 0.6 then half = 0.6 end
-  local c  = g.center
+  local c = g.center
   -- The gate's own axes, so the glyph lies IN the gate's plane at any angle.
   local rx, ry = g.hy, -g.hx
   local function at(sr, su)
     return vec3(c.x + rx * sr * half, c.y + ry * sr * half, c.z + su * half)
   end
+  gp = {
+    bl = at(-1, -1), br = at(1, -1), tl = at(-1, 1), tr = at(1, 1),
+    -- The up-arrow's stem and its two barbs.
+    down = at(0, -1), up = at(0, 1), armL = at(-0.55, 0.3), armR = at(0.55, 0.3),
+    -- The tick's elbow.
+    tickA = at(-0.9, 0.1), tickB = at(-0.25, -0.85),
+  }
+  g.glyph = gp
+  return gp
+end
+
+function paint.glyph(g, kind)
+  local p = palette()
+  local at = glyphPoints(g)
   local r = TUNE.POLE_RADIUS * 0.8
   if kind == 'open' then
     -- AN ARROW UP: take it. Faded hard on purpose, because unlike the cross and
     -- the tick this one is drawn on a gate the driver is about to aim through,
     -- and the whole point of the joker poles is that you can see the road
     -- between them.
-    debugDrawer:drawCylinder(at(0, -1), at(0, 1), r * 0.8, p.glyphOpen)
-    debugDrawer:drawCylinder(at(0, 1), at(-0.55, 0.3), r * 0.8, p.glyphOpen)
-    debugDrawer:drawCylinder(at(0, 1), at(0.55, 0.3), r * 0.8, p.glyphOpen)
+    debugDrawer:drawCylinder(at.down, at.up, r * 0.8, p.glyphOpen)
+    debugDrawer:drawCylinder(at.up, at.armL, r * 0.8, p.glyphOpen)
+    debugDrawer:drawCylinder(at.up, at.armR, r * 0.8, p.glyphOpen)
   elseif kind == 'shut' then
-    debugDrawer:drawCylinder(at(-1, -1), at(1, 1), r, p.glyphShut)
-    debugDrawer:drawCylinder(at(-1, 1), at(1, -1), r, p.glyphShut)
+    debugDrawer:drawCylinder(at.bl, at.tr, r, p.glyphShut)
+    debugDrawer:drawCylinder(at.tl, at.br, r, p.glyphShut)
   elseif kind == 'done' then
     -- A tick: short stroke down into the corner, long stroke up and out.
-    debugDrawer:drawCylinder(at(-0.9, 0.1), at(-0.25, -0.85), r, p.glyphDone)
-    debugDrawer:drawCylinder(at(-0.25, -0.85), at(1, 1), r, p.glyphDone)
+    debugDrawer:drawCylinder(at.tickA, at.tickB, r, p.glyphDone)
+    debugDrawer:drawCylinder(at.tickB, at.tr, r, p.glyphDone)
   end
 end
 
@@ -504,6 +624,9 @@ local function markerGeometry(wp)
   g = { w = w, h = h, d = d, kind = kind,
         x = wp.x, y = wp.y, z = wp.z, hx = wp.hx, hy = wp.hy,
         board = { at(-hw, bot), at(hw, bot), at(hw, top), at(-hw, top) },
+        -- Where the editor's numbered label floats. Cached with the rest so the
+        -- authoring pass allocates nothing per marker per frame.
+        label = vec3(wp.x, wp.y, wp.z + 1.2),
         tris = {}, edge = {} }
 
   -- One stroke as a filled quad, emitted as two triangles.
@@ -622,8 +745,24 @@ end
 -- drawing it at full gate height would be a tall pair of walls implying a
 -- constraint that is not doing any work. The FOOTPRINT is the part that decides,
 -- so the footprint is what is drawn honestly and the rest is kept out of the way.
-function paint.pitBox(wp, color)
+-- Stall geometry, cached exactly as gateGeometry caches a gate's.
+--
+-- FOURTEEN vec3 per stall per frame, and this one is not editor furniture: a
+-- driver gets the nearest stall drawn for the whole session (drawDriverGate),
+-- so this was the single largest per-frame allocator left on the racing path.
+-- The width is re-derived every frame for gateGeometry's reason -- it is two
+-- clamps and a table read, and a global width change has to be picked up with
+-- nothing telling us about it.
+local pitCache = setmetatable({}, { __mode = 'k' })
+
+local function pitGeometry(wp)
   local w = (gateDims(wp))
+  local g = pitCache[wp]
+  if g and g.w == w and g.x == wp.x and g.y == wp.y and g.z == wp.z
+      and g.hx == wp.hx and g.hy == wp.hy then
+    return g
+  end
+
   local hw = w * 0.5
   local d  = TUNE.PIT_DEPTH
   local fx, fy = wp.hx or 0, wp.hy or 1
@@ -635,46 +774,59 @@ function paint.pitBox(wp, color)
                 wp.y + ry * sr * hw + fy * sf * d,
                 z + (up or 0))
   end
+  -- Sized off the stall's DEPTH rather than its width, so the chevron stays
+  -- car-sized on a stall that inherited a wide checkpoint's span.
+  local tip  = vec3(wp.x + fx * d * 0.55, wp.y + fy * d * 0.55, z + 0.06)
+  local barb = math.min(hw, d * 0.5)
+  local h    = TUNE.PIT_WALL_H
+  g = {
+    w = w, x = wp.x, y = wp.y, z = wp.z, hx = wp.hx, hy = wp.hy,
+    bl = corner(-1, -1), br = corner(1, -1),
+    fl = corner(-1,  1), fr = corner(1,  1),
+    blu = corner(-1, -1, h), flu = corner(-1, 1, h),
+    bru = corner(1, -1, h),  fru = corner(1, 1, h),
+    ml = vec3(wp.x + rx * hw, wp.y + ry * hw, z + 0.05),
+    mr = vec3(wp.x - rx * hw, wp.y - ry * hw, z + 0.05),
+    tip  = tip,
+    tail = vec3(wp.x - fx * d * 0.35, wp.y - fy * d * 0.35, z + 0.06),
+    barbL = vec3(tip.x - fx * d * 0.4 + rx * barb,
+                 tip.y - fy * d * 0.4 + ry * barb, z + 0.06),
+    barbR = vec3(tip.x - fx * d * 0.4 - rx * barb,
+                 tip.y - fy * d * 0.4 - ry * barb, z + 0.06),
+    -- The editor's label, over the middle of the box where the car ends up.
+    label = vec3(wp.x, wp.y, z + h + 0.9),
+  }
+  pitCache[wp] = g
+  return g
+end
+
+function paint.pitBox(wp, color)
+  local g = pitGeometry(wp)
   local p = palette()
-  local bl, br = corner(-1, -1), corner(1, -1)
-  local fl, fr = corner(-1,  1), corner(1,  1)
   -- The floor: where to stop, filled so the extent is unmistakable and faint
   -- enough that the road under it stays readable.
-  debugDrawer:drawQuadSolid(bl, br, fr, fl, p.pitFill)
+  debugDrawer:drawQuadSolid(g.bl, g.br, g.fr, g.fl, p.pitFill)
   -- Two side walls, open front and back: a stall is driven into and out of.
-  local blu, flu = corner(-1, -1, TUNE.PIT_WALL_H), corner(-1, 1, TUNE.PIT_WALL_H)
-  local bru, fru = corner(1, -1, TUNE.PIT_WALL_H), corner(1, 1, TUNE.PIT_WALL_H)
-  debugDrawer:drawQuadSolid(bl, fl, flu, blu, p.pitWall)
-  debugDrawer:drawQuadSolid(br, fr, fru, bru, p.pitWall)
+  debugDrawer:drawQuadSolid(g.bl, g.fl, g.flu, g.blu, p.pitWall)
+  debugDrawer:drawQuadSolid(g.br, g.fr, g.fru, g.bru, p.pitWall)
   -- Corner posts, so the box has an outline at distance and in flat light where
   -- a translucent fill alone disappears.
   local r = TUNE.POLE_RADIUS
-  debugDrawer:drawCylinder(bl, blu, r, color)
-  debugDrawer:drawCylinder(br, bru, r, color)
-  debugDrawer:drawCylinder(fl, flu, r, color)
-  debugDrawer:drawCylinder(fr, fru, r, color)
+  debugDrawer:drawCylinder(g.bl, g.blu, r, color)
+  debugDrawer:drawCylinder(g.br, g.bru, r, color)
+  debugDrawer:drawCylinder(g.fl, g.flu, r, color)
+  debugDrawer:drawCylinder(g.fr, g.fru, r, color)
   -- The line across the middle of the box: where the car actually wants to be.
-  local ml = vec3(wp.x + rx * hw, wp.y + ry * hw, z + 0.05)
-  local mr = vec3(wp.x - rx * hw, wp.y - ry * hw, z + 0.05)
-  debugDrawer:drawCylinder(ml, mr, r * 0.6, color)
+  debugDrawer:drawCylinder(g.ml, g.mr, r * 0.6, color)
   -- A CHEVRON POINTING THE WAY THE STALL FACES.
   --
   -- The box alone is symmetrical, so it says where to stop and nothing about
   -- which way round. That matters now that stopping in one stands the car on
   -- the stall's heading: without this the car turning as it is serviced looks
   -- arbitrary rather than like being pointed back down the lane.
-  --
-  -- Sized off the stall's DEPTH rather than its width, so it stays car-sized on
-  -- a stall that inherited a wide checkpoint's span.
-  local p2 = palette()
-  local tip  = vec3(wp.x + fx * d * 0.55, wp.y + fy * d * 0.55, z + 0.06)
-  local tail = vec3(wp.x - fx * d * 0.35, wp.y - fy * d * 0.35, z + 0.06)
-  local barb = math.min(hw, d * 0.5)
-  local bl2  = vec3(tip.x - fx * d * 0.4 + rx * barb, tip.y - fy * d * 0.4 + ry * barb, z + 0.06)
-  local br2  = vec3(tip.x - fx * d * 0.4 - rx * barb, tip.y - fy * d * 0.4 - ry * barb, z + 0.06)
-  debugDrawer:drawCylinder(tail, tip, r * 0.5, p2.pitArrow)
-  debugDrawer:drawCylinder(bl2, tip, r * 0.5, p2.pitArrow)
-  debugDrawer:drawCylinder(br2, tip, r * 0.5, p2.pitArrow)
+  debugDrawer:drawCylinder(g.tail, g.tip, r * 0.5, p.pitArrow)
+  debugDrawer:drawCylinder(g.barbL, g.tip, r * 0.5, p.pitArrow)
+  debugDrawer:drawCylinder(g.barbR, g.tip, r * 0.5, p.pitArrow)
 end
 
 -- `fill` and `glyph` are for the joker and nothing else. An ordinary checkpoint
@@ -844,9 +996,8 @@ local function drawGates(derbyLive)
     end
     -- A checkpoint with branch gates is labeled with how many, so an admin can
     -- see at a glance which corners are shared and which are taken two ways.
-    local label = routeLabel(i, n)
     local alts = branch.bySlot[i]
-    if alts and #alts > 0 then label = label .. ' (+' .. #alts .. ')' end
+    local label = routeAltLabel(i, n, alts and #alts or 0)
     if nudgeSelected(track.route, i) then color = p.nudged end
     drawGate(wp, color, label, authoring)
   end
@@ -863,7 +1014,7 @@ local function drawGates(derbyLive)
     local color = p.branch or p.joker
     if active and slot == session.armedWp then color = p.armed end
     if nudgeSelected(branch.list, gi) then color = p.nudged end
-    drawGate(g, color, 'CP ' .. slot .. ' branch', authoring)
+    drawGate(g, color, branchLabel(slot), authoring)
   end
 
   -- Pit stalls. Amber, and labeled as stalls rather than numbered gates: they
@@ -874,9 +1025,11 @@ local function drawGates(derbyLive)
   for i, wp in ipairs(marker.list) do
     local col = nudgeSelected(marker.list, i) and p.nudged or p.markerLine
     paint.markerPanel(wp, col, p.markerFill)
-    debugDrawer:drawTextAdvanced(
-      vec3(wp.x, wp.y, wp.z + (gateDims(wp)) * 0 + 1.2),
-      String('MARKER ' .. i .. ' ' .. (marker.LABEL[wp.kind] or '')),
+    -- The height here is a fixed 1.2 above the marker. It used to add
+    -- gateDims(wp) * 0 -- three clamps and several table reads per marker per
+    -- frame, multiplied by zero.
+    local g = markerGeometry(wp)
+    debugDrawer:drawTextAdvanced(g.label, String(markerLabel(i, wp.kind)),
       p.text, true, false, p.textBg)
   end
 
@@ -894,9 +1047,8 @@ local function drawGates(derbyLive)
     -- distance, and the label floats over the middle where the car is meant to
     -- end up rather than being pinned to a gate that is no longer there.
     paint.pitBox(wp, col)
-    debugDrawer:drawTextAdvanced(
-      vec3(wp.x, wp.y, wp.z + TUNE.PIT_WALL_H + 0.9),
-      String('PIT ' .. i), p.text, true, false, p.textBg)
+    debugDrawer:drawTextAdvanced(pitGeometry(wp).label, String(pitLabel(i)),
+      p.text, true, false, p.textBg)
   end
 
   -- Joker route: violet, so it never reads as part of the main lap. The next

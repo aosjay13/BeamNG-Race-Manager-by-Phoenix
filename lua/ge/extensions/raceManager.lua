@@ -1090,9 +1090,13 @@ local function isOwnVehicle(vehId)
   return ok and own == true
 end
 
+-- pcall(veh.getID, veh) rather than pcall(function () ... end): the closure
+-- form allocates one every call, and this is called per frame, twice per
+-- ownVehicle(). Same protection, no garbage. A veh with no getID still fails
+-- into the `not ok` branch exactly as the closure did.
 local function vehicleId(veh)
   if not veh then return nil end
-  local ok, id = pcall(function () return veh:getID() end)
+  local ok, id = pcall(veh.getID, veh)
   if ok then return id end
   return nil
 end
@@ -2255,7 +2259,23 @@ local function checkGates()
     end
     checkJokerGates(session.prevPos, pos)
   end
-  session.prevPos = vec3(pos.x, pos.y, pos.z)
+  -- THE CARRY-OVER SAMPLE, MUTATED IN PLACE.
+  --
+  -- This was the one allocation left in a steady frame, and it did not have to
+  -- be one: every consumer (rectCrossesGate, branch.crossedAt, checkJokerGates,
+  -- and the recovery-undo test in onVehicleResetted) reads .x/.y/.z and nothing
+  -- else. No vec3 method, no operator, and none of them keeps the reference past
+  -- the call. A plain table reused frame to frame takes a driver's draw path to
+  -- zero allocations.
+  --
+  -- Anything that starts doing vec3 ARITHMETIC on prevPos has to allocate its
+  -- own copy rather than change this back.
+  local pp = session.prevPos
+  if pp then
+    pp.x, pp.y, pp.z = pos.x, pos.y, pos.z
+  else
+    session.prevPos = { x = pos.x, y = pos.y, z = pos.z }
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -4138,7 +4158,16 @@ function M.onVehicleResetted(vehId)
   snapshotLeft = 0
   do
     local _, nowPos = sampledVehicle()
-    session.prevPos = nowPos and vec3(nowPos.x, nowPos.y, nowPos.z) or session.prevPos
+    if nowPos then
+      -- In place, on checkGates' terms: prevPos is a reused plain table, and
+      -- `was` above is out of scope by here so nothing is reading the old value.
+      local pp = session.prevPos
+      if pp then
+        pp.x, pp.y, pp.z = nowPos.x, nowPos.y, nowPos.z
+      else
+        session.prevPos = { x = nowPos.x, y = nowPos.y, z = nowPos.z }
+      end
+    end
   end
   if resetsEnforced() then
     session.resetsUsed = session.resetsUsed + 1
@@ -4941,7 +4970,9 @@ local function forEachVehicle(skipId, fn)
     if ok and type(list) == 'table' then
       for _, veh in ipairs(list) do
         if veh then
-          local gotId, id = pcall(function () return veh:getID() end)
+          -- Method form, not a closure: this is a per-frame walk over the whole
+          -- field, so a closure here is one allocation per car per frame.
+          local gotId, id = pcall(veh.getID, veh)
           if gotId and id ~= skipId then fn(veh, id) end
         end
       end
@@ -4953,7 +4984,7 @@ local function forEachVehicle(skipId, fn)
   for i = 0, count - 1 do
     local veh = be:getObject(i)
     if veh then
-      local ok, id = pcall(function () return veh:getID() end)
+      local ok, id = pcall(veh.getID, veh)
       if ok and id ~= skipId then fn(veh, id) end
     end
   end
@@ -4985,7 +5016,9 @@ function ghost.fade(vehId, veh, alpha)
   local was = ghost.alpha[vehId]
   if was and math.abs(was - alpha) < 0.01 then return end
   ghost.alpha[vehId] = alpha
-  pcall(function () veh:setMeshAlpha(alpha, '', false) end)
+  -- Method form, no closure: the guard above means this runs only while an
+  -- alpha is actually moving, but while one is it runs per frame per car.
+  pcall(veh.setMeshAlpha, veh, alpha, '', false)
 end
 
 -- Apply (or lift) the ghost on one car: the collision toggle, then the fade that

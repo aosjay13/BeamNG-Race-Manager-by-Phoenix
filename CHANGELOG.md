@@ -675,6 +675,76 @@ Four new settings in `config.json`, beside the lap count:
   whole of config.json, which is precisely backwards: a value inside a list is
   something you read across, and the root of a file is something you read down.
 
+### A frame that builds nothing, and a test that was measuring an empty track
+
+#### Fixed
+
+- **The pit lane was never on the circuit the frame budget measured.**
+  `tests/perf_test.lua` sent its stalls as `pit`; `onApplyLayout` reads `pits`.
+  So `track.pitRoute` stayed empty for the life of that file, and `paint.pitBox`
+  sat outside the allocation budget three of its own checks claim to enforce.
+
+  That matters because the pit box is **not editor furniture**. A driver gets the
+  nearest stall drawn every frame of every session, and it was fourteen fresh
+  vectors a frame: the largest uncached allocator in the mod, on the racing path,
+  invisible to the one test whose entire job is noticing cost. The budget read
+  `1 alloc/frame` and the truth was fifteen.
+
+  The joker was unmeasured on the same terms -- `jokerEnabled` only ever arrives
+  on the state broadcast, which the harness never sent -- and the editor was
+  never opened at all, so the whole authoring path was unbudgeted. The fixture
+  now asserts what it loaded, so a renamed payload key fails with the reason
+  instead of quietly making every budget below it cheaper.
+
+- **A steady frame now allocates nothing at all**, driver or admin, where it used
+  to allocate 19 and 304. The gate cache pattern was extended to the three places
+  that never got it: the start slots, the pit box and the joker glyph, each keyed
+  on the thing it describes and rebuilt only when that moves. The four authoring
+  labels join the ones already cached, and `drawStartPosition` stopped building a
+  `'P' .. index` string per slot per frame.
+
+  The carry-over position the crossing detector keeps is a plain table now rather
+  than a fresh `vec3` per frame. Every consumer reads `.x/.y/.z` and none of them
+  keeps the reference, so the last allocation on a driver's path was one nobody
+  needed. The budget is **0** and pinned there.
+
+- **The driver's HUD stopped forcing a layout flush fifteen times a second.** The
+  board's measured width was read inside a `$watch` EXPRESSION, so every digest
+  iteration did two `querySelector` calls and three `offsetWidth`/`offsetHeight`
+  reads against a DOM Angular was midway through mutating. A digest walks its
+  watch list at least twice to prove it settled, and the lap ticker alone runs
+  ten a second.
+
+  It is a `ResizeObserver` now, reading the layout the browser was going to do
+  anyway. The worst part was the timing: `minimalMode()` armed this **for drivers
+  during a live session only**, which is exactly when the browser process is
+  already competing with physics for the frame.
+
+- **The class column stopped scanning the field once per row.** `classesInUse()`
+  was bound to two `ng-if`s, one of them inside the driver `ng-repeat`, so it was
+  N+1 watchers each walking every driver, twice a digest -- quadratic, for an
+  answer that changes when a broadcast lands three times a second. It is set on
+  the broadcast now, beside the two helpers that already worked that way. Worst
+  on a night running **no** classes, where the scan can never short-circuit.
+
+- **The panel background stopped being rebuilt per binding per digest.**
+  `panelStyle()` returned a fresh object and a fresh `rgba(...)` string on every
+  call, through `ng-style` at five places, for inputs that move when a human
+  drags a grip or a slider.
+
+- **Dead work removed:** a marker label added `gateDims(wp) * 0` -- three clamps
+  and several table reads per marker per frame, multiplied by zero -- and the
+  per-frame `pcall(function () ... end)` wrappers on the vehicle walk allocated a
+  closure per car per frame where `pcall(veh.getID, veh)` does the same job.
+
+#### Note
+
+- **A marker board costs ~170 draw calls a frame**, which the code comment
+  beside it ("a few segments and two posts each") does not prepare you for. It is
+  bounded by `MARKER_MAX_MARKS`, so it is a density choice rather than a leak,
+  and it is left as it is. The triangles are counted separately in the budget now
+  so they cannot swamp the gate numbers and hide something that is a leak.
+
 ## 0.10.0 - A car shoved on the grid no longer floods the UI
 
 ### Fixed

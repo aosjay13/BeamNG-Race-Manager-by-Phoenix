@@ -47,12 +47,22 @@ ColorF = function (r, g, b, a) allocs = allocs + 1; return { r, g, b, a } end
 ColorI = function (r, g, b, a) allocs = allocs + 1; return { r, g, b, a } end
 String = function (s) return s end
 
-local draws = 0
+local draws, tris = 0, 0
 debugDrawer = {
   drawCylinder  = function () draws = draws + 1 end,
   drawTextAdvanced = function () draws = draws + 1 end,
   drawQuadSolid = function () draws = draws + 1 end,
+  -- The marker faces, counted SEPARATELY. A marker board is a tiled sign and
+  -- nothing else in the mod draws a triangle, so keeping them apart is what
+  -- lets the gate budget below stay a gate budget: one 20m board is ~80 filled
+  -- marks, which would swamp a shared counter and make "does this scale with
+  -- the route" unreadable.
+  drawTriSolid  = function () tris = tris + 1 end,
 }
+-- Packed colors for drawTriSolid. The renderer guards on `color` being a
+-- function and skips the marker fills when it is not, so leaving it out would
+-- quietly measure a cheaper marker than the game draws.
+color = function () return 0 end
 
 local veh = { id = 7, x = 0, y = 0, z = 0 }
 function veh:getID() return self.id end
@@ -75,9 +85,14 @@ log = function () end
 -- The measurement that matters: every push into the browser, by event.
 local pushes = {}
 local pushTotal = 0
-guihooks = { trigger = function (event)
+-- The route payload is kept, not just counted: it is how this file checks the
+-- fixture below actually LOADED, which is the difference between a budget and
+-- a budget on an empty track.
+local routeState = nil
+guihooks = { trigger = function (event, payload)
   pushes[event] = (pushes[event] or 0) + 1
   pushTotal = pushTotal + 1
+  if event == 'RaceManagerRoute' then routeState = payload end
 end }
 
 MPGameNetwork      = {}
@@ -93,11 +108,28 @@ package.path = 'lua/ge/extensions/?.lua;' .. package.path
 local RM = dofile('lua/ge/extensions/raceManager.lua')
 RM.onExtensionLoaded()
 
-local function serverState(t) t.rmProtocol = 2; handlers['RM_Update'](t) end
-local function resetCounters() pushes, pushTotal, allocs, draws = {}, 0, 0, 0 end
+-- `jokerEnabled` defaults ON here, and that is the point: it is a field the
+-- extension only ever reads from this payload (session.jokerEnabled), so a
+-- harness that never sent it measured a circuit whose joker gates were on the
+-- track and never drawn. The joker glyph was outside every budget in this file.
+local function serverState(t)
+  t.rmProtocol = 2
+  if t.jokerEnabled == nil then t.jokerEnabled = true end
+  handlers['RM_Update'](t)
+end
+local function resetCounters() pushes, pushTotal, allocs, draws, tris = {}, 0, 0, 0, 0 end
 
 -- ---------------------------------------------------------------------------
--- A realistic circuit: twelve checkpoints, a joker route and a pit lane.
+-- A realistic circuit: twelve checkpoints, a joker route, a pit lane, a
+-- direction marker and a grid slot.
+--
+-- EVERY KEY HERE HAS TO MATCH WHAT onApplyLayout READS. The pit stalls were
+-- sent as `pit` where the handler reads `pits`, so track.pitRoute stayed empty
+-- for the life of this file: paint.pitBox is drawn for a DRIVER (the nearest
+-- stall, every frame of every session) and it was the largest uncached
+-- allocator in the mod, sitting outside the allocation budget three lines of
+-- this file claim to be enforcing. A typo in a fixture is not a small bug in a
+-- test whose whole job is to notice cost.
 -- ---------------------------------------------------------------------------
 local cps = {}
 for i = 1, 12 do
@@ -108,9 +140,19 @@ handlers['RM_ApplyLayout']({
   checkpoints = cps,
   joker = { { x = 30, y = 300, z = 0, hx = 0, hy = 1 },
             { x = 30, y = 400, z = 0, hx = 0, hy = 1 } },
-  pit   = { { x = -30, y = 200, z = 0, hx = 0, hy = 1 } },
+  pits  = { { x = -30, y = 200, z = 0, hx = 0, hy = 1 } },
+  markers = { { x = -20, y = 500, z = 0, hx = 0, hy = 1, kind = 'right' } },
   startPositions = { { x = 0, y = 0, z = 0, hx = 0, hy = 1 } },
 })
+-- The fixture is only worth what it actually loaded. These assert the layout
+-- reached the models, so a future rename of a payload key fails here with the
+-- reason rather than silently making every budget below cheaper.
+check(routeState ~= nil, 'the layout was applied and pushed a route state')
+check(#(routeState.pitRoute or {}) == 1,
+  'the fixture pit lane loaded: the payload key is `pits`, not `pit`')
+check(#(routeState.jokerRoute or {}) == 2, 'the fixture joker route loaded')
+check(#(routeState.markers or {}) == 1, 'the fixture direction marker loaded')
+check(#(routeState.waypoints or {}) == 12, 'the fixture checkpoints loaded')
 
 -- ---------------------------------------------------------------------------
 -- 1. UI pushes across one simulated second of racing, at 60 fps
@@ -201,7 +243,7 @@ serverState({ phase = 'racing', sessionKind = 'race', totalLaps = 5,
 RM.onUpdate(1 / 60)          -- prime the caches
 resetCounters()
 RM.onUpdate(1 / 60)
-local steadyAllocs, steadyDraws = allocs, draws
+local steadyAllocs, steadyDraws, steadyTris = allocs, draws, tris
 
 -- A DRIVER SEES TWO GATES. Twelve checkpoints, a joker and a pit stall are on
 -- the track; what gets drawn is the armed gate, the one after it, and whichever
@@ -211,18 +253,31 @@ check(steadyDraws <= 24, string.format(
   'a steady frame draws %d shapes on a twelve-gate circuit, not the whole lap '
     .. '(budget 24)', steadyDraws))
 
+-- The marker board, which is the only thing here that draws triangles. Its
+-- cost is bounded by TUNE.MARKER_MAX_MARKS (60) rather than by the board's
+-- size, which is the property worth pinning: an admin who drags a marker forty
+-- meters wide gets a denser sign, not an unbounded one.
+check(steadyTris <= 4 * 60, string.format(
+  'the marker board fills %d triangles, capped by MARKER_MAX_MARKS rather than '
+    .. 'by how wide the board was drawn', steadyTris))
+
 -- Immediate-mode drawing that allocates is drawing that feeds the collector on
 -- the render thread. The geometry and the colors are both cached.
--- ONE, and it is not the drawing. checkGates keeps last frame's position so it
--- has a segment to test gates against, and that carry-over sample is the single
--- allocation: `prevPos = vec3(pos.x, pos.y, pos.z)`. It is inherent to crossing
--- detection and predates every visual feature here. The gate geometry and the
--- colors themselves allocate NOTHING, which is the property this pins: if this
--- climbs, something in the draw path has started rebuilding per frame.
-check(steadyAllocs <= 1, string.format(
-  'a steady frame allocates %d vectors/colors, and the budget is 1: the '
-    .. 'crossing detector carries a position, the draw path caches everything '
-    .. 'else', steadyAllocs))
+--
+-- ZERO. This budget was 1 for a long time, for a reason that had stopped being
+-- true: checkGates keeps last frame's position so it has a segment to test
+-- gates against, and that carry-over sample was `vec3(pos.x, pos.y, pos.z)`
+-- every frame. Every consumer of it reads .x/.y/.z and nothing else -- no vec3
+-- method, no operator, and none of them keeps the reference -- so it is a plain
+-- table mutated in place now and a driver's frame allocates NOTHING AT ALL.
+--
+-- Which makes this the strictest form of the property it was always pinning: a
+-- steady frame builds no garbage, so anything that appears here is new work
+-- somebody added to the per-frame path.
+check(steadyAllocs == 0, string.format(
+  'a steady frame allocates %d vectors/colors, and the budget is 0: the draw '
+    .. 'path caches its geometry and the crossing detector reuses its sample',
+  steadyAllocs))
 
 -- The same frame on a route four times the size costs the same, which is the
 -- property that actually matters: cost follows what is SHOWN, not what exists.
@@ -238,10 +293,87 @@ RM.onUpdate(1 / 60)
 check(draws <= steadyDraws, string.format(
   'quadrupling the circuit to 48 gates draws %d shapes, no more than the 12-gate '
     .. 'circuit did (%d)', draws, steadyDraws))
+check(allocs == 0, string.format(
+  'and allocates %d on the bigger circuit too', allocs))
+
+-- ---------------------------------------------------------------------------
+-- 4. THE EDITOR, which nothing in this file used to open
+-- ---------------------------------------------------------------------------
+-- A driver sees two gates. An ADMIN with the editor open sees the whole circuit
+-- at once, numbered and labeled, plus every branch gate, pit stall, marker and
+-- grid slot: it is far and away the heaviest draw pass in the mod, and it was
+-- outside every budget in this file because perf_test never called
+-- setEditorOpen. draw_test.lua opens the editor but counts shapes and colors,
+-- not cost, so the entire authoring path was unmeasured.
+--
+-- It is measured on the SAME terms as the driver's frame, because the same rule
+-- applies: the labels and the geometry are fixed by the layout, so an editor
+-- frame on a circuit nobody is touching has nothing to build.
+-- A FULL GRID, staggered, because drawStartPosition runs per slot per frame and
+-- the authoring pass costs what the grid is long. A one-slot fixture would have
+-- measured the cheapest possible version of the thing that was actually
+-- expensive here.
+local starts = {}
+for i = 1, 24 do
+  starts[i] = { x = (i % 2 == 0) and 4 or -4, y = -i * 6, z = 0, hx = 0, hy = 1 }
+end
+handlers['RM_ApplyLayout']({
+  name = 'perf', width = 20, height = 8, depth = 2,
+  checkpoints = cps,
+  joker = { { x = 30, y = 300, z = 0, hx = 0, hy = 1 },
+            { x = 30, y = 400, z = 0, hx = 0, hy = 1 } },
+  pits  = { { x = -30, y = 200, z = 0, hx = 0, hy = 1 } },
+  markers = { { x = -20, y = 500, z = 0, hx = 0, hy = 1, kind = 'right' } },
+  branches = { { slot = 3, x = 15, y = 300, z = 0, hx = 0, hy = 1 } },
+  startPositions = starts,
+})
+serverState({ phase = 'waiting', sessionKind = 'race', totalLaps = 5,
+  maxResets = -1, flag = 'green', drivers = {}, youAreAdmin = true })
+RM.setEditorOpen(true)
+RM.onUpdate(1 / 60)          -- prime the caches
+check(#(routeState.startPositions or {}) == 24,
+  'the fixture grid loaded, so the slot markers are actually being drawn')
+check(#(routeState.branches or {}) == 1, 'the fixture branch gate loaded')
+resetCounters()
+RM.onUpdate(1 / 60)
+local editAllocs, editDraws, editTris = allocs, draws, tris
+
+-- THE SAME ZERO. Twelve gates, a branch gate, two joker gates, a pit stall, a
+-- marker and twenty-four grid slots, all labeled, and a steady editor frame
+-- builds nothing: the gate corners, the slot outlines, the stall box and every
+-- label string are cached against the thing they describe and rebuilt only when
+-- it moves.
+--
+-- This is where the authoring path used to spend it. drawStartPosition alone
+-- was nine vec3, a ColorF and a fresh 'P<n>' string per slot per frame -- on a
+-- twenty-four car grid that is ~250 objects a frame, thrown at the collector
+-- while an admin drags a gate around.
+check(editAllocs == 0, string.format(
+  'a steady EDITOR frame allocates %d vectors/colors, and the budget is 0: the '
+    .. 'authoring path caches its geometry and its labels like the driver path '
+    .. 'does', editAllocs))
+
+-- The editor DOES draw the whole circuit, and that is correct: it is the view
+-- whose entire job is showing everything at once. What this pins is that it
+-- costs what those items cost and no more -- no per-frame rebuild, and no
+-- second pass over the route.
+-- ~343 as it stands: twelve gates and two joker gates at nine shapes each
+-- (filled face, four edges, a label and a three-piece direction arrow), a
+-- branch gate, a pit stall at twelve, twenty-four grid slots at eight, and the
+-- marker's two posts. The budget is that plus headroom, and it is a budget on
+-- the ITEMS rather than on the route: check 3's scaling test is what catches
+-- the whole lap being painted.
+check(editDraws <= 380, string.format(
+  'a steady editor frame draws %d shapes on a twelve-gate circuit with a '
+    .. 'twenty-four car grid (budget 380)', editDraws))
+
+RM.setEditorOpen(false)
 
 print(string.format('perf_test: %d checks, %d failures', checks, fails))
 print(string.format('  held grid: %d UI pushes/sec (%d to the Messages app)',
   heldPushes, heldMessages))
-print(string.format('  racing: %d UI pushes/sec, %d draws/frame, %d allocs/frame',
-  racingPushes, steadyDraws, steadyAllocs))
+print(string.format('  racing: %d UI pushes/sec, %d draws + %d tris/frame, %d allocs/frame',
+  racingPushes, steadyDraws, steadyTris, steadyAllocs))
+print(string.format('  editor: %d draws + %d tris/frame, %d allocs/frame',
+  editDraws, editTris, editAllocs))
 if fails > 0 then os.exit(1) end

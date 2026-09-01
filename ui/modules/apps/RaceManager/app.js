@@ -2066,6 +2066,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           // Note gains/losses before the table re-renders, so the arrows in the
           // position column reflect this very update.
           trackPositionChanges($scope.drivers);
+          // Whether the class column exists at all, decided once per broadcast
+          // rather than once per row per digest.
+          refreshHasClasses($scope.drivers);
           // The server is authoritative for the race distance: whenever the
           // value it reports moves, re-seed the input box so it shows what the
           // session is actually running (including a value clamped server-side,
@@ -3615,12 +3618,26 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // Is this session running more than one class? Read off the DRIVERS rather
       // than off the garage, because that is what the board is showing: a class
       // tagged on an entry nobody is driving is not a class in this race.
-      $scope.classesInUse = function () {
-        for (var i = 0; i < $scope.drivers.length; i++) {
-          if ($scope.drivers[i].class) { return true; }
+      //
+      // ANSWERED WHEN THE FIELD ARRIVES, not when the template asks.
+      //
+      // This was a function bound to two ng-ifs: the header cell once, and the
+      // per-row cell inside ng-repeat="row in drivers", so N+1 watchers each
+      // running a full scan of `drivers`, at least twice per digest, 15+ digests
+      // a second. Quadratic in the field size for an answer that changes only
+      // when a broadcast lands three times a second -- and worst on the case it
+      // cannot short-circuit, a league running no classes at all, where every
+      // scan runs to the end of the field.
+      //
+      // Set from the update handler, the same way splitField and
+      // trackPositionChanges already are.
+      $scope.hasClasses = false;
+      function refreshHasClasses(drivers) {
+        for (var i = 0; i < drivers.length; i++) {
+          if (drivers[i].class) { $scope.hasClasses = true; return; }
         }
-        return false;
-      };
+        $scope.hasClasses = false;
+      }
       // A driver's class and their place in it, as one cell. The same shape
       // myHeatLabel uses, for the same reason: two numbers that are one fact.
       $scope.classLabel = function (row) {
@@ -4461,14 +4478,40 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         broadcast:   { w: loadPref('bcWidth', null),  h: loadPref('bcHeight', null) }
       };
 
+      // ONE OBJECT PER PANEL, REBUILT ONLY WHEN IT CHANGES.
+      //
+      // These are bound through ng-style at five places, and ngStyle watches
+      // its expression with $watchCollection -- so a fresh object and a fresh
+      // rgba() string were being built per binding per digest pass, then
+      // compared key by key against the identical object from last time. The
+      // inputs are a slider and a drag: they move when a human moves them, not
+      // fifteen times a second.
+      //
+      // Returning the SAME reference is what makes $watchCollection cheap; it
+      // is also why nothing may mutate the returned object.
+      var styleCache = { leaderboard: null, hud: null, broadcast: null };
+      var styleOpacity = null;
+
+      function invalidatePanelStyles() {
+        styleCache.leaderboard = null;
+        styleCache.hud = null;
+        styleCache.broadcast = null;
+      }
+
       function panelStyle(name) {
+        var o = Number($scope.lbUi.opacity);
+        // The slider is shared by all three, so its move drops all three.
+        if (o !== styleOpacity) { styleOpacity = o; invalidatePanelStyles(); }
+        var style = styleCache[name];
+        if (style) { return style; }
         var size = panelSize[name];
-        var style = { 'background-color': 'rgba(15, 17, 22, ' + Number($scope.lbUi.opacity) + ')' };
+        style = { 'background-color': 'rgba(15, 17, 22, ' + o + ')' };
         if (size.w) { style.width = size.w + 'px'; }
         if (size.h) {
           style.height = size.h + 'px';
           style['max-height'] = size.h + 'px';
         }
+        styleCache[name] = style;
         return style;
       }
       // Applied to the leaderboard container in minimal (driver) mode.
@@ -4518,22 +4561,70 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // BOTH DIMENSIONS. Width alone was enough for the driver bar, but the
       // overlays need a height too or they stay full-window tall: a narrow
       // column of red down the whole screen instead of a box over the panel.
-      $scope.$watch(function () {
-        if (!$scope.minimalMode()) { return ''; }
+      //
+      // MEASURED OFF THE DIGEST, because measuring inside one is not free.
+      //
+      // This used to be a $watch whose EXPRESSION did the measuring: two
+      // querySelector calls and three offset reads, returned as 'WxH'. A watch
+      // expression runs on every digest iteration and a digest walks its list at
+      // least twice to prove it settled, so that was 4+ offset reads per digest
+      // -- each one a read-after-write against a DOM Angular is midway through
+      // mutating, which forces a synchronous style and layout flush.
+      //
+      // The rate is the problem. A race pushes state at 3 Hz and lap times at
+      // 4 Hz, and lapTicker $applys at 10 Hz on top, so a digest runs 15+ times
+      // a second and this forced 30+ layouts in the same second. And
+      // minimalMode() means it was armed for DRIVERS DURING A LIVE SESSION
+      // ONLY: exactly when the CEF compositor is already competing with physics
+      // for the frame.
+      //
+      // A ResizeObserver reads the layout the browser was going to do anyway and
+      // fires only when a size really changed.
+      function measureBoard() {
         var board = $element[0].querySelector('.rm-table-wrap');
         var bar   = $element[0].querySelector('.rm-driverbar');
         var w = board ? board.offsetWidth : 0;
         var h = (board ? board.offsetHeight : 0) + (bar ? bar.offsetHeight : 0);
-        return w + 'x' + h;
-      }, function (size) {
-        var parts = String(size).split('x');
-        var w = parseInt(parts[0], 10) || 0;
-        var h = parseInt(parts[1], 10) || 0;
         // 'auto' rather than 0 while there is nothing to measure: a bar with no
         // width is a bar nobody can find the login button on.
         $element[0].style.setProperty('--rm-lb-width', w > 0 ? (w + 'px') : 'auto');
         $element[0].style.setProperty('--rm-lb-height', h > 0 ? (h + 'px') : 'auto');
-      });
+      }
+
+      var boardObserver = null;
+      if (typeof ResizeObserver === 'function') {
+        boardObserver = new ResizeObserver(measureBoard);
+        // The watch expression is an IDENTITY check, not a measurement:
+        // querySelector does not force layout the way offsetWidth does. It
+        // answers "has ng-if swapped the board out" (the race, qualifying and
+        // derby boards are three separate ng-if blocks), and the observer
+        // answers "has it changed size".
+        $scope.$watch(function () {
+          return $scope.minimalMode()
+            ? $element[0].querySelector('.rm-table-wrap')
+            : null;
+        }, function (board) {
+          boardObserver.disconnect();
+          if (!board) { measureBoard(); return; }
+          boardObserver.observe(board);
+          var bar = $element[0].querySelector('.rm-driverbar');
+          if (bar) { boardObserver.observe(bar); }
+          measureBoard();
+        });
+      } else {
+        // FALLBACK for a CEF build with no ResizeObserver. The same measurement
+        // taken the expensive way, kept rather than dropped: on a client this
+        // old the cost is frames, and losing it outright is a driver bar with no
+        // width and no login button on it.
+        $scope.$watch(function () {
+          if (!$scope.minimalMode()) { return ''; }
+          var board = $element[0].querySelector('.rm-table-wrap');
+          var bar   = $element[0].querySelector('.rm-driverbar');
+          var w = board ? board.offsetWidth : 0;
+          var h = (board ? board.offsetHeight : 0) + (bar ? bar.offsetHeight : 0);
+          return w + 'x' + h;
+        }, measureBoard);
+      }
 
 
 
@@ -4566,6 +4657,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         $scope.$evalAsync(function () {
           panelSize[resizeFrom.name].w = Math.round(w);
           panelSize[resizeFrom.name].h = Math.round(h);
+          invalidatePanelStyles();
         });
       }
       function onResizeEnd() {
@@ -4606,6 +4698,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       function resetSize(name) {
         panelSize[name].w = null;
         panelSize[name].h = null;
+        invalidatePanelStyles();
         savePref(PANELS[name].wKey, null);
         savePref(PANELS[name].hKey, null);
       }
@@ -4626,6 +4719,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           size.h = Math.max(panel.minH, Math.round(maxH));
           savePref(panel.hKey, size.h);
         }
+        invalidatePanelStyles();
       }
       $scope.$on('app:resized', function (ev, size) {
         if (!size) { return; }
@@ -4650,6 +4744,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         document.removeEventListener('mouseup', onDragUp, true);
         if (vehErrTimer) { clearTimeout(vehErrTimer); }
         if (goTimer) { clearTimeout(goTimer); }
+        // The size observer holds the board and the bar, which the HUD teardown
+        // is about to throw away.
+        if (boardObserver) { boardObserver.disconnect(); boardObserver = null; }
         stopLapTicker();
         // The app is going away (HUD teardown, pause menu, app closed), so
         // neither editor is open any more. Without this the start-slot markers
