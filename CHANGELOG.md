@@ -538,51 +538,27 @@ Four new settings in `config.json`, beside the lap count:
   driver has resets left, because this is not a reset being rationed but a move
   with no place in a race. Drivers out of the session keep them.
 
-  **Then the game's own files gave the actual mechanism**, and the fix got better.
-  Home runs `recovery.loadHome()`, which is:
+  **Two attempts at making Home DO the reset were shipped and both reverted.**
+  Recorded because the reason is a property of the game, not a bug in the
+  attempts:
 
-      obj:requestReset(RESET_PHYSICS)      -- the reset fires HERE
-      setRecoveryPoint(M.homePoint, ...)   -- the teleport happens AFTER it
+      "loadHome": obj:queueGameEngineLua('extensions.hook("trackVehReset")')
+                  recovery.loadHome()
 
-  So `onVehicleResetted` arrived while the car was still at the crash site: the
-  undo measured no movement, stood down, and the teleport landed a frame later
-  with nothing left watching. The recovery key worked because it moves the car
-  first and reports second.
+  `queueGameEngineLua` QUEUES the hook for a later engine frame while
+  `recovery.loadHome()` runs immediately in the vehicle's own VM. So the hook
+  routinely arrives after the reset AND the teleport, and a pose captured when it
+  lands is the pose of the spawn point -- which put drivers back sideways when
+  the race was close and left them at their spawn when it was not.
 
-  The action also fires `extensions.hook('trackVehReset')` -- and so do the reset
-  keys, both recovery keys and the Pause menu's buttons. That is the game's own
-  signal that a recovery was REQUESTED, which is the one thing that covers every
-  path. The mod implements it now: a recovery arms a short watch, and a car that
-  turns up somewhere else while it is running is put back where the driver was,
-  keeping the repair. Home does an in-place reset, which is what it should always
-  have done, and `loadHome` is unblocked again.
+  Worse, `trackVehReset` fires for the ordinary reset keys too, so the second
+  attempt broke R and Insert, which had always worked. Reverted the same day it
+  was reported.
 
-  **Watching every frame instead was tried first and withdrawn**, and the reason
-  is worth keeping: telling a teleport from a fast car needs a speed the mod
-  cannot always read, and a false positive drags a LEADING driver backwards for
-  going quickly. Arming the watch only on a reset removes the guesswork entirely.
-
-  Two things a live server then found, both in the watch itself:
-
-  - **The driver was put back at ninety degrees to the track.** The position was
-    captured when the key was pressed and the HEADING was read at undo time --
-    which is the heading of wherever the recovery had just dumped the car. Both
-    are captured up front now. The harness hid it: its stub returned a constant
-    rotation, so reading it at the wrong moment gave the same answer as reading
-    it at the right one.
-  - **It worked twice and failed the third time.** `loadHome` calls
-    `obj:requestReset` first, which reloads the vehicle's Lua VM, and only then
-    teleports -- so on a loaded server the move can land most of a second after
-    the key, by which time the 0.75s window had closed. The window is three
-    seconds now, which is only safe because the test changed with it: it looks
-    for a single-frame JUMP rather than distance travelled since the key. A car
-    driving away from a reset covers twenty-five metres in under three seconds
-    at 30 km/h, so the old measure would have dragged back a driver who simply
-    set off again; a teleport is a discontinuity no amount of driving produces.
-
-  Our own teleports now rebase that per-frame sample rather than being skipped
-  past. Left pointing at where the car used to be, the baseline made a car
-  sitting still somewhere else read as a fresh jump the moment the echo expired.
+  A fix has to sample the pose CONTINUOUSLY while the car is driving and let the
+  hook only authorise the undo, never supply the pose. That is a bigger change
+  than it looks and it is not shipped: `loadHome` stays blocked for the length of
+  a session, which cannot strand anybody.
 
 - **A point-to-point stage showed a lap count, a lap time and laps led.** All
   three are lap figures on a stage driven once: the Lap column read "1/5"
