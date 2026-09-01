@@ -971,8 +971,30 @@ local resetInputsBlocked = false
 -- So the key does nothing during a session, which is honest and cannot misfire.
 -- A driver who wants Home to reset can bind it to Recover Vehicle in BeamNG's
 -- own controls, and the mod then treats it exactly like the reset key it is.
-local TELEPORT_ACTIONS = { 'loadHome', 'dropPlayerAtCamera' }
+-- dropPlayerAtCamera ALONE. loadHome was here too, blocked because nothing could
+-- see it coming; it is handled properly now (see M.trackVehReset) and the key
+-- works again. This one stays: it puts the car wherever the camera is looking,
+-- reports nothing to anybody, and has no reading at all as a recovery.
+local TELEPORT_ACTIONS = { 'dropPlayerAtCamera' }
 local teleportInputsBlocked = false
+
+-- A RECOVERY WAS REQUESTED, AND THE CAR HAS NOT MOVED YET.
+--
+-- This is the window that makes the Home key fixable. recovery.loadHome() calls
+-- obj:requestReset() FIRST and teleports SECOND, so onVehicleResetted arrives
+-- while the car is still sitting at the crash site: the undo there measures no
+-- movement, stands down, and the teleport lands a frame later with nothing left
+-- watching. That is the whole of why Home stranded a driver while the recovery
+-- key did not.
+--
+-- So a reset ARMS a short watch instead of being judged on the spot. If the car
+-- turns up somewhere else while it is running, that is a teleport and it is
+-- undone; if it does not, nothing happens and the watch expires.
+--
+-- Armed ONLY by a reset action, which is what keeps it from ever mistaking a
+-- fast car for a teleport -- the thing that sank the first attempt at this.
+local recoverWatch = { left = 0, x = 0, y = 0, z = 0 }
+local RECOVER_WATCH_SEC = 0.75
 
 -- BeamNG reports a teleport as a vehicle reset, and this mod teleports the car
 -- itself (blocked-reset restore, grid placement, editor preview). Without a way
@@ -5872,8 +5894,76 @@ local function joinRequestUpdate(dt)
   M.requestState()
 end
 
+-- BeamNG hook: SOMETHING asked to reset or recover a vehicle.
+--
+-- Fired by every reset path the game has -- the reset keys, both recovery keys,
+-- loadHome, and the Pause menu's Vehicle Management buttons -- as
+-- `extensions.hook('trackVehReset')`, from the action definitions themselves.
+-- That makes it the one signal that covers the paths onVehicleResetted misses,
+-- and it is the game's own rather than something inferred.
+--
+-- It says a recovery was REQUESTED, not that the car has moved. Where the car
+-- was is recorded here, and the watch below decides whether anything happened.
+function M.trackVehReset()
+  if not sessionRunning() or session.spectatorLock or holdWanted then return end
+  -- WHERE THE CAR IS RIGHT NOW, read straight off it. This hook fires before the
+  -- recovery has moved anything -- loadHome resets first and teleports second --
+  -- so this is the truest record of where the driver was, fresher than the
+  -- per-frame sample and available before the first checkpoint has been reached.
+  local veh = playerVehicle()
+  local pos = nil
+  if veh then pcall(function () pos = veh:getPosition() end) end
+  if not pos then pos = session.prevPos end
+  if not pos then return end
+  recoverWatch.left = RECOVER_WATCH_SEC
+  recoverWatch.x, recoverWatch.y, recoverWatch.z = pos.x, pos.y, pos.z
+end
+
+-- Did the recovery move the car off the track? Runs only while the watch above
+-- is armed, so a car simply being driven quickly is never a candidate.
+local function recoverWatchUpdate(dt)
+  if recoverWatch.left <= 0 then return end
+  recoverWatch.left = recoverWatch.left - dt
+  -- The session ending, or the driver being stood down, closes the window: there
+  -- is nothing to protect and their car is their own again.
+  if not sessionRunning() or session.spectatorLock or holdWanted then
+    recoverWatch.left = 0
+    return
+  end
+  -- Our own teleports announce themselves. A checkpoint-mode relocation is one,
+  -- and it arrives inside exactly this window.
+  if isSelfTeleportEcho() then return end
+  local veh = playerVehicle()
+  if not veh then return end
+  local pos = nil
+  pcall(function () pos = veh:getPosition() end)
+  if not pos then return end
+  local dx, dy, dz = pos.x - recoverWatch.x, pos.y - recoverWatch.y, pos.z - recoverWatch.z
+  if (dx * dx + dy * dy + dz * dz)
+      <= (TUNE.RECOVER_SNAP_RANGE * TUNE.RECOVER_SNAP_RANGE) then
+    return                                  -- recovered in place: nothing to do
+  end
+  -- It moved. Put it back where the driver was, keeping the repair the recovery
+  -- already did -- which is exactly what the in-place reset key gives them.
+  recoverWatch.left = 0
+  noteSelfTeleport(recoverWatch.x, recoverWatch.y, recoverWatch.z)
+  local ok = pcall(function ()
+    local rot = veh:getRotation()
+    veh:setPositionRotation(recoverWatch.x, recoverWatch.y, recoverWatch.z,
+      rot.x, rot.y, rot.z, rot.w)
+  end)
+  if ok then
+    session.prevPos = vec3(recoverWatch.x, recoverWatch.y, recoverWatch.z)
+    pushNotice('reset', 'Recovered in place',
+      { sub = 'A race reset does not move you off the track' })
+    log('I', 'raceManager', 'Undid a recovery that teleported the car (Home key, '
+      .. 'a menu recovery, or a saved-position recall)')
+  end
+end
+
 function M.onUpdate(dt)
   localTime = localTime + dt
+  recoverWatchUpdate(dt)    -- a recovery that teleported, put back
   joinRequestUpdate(dt)     -- deferred state request after joining a server
   checkGates()
   lapTimerUpdate(dt)        -- live lap clock for this driver's own HUD

@@ -538,11 +538,29 @@ Four new settings in `config.json`, beside the lap count:
   driver has resets left, because this is not a reset being rationed but a move
   with no place in a race. Drivers out of the session keep them.
 
-  **Watching for the jump per frame was tried and withdrawn.** Telling a teleport
-  from a fast car needs a speed the mod cannot always read, and a false positive
-  drags a LEADING driver backwards for going quickly -- a worse bug than the one
-  being fixed. A driver who wants Home to reset can bind it to Recover Vehicle in
-  BeamNG's controls, and the mod treats it exactly like the reset key it then is.
+  **Then the game's own files gave the actual mechanism**, and the fix got better.
+  Home runs `recovery.loadHome()`, which is:
+
+      obj:requestReset(RESET_PHYSICS)      -- the reset fires HERE
+      setRecoveryPoint(M.homePoint, ...)   -- the teleport happens AFTER it
+
+  So `onVehicleResetted` arrived while the car was still at the crash site: the
+  undo measured no movement, stood down, and the teleport landed a frame later
+  with nothing left watching. The recovery key worked because it moves the car
+  first and reports second.
+
+  The action also fires `extensions.hook('trackVehReset')` -- and so do the reset
+  keys, both recovery keys and the Pause menu's buttons. That is the game's own
+  signal that a recovery was REQUESTED, which is the one thing that covers every
+  path. The mod implements it now: a recovery arms a short watch, and a car that
+  turns up somewhere else while it is running is put back where the driver was,
+  keeping the repair. Home does an in-place reset, which is what it should always
+  have done, and `loadHome` is unblocked again.
+
+  **Watching every frame instead was tried first and withdrawn**, and the reason
+  is worth keeping: telling a teleport from a fast car needs a speed the mod
+  cannot always read, and a false positive drags a LEADING driver backwards for
+  going quickly. Arming the watch only on a reset removes the guesswork entirely.
 
 - **A point-to-point stage showed a lap count, a lap time and laps led.** All
   three are lap figures on a stage driven once: the Lap column read "1/5"

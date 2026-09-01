@@ -787,6 +787,93 @@ queued = {}
 local okPlace = pcall(function () gridAssign(1, 1, 1); resetHook(); frames(3.5) end)
 check(okPlace, 'a build without core_vehicles still places the car on the grid')
 
+-- ===========================================================================
+-- THE HOME KEY, and the order that made it invisible
+-- ===========================================================================
+-- Home is bound to loadHome, and the game's own action definition is:
+--
+--   obj:queueGameEngineLua('extensions.hook("trackVehReset")') recovery.loadHome()
+--
+-- ...while recovery.loadHome() is:
+--
+--   obj:requestReset(RESET_PHYSICS)      -- the reset fires HERE
+--   setRecoveryPoint(M.homePoint, ...)   -- the teleport happens AFTER it
+--
+-- So onVehicleResetted arrives while the car is still sitting at the crash site.
+-- The undo there measured no movement, stood down, and the teleport landed a
+-- frame later with nothing watching -- which is exactly how a driver pressing
+-- the key they press every other day ended up at the far end of the map, still
+-- classified and still being timed.
+--
+-- The sequence below is that order, faithfully. A test that teleported first and
+-- reset second would pass against the old code.
+-- A CLEAN SESSION FIRST. This file is long and earlier sections leave a driver
+-- spectating, held, or out of resets; every one of those is a reason the watch
+-- deliberately stands down, so inheriting one would make these checks pass or
+-- fail on what ran before them.
+handlers['RM_ReleaseSpectate']({ source = 'test' })
+serverState({ phase = 'racing', maxResets = -1, totalLaps = 5, drivers = {} })
+frames(0.2)
+veh.x, veh.y, veh.z = 100, 200, 0
+frames(0.3)                       -- the mod samples where the car is
+
+teleports = {}
+RM.trackVehReset()                -- the hook the action fires...
+resetHook()                       -- ...and the reset, with the car UNMOVED
+veh.x, veh.y, veh.z = 1500, -900, 0   -- ...and only now the teleport lands
+frames(0.3)
+check(math.abs(veh.x - 100) < 1 and math.abs(veh.y - 200) < 1,
+  'a recovery that teleports AFTER its reset is undone: the driver is put back '
+    .. 'where they were (got ' .. veh.x .. ', ' .. veh.y .. ')')
+
+-- ...and the repair is kept. Undoing the teleport must not undo the recovery:
+-- the driver asked for a reset and gets one, in place, which is the whole point.
+check(#teleports > 0, 'the mod moved the car back itself')
+
+-- A RECOVERY THAT DID NOT MOVE THE CAR is left alone. The in-place reset key
+-- lands here on every press, and snapping a car that never moved would be a
+-- teleport where there was none.
+-- Nudged rather than jumped: the car is left where the undo above put it and
+-- moved a couple of metres, which is what an in-place recovery looks like. A
+-- test that teleported it across the map first would be asking the mod to
+-- ignore a teleport, which is the opposite of the rule being checked -- and
+-- would trip the older undo in onVehicleResetted besides.
+veh.x, veh.y = veh.x + 2, veh.y + 1
+frames(0.3)
+teleports = {}
+local atX, atY = veh.x, veh.y
+RM.trackVehReset()
+resetHook()
+frames(0.3)
+check(#teleports == 0, 'an in-place recovery is not interfered with')
+check(math.abs(veh.x - atX) < 1 and math.abs(veh.y - atY) < 1,
+  'and the car stays where it recovered')
+
+-- THE WATCH IS ONLY EVER ARMED BY A RESET. This is the guard that sank the first
+-- attempt at this fix: a version that watched every frame could not tell a
+-- teleport from a fast car, and would drag a LEADING driver backwards for going
+-- quickly. Moving a long way with no reset behind it must be left alone.
+veh.x, veh.y, veh.z = 500, 500, 0
+frames(0.3)
+teleports = {}
+veh.x, veh.y, veh.z = 2500, 2500, 0    -- a huge jump, no reset requested
+frames(0.5)
+check(#teleports == 0,
+  'a car that moves a long way without a reset behind it is NOT touched')
+
+-- OUT OF THE SESSION, a driver may recover wherever they like: they are not
+-- being scored for where it ends up.
+serverState({ phase = 'racing', maxResets = -1, totalLaps = 5, drivers = {},
+  spectatorLock = true })
+handlers['RM_ForceSpectate']({ reason = 'test' })
+veh.x, veh.y, veh.z = 600, 600, 0
+frames(0.3)
+teleports = {}
+RM.trackVehReset()
+veh.x, veh.y, veh.z = 3000, 3000, 0
+frames(0.5)
+check(#teleports == 0, 'a driver out of the session recovers freely')
+
 if fails == 0 then
   print('reset_test: ' .. checks .. ' checks, 0 failures')
 else
