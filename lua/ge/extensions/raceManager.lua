@@ -1563,17 +1563,24 @@ local HUD_ICON = {
   session = 'timer', joker = 'alt_route', derby = 'warning',
 }
 
+-- TEN SECONDS, not six. A driver reads this at racing speed, out of the corner
+-- of an eye, while deciding what to do about the corner in front of them. Six
+-- was set when these were mostly confirmations an admin would see; they are the
+-- primary channel now, because a regular client has no multiplayer chat app and
+-- a message they cannot see is not a message.
+local HUD_TTL = 10
 local function hudMessage(kind, text, ttl)
   kind = tostring(kind or 'info')
   local category = 'raceManager_' .. kind
   local icon = HUD_ICON[kind] or 'flag'
   if type(ui_message) == 'function' then
-    if pcall(ui_message, text, ttl or 6, category, icon) then return end
+    if pcall(ui_message, text, ttl or HUD_TTL, category, icon) then return end
   end
   pcall(guihooks.trigger, 'Message', {
-    ttl = ttl or 6, msg = text, category = category, icon = icon,
+    ttl = ttl or HUD_TTL, msg = text, category = category, icon = icon,
   })
 end
+
 
 -- Which notices leave the app. The test is "would a driver with their eyes on
 -- the road have to ACT on this", not "is it interesting".
@@ -1721,6 +1728,74 @@ end
 -- that was not timed.
 local function sessionRunning()
   return session.phase == 'racing' or session.phase == 'qualifying'
+end
+
+-- ---------------------------------------------------------------------------
+-- STICKY HUD STATE
+-- ---------------------------------------------------------------------------
+-- Some things are not events, they are CONDITIONS: the field is forming up, the
+-- race is neutralised, the green is coming at the line. A driver who looks up
+-- four seconds after the flash has missed it, and the fact is still true.
+--
+-- BeamNG replaces a HUD message that shares a category, so a condition is held
+-- on screen by simply re-asserting it. That is the whole mechanism: no second
+-- message system, and the transient notices go on flashing over the top.
+--
+-- IT EXPIRES AFTER A LAP OR TWO, counted in LAPS rather than seconds, because
+-- that is the unit the thing it describes is measured in. A caution that has run
+-- two laps is a caution everybody has seen; leaving it up turns the HUD into
+-- furniture and teaches drivers to stop reading it. The panel's own badge stays
+-- for as long as the condition really lasts -- that is what a badge is for.
+--
+-- The seconds cap is a backstop for a driver who is stationary, or out of the
+-- car, and therefore completing no laps at all.
+local STICKY_LAPS      = 2
+local STICKY_MAX_SEC   = 180
+local STICKY_REFRESH   = 2.0
+local sticky = { key = nil, lap = 0, left = 0, due = 0 }
+
+-- What the HUD should be holding up right now, or nil. Ordered by what a driver
+-- has to act on FIRST, and only one is ever showing: these conditions exclude
+-- each other on the road even where the flags overlap.
+local function stickyMessage()
+  if not sessionRunning() or session.spectatorLock then return nil end
+  if session.pacing then
+    return 'pace', 'PACE LAP - hold position, 40 mph / 64 km/h. Green at the line.'
+  end
+  if session.restartPending then
+    return 'restart', 'RESTART THIS LAP - green as the leader reaches the line. Get ready.'
+  end
+  if session.cautionPending then
+    return 'caution', 'CAUTION - race back to the line. Positions lock as you complete this lap.'
+  end
+  if session.caution then
+    return 'caution', 'CAUTION - hold position, no overtaking. Places are frozen.'
+  end
+  return nil
+end
+
+local function stickyUpdate(dt)
+  local key, text = stickyMessage()
+  if not key then
+    sticky.key = nil
+    return
+  end
+  if key ~= sticky.key then
+    -- A NEW CONDITION, so the allowance starts again. "Race back to the line"
+    -- becoming "positions frozen" is a different instruction, not the same one
+    -- continuing, and a driver gets the full two laps to read each of them.
+    sticky.key, sticky.lap = key, session.localLap or 0
+    sticky.left, sticky.due = STICKY_MAX_SEC, 0
+  end
+  sticky.left = sticky.left - dt
+  sticky.due  = sticky.due - dt
+  local lapsShown = (session.localLap or 0) - sticky.lap
+  if sticky.left <= 0 or lapsShown > STICKY_LAPS then return end
+  if sticky.due > 0 then return end
+  sticky.due = STICKY_REFRESH
+  -- Slightly longer than the refresh, so the message never blinks out between
+  -- two assertions on a frame that ran late.
+  hudMessage('flag', text, STICKY_REFRESH + 2)
 end
 
 local function resetLapTracking()
@@ -5874,6 +5949,7 @@ end
 
 function M.onUpdate(dt)
   localTime = localTime + dt
+  stickyUpdate(dt)          -- conditions held on the HUD: pace lap, caution, restart
   joinRequestUpdate(dt)     -- deferred state request after joining a server
   checkGates()
   lapTimerUpdate(dt)        -- live lap clock for this driver's own HUD
@@ -8059,6 +8135,19 @@ local function onLapCredit(rawData)
     .. ' (' .. tostring(data.reason or 'no reason given') .. ')')
 end
 
+-- The server has something to tell this driver, on the channel they can read.
+-- Routed straight through pushNotice, so it reaches the panel's strip and the
+-- game's own HUD by exactly the same path as every notice raised locally --
+-- there is no second presentation to keep in step.
+local function onNotice(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local msg = data.msg and tostring(data.msg) or ''
+  if msg == '' then return end
+  pushNotice(tostring(data.kind or 'session'), msg,
+    { sub = data.sub and tostring(data.sub) or nil })
+end
+
 -- --- Module 1: forced spectator mode (server -> client) --------------------
 -- 1st, 2nd, 3rd, 4th. The teens are the trap and they are why this is a function
 -- rather than a lookup on the last digit: 11th, 12th and 13th take "th" while 21st,
@@ -9042,6 +9131,8 @@ local DISPATCH = {
   RM_DerbyGhost      = ghost.onDerbyRespawn,
   -- Grid hold: the server pulling a car back onto its slot.
   RM_HoldCorrect     = onHoldCorrect,
+  -- Something the FIELD needs to read, pushed by the server.
+  RM_Notice          = onNotice,
   -- A lap handed to this driver without a crossing (the caution's free pass).
   RM_LapCredit       = onLapCredit,
   -- Cup / series points

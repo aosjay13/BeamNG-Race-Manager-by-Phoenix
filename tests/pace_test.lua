@@ -33,6 +33,7 @@ local lastChat  = nil
 local chatLog   = {}
 local timers    = {}
 
+local notices = {}
 MP = {
   GetPlayerName = function (pid) return connected[pid] end,
   SendChatMessage = function (target, msg)
@@ -46,6 +47,11 @@ MP = {
   end,
   TriggerClientEvent = function (target, event, payload)
     if event == 'RM_Update' then lastState = payload end
+    -- THE FIELD'S OWN CHANNEL. A regular client has no multiplayer chat app, so
+    -- an instruction to whoever is driving goes here rather than to chat, and a
+    -- test that only watched chat would read as though the message had been
+    -- deleted rather than moved.
+    if event == 'RM_Notice' then notices[#notices + 1] = payload end
   end,
   RegisterEvent = function () end,
   CreateEventTimer = function (name) timers[name] = true end,
@@ -54,6 +60,17 @@ MP = {
   Settings = { Map = 0 },
   Get = function () return '/levels/gridmap_v2/info.json' end,
 }
+
+-- What the FIELD was told, headline and sub-line searched as one string: a
+-- message split across the two is still one sentence to the driver reading it.
+local function noticeHas(text)
+  for _, n in ipairs(notices) do
+    local whole = tostring(n.msg or '') .. ' ' .. tostring(n.sub or '')
+    if whole:find(text, 1, true) then return true end
+  end
+  return false
+end
+local function noticeClear() notices = {} end
 
 Util = {
   JsonEncode = function (t) return t end,
@@ -175,10 +192,10 @@ check(lastState.phase == 'racing', 'Start Race releases the field immediately')
 check(timers['RM_CountdownTick'] ~= true, 'with no countdown timer running')
 check(lastState.pacing == true, 'the field is on the pace lap')
 check(lastState.flag == 'yellow', 'released under yellow, which is what a formation lap is')
-check(chatHas('PACE LAP'), 'and the field is told')
-check(chatHas('40 mph'), 'in miles per hour...')
-check(chatHas('64 km/h'), '...and in km/h, because the grid is not all in one country')
-check(chatHas('GREEN FLAG falls as the leader'), 'and told what ends it')
+check(noticeHas('PACE LAP'), 'and the field is told, on the channel a driver can read')
+check(noticeHas('40 mph'), 'in miles per hour...')
+check(noticeHas('64 km/h'), '...and in km/h, because the grid is not all in one country')
+check(noticeHas('GREEN FLAG falls as the leader'), 'and told what ends it')
 check(driver(1).status == 'racing', 'the drivers are racing-status: gates armed, laps reported')
 check(driver(1).currentLap == 1, 'everyone is on lap 1')
 check(driver(1).outLap == true,
@@ -239,7 +256,7 @@ report(3, 1, 1, 80.0)
 seconds(0.5)
 check(lastState.pacing == false, 'the green falls as the LEADER reaches the line')
 check(lastState.flag == 'green', 'and the flag goes green')
-check(chatHas('GREEN FLAG'), 'the field is told the race is on')
+check(noticeHas('GREEN FLAG'), 'the field is told the race is on')
 check(driver(2).status == 'racing' and driver(3).status == 'racing',
   'including the cars still strung out behind: the green is one event for '
     .. 'everybody, and each driver still starts their own lap 1 at the line')
@@ -357,7 +374,7 @@ chatClear()
 RM_onSetFlag(0, '{"flag":"green"}')
 check(lastState.pacing == false, 'a manual green ends the pace lap')
 check(lastState.flag == 'green', 'and the flag follows')
-check(chatHas('pace lap is over'),
+check(noticeHas('pace lap is over'),
   'through the same path the automatic green takes, so the two leave identical state')
 
 -- ---------------------------------------------------------------------------

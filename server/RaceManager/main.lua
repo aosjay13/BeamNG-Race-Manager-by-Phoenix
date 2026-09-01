@@ -1957,6 +1957,30 @@ local function assignGridSlot(pid, slot, order, count)
   }))
 end
 
+-- TELL THE FIELD SOMETHING, on the channel they can actually read.
+--
+-- A regular client has no multiplayer chat app. Every SendChatMessage(-1, ...)
+-- in this file was therefore an announcement to the admins and to nobody else --
+-- which is fine for a results path or an audit line, and useless for "your first
+-- lap is not timed", which is an instruction to the person driving.
+--
+-- So the two audiences get two channels, and the choice is made per message:
+--
+--   notifyField()  the drivers. Lands in BeamNG's own HUD, over the road, where
+--                  a driver is already looking.
+--   SendChatMessage(pid, ...)  the admin who pressed something. They have chat,
+--                  they are at a desk, and a refusal is a conversation with one
+--                  person rather than an announcement to the grid.
+--
+-- SendChatMessage(-1, ...) survives only where the message is genuinely for
+-- everyone AND is a record rather than an instruction -- the results file path
+-- being the clearest case.
+local function notifyField(kind, msg, sub)
+  MP.TriggerClientEvent(-1, 'RM_Notice', Util.JsonEncode({
+    kind = tostring(kind or 'session'), msg = tostring(msg or ''), sub = sub,
+  }))
+end
+
 local function broadcastCountdown(count)
   MP.TriggerClientEvent(-1, 'RM_Countdown', Util.JsonEncode({ count = count }))
 end
@@ -3107,7 +3131,7 @@ local function beginFinalLap()
   race.finalLap     = true
   race.finalLapLeft = CFG.finalLapGrace
   broadcastState()
-  MP.SendChatMessage(-1, '[RaceManager] TIME EXPIRED: the lap you are on is your '
+  notifyField('session', 'TIME EXPIRED', 'The lap you are on is your '
     .. 'FINAL LAP. Your session ends as you cross the line.')
   print(string.format('[RaceManager] Qualifying time expired: final lap armed for %d driver(s)',
     driversOnTrack()))
@@ -3134,7 +3158,7 @@ local function armRaceFinalLap(fromLap, why)
   end
   race.lastLapNum = fromLap
   broadcastState()
-  MP.SendChatMessage(-1, '[RaceManager] FINAL LAP: the leader has taken the line. '
+  notifyField('flag', 'FINAL LAP', 'The leader has taken the line. '
     .. 'Everyone still running finishes at the end of lap ' .. fromLap .. '.')
   print(string.format('[RaceManager] Timed race: final lap is lap %d (%s), %d driver(s) out',
     fromLap, why or 'leader crossed after the clock expired', driversOnTrack()))
@@ -4301,14 +4325,14 @@ local function releaseField(pacing)
   -- league with drivers either side of the Atlantic, and a number that means
   -- nothing to half the grid is a number half the grid ignores.
   if race.pacing then
-    MP.SendChatMessage(-1, '[RaceManager] PACE LAP: maintain position and limit '
+    notifyField('flag', 'PACE LAP', 'Maintain position and limit '
       .. 'your speed to 40 mph / 64 km/h. No overtaking. The GREEN FLAG falls as '
       .. 'the leader reaches the start/finish line.')
   elseif outLapOwed() and isQualiSession() then
-    MP.SendChatMessage(-1, '[RaceManager] GO! Your first lap is an OUT LAP: it is '
+    notifyField('flag', 'GO! Your first lap is an OUT LAP', 'It is '
       .. 'not timed and does not count. Timing starts as you cross the line.')
   elseif outLapOwed() then
-    MP.SendChatMessage(-1, '[RaceManager] GO! Your first lap COUNTS but is not '
+    notifyField('flag', 'GO! Your first lap counts', 'It is not '
       .. 'timed: a standing start is not a lap time.')
     -- WHY, in the console, because "my race keeps giving a lap away and I do not
     -- know what is asking for it" is otherwise unanswerable from the outside.
@@ -4349,7 +4373,7 @@ local function dropGreenFlag(why)
   race.pacing  = false
   race.flag    = 'green'
   race.greenAt = race.time
-  MP.SendChatMessage(-1, '[RaceManager] GREEN FLAG - GO! The pace lap is over '
+  notifyField('flag', 'GREEN FLAG - GO!', 'The pace lap is over '
     .. 'and the race is on.')
   print(string.format('[RaceManager] GREEN FLAG at %.1fs: %s', race.time,
     why or 'pace lap complete'))

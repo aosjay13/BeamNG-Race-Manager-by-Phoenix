@@ -2600,7 +2600,11 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // Presentation is decided per kind, in NOTICE_STYLE below, so that adding
       // a notification later is one row there rather than another timer and
       // another slot in this controller.
-      var NOTICE_DEFAULT = { rank: 0, flash: false, ms: 6000, color: 'gray' };
+      // LONGER THAN THEY WERE, across the board. These were tuned when the
+      // panel was mostly an admin's screen and chat carried the rest; they are
+      // the primary channel now, because a regular client has no multiplayer
+      // chat app. A driver reads this at speed, glancing away from a corner.
+      var NOTICE_DEFAULT = { rank: 0, flash: false, ms: 9000, color: 'gray' };
       var NOTICE_STYLE = {
         // Flags outrank everything: a caution is a fact about the session and
         // has to reach a driver whose eyes are on the road, ahead of any
@@ -2608,22 +2612,22 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         // The flash, and the color comes from the notice rather than from
         // here: green, yellow, red, white and checkered are all kind 'flag'
         // and each waves in its own color.
-        flag:     { rank: 40, flash: true,  ms: 2600 },
+        flag:     { rank: 40, flash: true,  ms: 4500 },
         // Being removed from the session, or having a car refused, is the other
         // class a driver cannot afford to miss.
-        spectate: { rank: 30, flash: false, ms: 6000 },
-        vehicle:  { rank: 30, flash: false, ms: 6000 },
-        session:  { rank: 20, flash: false, ms: 6000 },
+        spectate: { rank: 30, flash: false, ms: 9000 },
+        vehicle:  { rank: 30, flash: false, ms: 9000 },
+        session:  { rank: 20, flash: false, ms: 9000 },
         // Running out of resets changes what this driver is allowed to do for
         // the rest of the session, so it flashes rather than scrolling past in
         // the strip. Amber, not the flag yellow: a caution is about the
         // session and this is about one car.
-        resetsout: { rank: 25, flash: true, ms: 2600, color: 'amber' },
+        resetsout: { rank: 25, flash: true, ms: 4500, color: 'amber' },
         // Gold, and a flash rather than the strip. On a driver's panel the
         // strip painted 16% gold over a transparent root, which is to say over
         // the road going past: legible on an admin's dark panel and very nearly
         // invisible on everybody else's, which is how it went unnoticed.
-        fastest:  { rank: 10, flash: true,  ms: 2600, color: 'gold' },
+        fastest:  { rank: 10, flash: true,  ms: 4500, color: 'gold' },
         // Everything else (grid, joker, pit, reset, ghost, finish, server)
         // takes NOTICE_DEFAULT. They are the running commentary.
       };

@@ -20,6 +20,7 @@ local released   = {}   -- ordered list of RM_ReleaseSpectate payloads
 local timers     = {}
 local hostedMap  = '/levels/gridmap_v2/info.json'
 
+local notices = {}
 MP = {
   GetPlayerName = function (pid) return connected[pid] end,
   SendChatMessage = function (target, msg) lastChat = msg end,
@@ -30,6 +31,11 @@ MP = {
   end,
   TriggerClientEvent = function (target, event, payload)
     if event == 'RM_Update' then lastState = payload end
+    -- THE FIELD'S OWN CHANNEL. A regular client has no multiplayer chat app, so
+    -- an instruction to whoever is driving goes here rather than to chat, and a
+    -- test that only watched chat would read as though the message had been
+    -- deleted rather than moved.
+    if event == 'RM_Notice' then notices[#notices + 1] = payload end
     if event == 'RM_GridAssign' then
       gridAssign[target] = payload.slot or false
     end
@@ -42,6 +48,17 @@ MP = {
   Settings = { Map = 0 },
   Get = function () return hostedMap end,
 }
+
+-- What the FIELD was told, headline and sub-line searched as one string: a
+-- message split across the two is still one sentence to the driver reading it.
+local function noticeHas(text)
+  for _, n in ipairs(notices) do
+    local whole = tostring(n.msg or '') .. ' ' .. tostring(n.sub or '')
+    if whole:find(text, 1, true) then return true end
+  end
+  return false
+end
+local function noticeClear() notices = {} end
 
 Util = {
   JsonEncode = function (t) return t end,
@@ -259,8 +276,9 @@ for _ = 1, 15 do RM_Tick() end     -- past the limit
 check(lastState.phase == 'qualifying',
   'the time limit does not end the session out from under a driver mid-lap')
 check(lastState.finalLap == true, 'it arms the final lap instead')
-check(type(lastChat) == 'string' and lastChat:find('FINAL LAP', 1, true) ~= nil,
-  'chat tells every driver the lap they are on is their last')
+check(noticeHas('FINAL LAP'),
+  'the FIELD is told the lap they are on is their last, on the channel a '
+    .. 'regular client can actually read')
 -- The crossing is what ends it, and it takes the car off the track - but not
 -- the OUT lap crossing. This driver was still on their out lap when the clock
 -- expired, and a session that had already promised not to score that lap must

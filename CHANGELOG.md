@@ -523,6 +523,49 @@ Four new settings in `config.json`, beside the lap count:
   every connected driver in the season and fill the standings with people who
   have never scored.
 
+### The HUD gets the driver's messages, and holds the ones that last
+
+#### Added
+
+- **A channel the field can actually read.** A regular client has no multiplayer
+  chat app, so every `SendChatMessage(-1, ...)` in the plugin was an announcement
+  to the admins and to nobody else. That is fine for a results path or an audit
+  line; it is useless for "your first lap is not timed", which is an instruction
+  to the person driving.
+
+  Messages now pick an audience. `notifyField()` reaches every driver through
+  BeamNG's own HUD, over the road, where they are already looking; a refusal or
+  an audit line still goes to the admin who pressed something, because they have
+  chat and are sitting at a desk. Broadcast chat survives only where a message is
+  genuinely for everyone AND is a record rather than an instruction.
+
+  Six moved in this pass: TIME EXPIRED, FINAL LAP, the pace-lap instruction, both
+  forms of GO, and the green that ends a formation lap.
+
+- **Sticky HUD state for conditions, as opposed to events.** Some things are not
+  moments, they are situations: the field is forming up, the race is neutralised,
+  the green is coming at the line. A driver who looks up four seconds after the
+  flash has missed it and the fact is still true.
+
+  BeamNG replaces a HUD message sharing a category, so a condition is held on
+  screen by re-asserting it -- no second message system, and transient notices go
+  on flashing over the top.
+
+  **It expires after a lap or two, counted in LAPS**, because that is the unit
+  the thing it describes is measured in. A caution that has run two laps is one
+  everybody has seen; leaving it up turns the HUD into furniture and teaches
+  drivers to stop reading it. A seconds cap backs it up for a driver who is
+  stationary and completing no laps at all. The panel's badge stays for as long
+  as the condition really lasts, which is what a badge is for.
+
+#### Changed
+
+- **Every notice lasts longer.** The game HUD's messages go from six seconds to
+  ten, the panel's flashes from 2.6 to 4.5, and its strip from six to nine. The
+  old figures were set when this was mostly an admin's screen with chat carrying
+  the rest; it is the primary channel now, and a driver reads it at speed while
+  deciding what to do about the corner in front of them.
+
 ### Live-server fixes: the Home key, a sprint stage's board, and a busy header
 
 #### Fixed

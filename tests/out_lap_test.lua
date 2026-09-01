@@ -23,6 +23,7 @@ local spectated  = {}
 local released   = {}
 local timers     = {}
 
+local notices = {}
 MP = {
   GetPlayerName = function (pid) return connected[pid] end,
   SendChatMessage = function (target, msg) chat[#chat + 1] = msg end,
@@ -33,6 +34,11 @@ MP = {
   end,
   TriggerClientEvent = function (target, event, payload)
     if event == 'RM_Update'          then lastState = payload end
+    -- THE FIELD'S OWN CHANNEL. A regular client has no multiplayer chat app, so
+    -- an instruction to whoever is driving goes here rather than to chat, and a
+    -- test that only watched chat would read as though the message had been
+    -- deleted rather than moved.
+    if event == 'RM_Notice' then notices[#notices + 1] = payload end
     if event == 'RM_ForceSpectate'   then spectated[target] = payload end
     if event == 'RM_ReleaseSpectate' then released[target] = payload end
   end,
@@ -42,6 +48,17 @@ MP = {
   Settings = { Map = 0 },
   Get = function () return '/levels/gridmap_v2/info.json' end,
 }
+
+-- What the FIELD was told, headline and sub-line searched as one string: a
+-- message split across the two is still one sentence to the driver reading it.
+local function noticeHas(text)
+  for _, n in ipairs(notices) do
+    local whole = tostring(n.msg or '') .. ' ' .. tostring(n.sub or '')
+    if whole:find(text, 1, true) then return true end
+  end
+  return false
+end
+local function noticeClear() notices = {} end
 
 Util = {
   JsonEncode = function (t) return t end,
@@ -104,7 +121,7 @@ check(chatSaid('out lap'), 'forming the grid says so in chat')
 RM_onStartCountdown(0)
 RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
 check(lastState.phase == 'qualifying', 'the session is running')
-check(chatSaid('OUT LAP'), 'and GO says it again, in the words a driver reads mid-race')
+check(noticeHas('OUT LAP'), 'and GO says it again, in the words a driver reads mid-race')
 for pid = 0, 2 do
   check(driver(pid).outLap == true, 'driver ' .. pid .. ' starts owing an out lap')
   check(driver(pid).currentLap == 1, 'and starts on lap 1 like everybody else')

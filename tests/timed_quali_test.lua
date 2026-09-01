@@ -24,6 +24,7 @@ local spectated  = {}
 local released   = {}
 local timers     = {}
 
+local notices = {}
 MP = {
   GetPlayerName = function (pid) return connected[pid] end,
   SendChatMessage = function (target, msg) chat[#chat + 1] = msg end,
@@ -34,6 +35,11 @@ MP = {
   end,
   TriggerClientEvent = function (target, event, payload)
     if event == 'RM_Update'          then lastState = payload end
+    -- THE FIELD'S OWN CHANNEL. A regular client has no multiplayer chat app, so
+    -- an instruction to whoever is driving goes here rather than to chat, and a
+    -- test that only watched chat would read as though the message had been
+    -- deleted rather than moved.
+    if event == 'RM_Notice' then notices[#notices + 1] = payload end
     if event == 'RM_GridAssign'      then gridAssign[target] = payload end
     if event == 'RM_ForceSpectate'   then spectated[target] = payload end
     if event == 'RM_ReleaseSpectate' then released[target] = payload end
@@ -44,6 +50,17 @@ MP = {
   Settings = { Map = 0 },
   Get = function () return '/levels/gridmap_v2/info.json' end,
 }
+
+-- What the FIELD was told, headline and sub-line searched as one string: a
+-- message split across the two is still one sentence to the driver reading it.
+local function noticeHas(text)
+  for _, n in ipairs(notices) do
+    local whole = tostring(n.msg or '') .. ' ' .. tostring(n.sub or '')
+    if whole:find(text, 1, true) then return true end
+  end
+  return false
+end
+local function noticeClear() notices = {} end
 
 Util = {
   JsonEncode = function (t) return t end,
@@ -112,7 +129,7 @@ ticks(25)   -- past the 2 second limit (100 ms a tick)
 check(lastState.phase == 'qualifying',
   'the session is STILL RUNNING after the clock expires (drivers keep driving)')
 check(lastState.finalLap == true, 'the final lap is armed')
-check(chatSaid('FINAL LAP'), 'every driver is told the clock expired and this lap is their last')
+check(noticeHas('FINAL LAP'), 'every driver is told the clock expired and this lap is their last')
 for pid = 0, 2 do
   check(driver(pid).status == 'qualifying',
     'driver ' .. pid .. ' is still on track and controllable')
