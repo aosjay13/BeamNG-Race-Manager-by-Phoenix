@@ -523,6 +523,43 @@ Four new settings in `config.json`, beside the lap count:
   every connected driver in the season and fill the standings with people who
   have never scored.
 
+### Live-server fixes: the Home key, a sprint stage's board, and a busy header
+
+#### Fixed
+
+- **The Home key teleported a driver to their spawn point mid-race.** It calls
+  `loadHome`, which moves the car without ever reporting a reset -- so the undo
+  that already makes the RECOVERY key behave like the in-place one never saw it,
+  and a driver who pressed the key they press every other day of the week was at
+  the far end of the map, still classified and still being timed.
+
+  `loadHome` and `dropPlayerAtCamera` are now switched off for the length of a
+  session, in a filter group of their own: they are blocked whether or not a
+  driver has resets left, because this is not a reset being rationed but a move
+  with no place in a race. Drivers out of the session keep them.
+
+  **Watching for the jump per frame was tried and withdrawn.** Telling a teleport
+  from a fast car needs a speed the mod cannot always read, and a false positive
+  drags a LEADING driver backwards for going quickly -- a worse bug than the one
+  being fixed. A driver who wants Home to reset can bind it to Recover Vehicle in
+  BeamNG's controls, and the mod treats it exactly like the reset key it then is.
+
+- **A point-to-point stage showed a lap count, a lap time and laps led.** All
+  three are lap figures on a stage driven once: the Lap column read "1/5"
+  against a lap box the server ignores, Best Lap is empty for everybody by
+  design, and Led is 1 for whoever is in front. The Lap column becomes **CP** and
+  counts checkpoints cleared of the stage's total; the other two are hidden. Gap
+  stays -- it is a real time behind the leader and the most useful number on a
+  stage the field runs together.
+
+#### Changed
+
+- **The formation lap said itself three times.** "LAP 1: NOT TIMED", "PACE LAP:
+  NOT SCORED" and "PACE LAP 40 MPH / 64 KM/H" all at once, in the one place a
+  driver has least room to read. One badge now carries what it is, what to do and
+  that it does not count; the lap clock's slot says only **NOT TIMED**, which is
+  the one thing that belongs where a time would be.
+
 ### Code and data in two folders, and JSON you can read
 
 #### Changed

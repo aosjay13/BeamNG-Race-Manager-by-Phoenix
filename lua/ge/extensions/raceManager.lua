@@ -950,6 +950,30 @@ local RESET_ACTIONS = {
 }
 local resetInputsBlocked = false
 
+-- THE TELEPORTS, as their own group, blocked for the whole of a session rather
+-- than only once a driver is out of resets.
+--
+-- These two do not reset a car, they MOVE it: loadHome (Home) puts it on its
+-- spawn point and dropPlayerAtCamera puts it wherever the camera is. Neither is
+-- a recovery in any racing sense -- a driver who presses Home mid-race is at the
+-- far end of the map, still classified and still being timed, having pressed the
+-- key they press every other day of the week.
+--
+-- WHY BLOCKED RATHER THAN TURNED INTO A RESET. The undo in onVehicleResetted
+-- already makes the RECOVERY key behave like the in-place one, and the obvious
+-- next step is to do the same for these. It does not work: that undo hangs off
+-- BeamNG's reset hook, and a teleport that never reports itself as a reset never
+-- reaches it. Watching for the jump per frame instead was tried and withdrawn --
+-- telling a teleport from a fast car needs a speed the mod cannot always read,
+-- and a false positive drags a LEADING driver backwards for going quickly, which
+-- is a worse bug than the one being fixed.
+--
+-- So the key does nothing during a session, which is honest and cannot misfire.
+-- A driver who wants Home to reset can bind it to Recover Vehicle in BeamNG's
+-- own controls, and the mod then treats it exactly like the reset key it is.
+local TELEPORT_ACTIONS = { 'loadHome', 'dropPlayerAtCamera' }
+local teleportInputsBlocked = false
+
 -- BeamNG reports a teleport as a vehicle reset, and this mod teleports the car
 -- itself (blocked-reset restore, grid placement, editor preview). Without a way
 -- to tell those apart from the driver pressing reset, a blocked reset restored
@@ -3315,7 +3339,28 @@ end
 -- Recomputed every frame (cheap: only acts on a change): the reset keys go
 -- dead the moment the allowance is spent and come back the moment the session
 -- lets go of the rule.
+-- Same shape as setResetInputsBlocked, and deliberately a SEPARATE filter group:
+-- the two answer to different things. Resets are blocked when an allowance runs
+-- out; the teleports are blocked for the whole session regardless, so a driver
+-- with resets to spare still cannot put themselves on their spawn point.
+local function setTeleportInputsBlocked(blocked)
+  blocked = blocked and true or false
+  if blocked == teleportInputsBlocked then return end
+  if setActionGroupBlocked('raceManagerTeleport', TELEPORT_ACTIONS, blocked) then
+    teleportInputsBlocked = blocked
+    log('I', 'raceManager', 'Teleport inputs ' .. (blocked and 'BLOCKED' or 'released'))
+  end
+end
+
 local function resetInputBlockUpdate()
+  -- THE TELEPORTS GO OFF FOR THE WHOLE SESSION, and come back the moment it
+  -- ends. Not gated on the reset allowance: this is not a reset being rationed,
+  -- it is a move that has no place in a race at all.
+  --
+  -- A driver who is OUT of the session keeps them. Being able to put a spectated
+  -- car back on the road is the same courtesy the reset rules already extend
+  -- them, and they are not being scored for where it ends up.
+  setTeleportInputsBlocked(sessionRunning() and not session.spectatorLock)
   local wantBlocked = not session.spectatorLock
     and ((resetsEnforced() and session.resetsUsed >= session.maxResets)
       or (derbyResetsEnforced() and derbyResets.used >= derbyResets.max))

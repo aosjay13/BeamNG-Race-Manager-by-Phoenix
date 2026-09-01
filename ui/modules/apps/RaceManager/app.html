@@ -89,9 +89,15 @@
       </span>
       <!-- A running clock reads as a time being taken, so the out lap does not
            get one. The driver is told what the lap is for instead. -->
+      <!-- SHORT, because this is the LAP CLOCK's slot and the badges beside it
+           already say which lap it is. On a pace lap this used to read "LAP 1:
+           NOT TIMED" next to a badge reading "PACE LAP: NOT SCORED" next to one
+           reading "PACE LAP 40 MPH" -- three things telling a driver the same
+           fact, in the one place they have least room to read. What belongs
+           HERE is only why there is no time running. -->
       <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
-            title="Standing start, so the first lap is not timed. Timing starts as you cross the line.">
-        {{ sessionKind === 'quali' ? 'OUT LAP: NOT TIMED' : 'LAP 1: NOT TIMED' }}
+            title="{{ outLapNote() }}">
+        NOT TIMED
       </span>
       <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()"
             title="Time on the current lap">
@@ -166,7 +172,11 @@
          race reads as qualifying leaking into it, because the out lap used to be
          qualifying's alone. onOutLap() comes off the bridge's 250 ms lap feed, so
          it goes out on the crossing rather than a broadcast later. -->
-    <span class="rm-out-badge" ng-if="sessionUnderWay() && qualiOutLap && onOutLap()"
+    <!-- NOT DURING A PACE LAP. The pace badge already says PACE LAP and now
+         carries "not scored" with it, so this one would be the second badge in
+         a row naming the same lap. It stays for qualifying's out lap and for a
+         standing start's first lap, which have no badge of their own. -->
+    <span class="rm-out-badge" ng-if="sessionUnderWay() && qualiOutLap && onOutLap() && !pacing"
           title="{{ outLapNote() }}">{{ outLapLabel() }}</span>
     <!-- SAME THREE READOUTS THE DRIVER BAR CARRIES, in the same order, because
          an admin running the session is usually driving it as well. -->
@@ -214,8 +224,11 @@
           title="Full-course caution: hold position, no overtaking. Places are locked in the order the field came back to the line.">CAUTION &middot; POSITIONS FROZEN<b ng-if="cautionLaps"> &middot; LAP {{ cautionLaps }}</b></span>
     <span class="rm-restart-badge" ng-if="caution &amp;&amp; restartPending"
           title="A restart is called: the green flag falls as the leader reaches the start/finish line.">RESTART THIS LAP &middot; GREEN AT THE LINE</span>
+    <!-- ONE BADGE FOR THE WHOLE FORMATION LAP: what it is, what to do, and that
+         it does not count. Three badges used to carry those between them and a
+         driver forming up has no time to read three. -->
     <span class="rm-pace-badge" ng-if="pacing"
-          title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. The green flag falls as the leader reaches the line.">PACE LAP 40 MPH / 64 KM/H</span>
+          title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. It is not timed and is not one of the race laps. The green flag falls as the leader reaches the line.">PACE LAP &middot; HOLD &middot; 40 MPH / 64 KM/H &middot; NOT SCORED</span>
     <span class="rm-p2p-badge" ng-if="pointToPoint"
           title="This track is a point-to-point stage: driven once, first gate to last. Laps do not apply.">POINT TO POINT</span>
     <span class="rm-derby-badge" ng-if="derby.phase === 'running'">DERBY LIVE {{ formatDerbyTime(derby.time) }}</span>
@@ -2598,9 +2611,15 @@
       </span>
       <!-- No clock on the out lap. A running number on a lap that is not being
            timed is a lie, and this bar is the whole HUD for a driver. -->
+      <!-- SHORT, because this is the LAP CLOCK's slot and the badges beside it
+           already say which lap it is. On a pace lap this used to read "LAP 1:
+           NOT TIMED" next to a badge reading "PACE LAP: NOT SCORED" next to one
+           reading "PACE LAP 40 MPH" -- three things telling a driver the same
+           fact, in the one place they have least room to read. What belongs
+           HERE is only why there is no time running. -->
       <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
-            title="Standing start, so the first lap is not timed. Timing starts as you cross the line.">
-        {{ sessionKind === 'quali' ? 'OUT LAP: NOT TIMED' : 'LAP 1: NOT TIMED' }}
+            title="{{ outLapNote() }}">
+        NOT TIMED
       </span>
       <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()">
         LAP {{ formatLapLive(lapElapsed()) }}
@@ -2655,8 +2674,11 @@
           title="Full-course caution: hold position, no overtaking. Places are locked in the order the field came back to the line.">CAUTION &middot; POSITIONS FROZEN<b ng-if="cautionLaps"> &middot; LAP {{ cautionLaps }}</b></span>
     <span class="rm-restart-badge" ng-if="caution &amp;&amp; restartPending"
           title="A restart is called: the green flag falls as the leader reaches the start/finish line.">RESTART THIS LAP &middot; GREEN AT THE LINE</span>
+    <!-- ONE BADGE FOR THE WHOLE FORMATION LAP: what it is, what to do, and that
+         it does not count. Three badges used to carry those between them and a
+         driver forming up has no time to read three. -->
     <span class="rm-pace-badge" ng-if="pacing"
-          title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. The green flag falls as the leader reaches the line.">PACE LAP 40 MPH / 64 KM/H</span>
+          title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. It is not timed and is not one of the race laps. The green flag falls as the leader reaches the line.">PACE LAP &middot; HOLD &middot; 40 MPH / 64 KM/H &middot; NOT SCORED</span>
     <span class="rm-driverbar-label" ng-if="jokerEnabled">
       JOKER <b ng-class="{'rm-joker-done': jokerTaken}">{{ jokerTaken ? 'DONE (lap ' + jokerLap + ')' : 'PENDING' }}</b>
     </span>
@@ -3074,15 +3096,27 @@
           <th class="rm-col-pos" title="Live position: laps, then checkpoints cleared, then distance to the next checkpoint">Pos</th>
           <th class="rm-col-grid" title="Starting grid position">Start</th>
           <th class="rm-col-name">Driver</th>
-          <th class="rm-col-lap">Lap</th>
-          <th class="rm-col-time">Best Lap</th>
+          <!-- A SPRINT STAGE HAS NO LAPS, so the column stops pretending it
+               does. It read "1/5" on a stage driven once -- a lap count against
+               a lap box the server ignores -- while the number a driver on a
+               sprint actually wants is how far through the gates they are. -->
+          <th class="rm-col-lap" ng-if="!pointToPoint">Lap</th>
+          <th class="rm-col-lap" ng-if="pointToPoint" title="Checkpoints cleared on this stage">CP</th>
+          <!-- Nor a lap TIME. The first lap of a race sets none by design and a
+               sprint stage is nothing but that lap, so the column is empty for
+               everybody, all the way to the flag. The run time is the result and
+               it is in Status. -->
+          <th class="rm-col-time" ng-if="!pointToPoint">Best Lap</th>
           <!-- Time behind the leader, measured at this driver's last checkpoint
                -- the last point the two of them have both actually reached. It
                reads "+1 LAP" rather than a number of seconds once a driver is
                lapped, because seconds that exceed a lap time are the one figure
                here that would mislead. -->
           <th class="rm-col-time" title="Time behind the leader at this driver's last checkpoint">Gap</th>
-          <th class="rm-col-led">Led</th>
+          <!-- LAPS LED IS A LAP COUNT TOO. On a stage driven once it is 1 for
+               whoever is in front and 0 for everybody else, which is the
+               position column again in a worse hat. -->
+          <th class="rm-col-led" ng-if="!pointToPoint">Led</th>
           <!-- Which heat this driver ran, where they finished it, and whether
                that was a transfer. Present only during a heat program, because
                outside one every cell would be empty. -->
@@ -3123,13 +3157,14 @@
                    title="Type a starting slot and press Enter to pin this driver to it">
           </td>
           <td class="rm-col-name" title="{{ driverName(row) }}{{ realName(row) ? ' (' + realName(row) + ')' : '' }}">{{ driverName(row) }}</td>
-          <td class="rm-col-lap" title="{{ row.outLap ? 'Out lap: not timed, not counted' : (row.cpCleared ? row.cpCleared + ' checkpoint(s) cleared this lap' : '') }}">{{ lapLabel(row) }}</td>
+          <td class="rm-col-lap" ng-if="!pointToPoint" title="{{ row.outLap ? 'Out lap: not timed, not counted' : (row.cpCleared ? row.cpCleared + ' checkpoint(s) cleared this lap' : '') }}">{{ lapLabel(row) }}</td>
+          <td class="rm-col-lap" ng-if="pointToPoint" title="Checkpoints cleared of the stage's total">{{ stageProgress(row) }}</td>
           <!-- Fastest lap of the session, in gold. A plain equality test per
                row, evaluated by the same digest that already renders the cell. -->
-          <td class="rm-col-time" ng-class="{'rm-best-lap': row.id === bestLapPid && row.raceBest}"
+          <td class="rm-col-time" ng-if="!pointToPoint" ng-class="{'rm-best-lap': row.id === bestLapPid && row.raceBest}"
               title="{{ row.id === bestLapPid && row.raceBest ? 'Fastest lap of the session' : '' }}">{{ formatLap(row.raceBest) }}</td>
           <td class="rm-col-time rm-bc-gap" ng-class="{'rm-bc-lapped': lapsDown(row)}">{{ gapLabel(row) }}</td>
-          <td class="rm-col-led">{{ row.lapsLed || 0 }}</td>
+          <td class="rm-col-led" ng-if="!pointToPoint">{{ row.lapsLed || 0 }}</td>
           <!-- NO "Line" COLUMN. A branch gate is another way through a checkpoint
                rather than a route a driver is on, so there is nothing to report:
                two cars at opposite ends of a head-on oval are ranked next to each
@@ -3151,7 +3186,14 @@
           </td>
         </tr>
         <tr ng-if="!drivers.length">
-          <td colspan="12" class="rm-empty">
+          <!-- COUNTS EVERY HEADER CELL IN THE TABLE, including the pairs that
+               are alternatives to each other (Lap/CP, and the three a sprint
+               stage hides). At most twelve ever render at once, so this is one
+               wider than it needs to be -- which costs nothing, spans the table
+               in every case, and keeps the count checkable against the header.
+               (No angle-bracketed tag name in this comment on purpose: the
+               binding test counts header cells by scanning the markup.) -->
+          <td colspan="13" class="rm-empty">
             No drivers yet: join a BeamMP server running the RaceManager plugin, then press
             <b>Start Quali</b> (or <b>Generate Grid</b> to go straight to a race),
             followed by <b>Start Countdown</b> &mdash; or <b>Start Race</b>, if the

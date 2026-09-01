@@ -1394,6 +1394,24 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         return target ? (n + '/' + target) : String(n);
       };
 
+      // HOW FAR THROUGH THE STAGE, for a point-to-point run. Checkpoints
+      // cleared against the stage's length, which is the sprint answer to the
+      // question the Lap column asks on a circuit.
+      //
+      // A client that has not been sent the route yet has no denominator, and
+      // there is no honest one to invent -- so the cell shows the count alone
+      // rather than dividing by a total it is guessing at.
+      $scope.stageProgress = function (row) {
+        if (!row) { return '-'; }
+        if (row.status === 'finished') { return 'done'; }
+        var done = row.cpCleared || 0;
+        // The loaded route's own length, which this panel already has: it is
+        // what the Track tab counts. Read from here rather than asking the
+        // server for slotCount, which is the same number twice on the wire.
+        var total = ($scope.routeWaypoints || []).length;
+        return total > 0 ? (done + '/' + total) : String(done);
+      };
+
       // IS THIS RACE BEING RUN BEHIND THE PACE CAR. `paceLap` is the RULE and it
       // holds for the whole session, which is what makes the subtraction below
       // stable rather than flickering as the formation lap ends. Mirrors the
