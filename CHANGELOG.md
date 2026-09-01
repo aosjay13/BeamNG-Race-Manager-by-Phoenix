@@ -562,6 +562,28 @@ Four new settings in `config.json`, beside the lap count:
   cannot always read, and a false positive drags a LEADING driver backwards for
   going quickly. Arming the watch only on a reset removes the guesswork entirely.
 
+  Two things a live server then found, both in the watch itself:
+
+  - **The driver was put back at ninety degrees to the track.** The position was
+    captured when the key was pressed and the HEADING was read at undo time --
+    which is the heading of wherever the recovery had just dumped the car. Both
+    are captured up front now. The harness hid it: its stub returned a constant
+    rotation, so reading it at the wrong moment gave the same answer as reading
+    it at the right one.
+  - **It worked twice and failed the third time.** `loadHome` calls
+    `obj:requestReset` first, which reloads the vehicle's Lua VM, and only then
+    teleports -- so on a loaded server the move can land most of a second after
+    the key, by which time the 0.75s window had closed. The window is three
+    seconds now, which is only safe because the test changed with it: it looks
+    for a single-frame JUMP rather than distance travelled since the key. A car
+    driving away from a reset covers twenty-five metres in under three seconds
+    at 30 km/h, so the old measure would have dragged back a driver who simply
+    set off again; a teleport is a discontinuity no amount of driving produces.
+
+  Our own teleports now rebase that per-frame sample rather than being skipped
+  past. Left pointing at where the car used to be, the baseline made a car
+  sitting still somewhere else read as a fresh jump the moment the echo expired.
+
 - **A point-to-point stage showed a lap count, a lap time and laps led.** All
   three are lap figures on a stage driven once: the Lap column read "1/5"
   against a lap box the server ignores, Best Lap is empty for everybody by

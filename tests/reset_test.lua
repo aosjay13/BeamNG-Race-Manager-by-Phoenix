@@ -36,7 +36,13 @@ local veh = {
 }
 function veh:getID() return self.id end
 function veh:getPosition() return { x = self.x, y = self.y, z = self.z } end
-function veh:getRotation() return { x = 0, y = 0, z = 0, w = 1 } end
+-- A REAL ROTATION, because a constant one hides the bug this stub exists to
+-- catch: the undo used to read the heading AFTER the recovery had moved the car,
+-- so a driver was put back in the right place facing whichever way the spawn
+-- point pointed. With `w` fixed at 1 forever, reading it at the wrong moment
+-- gives the same answer as reading it at the right one.
+veh.rz, veh.rw = 0, 1
+function veh:getRotation() return { x = 0, y = 0, z = self.rz, w = self.rw } end
 function veh:getDirectionVector() return { x = self.hx, y = self.hy, z = 0 } end
 function veh:getVelocity() return { x = self.vx, y = self.vy, z = self.vz } end
 function veh:getJBeamFilename() return 'etk800' end
@@ -811,7 +817,7 @@ check(okPlace, 'a build without core_vehicles still places the car on the grid')
 -- spectating, held, or out of resets; every one of those is a reason the watch
 -- deliberately stands down, so inheriting one would make these checks pass or
 -- fail on what ran before them.
-handlers['RM_ReleaseSpectate']({ source = 'test' })
+handlers['RM_ReleaseSpectate']({ source = 'race' })
 serverState({ phase = 'racing', maxResets = -1, totalLaps = 5, drivers = {} })
 frames(0.2)
 veh.x, veh.y, veh.z = 100, 200, 0
@@ -873,6 +879,81 @@ RM.trackVehReset()
 veh.x, veh.y, veh.z = 3000, 3000, 0
 frames(0.5)
 check(#teleports == 0, 'a driver out of the session recovers freely')
+
+-- ===========================================================================
+-- ...AND FACING THE WAY THEY WERE
+-- ===========================================================================
+-- Reported from a live server: the undo put the driver back on the track at
+-- ninety degrees to it. The position was captured when the key was pressed and
+-- the HEADING was read at undo time -- which is the heading of wherever the
+-- recovery had just dumped the car.
+handlers['RM_ReleaseSpectate']({ source = 'race' })
+serverState({ phase = 'racing', maxResets = -1, totalLaps = 5, drivers = {} })
+frames(0.2)
+veh.x, veh.y, veh.z = 700, 700, 0
+veh.rz, veh.rw = 0.3827, 0.9239        -- 45 degrees: the driver's own heading
+frames(0.3)
+
+teleports = {}
+RM.trackVehReset()
+resetHook()
+veh.rz, veh.rw = 0.9239, 0.3827        -- the spawn faces somewhere else entirely
+veh.x, veh.y, veh.z = 4000, 4000, 0
+frames(0.3)
+check(#teleports >= 1, 'the teleport is undone')
+local back = teleports[#teleports]
+check(back and math.abs(back.qz - 0.3827) < 0.001
+  and math.abs(back.qw - 0.9239) < 0.001,
+  'and the driver is put back on THEIR heading, not the spawn point\'s (got z='
+    .. tostring(back and back.qz) .. ')')
+
+-- ===========================================================================
+-- A TELEPORT THAT LANDS LATE
+-- ===========================================================================
+-- Also from the live server: it worked twice and put the driver at their spawn
+-- the third time. loadHome calls obj:requestReset first, which reloads the
+-- vehicle's Lua VM, and only then teleports -- so on a loaded server the move
+-- can land most of a second after the key, and the window used to have closed.
+veh.x, veh.y, veh.z = 800, 800, 0
+veh.rz, veh.rw = 0, 1
+frames(0.3)
+teleports = {}
+RM.trackVehReset()
+resetHook()
+frames(1.5)                             -- a long, slow vehicle reload
+veh.x, veh.y, veh.z = 5000, 5000, 0     -- ...and only NOW does the teleport land
+frames(0.3)
+check(#teleports >= 1,
+  'a teleport that lands a second and a half after the key is still caught')
+check(math.abs(veh.x - 800) < 1 and math.abs(veh.y - 800) < 1,
+  'and the driver goes back where they were (got ' .. veh.x .. ', ' .. veh.y .. ')')
+
+-- ...WITHOUT DRAGGING BACK A DRIVER WHO SIMPLY DROVE OFF. The window is three
+-- seconds now, and a car pulling away from a reset covers well over the old
+-- twenty-five metre threshold inside it. Only a JUMP counts, so continuous
+-- movement -- however far it adds up to -- is left alone.
+veh.x, veh.y, veh.z = 900, 900, 0
+frames(0.3)
+RM.trackVehReset()
+resetHook()
+frames(0.1)
+-- WHERE THE CAR ACTUALLY IS once the reset has settled, which is not necessarily
+-- where it was put: the older undo in onVehicleResetted fires here too, because
+-- prevPos goes stale in a harness with no route loaded. What is being checked is
+-- that the WATCH leaves a driver alone from here on, so the reference is here.
+teleports = {}
+local droveFrom = veh.y
+veh.vy = 30                             -- driving away at about 110 km/h
+for _ = 1, 25 do                        -- 2.5s of it, a couple of metres a frame
+  veh.y = veh.y + 3
+  RM.onUpdate(0.1)
+end
+veh.vy = 0
+check(#teleports == 0,
+  'a driver who accelerates away from their reset is NOT dragged back, however '
+    .. 'far they get')
+check(math.abs(veh.y - (droveFrom + 75)) < 1,
+  'and keeps every metre of it (drove ' .. (veh.y - droveFrom) .. ' m of 75)')
 
 if fails == 0 then
   print('reset_test: ' .. checks .. ' checks, 0 failures')

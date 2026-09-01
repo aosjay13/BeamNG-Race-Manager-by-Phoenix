@@ -993,8 +993,27 @@ local teleportInputsBlocked = false
 --
 -- Armed ONLY by a reset action, which is what keeps it from ever mistaking a
 -- fast car for a teleport -- the thing that sank the first attempt at this.
-local recoverWatch = { left = 0, x = 0, y = 0, z = 0 }
-local RECOVER_WATCH_SEC = 0.75
+--   o*   where the driver was, and WHICH WAY THEY FACED. The heading has to be
+--        captured here, before anything moves: read at undo time it is the
+--        heading of wherever the recovery dumped the car, which put drivers back
+--        on the track at ninety degrees to it.
+--   l*   the previous frame's position, for the jump test below.
+local recoverWatch = {
+  left = 0,
+  ox = 0, oy = 0, oz = 0,
+  rx = 0, ry = 0, rz = 0, rw = 1,
+  lx = 0, ly = 0, lz = 0,
+}
+-- LONG ENOUGH FOR A SLOW RELOAD. loadHome calls obj:requestReset first, which
+-- reloads the vehicle's Lua VM, and only then teleports -- so on a loaded server
+-- the move can land most of a second after the key. At 0.75s the window
+-- sometimes closed first and the driver stayed at their spawn, which is why this
+-- worked twice and failed the third time.
+--
+-- Three seconds is safe here ONLY because of how the test below works: it looks
+-- for a single-frame JUMP, not for distance travelled since the key. A car
+-- driving away covers a few metres a frame however long the window is open.
+local RECOVER_WATCH_SEC = 3.0
 
 -- BeamNG reports a teleport as a vehicle reset, and this mod teleports the car
 -- itself (blocked-reset restore, grid placement, editor preview). Without a way
@@ -5916,7 +5935,19 @@ function M.trackVehReset()
   if not pos then pos = session.prevPos end
   if not pos then return end
   recoverWatch.left = RECOVER_WATCH_SEC
-  recoverWatch.x, recoverWatch.y, recoverWatch.z = pos.x, pos.y, pos.z
+  recoverWatch.ox, recoverWatch.oy, recoverWatch.oz = pos.x, pos.y, pos.z
+  recoverWatch.lx, recoverWatch.ly, recoverWatch.lz = pos.x, pos.y, pos.z
+  -- The heading the driver was actually on the track with. Kept as the identity
+  -- rotation if it cannot be read, which stands the car up rather than leaving
+  -- the field uninitialised.
+  recoverWatch.rx, recoverWatch.ry, recoverWatch.rz, recoverWatch.rw = 0, 0, 0, 1
+  if veh then
+    pcall(function ()
+      local r = veh:getRotation()
+      recoverWatch.rx, recoverWatch.ry = r.x, r.y
+      recoverWatch.rz, recoverWatch.rw = r.z, r.w
+    end)
+  end
 end
 
 -- Did the recovery move the car off the track? Runs only while the watch above
@@ -5930,30 +5961,59 @@ local function recoverWatchUpdate(dt)
     recoverWatch.left = 0
     return
   end
-  -- Our own teleports announce themselves. A checkpoint-mode relocation is one,
-  -- and it arrives inside exactly this window.
-  if isSelfTeleportEcho() then return end
   local veh = playerVehicle()
   if not veh then return end
   local pos = nil
   pcall(function () pos = veh:getPosition() end)
   if not pos then return end
-  local dx, dy, dz = pos.x - recoverWatch.x, pos.y - recoverWatch.y, pos.z - recoverWatch.z
-  if (dx * dx + dy * dy + dz * dz)
-      <= (TUNE.RECOVER_SNAP_RANGE * TUNE.RECOVER_SNAP_RANGE) then
-    return                                  -- recovered in place: nothing to do
+  -- OUR OWN TELEPORTS REBASE THE SAMPLE rather than being skipped past. A
+  -- checkpoint-mode relocation, a grid placement or the undo in
+  -- onVehicleResetted all land inside this window, and simply returning left the
+  -- baseline pointing at where the car USED to be -- so the moment the echo
+  -- expired, the car sitting still somewhere else read as a fresh jump and got
+  -- dragged back. Following the car keeps the next comparison honest.
+  if isSelfTeleportEcho() then
+    recoverWatch.lx, recoverWatch.ly, recoverWatch.lz = pos.x, pos.y, pos.z
+    return
   end
-  -- It moved. Put it back where the driver was, keeping the repair the recovery
-  -- already did -- which is exactly what the in-place reset key gives them.
+  -- A JUMP BETWEEN TWO FRAMES, not a distance from where the key was pressed.
+  --
+  -- Measuring from the origin means "moved 25 metres since the reset", and a car
+  -- driving away from one reaches that in under three seconds at 30 km/h -- so a
+  -- window long enough to catch a slow reload would drag a driver backwards for
+  -- simply setting off again. A teleport is not a long drive, it is a
+  -- DISCONTINUITY: hundreds of metres between two consecutive frames, which no
+  -- amount of driving produces.
+  --
+  -- The speed allowance is for a frame hitch on a loaded server, and costs
+  -- nothing here: obj:requestReset zeroes the car's velocity, so at the moment a
+  -- recovery teleports there is no speed for it to hide behind.
+  local dx, dy, dz = pos.x - recoverWatch.lx, pos.y - recoverWatch.ly, pos.z - recoverWatch.lz
+  local speed = 0
+  pcall(function ()
+    local v = veh:getVelocity()
+    speed = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+  end)
+  local limit = TUNE.RECOVER_SNAP_RANGE
+  local could = speed * (dt or 0) * 3
+  if could > limit then limit = could end
+  if (dx * dx + dy * dy + dz * dz) <= (limit * limit) then
+    -- Continuous movement: the car is being driven, or sitting still after an
+    -- in-place recovery. Carry the sample forward and keep watching.
+    recoverWatch.lx, recoverWatch.ly, recoverWatch.lz = pos.x, pos.y, pos.z
+    return
+  end
+  -- It jumped. Put it back where the driver was AND FACING THE WAY THEY WERE,
+  -- keeping the repair the recovery already did -- which is exactly what the
+  -- in-place reset key gives them.
   recoverWatch.left = 0
-  noteSelfTeleport(recoverWatch.x, recoverWatch.y, recoverWatch.z)
+  noteSelfTeleport(recoverWatch.ox, recoverWatch.oy, recoverWatch.oz)
   local ok = pcall(function ()
-    local rot = veh:getRotation()
-    veh:setPositionRotation(recoverWatch.x, recoverWatch.y, recoverWatch.z,
-      rot.x, rot.y, rot.z, rot.w)
+    veh:setPositionRotation(recoverWatch.ox, recoverWatch.oy, recoverWatch.oz,
+      recoverWatch.rx, recoverWatch.ry, recoverWatch.rz, recoverWatch.rw)
   end)
   if ok then
-    session.prevPos = vec3(recoverWatch.x, recoverWatch.y, recoverWatch.z)
+    session.prevPos = vec3(recoverWatch.ox, recoverWatch.oy, recoverWatch.oz)
     pushNotice('reset', 'Recovered in place',
       { sub = 'A race reset does not move you off the track' })
     log('I', 'raceManager', 'Undid a recovery that teleported the car (Home key, '
