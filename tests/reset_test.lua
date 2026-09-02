@@ -514,13 +514,33 @@ local function configReport()
   return found
 end
 check(configReport() == nil, 'nothing is declared on the frame the vehicle appears')
-frames(1.2)
+-- LONG ENOUGH TO SETTLE, which is several polls rather than one.
+--
+-- A car's identity is assembled from sources that arrive at different times --
+-- the parts from its spawn configuration, the tuning from its own Lua state --
+-- and each of them reads empty for a moment after a spawn. So nothing is
+-- declared until the signature has come out the same a few polls running:
+-- declaring the half-loaded one and then correcting it is a second signature
+-- for an untouched car, which the server refuses and the car is deleted.
+frames(9)
 local report = configReport()
-check(report ~= nil, 'the vehicle configuration is reported once the poll comes round')
-check(report.partsSig == 'model=etk800|parts=body=etk800_body',
+check(report ~= nil,
+  'the vehicle configuration is reported once the signature has settled')
+-- A DIGEST, not a copy of the build. The signature used to carry the serialized
+-- parts and vars verbatim; it now carries 'count:length:hashA:hashB' over each,
+-- computed identically here and inside the vehicle so a car's identity does not
+-- depend on which source answered. What matters is unchanged and is what these
+-- check: the parts half stands alone so tuning can be left free, and the full
+-- signature is that half plus the tuning.
+check(report.partsSig == 'model=etk800|pd=' .. RM.digestForTest({ body = 'etk800_body' }),
   'the parts half is sent separately, so tuning can be left free')
-check(report.sig == report.partsSig .. '|vars=camber=-1.5000',
-  'and the full signature is still the parts half plus the tuning')
+-- Strict is the parts half plus the TUNING, and nothing else. It briefly also
+-- carried a hash of the whole partConfig string, which turned out to describe
+-- the livery as well -- so Strict blocked paint jobs, which both modes allow.
+check(report.sig == report.partsSig .. '|vd=' .. RM.digestForTest({ camber = -1.5 }),
+  'and the full signature is the parts half plus the tuning')
+check(report.partsSig:find('etk800_body', 1, true) == nil,
+  'and it is an identity rather than a copy: the raw part names are not in it')
 check(report.label == 'etk800 - Cup Spec',
   'the setup is labeled with its real name, not the .pc filename stem')
 check(report.game == '0.39.0.0', 'and the report carries the BeamNG build')

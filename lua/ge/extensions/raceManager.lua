@@ -2578,7 +2578,671 @@ end
 -- rejecting us for their car, or whitelisting theirs when an admin presses
 -- capture. Saying nothing leaves the last good report standing, which is right:
 -- our car has not changed just because we stopped looking at it.
-local function localVehicleConfig()
+-- ONE TABLE, NOT NINE LOCALS.
+--
+-- This file sits at Lua's 200-active-locals ceiling, where the next `local`
+-- anybody adds ANYWHERE stops the whole chunk compiling and the mod is simply
+-- gone -- no error a player would ever see. The Garage List work needed nine
+-- names, which is nine more than there were, so they live on one table
+-- instead: a field costs nothing against that limit.
+--
+--   pcCache       the spawn configuration, digested once per car
+--   vehParts      the digests the car itself reported
+--   vehProbe      what the car last said about itself, for the panel
+--   probeLeft     cooldown between questions to the vehicle
+--   probesLeft    hard cap, so a silent car is not asked forever
+--   settleSig     the signature we have been seeing
+--   settleCount   how many polls running it has been the same
+--   SETTLE_POLLS  how many it takes to be believed
+--   lastDeclared  the previous declaration, for the log only
+local garage = {
+  pcCache = nil, vehParts = nil, vehProbe = nil,
+  probeLeft = 0, probesLeft = 3,
+  settleSig = nil, settleCount = 0, SETTLE_POLLS = 3,
+  lastDeclared = nil,
+  -- The last signature THIS client captured with Whitelist. Kept only so a
+  -- rejection can say whether the car's identity moved since it was approved,
+  -- which is otherwise two log lines minutes apart that somebody has to notice
+  -- and compare by eye.
+  lastCaptured = nil,
+  -- Parts captured from BeamMP's spawn event, keyed by vehicle id. See
+  -- watchMPSpawns: this is the only place a car spawned from a saved config
+  -- ever reveals what it is built from.
+  spawnParts = {},
+  spawnHooked = false,
+  -- PCPROBE, temporary. Answers one question: does the saved-config NAME
+  -- survive a Paint Design change? If it does, the Garage List can identify a
+  -- car by model + .pc name and every cosmetic is free in every mode with no
+  -- slot list to maintain. If it does not, identity has to stay a parts
+  -- comparison. Nothing here is read by the matcher; it only logs.
+  --   spawnPc   the .pc name BeamMP announced, per vehicle id
+  --   editPc    the same from an EDIT announcement, if one ever arrives
+  --   editSeen  how many edits BeamMP announced for our own car
+  --   probeSeq  rebuild counter, so two log lines can be told apart
+  spawnPc = {},
+  editPc = {},
+  editSeen = 0,
+  probeSeq = 0,
+  -- Vehicles whose spawn-event parts were dropped as older than the car. Such
+  -- a car must not fall through to the parts tree: the two sources key on
+  -- different things (slot names against paths), so the identity would jump on
+  -- a car that may only have been resprayed. See readSpawnConfig.
+  mpDropped = {},
+}
+
+-- THE CAR'S OWN ANSWER, sent up from the vehicle's Lua VM.
+--
+-- Measured, not guessed: on a BeamMP client both GE-side sources report a
+-- config object with ZERO parts (the panel prints '[partmgmt=0, vehData=0]').
+-- They are caches the VEHICLE fills by pushing its state up, and for a car
+-- spawned through BeamMP nothing ever triggers that push, so they stay empty
+-- for the whole session however long you wait.
+--
+-- The vehicle VM always knows its own parts. So it is asked directly and sends
+-- the answer back here. Asynchronous by nature -- queueLuaCommand is a message,
+-- not a call -- which is why the button primes on the first press and succeeds
+-- on the second rather than blocking.
+--
+-- Keyed on the vehicle id so a driver who swaps cars cannot whitelist the one
+-- they were in before.
+-- THE SPAWN CONFIG'S DIGEST, COMPUTED ONCE PER CAR.
+--
+-- Measured on a live client, and it is the whole of the "changing a part makes
+-- the game freeze" report: for a car spawned from a saved config `partConfig`
+-- is a short path, and for one EDITED in the session it is the entire
+-- configuration inline -- 73,258 bytes in the log that found this.
+--
+-- That string was being read and hashed inside localVehicleConfig, which the
+-- config poll calls every two seconds. Seventy-three thousand iterations of an
+-- interpreted hash loop, on the main thread, on a timer, for a value that only
+-- changes when the car does. Untouched car: thirty bytes, unnoticeable. Edited
+-- car: a hitch every two seconds, which is exactly what was reported and
+-- exactly why changing back to the approved car stopped it.
+--
+-- Cleared by armVehicleConfigReport, so a rebuild re-reads it once.
+
+-- Ask the car what it is built from, AND make it report on itself.
+--
+-- The first version of this asked for the parts and said nothing when it did not
+-- get them, which put us back where we started: the panel read 'car=none' and
+-- that one word covered every possible failure between here and the vehicle VM.
+-- With no error in the log either, there was nothing to act on.
+--
+-- So the chunk below reports at three points, and each answer rules something
+-- out. 'alive' means the vehicle ran our code and can talk back, which clears
+-- the whole channel in one go. 'parts:N' is what the CAR itself thinks it is
+-- built from, which separates "we cannot read it" from "there is nothing to
+-- read". 'err:...' is a fault inside the chunk, carried out rather than left in
+-- a log nobody is looking at.
+--
+-- Everything inside the long bracket runs in the VEHICLE's Lua state. Each step
+-- is separately pcall'd there, so a missing name costs that step and not the
+-- report about it.
+-- A HARD CAP FOR A SILENT CAR, refreshed every time one answers. A car that
+-- talks keeps its budget topped up and is re-asked every few seconds, which is
+-- what makes a part change show up; a car that never answers is asked three
+-- times and then left alone rather than all evening.
+
+-- THE DIGEST: what a car is built from, in forty characters.
+--
+-- `count:length:hashA:hashB` over the canonical "key=value;" form of a table,
+-- keys sorted so the same build always produces the same string. Two different
+-- hashes plus the count and the length, because one 32-bit hash alone is a
+-- collision risk on something that decides whether a car is allowed to race.
+--
+-- Computed IDENTICALLY here and in the vehicle (see requestVehicleParts), so a
+-- parts table read on this side and one read by the car itself produce the same
+-- signature. That is what keeps a car's identity stable no matter which source
+-- answered, and stops it flipping in and out of the offender list.
+-- WHICH SLOTS ARE NOT PART OF THE BUILD.
+--
+-- The Parts tab is not all parts. Alongside Body -- where everything really is
+-- a part, and changing one changes the car -- it carries Paint Design and
+-- License Plate Design, which are livery and must be free to change at all
+-- times, on every mode. Digesting the parts table wholesale made choosing a
+-- police livery read exactly like fitting a different engine.
+--
+-- Matched on the SLOT NAME, because that is the only signal there is. Kept
+-- narrow on purpose: `skidplate` is a real part and must not be caught by a
+-- loose match on "plate", so the plate rule spells out `licenseplate` in full.
+local function isCosmeticSlot(name)
+  name = tostring(name):lower()
+  return name:find('paint', 1, true) ~= nil
+      or name:find('licenseplate', 1, true) ~= nil
+      or name:find('license_plate', 1, true) ~= nil
+      or name:find('livery', 1, true) ~= nil
+      or name:find('decal', 1, true) ~= nil
+      or name:find('skin', 1, true) ~= nil
+end
+
+-- `skipCosmetic` is passed for the PARTS half and never for the tuning half:
+-- tuning has no livery in it, and filtering a table by a parts rule it was
+-- never subject to would be a quiet way to lose a tuning change.
+local function digestOf(t, skipCosmetic)
+  if type(t) ~= 'table' then return '0:0:0:0' end
+  local keys, n = {}, 0
+  for k in pairs(t) do
+    if not (skipCosmetic and isCosmeticSlot(k)) then
+      keys[#keys + 1] = tostring(k); n = n + 1
+    end
+  end
+  table.sort(keys)
+  local out = {}
+  for i = 1, #keys do
+    local v = t[keys[i]]
+    -- QUANTIZED, and this is the difference between a value and an identity.
+    --
+    -- Measured across three spawns of one untouched car: fifteen tuning values
+    -- every time, and a canonical string of 241, 247 and 247 bytes with three
+    -- different hashes. The tuning was not changing -- its FLOATS were, in the
+    -- last digits, and %.6g faithfully wrote every one of them down. So the
+    -- signature moved on its own between spawns and could never match the
+    -- entry the car had been whitelisted under.
+    --
+    -- Fixed three decimals: a width that does not depend on the value, and a
+    -- precision far finer than any tuning control a driver can actually set.
+    if type(v) == 'number' then v = string.format('%.3f', v) else v = tostring(v) end
+    out[#out + 1] = keys[i] .. '=' .. v
+  end
+  local str = table.concat(out, ';')
+  local h1, h2 = 5381, 0
+  for i = 1, #str do
+    local c = str:byte(i)
+    h1 = (h1 * 33 + c) % 4294967296
+    h2 = (h2 * 65599 + c) % 4294967296
+  end
+  return n .. ':' .. #str .. ':' .. h1 .. ':' .. h2
+end
+
+-- The same treatment for a plain string.
+--
+-- `partConfig` is usually a short path like "vehicles/bx/ESRA BX.pc" -- and for
+-- a car that has been edited in the session it is the CONFIGURATION ITSELF,
+-- inline, which runs to thousands of bytes. Put in a signature verbatim that
+-- sails past the server's 4000-byte limit and the capture is refused with
+-- "that configuration is too long to store", which is what a second press of
+-- Whitelist reported on an edited car.
+--
+-- So it is reduced like everything else: same two hashes, same length guard,
+-- and a signature that is a fixed size whatever the engine hands over.
+local function digestText(str)
+  if type(str) ~= 'string' or str == '' then return '-' end
+  local h1, h2 = 5381, 0
+  for i = 1, #str do
+    local c = str:byte(i)
+    h1 = (h1 * 33 + c) % 4294967296
+    h2 = (h2 * 65599 + c) % 4294967296
+  end
+  return #str .. ':' .. h1 .. ':' .. h2
+end
+
+-- THE PARTS, DUG OUT OF THE SPAWN CONFIG.
+--
+-- Measured, and it is the last gap in the Garage List: this client reports
+--
+--     pd=0:0:0:0   vd=15:241:...   pc=73363:...
+--
+-- The car knows its TUNING (fifteen values) and reports NO PARTS AT ALL, from
+-- every source including its own Lua VM. So the parts lock had nothing to
+-- compare and a body part could be swapped freely under Parts mode.
+--
+-- The parts are not missing, though. They are inside that 73 KB `partConfig`
+-- string, which for an edited car is the whole configuration written out. So it
+-- is parsed, once per car, and its parts are digested like any other parts
+-- table -- livery filtered out on the same rule.
+--
+-- Guarded at every step and never fatal: a car spawned from a saved config has
+-- a PATH here rather than a configuration, which parses to nothing and simply
+-- leaves the digest where it was.
+-- THE PARTS, DUG OUT OF THE SPAWN CONFIG.
+--
+-- Measured on a live client, and this is what the string actually is:
+--
+--   {["partsTree"]={["chosenPartName"]="legran",["suitablePartNames"]=...,
+--     ["partPath"]="/legran/",["children"]={["paint_design"]={...}}}}
+--
+-- Three things follow from that, and the first two were wrong here before.
+--
+-- IT IS A LUA TABLE LITERAL, not JSON. Calling jsonDecode on it fails once per
+-- read and prints a stack trace each time, which is a wall of red in the
+-- console for a value that was never going to parse. It is only offered to
+-- jsonDecode when it actually looks like JSON.
+--
+-- IT MUST BE LOADED WITH loadstring, NOT load. BeamNG runs LuaJIT, where `load`
+-- takes a FUNCTION and rejects a string outright; `loadstring` is the one that
+-- takes source. Written as `load or loadstring` this worked in the test harness
+-- (5.3, where `load` accepts a string) and could never work in the game -- the
+-- exact shape of bug the harness is least able to catch.
+--
+-- AND THERE IS NO FLAT `parts` TABLE. It is a TREE: every node carries its
+-- chosen part and a `children` map whose KEYS are the slot names -- which is
+-- also what the Parts tab shows, and what the livery filter reads. So the tree
+-- is walked and flattened into slot -> part.
+-- KEYED BY SLOT NAME, NOT BY PATH.
+--
+-- Every source has to produce the same table for the same car or the digest
+-- moves when the source does. BeamMP's spawn record is a flat slot -> part map,
+-- so the tree is flattened the same way. Keying by path ('/legran/engine')
+-- against BeamMP's 'engine' made one car digest two ways depending on which
+-- source answered, which is a car deleted for a change nobody made.
+--
+-- This is also exactly what BeamJoy does (convertPartsTree in its
+-- VehicleManager), against the same engine data, and it works in production.
+local function collectPartsTree(node, path, out, depth)
+  if type(node) ~= 'table' or depth > 24 then return end
+  local kids = node.children
+  if type(kids) ~= 'table' then return end
+  for slot, child in pairs(kids) do
+    if type(child) == 'table' then
+      local chosen = child.chosenPartName
+      -- An empty slot is a fact about the build too: "no roof rack" differs
+      -- from "roof rack", so it is recorded rather than skipped.
+      out[tostring(slot)] = (type(chosen) == 'string' and chosen ~= '') and chosen or '-'
+      collectPartsTree(child, path, out, depth + 1)
+    end
+  end
+end
+
+-- THE PARTS, WHERE BEAMNG ACTUALLY PUTS THEM.
+--
+-- core_vehicle_manager.getVehicleData(id).config carries `partsTree`, and
+-- `parts` on that table is empty. Reading only `parts` is why every source
+-- reported zero on a live client for the whole life of this feature: the panel
+-- printed [partmgmt=0, vehData=0, car=0] while the tree sat there full.
+--
+-- Returns nil when there is no tree, so callers can keep their own "not loaded
+-- yet" handling rather than getting an empty table that reads as a real answer.
+function garage.partsFromTree(cfg)
+  if type(cfg) ~= 'table' or type(cfg.partsTree) ~= 'table' then return nil end
+  local out = {}
+  collectPartsTree(cfg.partsTree, '', out, 0)
+  if next(out) == nil then return nil end
+  return out
+end
+
+-- THE PARTS, FROM BEAMMP'S SPAWN RECORD.
+--
+-- This is the source that should have been used from the start, and the console
+-- printed it in full when a car spawned:
+--
+--   Received a vehicle spawn for player ... {
+--     vcf = { model = "legran", partConfigFilename = "vehicles/legran/derby_wagon.pc",
+--             parts = {...}, vars = {...}, paints = {...} }, vid = 52703 }
+--
+-- A flat `parts` table, and it is there whether the car was spawned from a
+-- saved config or edited in the session. That matters more than convenience:
+-- `partConfig` is a 30-byte PATH for a car spawned from a .pc and a 73 KB
+-- DOCUMENT once anything is edited, so a digest taken from it changes the
+-- moment a driver touches the paint -- which is precisely the "blocks
+-- everything, including paint design" that was reported. One source that
+-- answers the same way in both states is what makes the lock stable.
+--
+-- It TRIES a handful of places and REPORTS the keys it actually found when
+-- none of them hold a parts table, because guessing an accessor and guessing
+-- again is what made this take as long as it did.
+-- CATCH THE PARTS AS THEY GO PAST.
+--
+-- A car spawned from a saved config exposes NOTHING to ask afterwards: its
+-- `partConfig` is the forty-byte path "vehicles/racetruck/Pro 4 (Sequential).pc",
+-- the part manager reports nothing, the per-vehicle store reports nothing, and
+-- the car's own Lua state reports nothing. The panel says it plainly:
+--
+--     [partmgmt=0, vehData=0, car=0, pc=40]
+--
+-- Only once a driver edits something does a real configuration appear -- which
+-- is backwards, because the stock car is the one a league wants to approve.
+--
+-- The parts are not secret, though. BeamMP is handed them in the spawn event
+-- and prints them:
+--
+--     Received a vehicle spawn ... vcf = { partConfigFilename = "...pc",
+--                                          parts = {...}, vars = {...} }, vid = 18320
+--
+-- and then keeps only the summary. So the event is wrapped and the parts are
+-- taken as they pass. The original is always called, whatever happens here: a
+-- fault in this must never cost a player their car spawning.
+--
+-- The payload's shape is not assumed. Every argument is examined for a config
+-- in either form, and what was found is logged the first time, so a BeamMP that
+-- passes something different says so instead of silently going quiet.
+-- The first key in sort order, as a shape sample. The two parts sources do not
+-- share a key space (BeamMP hands over slot names, the parts tree hands over
+-- paths), and one key of each is enough to see which one answered.
+--
+-- A field on `garage` rather than a `local function`: this chunk is four slots
+-- from Lua's 200-local ceiling, where the next top-level local stops the file
+-- compiling and the mod is absent in game with no error.
+function garage.sampleKey(t)
+  if type(t) ~= 'table' then return '?' end
+  local best = nil
+  for k in pairs(t) do
+    k = tostring(k)
+    if not best or k < best then best = k end
+  end
+  return best or '(none)'
+end
+
+local function watchMPSpawns()
+  if garage.spawnHooked then return end
+  if not (MPVehicleGE and type(MPVehicleGE.onServerVehicleSpawned) == 'function') then
+    return
+  end
+
+  -- Shared by both wrappers. `what` is 'spawn' or 'edit'; only the spawn route
+  -- feeds garage.spawnParts, because that is the source the matcher reads and
+  -- this change must not alter what it sees.
+  local function catch(args, argc, what)
+    pcall(function ()
+      for i = 1, argc do
+        local a = args[i]
+        -- The payload arrives either decoded or as JSON, depending on build.
+        if type(a) == 'string' and a:sub(1, 1) == '{' and type(jsonDecode) == 'function' then
+          local okD, decoded = pcall(jsonDecode, a)
+          if okD and type(decoded) == 'table' then a = decoded end
+        end
+        if type(a) == 'table' then
+          local cfg = type(a.vcf) == 'table' and a.vcf or a
+          if type(cfg.parts) == 'table' and next(cfg.parts) ~= nil then
+            local id = a.vid or a.gameVehicleID or cfg.vid
+            if id ~= nil then
+              local n = 0
+              for _ in pairs(cfg.parts) do n = n + 1 end
+              local pc = cfg.partConfigFilename
+              if what == 'spawn' then
+                garage.spawnParts[tostring(id)] = cfg.parts
+                garage.spawnPc[tostring(id)] = pc
+              else
+                -- AN EDIT REFILLS THE PARTS. This is the staleness fix: the
+                -- spawn event fires once, so without this the parts caught at
+                -- spawn answer for the car forever and a part swap is invisible.
+                garage.spawnParts[tostring(id)] = cfg.parts
+                -- Always truthy: this doubles as "an edit was announced for
+                -- this vehicle", and an edit payload need not name a config.
+                -- Testing the NAME for that is what dropped fresh parts as
+                -- stale on any build that announces edits without one.
+                garage.editPc[tostring(id)] = pc or '(unnamed)'
+                garage.editSeen = garage.editSeen + 1
+              end
+              -- A fresh answer for this vehicle, so it is no longer the case
+              -- that the only source that ever spoke for it has gone quiet.
+              garage.mpDropped[tostring(id)] = nil
+              log('I', 'raceManager', 'Caught ' .. n .. ' parts from the BeamMP '
+                .. what .. ' event for vehicle ' .. tostring(id)
+                .. ' (' .. tostring(pc or '?') .. ')'
+                .. ' [PCPROBE key0=' .. garage.sampleKey(cfg.parts) .. ']')
+            end
+          end
+        end
+      end
+    end)
+  end
+
+  local original = MPVehicleGE.onServerVehicleSpawned
+  MPVehicleGE.onServerVehicleSpawned = function (...)
+    -- The count is taken out here: `...` does not reach inside the pcall's own
+    -- function, which is not itself vararg.
+    local args, argc = { ... }, select('#', ...)
+    catch(args, argc, 'spawn')
+    return original(...)
+  end
+
+  -- PCPROBE: does BeamMP announce our OWN edit at all? If it does not, the
+  -- parts caught at spawn are the only ones this client ever has, which is why
+  -- a part swap can go unnoticed. Absent on a build without the event, and that
+  -- is logged, because silence otherwise reads as "no edit happened".
+  if type(MPVehicleGE.onServerVehicleEdited) == 'function' then
+    local originalEdit = MPVehicleGE.onServerVehicleEdited
+    MPVehicleGE.onServerVehicleEdited = function (...)
+      local args, argc = { ... }, select('#', ...)
+      catch(args, argc, 'edit')
+      return originalEdit(...)
+    end
+  else
+    log('W', 'raceManager', '[PCPROBE] MPVehicleGE.onServerVehicleEdited is '
+      .. 'ABSENT on this build, so no edit can ever be announced')
+  end
+
+  garage.spawnHooked = true
+  log('I', 'raceManager', 'Watching BeamMP spawn events for vehicle parts')
+end
+
+-- THE RAW SPAWN PACKET, which the MP record keeps for the life of the vehicle.
+--
+-- The one source that does not depend on catching an event in time. The spawn
+-- hook only sees cars that spawn AFTER it is installed, and a driver's own car
+-- is already there by then, which left a stock car with nothing readable at
+-- all: partmgmt, vehData and the car's own VM all report zero parts and
+-- partConfig is a 31-byte path.
+--
+-- Returns the parts table and the config filename. Logs what it could not parse
+-- rather than going quiet, because this is the last source there is.
+function garage.partsFromVehicleString(s)
+  if type(s) ~= 'string' or s == '' then return nil end
+  local brace = s:find('{', 1, true)
+  if not brace then return nil end
+  local cfg = nil
+  if type(jsonDecode) == 'function' then
+    pcall(function () cfg = jsonDecode(s:sub(brace)) end)
+  end
+  if type(cfg) ~= 'table' then
+    log('D', 'raceManager', 'serverVehicleString did not decode; it begins: '
+      .. s:sub(1, 200))
+    return nil
+  end
+  local vcf = (type(cfg.vcf) == 'table') and cfg.vcf or cfg
+  if type(vcf.parts) == 'table' and next(vcf.parts) ~= nil then
+    return vcf.parts, vcf.partConfigFilename
+  end
+  return nil
+end
+
+local function partsFromMP(vid)
+  -- The spawn event first: it is the ONLY source that answers for a car
+  -- spawned from a saved config, which is the car a league actually approves.
+  local caught = garage.spawnParts[tostring(vid)]
+  if type(caught) == 'table' and next(caught) ~= nil then
+    return caught, 'spawn event'
+  end
+
+  if not (MPVehicleGE and type(MPVehicleGE.getVehicles) == 'function') then
+    return nil, 'no MPVehicleGE'
+  end
+  local list = nil
+  pcall(function () list = MPVehicleGE.getVehicles() end)
+  if type(list) ~= 'table' then return nil, 'no vehicle list' end
+  for _, v in pairs(list) do
+    if type(v) == 'table' and tostring(v.gameVehicleID) == tostring(vid) then
+      for _, key in ipairs({ 'vcf', 'vehicleConfig', 'config', 'spawnData', 'data' }) do
+        local c = v[key]
+        if type(c) == 'table' then
+          if type(c.parts) == 'table' and next(c.parts) ~= nil then
+            return c.parts, key
+          end
+          if type(c.vcf) == 'table' and type(c.vcf.parts) == 'table'
+              and next(c.vcf.parts) ~= nil then
+            return c.vcf.parts, key .. '.vcf'
+          end
+        end
+      end
+      -- The raw packet, last, because it costs a JSON decode. It is also the
+      -- only one that answers for a car that spawned before the hook existed.
+      local sParts, sPc = garage.partsFromVehicleString(v.serverVehicleString)
+      if sParts then
+        if sPc then garage.spawnPc[tostring(vid)] = sPc end
+        return sParts, 'serverVehicleString'
+      end
+
+      local keys = {}
+      for k in pairs(v) do keys[#keys + 1] = tostring(k) end
+      table.sort(keys)
+      return nil, 'no parts on the MP record; it has: ' .. table.concat(keys, ' ')
+    end
+  end
+  return nil, 'vehicle ' .. tostring(vid) .. ' is not in the MP list'
+end
+
+local function partsFromConfigString(str)
+  if type(str) ~= 'string' or #str < 2 then return nil end
+  -- A saved config is a PATH, and there is nothing in it to read.
+  if str:match('%.pc$') then return nil end
+
+  local cfg = nil
+  -- Only offered to jsonDecode when it looks like JSON. BeamNG writes
+  -- {["key"]=...}, which is Lua, and handing that to a JSON parser buys a
+  -- stack trace per attempt and nothing else.
+  if str:sub(1, 2) == '{"' and type(jsonDecode) == 'function' then
+    pcall(function () cfg = jsonDecode(str) end)
+  end
+  if type(cfg) ~= 'table' and type(deserialize) == 'function' then
+    cfg = nil
+    pcall(function () cfg = deserialize(str) end)
+  end
+  if type(cfg) ~= 'table' then
+    cfg = nil
+    -- loadstring FIRST: on LuaJIT that is the only one that takes source.
+    local mk = loadstring or load
+    pcall(function ()
+      local fn = mk('return ' .. str, 'partConfig')
+      if fn then
+        -- No environment: this is engine data, and it only needs to build a
+        -- table. Nothing in it should be able to reach a global.
+        if setfenv then setfenv(fn, {}) end
+        cfg = fn()
+      end
+    end)
+  end
+  if type(cfg) ~= 'table' then return nil end
+
+  -- The tree is the real shape. A flat `parts` table is accepted too, because
+  -- some builds hand one over and it costs a line to keep working with both.
+  if type(cfg.partsTree) == 'table' then
+    local out = {}
+    collectPartsTree(cfg.partsTree, '', out, 0)
+    if next(out) ~= nil then return out end
+  end
+  if type(cfg.parts) ~= 'table' and type(cfg.config) == 'table' then
+    cfg = cfg.config
+  end
+  if type(cfg.parts) ~= 'table' or next(cfg.parts) == nil then return nil end
+  return cfg.parts
+end
+
+-- Ask the car what it is built from, and take back only the digest.
+--
+-- NEVER THE CONFIGURATION ITSELF. The version that did that turned a whole
+-- vehicle config into Lua source and made the engine compile it every few
+-- seconds; with an untouched car the config was empty and it looked fine, and
+-- the moment a part was changed the game froze on a timer. What comes back now
+-- is two short strings of digits.
+--
+-- The arithmetic is written to survive any Lua: no bitwise operators, because
+-- the vehicle VM's Lua version is not something this file gets to choose.
+-- `userAsked` is a human pressing Whitelist, and it is a different thing from
+-- the timer coming round.
+--
+-- The budget below exists to stop the POLL talking to a silent car forever. It
+-- must not also silence the button: the poll had already spent all three
+-- questions by the time an admin pressed anything, so the one ask that a person
+-- actually wanted was the one that never happened. An explicit press bypasses
+-- the budget and waits only long enough not to hammer the physics thread.
+local function requestVehicleParts(veh, userAsked)
+  if not veh then return end
+  if userAsked then
+    if garage.probeLeft > 13.0 then return end        -- asked less than 2s ago
+  elseif garage.probeLeft > 0 or garage.probesLeft <= 0 then
+    return
+  end
+  -- FIFTEEN SECONDS, not three.
+  --
+  -- This chunk runs in the VEHICLE's Lua state, and that state lives on the
+  -- PHYSICS THREAD. Anything done here is done in the middle of the simulation
+  -- step, so the cost is not "a little CPU somewhere", it is a stall the driver
+  -- feels. Part changes do not need a fast poll anyway: changing a part rebuilds
+  -- the vehicle, which fires onVehicleSpawned and re-arms this immediately. The
+  -- timer is only here to notice a re-TUNE, which nothing else announces.
+  garage.probeLeft = 15.0
+  if not userAsked then garage.probesLeft = garage.probesLeft - 1 end
+  if not garage.vehProbe then garage.vehProbe = 'asked' end
+  pcall(function ()
+    veh:queueLuaCommand([==[
+      pcall(function ()
+        -- `rmDigest`, not `D`: this chunk is a STRING in a file that a scope
+        -- check scans for calls into the extracted modules, and a bare one
+        -- letter collides with one of them.
+        --
+        -- HASHED INCREMENTALLY, on purpose. The readable way to do this is to
+        -- build "k=v;k=v" with table.concat and then walk it -- and that
+        -- allocates a string the size of the whole configuration, on the physics
+        -- thread, which is what made the game hitch every few seconds once a
+        -- part change filled the config in. The bytes fed here are exactly the
+        -- bytes that string would have contained, so the result is identical to
+        -- digestOf() on the other side; only the allocation is gone.
+        -- The same cosmetic rule as isCosmeticSlot on the other side. Both
+        -- copies have to agree exactly: livery skipped here and counted there
+        -- means a car digests differently depending on who answered, stops
+        -- matching its own whitelist entry, and is deleted for nothing.
+        local function rmCosmetic(name)
+          name = tostring(name):lower()
+          return name:find('paint', 1, true) ~= nil
+              or name:find('licenseplate', 1, true) ~= nil
+              or name:find('license_plate', 1, true) ~= nil
+              or name:find('livery', 1, true) ~= nil
+              or name:find('decal', 1, true) ~= nil
+              or name:find('skin', 1, true) ~= nil
+        end
+        local function rmDigest(t, skipCosmetic)
+          if type(t) ~= 'table' then return '0:0:0:0' end
+          local k, n = {}, 0
+          for a in pairs(t) do
+            if not (skipCosmetic and rmCosmetic(a)) then
+              k[#k+1] = tostring(a); n = n + 1
+            end
+          end
+          table.sort(k)
+          local h1, h2, len = 5381, 0, 0
+          local function feed(str)
+            for i = 1, #str do
+              local c = str:byte(i)
+              h1 = (h1 * 33 + c) % 4294967296
+              h2 = (h2 * 65599 + c) % 4294967296
+            end
+            len = len + #str
+          end
+          for i = 1, #k do
+            if i > 1 then feed(';') end
+            local val = t[k[i]]
+            -- Quantized identically to digestOf on the other side. Three
+            -- decimals, fixed width: %.6g wrote out float noise that changed
+            -- between spawns of a car nobody had touched.
+            if type(val) == 'number' then val = string.format('%.3f', val)
+            else val = tostring(val) end
+            feed(k[i]); feed('='); feed(val)
+          end
+          return n .. ':' .. len .. ':' .. h1 .. ':' .. h2
+        end
+        -- `v.config` FIRST, and partmgmt only if it has nothing.
+        --
+        -- getConfig() is not a field read: it assembles the configuration, and
+        -- on a car that actually has parts on it that is real work -- again, on
+        -- the physics thread, every poll. `v.config` is a plain reference to a
+        -- table that is already there.
+        local cfg
+        if type(v) == 'table' and type(v.config) == 'table'
+            and type(v.config.parts) == 'table' and next(v.config.parts) ~= nil then
+          cfg = v.config
+        elseif partmgmt and partmgmt.getConfig then
+          local c = partmgmt.getConfig()
+          if type(c) == 'table' then cfg = c end
+        end
+        cfg = cfg or (type(v) == 'table' and v.config) or {}
+        obj:queueGameEngineLua('raceManager.onVehicleDigest("'
+          .. rmDigest(cfg.parts, true) .. '","' .. rmDigest(cfg.vars) .. '")')
+      end)
+    ]==])
+  end)
+end
+
+local function localVehicleConfig(userAsked)
   local veh = ownVehicle()
   if not veh then return nil, 'Get in a vehicle first' end
   local attached = playerVehicle()
@@ -2587,15 +3251,343 @@ local function localVehicleConfig()
   end
   local model = '?'
   pcall(function () model = tostring(veh:getJBeamFilename()) end)
+  local vid = vehicleId(veh)
 
-  local parts, vars, configName = {}, {}, nil
-  if core_vehicle_partmgmt and core_vehicle_partmgmt.getConfig then
-    local ok, cfg = pcall(core_vehicle_partmgmt.getConfig)
-    if ok and type(cfg) == 'table' then
-      if type(cfg.parts) == 'table' then parts = cfg.parts end
-      if type(cfg.vars)  == 'table' then vars  = cfg.vars  end
-      configName = configDisplayName(cfg)
+  -- WHERE THE PART LIST COMES FROM, and why there is more than one answer.
+  --
+  -- core_vehicle_partmgmt.getConfig() reads the vehicle the PART MANAGER
+  -- considers current, which is a different question from "the car this player
+  -- is driving". In single player they are the same car and it answers. It is
+  -- the only source this ever had, and when it answers with nothing there is
+  -- no way to tell "not loaded yet" from "not the vehicle you meant" -- both
+  -- come back as an empty table, and both were reported as "still loading".
+  --
+  -- So it is asked FIRST, because where it works it is right, and a second
+  -- source keyed on the vehicle ITSELF is asked when it comes back empty.
+  -- Every source is guarded on its own existence: a build without one loses
+  -- that source, not the button.
+  local parts, vars, configName, source = {}, {}, nil, nil
+  local offered, notes = 0, {}
+
+  -- First non-empty answer wins. An empty parts table is never an answer: no
+  -- BeamNG vehicle has zero parts, so it means the source could not see this
+  -- car rather than that the car has nothing on it.
+  local function take(cfg, from)
+    if next(parts) ~= nil or type(cfg) ~= 'table' then return end
+    -- partsTree FIRST. That is where BeamNG keeps them; `parts` on this table
+    -- is empty on a live client, which is what made every source read zero.
+    -- `parts` is still accepted, for a build that populates it.
+    local got = garage.partsFromTree(cfg)
+    if not got and type(cfg.parts) == 'table' and next(cfg.parts) ~= nil then
+      got = cfg.parts
     end
+    if not got then return end
+    parts      = got
+    vars       = type(cfg.vars) == 'table' and cfg.vars or {}
+    configName = configDisplayName(cfg)
+    source     = from
+  end
+
+  -- WHAT A SOURCE ANSWERED, in a few characters, for the refusal message.
+  --
+  -- The refusal is read off the panel and nowhere else -- an admin setting up a
+  -- league night is not going to open the game console -- so the message has to
+  -- carry enough to tell the causes apart. 'absent' is a build without that API
+  -- at all; a number is an API that answered about SOME car and found nothing on
+  -- it, which is the interesting case and means it is not looking at this one.
+  local function note(from, ok, cfg)
+    if not ok then notes[#notes + 1] = from .. '=error'; return end
+    if type(cfg) ~= 'table' then
+      notes[#notes + 1] = from .. '=' .. type(cfg)
+      return
+    end
+    -- Counted off the same resolution `take` uses, or the panel reports zero
+    -- for a source that answered perfectly well.
+    local n, seen = 0, garage.partsFromTree(cfg)
+    if not seen and type(cfg.parts) == 'table' then seen = cfg.parts end
+    if type(seen) == 'table' then for _ in pairs(seen) do n = n + 1 end end
+    notes[#notes + 1] = from .. '=' .. n
+  end
+
+  if core_vehicle_partmgmt and core_vehicle_partmgmt.getConfig then
+    offered = offered + 1
+    local ok, cfg = pcall(core_vehicle_partmgmt.getConfig)
+    if ok then take(cfg, 'partmgmt') end
+    note('partmgmt', ok, cfg)
+  else
+    notes[#notes + 1] = 'partmgmt=absent'
+  end
+
+  -- The per-vehicle data store, asked about THIS vehicle by id rather than
+  -- about whichever one is current.
+  if core_vehicle_manager and core_vehicle_manager.getVehicleData and vid then
+    offered = offered + 1
+    local ok, data = pcall(core_vehicle_manager.getVehicleData, vid)
+    if ok and type(data) == 'table' then take(data.config, 'vehicleData') end
+    note('vehData', ok, type(data) == 'table' and data.config or data)
+  else
+    notes[#notes + 1] = 'vehData=absent'
+  end
+
+  -- The car's own answer, if it has sent one for THIS vehicle. Last, so a live
+  -- source still wins whenever it can actually see the car.
+  -- EACH SOURCE FOR WHAT IT IS ACTUALLY GOOD AT.
+  --
+  -- The car knows its TUNING and reports it live, which is what lets Strict
+  -- notice a re-tune with no rebuild behind it. It reports no parts at all.
+  --
+  -- The spawn configuration knows the PARTS, and changing a part rebuilds the
+  -- car, so a fresh one is read at exactly the moment they change.
+  --
+  -- Neither is preferred "when available", because that is a choice that can go
+  -- both ways on different frames and it is how a signature ends up changing
+  -- shape under a stored entry. Parts always come from the config when it could
+  -- be read; tuning always comes from the car.
+  local pd, vd = nil, nil
+  if garage.vehParts and garage.vehParts.vid == vid and garage.vehParts.pd then
+    pd, vd = garage.vehParts.pd, garage.vehParts.vd
+    notes[#notes + 1] = 'car=' .. (pd:match('^(%d+)') or '?')
+  else
+    notes[#notes + 1] = 'car=' .. (garage.vehProbe or 'none')
+  end
+
+  -- THE CAR NEVER SUPPLIES THE PARTS, ONLY THE TUNING.
+  --
+  -- '0:0:0:0' is the digest of nothing and no real car has no parts: the
+  -- vehicle VM sees its tuning and none of its build. Nil'd HERE, before the
+  -- parts table below can fill it, because leaving it set meant the car's
+  -- nothing outranked a perfectly good parts list and the whole read was
+  -- refused as "press again in a moment" with the answer already in hand.
+  if pd == '0:0:0:0' then pd = nil end
+
+  -- THE BUILD'S IDENTITY, when the part LIST cannot be had.
+  --
+  -- Measured on a live BeamMP client: partmgmt, the per-vehicle store and the
+  -- car's own VM all report zero parts, while BeamMP's spawn record for the same
+  -- car carries `partConfigFilename = "vehicles/bx/200bx_base_A.pc"` with a full
+  -- parts table beside it. The parts exist; they just never reach the vehicle's
+  -- own config table when BeamMP is the thing that spawned it.
+  --
+  -- `partConfig` on the vehicle OBJECT is the one place this side can still see
+  -- it: either the .pc path the car was built from, or, for a car tuned in the
+  -- session, the configuration itself. Both identify the build, which is what a
+  -- garage entry is for.
+  -- A parts table read on THIS side is digested with the same function the car
+  -- uses, so both routes produce one identical signature shape. Without that a
+  -- car could be whitelisted under one shape and declare the other a moment
+  -- later, and flip into the offender list for no visible reason.
+  if not pd and next(parts) ~= nil then
+    pd, vd = digestOf(parts, true), digestOf(vars)
+  end
+
+  -- The spawn config, digested ONCE per car rather than on every poll. It
+  -- belongs in the strict signature below, and it can be tens of kilobytes.
+  -- Wrapped so the sources can return early rather than nest: this runs once
+  -- per car and each source either answers or stands aside.
+  local function readSpawnConfig()
+    -- Read once per car, and used three ways below. On an edited car this is
+    -- tens of kilobytes, so it is never touched on a poll.
+    local raw = nil
+    pcall(function () raw = veh:getField('partConfig', 0) end)
+
+    -- THE PARTS CAUGHT AT SPAWN CAN BE OLDER THAN THE CAR.
+    --
+    -- garage.spawnParts is filled from BeamMP's spawn event, which fires once.
+    -- If BeamMP does not announce an edit, those parts answer for the vehicle
+    -- for the rest of the session and a part swap is invisible: Parts mode
+    -- blocks nothing. An inline partConfig (anything that is not a .pc path) is
+    -- the evidence that the driver rebuilt the car, so the caught parts are
+    -- stale and must not answer for it.
+    --
+    -- An announced edit refills them (see watchMPSpawns), so a build where
+    -- BeamMP does announce edits never reaches this.
+    local key = tostring(vid)
+    if type(raw) == 'string' and raw ~= '' and not raw:match('%.pc$')
+        and garage.spawnParts[key] and not garage.editPc[key] then
+      garage.spawnParts[key] = nil
+      garage.mpDropped[key] = true
+      log('W', 'raceManager', 'The parts caught at spawn are older than this '
+        .. 'car (its configuration is now inline, ' .. #raw .. ' bytes) and '
+        .. 'BeamMP announced no edit, so they are dropped rather than left to '
+        .. 'answer for a build they no longer describe')
+    end
+
+    -- BeamMP's record first: it is the only source that answers for a car
+    -- spawned from a saved config, which is the car a league approves.
+    local mpParts, mpWhy = partsFromMP(vid)
+    if mpParts then
+      local c = 0
+      for _ in pairs(mpParts) do c = c + 1 end
+      local freed, n = {}, 0
+      for slot in pairs(mpParts) do
+        if isCosmeticSlot(slot) then
+          n = n + 1
+          if n <= 12 then freed[#freed + 1] = slot end
+        end
+      end
+      garage.pcCache = {
+        vid = vid, digest = '-', len = 0,
+        parts = digestOf(mpParts, true), count = c, from = 'mp',
+        -- PCPROBE: which source answered, its key shape, and the .pc name it
+        -- was announced under. Read by the probe line below and by nothing else.
+        key0 = garage.sampleKey(mpParts),
+        pc = garage.spawnPc[tostring(vid)],
+      }
+      log('I', 'raceManager', 'Read ' .. c .. ' parts from the BeamMP spawn '
+        .. 'record (' .. tostring(mpWhy) .. '); ' .. n .. ' left free as '
+        .. 'livery: ' .. (n > 0 and table.concat(freed, ' ') or 'NONE'))
+      return
+    end
+
+    -- Say why, even though the fallback below may well succeed. BeamMP's record
+    -- is the only source that answers the same way for a stock car and an
+    -- edited one, so when it is NOT the source that is worth knowing rather
+    -- than inferring from which message appeared.
+    -- MEASURED AND SETTLED: BeamMP's vehicle record carries gameVehicleID,
+    -- jbeam, owner, position, rotation and the rest -- and no configuration at
+    -- all. The full `vcf` with its parts exists only in the spawn EVENT, which
+    -- is gone by the time anything here can ask.
+    --
+    -- The lookup stays, guarded, because it costs nothing and a future BeamMP
+    -- may keep it; it is logged at debug level rather than as a warning,
+    -- because it is now the expected answer rather than a surprise.
+    log('D', 'raceManager', 'BeamMP spawn record has no configuration ('
+      .. tostring(mpWhy) .. '); using the spawn configuration instead')
+
+    -- NO FALLING BACK ACROSS SOURCES, and this is what stops the fix above
+    -- turning into a deleted car.
+    --
+    -- The spawn event keys on SLOT NAMES and the parts tree keys on PATHS, so
+    -- the same car digests differently depending on which one answered. A
+    -- vehicle whose spawn parts were just dropped would jump identity here, on
+    -- a change that may only have been a respray, and be removed for it.
+    --
+    -- Declaring nothing is the safe half of that choice: the server reads no
+    -- declaration as "no verdict yet", which is never an offender. Cached as a
+    -- refusal rather than left nil, because a nil cache is re-read every poll
+    -- and re-reading an inline configuration on a timer is what froze the game.
+    if garage.mpDropped[key] then
+      garage.pcCache = { vid = vid, digest = '-', len = 0, parts = nil,
+                         count = 0, from = 'dropped', key0 = '(none)', pc = nil }
+      log('W', 'raceManager', 'This car was known through the BeamMP spawn '
+        .. 'event and that answer is now stale, so it is UNJUDGED until it '
+        .. 'respawns: the parts tree keys on paths where the spawn event keys '
+        .. 'on slots, and switching would move its identity without its build '
+        .. 'changing')
+      return
+    end
+
+    if type(raw) ~= 'string' or raw == '' then
+      -- NOT CACHED. A car one frame old has not been given its configuration
+      -- yet, and the poll runs a second after the spawn -- so this is "ask
+      -- again", not "this car has none".
+      --
+      -- Caching it made the failure PERMANENT for that vehicle: the parts
+      -- digest fell back to the car's own answer (zero parts) and stayed there,
+      -- so the signature no longer matched the entry the car had been
+      -- whitelisted under and every mode refused it. That is the difference
+      -- between a lock and a car that is blocked whatever you do to it.
+      garage.pcCache = nil
+    else
+      -- Parsed HERE, in the once-per-car block, for the reason the digest is:
+      -- this is tens of kilobytes and must never be touched on a poll.
+      local fromCfg = partsFromConfigString(raw)
+      garage.pcCache = {
+        vid = vid, digest = digestText(raw), len = #raw,
+        parts = fromCfg and digestOf(fromCfg, true) or nil,
+        count = fromCfg and (function ()
+          local c = 0
+          for _ in pairs(fromCfg) do c = c + 1 end
+          return c
+        end)() or 0,
+        -- PCPROBE. `raw` is EITHER a .pc path or the whole configuration
+        -- inline, and which one it is answers the question this probe exists
+        -- for: a path still naming the saved config after a Paint Design change
+        -- means identity can be the name.
+        from = 'tree',
+        key0 = fromCfg and garage.sampleKey(fromCfg) or '(unparsed)',
+        pc = raw:match('%.pc$') and raw or nil,
+      }
+      if fromCfg then
+        -- WHICH SLOTS THE LIVERY FILTER TOOK OUT, by name.
+        --
+        -- "Read 125 parts" says the tree parsed; it does not say whether the
+        -- paint design was among the ones left free, and that is the whole
+        -- question when a paint change gets a car deleted. The filter matches
+        -- on slot NAME, so the names it matched are the evidence -- and if the
+        -- paint slot is not in this list, it is not called what this code
+        -- thinks it is called.
+        local freed, n = {}, 0
+        for slot in pairs(fromCfg) do
+          if isCosmeticSlot(slot) then
+            n = n + 1
+            if n <= 12 then freed[#freed + 1] = slot end
+          end
+        end
+        log('I', 'raceManager', 'Read ' .. garage.pcCache.count
+          .. ' parts out of the spawn configuration; ' .. n
+          .. ' left free as livery: ' .. (n > 0 and table.concat(freed, ' ')
+            or 'NONE -- a paint or plate change will be treated as a part'))
+      else
+        -- NOT SILENT. An unreadable configuration means the parts digest stays
+        -- empty, and an empty parts digest is a lock that matches every car --
+        -- which is "Parts doesn't seem to block anything". If that happens, the
+        -- first characters are the only thing that says why.
+        log('W', 'raceManager', 'Could not read parts out of the spawn '
+          .. 'configuration (' .. #raw .. ' bytes), and BeamMP had none either ('
+          .. tostring(mpWhy) .. ') -- the Parts lock has nothing to compare. '
+          .. 'It begins: ' .. raw:sub(1, 120))
+      end
+    end
+  end
+  if not (garage.pcCache and garage.pcCache.vid == vid) then
+    readSpawnConfig()
+    -- PCPROBE, one line per rebuild, temporary. This fires whether or not the
+    -- identity moved, so a probe line with no "Declared" line after it means
+    -- the identity HELD across whatever the driver just changed. That pairing
+    -- is the reading; neither line answers on its own.
+    garage.probeSeq = garage.probeSeq + 1
+    local pcc = garage.pcCache
+
+    -- READ FRESH, and this is the whole point of the probe.
+    --
+    -- garage.spawnParts is never invalidated, so once BeamMP has answered for a
+    -- vid its .pc name is reported unchanged forever. Trusting it would answer
+    -- "the name survived the paint change" without ever having looked at the
+    -- car. `livePc` asks the vehicle itself, at this instant.
+    --
+    -- Length, not content: a path is tens of bytes and an edited configuration
+    -- is tens of thousands, so the size alone says which state the car is in.
+    -- The 73 KB string is READ but never hashed or parsed here, because hashing
+    -- it on a timer is what used to freeze the game.
+    local raw = nil
+    pcall(function () raw = veh:getField('partConfig', 0) end)
+    local liveLen = (type(raw) == 'string') and #raw or -1
+    local livePc = (type(raw) == 'string' and raw:match('%.pc$')) and raw or 'NONE'
+
+    log('I', 'raceManager', string.format(
+      '[PCPROBE] #%d vid=%s src=%s parts=%d key0=%s | livePc=%s liveLen=%d '
+        .. '| mpPc=%s editPc=%s edits=%d',
+      garage.probeSeq, tostring(vid),
+      tostring(pcc and pcc.from or 'none'),
+      (pcc and pcc.count) or 0,
+      tostring(pcc and pcc.key0 or '?'),
+      livePc, liveLen,
+      tostring(garage.spawnPc[tostring(vid)] or 'NONE'),
+      tostring(garage.editPc[tostring(vid)] or 'NONE'),
+      garage.editSeen))
+  end
+  notes[#notes + 1] = 'pc=' .. (garage.pcCache and garage.pcCache.len > 0 and garage.pcCache.len or 'none')
+    .. ((garage.pcCache and garage.pcCache.parts) and ('/' .. garage.pcCache.count .. 'p') or '')
+
+  local detail = ' [' .. table.concat(notes, ', ') .. ']'
+
+  -- NO SOURCE AT ALL is not the same failure as every source coming back empty,
+  -- and telling a driver to "try again" when nothing here can EVER answer is
+  -- advice that wastes their evening. Separated so the message matches.
+  if offered == 0 then
+    log('E', 'raceManager', 'No vehicle configuration source on this build')
+    return nil, 'This game build exposes no vehicle configuration to read' .. detail
   end
 
   -- AN EMPTY PART LIST IS "NOT LOADED YET", NEVER A REAL CONFIGURATION.
@@ -2616,32 +3608,282 @@ local function localVehicleConfig()
   -- No BeamNG vehicle has zero parts, so there is no legitimate reading of this
   -- other than "ask again in a moment". Saying nothing leaves the last good
   -- declaration standing and the poll re-asks two seconds later.
-  if next(parts) == nil then return nil, 'The vehicle is still loading, try again' end
+  -- The detail rides on the refusal because this is the ONLY place most people
+  -- will ever see it: it turns "the vehicle is still loading" (which was the
+  -- same sentence for four unrelated causes) into something that names which
+  -- source answered what.
+  -- ONE SHAPE, ALWAYS: WAIT FOR THE DIGEST RATHER THAN DECLARING SOMETHING ELSE.
+  --
+  -- This is the bug that deleted a car for being re-tuned. There used to be a
+  -- second shape here -- 'model=bx|pc=...' while no digest had arrived -- so an
+  -- untouched car declared one thing, and the moment a tune filled the config in
+  -- and the digest landed, the SAME car declared a different shape. It stopped
+  -- matching the entry it had been whitelisted under and was removed, in Parts
+  -- mode, for a change Parts mode exists to allow.
+  --
+  -- So there is no second shape. Until the car has answered this declares
+  -- NOTHING, and silence already means "no verdict yet" to the server: a car
+  -- with no declaration is never an offender and is never removed. A car that
+  -- will not answer at all costs the button, not the driver.
+  -- THE SPAWN CONFIG IS A FALLBACK, NOT THE ANSWER.
+  --
+  -- It is a snapshot taken when the car spawned; partsTree is what the car is
+  -- built from right now. Applied unconditionally, a spawn-time snapshot
+  -- outranked the live tree and a part swapped afterwards was invisible, which
+  -- is Parts mode blocking nothing.
+  --
+  -- Kept, guarded, because it is the only source when the tree cannot be read:
+  -- drop the guard and it takes over again.
+  if not pd and garage.pcCache and garage.pcCache.parts then
+    pd = garage.pcCache.parts
+  end
+
+  -- BOTH HALVES, OR NEITHER. Waiting for the parts alone is not enough.
+  --
+  -- The parts now arrive synchronously, out of the spawn configuration, while
+  -- the tuning still comes from the car and takes a moment. So a guard that
+  -- only waited for the parts let a car declare
+  --
+  --     pd=121:6778:...|vd=0:0:0:0      (tuning not in yet)
+  --
+  -- and then declare again with the real tuning a second later. Two signatures
+  -- for one unchanged car: whitelist either and the other is refused, which is
+  -- a car deleted for nothing it did. The log said it plainly -- `changed:
+  -- PARTS+TUNING` on a car nobody had touched.
+  --
+  -- Silence until both are known. The server reads no declaration as "no
+  -- verdict yet", which is the state where a driver is never an offender.
+  -- '0:0:0:0' IS NOT A PARTS DIGEST. It is the digest of nothing, and no real
+  -- car has no parts.
+  --
+  -- The car itself always answers that -- it can see its tuning and none of its
+  -- parts -- so the real parts come from the spawn configuration. When that
+  -- read does not yield any, `pd` was falling back to the car's nothing, and a
+  -- car that had been approved as `pd=84:6921:...` started declaring
+  -- `pd=0:0:0:0`. In Parts mode that IS the parts half, so an approved car was
+  -- removed for a change Parts mode allows -- reported as a re-tune deleting
+  -- the car six seconds later, which is this settling and then declaring the
+  -- degenerate value.
+  --
+  -- Treated as "not known yet" rather than as an answer, so nothing is declared
+  -- until the parts can genuinely be read. Silence is a car with no verdict,
+  -- which is never an offender.
+  if pd == '0:0:0:0' then pd = nil end
+
+  if not pd or not vd then
+    -- ASK THE CAR TO PUSH ITS PARTS, so the next press has something to read.
+    --
+    -- core_vehicle_partmgmt.getConfig() does not interrogate the vehicle: it
+    -- returns GE-side state that the VEHICLE populates by sending it up. In
+    -- single player something else has usually already triggered that (opening
+    -- the parts UI does it), which is why this only ever failed on a server.
+    -- Nothing in this mod was asking, so on a BeamMP client the state could stay
+    -- empty for the whole session and every press got the same refusal.
+    --
+    -- Fired into the vehicle's own VM, where `partmgmt` lives. Guarded twice
+    -- over: a build without that function raises inside the VEHICLE Lua state,
+    -- which is logged there and cannot take the extension down.
+    requestVehicleParts(veh, userAsked)
+    -- DELIBERATELY SILENT. This runs from the two-second config poll as well as
+    -- from the button, so logging here is a line every two seconds for the whole
+    -- session -- which is what it did, and it buried the vehicle-side answers
+    -- this is trying to collect. The admin who pressed something is told by the
+    -- caller; the poll says nothing, exactly as it did before.
+    return nil, 'Reading the vehicle, press again in a moment' .. detail
+  end
 
   -- The byte layout of `sig` is unchanged from before the split, deliberately:
   -- every entry already on disk was written in this exact form, so strict
   -- matching keeps working across the upgrade with no re-capture at all.
-  local partsSig = 'model=' .. model .. '|parts=' .. stableSerialize(parts)
-  local sig      = partsSig .. '|vars=' .. stableSerialize(vars)
-  local vid
-  pcall(function () vid = veh:getID() end)
+  -- TWO SHAPES OF SIGNATURE, and the difference is worth being honest about.
+  --
+  -- With a real parts list the two halves mean what the panel says: `partsSig`
+  -- is the build, `sig` adds the tuning on top, so Parts and Strict are
+  -- genuinely different locks.
+  --
+  -- From `partConfig` alone they cannot be separated -- it is one string naming
+  -- the whole build -- so both halves are the same value and Parts and Strict
+  -- behave identically. That is a real limitation and not a silent one: it is
+  -- reported as the source, and it is still an exact per-build identity rather
+  -- than the model-name-only matching this fell back to before.
+  -- TWO SHAPES, AND NOW THE FIRST ONE MAKES THE LOCKS REAL.
+  --
+  -- With a digest, `partsSig` covers the BUILD and `sig` adds the TUNING on top,
+  -- so Parts and Strict are genuinely different rules -- and both move the
+  -- instant a part is changed, which is what lets the server re-rule a car that
+  -- was edited after it was approved.
+  --
+  -- From `partConfig` alone the two cannot be separated: it is one string naming
+  -- the whole build, so both halves carry it and the two locks behave the same.
+  -- That is a real limitation, reported as the source rather than hidden, and
+  -- still an exact per-build identity.
+  -- WHAT EACH HALF MAY CONTAIN, and the rule is the mode's own promise.
+  --
+  -- `partsSig` is what Parts mode matches on, and Parts mode says the tuning is
+  -- free. So it carries the parts digest and NOTHING ELSE a re-tune can move.
+  -- The spawn config's name is deliberately kept out of it: whether BeamNG
+  -- rewrites `partConfig` when a car is tuned is not something this side can
+  -- promise, and a maybe in the parts half is a car deleted for tuning.
+  --
+  -- `sig` is Strict, which promises the exact tune, so it adds the tuning digest
+  -- and the spawn config on top.
+  local partsSig = 'model=' .. model .. '|pd=' .. pd
+  -- STRICT IS PARTS PLUS TUNING. NOTHING ELSE.
+  --
+  -- It used to carry a hash of the whole `partConfig` string as well, and that
+  -- string is the entire configuration -- parts, tuning, AND livery. So every
+  -- change moved it and Strict blocked everything, including the paint design
+  -- and the license plate that both modes are supposed to leave alone. Reported
+  -- exactly that way: "strict seems to block everything, including liveries".
+  --
+  -- The two halves already say precisely what the modes promise, each built
+  -- from a filtered digest, so the raw string had nothing to add but noise. It
+  -- is still read -- the PARTS are dug out of it -- but the blob itself never
+  -- reaches a signature again.
+  local sig = partsSig .. '|vd=' .. (vd or '0:0:0:0')
+  source = source or 'digest'
+  -- The label used to be dug out of the .pc path. It is not worth keeping the
+  -- 73 KB string alive for, and an edited car has no path in it anyway, so the
+  -- name now comes from a real config table when one was read and from the
+  -- model otherwise.
+  configName = configName or nil
   return {
     model    = model,
     label    = configName and (model .. ' - ' .. configName) or model,
     partsSig = partsSig,
     sig      = sig,
     vid      = vid,
+    -- Which source answered. Carried so the log can name it: "the button does
+    -- nothing" and "the button reads the wrong car" look identical from the
+    -- panel and are not the same bug.
+    source   = source,
   }
 end
 
 -- Last signature this client told the server about, so the periodic check only
 -- talks when something actually changed (spawn, swap, or a re-tune).
+-- A SIGNATURE HAS TO HOLD STILL BEFORE ANYBODY IS JUDGED ON IT.
+--
+-- This exists because chasing the sources one at a time did not work, and the
+-- reason it did not work is structural rather than a series of separate bugs.
+--
+-- The identity is assembled from several things that arrive at different times:
+-- the parts out of the spawn configuration, the tuning from the car's own Lua
+-- state, and BeamMP's record of what it spawned. EVERY ONE of them reads empty
+-- for a moment after a car appears and real a second later. Any one of those
+-- empty-to-real transitions is a second, different signature for a car nobody
+-- has touched -- and the server, quite correctly, refuses a car whose signature
+-- is not the one it was whitelisted under, and deletes it.
+--
+-- Fixing them individually meant knowing which source was slow this time, and
+-- there was always another. So nothing is judged on a signature until it has
+-- come out the same several polls running. A settled value cannot be a
+-- half-loaded one, whichever half was late.
+--
+-- The cost is a few seconds at spawn, during which nothing is declared at all,
+-- and the server reads no declaration as "no verdict yet" -- the state where a
+-- driver is never an offender and never removed. That is the right thing to be
+-- during those seconds.
+
+-- Three polls at two seconds each: long enough to outlast the sources coming
+-- up, short enough that an admin pressing the button is not left waiting.
+
+-- The current signature, but only once it has stopped moving. Returns nil while
+-- it is still settling, which every caller treats as "ask again in a moment".
+local function settledConfig(userAsked)
+  local cfg, why = localVehicleConfig(userAsked)
+  if not cfg then
+    garage.settleSig, garage.settleCount = nil, 0
+    return nil, why
+  end
+  if cfg.sig == garage.settleSig then
+    garage.settleCount = garage.settleCount + 1
+  else
+    garage.settleSig, garage.settleCount = cfg.sig, 1
+  end
+  if garage.settleCount < garage.SETTLE_POLLS then
+    return nil, 'Reading the vehicle, press again in a moment [settling '
+      .. garage.settleCount .. '/' .. garage.SETTLE_POLLS .. ']'
+  end
+  return cfg
+end
+
+-- The previous declaration, kept only so the log can say what MOVED between
+-- two of them. Never used for a decision.
 local lastReportedSig = nil
 local configCheckLeft = 0
 
+-- The car's answer, arriving from its own VM. Called by name from the vehicle
+-- state, so it has to be on M.
+-- What the car said about itself. Three answers, each ruling something out:
+--   alive    the vehicle ran our code and can talk back: channel is fine
+--   saw:N    what the CAR believes it is built from, N parts
+--   err ...  the chunk faulted over there, carried back rather than buried
+-- THE CAR'S ANSWER: two digests, and nothing else crosses the boundary.
+--
+-- Validated hard before it is believed. This arrives as a Lua string literal
+-- built inside the vehicle VM, so the only shape ever accepted is four numbers
+-- separated by colons -- anything else is discarded rather than reaching a
+-- signature the server will be asked to match on.
+-- Exposed for tests/garage_test.lua. The digest decides whether a car is
+-- allowed to race, so its determinism is worth pinning directly rather than
+-- only through the signature it ends up inside.
+function M.digestForTest(t, skipCosmetic) return digestOf(t, skipCosmetic) end
+
+function M.onVehicleDigest(partsDigest, varsDigest)
+  local function clean(d)
+    d = tostring(d or '')
+    return d:match('^%d+:%d+:%d+:%d+$') and d or nil
+  end
+  local pd, vd = clean(partsDigest), clean(varsDigest)
+  if not pd then return end
+  local veh = ownVehicle()
+  local before = garage.vehParts and garage.vehParts.pd
+  garage.vehParts = {
+    vid = veh and vehicleId(veh),
+    pd  = pd,
+    vd  = vd or '0:0:0:0',
+  }
+  garage.vehProbe = 'digest'
+  -- A CAR THAT TALKS KEEPS ITS BUDGET. This is what makes a part change show
+  -- up: the poll re-asks every few seconds, and the digest moves the moment the
+  -- build does.
+  garage.probesLeft = 3
+  if before ~= pd then
+    log('I', 'raceManager', 'Vehicle build digest: ' .. pd
+      .. (before and (' (was ' .. before .. ')') or ''))
+    -- The declaration the server is holding describes the OLD build. Re-declare
+    -- rather than waiting for the throttle to notice, which is the whole point
+    -- of detecting a part change at all.
+    lastReportedSig = nil
+  end
+end
+
+function M.onVehicleProbe(status)
+  garage.vehProbe = tostring(status or '?')
+  log('I', 'raceManager', 'Vehicle probe: ' .. garage.vehProbe)
+end
+
+-- A PARTS TABLE ARRIVING FROM ANYWHERE, reduced to the same digest.
+--
+-- Nothing in this file sends a config across any more -- that is what froze the
+-- game on a timer once a part change filled it in, and the car reports a DIGEST
+-- now instead. This is kept, and kept working, for two reasons: a queued call
+-- from an older client build must not land on a nil, and if a cheap way to
+-- carry a real parts list over is ever found, this is where it lands.
+--
+-- It stores exactly what onVehicleDigest stores, through the same digestOf, so
+-- a car's identity never depends on which route the answer took. Writing a
+-- different shape here is what made localVehicleConfig index a nil digest.
+function M.onVehicleParts(cfg)
+  if type(cfg) ~= 'table' or type(cfg.parts) ~= 'table' then return end
+  if next(cfg.parts) == nil then return end      -- still nothing: keep waiting
+  M.onVehicleDigest(digestOf(cfg.parts, true), digestOf(cfg.vars))
+end
+
 local function reportVehicleConfig(force)
   if not inMultiplayer() then return end
-  local cfg = localVehicleConfig()
+  local cfg = settledConfig()
   if not cfg then return end
   -- Keyed on the FULL signature even though the server may only be matching the
   -- parts half. The client is not told which mode is in force, and it must not
@@ -2649,6 +3891,32 @@ local function reportVehicleConfig(force)
   -- rule on if the admin switches to strict mid-evening.
   if not force and cfg.sig == lastReportedSig then return end
   lastReportedSig = cfg.sig
+  -- WHAT THIS CLIENT IS CLAIMING TO BE DRIVING, logged on every CHANGE.
+  --
+  -- Not on every poll: the guard above means this line only appears when the
+  -- declaration actually moves, so it is a history of what the car said about
+  -- itself rather than a heartbeat. It is the other half of the Garage List
+  -- comparison -- the stored entry is on disk in garage.json and this is what is
+  -- being matched against it, and until both were visible a mismatch could only
+  -- be guessed at.
+  -- WHAT MOVED, not just what is. A rejection after a change is only readable
+  -- if the two declarations either side of it can be told apart at a glance:
+  -- parts moving on a paint change is a filter that missed the slot, and
+  -- NOTHING moving while the car is still refused is a stale Garage List entry
+  -- captured under an older signature. Those are different bugs with the same
+  -- symptom, and this line is what separates them.
+  local moved = 'first'
+  if garage.lastDeclared then
+    local wasP, nowP = garage.lastDeclared:match('|pd=([^|]*)'), cfg.sig:match('|pd=([^|]*)')
+    local wasV, nowV = garage.lastDeclared:match('|vd=([^|]*)'), cfg.sig:match('|vd=([^|]*)')
+    local bits = {}
+    if wasP ~= nowP then bits[#bits + 1] = 'PARTS' end
+    if wasV ~= nowV then bits[#bits + 1] = 'TUNING' end
+    moved = #bits > 0 and table.concat(bits, '+') or 'nothing'
+  end
+  garage.lastDeclared = cfg.sig
+  log('I', 'raceManager', 'Declared to the server [' .. tostring(cfg.source)
+    .. ', changed: ' .. moved .. ']: ' .. tostring(cfg.sig))
   TriggerServerEvent('RM_VehicleConfig', jsonEncode({
     vid = cfg.vid, model = cfg.model, label = cfg.label,
     sig = cfg.sig, partsSig = cfg.partsSig,
@@ -2666,6 +3934,30 @@ end
 local function armVehicleConfigReport()
   lastReportedSig = nil
   configCheckLeft = 1.0
+  -- The cached answer belongs to the car that just went away. Dropped rather
+  -- than left to be matched by id: ids get reused, and whitelisting the
+  -- previous car's build under this one's name is worse than another wait.
+  garage.vehParts = nil
+  -- The spawn config belongs to the car that just went away, and re-reading it
+  -- is the one expensive thing here, so it is dropped exactly here and nowhere
+  -- else.
+  garage.pcCache = nil
+  -- A different car is a different signature, and it starts settling again
+  -- from nothing rather than inheriting the last one's count.
+  garage.settleSig, garage.settleCount = nil, 0
+  -- A FRESH BUDGET PER CAR, not per session. The probe is diagnostic now, so a
+  -- car that will not answer should cost three questions and then stop asking
+  -- rather than talking to a silent vehicle for the rest of the evening.
+  garage.probesLeft = 3
+  -- NOT ASKED HERE, and that is the point of the delay.
+  --
+  -- Changing a part REBUILDS the vehicle, and this fires in the middle of that.
+  -- Queueing Lua into a vehicle state that is still coming up is the worst
+  -- moment to pick, and a parts change can raise this event more than once, so
+  -- an immediate ask becomes a burst of them into a car that is busy being
+  -- born. The poll below picks it up a second later, when there is something
+  -- there to answer.
+  garage.probeLeft = 1.0
 end
 
 -- Polls the local vehicle configuration. Applying a tune does not raise a
@@ -2674,6 +3966,11 @@ end
 -- spawns, vehicle switches and setup changes with one code path.
 local function vehicleConfigUpdate(dt)
   if not inMultiplayer() then return end
+  -- Installed from the poll rather than at load: MPVehicleGE may not exist yet
+  -- when this extension comes up, and it is a no-op once hooked. Cheap enough
+  -- to attempt on a two-second timer and self-healing if BeamMP reloads.
+  watchMPSpawns()
+  if garage.probeLeft > 0 then garage.probeLeft = garage.probeLeft - dt end
   configCheckLeft = configCheckLeft - dt
   if configCheckLeft > 0 then return end
   configCheckLeft = 2.0
@@ -2687,16 +3984,113 @@ function M.whitelistCurrentVehicle()
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'The Garage List needs a BeamMP server' })
     return
   end
-  local cfg, why = localVehicleConfig()
+  -- A PERSON IS ASKING. Say so, so the read is allowed to question the car even
+  -- when the background poll has used its budget up.
+  -- The BUTTON takes the settled value too. Capturing an unsettled one puts an
+  -- entry on the Garage List that the car itself will stop matching a second
+  -- later, which is the same deletion seen from the other end.
+  local cfg, why = settledConfig(true)
   if not cfg then
     guihooks.trigger('RaceManagerEditorMsg', { msg = why or 'Get in a vehicle first' })
+    -- Logged HERE rather than inside the read: once per press, because someone
+    -- asked, instead of once per poll forever.
+    log('W', 'raceManager', 'Whitelist refused: ' .. tostring(why))
     return
   end
   TriggerServerEvent('RM_WhitelistVehicle', jsonEncode({
     model = cfg.model, label = cfg.label,
     sig = cfg.sig, partsSig = cfg.partsSig, game = gameVersion(),
   }))
-  log('I', 'raceManager', 'Whitelisting current vehicle: ' .. cfg.label)
+  -- THE CAPTURED SIGNATURE, in full.
+  --
+  -- The server files the car under this exact string and compares later
+  -- declarations against it. Printing it here puts it beside the "Declared to
+  -- the server" lines in the same log, so a rejection can be read rather than
+  -- guessed at: same string means the Garage List is at fault, a different one
+  -- means the car's identity moved and the difference says which half.
+  log('I', 'raceManager', 'Whitelisting current vehicle: ' .. cfg.label
+    .. ' (read from ' .. tostring(cfg.source) .. ')')
+  garage.lastCaptured = cfg.sig
+  log('I', 'raceManager', 'Captured signature: ' .. tostring(cfg.sig))
+end
+
+-- WHAT EVERY CONFIGURATION SOURCE ACTUALLY ANSWERS, printed to the console.
+--
+-- Run this when Whitelist Current Vehicle refuses:
+--   raceManager.diagnoseVehicleConfig()
+--
+-- It exists because the refusal has exactly one visible form -- "the vehicle is
+-- still loading" -- for several unrelated causes: no car, somebody else's car,
+-- a source that cannot see this vehicle, or a genuinely half-loaded one. From
+-- the panel they are indistinguishable, and the panel is the only place most of
+-- this is ever seen. This prints the difference.
+function M.diagnoseVehicleConfig()
+  local function line(s) log('I', 'raceManager', s); print('[RaceManager] ' .. s) end
+  local function describe(cfg)
+    if type(cfg) ~= 'table' then return 'not a table (' .. type(cfg) .. ')' end
+    local np, nv = 0, 0
+    if type(cfg.parts) == 'table' then for _ in pairs(cfg.parts) do np = np + 1 end end
+    if type(cfg.vars)  == 'table' then for _ in pairs(cfg.vars)  do nv = nv + 1 end end
+    return np .. ' parts, ' .. nv .. ' vars, name=' .. tostring(configDisplayName(cfg))
+  end
+
+  line('--- vehicle configuration diagnosis ---')
+  line('multiplayer: ' .. tostring(inMultiplayer()))
+  local veh = ownVehicle()
+  line('ownVehicle: ' .. (veh and 'yes' or 'NO -- nothing to read'))
+  local attached = playerVehicle()
+  line('attached vehicle id: ' .. tostring(attached and vehicleId(attached))
+    .. ', own vehicle id: ' .. tostring(veh and vehicleId(veh)))
+
+  if core_vehicle_partmgmt and core_vehicle_partmgmt.getConfig then
+    local ok, cfg = pcall(core_vehicle_partmgmt.getConfig)
+    line('core_vehicle_partmgmt.getConfig: ' .. (ok and describe(cfg)
+      or ('RAISED: ' .. tostring(cfg))))
+  else
+    line('core_vehicle_partmgmt.getConfig: ABSENT on this build')
+  end
+
+  local vid = veh and vehicleId(veh)
+  if core_vehicle_manager and core_vehicle_manager.getVehicleData then
+    if vid then
+      local ok, data = pcall(core_vehicle_manager.getVehicleData, vid)
+      line('core_vehicle_manager.getVehicleData(' .. tostring(vid) .. '): '
+        .. (ok and (type(data) == 'table' and describe(data.config)
+                    or 'not a table (' .. type(data) .. ')')
+            or ('RAISED: ' .. tostring(data))))
+    else
+      line('core_vehicle_manager.getVehicleData: no vehicle id to ask about')
+    end
+  else
+    line('core_vehicle_manager.getVehicleData: ABSENT on this build')
+  end
+
+  local cfg, why = localVehicleConfig()
+  if cfg then
+    line('RESOLVED via ' .. tostring(cfg.source) .. ': ' .. cfg.label)
+    line('signature: ' .. cfg.sig:sub(1, 200))
+  else
+    line('REFUSED: ' .. tostring(why))
+  end
+
+  -- PCPROBE, temporary. The same facts the per-rebuild line carries, on demand,
+  -- for the case where nothing has been rebuilt recently. Remove with the rest
+  -- of the probe.
+  local pcc = garage.pcCache
+  line('[PCPROBE] source: ' .. tostring(pcc and pcc.from or 'none')
+    .. ', parts: ' .. tostring(pcc and pcc.count or 0)
+    .. ', key shape: ' .. tostring(pcc and pcc.key0 or '?'))
+  -- Asked of the car, not of the cache: see the probe line for why the cached
+  -- name cannot answer this.
+  local raw = nil
+  if veh then pcall(function () raw = veh:getField('partConfig', 0) end) end
+  line('[PCPROBE] .pc name now: '
+    .. tostring((type(raw) == 'string' and raw:match('%.pc$')) and raw or 'NONE')
+    .. ' (partConfig is ' .. tostring(type(raw) == 'string' and #raw or -1) .. ' bytes)')
+  line('[PCPROBE] .pc at spawn: ' .. tostring(vid and garage.spawnPc[tostring(vid)] or 'NONE'))
+  line('[PCPROBE] .pc at edit : ' .. tostring(vid and garage.editPc[tostring(vid)] or 'NONE')
+    .. ' (' .. garage.editSeen .. ' edit event(s) announced by BeamMP)')
+  line('--- end ---')
 end
 
 function M.clearGarage()
@@ -8327,6 +9721,34 @@ local function onVehicleRejected(rawData)
   if remove then gone = deleteOwnVehicleNow() end
   log('W', 'raceManager', 'Vehicle rejected by the server: ' .. msg .. ' (' .. detail .. ')'
     .. (remove and (gone and ' [car deleted]' or ' [CAR NOT DELETED]') or ' [advisory only]'))
+
+  -- WHICH REJECTION IS THIS? There are two, they look identical from the panel,
+  -- and they need opposite fixes.
+  --
+  -- If the car is declaring exactly what was captured, the signature is stable
+  -- and the Garage List simply does not hold this car -- a different vehicle, a
+  -- different map's entry, or a list captured before the last change to how a
+  -- signature is built. Re-capturing fixes it.
+  --
+  -- If it has MOVED, the identity is drifting under an untouched car, and no
+  -- amount of re-capturing will ever hold. That was the bug for most of a day
+  -- and it must never be diagnosed by guesswork again.
+  if garage.lastCaptured then
+    if garage.lastDeclared == garage.lastCaptured then
+      log('W', 'raceManager', 'The car is declaring exactly what was captured ('
+        .. tostring(garage.lastCaptured) .. '), so its identity is STABLE: this '
+        .. 'is a Garage List that does not contain this car')
+    else
+      log('E', 'raceManager', 'THE SIGNATURE MOVED since it was captured. '
+        .. 'captured: ' .. tostring(garage.lastCaptured)
+        .. ' | declaring: ' .. tostring(garage.lastDeclared)
+        .. ' -- re-capturing will not hold while it keeps moving')
+    end
+  else
+    log('W', 'raceManager', 'Nothing was captured from this client, so there is '
+      .. 'nothing to compare: whitelist this car (with enforcing OFF) and the '
+      .. 'next rejection will say whether its identity holds still')
+  end
 end
 
 -- Server confirmed (or refused) a Whitelist Current Vehicle capture.
