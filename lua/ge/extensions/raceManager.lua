@@ -2610,23 +2610,14 @@ local garage = {
   -- ever reveals what it is built from.
   spawnParts = {},
   spawnHooked = false,
-  -- PCPROBE, temporary. Answers one question: does the saved-config NAME
-  -- survive a Paint Design change? If it does, the Garage List can identify a
-  -- car by model + .pc name and every cosmetic is free in every mode with no
-  -- slot list to maintain. If it does not, identity has to stay a parts
-  -- comparison. Nothing here is read by the matcher; it only logs.
-  --   spawnPc   the .pc name BeamMP announced, per vehicle id
-  --   editPc    the same from an EDIT announcement, if one ever arrives
-  --   editSeen  how many edits BeamMP announced for our own car
-  --   probeSeq  rebuild counter, so two log lines can be told apart
-  spawnPc = {},
+  -- Vehicles BeamMP announced an EDIT for. Doubles as "the spawn parts have
+  -- been refreshed since this car was built", which is what stops them being
+  -- dropped as stale below.
   editPc = {},
-  editSeen = 0,
-  probeSeq = 0,
   -- Vehicles whose spawn-event parts were dropped as older than the car. Such
-  -- a car must not fall through to the parts tree: the two sources key on
-  -- different things (slot names against paths), so the identity would jump on
-  -- a car that may only have been resprayed. See readSpawnConfig.
+  -- a car must not fall through to the spawn configuration: the two sources
+  -- key on different things, so the identity would jump on a car that may only
+  -- have been resprayed. See readSpawnConfig.
   mpDropped = {},
 }
 
@@ -2905,23 +2896,6 @@ end
 -- The payload's shape is not assumed. Every argument is examined for a config
 -- in either form, and what was found is logged the first time, so a BeamMP that
 -- passes something different says so instead of silently going quiet.
--- The first key in sort order, as a shape sample. The two parts sources do not
--- share a key space (BeamMP hands over slot names, the parts tree hands over
--- paths), and one key of each is enough to see which one answered.
---
--- A field on `garage` rather than a `local function`: this chunk is four slots
--- from Lua's 200-local ceiling, where the next top-level local stops the file
--- compiling and the mod is absent in game with no error.
-function garage.sampleKey(t)
-  if type(t) ~= 'table' then return '?' end
-  local best = nil
-  for k in pairs(t) do
-    k = tostring(k)
-    if not best or k < best then best = k end
-  end
-  return best or '(none)'
-end
-
 local function watchMPSpawns()
   if garage.spawnHooked then return end
   if not (MPVehicleGE and type(MPVehicleGE.onServerVehicleSpawned) == 'function') then
@@ -2950,7 +2924,6 @@ local function watchMPSpawns()
               local pc = cfg.partConfigFilename
               if what == 'spawn' then
                 garage.spawnParts[tostring(id)] = cfg.parts
-                garage.spawnPc[tostring(id)] = pc
               else
                 -- AN EDIT REFILLS THE PARTS. This is the staleness fix: the
                 -- spawn event fires once, so without this the parts caught at
@@ -2961,15 +2934,13 @@ local function watchMPSpawns()
                 -- Testing the NAME for that is what dropped fresh parts as
                 -- stale on any build that announces edits without one.
                 garage.editPc[tostring(id)] = pc or '(unnamed)'
-                garage.editSeen = garage.editSeen + 1
               end
               -- A fresh answer for this vehicle, so it is no longer the case
               -- that the only source that ever spoke for it has gone quiet.
               garage.mpDropped[tostring(id)] = nil
               log('I', 'raceManager', 'Caught ' .. n .. ' parts from the BeamMP '
                 .. what .. ' event for vehicle ' .. tostring(id)
-                .. ' (' .. tostring(pc or '?') .. ')'
-                .. ' [PCPROBE key0=' .. garage.sampleKey(cfg.parts) .. ']')
+                .. ' (' .. tostring(pc or '?') .. ')')
             end
           end
         end
@@ -2986,10 +2957,10 @@ local function watchMPSpawns()
     return original(...)
   end
 
-  -- PCPROBE: does BeamMP announce our OWN edit at all? If it does not, the
-  -- parts caught at spawn are the only ones this client ever has, which is why
-  -- a part swap can go unnoticed. Absent on a build without the event, and that
-  -- is logged, because silence otherwise reads as "no edit happened".
+  -- An edit is the only thing that refreshes the parts caught at spawn. Without
+  -- it those are all this client ever has for the vehicle, which is how a part
+  -- swap goes unnoticed. Absent on a build without the event, and that is
+  -- logged, because silence otherwise reads as "no edit happened".
   if type(MPVehicleGE.onServerVehicleEdited) == 'function' then
     local originalEdit = MPVehicleGE.onServerVehicleEdited
     MPVehicleGE.onServerVehicleEdited = function (...)
@@ -2998,42 +2969,12 @@ local function watchMPSpawns()
       return originalEdit(...)
     end
   else
-    log('W', 'raceManager', '[PCPROBE] MPVehicleGE.onServerVehicleEdited is '
-      .. 'ABSENT on this build, so no edit can ever be announced')
+    log('W', 'raceManager', 'MPVehicleGE.onServerVehicleEdited is ABSENT on '
+      .. 'this build, so no edit can ever be announced')
   end
 
   garage.spawnHooked = true
   log('I', 'raceManager', 'Watching BeamMP spawn events for vehicle parts')
-end
-
--- THE RAW SPAWN PACKET, which the MP record keeps for the life of the vehicle.
---
--- The one source that does not depend on catching an event in time. The spawn
--- hook only sees cars that spawn AFTER it is installed, and a driver's own car
--- is already there by then, which left a stock car with nothing readable at
--- all: partmgmt, vehData and the car's own VM all report zero parts and
--- partConfig is a 31-byte path.
---
--- Returns the parts table and the config filename. Logs what it could not parse
--- rather than going quiet, because this is the last source there is.
-function garage.partsFromVehicleString(s)
-  if type(s) ~= 'string' or s == '' then return nil end
-  local brace = s:find('{', 1, true)
-  if not brace then return nil end
-  local cfg = nil
-  if type(jsonDecode) == 'function' then
-    pcall(function () cfg = jsonDecode(s:sub(brace)) end)
-  end
-  if type(cfg) ~= 'table' then
-    log('D', 'raceManager', 'serverVehicleString did not decode; it begins: '
-      .. s:sub(1, 200))
-    return nil
-  end
-  local vcf = (type(cfg.vcf) == 'table') and cfg.vcf or cfg
-  if type(vcf.parts) == 'table' and next(vcf.parts) ~= nil then
-    return vcf.parts, vcf.partConfigFilename
-  end
-  return nil
 end
 
 local function partsFromMP(vid)
@@ -3064,14 +3005,6 @@ local function partsFromMP(vid)
           end
         end
       end
-      -- The raw packet, last, because it costs a JSON decode. It is also the
-      -- only one that answers for a car that spawned before the hook existed.
-      local sParts, sPc = garage.partsFromVehicleString(v.serverVehicleString)
-      if sParts then
-        if sPc then garage.spawnPc[tostring(vid)] = sPc end
-        return sParts, 'serverVehicleString'
-      end
-
       local keys = {}
       for k in pairs(v) do keys[#keys + 1] = tostring(k) end
       table.sort(keys)
@@ -3428,10 +3361,6 @@ local function localVehicleConfig(userAsked)
       garage.pcCache = {
         vid = vid, digest = '-', len = 0,
         parts = digestOf(mpParts, true), count = c, from = 'mp',
-        -- PCPROBE: which source answered, its key shape, and the .pc name it
-        -- was announced under. Read by the probe line below and by nothing else.
-        key0 = garage.sampleKey(mpParts),
-        pc = garage.spawnPc[tostring(vid)],
       }
       log('I', 'raceManager', 'Read ' .. c .. ' parts from the BeamMP spawn '
         .. 'record (' .. tostring(mpWhy) .. '); ' .. n .. ' left free as '
@@ -3454,13 +3383,14 @@ local function localVehicleConfig(userAsked)
     log('D', 'raceManager', 'BeamMP spawn record has no configuration ('
       .. tostring(mpWhy) .. '); using the spawn configuration instead')
 
-    -- NO FALLING BACK ACROSS SOURCES, and this is what stops the fix above
+    -- NO FALLING BACK ACROSS SOURCES, and this is what stops the drop above
     -- turning into a deleted car.
     --
-    -- The spawn event keys on SLOT NAMES and the parts tree keys on PATHS, so
-    -- the same car digests differently depending on which one answered. A
-    -- vehicle whose spawn parts were just dropped would jump identity here, on
-    -- a change that may only have been a respray, and be removed for it.
+    -- Both sources key on slot names now, but they do not enumerate the same
+    -- slots: the spawn record carries what the config set, the parts tree
+    -- carries every slot including the empty ones. So a vehicle whose spawn
+    -- parts were just dropped would still move its digest here, on a change
+    -- that may only have been a respray, and be removed for it.
     --
     -- Declaring nothing is the safe half of that choice: the server reads no
     -- declaration as "no verdict yet", which is never an offender. Cached as a
@@ -3468,12 +3398,11 @@ local function localVehicleConfig(userAsked)
     -- and re-reading an inline configuration on a timer is what froze the game.
     if garage.mpDropped[key] then
       garage.pcCache = { vid = vid, digest = '-', len = 0, parts = nil,
-                         count = 0, from = 'dropped', key0 = '(none)', pc = nil }
+                         count = 0, from = 'dropped' }
       log('W', 'raceManager', 'This car was known through the BeamMP spawn '
         .. 'event and that answer is now stale, so it is UNJUDGED until it '
-        .. 'respawns: the parts tree keys on paths where the spawn event keys '
-        .. 'on slots, and switching would move its identity without its build '
-        .. 'changing')
+        .. 'respawns rather than being re-identified from a source that '
+        .. 'enumerates different slots')
       return
     end
 
@@ -3500,13 +3429,7 @@ local function localVehicleConfig(userAsked)
           for _ in pairs(fromCfg) do c = c + 1 end
           return c
         end)() or 0,
-        -- PCPROBE. `raw` is EITHER a .pc path or the whole configuration
-        -- inline, and which one it is answers the question this probe exists
-        -- for: a path still naming the saved config after a Paint Design change
-        -- means identity can be the name.
         from = 'tree',
-        key0 = fromCfg and garage.sampleKey(fromCfg) or '(unparsed)',
-        pc = raw:match('%.pc$') and raw or nil,
       }
       if fromCfg then
         -- WHICH SLOTS THE LIVERY FILTER TOOK OUT, by name.
@@ -3540,43 +3463,7 @@ local function localVehicleConfig(userAsked)
       end
     end
   end
-  if not (garage.pcCache and garage.pcCache.vid == vid) then
-    readSpawnConfig()
-    -- PCPROBE, one line per rebuild, temporary. This fires whether or not the
-    -- identity moved, so a probe line with no "Declared" line after it means
-    -- the identity HELD across whatever the driver just changed. That pairing
-    -- is the reading; neither line answers on its own.
-    garage.probeSeq = garage.probeSeq + 1
-    local pcc = garage.pcCache
-
-    -- READ FRESH, and this is the whole point of the probe.
-    --
-    -- garage.spawnParts is never invalidated, so once BeamMP has answered for a
-    -- vid its .pc name is reported unchanged forever. Trusting it would answer
-    -- "the name survived the paint change" without ever having looked at the
-    -- car. `livePc` asks the vehicle itself, at this instant.
-    --
-    -- Length, not content: a path is tens of bytes and an edited configuration
-    -- is tens of thousands, so the size alone says which state the car is in.
-    -- The 73 KB string is READ but never hashed or parsed here, because hashing
-    -- it on a timer is what used to freeze the game.
-    local raw = nil
-    pcall(function () raw = veh:getField('partConfig', 0) end)
-    local liveLen = (type(raw) == 'string') and #raw or -1
-    local livePc = (type(raw) == 'string' and raw:match('%.pc$')) and raw or 'NONE'
-
-    log('I', 'raceManager', string.format(
-      '[PCPROBE] #%d vid=%s src=%s parts=%d key0=%s | livePc=%s liveLen=%d '
-        .. '| mpPc=%s editPc=%s edits=%d',
-      garage.probeSeq, tostring(vid),
-      tostring(pcc and pcc.from or 'none'),
-      (pcc and pcc.count) or 0,
-      tostring(pcc and pcc.key0 or '?'),
-      livePc, liveLen,
-      tostring(garage.spawnPc[tostring(vid)] or 'NONE'),
-      tostring(garage.editPc[tostring(vid)] or 'NONE'),
-      garage.editSeen))
-  end
+  if not (garage.pcCache and garage.pcCache.vid == vid) then readSpawnConfig() end
   notes[#notes + 1] = 'pc=' .. (garage.pcCache and garage.pcCache.len > 0 and garage.pcCache.len or 'none')
     .. ((garage.pcCache and garage.pcCache.parts) and ('/' .. garage.pcCache.count .. 'p') or '')
 
@@ -4073,23 +3960,12 @@ function M.diagnoseVehicleConfig()
     line('REFUSED: ' .. tostring(why))
   end
 
-  -- PCPROBE, temporary. The same facts the per-rebuild line carries, on demand,
-  -- for the case where nothing has been rebuilt recently. Remove with the rest
-  -- of the probe.
+  -- Which source actually answered for the parts. The whole failure mode of
+  -- this feature was every source reporting zero, so the resolved one is worth
+  -- naming when somebody is looking at a refusal.
   local pcc = garage.pcCache
-  line('[PCPROBE] source: ' .. tostring(pcc and pcc.from or 'none')
-    .. ', parts: ' .. tostring(pcc and pcc.count or 0)
-    .. ', key shape: ' .. tostring(pcc and pcc.key0 or '?'))
-  -- Asked of the car, not of the cache: see the probe line for why the cached
-  -- name cannot answer this.
-  local raw = nil
-  if veh then pcall(function () raw = veh:getField('partConfig', 0) end) end
-  line('[PCPROBE] .pc name now: '
-    .. tostring((type(raw) == 'string' and raw:match('%.pc$')) and raw or 'NONE')
-    .. ' (partConfig is ' .. tostring(type(raw) == 'string' and #raw or -1) .. ' bytes)')
-  line('[PCPROBE] .pc at spawn: ' .. tostring(vid and garage.spawnPc[tostring(vid)] or 'NONE'))
-  line('[PCPROBE] .pc at edit : ' .. tostring(vid and garage.editPc[tostring(vid)] or 'NONE')
-    .. ' (' .. garage.editSeen .. ' edit event(s) announced by BeamMP)')
+  line('spawn config: ' .. tostring(pcc and pcc.from or 'none')
+    .. ', ' .. tostring(pcc and pcc.count or 0) .. ' parts')
   line('--- end ---')
 end
 
