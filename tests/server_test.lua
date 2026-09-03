@@ -8,7 +8,8 @@ local connected = { [1] = 'Alice', [2] = 'Bob', [3] = 'Cara' }
 local lastState = nil     -- last decoded RM_Update payload
 local targetedStates = {} -- [pid] = last RM_Update sent to that pid alone
 local lastChat = nil      -- last broadcast chat message
-local lastLayouts = nil   -- last RM_Layouts payload
+local lastLayouts = nil   -- last RM_Layouts payload sent to pid 1 (the admin)
+local layoutSends = {}    -- every RM_Layouts send, in order: { target, payload }
 local lastHeld    = nil   -- last RM_SaveHeld payload (a refused overwrite)
 local lastLogin   = nil   -- last RM_LoginResult payload
 local appliedLayouts = {} -- [target] = last RM_ApplyLayout payload
@@ -35,7 +36,14 @@ MP = {
       lastState = payload
       if target ~= -1 then targetedStates[target] = payload end
     end
-    if event == 'RM_Layouts'     then lastLayouts = payload end
+    -- PER TARGET, because the layout list is ADDRESSED now rather than
+    -- broadcast, and an admin and a driver are sent different lists. A
+    -- last-wins capture reads whichever player the iteration ended on, which
+    -- is why `lastLayouts` follows pid 1: the admin every layout test drives.
+    if event == 'RM_Layouts' then
+      layoutSends[#layoutSends + 1] = { target = target, payload = payload }
+      if target == 1 or target == -1 then lastLayouts = payload end
+    end
     if event == 'RM_ApplyLayout' then lastApplied = payload; appliedLayouts[target] = payload end
     if event == 'RM_ClearTrack'  then lastCleared = payload end
     if event == 'RM_SaveHeld'    then lastHeld    = payload end
@@ -53,6 +61,16 @@ MP = {
 -- is not valid JSON has to raise rather than silently produce a table -- which
 -- is what the tests for malformed saves are actually asserting.
 local function targetedState(pid) return targetedStates[pid] end
+
+-- The last layout list ADDRESSED to this player. RM_onRequestLayouts targets a
+-- single pid, and a save now addresses every player individually, so a capture
+-- that follows only the admin never sees a driver's view.
+local function layoutsFor(pid)
+  for i = #layoutSends, 1, -1 do
+    if layoutSends[i].target == pid then return layoutSends[i].payload end
+  end
+  return nil
+end
 
 local function jsonDecode(text)
   if type(text) ~= 'string' then error('json: not a string', 0) end
@@ -459,6 +477,48 @@ check(lastLayouts.layouts[1].height == 8 and lastLayouts.layouts[1].depth == 2,
     .. 'The default is weighted upward: the total is the 10 meters it always '
     .. 'was, but 8 of it is above the road instead of 5')
 
+-- ONE ADDRESSED LIST PER PLAYER, AND NEVER A BROADCAST.
+--
+-- The bug: a save broadcast the driver-visible list to everyone and then sent
+-- admins the full one. Those two are not ordered against each other, and a live
+-- client log caught the wrong order twice in three saves:
+--
+--   607.78806: 26 layout(s)   607.78808: 0    <- admin left with an EMPTY list
+--
+-- The admin who had just pressed Save read "no layouts saved for this map", and
+-- the panel cleared their selection because the layout no longer appeared in
+-- the list, so Overwrite went away mid-edit. Logging out and back in fixed it,
+-- which is what made it look like a login problem rather than a save problem.
+--
+-- Nobody may be sent two lists for one save. That is the property, and it is
+-- what makes the ordering irrelevant instead of merely usually-right.
+layoutSends = {}
+RM_onSaveLayout(1, '{"name":"GP Circuit","width":24,"checkpoints":' .. cpJson .. '}')
+do
+  local perTarget, broadcasts = {}, 0
+  for _, s in ipairs(layoutSends) do
+    if s.target == -1 then broadcasts = broadcasts + 1 end
+    perTarget[s.target] = (perTarget[s.target] or 0) + 1
+  end
+  check(broadcasts == 0,
+    'a save BROADCASTS nothing: a broadcast plus a per-admin correction is a '
+      .. 'race, and the correction lost it two times in three')
+  local doubled = nil
+  for target, n in pairs(perTarget) do
+    if n > 1 then doubled = target end
+  end
+  check(doubled == nil,
+    'and no player is sent the layout list twice, so there is no order for the '
+      .. 'delivery to get wrong')
+  check(perTarget[1] and perTarget[2] and perTarget[3],
+    'every connected player is told, not just the admins')
+  check(layoutsFor(1) and #layoutsFor(1).layouts == 1,
+    'the admin who saved sees their layout, which is the whole complaint')
+  check(layoutsFor(3) and #layoutsFor(3).layouts == 0,
+    'and a driver still only sees practice-approved ones, so addressing the '
+      .. 'sends did not leak the unapproved list')
+end
+
 -- Same name on the same map overwrites instead of duplicating
 RM_onSaveLayout(1, '{"name":"gp circuit","width":30,"checkpoints":' .. cpJson .. '}')
 check(#lastLayouts.layouts == 1 and lastLayouts.layouts[1].width == 30,
@@ -579,7 +639,7 @@ check(lastLayouts.layouts[1].practice ~= true,
 
 -- A NON-ADMIN IS NOT EVEN SHOWN IT.
 RM_onRequestLayouts(3)
-check(lastLayouts ~= nil and #lastLayouts.layouts == 0,
+check(layoutsFor(3) ~= nil and #layoutsFor(3).layouts == 0,
   'an unapproved layout is not listed to a non-admin at all')
 RM_onRequestLayouts(1)
 check(#lastLayouts.layouts == 1, 'while an admin sees every layout on the map')
@@ -631,7 +691,7 @@ RM_onResetLeaderboard(1)   -- back to 'waiting', so practice is allowed again
 -- Un-approving takes it away again.
 RM_onSetLayoutPractice(1, '{"name":"GP Circuit","practice":false}')
 RM_onRequestLayouts(3)
-check(#lastLayouts.layouts == 0, 'un-approving hides it from drivers again')
+check(#layoutsFor(3).layouts == 0, 'un-approving hides it from drivers again')
 appliedLayouts = {}
 RM_onLoadLayout(3, '{"name":"GP Circuit","forPractice":true}')
 check(appliedLayouts[3] == nil, 'and refuses the load')
@@ -639,7 +699,7 @@ check(appliedLayouts[3] == nil, 'and refuses the load')
 -- A non-admin cannot approve anything.
 RM_onSetLayoutPractice(3, '{"name":"GP Circuit","practice":true}')
 RM_onRequestLayouts(3)
-check(#lastLayouts.layouts == 0, 'a non-admin cannot approve a layout for themselves')
+check(#layoutsFor(3).layouts == 0, 'a non-admin cannot approve a layout for themselves')
 RM_onRequestLayouts(1)
 
 -- LOGGING IN HAS TO RESEND THE LIST, and this is the check that would have
@@ -652,7 +712,7 @@ RM_onRequestLayouts(1)
 -- is indistinguishable from the server having lost the file.
 RM_onLogout(2)
 RM_onRequestLayouts(2)
-check(#lastLayouts.layouts == 0, 'a logged-out client holds the driver list')
+check(#layoutsFor(2).layouts == 0, 'a logged-out client holds the driver list')
 RM_onLogin(2, '{"password":"phoenix"}')
 check(#lastLayouts.layouts > 0,
   'and logging in resends it in full, without the client having to ask')

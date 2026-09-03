@@ -6294,20 +6294,41 @@ local function sendLayoutList(targetPid)
     return
   end
 
-  -- A BROADCAST IS TWO DIFFERENT LISTS, so it cannot be one broadcast.
+  -- ONE ADDRESSED LIST PER PLAYER. Never a broadcast plus a correction.
   --
-  -- The safe list goes to everyone, and every admin then gets the full one
-  -- addressed to them, which lands second and replaces it. The alternative --
-  -- broadcasting the safe list and leaving admins to re-request -- empties the
-  -- layout panel of the admin who just pressed Save, until they happen to
-  -- refresh it. Their own layout vanishing is not a subtle failure.
-  local safe = layoutsVisibleTo(nil, all)
-  print(string.format('[RaceManager] Sending layout list to all: %d of %d layout(s), map %s',
-    #safe, #all, map))
-  MP.TriggerClientEvent(-1, 'RM_Layouts', Util.JsonEncode({ map = map, layouts = safe }))
-  if #safe == #all then return end            -- nothing withheld: nothing to top up
-  for pid in pairs(authenticatedPlayers) do
-    MP.TriggerClientEvent(pid, 'RM_Layouts', Util.JsonEncode({ map = map, layouts = all }))
+  -- A broadcast and a targeted send are NOT ordered against each other.
+  -- Measured in a live client log, microseconds apart, on three saves:
+  --
+  --   478.66203: 0 layout(s)   478.66206: 26     ends full
+  --   607.78806: 26            607.78808: 0      ends EMPTY
+  --   810.94613: 26            810.94616: 0      ends EMPTY
+  --
+  -- Two in three delivered the admin's full list first and the driver-visible
+  -- one after it, so the admin who had just pressed Save was left reading "no
+  -- layouts saved for this map" with their selection cleared. Logging out and
+  -- back in fixed it because that path sends exactly one message.
+  --
+  -- So nobody is told twice. Each player is sent the one list they should see.
+  -- A save is rare and a field is tens of players, which is nothing against a
+  -- bug that loses an admin's place in the middle of building a track.
+  local sent, withheld = 0, 0
+  for pid in pairs(onlinePlayers()) do
+    local list = layoutsVisibleTo(pid, all)
+    if #list < #all then withheld = withheld + 1 end
+    MP.TriggerClientEvent(pid, 'RM_Layouts', Util.JsonEncode({ map = map, layouts = list }))
+    sent = sent + 1
+  end
+  print(string.format('[RaceManager] Sent the layout list to %d player(s): %d layout(s), '
+    .. '%d given the practice-only view, map %s', sent, #all, withheld, map))
+
+  -- KEPT, GUARDED: the old broadcast, for a build where MP.GetPlayers() comes
+  -- back empty with players actually connected. Silence would be worse than the
+  -- race this replaced, because nobody would get a list at all.
+  if sent == 0 then
+    local safe = layoutsVisibleTo(nil, all)
+    print('[RaceManager] No players enumerated; falling back to a broadcast of '
+      .. #safe .. ' layout(s)')
+    MP.TriggerClientEvent(-1, 'RM_Layouts', Util.JsonEncode({ map = map, layouts = safe }))
   end
 end
 
