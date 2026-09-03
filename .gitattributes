@@ -1,0 +1,13 @@
+# The packaged client zip is built from these files verbatim, so a CRLF
+# checkout produces a different zip byte for byte and package/Client/RaceManager.zip
+# shows as modified after every deploy. The diff is pure line endings and is
+# worth nothing; eventually somebody commits one. Pinned to LF so a rebuild on
+# any machine is reproducible.
+*.lua  text eol=lf
+*.js   text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+
+# Build artifacts and images: never converted, never diffed as text.
+*.zip binary
+*.png binary
