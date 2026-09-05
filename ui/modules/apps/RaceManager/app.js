@@ -153,7 +153,9 @@ angular.module('beamng.apps')
       $scope.gridGen = { count: 12, spacing: 8, stagger: 6, width: 2, from: 0 };
       $scope.gridGenerated = false;   // is there a generated grid the sliders may move?
       // Garage list (approved vehicles/setups).
-      $scope.garage = [];             // [{ model, label, class }]
+      $scope.garage = [];             // [{ model, label, class, pc }]
+      // The subset a driver can spawn: entries carrying a saved config path.
+      $scope.garageSpawnable = [];
       // The class boxes, kept beside the list rather than bound straight into
       // it: `garage` is replaced wholesale on every broadcast, and an ng-model
       // pointed at a row would lose what was being typed three times a second.
@@ -2190,6 +2192,18 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
             }
           }
           $scope.garage = toArray(data.garage);
+          // Derived HERE rather than in a template function. ng-if and
+          // ng-repeat would both call it every digest and it allocates a list,
+          // and this app is watched for per-frame allocations. An entry with no
+          // saved config behind it (a car edited in the session) has no file to
+          // spawn, so it is left out rather than offered as something that
+          // would quietly hand back the model's default.
+          $scope.garageSpawnable = [];
+          for (var gsi = 0; gsi < $scope.garage.length; gsi++) {
+            if ($scope.garage[gsi] && $scope.garage[gsi].pc) {
+              $scope.garageSpawnable.push($scope.garage[gsi]);
+            }
+          }
           // Seeded from the server, and only where the box is not being edited:
           // overwriting a half-typed class on the next broadcast is the bug the
           // separate array exists to avoid, and the debounce means "half-typed"
@@ -3620,6 +3634,16 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       };
       $scope.clearGarage = function () {
         bngApi.engineLua('raceManager.clearGarage()');
+      };
+
+      // Open to everyone: this is the driver's half of the Garage List. The
+      // spawn is entirely client-side (BeamNG loads the .pc itself), and the
+      // new car re-declares to the server like any other, so an approved entry
+      // needs no permission and an unapproved one gains nothing.
+      $scope.takeGarageCar = function (g, replace) {
+        if (!g || !g.pc || !g.model) { return; }
+        bngApi.engineLua('raceManager.takeGarageCar(' + luaStr(g.model) + ', '
+          + luaStr(g.pc) + ', ' + (replace ? 'true' : 'false') + ')');
       };
 
       // --- Saved garage sets ---------------------------------------------

@@ -6994,6 +6994,7 @@ local function loadGarageFromDisk()
         -- mode; garageAllows skips it in parts mode rather than guessing.
         partsSig = partsSig,
         game     = (type(e.game) == 'string' and e.game ~= '') and e.game or nil,
+        pc       = (type(e.pc) == 'string' and e.pc ~= '') and e.pc or nil,
       }
     end
   end
@@ -7155,7 +7156,10 @@ garageSnapshot = function ()
   -- compact view (the signature stays server-side).
   local list = {}
   for i, e in ipairs(g.list) do
-    list[i] = { model = e.model, label = e.label, class = e.class }
+    -- `pc` rides along and the signature does not, deliberately. A driver needs
+    -- the config path to spawn the car; the signature is what the server
+    -- compares against and is nobody else's business.
+    list[i] = { model = e.model, label = e.label, class = e.class, pc = e.pc }
   end
   -- The saved set NAMES ride along. They are read off the folder, so a set
   -- dropped in by hand appears without a restart; the cache below is what stops
@@ -7391,7 +7395,36 @@ function RM_onWhitelistVehicle(pid, rawData)
     return
   end
   local g = getGarage()
-  if garageHasSig(sig) then
+  local dupe = nil
+  for _, e in ipairs(g.list) do
+    if e.sig == sig then dupe = e; break end
+  end
+  if dupe then
+    -- A RE-CAPTURE BACKFILLS THE SAVED CONFIG PATH, and without this there is
+    -- no way to get one onto an entry that predates the field. Every list
+    -- captured before drivers could take a car has no `pc`, the Take button is
+    -- hidden for exactly that reason, and re-capturing the same car was refused
+    -- as a duplicate: the only fix left was Clear Garage and start again.
+    --
+    -- Only ever fills in or corrects the path. Nothing else about a stored
+    -- entry moves, because the signature matched, so there is nothing else that
+    -- could have changed.
+    local incoming = (type(data.pc) == 'string' and data.pc ~= '') and data.pc:sub(1, 200) or nil
+    if incoming and dupe.pc ~= incoming then
+      local had = dupe.pc
+      dupe.pc = incoming
+      saveGarageToDisk()
+      broadcastState()
+      MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+        added = true,
+        message = (had and 'Updated' or 'Added') .. ' the saved config for "'
+          .. dupe.label .. '", so drivers can take this car',
+      }))
+      print('[RaceManager] Garage entry "' .. dupe.label .. '" '
+        .. (had and 'repointed to' or 'gained') .. ' config ' .. incoming
+        .. ' (by ' .. (MP.GetPlayerName(pid) or pid) .. ')')
+      return
+    end
     MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
       added = false, message = 'That exact vehicle/setup is already on the Garage List',
     }))
@@ -7416,6 +7449,12 @@ function RM_onWhitelistVehicle(pid, rawData)
     sig      = sig,
     partsSig = partsSig,
     game     = (type(data.game) == 'string' and data.game ~= '') and data.game or nil,
+    -- THE SAVED CONFIG'S PATH, and the only field on an entry a driver can act
+    -- on. BeamNG spawns straight from it, so this is what lets somebody take a
+    -- car off the list instead of building it by hand. Absent for a car edited
+    -- in the session rather than loaded from a file; an entry without one is
+    -- simply not offered.
+    pc       = (type(data.pc) == 'string' and data.pc ~= '') and data.pc:sub(1, 200) or nil,
   }
   g.list[#g.list + 1] = entry
   local wrote, werr = saveGarageToDisk()
@@ -7575,6 +7614,7 @@ function RM_onLoadGarageSet(pid, rawData)
         sig      = e.sig,
         partsSig = partsSig,
         game     = (type(e.game) == 'string' and e.game ~= '') and e.game or nil,
+        pc       = (type(e.pc) == 'string' and e.pc ~= '') and e.pc or nil,
       }
     end
   end

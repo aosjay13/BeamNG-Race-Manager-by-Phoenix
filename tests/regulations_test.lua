@@ -769,6 +769,74 @@ check(hasSet('GT3'), 'deleting a set needs an admin too')
 RM_onDeleteGarageSet(1, '{"name":"GT3"}')
 check(not hasSet('GT3') and hasSet('Trucks'), 'an admin deletes one set and leaves the rest')
 
+-- ---------------------------------------------------------------------------
+-- THE SAVED CONFIG PATH, so a driver can take an approved car
+-- ---------------------------------------------------------------------------
+-- An entry carries the .pc it was built from. BeamNG spawns straight from that
+-- path (prepareConfigData in core/vehicles.lua reads opts.config as "a basename
+-- or a full path"), so it is the whole of what a driver needs.
+--
+-- It reaches EVERY client, admin or not, while the signature reaches none.
+RM_onClearGarage(1)
+RM_onWhitelistVehicle(1, '{"model":"etk800","label":"Cup Car","sig":"' .. SIG_A
+  .. '","pc":"vehicles/etk800/cup.pc"}')
+check(#lastState.garage == 1 and lastState.garage[1].pc == 'vehicles/etk800/cup.pc',
+  'the saved config path is broadcast with the entry, which is what a driver spawns from')
+check(lastState.garage[1].sig == nil,
+  'and the signature still is not: that is the servers comparison, not a drivers business')
+
+-- An edited car has no file behind it. The entry is still valid to race under,
+-- it simply cannot be handed to anybody to spawn.
+RM_onWhitelistVehicle(1, '{"model":"pigeon","label":"Home Build","sig":"' .. SIG_B .. '"}')
+check(#lastState.garage == 2 and lastState.garage[2].pc == nil,
+  'an entry captured from a car with no saved config carries no path, so the '
+    .. 'panel can leave it out instead of spawning the models default and '
+    .. 'calling it the approved car')
+
+-- A RE-CAPTURE BACKFILLS THE PATH ONTO AN ENTRY THAT HAS NONE.
+--
+-- Every list captured before this field existed has no `pc`, so the Take button
+-- is hidden for all of them. Re-capturing the same car was refused as an exact
+-- duplicate, which left Clear Garage and rebuild as the only way to fix a
+-- league's whole garage. Reported from a live server with exactly one entry.
+RM_onClearGarage(1)
+RM_onWhitelistVehicle(1, '{"model":"etk800","label":"Old Entry","sig":"' .. SIG_A .. '"}')
+check(#lastState.garage == 1 and lastState.garage[1].pc == nil,
+  'an entry captured with no path has none, as every pre-existing one does')
+
+garageMsg = nil
+RM_onWhitelistVehicle(1, '{"model":"etk800","label":"Old Entry","sig":"' .. SIG_A
+  .. '","pc":"vehicles/etk800/cup.pc"}')
+check(#lastState.garage == 1, 'a re-capture of the same car does not duplicate it')
+check(lastState.garage[1].pc == 'vehicles/etk800/cup.pc',
+  'and FILLS IN the saved config path, which is the only way an existing league '
+    .. 'garage becomes spawnable without being rebuilt from nothing')
+check(garageMsg ~= nil and garageMsg.added == true,
+  'and says so, rather than reporting the duplicate refusal it used to')
+
+-- With nothing new to add it is still a duplicate, so the message is honest.
+garageMsg = nil
+RM_onWhitelistVehicle(1, '{"model":"etk800","label":"Old Entry","sig":"' .. SIG_A
+  .. '","pc":"vehicles/etk800/cup.pc"}')
+check(garageMsg ~= nil and garageMsg.added == false,
+  'capturing it again with nothing changed is still reported as already listed')
+
+RM_onClearGarage(1)
+RM_onWhitelistVehicle(1, '{"model":"etk800","label":"Cup Car","sig":"' .. SIG_A
+  .. '","pc":"vehicles/etk800/cup.pc"}')
+RM_onWhitelistVehicle(1, '{"model":"pigeon","label":"Home Build","sig":"' .. SIG_B .. '"}')
+
+-- IT SURVIVES A SET, which is the point: a series saved on Tuesday is still
+-- spawnable on Friday.
+RM_onSaveGarageSet(1, '{"name":"PathTest"}')
+RM_onClearGarage(1)
+check(#lastState.garage == 0, 'cleared before the reload, so the reload is what proves it')
+RM_onLoadGarageSet(1, '{"name":"PathTest"}')
+check(#lastState.garage == 2 and lastState.garage[1].pc == 'vehicles/etk800/cup.pc',
+  'a saved set keeps the config path, so a series stays spawnable after a reload')
+check(lastState.garage[2].pc == nil, 'and the entry without one still has none')
+RM_onDeleteGarageSet(1, '{"name":"PathTest"}')
+
 -- PUT THE STORE BACK AS THIS SECTION FOUND IT. garage.json persists the
 -- enforcement flag, and the next suite to run reads that file: leaving it ON
 -- made class_test fail on "the garage is not being enforced", which is a real

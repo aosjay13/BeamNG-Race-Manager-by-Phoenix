@@ -1396,5 +1396,114 @@ do
     'and moves the full signature, which is what Strict blocks')
 end
 
+-- ---------------------------------------------------------------------------
+-- 23b. THE CAPTURE CARRIES THE SAVED CONFIG'S PATH
+-- ---------------------------------------------------------------------------
+-- Without it the entry reaches the server with no `pc`, the Take button is
+-- hidden because there is nothing to spawn, and the whole driver-facing half is
+-- invisible with no error anywhere. Read off the SAME table the parts come
+-- from, which is where BeamJoy reads it too.
+do
+  local function tree(parts)
+    local kids = {}
+    for slot, part in pairs(parts) do
+      kids[slot] = { chosenPartName = part, children = {} }
+    end
+    return { chosenPartName = 'buggy', children = kids }
+  end
+  partmgmtConfig = { parts = {}, vars = {} }
+  vehicleDataConfig = {
+    model = 'TrackfabLightBuggy',
+    partConfigFilename = 'vehicles/TrackfabLightBuggy/shortcoursesolohighoutput.pc',
+    partsTree = tree({ buggy_body = 'light', buggy_engine = 'v8' }),
+    vars = { camber = -1.5 },
+  }
+  clearLog()
+  RM.onVehicleSpawned(VEH_ID)
+  partConfigField = 'vehicles/TrackfabLightBuggy/shortcoursesolohighoutput.pc'
+  advance(20); RM.onVehicleDigest('0:0:0:0', '15:120:9876:5432')
+  settle(); clearLog(); RM.whitelistCurrentVehicle()
+  local w = whitelisted()
+  check(w ~= nil and w.pc == 'vehicles/TrackfabLightBuggy/shortcoursesolohighoutput.pc',
+    'the capture sends the saved config path, which is the only thing on an '
+      .. 'entry a driver can act on')
+
+  -- A car edited in the session has no file behind it. Sending a path anyway
+  -- would spawn the model's default under the approved car's name.
+  vehicleDataConfig = {
+    model = 'TrackfabLightBuggy',
+    partsTree = tree({ buggy_body = 'light', buggy_engine = 'v6' }),
+    vars = { camber = -1.5 },
+  }
+  clearLog()
+  RM.onVehicleSpawned(VEH_ID)
+  partConfigField = '{["partsTree"]={["chosenPartName"]="buggy","children"={}}}'
+  advance(20); RM.onVehicleDigest('0:0:0:0', '15:120:9876:5432')
+  settle(); clearLog(); RM.whitelistCurrentVehicle()
+  check(whitelisted() ~= nil and whitelisted().pc == nil,
+    'and sends none for a car with no saved config, so the panel can leave it out')
+end
+
+-- ---------------------------------------------------------------------------
+-- 24. TAKING A CAR OFF THE GARAGE LIST
+-- ---------------------------------------------------------------------------
+-- The driver's half. An entry carries the saved config's PATH, and BeamNG takes
+-- that verbatim: prepareConfigData in core/vehicles.lua reads opts.config as
+-- "a basename or a full path" and loads the .pc itself. So nothing is rebuilt
+-- here and no parts table is shipped.
+--
+-- replaceVehicle for Take (swaps the car under the driver, no vehicle cap) and
+-- spawnNewVehicle for an extra one. Which of the two gets called is the whole
+-- of what this pins, plus that the path is passed through untouched.
+do
+  local calls = {}
+  local realCV = core_vehicles
+  core_vehicles = {
+    removeCurrent = function () end,
+    replaceVehicle = function (model, opt)
+      calls[#calls + 1] = { how = 'replace', model = model, config = opt and opt.config }
+    end,
+    spawnNewVehicle = function (model, opt)
+      calls[#calls + 1] = { how = 'spawn', model = model, config = opt and opt.config }
+    end,
+  }
+
+  local PC = 'vehicles/BWR_Pro_2/75  Skoda.pc'
+  RM.takeGarageCar('BWR_Pro_2', PC, true)
+  check(#calls == 1 and calls[1].how == 'replace',
+    'Take REPLACES the car the driver is in, which has no vehicle-count limit')
+  check(calls[1].model == 'BWR_Pro_2' and calls[1].config == PC,
+    'and hands BeamNG the model and the .pc path verbatim, spaces and all: the '
+      .. 'engine resolves the file, this does not')
+
+  calls = {}
+  RM.takeGarageCar('BWR_Pro_2', PC, false)
+  check(#calls == 1 and calls[1].how == 'spawn',
+    'and asking for an extra car goes to spawnNewVehicle instead')
+
+  -- An entry with no saved config behind it must never reach the engine: with
+  -- no config BeamNG spawns the model's DEFAULT, which is a different car
+  -- wearing the approved car's name.
+  calls = {}
+  clearLog()
+  RM.takeGarageCar('BWR_Pro_2', '', true)
+  check(#calls == 0, 'an entry with no saved config is refused rather than '
+    .. 'spawning the models default and calling it the approved car')
+  check(refusal() ~= nil, 'and the driver is told why')
+
+  calls = {}
+  RM.takeGarageCar('', PC, true)
+  check(#calls == 0, 'and a missing model is refused too')
+
+  -- A build without the spawn API must not raise: the panel offers the button
+  -- from a server broadcast, and the client may be anything.
+  calls = {}
+  core_vehicles = { removeCurrent = function () end }
+  local ok = pcall(RM.takeGarageCar, 'BWR_Pro_2', PC, true)
+  check(ok, 'a build with no spawn API is reported, not an error thrown through the UI')
+
+  core_vehicles = realCV
+end
+
 print(string.format('garage_test: %d checks, %d failures', checks, fails))
 if fails > 0 then os.exit(1) end

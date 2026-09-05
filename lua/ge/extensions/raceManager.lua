@@ -3199,7 +3199,10 @@ local function localVehicleConfig(userAsked)
   -- source keyed on the vehicle ITSELF is asked when it comes back empty.
   -- Every source is guarded on its own existence: a build without one loses
   -- that source, not the button.
-  local parts, vars, configName, source = {}, {}, nil, nil
+  -- configPc is the SAVED CONFIG'S PATH, which is what makes an entry spawnable
+  -- by a driver: core_vehicles.replaceVehicle takes it as opts.config verbatim.
+  -- nil for a car edited in the session, because there is no file to spawn.
+  local parts, vars, configName, source, configPc = {}, {}, nil, nil, nil
   local offered, notes = 0, {}
 
   -- First non-empty answer wins. An empty parts table is never an answer: no
@@ -3218,6 +3221,10 @@ local function localVehicleConfig(userAsked)
     parts      = got
     vars       = type(cfg.vars) == 'table' and cfg.vars or {}
     configName = configDisplayName(cfg)
+    -- Same table the parts came out of. BeamJoy reads it from here too.
+    if type(cfg.partConfigFilename) == 'string' and cfg.partConfigFilename ~= '' then
+      configPc = cfg.partConfigFilename
+    end
     source     = from
   end
 
@@ -3644,6 +3651,9 @@ local function localVehicleConfig(userAsked)
     -- nothing" and "the button reads the wrong car" look identical from the
     -- panel and are not the same bug.
     source   = source,
+    -- The saved config this car was built from, when it was built from one.
+    -- Carried so the Garage List can hand it back to a driver to spawn.
+    pc       = configPc,
   }
 end
 
@@ -3887,6 +3897,7 @@ function M.whitelistCurrentVehicle()
   TriggerServerEvent('RM_WhitelistVehicle', jsonEncode({
     model = cfg.model, label = cfg.label,
     sig = cfg.sig, partsSig = cfg.partsSig, game = gameVersion(),
+    pc = cfg.pc,
   }))
   -- THE CAPTURED SIGNATURE, in full.
   --
@@ -4005,6 +4016,52 @@ function M.setGarageClass(index, class)
       class = tostring(class or ''),
     }))
   end
+end
+
+-- TAKE A CAR OFF THE GARAGE LIST. Open to everyone, not just admins.
+--
+-- The entry carries the saved config's PATH, and BeamNG takes that verbatim:
+-- prepareConfigData in core/vehicles.lua reads opts.config as "a basename or a
+-- full path" and loads the .pc itself. So there is nothing to rebuild here and
+-- no parts table to ship: the path IS the car.
+--
+-- THE FILE HAS TO EXIST ON THIS CLIENT. prepareConfigData calls
+-- FS:fileExists, and a config that ships inside a server mod is present on
+-- everyone who joined; one an admin saved locally is not. A missing file spawns
+-- the model's default rather than erroring, which is worth saying out loud
+-- because it looks like the wrong car rather than a failure.
+--
+-- `replace` swaps the car under the driver, which is the common case and has no
+-- vehicle-count limit. Spawning a new one goes through canSpawnAnotherVehicle
+-- and can simply be refused when the server is at its cap.
+function M.takeGarageCar(model, pc, replace)
+  model = tostring(model or '')
+  pc = tostring(pc or '')
+  if model == '' or pc == '' then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'That garage entry has no saved config to spawn' })
+    return
+  end
+  if not (core_vehicles and core_vehicles.replaceVehicle and core_vehicles.spawnNewVehicle) then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'This game build cannot spawn a vehicle' })
+    return
+  end
+  local ok, err = pcall(function ()
+    if replace then
+      core_vehicles.replaceVehicle(model, { config = pc })
+    else
+      core_vehicles.spawnNewVehicle(model, { config = pc })
+    end
+  end)
+  if not ok then
+    log('E', 'raceManager', 'Could not take garage car ' .. model .. ' (' .. pc
+      .. '): ' .. tostring(err))
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'The game refused that spawn' })
+    return
+  end
+  log('I', 'raceManager', (replace and 'Replaced with ' or 'Spawned ') .. model
+    .. ' from ' .. pc)
+  -- The new car re-declares itself on its own: onVehicleSpawned arms the report
+  -- and the poll picks it up, so the Garage List rules on it like any other.
 end
 
 -- NAMED GARAGE SETS. A race night runs several series and re-whitelisting each

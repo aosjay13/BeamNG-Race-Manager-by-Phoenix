@@ -435,6 +435,32 @@
     </div>
   </div>
 
+  <!-- THE GARAGE, FROM A DRIVER'S SIDE. An approved entry carries the saved
+       config's path, and BeamNG spawns straight from one, so a driver can take
+       an eligible car instead of building it by hand and hoping it matches.
+
+       Only entries with a `pc` appear: a car an admin captured after editing it
+       in the session has no file to spawn, and offering it would hand somebody
+       the model's default while telling them it was the approved car. -->
+  <div class="rm-garage-pick" ng-if="!isAdmin && garageSpawnable.length && !minimalMode()">
+    <div class="rm-cup-head">
+      <span class="rm-cup-title">Garage: cars you may run</span>
+      <span class="rm-cup-state" ng-if="garageEnforce">enforced</span>
+    </div>
+    <div class="rm-garage-pickrow" ng-repeat="g in garageSpawnable track by $index">
+      <span class="rm-garage-label" title="{{ g.pc }}">{{ g.label }}</span>
+      <span class="rm-garage-class" ng-if="g.class">{{ g.class }}</span>
+      <button class="rm-btn rm-btn-mini rm-btn-grid" ng-click="takeGarageCar(g, true)"
+              title="Replace the car you are in with this one">Take</button>
+      <button class="rm-btn rm-btn-mini" ng-click="takeGarageCar(g, false)"
+              title="Spawn this as an additional vehicle">+ New</button>
+    </div>
+    <div class="rm-garage-sets-note">
+      Take replaces the car you are in. The config has to be installed on your
+      client, which it is when it came from this server's mods.
+    </div>
+  </div>
+
 
   <!-- ================= Session controls (race mode, admin only) ==========
        These stay outside the tab bar on purpose: they are the buttons an
@@ -1573,6 +1599,12 @@
         <span class="rm-garage-idx">{{ $index + 1 }}</span>
         <span class="rm-garage-label" title="{{ g.label }}">{{ g.label }}</span>
         <span class="rm-garage-model">{{ g.model }}</span>
+        <!-- The same Take a driver gets, because an admin building a grid wants
+             to be IN one of these cars as often as anybody. Absent on an entry
+             with no saved config behind it: there would be no file to spawn. -->
+        <button class="rm-btn rm-btn-mini rm-btn-grid" ng-if="g.pc"
+                ng-click="takeGarageCar(g, true)"
+                title="Replace the car you are in with this one">Take</button>
         <!-- THE CLASS THIS CAR RUNS IN. On the entry rather than on the driver
              because a class is a property of the car: set it once here and every
              driver in that car is scored in it, for every race, with no
@@ -4454,6 +4486,25 @@
     background: rgba(251, 188, 5, 0.04);
   }
   .rm-cup-driver .rm-cup-standings { max-height: 110px; }
+  /* The driver's half of the Garage List. Styled off rm-cup-driver because it
+     sits in the same strip and should read as one band, not two. */
+  .rm-garage-pick {
+    padding: 5px 10px;
+    border-bottom: 1px solid rgba(66, 133, 244, 0.25);
+    background: rgba(66, 133, 244, 0.04);
+  }
+  .rm-garage-pickrow {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 0;
+  }
+  .rm-garage-pickrow .rm-garage-label {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .rm-cup-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
   .rm-cup-title {
     font-size: 10px;
