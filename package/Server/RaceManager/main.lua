@@ -1610,6 +1610,17 @@ local garageSnapshot
 local garageAudit
 local garageRejudge
 
+-- Assigned far below, with the cup module. Declared HERE because the roster is
+-- published on the cup broadcast and is written from much further up this file:
+-- setting or clearing a display name moves a roster entry, and the panel has to
+-- see that at once.
+--
+-- IT HAS TO BE THIS EARLY. Declared beside the cup at line 8400, every call
+-- site above that point read a nil GLOBAL instead, and the `if broadcastCupState
+-- then` guard those sites use turned that into silence rather than an error:
+-- the roster view simply never refreshed and nothing anywhere said why.
+local broadcastCupState
+
 -- Stamped into every state broadcast. The client bridge drops broadcasts
 -- without the current stamp: they come from an OUTDATED copy of this plugin
 -- still installed alongside (two copies alternating broadcasts made every UI
@@ -3856,7 +3867,16 @@ function RM_onSetAlias(pid, rawData)
 
   -- A blank alias clears it and falls back to the real guest name.
   local ok, msg = applyAlias(rec, decodeString(rawData, 'alias') or '')
-  if ok then broadcastState() end
+  if ok then
+    broadcastState()
+    -- AND THE ROSTER VIEW, because applyAlias moved it: a name creates or
+    -- rebinds an entry, and clearing one unbinds it. Only the cup broadcast
+    -- carries the roster, so without this the panel went on showing a driver
+    -- assigned to a name they no longer had, and the Cup's own driver list said
+    -- the same. Reported as "the leaderboard does not show the set name": the
+    -- board was right and the panel beside it was stale.
+    if broadcastCupState then broadcastCupState() end
+  end
   aliasResult(pid, ok, msg)
 end
 
@@ -8389,9 +8409,9 @@ local cup = {
   savedPresets = {},
 }
 local cupLoaded = false
--- Assigned further down, once the standings it has to serialise exist. Declared
--- here because saving and publishing are the same event (see saveCupToDisk).
-local broadcastCupState
+-- broadcastCupState is forward-declared with the garage ones near the top of
+-- this file. It used to be declared here, which put it out of scope for every
+-- caller above this line: see the note there.
 
 -- ---------------------------------------------------------------------------
 -- Persistence
@@ -9487,6 +9507,52 @@ function RM_onCupForgetDriver(pid, rawData)
   end
 end
 
+-- ADD A DRIVER WHO IS NOT HERE. The roster used to be fillable only by naming
+-- somebody who was connected, which is the wrong way round for a league: the
+-- entry list is known days before the race and the point of typing it in
+-- advance is that on the night an admin picks a name rather than spelling it.
+--
+-- Creates an UNBOUND entry. It belongs to nobody until a connection is assigned
+-- to it, which is exactly what makes it available in both the Cup panel and
+-- Display Names.
+--
+-- Not provisional: provisional means "the server guessed this", and a name an
+-- admin typed is the opposite of a guess.
+function RM_onRosterAdd(pid, rawData)
+  local data = adminPayload(pid, rawData)
+  if not data then return end
+  local clean, why = sanitizeAlias(tostring(data.name or ''))
+  if not clean then
+    MP.TriggerClientEvent(pid, 'RM_AliasResult', Util.JsonEncode({
+      success = false, message = 'Name rejected: ' .. tostring(why) .. '.' }))
+    return
+  end
+  local list = getRoster()
+  local existing = rosterByName(clean)
+  if existing then
+    MP.TriggerClientEvent(pid, 'RM_AliasResult', Util.JsonEncode({
+      success = false,
+      message = '"' .. existing.name .. '" is already on the roster.' }))
+    return
+  end
+  if #list >= MAX_ROSTER_ENTRIES then
+    MP.TriggerClientEvent(pid, 'RM_AliasResult', Util.JsonEncode({
+      success = false,
+      message = 'The roster is full (' .. MAX_ROSTER_ENTRIES .. ' drivers).' }))
+    return
+  end
+  local entry = { id = rosterNextId, name = clean }
+  rosterNextId = rosterNextId + 1
+  list[#list + 1] = entry
+  saveRosterToDisk()
+  broadcastState()
+  if broadcastCupState then broadcastCupState() end
+  MP.TriggerClientEvent(pid, 'RM_AliasResult', Util.JsonEncode({
+    success = true, message = '"' .. clean .. '" added to the roster.' }))
+  print(string.format('[RaceManager] Roster: "%s" added by %s (entry #%d, %d on the roster)',
+    clean, MP.GetPlayerName(pid) or pid, entry.id, #list))
+end
+
 -- ---------------------------------------------------------------------------
 -- Manual adjustments
 -- ---------------------------------------------------------------------------
@@ -9950,6 +10016,7 @@ function onInit()
   MP.RegisterEvent('RM_CupRemoveAdjust',  'RM_onCupRemoveAdjust')
   MP.RegisterEvent('RM_CupDropRound',     'RM_onCupDropRound')
   MP.RegisterEvent('RM_CupBindDriver',    'RM_onCupBindDriver')
+  MP.RegisterEvent('RM_RosterAdd',        'RM_onRosterAdd')
   MP.RegisterEvent('RM_CupForgetDriver',  'RM_onCupForgetDriver')
   MP.RegisterEvent('onPlayerJoin',        'RM_onPlayerJoin')
   MP.RegisterEvent('onPlayerDisconnect',  'RM_onPlayerDisconnect')

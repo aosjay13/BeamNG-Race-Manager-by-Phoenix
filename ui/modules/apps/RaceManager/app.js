@@ -538,7 +538,11 @@ angular.module('beamng.apps')
         // race finished. Same reason the derby pulls its own state here.
         // Not mode-gated: the cup panel is reachable from Race and Derby both,
         // and it needs the same pull either way.
-        if ($scope.adminTab === 'cup') {
+        // 'admin' too: Display Names lives on that tab and now offers the saved
+        // roster to pick from, which arrives on the cup broadcast. Without this
+        // the picker is empty until somebody happens to open the Cup tab, which
+        // reads as "the roster is gone" rather than "it has not been asked for".
+        if ($scope.adminTab === 'cup' || $scope.adminTab === 'admin') {
           bngApi.engineLua('raceManager.cupRequestState()');
         }
       }
@@ -1127,6 +1131,77 @@ angular.module('beamng.apps')
       $scope.cupUnbind = function (conn) {
         bngApi.engineLua('raceManager.cupBindDriver(' + conn.pid + ', 0)');
       };
+      // --- Display Names: bind to a saved driver -------------------------
+      // Typing a name into the Set box already reattaches somebody to an
+      // existing roster entry, because the roster matches on the name. That
+      // needs the admin to remember it and spell it exactly, and there was no
+      // way to see the list at all unless a cup was running. This offers the
+      // saved drivers directly, and leaves the Set box exactly as it was for
+      // adding somebody new.
+      //
+      // The rows here come from the race state and carry no roster binding, so
+      // the cup broadcast's view of the same connection is what has it.
+      function aliasConn(row) {
+        if (!row) { return null; }
+        for (var i = 0; i < $scope.cup.connected.length; i++) {
+          if ($scope.cup.connected[i].pid === row.id) { return $scope.cup.connected[i]; }
+        }
+        return null;
+      }
+      $scope.aliasMenuOpen = function (row) {
+        return $scope.cupOpenMenu === ('alias:' + (row && row.id));
+      };
+      $scope.aliasToggleMenu = function (row) {
+        var key = 'alias:' + row.id;
+        $scope.cupOpenMenu = ($scope.cupOpenMenu === key) ? null : key;
+        // Its own selector: cupToggleMenu reveals inside .rm-cup, which never
+        // matches this panel.
+        if ($scope.cupOpenMenu) { revealDropdown('.rm-alias .rm-layout-menu'); }
+      };
+      // Saved drivers this connection may be given: free, or already theirs.
+      // Evaluated only while the menu is open, which is what keeps it off the
+      // digest for every row on the server.
+      $scope.aliasRosterFree = function (row) {
+        var conn = aliasConn(row);
+        return conn ? $scope.cupFreeEntries(conn) : [];
+      };
+      // The saved driver they are currently racing as, or null.
+      $scope.aliasBoundName = function (row) {
+        var conn = aliasConn(row);
+        return conn ? $scope.cupConnLabel(conn) : null;
+      };
+      $scope.aliasBindTo = function (row, e) {
+        $scope.cupOpenMenu = null;
+        if (!row || !e) { return; }
+        bngApi.engineLua('raceManager.cupBindDriver(' + row.id + ', ' + e.id + ')');
+      };
+      $scope.aliasUnbind = function (row) {
+        $scope.cupOpenMenu = null;
+        if (!row) { return; }
+        bngApi.engineLua('raceManager.cupBindDriver(' + row.id + ', 0)');
+      };
+      // Add a driver who is not here. The server owns the naming rules and
+      // answers on RM_AliasResult, so this sends and lets the reply speak.
+      $scope.rosterAdd = function () {
+        var name = ($scope.aliasUi.newName || '').trim();
+        if (!name) { return; }
+        bngApi.engineLua('raceManager.rosterAdd(' + luaStr(name) + ')');
+        $scope.aliasUi.newName = '';
+      };
+      // Roster entries nobody on the server is currently assigned to. Shown so
+      // an admin can see the list they typed in and prune it, and so a name
+      // that is already taken does not look missing.
+      $scope.rosterUnclaimed = function () {
+        var out = [];
+        for (var i = 0; i < $scope.cup.roster.length; i++) {
+          if ($scope.cup.roster[i].boundPid == null) { out.push($scope.cup.roster[i]); }
+        }
+        return out;
+      };
+      $scope.rosterForget = function (entry) {
+        bngApi.engineLua('raceManager.cupForgetDriver(' + entry.id + ')');
+      };
+
       $scope.cupForgetDriver = function (entry) {
         bngApi.engineLua('raceManager.cupForgetDriver(' + entry.id + ')');
       };
@@ -1332,7 +1407,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       };
       // Admin-only alias editor inputs, keyed by driver id. Bound through an
       // object for the same ng-if child-scope reason every other input is.
-      $scope.aliasUi = { input: {} };
+      $scope.aliasUi = { input: {}, newName: '' };
 
       // ------------------------------------------------------------------
       // Build stamps

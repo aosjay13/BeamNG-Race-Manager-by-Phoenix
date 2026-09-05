@@ -427,6 +427,96 @@ if nomadId then
 end
 RM_onCupReset(9)
 
+-- ---------------------------------------------------------------------------
+-- A SERVER ROSTER: drivers who are not here
+-- ---------------------------------------------------------------------------
+-- The roster could only be filled by naming somebody who was CONNECTED, which
+-- is the wrong way round for a league. The entry list is known days before the
+-- night, and typing it in advance is what turns naming a driver on race night
+-- into picking a name instead of spelling it exactly.
+--
+-- An added entry belongs to nobody until a connection is assigned to it, which
+-- is what makes it offerable in both the Cup panel and Display Names.
+do
+  RM_onLogin(9, '{"password":"phoenix"}')
+  local function rosterHas(name)
+    for _, e in ipairs((lastCup and lastCup.roster) or {}) do
+      if e.name == name then return e end
+    end
+    return nil
+  end
+
+  aliasMsg[9] = nil
+  RM_onRosterAdd(9, '{"name":"Prebooked Driver"}')
+  check(rosterHas('Prebooked Driver') ~= nil,
+    'an admin adds a driver who is not on the server at all')
+  check(aliasMsg[9] and aliasMsg[9].success == true, 'and is told it worked')
+  local added = rosterHas('Prebooked Driver')
+  check(added.boundPid == nil,
+    'the entry belongs to nobody, which is what leaves it free to be assigned')
+  check(added.provisional ~= true,
+    'and is NOT provisional: provisional means the server guessed, and a name '
+      .. 'an admin typed is the opposite of a guess')
+
+  -- Non-admins cannot.
+  aliasMsg[1] = nil
+  RM_onRosterAdd(1, '{"name":"Sneaky"}')
+  check(rosterHas('Sneaky') == nil, 'a non-admin cannot add to the roster')
+
+  -- The same name twice is refused rather than making a second entry that the
+  -- picker would show twice and the cup would score separately.
+  aliasMsg[9] = nil
+  RM_onRosterAdd(9, '{"name":"prebooked driver"}')
+  check(aliasMsg[9] and aliasMsg[9].success == false,
+    'a duplicate name is refused, case-insensitively, so one driver cannot end '
+      .. 'up with two entries and two sets of points')
+
+  aliasMsg[9] = nil
+  RM_onRosterAdd(9, '{"name":"x"}')
+  check(aliasMsg[9] and aliasMsg[9].success == false,
+    'and a name that fails the display-name rules is refused with the reason')
+
+  -- IT IS THE SAME ENTRY THE REST OF THE SYSTEM USES: a connection assigned to
+  -- a pre-added driver races under that name, which is the whole point.
+  assign(1, added.id)
+  check(rosterHas('Prebooked Driver').boundPid == 1,
+    'a connection can be assigned to a driver who was added before they arrived')
+end
+
+-- ---------------------------------------------------------------------------
+-- THE ROSTER VIEW FOLLOWS A NAME CHANGE
+-- ---------------------------------------------------------------------------
+-- Only the cup broadcast carries the roster, and setting or clearing a display
+-- name moves it: a name creates or rebinds an entry, clearing one unbinds it.
+-- RM_onSetAlias rebroadcast the race state and not the roster, so the admin
+-- panel went on showing a driver assigned to a name they no longer had.
+--
+-- Reported as "the leaderboard does not show the set name". The board was
+-- right; the picker beside it was stale, which is the more confusing half.
+do
+  RM_onLogin(9, '{"password":"phoenix"}')
+  local function entryNamed(name)
+    for _, e in ipairs((lastCup and lastCup.roster) or {}) do
+      if e.name == name then return e end
+    end
+    return nil
+  end
+
+  setName(1, 'Stale Check')
+  check(entryNamed('Stale Check') ~= nil,
+    'setting a display name puts the entry on the roster view immediately, '
+      .. 'rather than when something else happens to trigger a cup broadcast')
+  check(entryNamed('Stale Check').boundPid == 1,
+    'and shows it bound to the driver who was named')
+
+  setName(1, '')
+  local after = entryNamed('Stale Check')
+  check(after ~= nil, 'clearing the name keeps the entry: the points hang off it')
+  check(after.boundPid == nil,
+    'and the roster view shows it UNBOUND straight away, so the picker cannot '
+      .. 'go on offering a driver a name the server has already taken back')
+end
+
 removeTree('Resources')
 
 if fails == 0 then

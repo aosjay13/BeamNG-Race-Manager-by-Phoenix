@@ -10453,6 +10453,19 @@ end
 -- on either side can tell a returning regular from a stranger.
 --
 -- entryId 0 unassigns.
+-- Put a driver on the roster who is not connected. A league's entry list is
+-- known before the night; typing it in advance is what turns naming somebody on
+-- race night into picking a name instead of spelling it.
+function M.rosterAdd(name)
+  name = tostring(name or '')
+  if name == '' then return end
+  if not inMultiplayer() then
+    editorMsg('The roster needs a BeamMP server')
+    return
+  end
+  TriggerServerEvent('RM_RosterAdd', jsonEncode({ name = name }))
+end
+
 function M.cupBindDriver(targetPid, entryId)
   targetPid = tonumber(targetPid)
   if not targetPid or targetPid < 0 then return end

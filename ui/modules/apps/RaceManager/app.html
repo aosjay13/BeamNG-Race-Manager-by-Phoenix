@@ -2536,9 +2536,71 @@
         <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="clearAlias(row)"
                 ng-disabled="!row.alias" title="Clear this display name">✕</button>
         <span class="rm-alias-current" ng-if="row.alias">→ {{ row.alias }}</span>
+        <!-- PICK A SAVED DRIVER instead of typing the name. The Set box beside
+             it still adds somebody new; this is for the far commoner case of a
+             regular coming back on a fresh guest id, where the name and the cup
+             points already exist and only the connection is new.
+
+             A custom menu, not a native <select>: CEF never draws an OS popup
+             over the game. -->
+        <div class="rm-layout-dropdown rm-alias-picker" ng-if="cup.roster.length"
+             ng-class="{'rm-layout-dropdown-open': aliasMenuOpen(row)}">
+          <button type="button" class="rm-layout-trigger"
+                  ng-class="{'rm-layout-trigger-empty': !aliasBoundName(row)}"
+                  ng-click="aliasToggleMenu(row)"
+                  title="Assign this connection to a driver already on the roster">
+            <span class="rm-layout-trigger-label">{{ aliasBoundName(row) || 'Saved driver…' }}</span>
+            <span class="rm-layout-caret">▾</span>
+          </button>
+          <div class="rm-layout-menu" ng-if="aliasMenuOpen(row)">
+            <div class="rm-layout-option" ng-repeat="e in aliasRosterFree(row) track by e.id"
+                 ng-click="aliasBindTo(row, e)">
+              {{ e.name }}<span ng-if="e.provisional"> (placeholder)</span>
+            </div>
+            <div class="rm-layout-option rm-cup-off" ng-if="!aliasRosterFree(row).length">
+              No saved drivers are free
+            </div>
+            <!-- Unassign, not delete: the roster entry and anything scored under
+                 it stay put and wait to be bound again. -->
+            <div class="rm-layout-option rm-cup-off" ng-if="aliasBoundName(row)"
+                 ng-click="aliasUnbind(row)">Unassign</div>
+          </div>
+        </div>
       </div>
       <div class="rm-layouts-hint" ng-if="!drivers.length">
         No drivers connected yet.
+      </div>
+
+      <!-- ===== The server roster =====
+           Drivers who do not have to be here. A league's entry list is known
+           days before the night, and typing it in advance turns naming somebody
+           on race night into picking a name rather than spelling it exactly.
+           These entries are what the picker above offers, and they are the same
+           entries the Cup scores against. -->
+      <div class="rm-alias-roster">
+        <div class="rm-layouts-title">Server Roster
+          <span class="rm-garage-count">{{ cup.roster.length }} driver{{ cup.roster.length === 1 ? '' : 's' }}</span>
+        </div>
+        <div class="rm-alias-row">
+          <input type="text" class="rm-alias-input" maxlength="20"
+                 placeholder="Add a driver by name…"
+                 ng-model="aliasUi.newName"
+                 ng-keydown="$event.keyCode === 13 && rosterAdd()">
+          <button class="rm-btn rm-btn-mini rm-btn-start" ng-click="rosterAdd()"
+                  ng-disabled="!aliasUi.newName">Add to Roster</button>
+        </div>
+        <div class="rm-alias-rosterlist" ng-if="rosterUnclaimed().length">
+          <span class="rm-alias-rosterchip" ng-repeat="e in rosterUnclaimed() track by e.id">
+            {{ e.name }}<span ng-if="e.provisional"> (placeholder)</span>
+            <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="rosterForget(e)"
+                    title="Remove this driver from the roster. Anything scored under them goes too.">✕</button>
+          </span>
+        </div>
+        <div class="rm-layouts-hint">
+          Saved to the server and kept across restarts. Unassigned drivers are
+          listed here; the ones already picked up by somebody on the server are
+          shown against that connection above.
+        </div>
       </div>
       <div class="rm-layouts-hint" ng-if="drivers.length">
         3–20 characters, letters/digits/spaces and <b>- _ .</b> only. A name already
@@ -3692,6 +3754,28 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: #9aa0a6;
+  }
+  .rm-alias-picker { min-width: 140px; }
+  .rm-alias-roster {
+    margin-top: 7px;
+    padding-top: 7px;
+    border-top: 1px dashed rgba(255, 255, 255, 0.12);
+  }
+  .rm-alias-rosterlist {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 5px 0;
+  }
+  .rm-alias-rosterchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 3px 1px 7px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 9px;
+    font-size: 11px;
+    color: #d6d8db;
   }
   .rm-alias-input {
     flex: 1;
