@@ -689,6 +689,95 @@ else
   os.execute('rm -rf Resources')
 end
 
+-- ---------------------------------------------------------------------------
+-- NAMED GARAGE SETS: a series in a file
+-- ---------------------------------------------------------------------------
+-- A race night runs more than one series and re-whitelisting each field between
+-- them is the evening. A set is the approved list under a name.
+--
+-- THE RULE THIS PINS is which state travels with a set. The lock mode does: a
+-- series is Parts or Strict and comes back the way it was set up. The
+-- ENFORCEMENT SWITCH DOES NOT, because a load that quietly started or stopped
+-- policing the grid is a far bigger action than the button says.
+os.remove('Resources/Server/RaceManager/Data/Garage/GT3.json')
+os.remove('Resources/Server/RaceManager/Data/Garage/Trucks.json')
+
+RM_onClearGarage(1)
+RM_onSetGarageEnforce(1, '{"enabled":false}')
+RM_onSetGarageMode(1, '{"mode":"strict"}')
+RM_onWhitelistVehicle(1, '{"model":"etk800","label":"GT3 Car","sig":"' .. SIG_A .. '"}')
+
+garageMsg = nil
+RM_onSaveGarageSet(3, '{"name":"GT3"}')
+check(garageMsg == nil, 'saving a garage set needs an admin')
+
+RM_onSaveGarageSet(1, '{"name":"GT3"}')
+check(garageMsg ~= nil and garageMsg.added == true, 'an admin saves the list under a name')
+local function hasSet(name)
+  for _, s in ipairs(lastState.garageSets or {}) do if s == name then return true end end
+  return false
+end
+check(hasSet('GT3'), 'and the set name rides the state broadcast, so the panel needs no request')
+
+-- A DIFFERENT SERIES, saved over the top of the first one's list.
+RM_onClearGarage(1)
+RM_onSetGarageMode(1, '{"mode":"parts"}')
+RM_onWhitelistVehicle(1, '{"model":"pigeon","label":"Truck","sig":"' .. SIG_B .. '"}')
+RM_onSaveGarageSet(1, '{"name":"Trucks"}')
+check(hasSet('GT3') and hasSet('Trucks'), 'both sets are listed')
+
+-- Switch enforcement ON, then load the other series. The cars and the mode come
+-- back; the switch is left exactly where the admin put it.
+RM_onSetGarageEnforce(1, '{"enabled":true}')
+RM_onLoadGarageSet(1, '{"name":"GT3"}')
+check(#lastState.garage == 1 and lastState.garage[1].label == 'GT3 Car',
+  'loading a set replaces the Garage List with that series')
+check(lastState.garageMode == 'strict',
+  'and restores the lock mode it was saved with, because that is the series rule')
+check(lastState.garageEnforce == true,
+  'ENFORCEMENT IS UNTOUCHED by a load: a set that carried it would start or '
+    .. 'stop policing the grid as a side effect of swapping series')
+
+RM_onLoadGarageSet(1, '{"name":"Trucks"}')
+check(#lastState.garage == 1 and lastState.garage[1].label == 'Truck'
+  and lastState.garageMode == 'parts', 'and the other set comes back the same way')
+check(lastState.garageEnforce == true, 'still untouched on the way back')
+
+-- Refusals.
+garageMsg = nil
+RM_onLoadGarageSet(1, '{"name":"Nothing Called This"}')
+check(garageMsg ~= nil and garageMsg.added == false,
+  'loading a set that does not exist is refused with a reason, not ignored')
+check(#lastState.garage == 1 and lastState.garage[1].label == 'Truck',
+  'and leaves the live list alone')
+
+RM_onClearGarage(1)
+garageMsg = nil
+RM_onSaveGarageSet(1, '{"name":"Empty"}')
+check(garageMsg ~= nil and garageMsg.added == false and not hasSet('Empty'),
+  'an empty Garage List is not saveable: a set that approves nothing would '
+    .. 'lock every car out the moment it was loaded')
+
+garageMsg = nil
+RM_onSaveGarageSet(1, '{"name":"///"}')
+check(garageMsg ~= nil and garageMsg.added == false,
+  'a name with nothing usable left after cleaning is refused rather than '
+    .. 'written as a file called _ or worse')
+
+RM_onDeleteGarageSet(3, '{"name":"GT3"}')
+check(hasSet('GT3'), 'deleting a set needs an admin too')
+RM_onDeleteGarageSet(1, '{"name":"GT3"}')
+check(not hasSet('GT3') and hasSet('Trucks'), 'an admin deletes one set and leaves the rest')
+
+-- PUT THE STORE BACK AS THIS SECTION FOUND IT. garage.json persists the
+-- enforcement flag, and the next suite to run reads that file: leaving it ON
+-- made class_test fail on "the garage is not being enforced", which is a real
+-- failure in a test that had nothing to do with this.
+RM_onDeleteGarageSet(1, '{"name":"Trucks"}')
+RM_onSetGarageEnforce(1, '{"enabled":false}')
+RM_onSetGarageMode(1, '{"mode":"parts"}')
+RM_onClearGarage(1)
+
 if fails == 0 then
   io.stdout:write(('ALL PASS (%d checks)\n'):format(checks))
 else

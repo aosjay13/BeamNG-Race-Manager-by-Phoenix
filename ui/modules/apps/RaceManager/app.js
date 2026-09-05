@@ -170,6 +170,11 @@ angular.module('beamng.apps')
       // server owns this; the value here is what the panel shows until the
       // first broadcast lands.
       $scope.garageMode = 'parts';
+      // Saved garage sets: a series in a file. Names only; the cars come back
+      // when one is loaded. `name` is the box to save under, `selected` is the
+      // set the Load/Delete buttons act on.
+      $scope.garageSets = [];
+      $scope.garageSetUi = { name: '', selected: '' };
       // Race entry: everyone connected is in the field by default, and an admin
       // can switch to opt-in when it should be a subset of who is on the server.
       // Only ever a mirror of the server's answer - this is the value the panel
@@ -2200,6 +2205,13 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           if (data.garageMode === 'parts' || data.garageMode === 'strict') {
             $scope.garageMode = data.garageMode;
           }
+          $scope.garageSets = toArray(data.garageSets);
+          // A set deleted (or renamed) elsewhere must not stay selected, or
+          // Load and Delete point at a file that is gone.
+          if ($scope.garageSetUi.selected
+              && $scope.garageSets.indexOf($scope.garageSetUi.selected) === -1) {
+            $scope.garageSetUi.selected = '';
+          }
           // Track whether an admin is running the session. When one appears and
           // we're just a spectator who hasn't pinned the login open, auto-hide
           // the prompt so the app is fully visible (a header Login button stays).
@@ -3608,6 +3620,28 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       };
       $scope.clearGarage = function () {
         bngApi.engineLua('raceManager.clearGarage()');
+      };
+
+      // --- Saved garage sets ---------------------------------------------
+      // The server owns every rule here (naming, the cap, refusing a load
+      // mid-session) and answers on the same channel Whitelist uses, so these
+      // send and let the reply speak.
+      $scope.saveGarageSet = function () {
+        var name = ($scope.garageSetUi.name || '').trim();
+        if (!name) { return; }
+        bngApi.engineLua('raceManager.saveGarageSet(' + luaStr(name) + ')');
+        $scope.garageSetUi.name = '';
+      };
+      $scope.loadGarageSet = function () {
+        var name = $scope.garageSetUi.selected;
+        if (!name) { return; }
+        bngApi.engineLua('raceManager.loadGarageSet(' + luaStr(name) + ')');
+      };
+      $scope.deleteGarageSet = function () {
+        var name = $scope.garageSetUi.selected;
+        if (!name) { return; }
+        bngApi.engineLua('raceManager.deleteGarageSet(' + luaStr(name) + ')');
+        $scope.garageSetUi.selected = '';
       };
       // Tag an entry with the class its car runs in. Blank clears it.
       $scope.applyGarageClass = function (index) {

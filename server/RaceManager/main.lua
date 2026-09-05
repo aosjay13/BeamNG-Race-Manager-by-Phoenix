@@ -1904,6 +1904,9 @@ local function broadcastState(targetPid)
     -- 'parts' or 'strict'. Which half of a setup the list is matched on, so the
     -- panel can label the switch and the capture button truthfully.
     garageMode    = garageInfo.mode,
+    -- Names of the saved garage sets, so the panel can offer them without a
+    -- request of its own. Names only: a set's cars are read when it is loaded.
+    garageSets    = garageInfo.sets,
     -- Whether clients should hang display names off BeamMP's nametags.
     -- Purely a client-side presentation rule; the server neither renders
     -- nor enforces anything about it, it just holds the switch so every
@@ -7050,6 +7053,91 @@ local function saveGarageToDisk()
   return true
 end
 
+-- ---------------------------------------------------------------------------
+-- NAMED GARAGE SETS: a series in a file
+-- ---------------------------------------------------------------------------
+-- A race night runs more than one series, and re-whitelisting every car between
+-- them is the evening. So the approved list can be SAVED under a name and
+-- loaded back: "GT3", "Trucks", "Legends".
+--
+-- ONE FILE PER SET, in a folder, exactly as a map's tracks are stored. Each set
+-- is independent, hand-editable, and copyable to another server; garage.json
+-- stays the small live list that boots.
+--
+-- NOT KEYED BY MAP, and that is the one place this differs from the layout
+-- store it copies. A track belongs to a map; a GT3 field is GT3 wherever it
+-- races, which is the whole point when two series share a circuit in one night.
+--
+-- A SET CARRIES THE LOCK MODE AND NEVER THE ENFORCEMENT SWITCH. Parts or Strict
+-- is a property of the series, so it travels with it. Whether the grid is being
+-- policed at all is a race-night decision, and a load that silently started or
+-- stopped enforcing would be a much bigger action than the button says.
+--
+-- ONE TABLE, not four locals: this chunk lives against Lua's 200-local ceiling
+-- and a field costs nothing against it.
+local gset = {
+  DIR = LAYOUTS_DIR .. '/Garage',
+  MAX = 30,
+  MAX_NAME = 40,
+}
+
+-- Same sanitising rule as layoutFileFor, for the same reason: this reaches a
+-- filesystem and a shell.
+function gset.fileFor(name)
+  local safe = tostring(name or ''):gsub('[^%w%-_%. ]', '_')
+  if safe == '' then safe = 'unnamed' end
+  return gset.DIR .. '/' .. safe .. '.json'
+end
+
+-- Trimmed, capped, and stripped of anything that cannot be a filename. Returns
+-- '' for a name that is nothing once cleaned, which every caller refuses.
+function gset.cleanName(raw)
+  local s = tostring(raw or ''):gsub('^%s+', ''):gsub('%s+$', '')
+  s = s:gsub('[^%w%-_%. ]', ''):sub(1, gset.MAX_NAME)
+  return (s:gsub('%s+$', ''))
+end
+
+-- The set names on disk, sorted. Read from the folder rather than cached in
+-- memory: a set an admin dropped in by hand should appear without a restart,
+-- which is the reason the store is files in the first place.
+function gset.names()
+  local out = {}
+  for _, file in ipairs(listDirectory(gset.DIR)) do
+    local base = file:match('^(.*)%.json$')
+    if base then out[#out + 1] = base end
+  end
+  table.sort(out)
+  return out
+end
+
+function gset.save(name)
+  ensureLayoutsDir()
+  makeDirectory(gset.DIR)
+  local g = getGarage()
+  local f, ferr = io.open(gset.fileFor(name), 'w')
+  if not f then return false, tostring(ferr) end
+  -- No `enforce` key, deliberately: see the note above. A set that carried it
+  -- would turn policing on or off as a side effect of being loaded.
+  f:write(jsonStringify({ version = 1, name = name, mode = g.mode, list = g.list }))
+  f:close()
+  return true
+end
+
+-- Returns the stored list and mode, or nil plus a reason. Does NOT install
+-- them: the caller does that, so the one path that mutates the live garage
+-- stays the one that persists and re-judges it.
+function gset.read(name)
+  local f = io.open(gset.fileFor(name), 'r')
+  if not f then return nil, 'no set called "' .. tostring(name) .. '"' end
+  local text = f:read('*a')
+  f:close()
+  local ok, data = pcall(jsonParse, text)
+  if not ok or type(data) ~= 'table' or type(data.list) ~= 'table' then
+    return nil, 'the file for "' .. tostring(name) .. '" could not be read'
+  end
+  return data
+end
+
 -- Assigned to the forward-declared local near broadcastState so every state
 -- broadcast can carry the current Garage List without the racing code knowing
 -- how it is stored.
@@ -7069,7 +7157,11 @@ garageSnapshot = function ()
   for i, e in ipairs(g.list) do
     list[i] = { model = e.model, label = e.label, class = e.class }
   end
-  garageView = { list = list, enforce = g.enforce, mode = g.mode }
+  -- The saved set NAMES ride along. They are read off the folder, so a set
+  -- dropped in by hand appears without a restart; the cache below is what stops
+  -- that being a directory listing three times a second, and every path that
+  -- writes a set drops the cache.
+  garageView = { list = list, enforce = g.enforce, mode = g.mode, sets = gset.names() }
   return garageView
 end
 
@@ -7398,6 +7490,124 @@ function RM_onSetGarageClass(pid, rawData)
     g.list[idx].label,
     g.list[idx].class and ('class ' .. g.list[idx].class) or 'unclassified',
     MP.GetPlayerName(pid) or pid))
+end
+
+-- Save the approved list under a name, so a series can be put back in one click.
+function RM_onSaveGarageSet(pid, rawData)
+  local data = adminPayload(pid, rawData)
+  if not data then return end
+  local name = gset.cleanName(data.name)
+  if name == '' then
+    MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+      added = false, message = 'That garage set name has nothing usable in it' }))
+    return
+  end
+  local g = getGarage()
+  if #g.list == 0 then
+    MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+      added = false, message = 'Nothing to save: the Garage List is empty' }))
+    return
+  end
+  -- The cap counts sets that do NOT already exist under this name, so
+  -- overwriting one at the limit is allowed. Refusing that would mean an admin
+  -- at 30 sets could no longer correct any of them.
+  local existing = false
+  for _, n in ipairs(gset.names()) do if n == name then existing = true break end end
+  if not existing and #gset.names() >= gset.MAX then
+    MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+      added = false, message = 'Too many saved garage sets (' .. gset.MAX .. '); delete one first' }))
+    return
+  end
+  local ok, err = gset.save(name)
+  if not ok then
+    print('[RaceManager] Could not write garage set "' .. name .. '": ' .. tostring(err))
+    MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+      added = false, message = 'Could not write that garage set to disk' }))
+    return
+  end
+  garageView = nil       -- the set list changed, and it rides the snapshot
+  broadcastState()
+  local msg = string.format('[RaceManager] Garage set "%s" %s by %s (%d car(s), %s)',
+    name, existing and 'updated' or 'saved', MP.GetPlayerName(pid) or pid, #g.list, g.mode)
+  MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+    added = true, message = 'Saved "' .. name .. '" (' .. #g.list .. ' car(s), '
+      .. (g.mode == 'strict' and 'Strict' or 'Parts') .. ')' }))
+  MP.SendChatMessage(-1, msg)
+  print(msg)
+end
+
+-- Replace the approved list with a saved set.
+--
+-- IDLE-LOCKED, unlike tagging a class. Swapping the list mid-race changes who
+-- is legal under cars already running, and the audit would start removing them.
+function RM_onLoadGarageSet(pid, rawData)
+  local data = adminPayload(pid, rawData)
+  if not data then return end
+  local name = gset.cleanName(data.name)
+  if name == '' then return end
+  if sessionUnderWay() then
+    MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+      added = false,
+      message = 'Finish the session before loading a different garage set' }))
+    return
+  end
+  local stored, why = gset.read(name)
+  if not stored then
+    MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+      added = false, message = tostring(why) }))
+    return
+  end
+  local g = getGarage()
+  -- Rebuilt through the same shape loadGarageFromDisk produces, so a set written
+  -- by an older build, or edited by hand, cannot put a half-formed entry on the
+  -- live list.
+  local list = {}
+  for _, e in ipairs(stored.list) do
+    if type(e) == 'table' and type(e.sig) == 'string' and e.sig ~= '' then
+      local partsSig = e.partsSig
+      if type(partsSig) ~= 'string' or partsSig == '' then
+        partsSig = e.sig:match('^(.*)|vars=')
+      end
+      list[#list + 1] = {
+        model    = tostring(e.model or '?'),
+        label    = tostring(e.label or e.model or 'Vehicle'),
+        class    = (type(e.class) == 'string' and e.class ~= '') and e.class or nil,
+        sig      = e.sig,
+        partsSig = partsSig,
+        game     = (type(e.game) == 'string' and e.game ~= '') and e.game or nil,
+      }
+    end
+  end
+  g.list = list
+  -- The mode travels with the series; the enforcement switch never does.
+  g.mode = (stored.mode == 'strict') and 'strict' or 'parts'
+  -- saveGarageToDisk persists the live list AND re-judges every driver against
+  -- it, so the grid is re-ruled by the swap rather than at each driver's next
+  -- declaration.
+  saveGarageToDisk()
+  broadcastState()
+  local msg = string.format('[RaceManager] Garage set "%s" loaded by %s (%d car(s), %s%s)',
+    name, MP.GetPlayerName(pid) or pid, #list,
+    g.mode == 'strict' and 'Strict' or 'Parts',
+    g.enforce and ', enforcing' or ', not enforced')
+  MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+    added = true, message = 'Loaded "' .. name .. '": ' .. #list .. ' car(s), '
+      .. (g.mode == 'strict' and 'Strict' or 'Parts')
+      .. (g.enforce and '' or ' (enforcement is still off)') }))
+  MP.SendChatMessage(-1, msg)
+  print(msg)
+end
+
+function RM_onDeleteGarageSet(pid, rawData)
+  local data = adminPayload(pid, rawData)
+  if not data then return end
+  local name = gset.cleanName(data.name)
+  if name == '' then return end
+  removeFile(gset.fileFor(name))
+  garageView = nil
+  broadcastState()
+  print('[RaceManager] Garage set "' .. name .. '" deleted by '
+    .. (MP.GetPlayerName(pid) or pid))
 end
 
 function RM_onSetGarageEnforce(pid, rawData)
@@ -9620,6 +9830,9 @@ function onInit()
   MP.RegisterEvent('RM_SetGarageEnforce', 'RM_onSetGarageEnforce')
   MP.RegisterEvent('RM_SetGarageMode',    'RM_onSetGarageMode')
   MP.RegisterEvent('RM_SetGarageClass',   'RM_onSetGarageClass')  -- multi-class
+  MP.RegisterEvent('RM_SaveGarageSet',    'RM_onSaveGarageSet')   -- named sets
+  MP.RegisterEvent('RM_LoadGarageSet',    'RM_onLoadGarageSet')
+  MP.RegisterEvent('RM_DeleteGarageSet',  'RM_onDeleteGarageSet')
   MP.RegisterEvent('RM_SetHeatDraw',      'RM_onSetHeatDraw')     -- heat seeding
   MP.RegisterEvent('RM_VehicleConfig',    'RM_onVehicleConfig')
   MP.RegisterEvent('onVehicleSpawn',      'RM_onVehicleSpawn')

@@ -4007,6 +4007,27 @@ function M.setGarageClass(index, class)
   end
 end
 
+-- NAMED GARAGE SETS. A race night runs several series and re-whitelisting each
+-- field between them is the evening; these put one back in a click. The server
+-- owns the naming rules, so nothing is validated here beyond having a string.
+function M.saveGarageSet(name)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SaveGarageSet', jsonEncode({ name = tostring(name or '') }))
+  end
+end
+
+function M.loadGarageSet(name)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_LoadGarageSet', jsonEncode({ name = tostring(name or '') }))
+  end
+end
+
+function M.deleteGarageSet(name)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_DeleteGarageSet', jsonEncode({ name = tostring(name or '') }))
+  end
+end
+
 -- The server ordered this client to drop the car it just refused.
 --
 -- WHY THE SERVER CANNOT DO THIS ITSELF: MP.RemoveVehicle wants BeamMP's own

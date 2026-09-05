@@ -1519,6 +1519,46 @@
       </button>
       <button class="rm-btn rm-btn-end" ng-click="clearGarage()" ng-disabled="!garage.length">Clear Garage</button>
     </div>
+    <!-- SAVED GARAGE SETS. A night that runs two series should not mean
+         whitelisting both fields between them.
+
+         Chips rather than a dropdown, for the reason the layout picker is not a
+         native <select>: CEF never draws an OS popup over the game. A short
+         list of names needs no menu anyway. -->
+    <div class="rm-garage-sets">
+      <div class="rm-garage-mode-label">Garage Sets</div>
+      <div class="rm-garage-controls">
+        <input type="text" class="rm-layout-name" placeholder="New set name…" maxlength="40"
+               ng-model="garageSetUi.name">
+        <button class="rm-btn rm-btn-start" ng-click="saveGarageSet()"
+                ng-disabled="!garageSetUi.name || !garage.length"
+                title="Save the list above under this name, with its Parts/Strict setting">
+          Save Current
+        </button>
+      </div>
+      <div class="rm-garage-controls" ng-if="garageSets.length">
+        <span class="rm-layouts-target" ng-class="{'rm-layouts-target-empty': !garageSetUi.selected}">
+          {{ garageSetUi.selected || 'no set selected' }}
+        </span>
+        <button class="rm-btn rm-btn-grid" ng-click="loadGarageSet()"
+                ng-disabled="!garageSetUi.selected"
+                title="Replace the Garage List with this set. Enforcing is never changed by a load.">
+          Load Set
+        </button>
+        <button class="rm-btn rm-btn-end" ng-click="deleteGarageSet()"
+                ng-disabled="!garageSetUi.selected">Delete Set</button>
+      </div>
+      <div class="rm-garage-setlist" ng-if="garageSets.length">
+        <button class="rm-btn rm-btn-mini" ng-repeat="s in garageSets track by $index"
+                ng-class="{'rm-btn-toggle-on': garageSetUi.selected === s}"
+                ng-click="garageSetUi.selected = s">{{ s }}</button>
+      </div>
+      <div class="rm-garage-sets-note">
+        A set stores the cars above and whether the lock is Parts or Strict, so a
+        series comes back exactly as it was set up. Loading one never turns
+        Enforcing on or off, and is refused while a session is running.
+      </div>
+    </div>
     <!-- THE ANSWER TO THE BUTTON ABOVE, and it used to have nowhere to appear.
          `editorMsg` is the shared admin-panel message channel: 34 places in the
          Lua write to it, including every outcome of Whitelist Current Vehicle
@@ -4667,6 +4707,23 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* Saved garage sets. Its own note class rather than rm-garage-mode-note:
+     that one is nowrap with an ellipsis, sized for a single line beside the
+     mode buttons, and would clip this to a few words. */
+  .rm-garage-sets {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #2c2f33;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .rm-garage-setlist { display: flex; gap: 4px; flex-wrap: wrap; }
+  .rm-garage-sets-note {
+    font-size: 10px;
+    color: #9aa0a6;
+    line-height: 1.4;
   }
   .rm-garage-bad {
     margin-top: 5px;
