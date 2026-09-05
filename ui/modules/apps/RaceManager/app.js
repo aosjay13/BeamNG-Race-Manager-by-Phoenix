@@ -177,6 +177,12 @@ angular.module('beamng.apps')
       // set the Load/Delete buttons act on.
       $scope.garageSets = [];
       $scope.garageSetUi = { name: '', selected: '' };
+      // BEHIND A DOT, like every other toggle here: the panel it opens sits
+      // inside an ng-if, and a bare scope property assigned from a child scope
+      // shadows the parent instead of writing to it, so the toggle would stop
+      // working the moment it was nested. tests/ui_bindings_test.lua enforces
+      // this and caught exactly that.
+      $scope.garagePickUi = { open: false };
       // Race entry: everyone connected is in the field by default, and an admin
       // can switch to opt-in when it should be a subset of who is on the server.
       // Only ever a mirror of the server's answer - this is the value the panel
