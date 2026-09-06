@@ -1,17 +1,11 @@
 name: Build RaceManager Package
 
+# NO VERSION INPUT. There is nothing to choose: the release is named by the
+# RM_BUILD in the source, so bumping is an edit to the files and a commit, not a
+# dropdown at release time. Offering the choice here is what let a tag be
+# invented that the tree it tagged did not agree with.
 on:
   workflow_dispatch:
-    inputs:
-      bump:
-        description: 'Version bump'
-        type: choice
-        default: patch
-        options:
-          - patch
-          - minor
-          - major
-          - none
 
 permissions:
   contents: write
@@ -25,14 +19,54 @@ jobs:
         with:
           fetch-depth: 0
 
-      # --- Optional: version bump (choose size when triggering) ---
-      - name: Bump version
+      # --- The version comes FROM THE SOURCE, and is checked, not invented ---
+      #
+      # This step used to bump a tag with github-tag-action, which computes the
+      # next number from the newest existing tag and applies it to whatever
+      # commit it is running on. The build stamps inside the files are edited by
+      # hand. Nothing compared the two, and they diverged exactly as you would
+      # expect: v0.12.0 was tagged one commit early, onto a tree still stamped
+      # 0.11.0, and a release went out named for a version it did not contain.
+      # That is the failure the note in server/RaceManager/main.lua warns about,
+      # reached by the one route nobody was watching.
+      #
+      # So the source is the authority. RM_BUILD names the release, all five
+      # stamps must agree before anything is built, and a tag that already
+      # exists on another commit is a hard stop rather than a silent overwrite.
+      - name: Resolve and verify version
         id: version
-        uses: anothrNick/github-tag-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DEFAULT_BUMP: ${{ inputs.bump }}
-          WITH_V: true
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          read_one() { sed -n "$1" "$2" | head -1; }
+          v=$(read_one "s/^local RM_BUILD = '\([^']*\)'.*/\1/p" server/RaceManager/main.lua)
+          c=$(read_one "s/^local RM_BUILD = '\([^']*\)'.*/\1/p" lua/ge/extensions/raceManager.lua)
+          a=$(read_one "s/.*APP_BUILD = '\([^']*\)';.*/\1/p"    ui/modules/apps/RaceManager/app.js)
+          j=$(read_one 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' ui/modules/apps/RaceManager/app.json)
+          d=$(read_one "s/.*RELEASE_NAME = 'RaceManager-v\([^']*\)\.zip'.*/\1/p" tools/deploy.py)
+          echo "server=$v client=$c app.js=$a app.json=$j deploy.py=$d"
+          [ -n "$v" ] || fail "could not read RM_BUILD from server/RaceManager/main.lua"
+
+          # THE FIVE THAT HAVE TO AGREE. A release whose pieces disagree shows a
+          # mismatch banner in the app and behaves like a stale install.
+          for other in "$c" "$a" "$j" "$d"; do
+            [ "$other" = "$v" ] || fail "build stamps disagree: server says '$v', another says '$other'"
+          done
+
+          tag="v$v"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            at=$(git rev-list -n1 "$tag")
+            [ "$at" = "$GITHUB_SHA" ] || fail "$tag already exists on $at, not on this commit. Bump the version, or move the tag deliberately."
+          fi
+          echo "new_tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag from $GITHUB_SHA"
+
+      - name: Create tag
+        run: |
+          tag="${{ steps.version.outputs.new_tag }}"
+          if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "$tag"
+          fi
 
       # --- Build the package with the SAME tool the deploy uses ---
       #

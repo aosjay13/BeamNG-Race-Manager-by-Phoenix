@@ -1448,7 +1448,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.12.0';
+      var APP_BUILD = '0.12.1';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -1598,6 +1598,10 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // or Not entered.
       $scope.showOutLap = function (row) {
         if (!row || !row.outLap) { return false; }
+        // QUALIFYING ONLY. A race gridded away from the line owes an out lap
+        // too, so this put "OUT LAP" in the Best Lap column of every row on a
+        // race grid, for a lap that a race scores like any other.
+        if ($scope.sessionKind !== 'quali') { return false; }
         return row.status === 'qualifying' || row.status === 'gridded';
       };
 
@@ -3637,6 +3641,10 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // driver on a formation lap that the lap counted. In a ternary in the
       // template this is unreadable, and it is the sort of thing that gets left
       // wrong because nobody wants to touch it.
+      // The badge that uses this is qualifying-only now, so the two race arms
+      // below are unreachable. Kept rather than cut: which of these a league
+      // wants on screen has already changed twice, and putting one back is
+      // dropping the `sessionKind` test off the rm-out-badge ng-if again.
       $scope.outLapLabel = function () {
         if ($scope.sessionKind === 'quali') { return 'OUT LAP'; }
         if ($scope.paceLap) { return 'PACE LAP: NOT SCORED'; }

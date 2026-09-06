@@ -64,9 +64,13 @@
     <span class="rm-laptime" ng-if="showLapTime()">
       <!-- The out lap, ending: no time to hold, because none was taken. The slot
            says what the lap was and that the next one counts. -->
-      <span class="rm-laptime-out" ng-if="lapHolding() && outLapDone()"
+      <!-- QUALIFYING ONLY. In a race the lap is scored either way, so "TIMING
+           FROM HERE" announced a distinction that changed nothing for the
+           driver, in the slot their lap time belongs in, at the moment the
+           green fell. -->
+      <span class="rm-laptime-out" ng-if="lapHolding() && outLapDone() && sessionKind === 'quali'"
             title="Your out lap is over: the lap you are on now is being timed">
-        {{ sessionKind === 'quali' ? 'OUT LAP DONE, TIMING' : 'TIMING FROM HERE' }}
+        OUT LAP DONE, TIMING
       </span>
       <span class="rm-laptime-hold" ng-if="lapHolding() && !outLapDone()"
             title="Lap just completed: held briefly so it can be read">
@@ -95,11 +99,16 @@
            reading "PACE LAP 40 MPH" -- three things telling a driver the same
            fact, in the one place they have least room to read. What belongs
            HERE is only why there is no time running. -->
-      <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
+      <!-- QUALIFYING ONLY, for the reason the comment above already gives: on a
+           pace lap this sat beside a badge reading "PACE LAP ... NOT SCORED",
+           the same fact twice where a driver has least room to read it. A
+           race's first lap counts, so the clock simply runs. -->
+      <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap() && sessionKind === 'quali'"
             title="{{ outLapNote() }}">
         NOT TIMED
       </span>
-      <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()"
+      <span class="rm-laptime-live"
+            ng-if="!lapHolding() && lapLive && !pacing && (!onOutLap() || sessionKind !== 'quali')"
             title="Time on the current lap">
         LAP {{ formatLapLive(lapElapsed()) }}
       </span>
@@ -176,7 +185,11 @@
          carries "not scored" with it, so this one would be the second badge in
          a row naming the same lap. It stays for qualifying's out lap and for a
          standing start's first lap, which have no badge of their own. -->
-    <span class="rm-out-badge" ng-if="sessionUnderWay() && qualiOutLap && onOutLap() && !pacing"
+    <!-- QUALIFYING ONLY. In a race this read "LAP 1: NOT TIMED", which is a
+         fact about the results table rather than about the lap being driven,
+         and it was the third thing on screen saying it. -->
+    <span class="rm-out-badge"
+          ng-if="sessionUnderWay() && qualiOutLap && onOutLap() && !pacing && sessionKind === 'quali'"
           title="{{ outLapNote() }}">{{ outLapLabel() }}</span>
     <!-- SAME THREE READOUTS THE DRIVER BAR CARRIES, in the same order, because
          an admin running the session is usually driving it as well. -->
@@ -2761,9 +2774,13 @@
          seconds and is styled differently so it never reads as a stalled clock;
          the live clock underneath never stops. -->
     <span class="rm-laptime" ng-if="showLapTime()">
-      <span class="rm-laptime-out" ng-if="lapHolding() && outLapDone()"
+      <!-- QUALIFYING ONLY. In a race the lap is scored either way, so "TIMING
+           FROM HERE" announced a distinction that changed nothing for the
+           driver, in the slot their lap time belongs in, at the moment the
+           green fell. -->
+      <span class="rm-laptime-out" ng-if="lapHolding() && outLapDone() && sessionKind === 'quali'"
             title="Your out lap is over: the lap you are on now is being timed">
-        {{ sessionKind === 'quali' ? 'OUT LAP DONE, TIMING' : 'TIMING FROM HERE' }}
+        OUT LAP DONE, TIMING
       </span>
       <span class="rm-laptime-hold" ng-if="lapHolding() && !outLapDone()">
         LAP<b ng-if="lapHold.lap">&nbsp;{{ lapHold.lap }}</b> {{ formatLap(lapHold.lapTime) }}<span
@@ -2791,11 +2808,16 @@
            reading "PACE LAP 40 MPH" -- three things telling a driver the same
            fact, in the one place they have least room to read. What belongs
            HERE is only why there is no time running. -->
-      <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap()"
+      <!-- QUALIFYING ONLY, for the reason the comment above already gives: on a
+           pace lap this sat beside a badge reading "PACE LAP ... NOT SCORED",
+           the same fact twice where a driver has least room to read it. A
+           race's first lap counts, so the clock simply runs. -->
+      <span class="rm-laptime-out" ng-if="!lapHolding() && lapLive && onOutLap() && sessionKind === 'quali'"
             title="{{ outLapNote() }}">
         NOT TIMED
       </span>
-      <span class="rm-laptime-live" ng-if="!lapHolding() && lapLive && !onOutLap()">
+      <span class="rm-laptime-live"
+            ng-if="!lapHolding() && lapLive && !pacing && (!onOutLap() || sessionKind !== 'quali')">
         LAP {{ formatLapLive(lapElapsed()) }}
       </span>
     </span>
@@ -3331,7 +3353,7 @@
                    title="Type a starting slot and press Enter to pin this driver to it">
           </td>
           <td class="rm-col-name" title="{{ driverName(row) }}{{ realName(row) ? ' (' + realName(row) + ')' : '' }}">{{ driverName(row) }}</td>
-          <td class="rm-col-lap" ng-if="!pointToPoint" title="{{ row.outLap ? 'Out lap: not timed, not counted' : (row.cpCleared ? row.cpCleared + ' checkpoint(s) cleared this lap' : '') }}">{{ lapLabel(row) }}</td>
+          <td class="rm-col-lap" ng-if="!pointToPoint" title="{{ (row.outLap && sessionKind === 'quali') ? 'Out lap: not timed, not counted' : (row.cpCleared ? row.cpCleared + ' checkpoint(s) cleared this lap' : '') }}">{{ lapLabel(row) }}</td>
           <td class="rm-col-lap" ng-if="pointToPoint" title="Checkpoints cleared of the stage's total">{{ stageProgress(row) }}</td>
           <!-- Fastest lap of the session, in gold. A plain equality test per
                row, evaluated by the same digest that already renders the cell. -->

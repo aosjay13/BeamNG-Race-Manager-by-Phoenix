@@ -6,6 +6,34 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.12.1 - A release that contains the version it is named after
+
+**Supersedes v0.12.0, which does not.** That tag was applied one commit early,
+onto a tree still stamped 0.11.0, so the release published under it is a 0.11.0
+build: none of 0.12.0's work is in it. Use this one.
+
+#### Fixed
+
+- **The release workflow can no longer name a release after a version it does
+  not contain.** It used to bump a tag with `github-tag-action`, which computes
+  the next number from the newest existing tag and applies it to whatever commit
+  the run is on, while the five build stamps in the source are edited by hand.
+  Nothing compared the two. The source is the authority now: the release is
+  named by `RM_BUILD`, all five stamps must agree before anything is built, and
+  a tag that already exists on a different commit is a hard stop rather than a
+  silent overwrite. The version dropdown is gone with it, because there is
+  nothing left to choose.
+
+- **The rest of the out lap messaging is out of a race.** 0.12.0 removed the
+  notices and the chat lines; this removes the readouts that were still saying
+  the same thing elsewhere on screen: the `NOT TIMED` and `TIMING FROM HERE`
+  chips in the header and the driver bar, the `LAP 1: NOT TIMED` badge, the
+  `OUT LAP` cell on a race grid, and the lap-cell tooltip. Qualifying keeps all
+  of them, because there the lap genuinely does not count.
+
+  The `PACE LAP - HOLD - 40 MPH` badge and `PACE` in the Lap column stay: those
+  are pace-lap instructions and per-driver state, not "your lap was not counted".
+
 ## 0.12.0 - The Garage List that works, a server roster, and the out lap
 
 ### The Garage List
