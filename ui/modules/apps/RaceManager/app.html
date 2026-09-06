@@ -1050,18 +1050,49 @@
       <span class="rm-cup-state" ng-if="cup.enabled">
         <b>{{ cup.name || 'Unnamed cup' }}</b> · {{ cup.round }} round{{ cup.round === 1 ? '' : 's' }} scored
       </span>
-      <span class="rm-cup-state rm-cup-off" ng-if="!cup.enabled">No cup running</span>
+      <!-- PAUSED IS NOT ABSENT. Pausing keeps every point; saying "No cup
+           running" over a season's standings is how a pause reads as an end. -->
+      <span class="rm-cup-state rm-cup-paused" ng-if="!cup.enabled && cup.exists">
+        <b>{{ cup.name || 'Unnamed cup' }}</b> · {{ cup.round }} round{{ cup.round === 1 ? '' : 's' }} scored ·
+        <b>PAUSED</b>, points kept
+      </span>
+      <span class="rm-cup-state rm-cup-off" ng-if="!cup.enabled && !cup.exists">No cup running</span>
     </div>
 
     <!-- Start / continue. Starting a cup clears any previous one, so the
          button says so rather than being an innocuous "Start". -->
+    <!-- RESUME FIRST, and on its own row: a paused cup's only offered action
+         used to be Start New Cup, which clears the standings it was paused
+         with. That is a season lost to the button that looked like the way
+         back. -->
+    <div class="rm-cup-controls" ng-if="!cup.enabled && cup.exists">
+      <button class="rm-btn rm-btn-start" ng-click="cupSetEnabled(true)"
+              title="Resume scoring. The standings are exactly as you left them.">
+        Resume Scoring
+      </button>
+      <span class="rm-setting-val">
+        Scoring is off: a race finished now scores nothing. Nothing has been lost.
+      </span>
+    </div>
     <div class="rm-cup-controls" ng-if="!cup.enabled">
       <input type="text" class="rm-cup-name" maxlength="40" placeholder="Cup name (optional)"
              ng-model="cupUi.name">
       <button class="rm-btn rm-btn-grid" ng-click="cupStart()"
+              ng-if="!cup.exists"
               title="Begin a new cup. Points accumulate from the next race and survive a server restart.">
         Start New Cup
       </button>
+      <!-- Behind a confirm once a cup exists, because here it is a delete. -->
+      <button class="rm-btn rm-btn-end" ng-click="cupAskReplace()"
+              ng-if="cup.exists && !cupUi.confirmReplace"
+              title="Discard the paused cup and start a new one. Every point in it goes.">
+        Start New Cup (discards the paused one)
+      </button>
+      <span class="rm-confirm" ng-if="cup.exists && cupUi.confirmReplace">
+        Discard "{{ cup.name || 'Unnamed cup' }}" and its {{ cup.standings.length }} scoring driver(s)?
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="cupStart()">Yes, discard it</button>
+        <button class="rm-btn rm-btn-mini" ng-click="cupCancelReplace()">Cancel</button>
+      </span>
     </div>
 
     <div class="rm-cup-controls" ng-if="cup.enabled">
@@ -1396,7 +1427,7 @@
          actually held events of both kinds - an all-race cup has no reason to
          offer a derby table. Every figure here comes off the broadcast; the
          only thing decided locally is which column to show. -->
-    <div ng-if="cup.enabled && cup.standings.length">
+    <div ng-if="(cup.enabled || cup.exists) && cup.standings.length">
       <div class="rm-cup-views" ng-if="cupIsMixed()">
         <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': cupIsView('combined')}"
                 ng-click="cupSetView('combined')"
@@ -4667,6 +4698,7 @@
     font-weight: 700;
   }
   .rm-cup-state { color: #e8eaed; font-size: 11px; margin-left: auto; }
+  .rm-cup-paused { color: #fbbc05; }
   .rm-cup-off { color: #9aa0a6; }
   .rm-cup-controls {
     display: flex;

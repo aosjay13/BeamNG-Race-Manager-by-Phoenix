@@ -6,6 +6,35 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.12.2 - A paused cup stops looking like a deleted one
+
+#### Fixed
+
+- **Pausing cup scoring no longer reads as ending the cup.** The Scoring button
+  clears one flag and keeps every point, which is what it is for: switch it off,
+  run a one-off race that scores nothing, switch it back on. But the whole panel
+  was gated on that flag, so a paused cup was indistinguishable from no cup at
+  all. The standings went off screen, the header read "No cup running", and the
+  only action left was **Start New Cup**, which discards the season that had
+  just been paused. The way back looked exactly like the way to lose it.
+
+  The header now says `PAUSED, points kept` with the cup's name and rounds, the
+  standings stay on screen, a **Resume Scoring** button appears, and Start New
+  Cup over an existing cup is behind a confirm that names what it would delete.
+
+  Nothing about the data changed: a paused cup was always intact, and pressing
+  Scoring again always brought it back.
+
+#### Worth knowing (no change)
+
+- **Cup results are already saved.** Each race's results `.txt` carries that
+  round's points and the running standings, and Clear Results Cache clears them
+  with everything else.
+- **Resetting a race banks nothing.** Points are banked only when a session
+  finishes. Reset does not finish one, so start a race, reset it, and the cup is
+  untouched. End Session *does* finish it, so End Session then Reset leaves the
+  round banked; the manual adjustment ledger is the way to correct that.
+
 ## 0.12.1 - A release that contains the version it is named after
 
 **Supersedes v0.12.0, which does not.** That tag was applied one commit early,

@@ -1093,6 +1093,36 @@ RM_onCupSetScoring(ADMIN, '{"race":[9,6,3]}')
 RM_onCupSavePreset(77, '{"name":"Not Mine"}')
 check(presetByKey('saved:not mine') == nil, 'a non-admin cannot save a scoring system')
 
+-- ---------------------------------------------------------------------------
+-- PAUSING SCORING IS NOT ENDING THE CUP
+-- ---------------------------------------------------------------------------
+-- The Scoring button clears `enabled` and nothing else, which is right: it is
+-- there so a one-off race on a cup night scores nothing. The panel was gated on
+-- `enabled` alone, so a paused cup looked exactly like no cup: the standings
+-- went off screen, the header read "No cup running", and the only action left
+-- was Start New Cup, which discards the season that was just paused.
+--
+-- `cupExists` is what tells the two apart, so it is worth pinning: a cup with a
+-- name, a scored round or a driver in it EXISTS whether or not it is scoring.
+do
+  RM_onCupStart(ADMIN, '{"name":"Paused Season"}')
+  check(lastCup.cupEnabled == true and lastCup.cupExists == true,
+    'a running cup both exists and is scoring')
+
+  RM_onCupSetEnabled(ADMIN, '{"enabled":false}')
+  check(lastCup.cupEnabled == false,
+    'pausing stops the scoring, which is what the button is for')
+  check(lastCup.cupExists == true,
+    'BUT THE CUP IS STILL THERE. Reporting otherwise is what made a pause read '
+      .. 'as an end, with Start New Cup offered as the way back out of it')
+  check(lastCup.cupName == 'Paused Season',
+    'and it keeps its name, so the panel can say which cup is paused')
+
+  RM_onCupSetEnabled(ADMIN, '{"enabled":true}')
+  check(lastCup.cupEnabled == true and lastCup.cupExists == true,
+    'and resuming picks it straight back up')
+end
+
 if fails == 0 then
   print('cup_test: ' .. checks .. ' checks, 0 failures')
 else

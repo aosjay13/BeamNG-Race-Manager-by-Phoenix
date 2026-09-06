@@ -628,6 +628,10 @@ angular.module('beamng.apps')
       // ----------------------------------------------------------------
       $scope.cup = {
         enabled: false,
+        // A cup can EXIST while not scoring. Pausing clears `enabled` only, and
+        // the panel used to be gated on that alone, which made a paused season
+        // look exactly like no season at all.
+        exists: false,
         name: '',
         round: 0,              // rounds scored so far; the next race is round + 1
         preset: '',            // key of the active preset, or 'custom'
@@ -942,6 +946,7 @@ angular.module('beamng.apps')
         bngApi.engineLua('raceManager.cupStart("'
           + String($scope.cupUi.name || '').replace(/"/g, '') + '")');
         $scope.cupUi.confirmReset = false;
+        $scope.cupUi.confirmReplace = false;
       };
       $scope.cupSetEnabled = function (on) {
         bngApi.engineLua('raceManager.cupSetEnabled(' + (!!on) + ')');
@@ -949,6 +954,11 @@ angular.module('beamng.apps')
       $scope.cupToggleEnabled = function () { $scope.cupSetEnabled(!$scope.cup.enabled); };
       // Two presses, because one press destroys a season's worth of points.
       // Clear Results Cache is behind the same pattern for the same reason.
+      // Starting a cup over a paused one is a delete, so it gets the same two
+      // presses End Cup has. Behind a dot for the ng-if child-scope reason
+      // every other flag here is.
+      $scope.cupAskReplace = function () { $scope.cupUi.confirmReplace = true; };
+      $scope.cupCancelReplace = function () { $scope.cupUi.confirmReplace = false; };
       $scope.cupAskReset = function () { $scope.cupUi.confirmReset = true; };
       $scope.cupCancelReset = function () { $scope.cupUi.confirmReset = false; };
       $scope.cupReset = function () {
@@ -1448,7 +1458,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.12.1';
+      var APP_BUILD = '0.12.2';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -3023,6 +3033,8 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         if (!data) { return; }
         $scope.$evalAsync(function () {
           $scope.cup.enabled = !!data.cupEnabled;
+          // Paused is not the same as absent: see cupExists on the server.
+          $scope.cup.exists = !!data.cupExists;
           $scope.cup.name = data.cupName || '';
           $scope.cup.round = data.round || 0;
           $scope.cup.preset = data.preset || 'custom';

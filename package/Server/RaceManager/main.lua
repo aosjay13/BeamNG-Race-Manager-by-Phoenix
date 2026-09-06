@@ -1660,7 +1660,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.12.1'
+local RM_BUILD = '0.12.2'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -8744,6 +8744,13 @@ broadcastCupState = function (targetPid)
   MP.TriggerClientEvent(targetPid or -1, 'RM_CupUpdate', Util.JsonEncode({
     rmProtocol   = RM_PROTOCOL,
     cupEnabled   = getCup().enabled,
+    -- DOES A CUP EXIST, which is a different question from whether it is
+    -- scoring. Pausing only clears `enabled`, and with the panel gated on that
+    -- alone a paused cup was indistinguishable from no cup at all: the
+    -- standings vanished, the header read "No cup running", and the one action
+    -- left on screen was Start New Cup, which would have destroyed the season
+    -- the admin had just paused.
+    cupExists    = (cup.name ~= '' or cup.round > 0 or #cup.entries > 0),
     cupName      = cup.name,
     round        = cup.round,
     preset       = cup.scoring.preset,
