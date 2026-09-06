@@ -1660,7 +1660,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.11.0'
+local RM_BUILD = '0.12.0'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -4355,8 +4355,12 @@ local function releaseField(pacing)
     notifyField('flag', 'GO! Your first lap is an OUT LAP', 'It is '
       .. 'not timed and does not count. Timing starts as you cross the line.')
   elseif outLapOwed() then
-    notifyField('flag', 'GO! Your first lap counts', 'It is not '
-      .. 'timed: a standing start is not a lap time.')
+    -- NO FIELD NOTICE FOR A RACE. "Your first lap counts but is not timed" is a
+    -- distinction about the results table, put in front of a driver at the exact
+    -- moment their only question is when to go. Qualifying keeps its notice
+    -- above, where the lap really does not count and pushing on it wastes one.
+    -- Restore this notifyField to put it back; the client's matching arm in the
+    -- phase handler came out with it.
     -- WHY, in the console, because "my race keeps giving a lap away and I do not
     -- know what is asking for it" is otherwise unanswerable from the outside.
     print('[RaceManager] Out lap owed: sessionKind=' .. tostring(race.sessionKind)
@@ -5232,8 +5236,12 @@ function RM_onLap(pid, rawData)
     -- Told to that driver alone. The out lap is a per-driver event twenty
     -- drivers reach at twenty different moments, and announcing each of them to
     -- the whole server would bury the messages that are everybody's business.
-    MP.SendChatMessage(rec.id,
-      '[RaceManager] Out lap complete: your next lap is TIMED.')
+    -- Qualifying only: in a race the lap was scored either way, so this told a
+    -- driver mid-first-corner about a distinction that did not affect them.
+    if isQualiSession() then
+      MP.SendChatMessage(rec.id,
+        '[RaceManager] Out lap complete: your next lap is TIMED.')
+    end
     print(string.format('[RaceManager] %s completed their out lap (not timed)', rec.name))
     return
   end

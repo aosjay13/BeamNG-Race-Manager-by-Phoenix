@@ -351,6 +351,28 @@ angular.module('beamng.apps')
             until: Date.now() + LAP_HOLD_MS
           };
           startLapTicker();
+          // PRACTICE KEEPS ITS LAPS ON SCREEN. The hold above shows a time for a
+          // few seconds and takes it away, which is right mid-race where the
+          // board carries the record. Practice has no board: the server scores
+          // nothing and there are no other drivers, so without this a lap time
+          // appeared and was gone before the next corner.
+          //
+          // Client-side and session-local by design. Nothing is sent up and
+          // nothing is written down; leaving the mode empties it.
+          if ($scope.practice && !data.outLap && typeof data.lapTime === 'number') {
+            if ($scope.practiceBest === null || data.lapTime < $scope.practiceBest) {
+              $scope.practiceBest = data.lapTime;
+            }
+            $scope.practiceLaps.unshift({
+              lap: data.lap || ($scope.practiceLaps.length + 1),
+              time: data.lapTime,
+              delta: (typeof data.delta === 'number') ? data.delta : null
+            });
+            // Bounded, because this is a DRIVER's screen and every row is
+            // watched. Ten laps is more than anybody reads at a glance and keeps
+            // the panel off the low-end budget the rest of the client respects.
+            if ($scope.practiceLaps.length > 10) { $scope.practiceLaps.pop(); }
+          }
         });
       });
 
@@ -1426,7 +1448,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.11.0';
+      var APP_BUILD = '0.12.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -2369,8 +2391,18 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.visualize = data.visualize !== false;
           // Free practice. Mirrored rather than tracked locally: the client Lua
           // owns it, and pressing the button is a request, not the state.
+          // ENTERING OR LEAVING PRACTICE EMPTIES THE LAP LIST, and so does
+          // changing track under it: a time set on one layout says nothing about
+          // the next, and a list that survived the switch would read as this
+          // session's.
+          var wasPractice = $scope.practice;
+          var wasLayout   = $scope.practiceLayout;
           $scope.practice       = data.practice === true;
           $scope.practiceLayout = data.practiceLayout || null;
+          if ($scope.practice !== wasPractice || $scope.practiceLayout !== wasLayout) {
+            $scope.practiceLaps = [];
+            $scope.practiceBest = null;
+          }
           $scope.practiceDone   = data.practiceDone || 0;
           $scope.practiceLeft   = (typeof data.practiceLeft === 'number')
                                   ? data.practiceLeft : null;
@@ -4277,6 +4309,14 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.practiceDone   = 0;
       $scope.practiceLeft   = null;
       $scope.practiceUi = { selected: '', laps: 0 };
+      // The laps run in THIS practice session, newest first, and the best of
+      // them. Cleared whenever practice starts or stops: a time set on one track
+      // means nothing on the next.
+      $scope.practiceLaps = [];
+      $scope.practiceBest = null;
+      $scope.practiceIsBest = function (l) {
+        return l && $scope.practiceBest !== null && l.time === $scope.practiceBest;
+      };
       $scope.practiceLayouts = function () {
         var out = [];
         for (var i = 0; i < $scope.layouts.length; i++) {

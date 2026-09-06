@@ -804,6 +804,22 @@ local function pitGeometry(wp)
   return g
 end
 
+-- EVERY stall's footprint, in one draw each.
+--
+-- A driver has to know where they may pit before they are on top of it, and the
+-- box below is eleven draws: giving every stall one would be five to ten times
+-- the whole frame's shape budget on a twenty-stall lane. The floor alone says
+-- where a stall is, which is the question being asked at distance; the nearest
+-- one still gets walls, posts and a chevron so the stall being aimed at is
+-- unmistakable.
+--
+-- Geometry comes from the same cache the full box uses, so this allocates
+-- nothing however many stalls a lane has.
+function paint.pitFloor(wp)
+  local g = pitGeometry(wp)
+  debugDrawer:drawQuadSolid(g.bl, g.br, g.fr, g.fl, palette().pitFill)
+end
+
 function paint.pitBox(wp, color)
   local g = pitGeometry(wp)
   local p = palette()
@@ -956,6 +972,12 @@ local function drawDriverGate(derbyLive)
         local d = dx * dx + dy * dy
         if d < bestD then best, bestD = i, d end
       end
+    end
+    -- ALL OF THEM, so a driver can see where they may pit rather than
+    -- discovering each stall by arriving at it. The floor is one draw; the
+    -- nearest stall then gets the full box over the top of its own floor.
+    for i, wp in ipairs(track.pitRoute) do
+      if i ~= best then paint.pitFloor(wp) end
     end
     -- Amber, and unlabeled like the rest: a pit stall is somewhere you either
     -- meant to go or did not. Drawn as the BOX pit.inside actually tests, so

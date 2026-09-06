@@ -225,7 +225,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.11.0'
+local RM_BUILD = '0.12.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -2031,7 +2031,12 @@ local function onLapCompleted()
     -- the moment the driver most needs to know their timing has started, and it
     -- is the moment they are least able to go looking for it.
     guihooks.trigger('RaceManagerLapDone', { outLap = true, lap = session.localLap })
-    pushNotice('session', 'OUT LAP COMPLETE: you are on a TIMED lap now')
+    -- Qualifying only. In a race the first lap is scored either way, so
+    -- "you are on a TIMED lap now" is answering a question nobody asked and
+    -- lands in the middle of the first corner.
+    if session.phase == 'qualifying' then
+      pushNotice('session', 'OUT LAP COMPLETE: you are on a TIMED lap now')
+    end
     log('I', 'raceManager', string.format('Out lap done: %.3fs (not timed)', lapTime))
   else
     announceLap(session.localLap)
@@ -2233,8 +2238,30 @@ local function checkGates()
     -- On the out lap the LINE ends the lap from wherever the driver has got to,
     -- even with slots still uncleared. Nothing on this lap is scored, so there is
     -- nothing to protect by making them go back for a gate.
+    --
+    -- BUT ONLY ONCE THEY HAVE ACTUALLY GONE SOMEWHERE. A grid sits BEHIND the
+    -- start/finish line on an ordinary circuit, so the line is the first gate a
+    -- driver reaches: seconds after the green, with nothing cleared, this ended
+    -- the out lap and started timing. Measured from a live log, out laps
+    -- "completed" in 2.1s, 2.4s, 4.4s and 5.6s. The formation lap is mechanically
+    -- an out lap, so the same crossing dropped the green the moment the leader
+    -- rolled over the line.
+    --
+    -- Requiring a cleared checkpoint says the difference plainly: reaching a line
+    -- you have not driven a route to is not completing a lap.
+    --
+    -- ONE RULE, NO GEOMETRY. An earlier attempt let gridIsOff() waive this, to
+    -- keep the head-on case the shortcut was written for. That is a 250 m
+    -- distance test, so a grid merely set further back down the straight would
+    -- have gone on ending its out lap in seconds: the same bug, hiding behind a
+    -- threshold.
+    --
+    -- The head-on car is not stranded by this. It clears nothing on the way to
+    -- the line, so it simply runs on to slot 1 and starts its lap there. That is
+    -- a longer out lap, never a backwards one, and never a two-second one.
     local lineEndedOutLap = false
-    if onOut and not crossed and session.armedWp < #track.route then
+    if onOut and not crossed and session.armedWp > 1
+        and session.armedWp < #track.route then
       local line = track.route[#track.route]
       if line then
         crossed, backwards = segmentCrossesGate(line, session.prevPos, pos)
@@ -9393,10 +9420,15 @@ local function onServerUpdate(rawData)
     if qualiOutLap and newPhase == 'qualifying' then
       pushNotice('session',
         'OUT LAP: this lap is NOT timed. Timing starts as you cross the line.')
-    elseif qualiOutLap and newPhase == 'racing' then
-      pushNotice('session',
-        'Your first lap COUNTS but is not timed: a standing start is not a lap time.')
     end
+    -- THE RACING BRANCH IS GONE ON PURPOSE. It read "Your first lap COUNTS but
+    -- is not timed", which is a distinction about the RESULTS table shown to a
+    -- driver on the grid, where the only question is when to go. Qualifying
+    -- keeps its notice because there the lap genuinely does not count and a
+    -- driver pushing on the out lap is wasting one.
+    --
+    -- Put it back by restoring the `elseif qualiOutLap and newPhase == 'racing'`
+    -- arm; the server's matching line in notifyField came out with it.
     -- Leaving the start procedure must never leave a car frozen.
     if newPhase ~= 'grid' and newPhase ~= 'countdown' then releaseGridHold('race') end
     if newPhase ~= 'grid' and newPhase ~= 'countdown' and not sessionRunning() then

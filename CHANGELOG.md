@@ -6,6 +6,83 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.12.0 - The Garage List that works, a server roster, and the out lap
+
+### The Garage List
+
+- **The parts lock finally locks.** It had refused every car it was ever shown
+  on a live client, and the panel said why in four numbers:
+  `[partmgmt=0, vehData=0, car=0, pc=31]`. Nothing was missing. BeamNG keeps a
+  vehicle's parts in `config.partsTree`, and `config.parts` on that same table
+  is empty; this mod only ever read `parts`. Confirmed against BeamJoy, which
+  reads `partsTree` off the same call and works in production.
+
+  Two more had to move before it worked, and either alone still reads as "the
+  lock blocks nothing": the vehicle VM answers `0:0:0:0` for its parts, and that
+  empty answer was discarded too late, so it outranked a full parts list; and
+  BeamMP's spawn record is a snapshot taken when the car appeared, applied
+  unconditionally, so a part swapped afterwards was invisible.
+
+  **Paint Design, License Plate Design and paint are free in every mode.**
+  Parts blocks parts and allows tuning. Strict blocks both.
+
+  Existing `garage.json` entries no longer match: the signature changed shape,
+  so the list needs clearing and re-capturing once.
+
+- **Named garage sets.** Save the approved list under a name and load it back,
+  so a night running several series is a click between them rather than
+  re-whitelisting each field. Stored one file per set in `Data/Garage/`, the way
+  a map's tracks are. A set carries the lock mode, because that is a property of
+  the series; it never carries the Enforcing switch, because a load that quietly
+  started or stopped policing the grid would be a far bigger action than the
+  button says. Loading is refused while a session is running.
+
+- **Drivers can take an approved car.** An entry now carries the saved config's
+  path, and BeamNG spawns straight from one, so a driver picks an eligible car
+  instead of building it by hand and hoping it matches. Open to non-admins.
+  Take replaces the car you are in; + New adds one. An entry with no saved
+  config behind it is never offered, because BeamNG would hand back the model's
+  default wearing the approved car's name.
+
+### The roster
+
+- **A server roster.** Drivers can be added by name without being connected, so
+  a league's entry list can be typed in days before the night. Duplicates are
+  refused case-insensitively: two entries for one driver means two separate
+  points totals, and nobody notices until standings night.
+
+- **Pick a saved driver.** Display Names gets a picker of roster entries with
+  Unassign beside it. The bind existed, but its only UI was in the Cup panel
+  behind a running cup, and the roster only reached the client when the Cup tab
+  was open.
+
+### Racing
+
+- **The out lap ends when a lap ends.** Crossing the start/finish used to end it
+  from wherever the driver had got to. On an ordinary circuit the grid sits
+  behind the line, so the line is the first gate a driver meets: out laps
+  "completed" in 2.1s, 2.4s, 4.4s and 5.6s in a live log. The formation lap is
+  mechanically an out lap, so the same crossing dropped the green the instant
+  the leader rolled over the line. It now takes a cleared checkpoint: reaching a
+  line you have not driven a route to is not a completed lap.
+
+- **A saved layout stops vanishing from the admin's own dropdown.** Saving sent
+  the list twice to an admin, and the two are not ordered against each other. A
+  live log caught the wrong order twice in three saves, which left the admin who
+  had just pressed Save reading "no layouts saved for this map" with their
+  selection cleared. Every player is now sent one addressed list.
+
+- **Every pit stall is drawn**, not just the nearest one, so a driver can see
+  where they may pit rather than discovering each stall by arriving at it.
+
+- **Practice shows its laps.** Lap number, time and delta to the previous lap,
+  newest first, with the best highlighted. Client-side and session-local:
+  nothing is sent up, nothing is written down.
+
+- The out lap's "not timed" messages are gone from a race, where the lap is
+  scored either way. Qualifying keeps them, because there the lap really does
+  not count.
+
 ## 0.11.0 - Race control: the pace lap, the caution, and heats into a feature
 
 Everything below shipped as one release. The pace lap, the caution and

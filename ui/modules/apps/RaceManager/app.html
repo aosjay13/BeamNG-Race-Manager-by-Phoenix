@@ -373,6 +373,27 @@
       <span class="rm-practice-state rm-practice-off" ng-if="!practice && !practiceLayouts().length">
         No tracks are open for practice
       </span>
+      <span class="rm-practice-state" ng-if="practice && practiceBest !== null">
+        best <b>{{ formatLap(practiceBest) }}</b>
+      </span>
+    </div>
+    <!-- THE LAPS RUN SO FAR. The lap readout holds a time for a few seconds and
+         takes it away, which is right in a race where the board carries the
+         record. Practice has no board: nothing is scored and there is nobody
+         else on it, so the time was gone before the next corner.
+
+         Session-local and client-side. Nothing is sent up, nothing is written
+         down, and it empties when practice stops or the track changes. Capped
+         at ten rows because this is a driver's screen and every row is watched. -->
+    <div class="rm-practice-laps" ng-if="practice && practiceLaps.length">
+      <div class="rm-practice-lap" ng-repeat="l in practiceLaps track by $index"
+           ng-class="{'rm-practice-lap-best': practiceIsBest(l)}">
+        <span class="rm-practice-lapno">{{ l.lap }}</span>
+        <span class="rm-practice-laptime">{{ formatLap(l.time) }}</span>
+        <span class="rm-practice-lapdelta" ng-if="l.delta !== null">
+          {{ l.delta > 0 ? '+' : '' }}{{ l.delta.toFixed(3) }}
+        </span>
+      </div>
     </div>
     <div class="rm-practice-row" ng-if="!practice && practiceLayouts().length">
       <!-- The app's own dropdown, not a native select: a select's popup is an
@@ -3761,6 +3782,25 @@
     white-space: nowrap;
     color: #9aa0a6;
   }
+  .rm-practice-laps {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    margin: 4px 0 2px 0;
+    max-height: 132px;
+    overflow-y: auto;
+  }
+  .rm-practice-lap {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 11px;
+    color: #d6d8db;
+  }
+  .rm-practice-lap-best .rm-practice-laptime { color: #fbbc05; font-weight: 600; }
+  .rm-practice-lapno { min-width: 18px; color: #9aa0a6; text-align: right; }
+  .rm-practice-laptime { font-variant-numeric: tabular-nums; }
+  .rm-practice-lapdelta { font-size: 10px; color: #9aa0a6; }
   .rm-alias-picker { min-width: 140px; }
   .rm-alias-roster {
     margin-top: 7px;

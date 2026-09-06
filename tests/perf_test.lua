@@ -135,12 +135,19 @@ local cps = {}
 for i = 1, 12 do
   cps[i] = { x = 0, y = i * 100, z = 0, hx = 0, hy = 1 }
 end
+-- A REAL PIT LANE, not one stall. A driver is shown every stall's floor so they
+-- can see where they may pit, and the nearest gets the full box on top. With a
+-- single stall in the fixture that fan-out was invisible and unbudgeted.
+local pits = {}
+for i = 1, 12 do
+  pits[i] = { x = -30, y = 100 + i * 12, z = 0, hx = 0, hy = 1 }
+end
 handlers['RM_ApplyLayout']({
   name = 'perf', width = 20, height = 8, depth = 2,
   checkpoints = cps,
   joker = { { x = 30, y = 300, z = 0, hx = 0, hy = 1 },
             { x = 30, y = 400, z = 0, hx = 0, hy = 1 } },
-  pits  = { { x = -30, y = 200, z = 0, hx = 0, hy = 1 } },
+  pits  = pits,
   markers = { { x = -20, y = 500, z = 0, hx = 0, hy = 1, kind = 'right' } },
   startPositions = { { x = 0, y = 0, z = 0, hx = 0, hy = 1 } },
 })
@@ -148,7 +155,7 @@ handlers['RM_ApplyLayout']({
 -- reached the models, so a future rename of a payload key fails here with the
 -- reason rather than silently making every budget below cheaper.
 check(routeState ~= nil, 'the layout was applied and pushed a route state')
-check(#(routeState.pitRoute or {}) == 1,
+check(#(routeState.pitRoute or {}) == 12,
   'the fixture pit lane loaded: the payload key is `pits`, not `pit`')
 check(#(routeState.jokerRoute or {}) == 2, 'the fixture joker route loaded')
 check(#(routeState.markers or {}) == 1, 'the fixture direction marker loaded')
@@ -249,9 +256,17 @@ local steadyAllocs, steadyDraws, steadyTris = allocs, draws, tris
 -- the track; what gets drawn is the armed gate, the one after it, and whichever
 -- joker or pit furniture applies. If this scales with the route the whole lap is
 -- being painted across the racing line.
-check(steadyDraws <= 24, string.format(
-  'a steady frame draws %d shapes on a twelve-gate circuit, not the whole lap '
-    .. '(budget 24)', steadyDraws))
+-- The budget SCALES WITH THE PIT LANE, and only with the pit lane. A driver is
+-- shown every stall's floor so they know where they may pit, which is one draw
+-- each; the nearest stall gets the full box, which is eleven. Writing it as
+-- "24 plus one per extra stall" is what makes a regression legible: giving every
+-- stall the full box would be eleven each and fail here by a mile, and so would
+-- anything that started drawing per checkpoint.
+local drawBudget = 24 + (#pits - 1)
+check(steadyDraws <= drawBudget, string.format(
+  'a steady frame draws %d shapes on a twelve-gate circuit with %d pit stalls, '
+    .. 'not the whole lap (budget %d: 24 plus one floor per extra stall)',
+  steadyDraws, #pits, drawBudget))
 
 -- The marker board, which is the only thing here that draws triangles. Its
 -- cost is bounded by TUNE.MARKER_MAX_MARKS (60) rather than by the board's
