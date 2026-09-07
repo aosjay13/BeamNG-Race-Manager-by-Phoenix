@@ -401,5 +401,66 @@ RM.saveLayout('full', true)
 check(sent[1] and sent[1].payload.confirmDrop == true,
   'and the admin answering the warning is what sets the confirmation')
 
+-- ===========================================================================
+-- THE LANE IS ONLY ON SCREEN ONCE YOU ARE IN IT
+-- ===========================================================================
+-- A lane of stalls is three draws each and used to sit off to the side for the
+-- whole race, for something a driver uses once. A track with an ENTRY GATE now
+-- shows that gate while racing and the stalls only behind it.
+--
+-- The state is what this pins; the drawing follows it in render.lua. A track
+-- with no entry gate keeps every stall on screen, because an existing layout
+-- must not go blank over a field it has never heard of.
+handlers['RM_ApplyLayout']({
+  name = 'gated lane', width = 20, height = 10,
+  checkpoints = { {x=0,y=100,z=0,hx=0,hy=1}, {x=0,y=200,z=0,hx=0,hy=1} },
+  pits      = { {x=-50,y=100,z=0,hx=1,hy=0} },
+  pitEntry  = { {x=-50,y=0,z=0,hx=0,hy=1} },
+  pitExit   = { {x=-50,y=300,z=0,hx=0,hy=1} },
+})
+check(#(lastRoute().pitEntry or {}) == 1, 'the layout loads its pit entry gate')
+check(#(lastRoute().pitExit or {}) == 1, 'and its exit gate')
+check(lastRoute().pitInLane == false, 'and nobody starts in the lane')
+
+racing()
+-- Approach the entry gate and cross it: y runs from before to after.
+veh.x, veh.y = -50, -10
+frames(0.2)
+check(lastRoute().pitInLane == false, 'driving up to the gate is not entering')
+veh.y = 10
+frames(0.2)
+check(lastRoute().pitInLane == true,
+  'crossing the entry gate puts the driver in the lane, which is what brings '
+    .. 'the stalls on screen')
+
+-- The tidy way out.
+veh.y = 290
+frames(0.2)
+veh.y = 310
+frames(0.2)
+check(lastRoute().pitInLane == false, 'and the exit gate takes them back out')
+
+-- ===========================================================================
+-- MISSING THE EXIT IS NOT A TRAP
+-- ===========================================================================
+-- A driver who drives past the exit gate would otherwise carry a lane full of
+-- stall markers to the flag with no way to be rid of them. Clearing any route
+-- checkpoint means they are plainly back on the racing line, so that is the
+-- fallback, and it is the one that cannot be missed.
+veh.x, veh.y = -50, -10
+frames(0.2)
+veh.y = 10
+frames(0.2)
+check(lastRoute().pitInLane == true, 'back in the lane')
+
+-- Straight to a checkpoint without ever meeting the exit gate.
+veh.x, veh.y = 0, 90
+frames(0.2)
+veh.y = 110
+frames(0.2)
+check(lastRoute().pitInLane == false,
+  'clearing a checkpoint takes the driver out of the lane, so missing the exit '
+    .. 'gate cannot strand the markers on screen')
+
 print(string.format('pit_test: %d checks, %d failures', checks, fails))
 if fails > 0 then os.exit(1) end

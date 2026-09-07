@@ -659,10 +659,19 @@ local function markerGeometry(wp)
   end
 
   local glyph = marker.GLYPH[kind] or marker.GLYPH.right
-  local function place(cx, cv, size)
+  local function place(cx, cv, size, ratio)
     -- Thickness scales with the mark, so a big sign gets a bold mark rather
     -- than a large thin one.
-    local t = size * TUNE.MARKER_STROKE
+    --
+    -- The ratio is NOT shared between tiled marks and shapes, and sharing it was
+    -- the bug that made the U turn and the P unreadable. A shape is placed at
+    -- min(w, span) * 0.42, several times the size of a 3 m tiled cell, so one
+    -- ratio gave it a stroke that grew with it: on a 12 m board the dark
+    -- outline came out 3.2 m thick inside a 10 m mark, wider than the gaps the
+    -- glyph is made of, and every shape collapsed into a blob. Shapes get the
+    -- thinner ratio so the outline lands near the chevron's in METERS instead
+    -- of in fractions of itself.
+    local t = size * ratio
     for k = 1, #glyph do
       local q = glyph[k]
       -- The outline goes down FIRST and slightly fatter. Marks are drawn over
@@ -690,13 +699,13 @@ local function markerGeometry(wp)
     for cix = 1, cols do
       local cx = -hw + stepU * (cix - 0.5)
       for riy = 1, rows do
-        place(cx, bot + stepV * (riy - 0.5), size)
+        place(cx, bot + stepV * (riy - 0.5), size, TUNE.MARKER_STROKE)
       end
     end
   else
     -- A U turn or a fork is a diagram, not a repeating mark: one of them,
     -- centerd, as large as the board allows.
-    place(0, (top + bot) * 0.5, math.min(w, span) * 0.42)
+    place(0, (top + bot) * 0.5, math.min(w, span) * 0.42, TUNE.MARKER_SHAPE_STROKE)
   end
 
   g.postA, g.postB = at(-hw, bot), at(-hw, top)
@@ -972,7 +981,26 @@ local function drawDriverGate(derbyLive)
         session.jokerTaken and p.jokerUsedFill or p.jokerFill, glyph)
     end
   end
-  if #track.pitRoute > 0 then
+  -- THE LANE'S MOUTH, AND THE LANE ITSELF ONLY ONCE YOU ARE IN IT.
+  --
+  -- A lane of stalls is three draws each and used to be on screen for the whole
+  -- race, off to the side, for something a driver uses once. So a track with an
+  -- ENTRY GATE shows that gate while racing and nothing else; the stalls appear
+  -- behind it. On a twelve-stall lane that is thirty-six draws a frame down to
+  -- three until somebody actually pits.
+  --
+  -- A track WITHOUT an entry gate keeps every stall on screen, exactly as
+  -- before. An existing layout must not go blank because of a field it has
+  -- never heard of.
+  local gated = #track.pitEntry > 0
+  if gated and not pit.inLane then
+    -- Racing. One gate at the mouth: poles, a translucent panel between them
+    -- and the arrow that says "in here", which is the joker gate's own shape
+    -- because a driver has already learned to read it.
+    for _, wp in ipairs(track.pitEntry) do
+      drawPoleGate(wp, p.pit, nil, p.pitFill, 'open')
+    end
+  elseif #track.pitRoute > 0 then
     local _, ppos = sampledVehicle()
     local best, bestD = 1, math.huge
     if ppos then
@@ -983,9 +1011,8 @@ local function drawDriverGate(derbyLive)
       end
     end
     -- ALL OF THEM, and all the same. Poles read across a pit lane, so there is
-    -- no longer a cheap version for the far ones and a detailed version for the
-    -- near one: three draws each is affordable for the whole lane, and a driver
-    -- can see every stall they may use before they are on top of it.
+    -- no cheap version for the far ones and a detailed version for the near
+    -- one: three draws each is affordable for a lane you are standing in.
     --
     -- The nearest is drawn last and brighter, so "the one you are aiming at" is
     -- still obvious without being a different object.
@@ -993,6 +1020,13 @@ local function drawDriverGate(derbyLive)
       if i ~= best then paint.pitBox(wp, p.pitFar) end
     end
     if track.pitRoute[best] then paint.pitBox(track.pitRoute[best], p.pit) end
+    -- The way out, drawn only from inside, so it is never furniture on the
+    -- racing line.
+    if gated then
+      for _, wp in ipairs(track.pitExit) do
+        drawPoleGate(wp, p.pitFar, nil, p.pitFill, nil)
+      end
+    end
   end
 end
 
@@ -1085,6 +1119,29 @@ local function drawGates(derbyLive)
     paint.pitBox(wp, col)
     debugDrawer:drawTextAdvanced(pitGeometry(wp).label, String(pitLabel(i)),
       p.text, true, false, p.textBg)
+  end
+
+  -- THE LANE'S MOUTH AND ITS EXIT, IN THE EDITOR.
+  --
+  -- Drawn here as well as in the driver path, and forgetting this is what made
+  -- the first cut look broken: an admin placed an entry gate, the panel counted
+  -- it, the list showed its coordinates and its size, and absolutely nothing
+  -- appeared on the ground. The driver path hides these behind "am I in the
+  -- lane", which is never true while editing.
+  --
+  -- Full gates rather than the stall's poles, because that is what they are:
+  -- something the car drives THROUGH, not something it stops in.
+  -- The label goes THROUGH drawPoleGate rather than being drawn here.
+  -- gateGeometry returns corners and nothing else: there is no `label` point on
+  -- it, so positioning the text by hand meant handing drawTextAdvanced a nil
+  -- and finding out in game. drawPoleGate already places a gate's label.
+  for i, wp in ipairs(track.pitEntry) do
+    local col = nudgeSelected(track.pitEntry, i) and p.nudged or p.pit
+    drawPoleGate(wp, col, 'PIT IN ' .. i, p.pitFill, 'open')
+  end
+  for i, wp in ipairs(track.pitExit) do
+    local col = nudgeSelected(track.pitExit, i) and p.nudged or p.pitFar
+    drawPoleGate(wp, col, 'PIT OUT ' .. i, p.pitFill, nil)
   end
 
   -- Joker route: violet, so it never reads as part of the main lap. The next

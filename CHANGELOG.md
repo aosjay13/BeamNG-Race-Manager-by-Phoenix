@@ -6,6 +6,63 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.12.9 - The pit lane only appears once you are in it
+
+#### Added
+
+- **A pit entrance gate, and the lane behind it.** While racing a driver sees
+  one gate at the lane's mouth: two poles, a translucent panel and an up arrow,
+  the joker gate's own shape because that is a shape drivers have already
+  learned. Crossing it brings the stalls on screen; an exit gate takes them away
+  again, and is drawn only from inside so it is never furniture on the racing
+  line.
+
+  On a twelve-stall lane that is pit furniture down from **36 draws a frame,
+  all race**, to **3** until somebody actually pits.
+
+  **Missing the exit gate is harmless.** Clearing any route checkpoint also
+  leaves the lane: a driver back on the racing line has plainly left, and
+  without that they would carry a lane of markers to the flag with no way to be
+  rid of them.
+
+  The three pit lists are boxed as one category in the track editor, **PIT:
+  Stalls / In / Out**, because they are one feature and read as three peers of
+  Branch and Marker when they were not.
+
+  Place both in the editor under **In** and **Out**. Both are
+  optional, and a track with no entry gate draws every stall for the whole race
+  exactly as before, so existing layouts are untouched.
+
+- **A pit lane marker symbol**: a drawn letter P, for signage on the approach.
+  Drawn rather than written, for the reason the other symbols are: debugDrawer
+  text does not shrink with distance, so a glyph readable in the editor is a
+  speck where a sign actually has to work.
+
+#### Fixed
+
+- **The shape symbols were unreadable, and it was the stroke, not the drawing.**
+  The U turn, both forks and the new P came out as cyan smears with a ragged
+  black edge. Mark thickness is a fraction of the mark's own size, which is
+  right for the tiled chevrons and wrong for these four: a shape is drawn as ONE
+  symbol at `min(width, span) * 0.42`, several times the size of a 3 m chevron
+  cell, so its outline scaled with it. On a twelve metre board that outline was
+  **3.2 m thick** inside a ten metre symbol, wider than the gaps the symbol is
+  made of. Shapes take their own thinner ratio now and land near the chevron's
+  weight in metres rather than in fractions of themselves.
+
+  The U turn is also square rather than arced. Every stroke is a filled quad
+  with both ends extended by half its thickness so mitres do not open up, and
+  the old arc was four segments each SHORTER than its own extension, so each was
+  drawn near three times its true length and the four overlapped into one blob.
+
+  **Nothing above caught this.** The marker checks counted triangles, proved
+  they had area, proved both passes were present and proved the cache held, and
+  all of it passed while the symbol was illegible in game. `draw_test` now
+  measures outline area against the symbol's OWN bounding box, which needs no
+  assumption about how large the board made it and is the same number at every
+  size. At the old ratio the four carry 105% to 133% of their footprint in ink:
+  more ink than symbol, with nothing left to see through.
+
 ## 0.12.7 - A Quali tab, an Admin tab, and pit poles you can see
 
 #### Changed

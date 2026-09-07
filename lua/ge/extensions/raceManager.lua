@@ -190,6 +190,11 @@ local TUNE = {
   -- the dark outline behind it is drawn.
   MARKER_STROKE   = 0.17,
   MARKER_EDGE     = 1.9,
+  -- Shapes (U turn, fork, P) are drawn two to five times larger than a tiled
+  -- cell, so they take a thinner ratio to land at a comparable stroke width in
+  -- METERS. Sharing one ratio is what made them unreadable. See place() in
+  -- render.lua.
+  MARKER_SHAPE_STROKE = 0.07,
   PIT_COOLDOWN   = 8.0,   -- before the same stall can trigger again
   PIT_DEPTH      = 3.0,   -- meters along the stall a car counts as being in it
   -- m/s below which the car counts as stopped IN the stall. A pit stop is
@@ -229,7 +234,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.12.7'
+local RM_BUILD = '0.12.9'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -370,6 +375,12 @@ local track = {
   jokerRoute = {},
   -- Pit stalls. Never part of the checkpoint sequence.
   pitRoute = {},
+  -- The pit lane's mouth and its exit. Arrays, because a lane can have more
+  -- than one way in. Declared HERE and not only where a layout is applied: the
+  -- renderer reads them every frame, including before any layout exists, and a
+  -- nil here is a crash in the draw path rather than an empty lane.
+  pitEntry = {},
+  pitExit  = {},
   -- Starting grid, slot 1 is pole. Travels with the layout.
   startPositions = {},
   -- Circuit or sprint. A point-to-point stage is driven once, first gate to
@@ -450,10 +461,11 @@ local marker = {
 }
 
 -- Every symbol, in one place. The order is the order the panel offers them.
-marker.KINDS = { 'right', 'left', 'up', 'down', 'uturn', 'splitRight', 'splitLeft' }
+marker.KINDS = { 'right', 'left', 'up', 'down', 'uturn', 'splitRight', 'splitLeft', 'pit' }
 marker.LABEL = {
   right = 'Right', left = 'Left', up = 'Straight on', down = 'Slow / stop',
   uturn = 'U turn', splitRight = 'Split, keep right', splitLeft = 'Split, keep left',
+  pit = 'Pit lane',
 }
 
 -- SYMBOL GEOMETRY, as line segments in a unit cell.
@@ -477,13 +489,52 @@ marker.GLYPH = {
   down  = { {-0.8,0.55, 0,-0.45}, {0,-0.45, 0.8,0.55} },
   -- These three are SHAPES rather than repeating marks, so they carry a stem:
   -- a U turn tiled across a board still has to look like a U turn.
-  uturn = { {-0.3,-0.8, -0.3,0.2}, {-0.3,0.2, -0.15,0.5}, {-0.15,0.5, 0.15,0.5},
-            {0.15,0.5, 0.3,0.2}, {0.3,0.2, 0.3,-0.25},
-            {0.3,-0.25, 0.08,0.05}, {0.3,-0.25, 0.52,0.05} },
+  -- SQUARE, not arced, for the reason the P is a stencil. A mark is not a line:
+  -- each stroke is drawn as a fattened dark outline with a face on top, so
+  -- strokes meeting at a shallow angle overlap into a blob. The arced top here
+  -- was four such joins and the glyph read as a cyan smear.
+  --
+  -- Up the left, across, down the right, and an arrowhead pointing DOWN so the
+  -- symbol says which way round it is travelled. Only the two barbs are angled,
+  -- which is what an arrowhead is, and the chevrons already prove two short
+  -- angled strokes read cleanly.
+  -- SQUARE, not arced, and the reason is arithmetic rather than taste. A mark
+  -- is not a line: every stroke is a filled quad, drawn once fattened as a dark
+  -- outline and once as the face, with both ends extended by half the
+  -- thickness so mitres do not open up. The arced top was four short segments,
+  -- each shorter than its own end extension, so each was drawn nearly three
+  -- times its true length and the four overlapped into one cyan smear.
+  --
+  -- Up the left, across, down the right, and an arrowhead pointing DOWN so the
+  -- mark says which way round it is travelled. Every segment is longer than the
+  -- stroke is wide, and the two legs are far enough apart that the gap between
+  -- them survives the outline: that gap is the only thing that makes it a U.
+  uturn = { {-0.45,-0.85, -0.45,0.55},
+            {-0.45,0.55, 0.45,0.55},
+            {0.45,0.55, 0.45,-0.25},
+            {0.45,-0.25, 0.10,0.10},
+            {0.45,-0.25, 0.80,0.10} },
   splitRight = { {0,-0.8, 0,-0.1}, {0,-0.1, -0.45,0.5}, {0,-0.1, 0.5,0.5},
                  {0.5,0.5, 0.1,0.42}, {0.5,0.5, 0.44,0.08} },
   splitLeft  = { {0,-0.8, 0,-0.1}, {0,-0.1, 0.45,0.5}, {0,-0.1, -0.5,0.5},
                  {-0.5,0.5, -0.1,0.42}, {-0.5,0.5, -0.44,0.08} },
+  -- A LETTER P, drawn rather than written, for the reason above the table: this
+  -- has to read from the far end of a straight, and debugDrawer text does not
+  -- shrink with distance. A P is the sign every driver already knows, and as
+  -- one shape rather than a tiled mark it stays a P at any board width.
+  --
+  -- A STENCIL P: stem, top bar, right side, waist bar. Four strokes, every one
+  -- axis-aligned, and that is the whole design.
+  --
+  -- The first attempt rounded the bowl with angled segments and came out lumpy,
+  -- because a mark is not a line: each stroke is drawn as a fattened dark
+  -- outline with a face on top, so two strokes meeting at an angle overlap into
+  -- a blob with a ragged silhouette. Right angles meet cleanly, which is also
+  -- why real stencil letters look like this.
+  pit = { {-0.40,-0.80, -0.40,0.80},
+          {-0.40,0.80, 0.30,0.80},
+          {0.30,0.80, 0.30,0.15},
+          {0.30,0.15, -0.40,0.15} },
 }
 
 -- Which symbols TILE as a repeating mark and which are one shape.
@@ -839,6 +890,19 @@ local pit = {
   -- A stop is something a driver DRIVES INTO. Arriving is the trigger, so
   -- having left is the thing that re-arms it.
   mustLeave = false,
+  -- IN THE PIT LANE, which is what decides whether the stalls are drawn at all.
+  --
+  -- A lane's stalls are three draws each and were on screen for the whole race,
+  -- off to the side, for something a driver uses once. Now one gate is drawn at
+  -- the lane's mouth and the stalls appear behind it.
+  --
+  -- Set by crossing an entry gate. Cleared by an exit gate OR by clearing any
+  -- route checkpoint, because a driver who misses the exit is plainly back on
+  -- the racing line and would otherwise carry the stalls to the flag.
+  inLane = false,
+  -- The previous sampled position, kept here rather than shared with the gate
+  -- loop: see the note in pit.update for why session.prevPos cannot be used.
+  prevPos = nil,
   stops    = 0,      -- how many this session, for the log
   -- Standing in a stall but still rolling. Held so the "stop in the box"
   -- reminder can be throttled: without it the prompt is a push per frame for
@@ -1527,6 +1591,9 @@ local function pushRouteState()
     isAdmin      = session.isAdmin,
     -- Joker route (Module 2)
     pitRoute     = track.pitRoute,
+    pitEntry     = track.pitEntry,
+    pitExit      = track.pitExit,
+    pitInLane    = pit.inLane,
     pitActive    = pit.active,
     pitLeft      = pit.left,
     jokerRoute   = track.jokerRoute,
@@ -1905,6 +1972,8 @@ local function clearTrackState(reason)
   -- The pit lane goes too. Stalls used to survive a purge, stay standing on the
   -- next track, and ride along into the next save.
   track.pitRoute     = {}
+  track.pitEntry     = {}
+  track.pitExit      = {}
   track.startPositions = {}
   session.gridSlot     = nil
   session.armedWp      = 1
@@ -2276,6 +2345,11 @@ local function checkGates()
     if crossed then
       lastGate     = wp   -- the "Last Checkpoint" reset mode respawns here
       lastGateBack = backwards
+      -- BACK ON THE RACING LINE, so the pit lane is behind us however we left
+      -- it. The exit gate is the tidy way out; this is the one that cannot be
+      -- missed, and without it a driver who drove past the exit would carry the
+      -- stall markers to the flag.
+      if pit.inLane then pit.leaveLane('cleared a checkpoint') end
 
       -- SECTOR CLOSED. Every checkpoint ends one, so the sector number is the
       -- gate number and the last sector of a lap ends at the line.
@@ -5136,6 +5210,20 @@ function pit.setGhost(on)
 end
 
 -- Let a car go again, and forget the stop.
+-- OUT OF THE LANE. One function, because there are two ways out and they must
+-- do the same thing: the exit gate, and clearing any route checkpoint.
+--
+-- The checkpoint route is the fallback, and it is not a nicety. A driver who
+-- misses the exit gate is plainly back on the racing line the moment they clear
+-- a checkpoint, and without this they would carry a lane full of stall markers
+-- to the flag with no way to get rid of them.
+function pit.leaveLane(reason)
+  if not pit.inLane then return end
+  pit.inLane = false
+  log('I', 'raceManager', 'Left the pit lane (' .. tostring(reason or 'exit') .. ')')
+  pushRouteState()
+end
+
 function pit.release(reason)
   if not pit.active then return end
   pit.active   = false
@@ -5207,6 +5295,43 @@ function pit.update(dt)
   if not sessionRunning() or session.spectatorLock or session.gridFrozen then return end
   local veh, pos = sampledVehicle()
   if not veh or not pos then return end
+
+  -- THE LANE'S MOUTH AND ITS EXIT.
+  --
+  -- Crossing an entry gate is what puts the stalls on screen; before that a
+  -- driver sees one gate at the lane's mouth and nothing else, which is the
+  -- whole saving. Either direction counts, because a lane can be entered from
+  -- either end on some layouts and a driver who backs in has still arrived.
+  --
+  -- ITS OWN PREVIOUS POSITION, not session.prevPos.
+  --
+  -- checkGates runs earlier in the same frame and sets session.prevPos to the
+  -- CURRENT sample on its way out, so by the time this runs the two are the
+  -- same point and every gate test is a zero-length segment that can never
+  -- cross anything. Caught by the test below, which sat at "in the lane: false"
+  -- however far the car was driven through the gate.
+  local prev = pit.prevPos
+  pit.prevPos = { x = pos.x, y = pos.y, z = pos.z }
+  if prev then
+    for _, wp in ipairs(track.pitEntry) do
+      if segmentCrossesGate(wp, prev, pos) then
+        if not pit.inLane then
+          pit.inLane = true
+          log('I', 'raceManager', 'Entered the pit lane')
+          pushRouteState()
+        end
+        break
+      end
+    end
+    if pit.inLane then
+      for _, wp in ipairs(track.pitExit) do
+        if segmentCrossesGate(wp, prev, pos) then
+          pit.leaveLane('exit gate')
+          break
+        end
+      end
+    end
+  end
 
   -- Which stall the car is standing in, if any. Worked out BEFORE the cooldown
   -- is consulted, so driving out during it still re-arms the stall: leaving is
@@ -7587,6 +7712,7 @@ end
 function M.setEditorTarget(target)
   target = tostring(target or 'main')
   if target ~= 'joker' and target ~= 'start' and target ~= 'pit'
+     and target ~= 'pitEntry' and target ~= 'pitExit'
      and target ~= 'branch' and target ~= 'marker' then target = 'main' end
   edit.target = target
   pushRouteState()
@@ -7596,6 +7722,8 @@ end
 local function activeEditorRoute()
   if edit.target == 'joker' then return track.jokerRoute end
   if edit.target == 'pit'   then return track.pitRoute end
+  if edit.target == 'pitEntry' then return track.pitEntry end
+  if edit.target == 'pitExit'  then return track.pitExit end
   if edit.target == 'start' then return track.startPositions end
   if edit.target == 'branch' then return branch.list end
   if edit.target == 'marker' then return marker.list end
@@ -9030,6 +9158,12 @@ function M.saveLayout(name, confirmDrop)
     -- share one row of slots.
     gridOffLine    = branch.gridIsOff(),
     pits           = bundle(track.pitRoute, 'pit stall') or {},
+    -- The lane's mouth and its exit travel with the layout like every other
+    -- gate set. Empty tables rather than nil: the server sanitises either into
+    -- the same thing, and a layout that loses its entry gate on a re-save would
+    -- put the whole lane back on screen for the rest of the race.
+    pitEntry       = bundle(track.pitEntry, 'pit entry') or {},
+    pitExit        = bundle(track.pitExit, 'pit exit') or {},
     -- Signage rides with the track it points around. A stage without its
     -- markers is a stage nobody can follow, so they are part of the layout
     -- rather than something placed again every session.
@@ -9954,6 +10088,13 @@ local function onApplyLayout(rawData)
   if type(data.pits) == 'table' and #data.pits > 0 then
     pits = unbundle(data.pits, 'pit stall') or {}
   end
+  local pitIn, pitOut = {}, {}
+  if type(data.pitEntry) == 'table' and #data.pitEntry > 0 then
+    pitIn = unbundle(data.pitEntry, 'pit entry') or {}
+  end
+  if type(data.pitExit) == 'table' and #data.pitExit > 0 then
+    pitOut = unbundle(data.pitExit, 'pit exit') or {}
+  end
   -- Markers, with their symbols. unbundle only carries geometry, so the kind is
   -- re-attached here from the payload and validated on the way in -- a layout
   -- hand-edited to an unknown symbol gets the default rather than a marker that
@@ -10021,6 +10162,11 @@ local function onApplyLayout(rawData)
   track.route      = cps
   track.jokerRoute = jokerCps
   track.pitRoute   = pits
+  track.pitEntry   = pitIn
+  track.pitExit    = pitOut
+  -- A new track is a new lane: whatever the last one had us doing, we are not
+  -- in this one's pits until we drive into them.
+  pit.inLane = false
   marker.list = marks
   track.startPositions = starts
   branch.list   = alts
@@ -10063,6 +10209,7 @@ local function onSaveHeld(rawData)
   local lost = type(data.lost) == 'table' and data.lost or {}
   local label = {
     joker = 'joker gates', pits = 'pit stalls',
+    pitEntry = 'pit entry gates', pitExit = 'pit exit gates',
     startPositions = 'start positions', branches = 'branch gates',
   }
   local parts = {}

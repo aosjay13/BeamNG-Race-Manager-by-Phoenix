@@ -214,8 +214,18 @@ check(routeState().nextWp == 1, 'the lap still completes normally around it')
 -- Symbols
 -- ---------------------------------------------------------------------------
 RM.setEditorTarget('marker')
-check(routeState().markerKinds and #routeState().markerKinds == 7,
-  'seven symbols are offered')
+-- Counted rather than listed, so adding a symbol is one edit here and not a
+-- rewrite. `pit` was the eighth: a drawn letter P for the lane, because
+-- debugDrawer text does not shrink with distance and a sign has to read from
+-- the far end of a straight.
+check(routeState().markerKinds and #routeState().markerKinds == 8,
+  'eight symbols are offered (got '
+    .. tostring(routeState().markerKinds and #routeState().markerKinds) .. ')')
+do
+  local has = {}
+  for _, k in ipairs(routeState().markerKinds or {}) do has[k] = true end
+  check(has.pit, 'the pit lane symbol is among them')
+end
 
 RM.setMarkerKind('uturn')
 check(routeState().markerKind == 'uturn', 'the next marker takes the chosen symbol')

@@ -114,6 +114,12 @@ angular.module('beamng.apps')
       $scope.jokerEnabled = false;
       $scope.jokerGates = 0;      // joker gates the LOADED TRACK has (server's count)
       $scope.jokerRoute = [];     // joker gates placed/loaded on this client
+      // The pit lane, as this client has it. Declared rather than left to the
+      // first route state: the editor tabs read .length, and an ng-if on an
+      // undefined shows the "no entry gate" warning before a track has loaded.
+      $scope.pitRoute = [];
+      $scope.pitEntry = [];
+      $scope.pitExit  = [];
       $scope.jokerNext = 1;
       $scope.jokerTaken = false;
       $scope.jokerLap = null;
@@ -123,7 +129,12 @@ angular.module('beamng.apps')
       // lap - the same normalization raceManager.setEditorTarget applies.
       // Every tab the editor offers. A tab missing from here silently falls back
       // to the main route, which looks like the button doing nothing.
+      // A WHITELIST, and adding an editor tab is TWO edits: the button and this.
+      // Miss the second and the tab falls back to the main route, so pressing it
+      // silently appends checkpoints to the lap instead of whatever it named.
+      // tests/ui_bindings_test.lua checks the two agree, and caught exactly that.
       var EDITOR_TARGETS = { main: true, joker: true, pit: true, start: true,
+                             pitEntry: true, pitExit: true,
                              branch: true, marker: true };
       function editorTargetOf(value) {
         return EDITOR_TARGETS[value] ? value : 'main';
@@ -1462,7 +1473,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.12.7';
+      var APP_BUILD = '0.12.9';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -2404,7 +2415,15 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         if (!data) { return; }
         $scope.$evalAsync(function () {
           $scope.routeWaypoints = data.waypoints || [];
-          $scope.pitRoute = data.pitRoute || [];
+          // THROUGH toArray, not `|| []`. The Lua encoder writes an EMPTY table
+          // as {} rather than [], so an empty list arrives as an OBJECT: `|| []`
+          // keeps it, `.length` is undefined, and the editor tab reads "Pit ()"
+          // with no number at all. Which is exactly what it did.
+          $scope.pitRoute = toArray(data.pitRoute);
+          // The lane's mouth and its exit. Both optional: with no entry gate
+          // every stall is drawn all race, which is what tracks did before this.
+          $scope.pitEntry = toArray(data.pitEntry);
+          $scope.pitExit  = toArray(data.pitExit);
           $scope.pitActive = !!data.pitActive;
           $scope.pitLeft = data.pitLeft || 0;
           $scope.nextWp = data.nextWp || 1;
@@ -2510,6 +2529,8 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.editorWaypoints = function () {
         if ($scope.editorTarget === 'joker') { return $scope.jokerRoute; }
         if ($scope.editorTarget === 'pit')   { return $scope.pitRoute; }
+        if ($scope.editorTarget === 'pitEntry') { return $scope.pitEntry; }
+        if ($scope.editorTarget === 'pitExit')  { return $scope.pitExit; }
         if ($scope.editorTarget === 'start') { return $scope.startPositions; }
         if ($scope.editorTarget === 'branch') { return $scope.branches; }
         if ($scope.editorTarget === 'marker') { return $scope.markers; }

@@ -823,6 +823,69 @@ frame()
 check(#tris ~= turned or turned > 0,
   're-signing a marker rebuilds its geometry rather than serving the old shape')
 
+-- ===========================================================================
+-- A SHAPE HAS TO STAY LEGIBLE, which means measuring its ink
+-- ===========================================================================
+-- The U turn, the fork and the P are drawn as one big shape rather than a run
+-- of tiled marks, and that is exactly how they went wrong. A shape is placed at
+-- min(width, span) * 0.42, several times the size of a 3 m tiled cell, and the
+-- stroke ratio was shared with the tiled marks, so the dark outline scaled with
+-- the shape until it was wider than the gaps the glyph is made of. On a 12 m
+-- board that outline was 3.2 m thick. Every check above still passed: the
+-- triangles were there, they had area, both passes were present, the cache
+-- behaved. In game it was an unreadable blob.
+--
+-- What separates a glyph from a blob is background still showing through, so
+-- that is what gets measured: outline area against the outline's OWN bounding
+-- box. Normalising against the mark itself needs no assumption about how big
+-- the board made it, and it is scale free, so one budget covers every board.
+-- Strokes that overlap are counted twice, which is the point: a shape carrying
+-- more ink than its own footprint has none of itself left to see through.
+local function inkRatio(kind, boardW)
+  handlers['RM_ApplyLayout']({
+    name = 'ink', width = 20, height = 6, depth = 2,
+    checkpoints = { { x = 0, y = 200, z = 5, hx = 0, hy = 1 } },
+    markers = { { x = 0, y = 120, z = 5, hx = 0, hy = 1, kind = kind, width = boardW } },
+  })
+  RM.setEditorOpen(false)
+  tris = {}
+  frame()
+  local ink = 0
+  local lo = { x = math.huge, y = math.huge, z = math.huge }
+  local hi = { x = -math.huge, y = -math.huge, z = -math.huge }
+  for _, t in ipairs(tris) do
+    -- The outline pass only, told apart by its red channel exactly as the
+    -- two-pass check above does it.
+    if math.floor((t.packed or 0) / 16777216) < 32 then
+      local ux, uy, uz = t.b.x - t.a.x, t.b.y - t.a.y, t.b.z - t.a.z
+      local vx, vy, vz = t.c.x - t.a.x, t.c.y - t.a.y, t.c.z - t.a.z
+      local cx, cy, cz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+      ink = ink + math.sqrt(cx * cx + cy * cy + cz * cz) * 0.5
+      for _, v in ipairs({ t.a, t.b, t.c }) do
+        for _, ax in ipairs({ 'x', 'y', 'z' }) do
+          if v[ax] < lo[ax] then lo[ax] = v[ax] end
+          if v[ax] > hi[ax] then hi[ax] = v[ax] end
+        end
+      end
+    end
+  end
+  -- The board stands upright at some heading, so the mark lives in a plane and
+  -- one of the three extents is near zero. The two largest are its footprint.
+  local ext = { hi.x - lo.x, hi.y - lo.y, hi.z - lo.z }
+  table.sort(ext)
+  return ink / (ext[2] * ext[3])
+end
+
+for _, kind in ipairs({ 'uturn', 'splitRight', 'splitLeft', 'pit' }) do
+  for _, boardW in ipairs({ 8, 12, 24 }) do
+    local ratio = inkRatio(kind, boardW)
+    check(ratio < 0.75, kind .. ' stays a shape rather than a blob on a '
+      .. boardW .. ' m board (outline is '
+      .. string.format('%.0f%%', ratio * 100)
+      .. ' of its own footprint, budget 75%)')
+  end
+end
+
 if fails == 0 then
   print('draw_test: ' .. checks .. ' checks, 0 failures')
 else

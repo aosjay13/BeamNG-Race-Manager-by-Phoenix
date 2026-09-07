@@ -1666,7 +1666,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.12.7'
+local RM_BUILD = '0.12.9'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -6633,6 +6633,16 @@ function RM_onSaveLayout(pid, rawData)
     -- of the checkpoint list on purpose -- they are an area, not a gate to be
     -- passed in order, and lap validation must never see them.
     pits         = sanitizeCheckpoints(data.pits),
+    -- THE PIT LANE'S MOUTH AND ITS EXIT. Arrays, not single gates, because a
+    -- lane can have more than one way in and a layout that could only hold one
+    -- would need this format changing again the first time somebody built a
+    -- track that did.
+    --
+    -- Optional, and the client falls back to showing every stall all the time
+    -- when there is no entry gate: an existing layout must not go blank because
+    -- a new field it has never heard of is absent.
+    pitEntry     = sanitizeCheckpoints(data.pitEntry),
+    pitExit      = sanitizeCheckpoints(data.pitExit),
     -- Signage travels with the track it points around: a stage without its
     -- markers is a stage nobody can follow.
     markers      = sanitizeCheckpoints(data.markers),
@@ -6684,6 +6694,8 @@ function RM_onSaveLayout(pid, rawData)
     end
     checkSection('joker',          had(existing.joker),          entry.joker and #entry.joker or 0)
     checkSection('pits',           had(existing.pits),           entry.pits and #entry.pits or 0)
+    checkSection('pitEntry',       had(existing.pitEntry),       entry.pitEntry and #entry.pitEntry or 0)
+    checkSection('pitExit',        had(existing.pitExit),        entry.pitExit and #entry.pitExit or 0)
     checkSection('startPositions', had(existing.startPositions), starts and #starts or 0)
     checkSection('branches',       had(existing.branches),       entry.branches and #entry.branches or 0)
     if next(lost) then

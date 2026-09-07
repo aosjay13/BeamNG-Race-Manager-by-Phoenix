@@ -1742,12 +1742,35 @@
               title="The alternate rallycross route. Saved with the layout, driven once per race.">
         Joker ({{ jokerRoute.length }})
       </button>
-      <button class="rm-btn rm-btn-mini rm-route-tab-pit"
-              ng-class="{'rm-route-tab-pit-active': editorTarget === 'pit'}"
-              ng-click="setEditorTarget('pit')"
-              title="Drive into a stall and press the button. A stall stops, repairs and releases the car. Not a checkpoint.">
-        Pit ({{ pitRoute.length }})
-      </button>
+      <!-- ONE CATEGORY. The three pit lists are one feature and used to sit in
+           the row as three peers among eight, so "Pit In" read as a sibling of
+           "Branch" rather than as part of "Pit". Boxed together they read as
+           what they are: the stalls, and the way in and out of them. -->
+      <span class="rm-route-tab-group">
+        <span class="rm-route-tab-group-label">Pit</span>
+        <button class="rm-btn rm-btn-mini rm-route-tab-pit"
+                ng-class="{'rm-route-tab-pit-active': editorTarget === 'pit'}"
+                ng-click="setEditorTarget('pit')"
+                title="Drive into a stall and press the button. A stall stops, repairs and releases the car. Not a checkpoint.">
+          Stalls ({{ pitRoute.length }})
+        </button>
+      <!-- THE LANE'S MOUTH AND ITS EXIT. Optional: a track with no entry gate
+           keeps every stall on screen the way it always did. With one, the
+           stalls are hidden until a driver crosses it, which takes a
+           twelve-stall lane from thirty-six draws a frame to three. -->
+        <button class="rm-btn rm-btn-mini rm-route-tab-pit"
+                ng-class="{'rm-route-tab-pit-active': editorTarget === 'pitEntry'}"
+                ng-click="setEditorTarget('pitEntry')"
+                title="The way into the pit lane. Drawn while racing with an arrow through it; crossing it is what brings the stalls on screen.">
+          In ({{ pitEntry.length }})
+        </button>
+        <button class="rm-btn rm-btn-mini rm-route-tab-pit"
+                ng-class="{'rm-route-tab-pit-active': editorTarget === 'pitExit'}"
+                ng-click="setEditorTarget('pitExit')"
+                title="The way out. Drawn only from inside the lane. Missing it is harmless: clearing any checkpoint also leaves the lane.">
+          Out ({{ pitExit.length }})
+        </button>
+      </span>
       <button class="rm-btn rm-btn-mini rm-route-tab-branch"
               ng-class="{'rm-route-tab-branch-active': editorTarget === 'branch'}"
               ng-click="setEditorTarget('branch')"
@@ -1782,6 +1805,15 @@
       </span>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'pit'">
         Stalls are drawn amber. Driving into one repairs the car in place; they are not checkpoints.
+        <b ng-if="!pitEntry.length">No entry gate, so every stall is drawn for the whole race.</b>
+      </span>
+      <span class="rm-route-tab-note" ng-if="editorTarget === 'pitEntry'">
+        Place this where the lane leaves the track. While racing a driver sees only this gate;
+        crossing it brings the stalls on screen. Without one, every stall is drawn all race.
+      </span>
+      <span class="rm-route-tab-note" ng-if="editorTarget === 'pitExit'">
+        Place this where the lane rejoins. Optional: clearing any checkpoint also
+        leaves the lane, so missing the exit never strands the markers on screen.
       </span>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'start'">
         Slot 1 is pole. Drivers are placed here and held until the countdown ends.
@@ -1811,7 +1843,7 @@
     </div>
     <div class="rm-editor-controls">
       <button class="rm-btn rm-btn-grid"  ng-click="editorAdd()"
-              ng-disabled="editorTarget === 'branch' && !waypoints.length">+ {{ editorTarget === 'joker' ? 'Joker Gate' : (editorTarget === 'start' ? 'Place Start Position' : (editorTarget === 'pit' ? 'Place Pit Stall' : (editorTarget === 'branch' ? ('Branch Gate for CP ' + branchSlot) : (editorTarget === 'marker' ? ('Marker ' + markerGlyph(markerKind)) : 'Checkpoint')))) }} Here</button>
+              ng-disabled="editorTarget === 'branch' && !waypoints.length">+ {{ editorTarget === 'joker' ? 'Joker Gate' : (editorTarget === 'start' ? 'Place Start Position' : (editorTarget === 'pit' ? 'Place Pit Stall' : (editorTarget === 'pitEntry' ? 'Place Pit Entry' : (editorTarget === 'pitExit' ? 'Place Pit Exit' : (editorTarget === 'branch' ? ('Branch Gate for CP ' + branchSlot) : (editorTarget === 'marker' ? ('Marker ' + markerGlyph(markerKind)) : 'Checkpoint')))))) }} Here</button>
       <button class="rm-btn"              ng-click="editorUndo()"  ng-disabled="!editorWaypoints().length">Undo</button>
       <button class="rm-btn rm-btn-end"   ng-click="editorClear()" ng-disabled="!editorWaypoints().length">Clear</button>
       <button class="rm-btn" ng-click="editorToggleVisualize()">{{ visualize ? 'Hide' : 'Show' }} Gates</button>
@@ -4121,6 +4153,23 @@
     letter-spacing: 0.4px;
     background: rgba(52, 168, 83, 0.22);
     color: #7ee2a8;
+  }
+  /* The pit group: stalls, in and out are one feature, boxed so they do not
+     read as three peers of Branch and Marker. */
+  .rm-route-tab-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 5px 2px 4px;
+    border: 1px solid rgba(255, 178, 36, 0.35);
+    border-radius: 4px;
+    background: rgba(255, 178, 36, 0.06);
+  }
+  .rm-route-tab-group-label {
+    font-size: 9px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: rgba(255, 178, 36, 0.75);
   }
   .rm-route-tab-pit-active { background: rgba(255, 184, 26, 0.22); color: #ffb81a; }
   .rm-pit {
