@@ -6,6 +6,42 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.13.1 - Saving one track stops rewriting every track
+
+#### Fixed
+
+- **A save wrote every map's file, not the one that changed.** 29 files and
+  700 KB on a real server, every save, every one stamped the same second so
+  nothing showed which track had actually been touched. Each map is serialised
+  and compared against the bytes on disk now, and only the ones that differ are
+  written.
+
+  These files are meant to be opened and hand edited, so the writer stays in
+  text mode on both sides rather than switching to binary: on Windows they keep
+  CRLF like every other Windows text file, and reading converts it back, so the
+  comparison is still exact. Binary would have stripped the line endings off all
+  29 files on the first save after upgrading, for nothing.
+
+- **One corrupt track file could delete another track, permanently.** The
+  cleanup at the end of a save removes any track file with no layouts in memory,
+  because that is how a map whose last layout was deleted loses its file. A file
+  that fails to PARSE is also absent from memory, for an entirely different
+  reason, and the same rule deleted it. One unreadable file plus one save on an
+  unrelated map destroyed a track for good.
+
+  Deletion is now limited to files this process actually read and understood.
+  An unreadable file is left byte for byte alone, and the log says so, so it can
+  be repaired and its tracks come back.
+
+- **A write no longer truncates the live file before it has anything to put
+  back.** `io.open(path, 'w')` empties the file first, so a crash or a full disk
+  in that window left a truncated file, which does not parse, which used to be
+  deleted by the rule above. The whole loss began with a mode character. New
+  text goes to a `.tmp`, is read back to prove it landed whole (a short write
+  from a full disk does not raise, it just produces a shorter file), and only
+  then replaces the file. A `.tmp` left behind is a write that failed and is
+  kept deliberately: at that point it holds the only good copy.
+
 ## 0.13.0 - The pit lane, a Quali tab, and a cup you can pause
 
 *Rolls up everything since 0.12.1. The numbers 0.12.2 through 0.12.9 have

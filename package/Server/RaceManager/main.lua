@@ -1666,7 +1666,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.13.0'
+local RM_BUILD = '0.13.1'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -6135,6 +6135,19 @@ local function layoutFileFor(map)
   return LAYOUTS_TRACKS .. '/' .. safe .. '.json'
 end
 
+-- THE FILES THIS PROCESS READ AND PARSED, by file name.
+--
+-- The cleanup at the end of a save deletes any track file that no longer has
+-- layouts in memory, which is how a map whose last layout was deleted loses its
+-- file. Absent this set that rule also fires on a file that failed to PARSE:
+-- unreadable means absent from memory, absent from memory means not live, and
+-- not live meant deleted. One corrupt file plus one save on an unrelated map
+-- destroyed a track for good, and the save that did it was not even on that map.
+--
+-- So deletion is limited to files this process read and understood. A corrupt
+-- one is left exactly where it is, for somebody to look at.
+local layoutFileParsed = {}
+
 -- Read one map's file. `fallbackMap` is the map its FILENAME claims, and it is
 -- used only for an entry that carries no map of its own -- which is what a
 -- hand-written file looks like when somebody sensibly declines to repeat the
@@ -6142,13 +6155,15 @@ end
 -- keeps it, so moving a file does not silently re-home the tracks in it.
 local function readLayoutFile(path, fallbackMap)
   local f = io.open(path, 'r')
-  if not f then return {} end
+  if not f then return {}, false end
   local text = f:read('*a')
   f:close()
   local ok, data = pcall(jsonParse, text)
   if not ok or type(data) ~= 'table' or type(data.layouts) ~= 'table' then
-    print('[RaceManager] Could not parse ' .. path .. ', skipping it')
-    return {}
+    print('[RaceManager] Could not parse ' .. path
+      .. ', skipping it. It is LEFT ALONE, layouts in it are not loaded, and it '
+      .. 'will not be deleted or overwritten.')
+    return {}, false
   end
   local out = {}
   for _, l in ipairs(data.layouts) do
@@ -6158,7 +6173,7 @@ local function readLayoutFile(path, fallbackMap)
       if type(l.map) == 'string' and l.map ~= '' then out[#out + 1] = l end
     end
   end
-  return out
+  return out, true
 end
 
 -- Every track file in the folder. Returns nil -- not an empty list -- when the
@@ -6180,7 +6195,9 @@ local function readLayoutFolder()
   for _, name in ipairs(names) do
     local base = name:match('^(.*)%.json$')
     if base then
-      for _, l in ipairs(readLayoutFile(LAYOUTS_TRACKS .. '/' .. name, base)) do
+      local list, parsed = readLayoutFile(LAYOUTS_TRACKS .. '/' .. name, base)
+      if parsed then layoutFileParsed[name] = true end
+      for _, l in ipairs(list) do
         out[#out + 1] = l
       end
     end
@@ -6203,6 +6220,69 @@ end
 -- line is a nil GLOBAL that compiles perfectly and throws when pressed.
 local getLayouts
 
+-- One map's file, written only if it is not already what it should be.
+--
+-- THE WRITE IS NOT DONE IN PLACE. The old version opened the live file with 'w',
+-- which truncates it to nothing before there is a single byte to put back: a
+-- crash or a full disk in that window left a truncated file, and a truncated
+-- file does not parse, and a file that does not parse used to get deleted on the
+-- next save. The whole loss began with a mode character.
+--
+-- New text goes to a .tmp, is READ BACK to prove it landed whole -- a short
+-- write from a full disk does not raise, it just produces a shorter file -- and
+-- only then replaces the file it is replacing. A .tmp left behind is a write
+-- that failed, and is worth keeping for whoever comes looking.
+--
+-- TEXT MODE ON BOTH SIDES, deliberately, and not binary. These files are meant
+-- to be opened and hand edited, so on Windows they should keep the CRLF line
+-- endings every other Windows file has. Text mode is self consistent: writing
+-- turns each line feed into CRLF, reading turns it back, so the comparison
+-- below is still exact while the file on disk stays a normal Windows text file.
+--
+-- Binary would have been the obvious choice and is the wrong one twice over. It
+-- would rewrite all 29 files once, on the first save after an upgrade, purely to
+-- strip their line endings -- and mixing the two, reading 'rb' against text
+-- written 'w', makes the read back comparison fail every time on Windows and
+-- every write look like a short write.
+--
+-- Returns 'same', 'wrote', or nil plus a message.
+local function writeLayoutFile(path, text)
+  local cur = io.open(path, 'r')
+  if cur then
+    local have = cur:read('*a')
+    cur:close()
+    -- jsonStringify sorts its keys, so equal contents really do produce equal
+    -- bytes and this comparison is not just usually right.
+    if have == text then return 'same' end
+  end
+
+  local tmp = path .. '.tmp'
+  local f, ferr = io.open(tmp, 'w')
+  if not f then return nil, tostring(ferr) end
+  f:write(text)
+  f:close()
+
+  local back = io.open(tmp, 'r')
+  local landed = back and back:read('*a') or nil
+  if back then back:close() end
+  if landed ~= text then
+    removeFile(tmp)
+    return nil, 'short write to ' .. tmp .. ' (disk full?); ' .. path .. ' left as it was'
+  end
+
+  -- os.rename will not replace an existing file on Windows, so the old one goes
+  -- first. That leaves a gap between two syscalls rather than around a whole
+  -- write, and if the rename still fails the .tmp is deliberately KEPT: it holds
+  -- the only good copy at that point and deleting it is the actual data loss.
+  removeFile(path)
+  local ok, rerr = os.rename(tmp, path)
+  if not ok then
+    return nil, 'could not put ' .. tmp .. ' in place of ' .. path .. ' ('
+      .. tostring(rerr) .. '). The .tmp holds the current layouts; rename it by hand.'
+  end
+  return 'wrote'
+end
+
 local function saveLayoutsToDisk()
   ensureLayoutsDir()
   makeDirectory(LAYOUTS_TRACKS)
@@ -6217,25 +6297,41 @@ local function saveLayoutsToDisk()
   local failed = nil
   for map, list in pairs(byMap) do
     local path = layoutFileFor(map)
-    local f, ferr = io.open(path, 'w')
-    if not f then
-      failed = failed or tostring(ferr)
+    -- EVERY MAP IS SERIALISED, but only the ones that changed are written.
+    -- Saving one track used to rewrite the whole folder: 29 files and 700 KB on
+    -- a real server, every save, all with the same timestamp so nothing showed
+    -- which track had actually been touched. Worse, it put every OTHER map
+    -- through the truncate-and-rewrite window above for a change that had
+    -- nothing to do with them.
+    local status, err = writeLayoutFile(path, jsonStringify({
+      version = 1, map = map, layouts = list }))
+    if not status then
+      failed = failed or err
     else
-      f:write(jsonStringify({ version = 1, map = map, layouts = list }))
-      f:close()
+      -- Ours now, so deleting its last layout later still removes the file.
+      layoutFileParsed[path:match('[^/]+$')] = true
     end
   end
   -- A MAP WHOSE LAST LAYOUT WAS DELETED loses its file. Left behind, it would be
   -- read again on the next boot and hand back the track that was just deleted --
   -- which is the one bug a per-map store can have that a single file cannot.
+  --
+  -- ONLY files this process read and parsed, or wrote itself. A file that failed
+  -- to parse is missing from memory for that reason alone, and a file somebody
+  -- dropped in since boot has never been read at all; neither is evidence that a
+  -- track was deleted, and deleting them here is how a corrupt file used to take
+  -- a track with it.
   for _, name in ipairs(listDirectory(LAYOUTS_TRACKS)) do
     local base = name:match('^(.*)%.json$')
-    if base then
+    if base and layoutFileParsed[name] then
       local live = false
       for map in pairs(byMap) do
         if layoutFileFor(map) == LAYOUTS_TRACKS .. '/' .. name then live = true break end
       end
-      if not live then removeFile(LAYOUTS_TRACKS .. '/' .. name) end
+      if not live then
+        removeFile(LAYOUTS_TRACKS .. '/' .. name)
+        layoutFileParsed[name] = nil
+      end
     end
   end
   if failed then return false, failed end

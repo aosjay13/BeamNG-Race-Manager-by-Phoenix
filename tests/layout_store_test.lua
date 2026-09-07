@@ -230,6 +230,127 @@ check(not exists(FOLDER .. '/italy.json'),
   '...without an italy.json existing at all: the map on the entry decides where '
     .. 'a track belongs, and the filename is for people')
 
+-- ---------------------------------------------------------------------------
+-- A FILE THAT DOES NOT PARSE IS LEFT ALONE
+-- ---------------------------------------------------------------------------
+-- The one that cost a track. The cleanup at the end of a save removes any track
+-- file with no layouts in memory, because that is how a map whose last layout
+-- was deleted loses its file. A file that fails to PARSE is also absent from
+-- memory -- for an entirely different reason -- and used to be deleted by the
+-- same rule. So one corrupt file plus one save on an UNRELATED map destroyed a
+-- track permanently, and nothing in the save had anything to do with that map.
+--
+-- Made worse by the write: every save rewrote every map's file, truncating each
+-- one before it had bytes to put back, so the corruption this deletes on was
+-- also something a save could cause.
+removeTree(DIR)
+local BS = string.char(92)
+os.execute(package.config:sub(1, 1) == BS
+  and ('mkdir "' .. FOLDER:gsub('/', BS) .. '" 2>nul')
+  or  ('mkdir -p "' .. FOLDER .. '"'))
+
+writeFile(FOLDER .. '/italy.json', '{"version":1,"map":"italy","layouts":[' ..
+  '{"name":"Club","map":"italy","width":20,"checkpoints":[' .. gate(10) .. ']}' ..
+  ']}')
+local CORRUPT = '{"version":1,"map":"west_coast_usa","layouts":[{"name":"Coa'
+writeFile(FOLDER .. '/west_coast_usa.json', CORRUPT)
+
+currentMap = 'italy'
+boot()
+check(#lastLayouts.layouts == 1, 'the good map still loads beside a corrupt one')
+
+-- A save on italy. Nothing here concerns west_coast_usa at all.
+RM_onSaveLayout(0, '{"name":"Second","checkpoints":[' .. gate(50) .. ']}')
+RM_onRequestLayouts(0)
+check(#lastLayouts.layouts == 2, 'the new italy track saves')
+
+check(exists(FOLDER .. '/west_coast_usa.json'),
+  'and the corrupt file is STILL THERE: unreadable is not the same fact as '
+    .. 'deleted, and a save on another map is no evidence about this one')
+local cf = io.open(FOLDER .. '/west_coast_usa.json', 'r')
+local ctext = cf:read('*a'); cf:close()
+check(ctext == CORRUPT,
+  'byte for byte as it was, so whatever is wrong with it is still there to be '
+    .. 'looked at rather than half rewritten')
+
+-- ...and repairing it by hand brings the track back, which is the whole point of
+-- not having deleted it.
+writeFile(FOLDER .. '/west_coast_usa.json',
+  '{"version":1,"map":"west_coast_usa","layouts":[' ..
+  '{"name":"Coast","map":"west_coast_usa","width":20,"checkpoints":[' .. gate(40) .. ']}' ..
+  ']}')
+currentMap = 'west_coast_usa'
+boot()
+check(#lastLayouts.layouts == 1 and lastLayouts.layouts[1].name == 'Coast',
+  'a repaired file loads normally: the data was recoverable the whole time')
+
+-- ---------------------------------------------------------------------------
+-- A SAVE WRITES THE MAP THAT CHANGED, AND NOT THE OTHERS
+-- ---------------------------------------------------------------------------
+-- Saving one track used to rewrite the folder: 29 files and 700 KB on a real
+-- server, every save, every file stamped the same second so nothing showed which
+-- track had actually been touched. The cost is not really the bytes, it is that
+-- every unrelated map went through the write path for a change that had nothing
+-- to do with it.
+local function mtime(path)
+  local cmd
+  if package.config:sub(1, 1) == BS then
+    local q = string.char(39)
+    cmd = 'powershell -NoProfile -Command "(Get-Item ' .. q
+      .. path:gsub('/', BS) .. q .. ').LastWriteTime.Ticks"'
+  else
+    cmd = 'stat -c %Y "' .. path .. '" 2>/dev/null'
+  end
+  local h = io.popen(cmd)
+  local out = h and h:read('*a') or ''
+  if h then h:close() end
+  return (out:gsub('%s', ''))
+end
+
+-- One save first, so both files are in the exact form the writer produces.
+-- Until then they differ from it by their formatting alone, and a comparison
+-- against the bytes on disk quite correctly rewrites them. It converges after
+-- one save and stays converged.
+currentMap = 'italy'
+boot()
+RM_onSaveLayout(0, '{"name":"Converge","checkpoints":[' .. gate(60) .. ']}')
+
+-- THE FILE IS STILL A NORMAL TEXT FILE FOR THIS PLATFORM. These are meant to be
+-- opened and hand edited, so on Windows they keep CRLF like every other Windows
+-- text file. That is why the writer uses text mode on both sides rather than
+-- binary: binary would strip the line endings off all 29 files on the first save
+-- after an upgrade, for nothing.
+local cr = io.open(FOLDER .. '/italy.json', 'rb')
+local raw = cr:read('*a'); cr:close()
+if package.config:sub(1, 1) == BS then
+  check(raw:find(string.char(13) .. string.char(10), 1, true) ~= nil,
+    'a written layout file keeps CRLF line endings on Windows, so it opens in '
+      .. 'any editor exactly as it did before')
+else
+  check(raw:find(string.char(13), 1, true) == nil,
+    'and carries no carriage returns anywhere else')
+end
+
+local before = mtime(FOLDER .. '/west_coast_usa.json')
+check(before ~= '', 'the timestamp of the untouched map is readable (got "'
+  .. before .. '")')
+
+RM_onSaveLayout(0, '{"name":"Third","checkpoints":[' .. gate(70) .. ']}')
+
+local it = io.open(FOLDER .. '/italy.json', 'r')
+local ittext = it:read('*a'); it:close()
+check(ittext:find('Third', 1, true), 'the map that changed is written')
+check(mtime(FOLDER .. '/west_coast_usa.json') == before,
+  'and the map that did not change is not touched at all')
+
+-- No debris. A .tmp left behind means a write that failed, so one sitting there
+-- after a clean save would be a lie about the state of the store.
+local debris = false
+for _, name in ipairs({ 'italy.json.tmp', 'west_coast_usa.json.tmp' }) do
+  if exists(FOLDER .. '/' .. name) then debris = true end
+end
+check(not debris, 'a successful save leaves no .tmp behind')
+
 removeTree(DIR)
 
 if fails == 0 then
