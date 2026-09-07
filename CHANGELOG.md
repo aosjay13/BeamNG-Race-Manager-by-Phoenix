@@ -6,7 +6,12 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
-## 0.12.9 - The pit lane only appears once you are in it
+## 0.13.0 - The pit lane, a Quali tab, and a cup you can pause
+
+*Rolls up everything since 0.12.1. The numbers 0.12.2 through 0.12.9 have
+sections in this file and commits in the history but were never tagged, so
+no artifact ever carried them; they are folded in here rather than left
+looking like releases somebody could go and download.*
 
 #### Added
 
@@ -37,59 +42,6 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   Drawn rather than written, for the reason the other symbols are: debugDrawer
   text does not shrink with distance, so a glyph readable in the editor is a
   speck where a sign actually has to work.
-
-#### Fixed
-
-- **The shape symbols were unreadable, and it was the stroke, not the drawing.**
-  The U turn, both forks and the new P came out as cyan smears with a ragged
-  black edge. Mark thickness is a fraction of the mark's own size, which is
-  right for the tiled chevrons and wrong for these four: a shape is drawn as ONE
-  symbol at `min(width, span) * 0.42`, several times the size of a 3 m chevron
-  cell, so its outline scaled with it. On a twelve metre board that outline was
-  **3.2 m thick** inside a ten metre symbol, wider than the gaps the symbol is
-  made of. Shapes take their own thinner ratio now and land near the chevron's
-  weight in metres rather than in fractions of themselves.
-
-  The U turn is also square rather than arced. Every stroke is a filled quad
-  with both ends extended by half its thickness so mitres do not open up, and
-  the old arc was four segments each SHORTER than its own extension, so each was
-  drawn near three times its true length and the four overlapped into one blob.
-
-  **Nothing above caught this.** The marker checks counted triangles, proved
-  they had area, proved both passes were present and proved the cache held, and
-  all of it passed while the symbol was illegible in game. `draw_test` now
-  measures outline area against the symbol's OWN bounding box, which needs no
-  assumption about how large the board made it and is the same number at every
-  size. At the old ratio the four carry 105% to 133% of their footprint in ink:
-  more ink than symbol, with nothing left to see through.
-
-## 0.12.7 - A Quali tab, an Admin tab, and pit poles you can see
-
-#### Changed
-
-- **Qualifying gets its own tab.** The Grid tab was holding three separate
-  things: how qualifying runs, how heats run, and how the grid is filled. The
-  first of those was filed under a tab named for the thing it feeds rather than
-  the thing it configures. Quali now carries Ghost quali and the lap-or-time
-  allowance; Grid keeps heats, transfers, seeding and the starting order,
-  because those all answer "who lines up where".
-
-- **The gear tab is called Admin.** It was a gear to save width at 560px, but a
-  gear is where people look for app settings and this tab is the server's: the
-  password, the results, the session. The row wraps rather than clipping, so the
-  cost is a second line at the narrowest widths.
-
-#### Fixed
-
-- **Pit poles can be raised.** They took their height from `TUNE.PIT_WALL_H`, a
-  fixed 1.4 m that was the right size for the WALLS of the box they replaced and
-  far too short for a pole: the markers lay on the ground with nothing on the
-  layout able to lift them. The height comes from `gateDims` now, the same call
-  every checkpoint uses, so the track's height control raises a stall too.
-
-## 0.12.6 - Pit poles, your own results copy, drop-up menus, and a paused cup
-
-#### Added
 
 - **Show Results Path**, beside Clear Results Cache. The server resolves where
   it keeps its results and reports it to admins, so the folder can be pasted
@@ -130,7 +82,50 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   less than twice what one box did. The frame budget reads "24 plus three per
   stall", so putting the box back on every stall fails it by more than double.
 
+#### Changed
+
+- **Qualifying gets its own tab.** The Grid tab was holding three separate
+  things: how qualifying runs, how heats run, and how the grid is filled. The
+  first of those was filed under a tab named for the thing it feeds rather than
+  the thing it configures. Quali now carries Ghost quali and the lap-or-time
+  allowance; Grid keeps heats, transfers, seeding and the starting order,
+  because those all answer "who lines up where".
+
+- **The gear tab is called Admin.** It was a gear to save width at 560px, but a
+  gear is where people look for app settings and this tab is the server's: the
+  password, the results, the session. The row wraps rather than clipping, so the
+  cost is a second line at the narrowest widths.
+
 #### Fixed
+
+- **The shape symbols were unreadable, and it was the stroke, not the drawing.**
+  The U turn, both forks and the new P came out as cyan smears with a ragged
+  black edge. Mark thickness is a fraction of the mark's own size, which is
+  right for the tiled chevrons and wrong for these four: a shape is drawn as ONE
+  symbol at `min(width, span) * 0.42`, several times the size of a 3 m chevron
+  cell, so its outline scaled with it. On a twelve metre board that outline was
+  **3.2 m thick** inside a ten metre symbol, wider than the gaps the symbol is
+  made of. Shapes take their own thinner ratio now and land near the chevron's
+  weight in metres rather than in fractions of themselves.
+
+  The U turn is also square rather than arced. Every stroke is a filled quad
+  with both ends extended by half its thickness so mitres do not open up, and
+  the old arc was four segments each SHORTER than its own extension, so each was
+  drawn near three times its true length and the four overlapped into one blob.
+
+  **Nothing above caught this.** The marker checks counted triangles, proved
+  they had area, proved both passes were present and proved the cache held, and
+  all of it passed while the symbol was illegible in game. `draw_test` now
+  measures outline area against the symbol's OWN bounding box, which needs no
+  assumption about how large the board made it and is the same number at every
+  size. At the old ratio the four carry 105% to 133% of their footprint in ink:
+  more ink than symbol, with nothing left to see through.
+
+- **Pit poles can be raised.** They took their height from `TUNE.PIT_WALL_H`, a
+  fixed 1.4 m that was the right size for the WALLS of the box they replaced and
+  far too short for a pole: the markers lay on the ground with nothing on the
+  layout able to lift them. The height comes from `gateDims` now, the same call
+  every checkpoint uses, so the track's height control raises a stall too.
 
 - **Dropdown menus no longer run off the bottom of the app.** They open downward
   from their trigger, and the practice picker sits on the last row, so its list
@@ -146,10 +141,6 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 - **Pausing cup scoring no longer reads as ending the cup** (shipped in 0.12.2,
   which was not released).
-
-## 0.12.2 - A paused cup stops looking like a deleted one
-
-#### Fixed
 
 - **Pausing cup scoring no longer reads as ending the cup.** The Scoring button
   clears one flag and keeps every point, which is what it is for: switch it off,
