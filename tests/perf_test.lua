@@ -256,16 +256,18 @@ local steadyAllocs, steadyDraws, steadyTris = allocs, draws, tris
 -- the track; what gets drawn is the armed gate, the one after it, and whichever
 -- joker or pit furniture applies. If this scales with the route the whole lap is
 -- being painted across the racing line.
--- The budget SCALES WITH THE PIT LANE, and only with the pit lane. A driver is
--- shown every stall's floor so they know where they may pit, which is one draw
--- each; the nearest stall gets the full box, which is eleven. Writing it as
--- "24 plus one per extra stall" is what makes a regression legible: giving every
--- stall the full box would be eleven each and fail here by a mile, and so would
--- anything that started drawing per checkpoint.
-local drawBudget = 24 + (#pits - 1)
+-- THE BUDGET SCALES WITH THE PIT LANE, and only with the pit lane. Every stall
+-- is drawn the same way now, as two poles and a stop line: three draws, read
+-- across a lane where a translucent floor could not be seen until a driver was
+-- almost standing in it.
+--
+-- Three per stall is what this pins. The walled box it replaced was ELEVEN, so
+-- putting that back on every stall fails here by more than double, and so does
+-- anything that starts drawing per checkpoint.
+local drawBudget = 24 + 3 * #pits
 check(steadyDraws <= drawBudget, string.format(
   'a steady frame draws %d shapes on a twelve-gate circuit with %d pit stalls, '
-    .. 'not the whole lap (budget %d: 24 plus one floor per extra stall)',
+    .. 'not the whole lap (budget %d: 24 plus three per stall)',
   steadyDraws, #pits, drawBudget))
 
 -- The marker board, which is the only thing here that draws triangles. Its

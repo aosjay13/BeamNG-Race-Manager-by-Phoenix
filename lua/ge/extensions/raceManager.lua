@@ -225,7 +225,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.12.2'
+local RM_BUILD = '0.12.6'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -4005,6 +4005,94 @@ function M.diagnoseVehicleConfig()
   line('spawn config: ' .. tostring(pcc and pcc.from or 'none')
     .. ', ' .. tostring(pcc and pcc.count or 0) .. ' parts')
   line('--- end ---')
+end
+
+-- WHERE THIS CLIENT KEEPS ITS OWN COPIES. A path inside BeamNG's user folder,
+-- which is the whole reason it can be opened at all: exploreFolder resolves
+-- through the virtual filesystem and refuses anything outside it.
+-- On M, not a local: this chunk is a handful of names from Lua's 200-local
+-- ceiling, where the next one stops the file compiling and the mod is simply
+-- absent in game. A field costs nothing against that.
+M.RESULTS_LOCAL_DIR = 'settings/raceManager/results'
+
+-- A COPY OF THE RESULTS, FOR AN ADMIN WHO IS NOT THE SERVER OWNER.
+--
+-- A league's race admins are often not the people with the box: no console, no
+-- filesystem, no way to read the one file the night produced. The server still
+-- writes its own copy and that stays the record; this is the same text, landed
+-- somewhere the person who ran the race can reach.
+--
+-- Written under BeamNG's user folder deliberately. Anywhere else and it would
+-- be as unreachable as the server's copy, because the only folder this game
+-- will open is one of its own.
+function M.onResultsFile(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  local text = tostring(data.text or '')
+  if text == '' then return end
+  -- Sanitised: this arrives over the wire and becomes a filename. Anything that
+  -- is not plainly a name is replaced rather than trusted.
+  local name = tostring(data.name or 'results.txt'):gsub('[^%w%-_%.]', '_')
+  if name == '' then name = 'results.txt' end
+
+  if FS and FS.directoryCreate then pcall(function () FS:directoryCreate(M.RESULTS_LOCAL_DIR, true) end) end
+  local path = M.RESULTS_LOCAL_DIR .. '/' .. name
+  local wrote = false
+  if type(writeFile) == 'function' then
+    wrote = pcall(writeFile, path, text) and true or false
+  else
+    local f = io.open(path, 'w')
+    if f then f:write(text); f:close(); wrote = true end
+  end
+  if not wrote then
+    log('W', 'raceManager', 'Could not write a local results copy to ' .. path)
+    return
+  end
+  log('I', 'raceManager', 'Results saved locally: ' .. path .. ' (' .. #text .. ' bytes)')
+  pushNotice('session', 'Results saved to your own copy: ' .. name)
+end
+
+-- Open THIS CLIENT'S results folder. Works where the server's does not, because
+-- it is inside BeamNG's own files.
+function M.openLocalResults()
+  if FS and FS.directoryCreate then pcall(function () FS:directoryCreate(M.RESULTS_LOCAL_DIR, true) end) end
+  local real = nil
+  if FS and FS.getFileRealPath then
+    local okR, r = pcall(function () return FS:getFileRealPath(M.RESULTS_LOCAL_DIR) end)
+    if okR then real = r end
+  end
+  if Engine and Engine.Platform and Engine.Platform.exploreFolder then
+    pcall(Engine.Platform.exploreFolder, '/' .. M.RESULTS_LOCAL_DIR .. '/')
+  end
+  log('I', 'raceManager', 'Local results folder: ' .. tostring(real or M.RESULTS_LOCAL_DIR))
+  pushNotice('session', 'Your results copies: ' .. tostring(real or M.RESULTS_LOCAL_DIR))
+end
+
+-- WHERE THE SERVER KEEPS ITS RESULTS. Shown, not opened, and that is measured
+-- rather than a limitation I am guessing at.
+--
+-- Engine.Platform.exploreFolder resolves through BeamNG's virtual filesystem
+-- and refuses anything outside it. The results are on the server's disk, so the
+-- engine answered:
+--
+--   E  engine::Platform::openFolder  Failed to get real path for:
+--                                    C:/BeamNG Server/.../Data/results
+--
+-- It fails INTERNALLY rather than raising, so the pcall around it returned true
+-- and this function cheerfully logged "opened" for something that had not
+-- happened. Calling it now only buys a red engine error on every press, so the
+-- call is gone and the path is what this offers.
+--
+-- Clear Results Cache has no such limit because it is the opposite shape: it
+-- asks the server to delete its own files and never touches a path on this side.
+function M.openResultsFolder(path)
+  path = tostring(path or '')
+  if path == '' then
+    pushNotice('session', 'The server did not report where its results are kept')
+    return
+  end
+  log('I', 'raceManager', 'Results folder: ' .. path)
+  pushNotice('session', 'Results are on the server at: ' .. path)
 end
 
 function M.clearGarage()
@@ -10627,6 +10715,8 @@ local DISPATCH = {
   RM_LapCredit       = onLapCredit,
   -- Cup / series points
   RM_CupUpdate       = onCupUpdate,
+  -- A copy of a results file, for an admin who cannot reach the server's.
+  RM_ResultsFile     = M.onResultsFile,
   -- Demo Derby module
   RM_DerbyUpdate     = derby.onDerbyUpdate,
   RM_DerbyLayouts    = derby.onDerbyLayoutList,

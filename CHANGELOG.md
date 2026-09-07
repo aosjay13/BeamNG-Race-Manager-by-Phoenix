@@ -6,6 +6,66 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.12.6 - Pit poles, your own results copy, drop-up menus, and a paused cup
+
+#### Added
+
+- **Show Results Path**, beside Clear Results Cache. The server resolves where
+  it keeps its results and reports it to admins, so the folder can be pasted
+  into a file manager.
+
+  It reports rather than opens, and that is measured. `Engine.Platform.exploreFolder`
+  resolves through BeamNG's virtual filesystem and refuses anything outside it:
+  `Failed to get real path for: C:/BeamNG Server/.../Data/results`. It fails
+  internally rather than raising, so a `pcall` around it returns true and the
+  first version of this logged "opened" for something that had not happened.
+  The call is gone; it only bought a red engine error per press.
+
+  Clear Results Cache has no such limit because it is the opposite shape: it
+  asks the server to delete its own files and never touches a path client-side.
+
+- **Every admin gets their own copy of the results.** A league's race admins are
+  often not the people with the box: no console, no filesystem, no way to read
+  the one file the night produced. The server still writes its own copy and that
+  stays the record; the same text now also goes to whoever is logged in as an
+  admin, and their client saves it under BeamNG's own folder.
+
+  **My Results** opens that folder, and it genuinely opens: it is inside the
+  game's user folder, which is the only kind of folder BeamNG will open. Capped
+  at 60 KB, because this crosses BeamMP as one event and a results file grows
+  with the field; over the cap the admin is told to use the server's copy.
+
+- **Pit stalls are two poles and a stop line, and every stall is drawn.** A
+  stall used to be a walled box with a translucent floor, and only the nearest
+  one was drawn in full. Over tarmac that floor read as tarmac, so a driver
+  found each stall by arriving at it.
+
+  Poles read down a pit lane. They stand on the stall's centre line, which is
+  where the car is meant to come to rest, so the marker points at the answer
+  rather than outlining the room. `pit.inside` still tests the full width and
+  depth: what changed is the drawing, not the rule.
+
+  Cheaper per stall too, three draws against eleven; the whole lane now costs
+  less than twice what one box did. The frame budget reads "24 plus three per
+  stall", so putting the box back on every stall fails it by more than double.
+
+#### Fixed
+
+- **Dropdown menus no longer run off the bottom of the app.** They open downward
+  from their trigger, and the practice picker sits on the last row, so its list
+  was cut off with nothing to scroll into. They now flip above the trigger when
+  there is no room below and more room above. Fixed in the shared helper, so all
+  five pickers get it.
+
+- **A freshly logged-in admin now receives a targeted state.** The per-player
+  fields ride targeted sends only, and the app asks for one when it MOUNTS,
+  which is before anybody logs in. So an admin never received one while
+  authenticated: Show Results Path stayed hidden on a server that had the path
+  all along. Any future per-player field would have hit the same trap.
+
+- **Pausing cup scoring no longer reads as ending the cup** (shipped in 0.12.2,
+  which was not released).
+
 ## 0.12.2 - A paused cup stops looking like a deleted one
 
 #### Fixed

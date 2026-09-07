@@ -2547,6 +2547,23 @@
         <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="clearResults()">Yes, clear them</button>
         <button class="rm-btn rm-btn-mini" ng-click="cancelClearResults()">Cancel</button>
       </span>
+      <!-- ONLY ON THE SERVER'S OWN MACHINE. The results are on the server's
+           disk and a headless server has no desktop to open a window on, so the
+           opening has to happen here. Clear Results Cache is the opposite shape
+           and has no such limit: it asks the server to delete its own files.
+           The path is shown either way, so this cannot be a dead button on a
+           build that will not open an absolute path. -->
+      <!-- YOUR OWN COPIES, and this one really does open. It is inside BeamNG's
+           user folder, which is the only kind of folder the game will open:
+           exploreFolder resolves through the virtual filesystem and refuses
+           anything outside it, which is why the server's copy can only be
+           reported as a path. -->
+      <button class="rm-btn rm-btn-mini" ng-if="!resultsUi.confirmClear"
+              ng-click="openLocalResults()"
+              title="Open your own copies of the results, saved on this PC when a session closes. Written for whoever is logged in as an admin, so a race admin without server access still gets the file.">My Results</button>
+      <button class="rm-btn rm-btn-mini" ng-if="resultsPath && !resultsUi.confirmClear"
+              ng-click="openResults()"
+              title="Show the full path to the server's results folder, to paste into a file manager. BeamNG cannot open a folder outside its own files, so this reports the path rather than opening it.">Server Path</button>
       <span class="rm-layouts-hint">
         Result files are written automatically when a session closes; this only
         clears the ones already saved on the server.
@@ -4147,6 +4164,13 @@
     border-radius: 3px;
     box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
     pointer-events: auto;
+  }
+  /* Opened upward, when there is no room below (the practice picker on the
+     app's last row). Set by revealDropdown, which measures rather than
+     guessing which panels are near the bottom. */
+  .rm-layout-menu-up {
+    top: auto;
+    bottom: calc(100% + 2px);
   }
   .rm-layout-option {
     padding: 4px 8px;

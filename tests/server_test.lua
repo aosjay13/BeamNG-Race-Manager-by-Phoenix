@@ -233,6 +233,14 @@ check(lastState == nil, 'admin command ignored before authentication')
 adminLogin(1)                                   -- correct password: pid 1 admin
 check(lastState ~= nil and lastState.adminPresent == true,
   'successful login broadcasts adminPresent=true to everyone')
+-- AND A TARGETED ONE TO THE NEW ADMIN. youAreAdmin, youSpectating and the
+-- results path only ride targeted sends. The app asks for a targeted state when
+-- it MOUNTS, which is before anybody logs in, so without this an admin never
+-- received one while authenticated: Open Results stayed hidden on a server that
+-- had the path all along.
+check(targetedState(1) ~= nil, 'and sends that admin their own targeted state')
+check(targetedState(1).youAreAdmin == true,
+  'which is what carries the per-player fields, youAreAdmin among them')
 adminLogin(2)
 
 -- Change the master password (authed admin only) to an arbitrary value: the old

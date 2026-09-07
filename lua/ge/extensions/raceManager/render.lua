@@ -116,6 +116,10 @@ local function palette()
     -- The chevron on the floor: which way the stall faces, and therefore which
     -- way the car is stood when it stops.
     pitArrow     = ColorF(1, 0.88, 0.35, 0.85),
+    -- The stalls that are not the nearest one. Same amber, dimmer, so the whole
+    -- lane is legible at a glance while the one being aimed at still stands out
+    -- without being a different shape.
+    pitFar       = ColorF(1, 0.72, 0.1, 0.45),
     -- Direction markers. Cyan, because every other color on a track already
     -- means something a driver has learned -- green is the gate they are
     -- driving at, orange the rest of the route, violet the joker, amber the
@@ -791,6 +795,11 @@ local function pitGeometry(wp)
     bru = corner(1, -1, h),  fru = corner(1, 1, h),
     ml = vec3(wp.x + rx * hw, wp.y + ry * hw, z + 0.05),
     mr = vec3(wp.x - rx * hw, wp.y - ry * hw, z + 0.05),
+    -- Tops of the two poles that mark the stall. A pole is visible across a
+    -- pit lane where a translucent floor is not: the box read as empty tarmac
+    -- until a driver was almost standing in it.
+    mlu = vec3(wp.x + rx * hw, wp.y + ry * hw, z + h),
+    mru = vec3(wp.x - rx * hw, wp.y - ry * hw, z + h),
     tip  = tip,
     tail = vec3(wp.x - fx * d * 0.35, wp.y - fy * d * 0.35, z + 0.06),
     barbL = vec3(tip.x - fx * d * 0.4 + rx * barb,
@@ -804,7 +813,10 @@ local function pitGeometry(wp)
   return g
 end
 
--- EVERY stall's footprint, in one draw each.
+-- The stall's FOOTPRINT, one draw. Unused since every stall became two poles,
+-- and kept rather than cut: the footprint is what pit.inside actually tests,
+-- so this is the drawing that matches the rule exactly. It is one call away if
+-- a lane ever needs the volume shown as well as the stop point.
 --
 -- A driver has to know where they may pit before they are on top of it, and the
 -- box below is eleven draws: giving every stall one would be five to ten times
@@ -822,31 +834,20 @@ end
 
 function paint.pitBox(wp, color)
   local g = pitGeometry(wp)
-  local p = palette()
-  -- The floor: where to stop, filled so the extent is unmistakable and faint
-  -- enough that the road under it stays readable.
-  debugDrawer:drawQuadSolid(g.bl, g.br, g.fr, g.fl, p.pitFill)
-  -- Two side walls, open front and back: a stall is driven into and out of.
-  debugDrawer:drawQuadSolid(g.bl, g.fl, g.flu, g.blu, p.pitWall)
-  debugDrawer:drawQuadSolid(g.br, g.fr, g.fru, g.bru, p.pitWall)
-  -- Corner posts, so the box has an outline at distance and in flat light where
-  -- a translucent fill alone disappears.
   local r = TUNE.POLE_RADIUS
-  debugDrawer:drawCylinder(g.bl, g.blu, r, color)
-  debugDrawer:drawCylinder(g.br, g.bru, r, color)
-  debugDrawer:drawCylinder(g.fl, g.flu, r, color)
-  debugDrawer:drawCylinder(g.fr, g.fru, r, color)
-  -- The line across the middle of the box: where the car actually wants to be.
-  debugDrawer:drawCylinder(g.ml, g.mr, r * 0.6, color)
-  -- A CHEVRON POINTING THE WAY THE STALL FACES.
+  -- TWO POLES AND A STOP LINE, the same shape a checkpoint uses, for the same
+  -- reason: it is read at a distance. The old stall was a walled box with a
+  -- translucent floor, three quads and eight cylinders of it, and none of that
+  -- carried across a pit lane. A driver found each stall by arriving at it.
   --
-  -- The box alone is symmetrical, so it says where to stop and nothing about
-  -- which way round. That matters now that stopping in one stands the car on
-  -- the stall's heading: without this the car turning as it is serviced looks
-  -- arbitrary rather than like being pointed back down the lane.
-  debugDrawer:drawCylinder(g.tail, g.tip, r * 0.5, p.pitArrow)
-  debugDrawer:drawCylinder(g.barbL, g.tip, r * 0.5, p.pitArrow)
-  debugDrawer:drawCylinder(g.barbR, g.tip, r * 0.5, p.pitArrow)
+  -- The poles stand on the stall's CENTRE line, which is where the car is meant
+  -- to come to rest, so the marker points at the answer rather than outlining
+  -- the room. pit.inside still tests the full width and depth: this changed how
+  -- a stall looks, never where it is.
+  debugDrawer:drawCylinder(g.ml, g.mlu, r, color)
+  debugDrawer:drawCylinder(g.mr, g.mru, r, color)
+  -- The spot between them: stop here.
+  debugDrawer:drawCylinder(g.ml, g.mr, r * 0.6, color)
 end
 
 -- `fill` and `glyph` are for the joker and nothing else. An ordinary checkpoint
@@ -973,15 +974,16 @@ local function drawDriverGate(derbyLive)
         if d < bestD then best, bestD = i, d end
       end
     end
-    -- ALL OF THEM, so a driver can see where they may pit rather than
-    -- discovering each stall by arriving at it. The floor is one draw; the
-    -- nearest stall then gets the full box over the top of its own floor.
+    -- ALL OF THEM, and all the same. Poles read across a pit lane, so there is
+    -- no longer a cheap version for the far ones and a detailed version for the
+    -- near one: three draws each is affordable for the whole lane, and a driver
+    -- can see every stall they may use before they are on top of it.
+    --
+    -- The nearest is drawn last and brighter, so "the one you are aiming at" is
+    -- still obvious without being a different object.
     for i, wp in ipairs(track.pitRoute) do
-      if i ~= best then paint.pitFloor(wp) end
+      if i ~= best then paint.pitBox(wp, p.pitFar) end
     end
-    -- Amber, and unlabeled like the rest: a pit stall is somewhere you either
-    -- meant to go or did not. Drawn as the BOX pit.inside actually tests, so
-    -- "come to a stop inside the box" refers to something the driver can see.
     if track.pitRoute[best] then paint.pitBox(track.pitRoute[best], p.pit) end
   end
 end

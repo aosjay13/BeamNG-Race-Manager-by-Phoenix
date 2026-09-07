@@ -183,6 +183,7 @@ angular.module('beamng.apps')
       // working the moment it was nested. tests/ui_bindings_test.lua enforces
       // this and caught exactly that.
       $scope.garagePickUi = { open: false };
+      $scope.resultsPath = '';   // the server's results folder, admins only
       // Race entry: everyone connected is in the field by default, and an admin
       // can switch to opt-in when it should be a subset of who is on the server.
       // Only ever a mirror of the server's answer - this is the value the panel
@@ -1458,7 +1459,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.12.2';
+      var APP_BUILD = '0.12.6';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -2348,6 +2349,8 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           // the prompt so the app is fully visible (a header Login button stays).
           if (typeof data.serverBuild === 'string') { $scope.serverBuild = data.serverBuild; }
           $scope.adminPresent = !!data.adminPresent;
+          // Targeted admin sends only, so a non-admin never even sees the row.
+          if (typeof data.resultsPath === 'string') { $scope.resultsPath = data.resultsPath; }
           if ($scope.adminPresent && !$scope.isAdmin && !$scope.loginPinned) {
             $scope.showLogin = false;
           }
@@ -3765,6 +3768,19 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.whitelistCurrentVehicle = function () {
         bngApi.engineLua('raceManager.whitelistCurrentVehicle()');
       };
+      // Where the server keeps its results. Admin sends only; absent on a
+      // server that could not resolve its own absolute path, which hides the
+      // button rather than offering one that cannot say anything useful.
+      // Your own copies, written on this PC when a session closes. Always
+      // available: it needs nothing from the server, which is the point of it.
+      $scope.openLocalResults = function () {
+        bngApi.engineLua('raceManager.openLocalResults()');
+      };
+      $scope.openResults = function () {
+        if (!$scope.resultsPath) { return; }
+        bngApi.engineLua('raceManager.openResultsFolder(' + luaStr($scope.resultsPath) + ')');
+      };
+
       $scope.clearGarage = function () {
         bngApi.engineLua('raceManager.clearGarage()');
       };
@@ -4377,10 +4393,30 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // edge would hang below the visible area. Scroll it into the scroller
       // once Angular has put it in the DOM (the same deferred pattern the
       // preview canvas uses).
+      // SCROLLING IS NOT ENOUGH AT THE BOTTOM OF THE APP. The menu drops
+      // downward from its trigger, and the app has a hard bottom edge: the
+      // practice picker sits on the last row, so its list was cut off with
+      // nothing to scroll into. scrollIntoView cannot help there, because the
+      // menu is outside the window rather than merely below the scroll.
+      //
+      // So it flips above the trigger when there is not room below and there IS
+      // room above, and scrolls otherwise. Measured against the app's own box
+      // rather than the viewport: this is a BeamNG app window, not a page.
       function revealDropdown(selector) {
         setTimeout(function () {
           var menu = $element[0].querySelector(selector);
-          if (menu && menu.scrollIntoView) { menu.scrollIntoView({ block: 'nearest' }); }
+          if (!menu) { return; }
+          menu.classList.remove('rm-layout-menu-up');
+          if (!menu.getBoundingClientRect) { return; }
+          var host = $element[0].getBoundingClientRect();
+          var box  = menu.getBoundingClientRect();
+          var spaceBelow = host.bottom - box.top;
+          var spaceAbove = box.bottom - box.height - host.top;
+          if (box.bottom > host.bottom && spaceAbove > spaceBelow) {
+            menu.classList.add('rm-layout-menu-up');
+            return;                       // flipped: it is on screen already
+          }
+          if (menu.scrollIntoView) { menu.scrollIntoView({ block: 'nearest' }); }
         }, 0);
       }
 

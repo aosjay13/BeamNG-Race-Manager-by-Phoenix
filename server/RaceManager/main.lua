@@ -1610,6 +1610,12 @@ local garageSnapshot
 local garageAudit
 local garageRejudge
 
+-- Where this server keeps its results, as an absolute path. Declared up here
+-- because broadcastState asks for it and the resolver lives with the other
+-- results helpers, hundreds of lines below: named there, this would have been a
+-- nil GLOBAL read at every broadcast. tests/scope_test.lua caught exactly that.
+local resultsFolderPath
+
 -- Assigned far below, with the cup module. Declared HERE because the roster is
 -- published on the cup broadcast and is written from much further up this file:
 -- setting or clearing a display name moves a roster entry, and the panel has to
@@ -1660,7 +1666,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.12.2'
+local RM_BUILD = '0.12.6'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -1929,6 +1935,10 @@ local function broadcastState(targetPid)
     adminPresent = next(authenticatedPlayers) ~= nil,
     -- "Are YOU an admin" (targeted sends only; nil drops out of the JSON).
     youAreAdmin  = selfAdmin,
+    -- Where this server keeps its results, for the admin panel's Open Results.
+    -- Admin sends only, and nil on a server that could not resolve it, which
+    -- the panel handles by showing the relative path instead.
+    resultsPath  = selfAdmin and resultsFolderPath() or nil,
     drivers      = buildDrivers(),
   })
   MP.TriggerClientEvent(targetPid or -1, 'RM_Update', payload)
@@ -2028,6 +2038,17 @@ function RM_onLogin(pid, rawData)
     RM_onRequestLayouts(pid)
     -- Tell every client an admin is now present (updates their adminPresent).
     broadcastState()
+    -- AND THIS ONE PERSONALLY, because the per-player fields only ride a
+    -- TARGETED send: youAreAdmin, youSpectating and the results path are all
+    -- left off the global payload. The app asks for a targeted state when it
+    -- mounts, which is BEFORE anybody logs in, so without this an admin never
+    -- received one at all while authenticated. Open Results was hidden for
+    -- exactly that reason, on a server that had the path all along.
+    --
+    -- Order does not matter between the two: the global payload omits those
+    -- keys entirely rather than sending them empty, and the client leaves a
+    -- value alone when its key is absent.
+    broadcastState(pid)
     print('[RaceManager] Admin login OK: ' .. (MP.GetPlayerName(pid) or pid))
   else
     authenticatedPlayers[pid] = nil
@@ -2156,6 +2177,37 @@ end
 
 local function ensureResultsDir()
   makeDirectory(RESULTS_DIR)
+end
+
+-- WHERE THE RESULTS ACTUALLY ARE, as a path somebody could paste into a file
+-- manager. RESULTS_DIR is relative to the server's working directory, which is
+-- enough for the server's own io.open and useless to anyone else.
+--
+-- Resolved ONCE and cached: this shells out, and it is asked for on every state
+-- broadcast to an admin. A server that cannot answer reports nil rather than a
+-- guess, and the panel then shows the relative path instead of a wrong absolute
+-- one.
+local resultsAbsPath = nil
+local resultsAbsAsked = false
+resultsFolderPath = function ()
+  if resultsAbsAsked then return resultsAbsPath end
+  resultsAbsAsked = true
+  local ok, pipe = pcall(io.popen, IS_WINDOWS and 'cd' or 'pwd')
+  if ok and pipe then
+    local cwd = pipe:read('*l')
+    pipe:close()
+    if type(cwd) == 'string' and cwd ~= '' then
+      cwd = cwd:gsub('%s+$', '')
+      -- FORWARD SLASHES THROUGHOUT, and the backslash written as a char code.
+      -- Windows `cd` answers with backslashes; a file manager takes either, and
+      -- a literal backslash in Lua source is one escape away from a string that
+      -- does not compile.
+      resultsAbsPath = cwd:gsub(string.char(92), '/'):gsub('/$', '')
+        .. '/' .. RESULTS_DIR
+    end
+  end
+  print('[RaceManager] Results folder: ' .. tostring(resultsAbsPath or RESULTS_DIR))
+  return resultsAbsPath
 end
 
 -- Timestamped result path that never overwrites: sessions ending within the
@@ -2490,6 +2542,42 @@ local function buildResultsText(cupRound)
   return table.concat(lines, '\n') .. '\n'
 end
 
+-- A COPY TO EVERY ADMIN, as well as the server's own file.
+--
+-- The server's copy is the record, and it stays. But a league's race admins are
+-- often not the people with the box: no console, no filesystem, no way to read
+-- the one file the night produced. So the text goes to whoever is logged in as
+-- an admin, and their client writes it into BeamNG's own folder where they can
+-- actually reach it.
+--
+-- Capped, and the cap is the point rather than caution. This crosses BeamMP as
+-- one event, and a results file grows with the field: a huge grid must not turn
+-- the end of a race into a payload nothing will carry. Over the cap the admin
+-- is told to use the server's copy, which is the one that is always complete.
+local MAX_RESULTS_PUSH = 60000
+
+local function sendResultsToAdmins(name, text)
+  if type(text) ~= 'string' or text == '' then return end
+  local n = 0
+  for pid in pairs(authenticatedPlayers) do n = n + 1 end
+  if n == 0 then return end
+  if #text > MAX_RESULTS_PUSH then
+    for pid in pairs(authenticatedPlayers) do
+      MP.SendChatMessage(pid, '[RaceManager] Results were too large to send ('
+        .. #text .. ' bytes); the server copy is complete.')
+    end
+    print('[RaceManager] Results not sent to admins: ' .. #text .. ' bytes over the '
+      .. MAX_RESULTS_PUSH .. ' limit')
+    return
+  end
+  for pid in pairs(authenticatedPlayers) do
+    MP.TriggerClientEvent(pid, 'RM_ResultsFile', Util.JsonEncode({
+      name = name, text = text }))
+  end
+  print(string.format('[RaceManager] Results "%s" sent to %d admin(s), %d bytes',
+    name, n, #text))
+end
+
 local function writeResults(cupRound)
   ensureResultsDir()
   local path = uniqueResultsPath('results')
@@ -2498,6 +2586,12 @@ local function writeResults(cupRound)
   if not f then return false, tostring(err) end
   f:write(text)
   f:close()
+  -- The admins' copies go out whether or not they were watching the console.
+  -- Basename only, and the separator class is built rather than written: a
+  -- literal backslash in a Lua pattern is one escape away from a file that
+  -- does not compile, which is how this first landed.
+  local base = path:gsub(string.char(92), '/'):match('([^/]+)$') or 'results.txt'
+  sendResultsToAdmins(base, text)
   return true, path
 end
 

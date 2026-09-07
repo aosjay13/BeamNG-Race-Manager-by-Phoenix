@@ -678,27 +678,44 @@ check(jokerLabels == 0,
   'a driver gets no joker label at all, from any draw path (got '
     .. jokerLabels .. ')')
 
--- The pit box: the footprint pit.inside actually tests, which is the gate's
--- width across and PIT_DEPTH either way ALONG. Two poles used to show a plane
--- for a rule that is a volume, while the mod asked the driver to stop in a box
--- it never drew.
-local minX, maxX, minY, maxY = math.huge, -math.huge, math.huge, -math.huge
-for _, q in ipairs(quads) do
-  for _, pt in ipairs({ q.a, q.b, q.c, q.d }) do
-    if pt.x < -20 then           -- the pit stall is out at x = -50
-      if pt.x < minX then minX = pt.x end
-      if pt.x > maxX then maxX = pt.x end
-      if pt.y < minY then minY = pt.y end
-      if pt.y > maxY then maxY = pt.y end
+-- THE STALL IS TWO POLES AND A STOP LINE, and this is a deliberate reversal.
+--
+-- It used to be drawn as the BOX pit.inside tests: a floor, two walls, corner
+-- posts and a chevron, on the reasoning that two poles show a plane for a rule
+-- that is a volume. That reasoning was right and lost anyway, because none of
+-- it could be SEEN. A translucent floor over tarmac reads as tarmac, so a
+-- driver found each stall by arriving at it, which is the report that changed
+-- this.
+--
+-- The volume is still the rule and pit.inside still tests it. What is DRAWN is
+-- the thing a driver can pick out down a pit lane, standing on the stall's
+-- centre line where the car is meant to come to rest, so the marker points at
+-- the answer rather than outlining the room.
+--
+-- Pinned here: the poles span the stall's WIDTH and stand up off the ground. A
+-- marker that collapsed to a dot on the tarmac would be the old bug again.
+local poleL, poleR, spanY = nil, nil, 0
+for _, c in ipairs(cylinders) do
+  if c.a.x < -20 and c.b.x < -20 then      -- the pit stall is out at x = -50
+    if c.a.z ~= c.b.z then                 -- an upright: a pole
+      if not poleL or c.a.y < poleL.a.y then poleL = c end
+      if not poleR or c.a.y > poleR.a.y then poleR = c end
+    else                                   -- flat: the stop line between them
+      local d = math.abs(c.a.y - c.b.y)
+      if d > spanY then spanY = d end
     end
   end
 end
--- The stall faces +X, so PIT_DEPTH runs along X and the width runs along Y.
-check(near(maxX - minX, 6),
-  'the box runs PIT_DEPTH either way along the stall (6 m, got '
-    .. tostring(maxX - minX) .. ')')
-check(near(maxY - minY, 20),
-  'and the gate width across it (20 m, got ' .. tostring(maxY - minY) .. ')')
+check(poleL ~= nil and poleR ~= nil, 'the stall is marked by uprights a driver can see')
+check(poleL and poleR and near(math.abs(poleR.a.y - poleL.a.y), 20),
+  'the poles stand at the stall width (20 m, got '
+    .. tostring(poleL and poleR and math.abs(poleR.a.y - poleL.a.y) or -1) .. ')')
+check(poleL and poleL.b.z > poleL.a.z,
+  'and they stand UP off the ground, which is the whole reason they replaced a '
+    .. 'floor that could not be seen over tarmac')
+check(near(spanY, 20),
+  'the stop line runs between them, marking where to come to rest (20 m, got '
+    .. tostring(spanY) .. ')')
 
 
 -- ===========================================================================
