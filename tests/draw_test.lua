@@ -713,6 +713,21 @@ check(poleL and poleR and near(math.abs(poleR.a.y - poleL.a.y), 20),
 check(poleL and poleL.b.z > poleL.a.z,
   'and they stand UP off the ground, which is the whole reason they replaced a '
     .. 'floor that could not be seen over tarmac')
+-- AND IT COMES FROM THE LAYOUT, not from a constant. The first cut used
+-- TUNE.PIT_WALL_H (1.4 m), which was the right size for the WALLS of the box it
+-- replaced and left the poles lying on the ground with no way to raise them:
+-- the reported symptom, and the one thing poles were for.
+--
+-- The height goes through gateDims now, the same call every gate uses, so the
+-- track's height control raises a stall too. NOT asserted equal to a route
+-- gate: a waypoint carrying a legacy height and no depth has that height split
+-- between above and below, so the two only match when both were saved the same
+-- way, and asserting it would be pinning the fixture's migration rather than
+-- the rule. Reverting to PIT_WALL_H fails this by a factor of three.
+check(poleL and (poleL.b.z - poleL.a.z) > 3,
+  'a pit pole takes its height from the layout rather than the 1.4 m wall '
+    .. 'constant it used to inherit (got '
+    .. tostring(poleL and (poleL.b.z - poleL.a.z) or -1) .. ')')
 check(near(spanY, 20),
   'the stop line runs between them, marking where to come to rest (20 m, got '
     .. tostring(spanY) .. ')')

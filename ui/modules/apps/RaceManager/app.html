@@ -705,16 +705,21 @@
        race editor is under Track now and the arena editor under Derby, beside
        the controls each belongs to.
 
-       LABELS ARE SHORT ON PURPOSE. Seven tabs have to hold one line at the
-       app's default 560px or the fold buys nothing; "Quali & Grid" was the
-       widest tab in the old row and is simply Grid. -->
+       LABELS ARE SHORT ON PURPOSE, and the row wraps rather than clipping.
+       Eight tabs no longer hold one line at the app's default 560px; that
+       buys Quali its own tab and the admin one a name, and costs a second row
+       at the narrowest widths. "Quali & Grid" as ONE tab was the widest label
+       the row ever had, which is what splitting them avoids repeating. -->
   <div class="rm-admin-tabs" ng-if="isAdmin && !setupHidden()">
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('race')}"
             ng-click="selectAdminTab('race')"
             title="Race distance, reset ruleset, the pace lap and the joker lap">Race</button>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('quali')}"
+            ng-click="selectAdminTab('quali')"
+            title="How qualifying runs: ghosting and the lap or time allowance">Quali</button>
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('grid')}"
             ng-click="selectAdminTab('grid')"
-            title="Qualifying rules and how the starting grid is filled">Grid</button>
+            title="How the starting grid is filled: heats, transfers and the grid order">Grid</button>
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('track')}"
             ng-click="selectAdminTab('track')"
             title="Track layouts, the checkpoint editor, the starting grid and free practice">Track <span class="rm-tab-count" ng-if="routeWaypoints.length">{{ routeWaypoints.length }}</span></button>
@@ -727,12 +732,14 @@
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('derby')}"
             ng-click="selectAdminTab('derby')"
             title="Demo Derby: rules, entry, live standings and the arena editor">Derby <span class="rm-tab-count" ng-if="derby.boundaryCount">{{ derby.boundaryCount }}</span></button>
-    <!-- A GEAR, NOT A WORD. The master password and the results housekeeping
-         are touched about twice a season, and a full-width label for them is
-         the row's whole margin at 560px. -->
+    <!-- A WORD, NOT A GEAR. It was a gear to save the row's margin at 560px,
+         but a gear is where people look for app settings and this tab is the
+         server's: the password, the results, the session. The row wraps rather
+         than clipping, so the cost of the label is a second line at the
+         narrowest widths, not a tab nobody can reach. -->
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('admin')}"
             ng-click="selectAdminTab('admin')"
-            title="Master password and results housekeeping">⚙</button>
+            title="Master password, results housekeeping and the session">Admin</button>
   </div>
 
   <!-- The setup body is folded away for the session. One click brings it back
@@ -872,8 +879,13 @@
     </span>
   </div>
 
-  <!-- ================= Qualifying &amp; grid settings ===================== -->
-  <div class="rm-settings" ng-if="isAdminTab('grid')">
+  <!-- ================= Qualifying ========================================
+       Its own tab. These used to sit in Grid, under a heading that named the
+       thing they FEED rather than the thing they configure, so an admin looking
+       for the qualifying length went to Race first and Grid second. Heats and
+       grid order stay next door because both answer "who lines up where",
+       which is a different question from "how does qualifying run". -->
+  <div class="rm-settings" ng-if="isAdminTab('quali')">
     <span class="rm-setting" title="Rivals stop being obstacles in qualifying, so traffic can't ruin a lap.">
       <label>Ghost quali</label>
       <button class="rm-btn rm-btn-mini rm-btn-toggle" ng-class="{'rm-btn-toggle-on': ghostQuali}"
@@ -912,6 +924,10 @@
       </span>
       <span class="rm-setting-val">{{ qualiLimitLabel() }}</span>
     </span>
+  </div>
+
+  <!-- ================= Grid: heats and starting order ==================== -->
+  <div class="rm-settings" ng-if="isAdminTab('grid')">
     <!-- Module 6: heats and transfers.
 
          Placed in the GRID tab and not a tab of its own, because that is what a

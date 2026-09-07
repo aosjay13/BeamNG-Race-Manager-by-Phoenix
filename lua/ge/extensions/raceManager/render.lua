@@ -764,9 +764,17 @@ end
 local pitCache = setmetatable({}, { __mode = 'k' })
 
 local function pitGeometry(wp)
-  local w = (gateDims(wp))
+  -- HEIGHT COMES FROM THE LAYOUT, like a checkpoint's does. It used to be
+  -- TUNE.PIT_WALL_H, a fixed 1.4 m, which was the right size for the WALLS of
+  -- the box this used to draw and far too short for a pole: the markers sat on
+  -- the ground and could not be raised, which is the whole thing poles were
+  -- meant to fix.
+  --
+  -- gateDims already answers this per waypoint, so a stall follows the same
+  -- height control every gate on the track does.
+  local w, gh = gateDims(wp)
   local g = pitCache[wp]
-  if g and g.w == w and g.x == wp.x and g.y == wp.y and g.z == wp.z
+  if g and g.w == w and g.h == gh and g.x == wp.x and g.y == wp.y and g.z == wp.z
       and g.hx == wp.hx and g.hy == wp.hy then
     return g
   end
@@ -786,9 +794,9 @@ local function pitGeometry(wp)
   -- car-sized on a stall that inherited a wide checkpoint's span.
   local tip  = vec3(wp.x + fx * d * 0.55, wp.y + fy * d * 0.55, z + 0.06)
   local barb = math.min(hw, d * 0.5)
-  local h    = TUNE.PIT_WALL_H
+  local h    = gh
   g = {
-    w = w, x = wp.x, y = wp.y, z = wp.z, hx = wp.hx, hy = wp.hy,
+    w = w, h = gh, x = wp.x, y = wp.y, z = wp.z, hx = wp.hx, hy = wp.hy,
     bl = corner(-1, -1), br = corner(1, -1),
     fl = corner(-1,  1), fr = corner(1,  1),
     blu = corner(-1, -1, h), flu = corner(-1, 1, h),

@@ -6,6 +6,30 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.12.7 - A Quali tab, an Admin tab, and pit poles you can see
+
+#### Changed
+
+- **Qualifying gets its own tab.** The Grid tab was holding three separate
+  things: how qualifying runs, how heats run, and how the grid is filled. The
+  first of those was filed under a tab named for the thing it feeds rather than
+  the thing it configures. Quali now carries Ghost quali and the lap-or-time
+  allowance; Grid keeps heats, transfers, seeding and the starting order,
+  because those all answer "who lines up where".
+
+- **The gear tab is called Admin.** It was a gear to save width at 560px, but a
+  gear is where people look for app settings and this tab is the server's: the
+  password, the results, the session. The row wraps rather than clipping, so the
+  cost is a second line at the narrowest widths.
+
+#### Fixed
+
+- **Pit poles can be raised.** They took their height from `TUNE.PIT_WALL_H`, a
+  fixed 1.4 m that was the right size for the WALLS of the box they replaced and
+  far too short for a pole: the markers lay on the ground with nothing on the
+  layout able to lift them. The height comes from `gateDims` now, the same call
+  every checkpoint uses, so the track's height control raises a stall too.
+
 ## 0.12.6 - Pit poles, your own results copy, drop-up menus, and a paused cup
 
 #### Added

@@ -204,6 +204,10 @@ local TUNE = {
   -- How high a pit stall's side walls are DRAWN. Not a rule: the height half of
   -- pit.inside excludes nobody, so the walls are kept low and out of the way
   -- while the footprint, which is the part that decides, is drawn honestly.
+  -- Unused since a stall became two poles: the poles take the layout's gate
+  -- height so they can be raised like every other marker on the track. Kept
+  -- because it is the wall height paint.pitFloor's box wants if the footprint
+  -- is ever drawn again.
   PIT_WALL_H     = 1.4,
   START_SLOT_LEN  = 4.6,  -- meters; roughly one car long
   START_SLOT_WIDE = 2.2,
@@ -225,7 +229,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.12.6'
+local RM_BUILD = '0.12.7'
 
 -- ---------------------------------------------------------------------------
 -- State

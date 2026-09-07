@@ -462,7 +462,10 @@ angular.module('beamng.apps')
       // which is a name that could only work while the mode was a separate
       // choice; the race editor lives under `track` and the arena editor under
       // `derby`, beside the controls each belongs to.
-      var TABS = { race: true, grid: true, track: true, garage: true,
+      // A WHITELIST, so an unknown tab falls back to Race rather than showing an
+      // empty panel. Which also means a new tab is TWO edits: the button and
+      // this. Miss the second and the button lands on Race with no error.
+      var TABS = { race: true, quali: true, grid: true, track: true, garage: true,
                    cup: true, derby: true, admin: true };
       var DEFAULT_TAB = 'race';
 
@@ -1459,7 +1462,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.12.6';
+      var APP_BUILD = '0.12.7';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
