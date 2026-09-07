@@ -647,7 +647,7 @@ local setGhostReason             -- forward declaration, assigned further down
 -- its functions. Two reasons, and neither is a style preference.
 --
 -- The first is the local ceiling this file's TUNE table already exists for --
--- 194 of the 200 a function may hold are spoken for, and a module that needed a
+-- 181 of the 200 a function may hold are spoken for, and a module that needed a
 -- local apiece for its state and another for each of its eight functions simply
 -- would not compile. Hanging them off one table costs one.
 --
@@ -981,11 +981,13 @@ local joinRequestLeft = nil
 -- 0 none, N allowed per session. resetsUsed counts what this client has spent.
 -- Once the allowance is gone the reset is BLOCKED rather than punished: the car
 -- is put straight back where it was, so pressing R buys nothing and costs
--- nothing. lastGood* is the rolling snapshot that restore uses.
-local lastGoodPos    = nil       -- vec3-ish { x, y, z } sampled while driving
-local lastGoodRot    = nil       -- quaternion { x, y, z, w } for the same sample
-local snapshotLeft   = 0         -- seconds until the next snapshot is taken
-local SNAPSHOT_EVERY = 0.25      -- seconds between "last good position" samples
+-- nothing. `snapshot` below is the rolling sample that restore uses.
+local snapshot = {
+  pos   = nil,    -- vec3-ish { x, y, z } sampled while driving
+  rot   = nil,    -- quaternion { x, y, z, w } for the same sample
+  left  = 0,      -- seconds until the next sample is due
+  EVERY = 0.25,   -- seconds between "last good position" samples
+}
 
 -- What a LEGAL reset does while racing (mirrored from the server):
 --   'inplace'    -- BeamNG's normal repair-where-you-stand (the default)
@@ -1001,6 +1003,15 @@ local lastGate       = nil       -- last checkpoint the local car crossed (a wp 
 -- shared gates, branch gates and ordinary gates alike.
 local lastGateBack   = false
 
+-- Reset and teleport blocking, in ONE table: the two action groups, whether
+-- each is currently filtered out, the echo window that tells this mod's own
+-- teleports from the driver's, and the rate limit on blocked-attempt feedback.
+--
+-- Grouped for the local ceiling, like `hold` and `nudge`. Nine names up here
+-- cost nine of the 200 this file may hold; one table costs one. The fields are
+-- assigned below rather than in a literal so each keeps the comment it earned.
+local block = {}
+
 -- Once the allowance is spent the reset INPUTS themselves are switched off via
 -- BeamNG's input action filter, so pressing R/Insert does nothing at all - the
 -- car never resets, not even in place. The onVehicleResetted restore below
@@ -1011,12 +1022,12 @@ local lastGateBack   = false
 -- which is a reset the driver can reach without ever triggering one of the
 -- input actions below. The filter still covers the keys and pads; the restore
 -- in onVehicleResetted is what covers the Pause menu.
-local RESET_ACTIONS = {
+block.RESET_ACTIONS = {
   'reset_physics', 'reset_all_physics', 'recover_vehicle', 'recover_vehicle_alt',
   'recover_to_last_road', 'reload_vehicle', 'reload_all_vehicles',
   'loadHome', 'dropPlayerAtCamera',
 }
-local resetInputsBlocked = false
+block.resetInputs = false
 
 -- THE TELEPORTS, as their own group, blocked for the whole of a session rather
 -- than only once a driver is out of resets.
@@ -1039,8 +1050,8 @@ local resetInputsBlocked = false
 -- So the key does nothing during a session, which is honest and cannot misfire.
 -- A driver who wants Home to reset can bind it to Recover Vehicle in BeamNG's
 -- own controls, and the mod then treats it exactly like the reset key it is.
-local TELEPORT_ACTIONS = { 'loadHome', 'dropPlayerAtCamera' }
-local teleportInputsBlocked = false
+block.TELEPORT_ACTIONS = { 'loadHome', 'dropPlayerAtCamera' }
+block.teleportInputs = false
 
 -- BeamNG reports a teleport as a vehicle reset, and this mod teleports the car
 -- itself (blocked-reset restore, grid placement, editor preview). Without a way
@@ -1049,14 +1060,14 @@ local teleportInputsBlocked = false
 -- endless loop that pinned the car in place and flooded the UI until the game
 -- locked up. Every teleport we perform is recorded here (where and when), and a
 -- reset reported from that spot inside the window is our own echo.
-local selfTeleport   = { left = 0, x = 0, y = 0, z = 0 }
-local TELEPORT_WINDOW = 0.6      -- seconds an echo of our own teleport can arrive in
-local TELEPORT_RADIUS = 2.0      -- meters from where we put the car
+block.selfTeleport = { left = 0, x = 0, y = 0, z = 0 }
+block.TELEPORT_WINDOW = 0.6      -- seconds an echo of our own teleport can arrive in
+block.TELEPORT_RADIUS = 2.0      -- meters from where we put the car
 -- Reset fires repeatedly while the key is held, so the feedback for a blocked
 -- attempt (notice, log line, server report) is rate limited. The block itself
 -- is applied on every single attempt.
-local blockNoticeLeft = 0
-local BLOCK_NOTICE_EVERY = 1.0   -- seconds between blocked-reset reports
+block.noticeLeft = 0
+block.NOTICE_EVERY = 1.0   -- seconds between blocked-reset reports
 
 -- Admin session. This lives HERE, not in the UI app, and that is the whole
 -- point: BeamNG tears the HUD layer down and rebuilds it whenever the pause
@@ -1858,10 +1869,12 @@ end
 --
 -- The seconds cap is a backstop for a driver who is stationary, or out of the
 -- car, and therefore completing no laps at all.
-local STICKY_LAPS      = 2
-local STICKY_MAX_SEC   = 180
-local STICKY_REFRESH   = 2.0
-local sticky = { key = nil, lap = 0, left = 0, due = 0 }
+local sticky = {
+  key = nil, lap = 0, left = 0, due = 0,
+  LAPS    = 2,
+  MAX_SEC = 180,
+  REFRESH = 2.0,
+}
 
 -- What the HUD should be holding up right now, or nil. Ordered by what a driver
 -- has to act on FIRST, and only one is ever showing: these conditions exclude
@@ -1894,17 +1907,17 @@ local function stickyUpdate(dt)
     -- becoming "positions frozen" is a different instruction, not the same one
     -- continuing, and a driver gets the full two laps to read each of them.
     sticky.key, sticky.lap = key, session.localLap or 0
-    sticky.left, sticky.due = STICKY_MAX_SEC, 0
+    sticky.left, sticky.due = sticky.MAX_SEC, 0
   end
   sticky.left = sticky.left - dt
   sticky.due  = sticky.due - dt
   local lapsShown = (session.localLap or 0) - sticky.lap
-  if sticky.left <= 0 or lapsShown > STICKY_LAPS then return end
+  if sticky.left <= 0 or lapsShown > sticky.LAPS then return end
   if sticky.due > 0 then return end
-  sticky.due = STICKY_REFRESH
+  sticky.due = sticky.REFRESH
   -- Slightly longer than the refresh, so the message never blinks out between
   -- two assertions on a frame that ran late.
-  hudMessage('flag', text, STICKY_REFRESH + 2)
+  hudMessage('flag', text, sticky.REFRESH + 2)
 end
 
 local function resetLapTracking()
@@ -1928,7 +1941,7 @@ local function resetLapTracking()
   session.resetsUsed   = 0
   lastGate     = nil
   lastGateBack = false
-  blockNoticeLeft = 0   -- a fresh session may report its first blocked attempt at once
+  block.noticeLeft = 0   -- a fresh session may report its first blocked attempt at once
   -- Telemetry restarts with the session; report immediately on the next frame
   -- so the leaderboard has a distance for this driver from the first moments.
   progressLeft = 0
@@ -5001,9 +5014,9 @@ end
 -- the restore in onVehicleResetted.
 local function setResetInputsBlocked(blocked)
   blocked = blocked and true or false
-  if blocked == resetInputsBlocked then return end
-  if setActionGroupBlocked('raceManagerResets', RESET_ACTIONS, blocked) then
-    resetInputsBlocked = blocked
+  if blocked == block.resetInputs then return end
+  if setActionGroupBlocked('raceManagerResets', block.RESET_ACTIONS, blocked) then
+    block.resetInputs = blocked
     log('I', 'raceManager', 'Reset inputs ' .. (blocked and 'BLOCKED' or 'released'))
   end
 end
@@ -5040,9 +5053,9 @@ end
 -- with resets to spare still cannot put themselves on their spawn point.
 local function setTeleportInputsBlocked(blocked)
   blocked = blocked and true or false
-  if blocked == teleportInputsBlocked then return end
-  if setActionGroupBlocked('raceManagerTeleport', TELEPORT_ACTIONS, blocked) then
-    teleportInputsBlocked = blocked
+  if blocked == block.teleportInputs then return end
+  if setActionGroupBlocked('raceManagerTeleport', block.TELEPORT_ACTIONS, blocked) then
+    block.teleportInputs = blocked
     log('I', 'raceManager', 'Teleport inputs ' .. (blocked and 'BLOCKED' or 'released'))
   end
 end
@@ -5081,25 +5094,25 @@ end
 local function snapshotUpdate(dt)
   local wanted = resetsEnforced() or derbyResetsEnforced() or sessionRunning()
   if not wanted or session.spectatorLock or session.gridFrozen then return end
-  snapshotLeft = snapshotLeft - dt
-  if snapshotLeft > 0 then return end
-  snapshotLeft = SNAPSHOT_EVERY
+  snapshot.left = snapshot.left - dt
+  if snapshot.left > 0 then return end
+  snapshot.left = snapshot.EVERY
   local veh = playerVehicle()
   if not veh then return end
   local ok = pcall(function ()
     local pos = veh:getPosition()
     local rot = veh:getRotation()
-    lastGoodPos = vec3(pos.x, pos.y, pos.z)
-    lastGoodRot = quat(rot.x, rot.y, rot.z, rot.w)
+    snapshot.pos = vec3(pos.x, pos.y, pos.z)
+    snapshot.rot = quat(rot.x, rot.y, rot.z, rot.w)
   end)
-  if not ok then lastGoodPos, lastGoodRot = nil, nil end
+  if not ok then snapshot.pos, snapshot.rot = nil, nil end
 end
 
 -- Remember a teleport this mod just performed, so the vehicle-reset hook it
 -- provokes can be recognized as our own doing rather than a driver reset.
 local function noteSelfTeleport(x, y, z)
-  selfTeleport.left = TELEPORT_WINDOW
-  selfTeleport.x, selfTeleport.y, selfTeleport.z = x, y, z
+  block.selfTeleport.left = block.TELEPORT_WINDOW
+  block.selfTeleport.x, block.selfTeleport.y, block.selfTeleport.z = x, y, z
   -- REMEMBERED HERE, because here is the last moment it is still true.
   --
   -- A teleport breaks the coupling: the trailer arrives with the car (BeamNG
@@ -5118,14 +5131,16 @@ local function noteSelfTeleport(x, y, z)
   -- one side or the other. Read behind pcall and a type test, because that is a
   -- GE extension that may not be loaded and a build that renames it should cost
   -- the trailer rather than every teleport the mod performs.
-  selfTeleport.hadRig = false
+  block.selfTeleport.hadRig = false
   local veh = ownVehicle()
   if veh then
     local id = vehicleId(veh)
     pcall(function ()
       if not (core_vehicles and type(core_vehicles.attachedCouplers) == 'table') then return end
       for _, pair in ipairs(core_vehicles.attachedCouplers) do
-        if pair[1] == id or pair[2] == id then selfTeleport.hadRig = true; return end
+        if pair[1] == id or pair[2] == id then
+          block.selfTeleport.hadRig = true; return
+        end
       end
     end)
   end
@@ -5149,17 +5164,18 @@ end
 -- the old 2 m test, which is why a reset pressed right after a block is still
 -- caught as a real attempt.
 local function isSelfTeleportEcho()
-  if selfTeleport.left <= 0 then return false end
+  if block.selfTeleport.left <= 0 then return false end
   local veh = playerVehicle()
   if not veh then return false end
-  local elapsed = TELEPORT_WINDOW - selfTeleport.left
+  local elapsed = block.TELEPORT_WINDOW - block.selfTeleport.left
   if elapsed < 0 then elapsed = 0 end
   local ok, near = pcall(function ()
     local p = veh:getPosition()
-    local dx, dy, dz = p.x - selfTeleport.x, p.y - selfTeleport.y, p.z - selfTeleport.z
+    local st = block.selfTeleport
+    local dx, dy, dz = p.x - st.x, p.y - st.y, p.z - st.z
     local v = veh:getVelocity()
     local speed = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
-    local allowed = TELEPORT_RADIUS + speed * elapsed
+    local allowed = block.TELEPORT_RADIUS + speed * elapsed
     return (dx * dx + dy * dy + dz * dz) <= allowed * allowed
   end)
   return ok and near == true
@@ -5467,8 +5483,9 @@ end
 
 -- Age out both reset-side timers.
 local function resetGuardUpdate(dt)
-  if selfTeleport.left  > 0 then selfTeleport.left  = selfTeleport.left  - dt end
-  if blockNoticeLeft    > 0 then blockNoticeLeft    = blockNoticeLeft    - dt end
+  local st = block.selfTeleport
+  if st.left           > 0 then st.left           = st.left           - dt end
+  if block.noticeLeft  > 0 then block.noticeLeft  = block.noticeLeft  - dt end
 end
 
 -- Heading (hx, hy) -> yaw about Z, expressed as a quaternion that stands a
@@ -5601,10 +5618,10 @@ local function relocateToGate(wp)
     veh:setPositionRotation(wp.x, wp.y, z, rot.x, rot.y, rot.z, rot.w)
   end)
   if ok then
-    lastGoodPos = vec3(wp.x, wp.y, z)
-    lastGoodRot = rot
+    snapshot.pos = vec3(wp.x, wp.y, z)
+    snapshot.rot = rot
   else
-    selfTeleport.left = 0
+    block.selfTeleport.left = 0
   end
   return ok
 end
@@ -5614,16 +5631,16 @@ end
 -- the fact: put the car back exactly where it was standing a moment ago.
 local function restoreLastGoodPosition()
   local veh = playerVehicle()
-  if not veh or not lastGoodPos then return false end
-  local rot = lastGoodRot or quat(0, 0, 0, 1)
+  if not veh or not snapshot.pos then return false end
+  local rot = snapshot.rot or quat(0, 0, 0, 1)
   -- Armed BEFORE the teleport: the hook it triggers may arrive on this very
   -- frame, and hearing it back as a driver reset is what caused the loop.
-  noteSelfTeleport(lastGoodPos.x, lastGoodPos.y, lastGoodPos.z)
+  noteSelfTeleport(snapshot.pos.x, snapshot.pos.y, snapshot.pos.z)
   local ok = pcall(function ()
-    veh:setPositionRotation(lastGoodPos.x, lastGoodPos.y, lastGoodPos.z,
+    veh:setPositionRotation(snapshot.pos.x, snapshot.pos.y, snapshot.pos.z,
       rot.x, rot.y, rot.z, rot.w)
   end)
-  if not ok then selfTeleport.left = 0 end
+  if not ok then block.selfTeleport.left = 0 end
   return ok
 end
 
@@ -5713,8 +5730,8 @@ function M.onVehicleResetted(vehId)
     -- Holding the reset key fires this hook over and over. The block above runs
     -- every time; the talking about it does not, or the notice channel, the
     -- console and the server all get flooded by one held key.
-    if blockNoticeLeft <= 0 then
-      blockNoticeLeft = BLOCK_NOTICE_EVERY
+    if block.noticeLeft <= 0 then
+      block.noticeLeft = block.NOTICE_EVERY
       if inMultiplayer() then TriggerServerEvent('RM_ResetDenied', '') end
       -- THE MOMENT IT MATTERS: the driver reached for a reset and it did not
       -- come. Said here rather than when the last one was spent, because
@@ -5724,7 +5741,7 @@ function M.onVehicleResetted(vehId)
       -- Every refused attempt says it again, not just the first: a driver who
       -- has forgotten and presses reset three corners later needs the same
       -- answer, and silence reads as the key having broken. Still throttled by
-      -- blockNoticeLeft above, which is about a HELD key rather than about
+      -- block.noticeLeft above, which is about a HELD key rather than about
       -- repeat attempts.
       --
       -- A session with no resets at all is a different sentence. Those drivers
@@ -5762,7 +5779,7 @@ function M.onVehicleResetted(vehId)
     -- undone instead and both keys do the in-place repair.
     --
     -- Two references, and BOTH have been got wrong once:
-    --   * prevPos ONLY, never the rolling lastGoodPos. That one is up to a
+    --   * prevPos ONLY, never the rolling snapshot.pos. That one is up to a
     --     quarter of a second old, and a car at racing speed covers more ground
     --     in that time than the threshold allows, so an ordinary reset looks like
     --     a teleport and gets undone. Two tests catch it, and have twice.
@@ -5806,7 +5823,7 @@ function M.onVehicleResetted(vehId)
   -- in the middle of a lap.
   --
   -- Seeded from where the car actually is now, which is both fresh and true.
-  snapshotLeft = 0
+  snapshot.left = 0
   do
     local _, nowPos = sampledVehicle()
     if nowPos then
@@ -5838,8 +5855,8 @@ function M.onVehicleResetted(vehId)
     -- Always: there is no allowance left to check.
     if true then
       local restored = restoreLastGoodPosition()
-      if blockNoticeLeft <= 0 then
-        blockNoticeLeft = BLOCK_NOTICE_EVERY
+      if block.noticeLeft <= 0 then
+        block.noticeLeft = block.NOTICE_EVERY
         if inMultiplayer() then TriggerServerEvent('RM_DerbyResetDenied', '') end
         pushNotice('reset', 'RESET BLOCKED: no resets in a derby')
         log('W', 'raceManager', 'Derby reset blocked (position '
@@ -5999,7 +6016,7 @@ placeOnStartPosition = function (sp)
   local ok = pcall(function ()
     veh:setPositionRotation(sp.x, sp.y, sp.z, rot.x, rot.y, rot.z, rot.w)
   end)
-  if not ok then selfTeleport.left = 0 end
+  if not ok then block.selfTeleport.left = 0 end
   return ok
 end
 
@@ -6057,7 +6074,7 @@ function hold.restore(reason)
     local ok = pcall(function ()
       veh:setPositionRotation(to.x, to.y, to.z, rot.x, rot.y, rot.z, rot.w)
     end)
-    if not ok then selfTeleport.left = 0 end
+    if not ok then block.selfTeleport.left = 0 end
     -- The car has just been dropped again, so it has to settle again -- and
     -- until it has, nothing may measure it. Without this a restore is followed
     -- immediately by the drift it caused, which is the loop this guard is for.
@@ -6341,7 +6358,7 @@ local function placeOnAssignedSlot()
   -- Where this car is meant to be standing, remembered before the hold is asked
   -- for. Everything that verifies or restores the hold measures against this:
   -- the local drift watch, the reset/respawn restores, and the server's
-  -- correction. Kept separately from lastGoodPos below because that one belongs
+  -- correction. Kept separately from snapshot.pos below because that one belongs
   -- to the reset ruleset and moves as the driver laps.
   if field.hold then
     -- The slot's coordinates are where the car is DROPPED, not where it will
@@ -6358,8 +6375,8 @@ local function placeOnAssignedSlot()
   -- The grid slot is where the car legitimately stands, so it is also the
   -- position a blocked reset should restore to - facing down the track, not
   -- at whatever identity rotation happens to mean on this circuit.
-  lastGoodPos = vec3(sp.x, sp.y, sp.z)
-  lastGoodRot = headingRot(sp.hx, sp.hy)
+  snapshot.pos = vec3(sp.x, sp.y, sp.z)
+  snapshot.rot = headingRot(sp.hx, sp.hy)
   pushNotice('grid', 'You start from P' .. slot .. ': hold for the countdown')
   log('I', 'raceManager', 'Placed on start slot ' .. slot
     .. ' (' .. tostring(field.holdSource or 'race') .. ')')
@@ -10936,21 +10953,21 @@ end
 -- actions through a hook. The panel carries a standing OUT marker instead,
 -- which needs nothing from the engine.
 --
--- Guarded on resetInputsBlocked first, which is false for almost the whole of
+-- Guarded on block.resetInputs first, which is false for almost the whole of
 -- every session: an analog axis fires this hook constantly and nothing below
 -- the guard should run for steering.
 function M.onFilteredInputChanged(devName, action, value)
-  if not resetInputsBlocked then return end
+  if not block.resetInputs then return end
   -- Presses only. Releases come through as 0 and are not a second attempt.
   if not value or value <= 0 then return end
   if type(action) ~= 'string' then return end
   local wanted = false
-  for i = 1, #RESET_ACTIONS do
-    if RESET_ACTIONS[i] == action then wanted = true; break end
+  for i = 1, #block.RESET_ACTIONS do
+    if block.RESET_ACTIONS[i] == action then wanted = true; break end
   end
   if not wanted then return end
-  if blockNoticeLeft > 0 then return end
-  blockNoticeLeft = BLOCK_NOTICE_EVERY
+  if block.noticeLeft > 0 then return end
+  block.noticeLeft = block.NOTICE_EVERY
   -- Recorded on the server as well, so a driver leaning on the key still shows
   -- up in the live table and the results the same way a reset the filter could
   -- not see already does.
@@ -11005,8 +11022,8 @@ local function resetToIdle(reason)
   session.resetsUsed      = 0
   session.resetMode       = 'inplace'
   lastGate        = nil
-  selfTeleport.left = 0
-  blockNoticeLeft = 0
+  block.selfTeleport.left = 0
+  block.noticeLeft = 0
   session.jokerEnabled    = false
   -- Both halves of the pace lap. The rule as much as the condition: it belongs
   -- to the server that granted it, and a client that carried it to the next
