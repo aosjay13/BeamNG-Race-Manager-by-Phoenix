@@ -743,6 +743,64 @@ check(#lastState.garage == 1 and lastState.garage[1].label == 'Truck'
   and lastState.garageMode == 'parts', 'and the other set comes back the same way')
 check(lastState.garageEnforce == true, 'still untouched on the way back')
 
+-- ---------------------------------------------------------------------------
+-- SWAPPING THE LIST RE-RULES THE CARS ALREADY OUT THERE
+-- ---------------------------------------------------------------------------
+-- The bug this pins, reported as "it didnt remove the wendover when I was on the
+-- Off Road list". garageRejudge recorded a verdict and stopped: every
+-- rejectVehicle call lived in the declaration and spawn handlers, and a client
+-- only re-declares when its OWN car changes. So a driver sitting still in a car
+-- the new list does not cover kept it, legally, while the panel promised
+-- "unapproved cars are deleted for everyone, admins included".
+--
+-- Worth pinning precisely because nothing looked wrong: the audit knew, the
+-- verdict was right, the panel was correct. Only the consequence was missing.
+--
+-- A SERIES THAT GENUINELY EXCLUDES THEM. The first version of this test swapped
+-- to Trucks and asserted a removal, and Trucks is a PARTS-mode set whose entry
+-- shares its parts half with SIG_A -- so the driver was still legal and the fix
+-- was right to leave them alone. The set below is strict and shares nothing.
+RM_onClearGarage(1)
+RM_onSetGarageMode(1, '{"mode":"strict"}')
+RM_onWhitelistVehicle(1, '{"model":"pigeon","label":"Only Pigeons","sig":'
+  .. '"model=pigeon|parts=body=pigeon_body|vars=camber=0.0000"}')
+RM_onSaveGarageSet(1, '{"name":"Pigeons"}')
+
+RM_onLoadGarageSet(1, '{"name":"GT3"}')
+rejected = {}
+RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"' .. SIG_A .. '"}')
+check(rejected[3] == nil, 'the driver is legal under the series that is loaded')
+
+rejected = {}
+RM_onLoadGarageSet(1, '{"name":"Pigeons"}')
+check(rejected[3] ~= nil,
+  'swapping to a series that does not cover their car takes it away, without '
+    .. 'waiting for them to touch anything')
+check(rejected[3] and rejected[3].remove == true,
+  'and it is a removal rather than a warning, which is what the panel promises')
+
+-- ONCE, on the transition. This runs on every capture, removal, mode switch and
+-- enforcement toggle; a driver already refused has had their car deleted and
+-- been told why, and saying it again on each of those is a message storm for one
+-- offence.
+rejected = {}
+RM_onWhitelistVehicle(1, '{"model":"bx","label":"Something Else","sig":'
+  .. '"model=bx|parts=body=bx_body|vars=camber=0.0000"}')
+check(rejected[3] == nil,
+  'a later change to the list does not tell the same driver again about the '
+    .. 'same offence')
+
+-- ...and putting their car back on the list clears the verdict, so the next swap
+-- can refuse them again if it needs to.
+RM_onLoadGarageSet(1, '{"name":"GT3"}')
+rejected = {}
+RM_onLoadGarageSet(1, '{"name":"Pigeons"}')
+check(rejected[3] ~= nil,
+  'a driver legalised and then refused again IS told the second time')
+
+-- Put the list back the way the refusal checks below expect to find it.
+RM_onLoadGarageSet(1, '{"name":"Trucks"}')
+
 -- Refusals.
 garageMsg = nil
 RM_onLoadGarageSet(1, '{"name":"Nothing Called This"}')

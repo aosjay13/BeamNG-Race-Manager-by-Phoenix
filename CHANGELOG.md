@@ -6,6 +6,47 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.13.2 - The Garage List rules on the car you are actually in
+
+**Re-capture your Garage List after updating.** Every stored entry was captured
+from a source that could not hold still, so the signatures on disk describe
+something no car reliably reports. Clear the list and whitelist again.
+
+#### Fixed
+
+- **The approved car was deleted and the unapproved one was not.** Two separate
+  faults pointing opposite ways, which is why it read as the list simply not
+  working.
+
+- **A car's identity wandered, so Take could not stick.** `core_vehicle_partmgmt`
+  was asked for the parts first, and it answers about whichever car it considers
+  CURRENT, from the parts UI's view of it rather than the spawned car's. Since
+  this code learned to read `partsTree` that source always answered, so the
+  per-vehicle store underneath it was never reached: twenty four declarations in
+  one session, every one from the part manager.
+
+  What it cost, off that session: one untouched wendover declaring
+  `pd=116:3577:3532314344:715134229` and `pd=116:3577:3265219531:1357188818`
+  alternately. Same 116 parts, same 3577 bytes, two hashes, back and forth. A
+  car whitelisted on one answer is refused on the other, and re-capturing cannot
+  help, which is what the "THE SIGNATURE MOVED" line has been reporting for two
+  sessions. `getVehicleData` is asked BY ID now, so it cannot drift onto another
+  car or onto the menu's pending state. The part manager stays as the fallback
+  for builds where the per-vehicle store is empty.
+
+- **Swapping the Garage List left the cars already out there alone.**
+  `garageRejudge` worked out each driver's new verdict and stopped: every removal
+  lived in the declaration and spawn handlers, and a client only re-declares when
+  its OWN car changes. So loading a series that did not cover somebody left them
+  driving it, legally, while the panel promised "unapproved cars are deleted for
+  everyone, admins included". It now acts on the verdict it reaches.
+
+  **Once, on the transition**, because that function also runs on every capture,
+  removal and mode switch, and a driver already refused has had their car deleted
+  and been told why. **Not mid-session**: loading a set is already refused while a
+  session runs, and pulling cars out from under a running field is worse than the
+  offence, which is what the countdown audit is for.
+
 ## 0.13.1 - Saving one track stops rewriting every track
 
 #### Fixed

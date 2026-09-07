@@ -1609,6 +1609,11 @@ local garageSnapshot
 -- re-judge the field when the list underneath it moves.
 local garageAudit
 local garageRejudge
+-- And the removal itself. garageRejudge decides a verdict and now has to be able
+-- to ACT on it, but rejectVehicle is defined a hundred lines further down: named
+-- there, the closure above would capture nothing and read a nil GLOBAL at call
+-- time, which compiles perfectly and throws the first time an admin swaps a set.
+local rejectVehicle
 
 -- Where this server keeps its results, as an absolute path. Declared up here
 -- because broadcastState asks for it and the resolver lives with the other
@@ -1666,7 +1671,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.13.1'
+local RM_BUILD = '0.13.2'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -7458,7 +7463,10 @@ end
 -- "offender" -- the distinction the panel and the audit both depend on.
 garageRejudge = function ()
   local enforcing = garageEnforcing()
-  for _, rec in pairs(players) do
+  -- The KEY is bound now, not discarded. It is the player id rejectVehicle
+  -- needs, and reading it off a `_` loop would have been a nil global: it
+  -- compiles, and throws the first time a swap actually refuses somebody.
+  for pid, rec in pairs(players) do
     -- ONE LOOKUP, TWO ANSWERS. The class is re-derived whether or not the rule
     -- is being enforced, because an admin who tags an entry "GT3" has to see the
     -- drivers in that car become GT3 immediately -- not when they next happen to
@@ -7469,10 +7477,32 @@ garageRejudge = function ()
     local was = rec.class
     rec.class = entry and entry.class or nil
     if rec.class ~= was then rememberIdentity(rec) end
+    local wasOk = rec.carOk
     if not enforcing or not rec.carSig then
       rec.carOk = nil
     else
       rec.carOk = entry ~= nil
+    end
+    -- AND ACT ON IT. Recording the verdict is not enforcing it, and for the life
+    -- of this feature that is all this did: swap to a list that does not cover
+    -- somebody and their car sat there, legal to drive, marked an offender in an
+    -- audit nobody had open. Every rejectVehicle call lived in the declaration
+    -- and spawn handlers, and a client only re-declares when its OWN car changes
+    -- -- so a driver sitting still was never re-checked by anyone. Reported as
+    -- "it didnt remove the wendover when I was on the Off Road list", against a
+    -- panel that promises "unapproved cars are deleted for everyone".
+    --
+    -- ON THE TRANSITION ONLY. This runs on every capture, removal, mode switch
+    -- and enforcement toggle, and a driver already refused has already had their
+    -- car deleted and been told why; repeating it on each of those is a message
+    -- storm for one offence.
+    --
+    -- NOT MID-SESSION. Loading a set is already refused while a session runs,
+    -- but a capture or an enforcement toggle is not, and pulling cars out from
+    -- under a running field is worse than the offence: garageAudit already names
+    -- offenders at the countdown, which is the moment it matters.
+    if rec.carOk == false and wasOk ~= false and not sessionUnderWay() then
+      rejectVehicle(pid, nil, 'the Garage List changed and no longer covers this car')
     end
   end
 end
@@ -7581,7 +7611,7 @@ end
 -- league decision that has already changed once, and putting it back is passing
 -- `true` from the two call sites again rather than rebuilding the path under
 -- time pressure on a race night.
-local function rejectVehicle(pid, vid, why, advisory)
+rejectVehicle = function (pid, vid, why, advisory)
   if MP.RemoveVehicle and vid and not advisory then
     pcall(MP.RemoveVehicle, pid, vid)
   end

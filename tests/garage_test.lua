@@ -239,16 +239,39 @@ check(whitelisted() ~= nil,
   'when the part manager answers empty, the per-vehicle store is asked and the '
     .. 'car is whitelisted anyway')
 
--- ...and the first source still wins when it CAN answer, so nothing regresses
--- where this already worked.
+-- ...AND WHEN BOTH ANSWER, THE PER-VEHICLE STORE WINS. This check used to assert
+-- the opposite -- "the part manager is authoritative" -- while the comment four
+-- lines above it already said getConfig reads whichever car the part manager
+-- considers current, which is not always the one being driven. The test agreed
+-- with the code and both disagreed with the paragraph explaining them.
+--
+-- What the old order cost, off a real session: one untouched wendover declaring
+-- pd=116:3577:3532314344:715134229 and pd=116:3577:3265219531:1357188818
+-- alternately. Same 116 parts, same 3577 bytes, two hashes, back and forth.
+-- Whitelisted on one, refused on the other, and re-capturing could never help.
+-- getVehicleData is asked BY ID, so it cannot answer about a different car.
 partmgmtConfig  = realConfig('FromPartMgmt')
 vehicleDataConfig = realConfig('FromVehicleData')
 settle()
 clearLog()
 RM.whitelistCurrentVehicle()
 p = whitelisted()
+check(p and p.label:find('FromVehicleData', 1, true) ~= nil,
+  'when both sources answer, the one asked BY VEHICLE ID wins: the part manager '
+    .. 'answers about whichever car it considers current, and that identity wanders')
+
+-- ...and the part manager is still the FALLBACK, not deleted. On a build where
+-- the per-vehicle store is empty it is the only source there is, and a wandering
+-- identity beats having no Garage List at all.
+partmgmtConfig  = realConfig('FromPartMgmt')
+vehicleDataConfig = { parts = {}, vars = {} }
+settle()
+clearLog()
+RM.whitelistCurrentVehicle()
+p = whitelisted()
 check(p and p.label:find('FromPartMgmt', 1, true) ~= nil,
-  'the part manager is still asked FIRST: where it works it is authoritative')
+  'and it still answers when the per-vehicle store cannot, so a build without '
+    .. 'one keeps a working Garage List')
 
 -- ---------------------------------------------------------------------------
 -- 3. A GENUINELY HALF-LOADED CAR still refuses, and says so

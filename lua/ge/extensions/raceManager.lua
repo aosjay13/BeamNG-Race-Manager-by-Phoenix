@@ -234,7 +234,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.13.1'
+local RM_BUILD = '0.13.2'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -3354,17 +3354,27 @@ local function localVehicleConfig(userAsked)
     notes[#notes + 1] = from .. '=' .. n
   end
 
-  if core_vehicle_partmgmt and core_vehicle_partmgmt.getConfig then
-    offered = offered + 1
-    local ok, cfg = pcall(core_vehicle_partmgmt.getConfig)
-    if ok then take(cfg, 'partmgmt') end
-    note('partmgmt', ok, cfg)
-  else
-    notes[#notes + 1] = 'partmgmt=absent'
-  end
-
-  -- The per-vehicle data store, asked about THIS vehicle by id rather than
-  -- about whichever one is current.
+  -- THE PER-VEHICLE STORE FIRST, asked about THIS vehicle BY ID. Order is the
+  -- whole fix here, and getting it wrong made the Garage List unusable in a way
+  -- that looked like everything else.
+  --
+  -- core_vehicle_partmgmt.getConfig answers about whichever car is CURRENT, and
+  -- it is the parts UI's view of it rather than the spawned car's. It used to be
+  -- asked first and, since this file learned to read partsTree, it always
+  -- answered -- so `take` short circuited and this source was never reached at
+  -- all. Twenty four declarations in one session, every one of them from
+  -- partmgmt.
+  --
+  -- What that costs: the identity WANDERS. One untouched wendover declared
+  -- pd=116:3577:3532314344:715134229 and pd=116:3577:3265219531:1357188818
+  -- alternately -- same 116 parts, same 3577 bytes, two different hashes, back
+  -- and forth. digestOf sorts its keys, so this was never iteration order; it
+  -- was partmgmt giving two different answers about one car. A car whitelisted
+  -- on one answer is refused on the other, and re-capturing cannot help,
+  -- which is exactly what "THE SIGNATURE MOVED" has been reporting.
+  --
+  -- getVehicleData(vid) is pinned to the vehicle being declared, so it cannot
+  -- drift onto another car or onto the menu's pending state.
   if core_vehicle_manager and core_vehicle_manager.getVehicleData and vid then
     offered = offered + 1
     local ok, data = pcall(core_vehicle_manager.getVehicleData, vid)
@@ -3372,6 +3382,19 @@ local function localVehicleConfig(userAsked)
     note('vehData', ok, type(data) == 'table' and data.config or data)
   else
     notes[#notes + 1] = 'vehData=absent'
+  end
+
+  -- KEPT AS THE FALLBACK, not deleted. On a build where the per-vehicle store is
+  -- empty this is the only source that answers, and a wandering identity still
+  -- beats no Garage List at all. It is named in the log as the source, so a
+  -- signature that will not hold still can be recognised for what it is.
+  if core_vehicle_partmgmt and core_vehicle_partmgmt.getConfig then
+    offered = offered + 1
+    local ok, cfg = pcall(core_vehicle_partmgmt.getConfig)
+    if ok then take(cfg, 'partmgmt') end
+    note('partmgmt', ok, cfg)
+  else
+    notes[#notes + 1] = 'partmgmt=absent'
   end
 
   -- The car's own answer, if it has sent one for THIS vehicle. Last, so a live
