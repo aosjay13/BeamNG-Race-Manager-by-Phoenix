@@ -15,7 +15,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # NODE 24. All three actions in this file were on the Node 20 runtime,
+        # which GitHub deprecated in September 2025 -- the runner forced them
+        # onto Node 24 anyway and annotated every run to say so. Forced is not
+        # supported, so the majors are moved rather than left to be carried.
+        #
+        # Nothing in how they are CALLED changed. checkout v5 is the runtime
+        # move, v6 writes credentials to a separate file, v7 is ESM and blocks
+        # checking out fork PRs for pull_request_target and workflow_run -- and
+        # this workflow is workflow_dispatch only, so that last one cannot
+        # apply. upload-artifact v5 and v6 are the same runtime move twice over
+        # and v7 adds an optional `archive` input nothing here passes.
+        # action-gh-release v3 is a pure runtime move; tag_name and files are
+        # untouched.
+        #
+        # They need runner 2.327.1 or newer, which ubuntu-latest has long been
+        # past. A self-hosted runner would need checking first.
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -129,14 +145,14 @@ jobs:
 
       # --- Publish as a Release ---
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.new_tag }}
           files: RaceManager-${{ steps.version.outputs.new_tag }}.zip
 
       # --- Also attach to the run as an artifact (optional) ---
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: RaceManager-${{ steps.version.outputs.new_tag }}
           path: package/
