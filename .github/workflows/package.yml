@@ -7,8 +7,19 @@ name: Build RaceManager Package
 on:
   workflow_dispatch:
 
+# AN EXPLICIT BLOCK SETS EVERY SCOPE IT DOES NOT NAME TO none, which is the
+# trap here rather than the two lines themselves. `contents: write` alone is
+# enough to push the tag and create the release, so the release worked -- and
+# the Upload artifact step at the bottom then failed on its FINALIZE call with a
+# bare 403, after the bytes had already gone up and a digest had been logged.
+# Nothing in that error says "permissions", and the release it follows has
+# already succeeded, so the run goes red for a step that is optional.
+#
+#   contents  push the tag, create the release
+#   actions   finalize an artifact attached to the run
 permissions:
   contents: write
+  actions: write
 
 jobs:
   package:
