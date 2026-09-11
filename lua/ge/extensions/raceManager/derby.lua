@@ -869,7 +869,6 @@ D.onDerbyUpdate = function (rawData)
   -- released the moment the derby is no longer running -- so a car is never left
   -- frozen by a derby that has ended, whatever order the broadcasts arrive in.
   D.derbyState.over = data.derbyOver == true
-  derbyStandDown(D.derbyState.over and newPhase == 'running')
   if newPhase == 'running' and D.derbyState.phase ~= 'running' then
     -- Fresh derby: re-arm local detection from a clean slate. The derby reset
     -- allowance is per-derby, so it starts over too.
@@ -991,6 +990,32 @@ D.onDerbyUpdate = function (rawData)
       D.derbyState.out = true
     end
   end
+
+  -- THE STAND-DOWN, AND NOT FOR A WRECK.
+  --
+  -- Decided and running out the cool-down: hold still. It applies the handbrake
+  -- and freezes the car so a result that is already settled cannot be driven
+  -- into for the seconds the arena stays up, and it lets go the moment the derby
+  -- stops running, whatever order the broadcasts arrive in.
+  --
+  -- A DRIVER WHO IS ALREADY OUT IS EXEMPT, and that is the whole of this guard.
+  -- Their car was deliberately left as a free-rolling obstacle when they were
+  -- eliminated -- handbrake OFF, ignition cut, nothing frozen, see
+  -- spectate.releaseControls -- because the survivors are meant to be able to
+  -- shove it. Standing them down bolted it to the arena floor again a moment
+  -- later, which is exactly the handbrake that elimination had just released.
+  --
+  -- It bites on the LAST elimination above all, because that is the one that
+  -- decides the derby: the same broadcast says "you are out" and "the derby is
+  -- over", so the release and the re-application landed within a frame of each
+  -- other and the handbrake simply appeared to come back on its own.
+  --
+  -- CALLED HERE, BELOW the block above, and the move is the fix rather than a
+  -- tidy-up. It used to run at the top of this function, before `out` had been
+  -- read out of this same payload -- so on the one broadcast where it mattered
+  -- it was deciding against last tick's answer.
+  derbyStandDown(D.derbyState.over and newPhase == 'running'
+    and not D.derbyState.out)
 
   guihooks.trigger('RaceManagerDerby', data)
 end

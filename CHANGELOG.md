@@ -6,6 +6,77 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.15.1 - The wreck stays a wreck, and the pace lap waits for the line
+
+#### Fixed
+
+- **The pace lap dropped its green at checkpoint 1.** A regression from 0.15.0,
+  and the mistake is worth more than the fix. On an out lap the client reports
+  its distance to the START/FINISH LINE while the checkpoint count beside it
+  reports progress along the route, which reads like two halves of one payload
+  disagreeing. It was "corrected" to measure the armed gate like every other lap.
+
+  It is not a disagreement. A pace lap is mechanically an out lap, and
+  `paceLapWatch` waves the green off that number as metres-to-the-line. Measuring
+  the armed gate instead, the arming latch tripped on the run to checkpoint 1 and
+  the green fell there: a formation lap that ended at the first corner.
+
+  Reverted, and both sides now say why the field is what it is.
+  `tests/out_lap_line_test.lua` asserts the number rather than leaving the only
+  statement of it in a comment -- the server-side pace test feeds the telemetry
+  in by hand, so it could never have seen which gate the client measured.
+
+- **An eliminated derby car got its handbrake back.** Elimination releases it on
+  purpose: a wreck is meant to be an obstacle the survivors can shove, and one
+  bolted to the arena floor is a wall instead. The END-OF-DERBY stand-down
+  applies it, also on purpose, so a settled result cannot be driven into while
+  the arena stays up for the cool-down. The stand-down went to every client,
+  including the drivers already out.
+
+  Worst on the LAST elimination, which is the one that decides the derby: the
+  same broadcast says "you are out" and "the derby is over", so the release and
+  the re-application landed within a frame of each other and the handbrake looked
+  like it came back on its own.
+
+  The stand-down now skips a driver who is out, and it is called BELOW the block
+  that reads this driver's status out of that same payload rather than above it.
+  It used to run first, so on the one broadcast where it mattered it was deciding
+  against the previous tick's answer.
+
+- **The engine went on revving after an out-of-bounds timeout.** The two derby
+  timers are identical on the server and nearly identical on the client, and what
+  separates them is physical: a car put out for NOT MOVING has nobody holding
+  anything down, so zeroing the pedals once settles it. A car put out for leaving
+  the arena was being driven a second ago with a foot on the floor.
+
+  A filtered action keeps the value it had when the filter armed, so setting the
+  throttle to zero once cannot beat a pedal that is still held -- only the
+  propulsion filter can, and it was armed for the end-of-derby stand-down alone.
+  The one case with a held pedal was the one case not filtered. It is armed for a
+  derby elimination now, and lifts with the spectator lock.
+
+- **The ignition cut was guarded one level too shallow**, on the same path. It
+  tested for `setEngineIgnition` and reached it through
+  `controller.mainController`, so on the very vehicle the guard was written to
+  protect -- one with no main controller -- the guard itself threw on the index
+  before it could refuse. `queueLuaCommand` posts a string into the vehicle's own
+  Lua VM, so the error surfaces there and the pcall on this side sees nothing:
+  the ignition silently stayed on.
+
+- **The release workflow could not finalize its own build artifact.** An explicit
+  permissions block sets every scope it does not name to none. `contents: write`
+  is enough to push the tag and create the release, which is why the release
+  always worked and the run went red anyway for the optional step after it.
+  Finalizing an artifact needs `actions: write`.
+
+#### Added
+
+- **`tests/derby_wreck_test.lua`**, because nothing looked at the car. derby_test
+  covers who is out and why; derby_lives_test covers the client's timers and what
+  they report. What a driver actually experiences when they are knocked out -- is
+  it frozen, is it on its handbrake, is the engine still running -- had no test at
+  all, and both of the derby bugs above lived in that gap.
+
 ## 0.15.0 - A password for running the night, and one for owning the server
 
 #### Added
@@ -129,12 +200,14 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   1 to start its lap there. A longer out lap, never a backwards one. A sprint
   stage cannot reach the rule at all, because point-to-point owes no out lap.
 
-- **The out lap reported its distance to the wrong gate.** The telemetry that
-  orders the field measured metres to the start/finish line while the checkpoint
-  count beside it measured progress along the route: two halves of one payload
-  reading different gates, so a driver a corner into their out lap was placed by
-  how near they happened to be to a line they were driving away from. It reads
-  the armed gate now, like every other lap.
+- **The out lap's distance report was pointed at the armed gate.** On an out lap
+  it measures metres to the START/FINISH LINE while the checkpoint count beside
+  it measures progress along the route, which reads like two halves of one
+  payload disagreeing, so it was changed to measure the armed gate like every
+  other lap.
+
+  **This was wrong and it broke the pace lap.** See 0.15.1, where it is reverted
+  and the reason is written down on both sides of the wire.
 
 #### Changed
 

@@ -1788,7 +1788,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.15.0'
+local RM_BUILD = '0.15.1'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -4796,6 +4796,12 @@ end
 -- grids its field half a lap out arms on the first tick and still waits for the
 -- leader to come round, and a grid five meters short of the line arms as soon as
 -- the field has driven fifty.
+--
+-- BOTH THRESHOLDS READ leader.distNext AS METRES TO THE LINE, which is true for
+-- the whole of an out lap and only then -- the client points that field at the
+-- start/finish while one is running, and a pace lap is an out lap. Changing it
+-- to the armed gate dropped the green at checkpoint 1. See reportProgress on the
+-- client before touching either side of this.
 local function paceLapWatch()
   -- A RED FLAG HOLDS EVERYTHING. Red means stop where you are and wait, so a
   -- leader who coasts the last few meters to the line under one must not start

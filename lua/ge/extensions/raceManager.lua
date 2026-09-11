@@ -234,7 +234,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.15.0'
+local RM_BUILD = '0.15.1'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -2591,14 +2591,19 @@ local function reportProgress(dt)
   -- more than one, and which of them is nearest is the only honest answer to
   -- that: it needs the car's position, so it is resolved here rather than above.
   --
-  -- THE ARMED GATE ON THE OUT LAP TOO. This read the start/finish line instead
-  -- while an out lap was running, which was the other half of the shortcut in
-  -- checkGates: with the line as the target, the distance shipped to the
-  -- leaderboard was metres-to-the-line while `cp` right below it counted
-  -- progress along the route. Two halves of one payload measuring different
-  -- gates, so a driver a corner into their out lap was ordered by how near they
-  -- happened to be to a line they were driving away from.
-  local wp = branch.nearestAt(session.armedWp, pos)
+  -- ON AN OUT LAP IT IS THE START/FINISH LINE, AND THAT IS NOT AN OVERSIGHT.
+  -- It reads as one -- `cp` on the line below counts progress along the route
+  -- while this measures a different gate -- and it was changed to the armed gate
+  -- once on exactly that reasoning. THE PACE LAP IS WHAT CONSUMES IT: a pace lap
+  -- is mechanically an out lap, and paceLapWatch waves the green off this number
+  -- as metres-to-the-line. Pointed at the armed gate instead, the green fell as
+  -- the leader reached CHECKPOINT 1 and the formation lap ended at the first
+  -- corner.
+  --
+  -- So the two fields answer two questions on purpose: `cp` is how far round the
+  -- route this driver is, and on the one lap that is given away `dist` is how
+  -- far they still are from the line that ends it.
+  local wp = onOutLap() and track.route[#track.route] or branch.nearestAt(session.armedWp, pos)
   if not wp then return end
 
   -- Distance from the car to the center of the next checkpoint, in meters.
@@ -4687,9 +4692,19 @@ local spectate = {
   -- in production write it: a vehicle with no main controller -- a trailer,
   -- anything unpowered -- has no such call, and an unguarded one would throw
   -- inside the vehicle's own Lua where nothing here can see it.
-  IGNITION_OFF = 'if controller.mainController.setEngineIgnition then '
+  --
+  -- THE GUARD USED TO BE ONE LEVEL TOO SHALLOW. It tested for the FUNCTION and
+  -- reached it through `controller.mainController`, so on the very vehicle it
+  -- was written to protect -- one with no main controller -- the guard itself
+  -- threw on the index before it could refuse. The pcall on this side sees
+  -- nothing: queueLuaCommand posts a string into the vehicle's own VM and the
+  -- error surfaces there, so the ignition silently stayed on and the only
+  -- symptom was an engine that went on running under a driver who was out.
+  IGNITION_OFF = 'if controller and controller.mainController '
+    .. 'and controller.mainController.setEngineIgnition then '
     .. 'controller.mainController.setEngineIgnition(false) end',
-  IGNITION_ON  = 'if controller.mainController.setEngineIgnition then '
+  IGNITION_ON  = 'if controller and controller.mainController '
+    .. 'and controller.mainController.setEngineIgnition then '
     .. 'controller.mainController.setEngineIgnition(true) end',
   -- Did WE cut it? Only then is it ours to put back.
   engineCut = false,
@@ -5150,7 +5165,24 @@ local function resetInputBlockUpdate()
   setResetInputsBlocked(wantBlocked or spectate.derbyStoodDown())
   -- Same tick, same source of truth. Recomputed rather than applied once by the
   -- derby module, so it cannot be left armed by a broadcast that never arrives.
-  spectate.setPropulsionBlocked(spectate.derbyStoodDown())
+  --
+  -- AND FOR A WRECK, which it did not use to cover. Being eliminated neutralises
+  -- the controls once (spectate.releaseControls) and cuts the ignition, and for
+  -- the STOPPED timer that is enough: a car eliminated for not moving has nobody
+  -- holding anything down. A car put out for leaving the arena was being driven
+  -- a second ago, with a foot on the floor -- and this file already knows what
+  -- that costs, three lines up in spectate.PROPULSION: a filtered action keeps
+  -- the value it had when the filter armed, and an input.event setting it to
+  -- zero once cannot beat a pedal that is still held. Only the filter can.
+  --
+  -- So the one case with a held pedal was the one case not filtered, which is
+  -- why it was the out-of-bounds timeout that screamed and the stopped timer
+  -- that never did.
+  --
+  -- It lifts on its own: spectatorLock is cleared when the derby releases its
+  -- drivers, and this is recomputed every frame.
+  spectate.setPropulsionBlocked(spectate.derbyStoodDown()
+    or session.spectatorLock == 'derby')
 end
 
 -- Rolling "last good position" sample. Taken a few times a second while the

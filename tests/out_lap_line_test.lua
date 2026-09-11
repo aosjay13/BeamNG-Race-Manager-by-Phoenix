@@ -109,11 +109,13 @@ local function serverState(t)
   handlers['RM_Update'](t)
 end
 
--- The lap-done pushes this file rules on.
+-- The lap-done pushes this file rules on, and the telemetry payload beside them.
 local lapsDone = {}
+local lastProgress = nil
 local realTrigger = guihooks.trigger
 guihooks.trigger = function (event, payload)
   if event == 'RaceManagerLapDone' then lapsDone[#lapsDone + 1] = payload end
+  if event == 'RaceManagerProgress' then lastProgress = payload end
   return realTrigger(event, payload)
 end
 
@@ -238,6 +240,34 @@ settle()
 drive(1150)
 check(#lapsDone == 0, 'the out lap is running with slot 1 cleared')
 check(routeState.nextWp == 2, 'and slot 2 is the gate the driver is being sent to')
+
+-- ---------------------------------------------------------------------------
+-- WHAT `dist` MEASURES ON AN OUT LAP, which is NOT the gate that is armed.
+-- ---------------------------------------------------------------------------
+-- It is metres to the START/FINISH LINE, for the whole of an out lap and only
+-- then. That reads like a bug sitting next to `cp`, which counts progress along
+-- the route -- two halves of one payload measuring different gates -- and it was
+-- "fixed" to the armed gate once on exactly that reasoning.
+--
+-- THE PACE LAP IS WHAT CONSUMES IT. A pace lap is mechanically an out lap, and
+-- paceLapWatch on the server waves the green off this number as
+-- distance-to-the-line. Pointed at the armed gate it dropped the green as the
+-- leader reached checkpoint 1: a formation lap that ended at the first corner.
+--
+-- Asserted here rather than left to a comment, because the server-side test that
+-- covers the green (tests/pace_test.lua) feeds RM_onProgress by hand and so
+-- cannot see which gate this side measured.
+--
+-- The car is at y=1150. Slot 2 is at y=1200, fifty metres ahead and armed. The
+-- line is at y=50, eleven hundred metres behind. The two numbers are far enough
+-- apart that nothing about this check is a rounding question.
+check(lastProgress ~= nil, 'telemetry is being reported on the out lap')
+check(lastProgress and lastProgress.dist and lastProgress.dist > 1000,
+  'and `dist` is metres to the START/FINISH LINE (~1100), not to the armed gate '
+    .. '(~50): the pace lap green is waved off this number, and measuring the '
+    .. 'armed gate instead ends the formation lap at checkpoint 1')
+check(lastProgress and lastProgress.cp == 1,
+  'while `cp` counts the route: the two fields answer two questions on purpose')
 
 -- Back round to the line and through it, exactly as reported.
 veh.y = 0
