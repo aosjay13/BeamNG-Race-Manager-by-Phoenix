@@ -234,7 +234,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.15.1'
+local RM_BUILD = '0.15.2'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -7705,6 +7705,88 @@ local drawStartPositions = render.drawStartPositions
 local drawGates          = render.drawGates
 
 local derby = require('raceManager/derby')
+
+-- WHY ARE MY INPUTS DEAD? The same shape as diagnoseVehicleConfig above, and it
+-- exists for the same reason: a control that does nothing has several unrelated
+-- causes and exactly one visible form.
+--
+-- This mod arms five action-filter groups, and EVERY ONE of them is recomputed
+-- from live state on every frame -- see resetInputBlockUpdate and the grabber
+-- line in onUpdate. That matters more than it sounds: a group cannot be "left"
+-- armed by a missed broadcast, because the next frame would release it. So when
+-- inputs are dead the question is never "did a filter get stuck", it is "which
+-- piece of state is wrong", and those are different bugs in different places.
+--
+-- It also prints what the ENGINE thinks, not only what this mod believes it
+-- asked for. Those two disagreeing is its own answer: core_input_actionFilter is
+-- a BeamNG extension a build can rename or not load, in which case every
+-- setActionGroupBlocked call here has been quietly doing nothing.
+--
+-- AND WHAT IS NOT OURS. A dead control that no group of ours covers, and that
+-- the engine does not report as blocked, is not this mod -- BeamNG has filters
+-- of its own and so does BeamMP. Saying that plainly is worth as much as finding
+-- one of ours, because the alternative is reading this file for an evening.
+function M.inputDiag()
+  local function line(s) log('I', 'raceManager', s); print('[RaceManager] ' .. s) end
+  line('--- input diagnosis ---')
+  line('phase: ' .. tostring(session.phase)
+    .. ', spectatorLock: ' .. tostring(session.spectatorLock)
+    .. ', derby phase: ' .. tostring(derby.derbyState and derby.derbyState.phase)
+    .. ', derby out: ' .. tostring(derby.derbyState and derby.derbyState.out)
+    .. ', derby stood down: ' .. tostring(derby.derbyState and derby.derbyState.stoodDown))
+  line('resets: ' .. tostring(session.resetsUsed) .. '/' .. tostring(session.maxResets)
+    .. ', derby resets: ' .. tostring(derbyResets.used) .. '/' .. tostring(derbyResets.max))
+
+  -- What THIS FILE believes it has armed.
+  local groups = {
+    { 'raceManagerSpectate',   spectate.blocked,           spectate.DRIVE },
+    { 'raceManagerPropulsion', spectate.propulsionBlocked, spectate.PROPULSION },
+    { 'raceManagerGrabber',    spectate.grabBlocked,       spectate.GRAB },
+    { 'raceManagerResets',     block.resetInputs,          block.RESET_ACTIONS },
+    { 'raceManagerTeleport',   block.teleportInputs,       block.TELEPORT_ACTIONS },
+  }
+  for _, g in ipairs(groups) do
+    line(string.format('  %-22s %s (%d action%s)', g[1],
+      g[2] and 'BLOCKED' or 'released', #g[3], #g[3] == 1 and '' or 's'))
+  end
+
+  -- ...and what the engine says, for every action any of them covers. A group
+  -- this file thinks is released whose actions the engine still reports blocked
+  -- is somebody else's filter, and that is the useful half of this readout.
+  if not (core_input_actionFilter and core_input_actionFilter.isActionBlocked) then
+    line('core_input_actionFilter.isActionBlocked is absent: this build cannot be '
+      .. 'asked, and every filter call this mod makes may be doing nothing')
+    return
+  end
+  local blocked, n = {}, 0
+  for _, g in ipairs(groups) do
+    for _, action in ipairs(g[3]) do
+      local ok, is = pcall(core_input_actionFilter.isActionBlocked, action)
+      if ok and is then blocked[#blocked + 1] = action; n = n + 1 end
+    end
+  end
+  table.sort(blocked)
+  line('engine reports blocked (' .. n .. '): '
+    .. (n > 0 and table.concat(blocked, ', ') or 'nothing this mod covers'))
+  -- STEERING AND RESET BY NAME, because they are what gets reported, and because
+  -- a keyboard and a pad do not use the same action for either of them. "The
+  -- controller is dead and the keyboard is fine" is that split showing, and it
+  -- narrows the search to one of the two names on each line.
+  for _, pair in ipairs({
+    { 'steering (pad/wheel)', 'steering' },
+    { 'steer left (kbd)',     'steer_left' },
+    { 'steer right (kbd)',    'steer_right' },
+    { 'throttle (pad)',       'throttle' },
+    { 'accelerate (kbd)',     'accelerate' },
+    { 'recover_vehicle',      'recover_vehicle' },
+    { 'reset_physics',        'reset_physics' },
+    { 'recover_to_last_road', 'recover_to_last_road' },
+  }) do
+    local ok, is = pcall(core_input_actionFilter.isActionBlocked, pair[2])
+    line(string.format('  %-22s %s', pair[1],
+      (not ok) and 'could not be asked' or (is and 'BLOCKED' or 'free')))
+  end
+end
 
 derby.init({
   -- Plain functions.

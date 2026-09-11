@@ -6,6 +6,36 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.15.2 - A way to ask why the inputs are dead
+
+#### Added
+
+- **`raceManager.inputDiag()` in the console**, for a report that has now come in
+  twice and cannot be reproduced on demand: steering and reset dead on a
+  controller while the keyboard has full control.
+
+  It prints the session and derby state, which of the five action-filter groups
+  this mod believes it has armed, and SEPARATELY what the engine reports as
+  blocked for every action those groups cover. Then it names steering, throttle
+  and the three reset actions one line each, split into the pad name and the
+  keyboard name, because a dead controller beside a live keyboard IS that split
+  and the two halves are different actions.
+
+  Three answers come out of it and they are different bugs in different places. A
+  group this mod has armed is this mod. A group it has NOT armed whose actions
+  the engine still blocks is somebody else's filter -- BeamNG has its own and so
+  does BeamMP. And a build with no `isActionBlocked` to ask is one where every
+  filter call this mod makes may have been doing nothing all along, which is its
+  own answer.
+
+  Worth writing down, because it is what the first investigation got wrong: every
+  one of the five groups is recomputed from live state on EVERY FRAME. None of
+  them can be left armed by a missed broadcast, because the next frame releases
+  it. So when inputs are dead the question is never "did a filter stick", it is
+  "which piece of state is wrong" -- and the report that prompted this was of
+  inputs that came back after spawning through the vehicle selector, which no
+  per-frame filter of ours could have survived.
+
 ## 0.15.1 - The wreck stays a wreck, and the pace lap waits for the line
 
 #### Fixed
