@@ -822,6 +822,104 @@ check(garageMsg ~= nil and garageMsg.added == false,
   'a name with nothing usable left after cleaning is refused rather than '
     .. 'written as a file called _ or worse')
 
+-- ---------------------------------------------------------------------------
+-- ADDING A SET INSTEAD OF REPLACING: a multi-class field from the sets a
+-- league already keeps
+-- ---------------------------------------------------------------------------
+-- Running two classes together used to mean whitelisting the combined field car
+-- by car and keeping that combination as a fourth set -- one that goes stale the
+-- moment any of the real three is corrected. Load one class, add the next.
+os.remove('Resources/Server/RaceManager/Data/Garage/ClassA.json')
+os.remove('Resources/Server/RaceManager/Data/Garage/ClassB.json')
+os.remove('Resources/Server/RaceManager/Data/Garage/StrictSet.json')
+
+local SIG_C = 'model=covet|parts=body=covet_body|vars=camber=0.0000'
+local SIG_D = 'model=sunburst|parts=body=sunburst_body|vars=camber=0.0000'
+
+RM_onClearGarage(1)
+RM_onSetGarageMode(1, '{"mode":"parts"}')
+RM_onWhitelistVehicle(1, '{"model":"covet","label":"Class A Car","sig":"' .. SIG_C .. '"}')
+RM_onSaveGarageSet(1, '{"name":"ClassA"}')
+
+RM_onClearGarage(1)
+RM_onWhitelistVehicle(1, '{"model":"sunburst","label":"Class B Car","sig":"' .. SIG_D .. '"}')
+RM_onSaveGarageSet(1, '{"name":"ClassB"}')
+
+RM_onClearGarage(1)
+RM_onLoadGarageSet(1, '{"name":"ClassA"}')
+garageMsg = nil
+RM_onLoadGarageSet(1, '{"name":"ClassB","append":true}')
+check(#lastState.garage == 2, 'adding a set merges it into the list rather than replacing it')
+local function hasCar(label)
+  for _, e in ipairs(lastState.garage or {}) do if e.label == label then return true end end
+  return false
+end
+check(hasCar('Class A Car') and hasCar('Class B Car'),
+  'and both classes are on the one list, which is the whole point')
+check(garageMsg ~= nil and garageMsg.added == true, 'the admin is told it worked')
+
+-- Adding the same set twice is a no-op rather than a doubled list. The test is
+-- "is this the same ENTRY", on the full signature -- two TUNES of the same parts
+-- stay two entries, because the list is also the menu a driver spawns from.
+garageMsg = nil
+RM_onLoadGarageSet(1, '{"name":"ClassB","append":true}')
+check(#lastState.garage == 2,
+  'adding a set already on the list does not duplicate its cars')
+check(garageMsg ~= nil and garageMsg.added == true
+  and garageMsg.message:find('already', 1, true) ~= nil,
+  'and says so rather than reporting a silent success')
+
+-- ADDING ONTO NOTHING IS A LOAD, and has to be: the mode comes off the set, so
+-- there is nothing to disagree with and nothing to merge into.
+RM_onClearGarage(1)
+RM_onSetGarageMode(1, '{"mode":"strict"}')
+RM_onLoadGarageSet(1, '{"name":"ClassA","append":true}')
+check(#lastState.garage == 1 and lastState.garageMode == 'parts',
+  'adding to an empty list behaves as a load, mode included')
+
+-- THE MODES HAVE TO AGREE. Parts and Strict disagree about who is legal, not
+-- about who is listed: adopting either would silently re-rule half the field.
+RM_onClearGarage(1)
+RM_onSetGarageMode(1, '{"mode":"strict"}')
+RM_onWhitelistVehicle(1, '{"model":"etk800","label":"Strict Car","sig":"' .. SIG_A .. '"}')
+RM_onSaveGarageSet(1, '{"name":"StrictSet"}')
+garageMsg = nil
+RM_onLoadGarageSet(1, '{"name":"ClassA","append":true}')
+check(garageMsg ~= nil and garageMsg.added == false,
+  'a Parts set cannot be merged into a Strict list: the two rule cars '
+    .. 'differently, and adopting either mode silently re-rules somebody')
+check(#lastState.garage == 1 and lastState.garage[1].label == 'Strict Car',
+  'and the refusal leaves the live list exactly as it was')
+check(lastState.garageMode == 'strict', 'mode included')
+
+-- A LOAD still crosses modes freely: it replaces everything, so there is no
+-- half of the field left under the old rule.
+RM_onLoadGarageSet(1, '{"name":"ClassA"}')
+check(#lastState.garage == 1 and lastState.garageMode == 'parts',
+  'loading across modes is still fine, because nothing is left behind to re-rule')
+
+-- Refused WHOLE rather than part-loaded when the merge would overflow: a field
+-- that looks loaded and is four cars short is found by a driver being deleted.
+RM_onClearGarage(1)
+RM_onSetGarageMode(1, '{"mode":"parts"}')
+for i = 1, 60 do
+  RM_onWhitelistVehicle(1, '{"model":"filler","label":"Filler ' .. i
+    .. '","sig":"model=filler|parts=body=f' .. i .. '|vars=camber=0.0000"}')
+end
+check(#lastState.garage == 60, 'the Garage List fills to its cap')
+garageMsg = nil
+RM_onLoadGarageSet(1, '{"name":"ClassA","append":true}')
+check(garageMsg ~= nil and garageMsg.added == false,
+  'a merge that would pass the entry cap is refused')
+check(#lastState.garage == 60,
+  'and nothing is added: a part-loaded field looks complete and is not')
+
+RM_onDeleteGarageSet(1, '{"name":"ClassA"}')
+RM_onDeleteGarageSet(1, '{"name":"ClassB"}')
+RM_onDeleteGarageSet(1, '{"name":"StrictSet"}')
+RM_onClearGarage(1)
+RM_onLoadGarageSet(1, '{"name":"Trucks"}')
+
 RM_onDeleteGarageSet(3, '{"name":"GT3"}')
 check(hasSet('GT3'), 'deleting a set needs an admin too')
 RM_onDeleteGarageSet(1, '{"name":"GT3"}')

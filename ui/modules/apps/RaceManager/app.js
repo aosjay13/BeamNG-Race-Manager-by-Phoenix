@@ -420,8 +420,27 @@ angular.module('beamng.apps')
       // Admin authentication. Every editor/admin control stays hidden until the
       // server confirms a login (RaceManagerAuth). authUi holds the two inputs.
       $scope.isAdmin = false;
-      $scope.authUi = { password: '', newPassword: '' };
+      $scope.authUi = { password: '', newPassword: '', newModPassword: '' };
       $scope.authError = false;   // true after a rejected login attempt
+      // WHICH TIER this login is worth: 'admin' or 'moderator'. isAdmin still
+      // means "may run the night" and still gates every control it gated
+      // before, because that is what both tiers are for.
+      $scope.adminRole = null;
+      // The three the server will not let a moderator do: change either
+      // password, clear the server's results, delete a saved layout.
+      //
+      // NOT `=== 'admin'`. A null role is an offline session or a server from
+      // before the tiers existed, and on both of those the one login there is
+      // has always been able to do everything -- so null has to read as the
+      // WIDER tier. Testing for 'admin' would take the controls away on exactly
+      // the two cases that never had a moderator to protect against.
+      $scope.isFullAdmin = function () {
+        return $scope.isAdmin && $scope.adminRole !== 'moderator';
+      };
+      // For the panel's own explanation of why a control is missing.
+      $scope.isModerator = function () {
+        return $scope.isAdmin && $scope.adminRole === 'moderator';
+      };
       // Non-admins are spectators: they always see the live timing. showLogin
       // controls whether the login prompt is visible over the top.
       //   - No admin on the server yet: prompt shows (but can be dismissed).
@@ -1601,7 +1620,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.14.2';
+      var APP_BUILD = '0.15.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -2589,6 +2608,14 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
             }
             pushEditorOpen();
           }
+          // THE TIER CAN MOVE WITHOUT THE FLAG MOVING, so this is its own test
+          // rather than a line inside the one above. An admin whose password is
+          // changed under them and who logs back in as a moderator is logged in
+          // both before and after: nesting this would leave the panel offering
+          // three controls the server now refuses.
+          if (typeof data.isAdmin === 'boolean') {
+            $scope.adminRole = data.isAdmin ? (data.role || null) : null;
+          }
           if (typeof data.width === 'number') { $scope.settingsUi.width = data.width; }
           if (typeof data.height === 'number') { $scope.settingsUi.height = data.height; }
           if (typeof data.depth === 'number') { $scope.settingsUi.depth = data.depth; }
@@ -3108,7 +3135,12 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       var pwMsgTimer = null;
       $scope.$on('RaceManagerPasswordChanged', function (event, data) {
         $scope.$evalAsync(function () {
-          $scope.pwMsg = '✓ Password updated' + (data && data.by ? ' by ' + data.by : '');
+          // WHICH password, because there are two of them now and "updated"
+          // over the wrong one is worse than saying nothing.
+          var which = (data && data.role === 'moderator')
+            ? (data.cleared ? 'Moderator login turned off' : 'Moderator password updated')
+            : 'Admin password updated';
+          $scope.pwMsg = '✓ ' + which + (data && data.by ? ' by ' + data.by : '');
           if (pwMsgTimer) { clearTimeout(pwMsgTimer); }
           pwMsgTimer = setTimeout(function () {
             $scope.$evalAsync(function () { $scope.pwMsg = null; });
@@ -3133,6 +3165,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           // were mid-session pressing buttons that had quietly stopped working.
           var lapsed = !!(data && data.lapsed);
           $scope.isAdmin = ok;
+          // Absent means full admin, per isFullAdmin above. Cleared with the
+          // flag so a rejected login cannot leave the last tier behind.
+          $scope.adminRole = ok ? (data && data.role) || null : null;
           $scope.authError = !ok && !restored && !lapsed;
           if (lapsed) { $scope.showLogin = true; }
           if (ok) {
@@ -3980,6 +4015,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // Admin logs out -> back to spectator + login prompt, and drop server auth.
       $scope.logout = function () {
         $scope.isAdmin = false;
+        $scope.adminRole = null;
         $scope.showLogin = true;
         $scope.loginPinned = true;
         // The admin tab is left where it was: every panel is behind ng-if
@@ -3991,8 +4027,19 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.changePassword = function () {
         var p = ($scope.authUi.newPassword || '').trim();
         if (!p) { return; }
-        bngApi.engineLua('raceManager.changePassword(' + luaStr(p) + ')');
+        bngApi.engineLua('raceManager.changePassword(' + luaStr(p) + ", 'admin')");
         $scope.authUi.newPassword = '';
+      };
+
+      // The race director's password. THE EMPTY FIELD IS A REAL SETTING here
+      // and the admin one's is not: clearing it is how the moderator tier is
+      // turned off again, so this posts what is in the box rather than refusing
+      // a blank. Clearing the ADMIN password would lock the owner out of their
+      // own controls, which is why that one still insists on a value.
+      $scope.changeModPassword = function () {
+        var p = ($scope.authUi.newModPassword || '').trim();
+        bngApi.engineLua('raceManager.changePassword(' + luaStr(p) + ", 'moderator')");
+        $scope.authUi.newModPassword = '';
       };
 
       // ------------------------------------------------------------------
@@ -4091,12 +4138,26 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // row under Set Password in a panel an admin opens for other things. A
       // results file is the only record a league has of a race night once the
       // session is over.
-      $scope.resultsUi = { confirmClear: false };
+      $scope.resultsUi = { confirmClear: false, confirmLocal: false };
       $scope.askClearResults    = function () { $scope.resultsUi.confirmClear = true; };
       $scope.cancelClearResults = function () { $scope.resultsUi.confirmClear = false; };
       $scope.clearResults = function () {
         $scope.resultsUi.confirmClear = false;
         bngApi.engineLua('raceManager.clearResults()');
+      };
+      // THE SAME BUTTON FOR THIS PC ONLY, and open to a moderator because it
+      // destroys nothing the league relies on: the server's copy is the record
+      // and this never touches it. A race director who has finished with an
+      // evening's files can clear their own without being handed the admin
+      // password to do it.
+      //
+      // Its own confirm flag rather than sharing confirmClear: one flag would
+      // arm both rows at once, and the two rows delete very different things.
+      $scope.askClearLocal    = function () { $scope.resultsUi.confirmLocal = true; };
+      $scope.cancelClearLocal = function () { $scope.resultsUi.confirmLocal = false; };
+      $scope.clearLocalResults = function () {
+        $scope.resultsUi.confirmLocal = false;
+        bngApi.engineLua('raceManager.clearLocalResults()');
       };
 
       // ------------------------------------------------------------------
@@ -4310,6 +4371,16 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         if (!name) { return; }
         bngApi.engineLua('raceManager.saveGarageSet(' + luaStr(name) + ')');
         $scope.garageSetUi.name = '';
+      };
+      // ADD rather than replace: the set is merged into what is already
+      // approved, so a multi-class field is built from the per-class sets a
+      // league already keeps rather than whitelisted again car by car. Every
+      // rule about the merge lives on the server; this only says which button
+      // was pressed.
+      $scope.addGarageSet = function () {
+        var name = $scope.garageSetUi.selected;
+        if (!name) { return; }
+        bngApi.engineLua('raceManager.loadGarageSet(' + luaStr(name) + ', true)');
       };
       $scope.loadGarageSet = function () {
         var name = $scope.garageSetUi.selected;

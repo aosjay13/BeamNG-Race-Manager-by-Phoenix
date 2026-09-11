@@ -234,7 +234,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.14.2'
+local RM_BUILD = '0.15.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -346,6 +346,18 @@ local session = {
   -- reconnect can inherit a stale one. Session-scoped rather than editor state:
   -- it gates the editor, but it is not part of it.
   isAdmin = false,
+  -- WHICH KIND of admin: 'admin' | 'moderator'. Both may run the night, so
+  -- isAdmin stays the flag every control is gated on; this narrows it for the
+  -- three the server will not let a moderator do at all.
+  --
+  -- nil MEANS FULL ADMIN, not "no rights". An offline session and a server from
+  -- before the tiers existed both send no role, and in both of those the one
+  -- login there is has always been able to do everything. Reading nil as the
+  -- lower tier would take controls away on exactly those two.
+  role = nil,
+  -- A field, not another top-level local: this file sits close enough to Lua's
+  -- 200-local ceiling that the next one stops it compiling, and a mod that will
+  -- not compile is simply absent in game with nothing said about it.
 }
 
 -- Checkpoints: ordered list of { x, y, z, hx, hy } where (hx, hy) is the
@@ -1605,6 +1617,10 @@ local function pushRouteState()
     -- Admin session, so a freshly mounted UI app knows straight away that this
     -- client is still logged in (see the isAdmin declaration above).
     isAdmin      = session.isAdmin,
+    -- ...and at which tier, for the same reason. The app is torn down and
+    -- rebuilt every time the pause menu opens; without this it would come back
+    -- knowing it was logged in but not as what, and default to the wider tier.
+    role         = session.role,
     -- Joker route (Module 2)
     pitRoute     = track.pitRoute,
     pitEntry     = track.pitEntry,
@@ -2311,54 +2327,41 @@ local function checkGates()
     -- the same way from scratch, which is what a branch gate being another way
     -- through CP i, rather than a lane the driver is on, actually means.
     --
-    -- THE OUT LAP ARMS THE CHECKPOINTS LIKE ANY OTHER LAP. An earlier version
-    -- armed only the start/finish line on the reasoning that a lap nobody is
-    -- scoring has nothing to police -- which is true, and which also took the
-    -- checkpoints off the driver's screen for the whole of their first lap. The
-    -- out lap is the lap where a driver least knows the circuit; it is the worst
-    -- possible one to hide the gates on.
+    -- THE OUT LAP IS AN ORDINARY LAP THAT IS NOT SCORED, and that is the whole
+    -- of the rule. Same gates, same order, same arming, same end: it clears
+    -- checkpoint 1 through the line like every other lap, and the only thing
+    -- different about it happens on the SERVER, which declines to time it.
     --
-    -- The line is accepted as well, further down, so a car gridded PAST slot 1
-    -- (which a head-on layout does, spreading its grid round the circuit) can
-    -- still end the out lap by reaching the line rather than being sent most of
-    -- the way round backwards to arm a gate behind it.
-    local onOut = onOutLap()
+    -- THE LINE HAS NO SHORTCUT HERE, and used to. Two earlier versions let
+    -- crossing the start/finish end the out lap from wherever the driver had
+    -- got to, on the reasoning that a lap nobody scores has nothing to police:
+    --
+    --   * the first accepted it unconditionally, so on an ordinary circuit --
+    --     where the grid sits just behind the line, making the line the FIRST
+    --     gate a driver meets -- the out lap ended seconds after the green with
+    --     nothing driven. From a live log: 2.1s, 2.4s, 4.4s, 5.6s. A formation
+    --     lap is mechanically an out lap, so the same crossing dropped the green
+    --     the instant the leader rolled over the line.
+    --
+    --   * the second required one cleared checkpoint first, which fixed those
+    --     and left the same bug one gate further along: clear slot 1, turn
+    --     round, cross the line, and the out lap was "complete" with ten gates
+    --     never driven. Reported from a real qualifying session.
+    --
+    -- The second is why there is no version of this rule left. A shortcut that
+    -- ends a lap on a gate the driver was not being sent to is wrong at every
+    -- threshold, because the thing that makes it wrong is the shortcut and not
+    -- the number: the gate the renderer highlights is `armedWp`, so the lap
+    -- ended on a gate that was not lit, which is how it was noticed.
+    --
+    -- Nobody is stranded without it. A car gridded PAST slot 1 -- which a
+    -- head-on layout does, spreading its grid round the circuit -- clears
+    -- nothing on the way to the line and simply runs on to slot 1 to start its
+    -- lap there. That is a LONGER out lap, never a backwards one, and never a
+    -- two-second one. A sprint stage cannot reach this at all: point-to-point
+    -- owes no out lap (see outLapOwed, server side).
     local wp, backwards = branch.crossedAt(session.armedWp, session.prevPos, pos)
     local crossed = wp ~= nil
-
-    -- On the out lap the LINE ends the lap from wherever the driver has got to,
-    -- even with slots still uncleared. Nothing on this lap is scored, so there is
-    -- nothing to protect by making them go back for a gate.
-    --
-    -- BUT ONLY ONCE THEY HAVE ACTUALLY GONE SOMEWHERE. A grid sits BEHIND the
-    -- start/finish line on an ordinary circuit, so the line is the first gate a
-    -- driver reaches: seconds after the green, with nothing cleared, this ended
-    -- the out lap and started timing. Measured from a live log, out laps
-    -- "completed" in 2.1s, 2.4s, 4.4s and 5.6s. The formation lap is mechanically
-    -- an out lap, so the same crossing dropped the green the moment the leader
-    -- rolled over the line.
-    --
-    -- Requiring a cleared checkpoint says the difference plainly: reaching a line
-    -- you have not driven a route to is not completing a lap.
-    --
-    -- ONE RULE, NO GEOMETRY. An earlier attempt let gridIsOff() waive this, to
-    -- keep the head-on case the shortcut was written for. That is a 250 m
-    -- distance test, so a grid merely set further back down the straight would
-    -- have gone on ending its out lap in seconds: the same bug, hiding behind a
-    -- threshold.
-    --
-    -- The head-on car is not stranded by this. It clears nothing on the way to
-    -- the line, so it simply runs on to slot 1 and starts its lap there. That is
-    -- a longer out lap, never a backwards one, and never a two-second one.
-    local lineEndedOutLap = false
-    if onOut and not crossed and session.armedWp > 1
-        and session.armedWp < #track.route then
-      local line = track.route[#track.route]
-      if line then
-        crossed, backwards = segmentCrossesGate(line, session.prevPos, pos)
-        if crossed then wp, lineEndedOutLap = line, true end
-      end
-    end
 
     if crossed then
       lastGate     = wp   -- the "Last Checkpoint" reset mode respawns here
@@ -2398,14 +2401,7 @@ local function checkGates()
           })
         end
       end
-      if lineEndedOutLap then
-        -- Reached the line with slots still owing. The out lap is over; slot 1
-        -- arms behind it with timing running. onLapCompleted reports the crossing
-        -- like any other -- the SERVER is what declines to score it, exactly as
-        -- it always has for qualifying.
-        onLapCompleted()
-        session.armedWp = 1
-      elseif session.armedWp >= #track.route then
+      if session.armedWp >= #track.route then
         onLapCompleted()
         session.armedWp = 1
       else
@@ -2594,7 +2590,15 @@ local function reportProgress(dt)
   -- The gate THIS car is driving towards. A checkpoint with a branch gate has
   -- more than one, and which of them is nearest is the only honest answer to
   -- that: it needs the car's position, so it is resolved here rather than above.
-  local wp = onOutLap() and track.route[#track.route] or branch.nearestAt(session.armedWp, pos)
+  --
+  -- THE ARMED GATE ON THE OUT LAP TOO. This read the start/finish line instead
+  -- while an out lap was running, which was the other half of the shortcut in
+  -- checkGates: with the line as the target, the distance shipped to the
+  -- leaderboard was metres-to-the-line while `cp` right below it counted
+  -- progress along the route. Two halves of one payload measuring different
+  -- gates, so a driver a corner into their out lap was ordered by how near they
+  -- happened to be to a line they were driving away from.
+  local wp = branch.nearestAt(session.armedWp, pos)
   if not wp then return end
 
   -- Distance from the car to the center of the next checkpoint, in meters.
@@ -4187,6 +4191,62 @@ function M.openLocalResults()
   pushNotice('session', 'Your results copies: ' .. tostring(real or M.RESULTS_LOCAL_DIR))
 end
 
+-- DELETE THIS PC'S COPIES OF THE RESULTS, and nothing else anywhere.
+--
+-- The server-side Clear Results Cache is an admin-only button for a reason: it
+-- deletes the league's record of a race night and no one can put it back. This
+-- one is the opposite in every way that matters. It touches one folder inside
+-- BeamNG's own user files, on the machine of whoever pressed it, and the
+-- server's copy -- the actual record -- is untouched. So a race director can
+-- tidy up after an evening without anyone having to hand them the admin
+-- password to do it.
+--
+-- FS:findFiles is the virtual filesystem's own listing and resolves into the
+-- user folder, which is where onResultsFile writes. Depth 0 keeps it to this
+-- folder: a recursive delete under a path the game resolves for us is not a
+-- thing worth being casual about.
+--
+-- Pattern-matched to .txt as well, because the folder is the one the RESULTS
+-- go in but it is still a folder on someone's PC. A filter is cheap and
+-- "delete everything in here" is not a promise this button made.
+function M.clearLocalResults()
+  if not (FS and FS.findFiles and FS.removeFile) then
+    pushNotice('session', 'This build has no file access, so the copies cannot be removed')
+    log('W', 'raceManager', 'clearLocalResults: FS:findFiles/removeFile unavailable')
+    return
+  end
+  local okList, files = pcall(function ()
+    return FS:findFiles(M.RESULTS_LOCAL_DIR, '*.txt', 0, false, false)
+  end)
+  if not okList or type(files) ~= 'table' then
+    pushNotice('session', 'Could not read your results folder')
+    log('W', 'raceManager', 'clearLocalResults: findFiles failed: ' .. tostring(files))
+    return
+  end
+  -- pairs AND A COUNTER, not ipairs and #. The list comes back from a C
+  -- function, and BeamNG's own career code counts it with tableSize rather than
+  -- the length operator -- so it is not promised to be a hole-free sequence.
+  -- ipairs over a table with a hole in it stops at the hole and silently leaves
+  -- the rest of the folder behind, which reads on screen as a clear that worked.
+  local found, removed = 0, 0
+  for _, path in pairs(files) do
+    found = found + 1
+    if pcall(function () FS:removeFile(path) end) then removed = removed + 1 end
+  end
+  log('I', 'raceManager', 'Local results cleared: ' .. removed .. ' of ' .. found .. ' file(s)')
+  -- COUNTED, not assumed. "Cleared" over a folder that would not delete is the
+  -- kind of reassurance that gets believed until somebody goes looking.
+  if found == 0 then
+    pushNotice('session', 'You had no saved results copies to clear')
+  elseif removed == found then
+    pushNotice('session', 'Your results copies cleared: ' .. removed
+      .. ' file' .. (removed == 1 and '' or 's') .. ' removed from this PC')
+  else
+    pushNotice('session', 'Cleared ' .. removed .. ' of ' .. found
+      .. ' results copies: the rest could not be deleted')
+  end
+end
+
 -- WHERE THE SERVER KEEPS ITS RESULTS. Shown, not opened, and that is measured
 -- rather than a limitation I am guessing at.
 --
@@ -4307,9 +4367,16 @@ function M.saveGarageSet(name)
   end
 end
 
-function M.loadGarageSet(name)
+-- `append` true MERGES the set into the approved list instead of replacing it,
+-- which is how a multi-class night is built out of the per-class sets a league
+-- already maintains. The server owns every rule about the merge: matching
+-- modes, duplicates and the entry cap are all decided there, because they are
+-- questions about the live list and this side does not hold it.
+function M.loadGarageSet(name, append)
   if inMultiplayer() then
-    TriggerServerEvent('RM_LoadGarageSet', jsonEncode({ name = tostring(name or '') }))
+    TriggerServerEvent('RM_LoadGarageSet', jsonEncode({
+      name = tostring(name or ''), append = append == true,
+    }))
   end
 end
 
@@ -9619,7 +9686,21 @@ local function onServerUpdate(rawData)
   -- gets corrected (server restart, or an admin logged out from elsewhere).
   if type(data.youAreAdmin) == 'boolean' and data.youAreAdmin ~= session.isAdmin then
     session.isAdmin = data.youAreAdmin
-    guihooks.trigger('RaceManagerAuth', { success = session.isAdmin, restored = true })
+    session.role = session.isAdmin and (data.youRole or 'admin') or nil
+    guihooks.trigger('RaceManagerAuth', {
+      success = session.isAdmin, role = session.role, restored = true,
+    })
+    pushRouteState()
+  -- THE TIER CAN MOVE WITHOUT THE FLAG MOVING, which the test above cannot see:
+  -- an admin who has their own password changed out from under them and logs
+  -- back in as a moderator is authenticated both before and after. Checked
+  -- separately, or the panel would go on offering controls the server refuses.
+  elseif session.isAdmin and type(data.youRole) == 'string'
+      and data.youRole ~= session.role then
+    session.role = data.youRole
+    guihooks.trigger('RaceManagerAuth', {
+      success = true, role = session.role, restored = true,
+    })
     pushRouteState()
   end
   -- The qualifying clock has expired and this driver is on their last lap. Read
@@ -10385,11 +10466,17 @@ local function onLoginResult(rawData)
   -- Remember it here as well as telling the UI: the UI's copy dies with the
   -- app, this one outlives the pause menu.
   session.isAdmin = data.success == true
+  -- The tier that was granted, straight from the password that matched. Cleared
+  -- on a failure along with the flag, so a rejected login cannot leave the last
+  -- successful one's tier behind.
+  session.role = session.isAdmin and (data.role or 'admin') or nil
   -- `lapsed` means this was not an answer to a login attempt: the server refused
   -- a command because the session is no longer authenticated. Worth saying out
   -- loud, because from the panel it looks exactly like the mod has stopped
   -- working rather than like being logged out.
-  guihooks.trigger('RaceManagerAuth', { success = session.isAdmin, lapsed = data.lapsed == true })
+  guihooks.trigger('RaceManagerAuth', {
+    success = session.isAdmin, role = session.role, lapsed = data.lapsed == true,
+  })
   if data.lapsed == true then
     pushNotice('server', 'Admin session expired: log in again to run the session')
   end
@@ -10397,15 +10484,46 @@ local function onLoginResult(rawData)
     .. (data.lapsed == true and ' (session lapsed)' or ''))
 end
 
--- Server broadcast that an admin rotated the master password (never the value).
+-- THE SERVER REFUSED A COMMAND ON THE TIER, not on the login.
+--
+-- Separate from RM_LoginResult deliberately: that event carries the admin flag,
+-- so answering a moderator down it would log them out of a session they are
+-- legitimately in. This says why the button did nothing and changes nothing
+-- else. A refusal that reaches nobody is a dead button, which is the failure
+-- this whole channel exists to avoid.
+--
+-- On M rather than a local: this file runs close to Lua's 200-local ceiling,
+-- and the one past it makes the mod vanish from the game with nothing logged.
+function M.onDenied(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  local why = (ok and type(data) == 'table' and data.reason) and tostring(data.reason)
+    or 'The server refused that command'
+  editorMsg(why)
+  pushNotice('server', why)
+  log('W', 'raceManager', 'Command refused: ' .. why)
+end
+
+-- Server broadcast that an admin rotated one of the master passwords (never
+-- the value). WHICH ONE is carried, because there are two of them now and
+-- "Admin password changed" over a moderator-password change is a sentence that
+-- sends somebody looking for a login that still works fine.
 local function onPasswordChanged(rawData)
   local ok, data = pcall(jsonDecode, rawData)
-  local by = (ok and type(data) == 'table' and data.changedBy) and tostring(data.changedBy) or 'an admin'
-  editorMsg('Admin password changed by ' .. by)
+  data = (ok and type(data) == 'table') and data or {}
+  local by = data.changedBy and tostring(data.changedBy) or 'an admin'
+  local what = 'Admin password'
+  if data.role == 'moderator' then
+    what = data.cleared == true and 'Moderator login turned off' or 'Moderator password'
+  end
+  local said = data.cleared == true and (what .. ' by ' .. by)
+    or (what .. ' changed by ' .. by)
+  editorMsg(said)
   -- Dedicated channel so the admin bar can confirm the change even when the
   -- editor panel (where editorMsg is shown) isn't open.
-  guihooks.trigger('RaceManagerPasswordChanged', { by = by })
-  log('I', 'raceManager', 'Master password changed by ' .. by)
+  guihooks.trigger('RaceManagerPasswordChanged', {
+    by = by, role = data.role, cleared = data.cleared == true,
+  })
+  log('I', 'raceManager', said)
 end
 
 -- ---------------------------------------------------------------------------
@@ -10421,7 +10539,8 @@ function M.login(password)
     -- meant to stay usable single-player, so grant local admin outright. Recorded
     -- here too, so the offline editor also survives the pause menu.
     session.isAdmin = true
-    guihooks.trigger('RaceManagerAuth', { success = true, offline = true })
+    session.role = 'admin'
+    guihooks.trigger('RaceManagerAuth', { success = true, role = 'admin', offline = true })
     pushRouteState()
   end
 end
@@ -10432,19 +10551,30 @@ function M.logout()
   -- Clear the durable copy FIRST. If it stayed set, the next route push would
   -- hand admin straight back to the UI that just logged out.
   session.isAdmin = false
+  session.role = nil
   if inMultiplayer() then TriggerServerEvent('RM_Logout', '') end
   pushRouteState()
 end
 
--- Authenticated admin rotates the master password on the server.
-function M.changePassword(newPassword)
+-- An admin rotates one of the two master passwords on the server. `role` is
+-- 'moderator' for the race director's password and anything else (including
+-- nothing) for the admin's, which is what this took before the tiers existed.
+--
+-- AN EMPTY MODERATOR PASSWORD IS A REAL INSTRUCTION: it is how the tier is
+-- switched off again, so it goes to the server instead of being refused here as
+-- a blank field. An empty ADMIN password is still nothing but a slip -- there
+-- is no way back from it -- and is still refused.
+function M.changePassword(newPassword, role)
   newPassword = tostring(newPassword or '')
-  if newPassword == '' then
+  local moderator = role == 'moderator'
+  if newPassword == '' and not moderator then
     editorMsg('Enter a new password first')
     return
   end
   if inMultiplayer() then
-    TriggerServerEvent('RM_ChangePassword', jsonEncode({ password = newPassword }))
+    TriggerServerEvent('RM_ChangePassword', jsonEncode({
+      password = newPassword, role = moderator and 'moderator' or 'admin',
+    }))
   end
 end
 
@@ -10978,6 +11108,9 @@ local DISPATCH = {
   RM_ClearTrack      = onClearTrack,
   RM_LoginResult     = onLoginResult,
   RM_PasswordChanged = onPasswordChanged,
+  -- An admin-only command refused because this session is a moderator. Its own
+  -- channel so the refusal cannot be mistaken for the login lapsing.
+  RM_Denied          = M.onDenied,
   -- Module 1: forced spectator mode (used by racing and, separately, by derby)
   RM_ForceSpectate   = onForceSpectate,
   RM_ReleaseSpectate = onReleaseSpectate,
@@ -11098,8 +11231,10 @@ local function resetToIdle(reason)
   session.phase = 'waiting'
   -- The server drops authenticatedPlayers on disconnect, so a session that has
   -- ended takes the admin rights with it. Forget them here or the next server
-  -- would inherit an admin flag it never granted.
+  -- would inherit an admin flag it never granted -- nor the tier it was at,
+  -- which the next server has its own passwords for.
   session.isAdmin = false
+  session.role = nil
   edit.open = false
   clearTrackState(reason)
   releaseSpectator(nil)

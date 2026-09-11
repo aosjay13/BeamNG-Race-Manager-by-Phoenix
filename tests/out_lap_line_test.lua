@@ -205,5 +205,61 @@ check(#lapsDone == 0,
 drive(1150)
 check(#lapsDone == 0, 'and it is still running as the car reaches slot 1')
 
+-- ---------------------------------------------------------------------------
+-- 3. ONE CLEARED CHECKPOINT IS NOT A LAP EITHER
+-- ---------------------------------------------------------------------------
+-- The rule above was once "the line ends the out lap once at least one
+-- checkpoint is cleared", which fixed section 1 and left the same bug one gate
+-- further along. Reported from a real qualifying session: start quali, clear
+-- slot 1, turn round, cross the start/finish, and the out lap was announced as
+-- complete with ten gates never driven.
+--
+-- The tell was on screen the whole time. The renderer lights `armedWp`, so the
+-- lap ended on a gate that was not the lit one -- which is what a shortcut that
+-- accepts a gate the driver is not being sent to always looks like, at any
+-- threshold. There is no version of the rule left.
+serverState({ phase = 'waiting', drivers = {} })
+RM.onUpdate(0.016)
+local cps3 = {}
+for i = 1, 11 do cps3[i] = { x = 0, y = 1000 + i * 100, z = 0, hx = 0, hy = 1 } end
+cps3[12] = { x = 0, y = 50, z = 0, hx = 0, hy = 1 }
+handlers['RM_ApplyLayout']({
+  name = 'back to the line after slot 1', width = 20, height = 8, depth = 2,
+  checkpoints = cps3,
+  startPositions = { { x = 0, y = 0, z = 0, hx = 0, hy = 1 } },
+})
+veh.x, veh.y, veh.z = 0, 0, 0
+serverState({ phase = 'qualifying', qualiOutLap = true, drivers = {} })
+RM.onUpdate(0.016)
+lapsDone = {}
+settle()
+
+-- Out over the line (nothing cleared) and on to slot 1, which IS cleared.
+drive(1150)
+check(#lapsDone == 0, 'the out lap is running with slot 1 cleared')
+check(routeState.nextWp == 2, 'and slot 2 is the gate the driver is being sent to')
+
+-- Back round to the line and through it, exactly as reported.
+veh.y = 0
+RM.onUpdate(0.016)
+settle()
+drive(200)
+check(#lapsDone == 0,
+  'crossing the start/finish with ONE checkpoint cleared does not end the out '
+    .. 'lap: an out lap is an ordinary lap that is not scored, and it takes the '
+    .. 'same route as any other')
+check(routeState.nextWp == 2,
+  'and the armed gate has not moved, so the lap can only ever end on the gate '
+    .. 'the driver can see lit')
+
+-- It ends where every lap ends: having driven the route.
+drive(2150)
+check(#lapsDone == 0, 'still nothing part way round')
+veh.y = 0
+RM.onUpdate(0.016)
+drive(200)
+check(#lapsDone == 1 and lapsDone[1].outLap == true,
+  'and the out lap completes on the line once all twelve gates are driven')
+
 print(string.format('out_lap_line_test: %d checks, %d failures', checks, fails))
 if fails > 0 then os.exit(1) end

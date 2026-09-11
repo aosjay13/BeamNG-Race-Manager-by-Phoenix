@@ -62,12 +62,55 @@ Racing / Race Over), the race clock, and your checkpoint progress (`CP 2/5`)
 while you're on track.
 
 Everyone can watch the live timing, but the **editor and all race/derby
-controls are hidden until you log in as an admin**. Type the master password
-into the **Admin Login** bar and press **Login**; on success the controls
-appear and an **ADMIN** badge shows in the header. Because BeamMP guest IDs
-rotate constantly, admin rights are gated by this shared password rather than
-a name/ID whitelist, and they are dropped as soon as you disconnect (or when
-the admin presses **Log out**).
+controls are hidden until you log in**. Type a master password into the
+**Admin Login** bar and press **Login**; on success the controls appear and a
+badge shows in the header. Because BeamMP guest IDs rotate constantly, rights
+are gated by a shared password rather than a name/ID whitelist, and they are
+dropped as soon as you disconnect (or when you press **Log out**).
+
+### Two tiers: admin and moderator
+
+There are **two passwords**, and the one you type decides what you can do. One
+login box takes either, so nobody has to be told in advance which kind of login
+they are performing.
+
+| | Admin | Moderator |
+|---|---|---|
+| Run sessions, grids, flags, cautions | ✅ | ✅ |
+| Race, quali, reset and garage settings | ✅ | ✅ |
+| Build, save and load track layouts | ✅ | ✅ |
+| Cup, derby and drag ladder | ✅ | ✅ |
+| Clear **your own** copies of the results | ✅ | ✅ |
+| Change either password | ✅ | ❌ |
+| **Clear Results Cache** (the server's files) | ✅ | ❌ |
+| **Delete** a track layout, derby arena or garage set | ✅ | ❌ |
+
+The three an admin keeps are the three that **cannot be undone**. A moderator
+who presses one anyway is refused by the server, told why, and **stays logged
+in** - a refusal on the tier is not a refusal on the login.
+
+The header badge says which you are: green **ADMIN**, amber **MODERATOR**.
+
+**The moderator password ships empty, which means off.** Nothing changes on a
+server that never sets one: the password already in `config.json` is the admin
+password and keeps every right it had. To hand out the narrower one, log in as
+admin, open the **⚙** tab and fill in **Moderator password**. Leaving that box
+empty and pressing **Set Moderator** turns the tier off again.
+
+**Changing a password does not sign anybody out** - an admin rotating one mid
+evening must not boot the race director out of the race they are running.
+*Turning the moderator tier off* is the exception: anyone signed in at that
+tier is signed out on the spot, because a session at a tier that no longer
+exists is the one reading of an empty box nobody meant. Rights are also dropped
+on disconnect, and by **Log out**.
+
+> **Upgrading, and your race directors already have your password?** They now
+> hold the *admin* password. Set a new admin password first, then put the old
+> one in the moderator box, and the people who already have it drop to the
+> narrower tier without being sent anything new.
+
+Both passwords live in `Resources/Server/RaceManager/Data/config.json` and
+survive a restart.
 
 You never have to log in just to watch: close the login bar with **✕** and the
 live timing is already there.
@@ -96,10 +139,11 @@ session is running: sitting out decides whether you are in the field, and the
 field is decided when the grid forms. Leaving a race you are already in is
 retiring, above.
 
-> The server ships with a **default password of `phoenix`** (set at the top of
-> `server/RaceManager/main.lua`). **Change it before your first public
-> session:** log in, then use the **Change password** bar to set a new one - it
-> takes effect on the server immediately.
+> The server ships with a **default admin password of `phoenix`** and **no
+> moderator password** (both at the top of `server/RaceManager/main.lua`).
+> **Change the admin one before your first public session:** log in, then use
+> the **Admin password** bar in the **⚙** tab - it takes effect immediately and
+> is written to `config.json`, so it survives a restart.
 
 ### Step 2 - Build a track
 
@@ -362,6 +406,13 @@ appears:
 - the results file records `out lap not timed` in the qualifying format line,
   so a lap count read months later still adds up.
 
+**The out lap takes the same route as any other lap.** Every checkpoint, in
+order, ending at the start/finish line, with the next gate lit on screen
+throughout. It is an ordinary lap that simply is not scored: crossing the
+start/finish without having driven the route does not end it, however far round
+you have got. Drive out, clear slot 1, turn round and come back over the line
+and you are still on your out lap, with slot 2 still lit.
+
 **A point-to-point stage has no out lap.** A sprint is driven once, first gate
 to last - a lap given away there is the whole session given away, and there is
 no line to come back past to start a timed one.
@@ -595,7 +646,13 @@ Housekeeping:
   replaced by *Delete every saved results file on the server?* with **Yes,
   clear them** and **Cancel**, the same two-press step **End Cup** is behind.
   Once a session is over that file is the only record a league has that the
-  race happened, and there is no undo.
+  race happened, and there is no undo. **Admin only**, for exactly that reason.
+- **Clear My Results** deletes the copies saved on **your own PC** when a
+  session closed, and nothing else anywhere - the server's files are untouched.
+  It asks first in the same way. Open to a **moderator** as well, because a race
+  director tidying up after an evening should not need the admin password to do
+  it. **My Results** opens that folder; the count of what was removed comes back
+  as an on-screen notice.
 
 ## Live position tracking
 
@@ -1333,6 +1390,10 @@ usual, and type a class into the box on each row &mdash; `GT3`, `GT4`, whatever
 your league calls them. Every driver in that car is in that class, for every race,
 with no per-driver bookkeeping and nothing to remember when somebody switches car.
 
+Keeping a [garage set](#garage-sets) per class and pressing **+ Add Set** for
+each one builds the combined field without whitelisting it again. The class tags
+travel on the entries, so the merged list is already grouped.
+
 Leave every box blank and nothing changes: no class on any driver, no Class
 column, no per-class section. That is what a single-class night is.
 
@@ -1830,6 +1891,58 @@ want to permit.
 
 Refusals name the mode in force, so a driver is told whether the thing to undo
 is a part swap or a tune.
+
+### Garage sets
+
+A night that runs two series should not mean whitelisting both fields between
+them. A **set** is the approved list saved under a name, in
+`Resources/Server/RaceManager/Data/Garage/`, one file per set.
+
+- **Save Current** writes the list above under the name you type, along with
+  whether it is Parts or Strict. That mode is part of the series and comes back
+  with it.
+- **Load Set** replaces the list with that set.
+- **+ Add Set** merges it into the list instead of replacing it.
+- **Delete Set** removes the file. **Admin only**, like deleting a layout: a set
+  is a whole field captured car by car and nothing puts a deleted one back.
+  Clear Garage next to it stays open to a moderator, because that empties the
+  live list and any saved set puts it straight back.
+
+**Loading never turns Enforcing on or off.** A set that carried the switch would
+start or stop policing the grid as a side effect of swapping series, which is a
+much bigger action than the button says. Loading and adding are both refused
+while a session is running: changing who is legal under cars already on track is
+how a driver gets deleted mid race.
+
+#### Adding sets together
+
+**+ Add Set** is how a multi-class field is built out of the sets you already
+keep. Load your GT3 set, add your Touring set, and the list is both. Correct
+either of the real sets later and the combination is rebuilt from the corrected
+ones, which is what keeping a hand-built third set could never do.
+
+Three rules, and each of them refuses out loud rather than doing something
+quietly:
+
+- **Both sets must be the same Parts/Strict mode.** The two rule cars
+  differently, not just list them differently. Adopting the incoming set's mode
+  would re-rule every car already approved under the other one, and keeping the
+  current mode would re-rule the cars arriving. Load the set on its own, or
+  re-save one of them in the other mode.
+- **Cars already on the list are not added twice.** The test is whether it is the
+  same entry, on the full signature. Two *tunes* of the same parts stay two
+  entries, because the list is also the menu a driver spawns a car from and
+  collapsing them takes a choice away.
+- **A merge that would pass the 60-entry cap adds nothing at all.** A field that
+  looks loaded and is four cars short gets found when a driver is deleted on a
+  race night.
+
+Adding to an **empty** list behaves exactly like Load Set, mode included. There
+is nothing to disagree with and nothing to merge into, so the first Add of an
+evening is a load.
+
+A **Load** still crosses modes freely. It replaces everything, so no half of the
+field is left behind under the old rule.
 
 ### How it is enforced
 
@@ -2351,7 +2464,7 @@ they survive a reconnect and a server restart like everything else.
 | **Cup** | Championship scoring, bonuses and standings |
 | **Derby** | Demo Derby rules, entry, live standings and the arena editor |
 | **Drag** | The drag tournament ladder: format, lanes, the tree, dial-ins and the bracket |
-| **⚙** | Master password, results housekeeping |
+| **⚙** | Master passwords, results housekeeping |
 
 **Session controls stay above the tabs** and are never one click away: Start
 Quali, Generate Grid, Start Countdown, End Session, Reset, and the **Track

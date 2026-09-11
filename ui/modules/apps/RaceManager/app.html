@@ -245,7 +245,11 @@
     <span class="rm-p2p-badge" ng-if="pointToPoint"
           title="This track is a point-to-point stage: driven once, first gate to last. Laps do not apply.">POINT TO POINT</span>
     <span class="rm-derby-badge" ng-if="derby.phase === 'running'">DERBY LIVE {{ formatDerbyTime(derby.time) }}</span>
-    <span class="rm-admin-tag" ng-if="isAdmin" title="You are logged in as an admin">ADMIN</span>
+    <span class="rm-admin-tag" ng-if="isFullAdmin()" title="You are logged in as an admin: full rights, including passwords, results and deleting layouts">ADMIN</span>
+    <!-- The tier is worth SAYING, not just enforcing. A race director who finds
+         three controls missing should be able to read why off the header rather
+         than conclude the panel is broken. -->
+    <span class="rm-admin-tag rm-mod-tag" ng-if="isModerator()" title="You are logged in as a moderator: you can run the night, but not change passwords, clear the server's results or delete layouts">MODERATOR</span>
     <!-- The Editor and Derby shortcuts that used to sit here are gone: the admin
          tab bar is directly below, shows which panel is active and carries the
          checkpoint count, so a second control for the same action only cost
@@ -292,6 +296,10 @@
     <span class="rm-login-error" ng-if="authError">Incorrect password</span>
     <span class="rm-login-hint" ng-if="!authError &amp;&amp; adminPresent">An admin is running this session. Log in to manage it, or close this and watch.</span>
     <span class="rm-login-hint" ng-if="!authError &amp;&amp; !adminPresent">Log in to unlock race, derby &amp; track editor controls, or close this and watch.</span>
+    <!-- ONE BOX FOR BOTH TIERS. The server tries the admin password and then
+         the moderator one and grants whichever matched, so nobody has to be
+         told in advance which kind of login they are about to perform. -->
+    <span class="rm-login-hint">Admin or moderator: the same box takes either password.</span>
   </div>
 
   <!-- ================= Race entry (everyone, admin or not) ================ -->
@@ -1751,7 +1759,20 @@
                 title="Replace the Garage List with this set. Enforcing is never changed by a load.">
           Load Set
         </button>
-        <button class="rm-btn rm-btn-end" ng-click="deleteGarageSet()"
+        <!-- BUILD A MULTI-CLASS FIELD OUT OF THE SETS ALREADY KEPT. Load one,
+             add the next, and the list is the two of them. Disabled on an empty
+             list only to keep the pair reading as Load-then-Add: the server
+             treats an Add onto nothing as a Load anyway. -->
+        <button class="rm-btn rm-btn-grid" ng-click="addGarageSet()"
+                ng-disabled="!garageSetUi.selected || !garage.length"
+                title="Add this set to the Garage List instead of replacing it. Cars already on the list are not duplicated. Both sets must be the same Parts/Strict mode.">
+          + Add Set
+        </button>
+        <!-- ADMIN ONLY, like deleting a layout. A set is a whole field captured
+             car by car and nothing puts a deleted one back. Clear Garage next to
+             it stays open to a moderator: that empties the live list, which any
+             saved set puts straight back. -->
+        <button class="rm-btn rm-btn-end" ng-if="isFullAdmin()" ng-click="deleteGarageSet()"
                 ng-disabled="!garageSetUi.selected">Delete Set</button>
       </div>
       <div class="rm-garage-setlist" ng-if="garageSets.length">
@@ -1763,6 +1784,11 @@
         A set stores the cars above and whether the lock is Parts or Strict, so a
         series comes back exactly as it was set up. Loading one never turns
         Enforcing on or off, and is refused while a session is running.
+        <b>+ Add Set</b> merges instead of replacing, which is how a multi-class
+        field is built from the sets you already keep: load one class, add the
+        next. Cars already on the list are not added twice, and two sets can only
+        be merged when both are the same Parts/Strict mode, because the two rule
+        cars differently.
       </div>
     </div>
     <!-- THE ANSWER TO THE BUTTON ABOVE, and it used to have nowhere to appear.
@@ -2288,7 +2314,12 @@
                   title="Replace the selected layout with what is placed right now">
             Overwrite
           </button>
-          <button class="rm-btn rm-btn-end" ng-click="deleteLayout()"
+          <!-- ADMIN ONLY. Every other control in this row can be undone by
+               doing it again; this one cannot. A layout is an evening driven
+               gate by gate and nothing puts a deleted one back, so a moderator
+               does not get the button and the server refuses the event even if
+               they somehow send it. -->
+          <button class="rm-btn rm-btn-end" ng-if="isFullAdmin()" ng-click="deleteLayout()"
                   ng-disabled="!layoutUi.selected || !canEdit()"
                   title="Delete the selected layout from the server">
             Delete
@@ -2640,7 +2671,10 @@
                 title="Broadcast this arena's boundary and timers to every connected player">
           Load Arena
         </button>
-        <button class="rm-btn rm-btn-end rm-btn-mini" ng-click="derbyDeleteLayout()"
+        <!-- ADMIN ONLY, for the same reason the track layout Delete is: an
+             arena is a boundary driven corner by corner and a grid placed slot
+             by slot, and deleting one is not undoable. -->
+        <button class="rm-btn rm-btn-end rm-btn-mini" ng-if="isFullAdmin()" ng-click="derbyDeleteLayout()"
                 ng-disabled="!derbyUi.selected || derbyActive()"
                 title="Delete this saved arena from the server">✕</button>
       </div>
@@ -2668,19 +2702,55 @@
 
   <!-- ================= Admin housekeeping ================================= -->
   <div class="rm-adminbar-panel" ng-if="isAdminTab('admin')">
-    <div class="rm-adminbar">
-      <span class="rm-adminbar-label">Change password</span>
+    <!-- WHAT A MODERATOR SEES INSTEAD OF THE PASSWORD ROWS. A panel that simply
+         omits three controls reads as a panel that is broken; one sentence is
+         the difference between "this is missing" and "this is not yours". -->
+    <div class="rm-adminbar" ng-if="isModerator()">
+      <span class="rm-adminbar-label">Moderator</span>
+      <span class="rm-layouts-hint">
+        You can run the whole night from here: sessions, grids, flags, settings,
+        the editor, the cup, the derby and the drag ladder. Changing either
+        password, clearing the server's results and deleting a layout need the
+        admin password, because none of the three can be undone. Your own copies
+        of the results are still yours to clear, below.
+      </span>
+    </div>
+
+    <div class="rm-adminbar" ng-if="isFullAdmin()">
+      <span class="rm-adminbar-label">Admin password</span>
       <input type="text" class="rm-login-input" ng-model="authUi.newPassword"
-             placeholder="New password (anything)…"
+             placeholder="New admin password (anything)…"
              ng-keydown="$event.keyCode === 13 && changePassword()">
       <button class="rm-btn rm-btn-mini" ng-click="changePassword()" ng-disabled="!authUi.newPassword">Set Password</button>
       <span class="rm-pw-msg" ng-if="pwMsg">{{ pwMsg }}</span>
+      <span class="rm-layouts-hint">
+        Full rights: everything below plus passwords, results and deleting layouts.
+      </span>
+    </div>
+
+    <!-- THE ONE TO HAND OUT. Blank is not a missing value here, it is the OFF
+         switch: an empty moderator password never matches, whatever gets typed
+         into the login box. That is why Set is not disabled on an empty field
+         the way the admin one is. -->
+    <div class="rm-adminbar" ng-if="isFullAdmin()">
+      <span class="rm-adminbar-label">Moderator password</span>
+      <input type="text" class="rm-login-input" ng-model="authUi.newModPassword"
+             placeholder="New moderator password (blank turns it off)…"
+             ng-keydown="$event.keyCode === 13 && changeModPassword()">
+      <button class="rm-btn rm-btn-mini" ng-click="changeModPassword()">Set Moderator</button>
+      <span class="rm-layouts-hint">
+        Hand this one to whoever runs your race nights. They get every control
+        except changing these passwords, clearing the server's results and
+        deleting layouts. Leave the box empty and press Set Moderator to turn
+        the moderator login off again.
+      </span>
     </div>
     <div class="rm-adminbar">
       <span class="rm-adminbar-label">Results</span>
       <!-- Two presses. The file this deletes is the only record a league has of
-           a race night once the session is over, and there is no undo. -->
-      <button class="rm-btn rm-btn-reset rm-btn-mini" ng-if="!resultsUi.confirmClear"
+           a race night once the session is over, and there is no undo. Admin
+           only for exactly that reason. -->
+      <button class="rm-btn rm-btn-reset rm-btn-mini" ng-if="isFullAdmin() && !resultsUi.confirmClear"
               ng-click="askClearResults()"
               title="Delete all saved result .txt files on the server">Clear Results Cache</button>
       <span class="rm-confirm" ng-if="resultsUi.confirmClear">
@@ -2699,15 +2769,31 @@
            exploreFolder resolves through the virtual filesystem and refuses
            anything outside it, which is why the server's copy can only be
            reported as a path. -->
-      <button class="rm-btn rm-btn-mini" ng-if="!resultsUi.confirmClear"
+      <button class="rm-btn rm-btn-mini" ng-if="!resultsUi.confirmClear && !resultsUi.confirmLocal"
               ng-click="openLocalResults()"
               title="Open your own copies of the results, saved on this PC when a session closes. Written for whoever is logged in as an admin, so a race admin without server access still gets the file.">My Results</button>
-      <button class="rm-btn rm-btn-mini" ng-if="resultsPath && !resultsUi.confirmClear"
+      <!-- YOUR PC, NOT THE SERVER, and that is why it is not admin-only. The
+           server's copy is the league's record and this never touches it, so a
+           race director can tidy their own folder after an evening without
+           being handed the admin password to do it.
+
+           Still two presses: the copies are the only file a director without
+           server access actually has, and there is no undo here either. -->
+      <button class="rm-btn rm-btn-reset rm-btn-mini" ng-if="!resultsUi.confirmClear && !resultsUi.confirmLocal"
+              ng-click="askClearLocal()"
+              title="Delete the copies of the results saved on THIS PC. The server's own files are untouched.">Clear My Results</button>
+      <span class="rm-confirm" ng-if="resultsUi.confirmLocal">
+        Delete your own copies on this PC? The server keeps its own.
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="clearLocalResults()">Yes, clear mine</button>
+        <button class="rm-btn rm-btn-mini" ng-click="cancelClearLocal()">Cancel</button>
+      </span>
+      <button class="rm-btn rm-btn-mini" ng-if="resultsPath && !resultsUi.confirmClear && !resultsUi.confirmLocal"
               ng-click="openResults()"
               title="Show the full path to the server's results folder, to paste into a file manager. BeamNG cannot open a folder outside its own files, so this reports the path rather than opening it.">Server Path</button>
       <span class="rm-layouts-hint">
-        Result files are written automatically when a session closes; this only
-        clears the ones already saved on the server.
+        Result files are written automatically when a session closes. Clear
+        Results Cache deletes the server's; Clear My Results deletes only the
+        copies on this PC.
       </span>
     </div>
     <div class="rm-adminbar">
@@ -4168,8 +4254,16 @@
     color: #7ee2a8;
     border: 1px solid rgba(52, 168, 83, 0.5);
   }
+  /* Amber rather than green: a different tier should not read as the same badge
+     at a glance across a room, which is the only way this is ever read. */
+  .rm-mod-tag {
+    background: rgba(251, 188, 5, 0.2);
+    color: #fdd663;
+    border-color: rgba(251, 188, 5, 0.45);
+  }
   /* When the ADMIN tag takes the auto margin, the first tab button no longer should. */
   .rm-admin-tag ~ .rm-btn-tab-derby, .rm-admin-tag ~ .rm-btn-tab { margin-left: 0; }
+  .rm-mod-tag ~ .rm-btn-tab-derby, .rm-mod-tag ~ .rm-btn-tab { margin-left: 0; }
   .rm-btn-login-tab { border-color: #34a853; color: #7ee2a8; }
 
   /* Admin login + change-password bars */

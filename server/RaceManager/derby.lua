@@ -43,6 +43,7 @@ local aliasNote, decodeString, displayName
 local ensureLayoutsDir, ensureResultsDir, forceSpectate, getCurrentMap
 local isEntrant, jsonParse, jsonStringify, onlinePlayers
 local releaseSpectators, requireAuth, respawnField, uniqueResultsPath
+local requireAdmin
 local players, race, sanitizeCheckpoints
 
 -- Set later by setCupHooks. nil is a legitimate state: no cup, no points.
@@ -73,6 +74,7 @@ function D.init(h)
   isEntrant, jsonParse, jsonStringify = h.isEntrant, h.jsonParse, h.jsonStringify
   onlinePlayers, releaseSpectators = h.onlinePlayers, h.releaseSpectators
   requireAuth, respawnField, uniqueResultsPath = h.requireAuth, h.respawnField, h.uniqueResultsPath
+  requireAdmin = h.requireAdmin
   players, race, sanitizeCheckpoints = h.players, h.race, h.sanitizeCheckpoints
   listDirectory, makeDirectory = h.listDirectory, h.makeDirectory
   removeFile = h.removeFile
@@ -1247,8 +1249,11 @@ function RM_onDerbyLoadLayout(pid, rawData)
     data.name, map))
 end
 
+-- ADMIN ONLY, exactly as the track layouts are: an arena is a boundary driven
+-- corner by corner plus a grid placed slot by slot, and nothing puts a deleted
+-- one back.
 function RM_onDerbyDeleteLayout(pid, rawData)
-  if not requireAuth(pid) then return end
+  if not requireAdmin(pid) then return end
   local name = decodeString(rawData, 'name')
   if not name or name == '' then return end
   local map = getCurrentMap()

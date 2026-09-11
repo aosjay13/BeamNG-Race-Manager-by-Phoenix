@@ -6,6 +6,154 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.15.0 - A password for running the night, and one for owning the server
+
+#### Added
+
+- **Two permission tiers, and one login box that still takes either.** Running
+  a race night and owning the server stopped being the same job. A league hands
+  its race directors a password so somebody other than the owner can run a
+  Tuesday; until now that password was the whole of the security model, and
+  whoever could start a race could also rotate the master password, wipe every
+  results file on the server and delete a layout that took an evening to drive.
+
+  Three things, none of them undoable, all of them one mis-click from a control
+  sitting in the same panel as Log out.
+
+  | | Admin | Moderator |
+  |---|---|---|
+  | Sessions, grids, flags, cautions | yes | yes |
+  | Race, quali, reset and garage settings | yes | yes |
+  | Build, save and load layouts | yes | yes |
+  | Cup, derby, drag ladder | yes | yes |
+  | Clear your OWN copies of the results | yes | yes |
+  | Change either password | yes | **no** |
+  | Clear Results Cache (the server's files) | yes | **no** |
+  | Delete a track layout, derby arena or garage set | yes | **no** |
+
+  What an admin keeps is exactly what has no undo. **Delete Garage Set** is on
+  that list for the same reason deleting a layout is: a set is a whole field
+  captured car by car. **Clear Garage** is not, and that is not an
+  inconsistency -- it empties the live list, which any saved set puts straight
+  back. **End Cup** stays open to a moderator too.
+
+  The server enforces all of it rather than trusting the panel to hide the
+  buttons, and the refusal goes down a channel of its own: reusing
+  `RM_LoginResult` would have carried the client's admin flag with it and logged
+  a moderator out of a session they are entitled to, mid evening, for pressing a
+  button.
+
+  The header badge says which you are: green ADMIN, amber MODERATOR, and the
+  panel explains in a sentence why three controls are missing rather than
+  leaving a director to conclude it is broken.
+
+- **Nothing changes on a server that never asks for it.** The moderator
+  password ships EMPTY, which means off, and the password already in
+  `config.json` is the admin one and keeps every right it had. Nobody is locked
+  out of their own password field by an update.
+
+  To hand out the narrower one, log in as admin and fill in **Moderator
+  password** in the ⚙ tab. Leaving the box empty and pressing Set Moderator
+  turns the tier off again -- an empty password never matches, including when
+  the login box is submitted blank, which is the case a plain string compare
+  says yes to. An empty ADMIN password is still refused: there is no way back
+  from that one short of editing `config.json` by hand.
+
+  Turning the tier off signs out anybody currently at it. A ROTATION still
+  does not, and that asymmetry is deliberate: an admin changing a password mid
+  evening must not boot the race director out of the race they are running,
+  but a session sitting at a tier that no longer exists is the one reading of
+  an emptied box nobody meant.
+
+  Already handed your password to your race directors? They now hold the admin
+  one. Set a new admin password, then put the old one in the moderator box, and
+  the people who already have it drop a tier without being sent anything new.
+
+- **+ Add Set** in the Garage panel: a saved garage set MERGED into the approved
+  list instead of replacing it. A league running two classes together had to
+  whitelist the combined field car by car and then keep that combination as a
+  third set, which goes stale the moment either of the real two is corrected.
+  Load GT3, add Touring, and the field is built out of the sets already being
+  maintained. Class tags ride on the entries, so the merged list is already
+  grouped.
+
+  Three rules, each of which refuses out loud rather than doing something
+  quietly. **Both sets must be the same Parts/Strict mode** -- the two rule cars
+  differently, so adopting either one would silently re-rule half the field.
+  **Cars already listed are not added twice**, tested on the full signature, so
+  two tunes of the same parts stay two entries rather than being collapsed into
+  one and taking a car off the menu a driver spawns from. **A merge that would
+  pass the 60-entry cap adds nothing at all**, because a field that looks loaded
+  and is four cars short is found when a driver gets deleted on a race night.
+
+  Adding to an empty list is a load, mode included: there is nothing to disagree
+  with and nothing to merge into. A plain Load still crosses modes freely, since
+  it replaces everything and leaves no half of the field under the old rule.
+
+- **Clear My Results**, next to Clear Results Cache and deliberately not behind
+  the same tier. The server's copy is the league's record and this never
+  touches it: it deletes the copies written to THIS PC when a session closed,
+  counts what actually went, and says so. A race director tidying up after an
+  evening should not need the admin password to do it.
+
+  Two presses, like its neighbour. For a director without server access those
+  copies are the only results file they have.
+
+#### Fixed
+
+- **A qualifying out lap ended on a bare start/finish crossing.** Start
+  qualifying, clear slot 1, turn round, cross the line, and the out lap was
+  announced complete with ten gates never driven. Timing then started on a lap
+  the driver had not lined up for.
+
+  This is the second time around for this rule and the reason there is no
+  version of it left. The line used to end an out lap from wherever the driver
+  had got to, on the reasoning that a lap nobody scores has nothing to police:
+
+  - the first version accepted it unconditionally, so on an ordinary circuit,
+    where the grid sits just behind the line and the line is therefore the FIRST
+    gate a car meets, out laps ended seconds after the green with nothing
+    driven. From a live log: 2.1s, 2.4s, 4.4s, 5.6s. A formation lap is
+    mechanically an out lap, so the same crossing dropped the green the instant
+    the leader rolled over the line;
+  - the second required one cleared checkpoint first, which fixed those and left
+    the same bug one gate further along. That is the one reported here.
+
+  The shortcut is gone rather than tightened again. What made it wrong was never
+  the threshold: it ended a lap on a gate the driver was not being sent to, and
+  the renderer lights `armedWp`, so the lap ended on a gate that was not lit.
+  That mismatch is how it was spotted, and it is a mismatch at any threshold.
+
+  Nobody is stranded without it. A car gridded past slot 1, which a head-on
+  layout does, clears nothing on its way to the line and simply runs on to slot
+  1 to start its lap there. A longer out lap, never a backwards one. A sprint
+  stage cannot reach the rule at all, because point-to-point owes no out lap.
+
+- **The out lap reported its distance to the wrong gate.** The telemetry that
+  orders the field measured metres to the start/finish line while the checkpoint
+  count beside it measured progress along the route: two halves of one payload
+  reading different gates, so a driver a corner into their out lap was placed by
+  how near they happened to be to a line they were driving away from. It reads
+  the armed gate now, like every other lap.
+
+#### Changed
+
+- **The seven names the tiers needed became one `auth` table.**
+  `server/RaceManager/main.lua` compiles within a handful of slots of Lua's
+  200-local ceiling and the one past it does not warn -- the plugin simply
+  fails to load. Two passwords, two role names and three predicates as separate
+  top-level locals spent most of what was left; as one table they cost a single
+  slot, and the file has the same headroom it started the release with.
+  `authenticatedPlayers`, `isAuthenticated` and `requireAuth` keep their own
+  names, because a hundred and twenty call sites and two modules already say
+  them.
+
+- **`authenticatedPlayers` holds a role string instead of `true`.** Worth
+  saying out loud because of how the near miss fails: a role is truthy but is
+  not `true`, so an `== true` comparison left behind in `isAuthenticated`
+  refuses every command from everybody -- the whole mod dead, behind a login
+  that reports success. `tests/permissions_test.lua` opens with that case.
+
 ## 0.14.2 - The Drag panel stops greeting everybody who joins
 
 #### Fixed

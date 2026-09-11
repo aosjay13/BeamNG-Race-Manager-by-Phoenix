@@ -51,8 +51,11 @@ the old one instead of leaving two copies side by side.
    which makes the UI flicker between two states. The app header shows a version
    for each piece; if they don't match, something didn't copy. A stale file
    fails *silently*: a button just stops doing anything.
-2. **Change the password before your first public session.** It ships as
-   `phoenix`. Log in, then set a new one from the **Change password** bar.
+2. **Change the admin password before your first public session.** It ships as
+   `phoenix`. Log in, then set a new one from the **Admin password** bar in the
+   **⚙** tab. There is a second, narrower **moderator** password for whoever
+   runs your race nights; it ships empty, which means off. See
+   [Two tiers](docs/REFERENCE.md#two-tiers-admin-and-moderator).
 3. **Upgrading from 0.6.0 or earlier on Linux?** Those packages spelled the
    folders in lower case. Delete any leftover `Resources/client` or
    `Resources/server`. Windows is unaffected.
@@ -73,8 +76,11 @@ car back. Only the lap target and the scoring differ.
 
 **1. Open the app and log in.** Join the server, open the HUD app menu and add
 **Race Manager** (under *Racing* and *Info*). Everyone sees the live timing, but
-the editor and race controls stay hidden until you type the master password into
+the editor and race controls stay hidden until you type a master password into
 the **Admin Login** bar; anyone who just wants to watch closes it with **✕**.
+The same box takes either password: **admin** gets everything, **moderator**
+gets everything except changing passwords, clearing the server's results and
+deleting layouts.
 To sit a session out entirely, press **👁 Spectate** in the Race Entry row: the
 field runs without you, your car stays put as a ghost, and you watch with
 BeamNG's own camera controls. Streaming the night? **📺 Broadcast** then swaps
@@ -190,6 +196,8 @@ expect without touching any of it.
 | **[Drag racing](docs/REFERENCE.md#drag-racing-parallel-game-mode)** | A tournament ladder down a drag strip: single or double elimination, or a points shootout. Two to eight cars a pass with any number going through, a christmas tree with real red lights, reaction times, elapsed times and trap speeds, and dial-in bracket racing. Scores into the cup on a table of its own. The strip is an ordinary point-to-point layout, so the track editor already builds one, and a practice pass lets one driver try it before a field turns up. |
 | **[Broadcast board](docs/REFERENCE.md#broadcast-board-spectators)** | A spectator's board for streaming: the whole field, the drivers who are out and why, cup standings, and click a name to put the camera on that car in orbit. |
 | **[Driver UI](docs/REFERENCE.md#driver-ui-non-admins)** | Non-admins see just the leaderboard. Resizable, fades so it doesn't block the view, and collapses to a single status line. Alerts still get through. |
+| **[Admin and moderator](docs/REFERENCE.md#two-tiers-admin-and-moderator)** | Two passwords into one login box. A moderator runs the whole night; changing passwords, clearing the server's results and deleting a layout, arena or garage set stay with the admin, because none of those can be undone. The moderator tier ships off, so nothing changes on a server that never asks for it. |
+| **[Garage sets](docs/REFERENCE.md#garage-sets)** | Save the approved car list under a name and load it back in a click. **+ Add Set** merges instead of replacing, so a multi-class field is built from the per-class sets you already keep rather than whitelisted again car by car. |
 
 ## Troubleshooting
 

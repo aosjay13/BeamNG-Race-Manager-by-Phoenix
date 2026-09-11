@@ -61,7 +61,22 @@ local CFG = {
   -- The admin password. It lives here so that CHANGING it survives a restart:
   -- until now the change was in memory only, so every restart quietly put the
   -- password back to 'phoenix' and nobody found out until a login failed.
+  --
+  -- THIS ONE IS THE FULL TIER, and it stays the full tier on a server that is
+  -- being upgraded. A league whose config.json already says adminPassword keeps
+  -- every right it had; nobody is locked out of their own password field by an
+  -- update. The narrower tier is the new key below, and it starts off.
   adminPassword = 'phoenix',
+
+  -- THE RACE DIRECTOR'S PASSWORD. Everything an admin can do except the three
+  -- that cannot be undone: changing either password, clearing the server's
+  -- results, and deleting a saved layout. See requireAdmin.
+  --
+  -- EMPTY MEANS OFF, and empty is what it ships as. A tier nobody asked for
+  -- must not appear on a server as a second way in, so the moderator login
+  -- does not exist until an admin sets this -- and an empty password can never
+  -- match, however the login field is filled in.
+  moderatorPassword = '',
 
   -- What a race starts as.
   totalLaps     = 5,
@@ -642,15 +657,67 @@ end
 -- ---------------------------------------------------------------------------
 -- BeamMP guest account IDs rotate constantly, so admin rights are gated by a
 -- shared password rather than a name/ID whitelist. A player sends RM_Login with
--- the current master password; on a match their session ID is recorded in
+-- a master password; on a match their session ID is recorded in
 -- authenticatedPlayers and every admin-level event checks that table before
--- acting. The default below is meant to be rotated on the fly (RM_ChangePassword)
--- once an admin is logged in -- change it before the first public session.
-local adminPassword = CFG.adminPassword
-local authenticatedPlayers = {}   -- [playerID] = true while that session is an admin
+-- acting. The defaults are meant to be rotated on the fly (RM_ChangePassword)
+-- once an admin is logged in -- change them before the first public session.
+--
+-- TWO PASSWORDS, TWO TIERS, and the reason is that running a race night and
+-- owning the server are not the same job. A league hands its race directors a
+-- password so they can run the evening; that password should not also let them
+-- rotate the master password, wipe the server's results or delete a layout the
+-- league spent an evening building. Those three are the ones with no undo.
+--
+--   admin      everything, including the three above
+--   moderator  everything else: sessions, grids, flags, settings, the editor,
+--              the cup, the derby, the drag ladder
+--
+-- The table holds the ROLE rather than `true`, so the tier travels with the
+-- session instead of being looked up again from a password nobody kept.
+--
+-- ONE TABLE, NOT SEVEN NAMES, and that is a hard constraint rather than tidiness.
+-- This file compiles within a handful of slots of Lua's 200-local ceiling, and
+-- the one past it does not warn: the plugin simply fails to load. Seven separate
+-- top-level locals for the two passwords, the two role names and the three
+-- predicates would have spent most of what is left. `authenticatedPlayers`,
+-- `isAuthenticated` and `requireAuth` keep their own names because a hundred
+-- and twenty call sites and two modules already say them.
+local auth = {
+  ADMIN = 'admin',
+  MOD   = 'moderator',
+  -- Seeded here and re-seeded from config.json by applyConfigToRace, which runs
+  -- after the file has been read.
+  adminPw = CFG.adminPassword,
+  modPw   = CFG.moderatorPassword,
+}
+local authenticatedPlayers = {}   -- [playerID] = 'admin' | 'moderator'
 
+-- MAY THIS SESSION RUN THE NIGHT? True for either tier, and this is what the
+-- hundred-odd admin handlers ask. It was `== true` when the table held
+-- booleans; a role string is truthy but is not `true`, and leaving that
+-- comparison alone would have refused every command from everybody.
 local function isAuthenticated(pid)
-  return authenticatedPlayers[pid] == true
+  return authenticatedPlayers[pid] ~= nil
+end
+
+-- ...and the narrow question, asked by the three handlers that cannot be undone.
+function auth.isFull(pid)
+  return authenticatedPlayers[pid] == auth.ADMIN
+end
+
+-- Which password was typed, and therefore which tier this login is worth.
+-- Returns nil for a miss.
+--
+-- ADMIN IS TESTED FIRST so that two passwords set to the same string grant the
+-- higher tier rather than the lower one. An empty moderator password is the
+-- OFF switch for that tier and must never match, including when the login
+-- field was left blank -- which is exactly what `pass == auth.modPw` would
+-- have said, on every server that never set one.
+function auth.roleOf(pass)
+  if type(pass) ~= 'string' or pass == '' then return nil end
+  if pass == auth.adminPw then return auth.ADMIN end
+  if auth.modPw ~= '' and pass == auth.modPw then return auth.MOD end
+  return nil
 end
 
 -- Guard placed at the top of every admin-level event handler. Any command from
@@ -671,6 +738,31 @@ local function requireAuth(pid)
   print('[RaceManager] Ignored admin command from unauthenticated player ' .. tostring(pid))
   MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({
     success = false, lapsed = true,
+  }))
+  return false
+end
+
+-- The same guard, one tier up: for the three commands that destroy something a
+-- league cannot get back. Changing a password, clearing the server's results,
+-- deleting a saved layout.
+--
+-- IT DOES NOT ANSWER WITH RM_LoginResult, and that is the whole difference.
+-- That event carries the client's admin flag, so replying to a moderator with
+-- `success = false` would log them out of a session they are legitimately in --
+-- mid-race-night, from pressing a button they were never allowed to press. A
+-- refusal on the tier is not a refusal on the login.
+--
+-- So it goes down its own channel, says which tier the command wanted, and
+-- leaves the session exactly where it was. The panel hides these controls from
+-- a moderator anyway; this is the server refusing to take that on trust.
+function auth.requireFull(pid)
+  if not requireAuth(pid) then return false end
+  if auth.isFull(pid) then return true end
+  print('[RaceManager] Refused an admin-only command from moderator '
+    .. (MP.GetPlayerName(pid) or tostring(pid)))
+  MP.TriggerClientEvent(pid, 'RM_Denied', Util.JsonEncode({
+    reason = 'That needs the admin password: a moderator cannot change '
+      .. 'passwords, clear the results or delete a layout.',
   }))
   return false
 end
@@ -1696,7 +1788,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.14.2'
+local RM_BUILD = '0.15.0'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -1826,9 +1918,11 @@ local function broadcastState(targetPid)
   -- the UI app sends every time it mounts) an authoritative answer to "am I
   -- still logged in", instead of the client having to remember on its own.
   local selfAdmin = nil
+  local selfRole = nil
   local selfSpectating = nil
   if targetPid then
     selfAdmin = isAuthenticated(targetPid)
+    selfRole  = authenticatedPlayers[targetPid]
     local selfRec = players[pidKey(targetPid)]
     -- NOT `selfRec and selfRec.spectating == true or nil`. That idiom cannot
     -- return false: the `or` swallows it and yields nil, the field drops out of
@@ -1982,7 +2076,16 @@ local function broadcastState(targetPid)
     -- already running the session, while still exposing a way back to login.
     adminPresent = next(authenticatedPlayers) ~= nil,
     -- "Are YOU an admin" (targeted sends only; nil drops out of the JSON).
+    --
+    -- TRUE FOR EITHER TIER, on purpose. Every control in the panel except three
+    -- means "may this session run the night", and that is what both tiers are
+    -- for. The three that mean more read youRole instead.
     youAreAdmin  = selfAdmin,
+    -- 'admin' | 'moderator'. Targeted sends only, like the flag above, and nil
+    -- for a session that is neither. A client that never sees this key (an old
+    -- server, or offline single-player) treats itself as a full admin, which is
+    -- what it was before the tiers existed.
+    youRole      = selfRole,
     -- Where this server keeps its results, for the admin panel's Open Results.
     -- Admin sends only, and nil on a server that could not resolve it, which
     -- the panel handles by showing the relative path instead.
@@ -2060,14 +2163,21 @@ end
 -- ---------------------------------------------------------------------------
 -- Admin authentication events
 -- ---------------------------------------------------------------------------
--- A client submits the master password. On a match the session is marked as an
--- admin and told to reveal its editor/admin controls; on a miss any prior
--- admin flag for that session is cleared and a failure is reported.
+-- A client submits a master password. ONE FIELD, EITHER TIER: the server tries
+-- the admin password and then the moderator one and grants whichever matched,
+-- so a race director types their password into the same box the owner uses and
+-- neither has to be told which kind of login they are performing.
+--
+-- On a match the session is marked and told to reveal its controls; on a miss
+-- any prior flag for that session is cleared and a failure is reported.
 function RM_onLogin(pid, rawData)
   local pass = decodeString(rawData, 'password')
-  if pass ~= nil and pass == adminPassword then
-    authenticatedPlayers[pid] = true
-    MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({ success = true }))
+  local role = auth.roleOf(pass)
+  if role then
+    authenticatedPlayers[pid] = role
+    MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({
+      success = true, role = role,
+    }))
     -- THE LAYOUT LIST IS PRIVILEGE-DEPENDENT NOW, so logging in has to resend it.
     --
     -- A driver is only shown the layouts approved for practice. This client
@@ -2097,7 +2207,7 @@ function RM_onLogin(pid, rawData)
     -- keys entirely rather than sending them empty, and the client leaves a
     -- value alone when its key is absent.
     broadcastState(pid)
-    print('[RaceManager] Admin login OK: ' .. (MP.GetPlayerName(pid) or pid))
+    print('[RaceManager] ' .. role .. ' login OK: ' .. (MP.GetPlayerName(pid) or pid))
   else
     authenticatedPlayers[pid] = nil
     MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({ success = false }))
@@ -2114,29 +2224,79 @@ function RM_onLogout(pid)
   print('[RaceManager] Admin logged out: ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- An already-authenticated admin rotates the master password. The new password
--- takes effect immediately for future logins; sessions already logged in stay
--- logged in. The password itself is never broadcast -- only a notice that it
--- changed (and by whom) goes to the server state so every open UI can reflect it.
+-- An admin rotates one of the two master passwords. The new password takes
+-- effect immediately for future logins; sessions already logged in stay logged
+-- in at the tier they logged in at. The password itself is never broadcast --
+-- only a notice that it changed (and by whom) goes out, so every open UI can
+-- reflect it.
+--
+-- ADMIN ONLY, BOTH OF THEM. A moderator who could set the moderator password
+-- could hand out their own tier, and one who could set the ADMIN password could
+-- simply promote themselves -- which would make the whole split decorative.
+--
+-- `role` picks which password is being set and defaults to the admin one, so a
+-- client from before the split still changes the password it means to.
 function RM_onChangePassword(pid, rawData)
-  if not requireAuth(pid) then return end
+  if not auth.requireFull(pid) then return end
   local newPass = decodeString(rawData, 'password')
-  if not newPass or newPass == '' then return end
-  adminPassword = newPass
+  if not newPass then return end
+  local which = decodeString(rawData, 'role') == auth.MOD and auth.MOD or auth.ADMIN
+  -- EMPTY IS ALLOWED FOR THE MODERATOR AND ONLY THE MODERATOR: it is how the
+  -- tier is turned off again, and auth.roleOf refuses to match it. An empty
+  -- admin password would lock the server's owner out of their own controls with
+  -- no way back short of editing config.json by hand.
+  if newPass == '' and which ~= auth.MOD then return end
+  if which == auth.MOD then
+    auth.modPw, CFG.moderatorPassword = newPass, newPass
+  else
+    auth.adminPw, CFG.adminPassword = newPass, newPass
+  end
   -- AND IT SURVIVES A RESTART NOW. This used to change the password in memory
   -- only, so every restart quietly put it back to the shipped default and the
   -- first anybody knew was a login that should have worked and did not.
-  CFG.adminPassword = newPass
+  local label = which == auth.MOD
+    and (newPass == '' and 'Moderator login turned off' or 'Moderator password changed')
+    or 'Admin password changed'
   if saveConfigToDisk() then
-    print('[RaceManager] Admin password changed and saved to config.json')
+    print('[RaceManager] ' .. label .. ' and saved to config.json')
   else
-    print('[RaceManager] Admin password changed, but config.json could not be '
+    print('[RaceManager] ' .. label .. ', but config.json could not be '
       .. 'written: it will revert on restart')
   end
   MP.TriggerClientEvent(-1, 'RM_PasswordChanged', Util.JsonEncode({
     changedBy = MP.GetPlayerName(pid) or ('Player ' .. pid),
+    role      = which,
+    cleared   = newPass == '',
   }))
-  print('[RaceManager] Admin password changed by ' .. (MP.GetPlayerName(pid) or pid))
+  print('[RaceManager] ' .. label .. ' by ' .. (MP.GetPlayerName(pid) or pid))
+  -- TURNING THE TIER OFF ENDS THE SESSIONS THAT ARE AT IT, and only that case.
+  --
+  -- Rotating a password leaves everyone logged in, which is deliberate and is
+  -- what it has always done: an admin changing the password mid-evening must
+  -- not boot the race director out of the session they are running. But an
+  -- EMPTY moderator password is not a rotation, it is "this tier should not
+  -- exist", and leaving somebody signed in at a tier that no longer exists is
+  -- the one reading of that instruction nobody meant.
+  --
+  -- They are told their login has lapsed, which is the message that brings the
+  -- login box back rather than leaving them pressing dead buttons.
+  if which == auth.MOD and newPass == '' then
+    local dropped = 0
+    for other, role in pairs(authenticatedPlayers) do
+      if role == auth.MOD then
+        authenticatedPlayers[other] = nil
+        dropped = dropped + 1
+        MP.TriggerClientEvent(other, 'RM_LoginResult', Util.JsonEncode({
+          success = false, lapsed = true,
+        }))
+      end
+    end
+    if dropped > 0 then
+      print('[RaceManager] Moderator login turned off: ' .. dropped
+        .. ' session(s) signed out')
+      broadcastState()
+    end
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -5660,8 +5820,13 @@ function RM_onLap(pid, rawData)
 end
 
 -- Clear Results Cache: delete every saved .txt in the results folder.
+--
+-- ADMIN ONLY. These files are the only record a league has of a race night once
+-- the session is over, and there is no undo. A race director clearing their own
+-- copies is a different button and stays open to them: see RM_ClearLocal on the
+-- client, which never touches anything on the server.
 function RM_onClearResults(pid)
-  if not requireAuth(pid) then return end
+  if not auth.requireFull(pid) then return end
   local ok, removed = pcall(clearResultsCache)
   if not ok then
     print('[RaceManager] Failed to clear results cache: ' .. tostring(removed))
@@ -6029,6 +6194,14 @@ local function applyConfigTable(data)
   end
 
   str('adminPassword')
+  -- NOT str(), and the difference is the whole point of this key. str() reads
+  -- an empty string as "not set" and keeps the built-in value, which is right
+  -- for every other setting and wrong for this one: empty is how the moderator
+  -- tier is turned OFF, so a file that says "" has to be obeyed rather than
+  -- ignored back to whatever was there before.
+  if type(data.moderatorPassword) == 'string' then
+    CFG.moderatorPassword = data.moderatorPassword; applied = applied + 1
+  end
   num('totalLaps', 1, CFG.maxTotalLaps)
   num('maxResets', -1, CFG.maxResetLimit)
   str('resetMode', { inplace = true, checkpoint = true })
@@ -6094,6 +6267,10 @@ end
 local function configFileText()
   return jsonStringify({
     adminPassword  = CFG.adminPassword,
+    -- Written even when empty, so an admin reading the file can see the tier
+    -- exists and how to switch it on. A key that only appears once it is in use
+    -- is one nobody finds.
+    moderatorPassword = CFG.moderatorPassword,
     totalLaps      = CFG.totalLaps,
     maxResets      = CFG.maxResets,
     resetMode      = CFG.resetMode,
@@ -6145,7 +6322,8 @@ local function applyConfigToRace()
   race.heatLaps       = CFG.heatLaps
   race.qualiLapLimit  = CFG.qualiLapLimit
   race.qualiTimeLimit = CFG.qualiTimeLimit
-  adminPassword       = CFG.adminPassword
+  auth.adminPw        = CFG.adminPassword
+  auth.modPw          = CFG.moderatorPassword
 end
 
 local function loadConfigFromDisk()
@@ -7010,8 +7188,12 @@ end
 -- like loading is. A deleted layout that is currently loaded is forgotten too:
 -- race.layout pointing at a removed entry would keep serving joining players a
 -- track nobody could load again.
+--
+-- ADMIN ONLY. A layout is an evening's work driving the course gate by gate,
+-- and deleting one is the only thing in the editor a moderator could do that
+-- nobody can put back.
 function RM_onDeleteLayout(pid, rawData)
-  if not requireAuth(pid) then return end
+  if not auth.requireFull(pid) then return end
   if sessionUnderWay() then
     MP.SendChatMessage(pid, '[RaceManager] Cannot delete a layout while a session is under way.')
     return
@@ -7921,19 +8103,32 @@ function RM_onSaveGarageSet(pid, rawData)
   print(msg)
 end
 
--- Replace the approved list with a saved set.
+-- Install a saved set: REPLACING the approved list, or ADDING to it.
 --
 -- IDLE-LOCKED, unlike tagging a class. Swapping the list mid-race changes who
 -- is legal under cars already running, and the audit would start removing them.
+--
+-- ADDING IS WHAT A MULTI-CLASS NIGHT NEEDS. A league with a set per class had
+-- to whitelist a combined field car by car to run them together, and then keep
+-- that combination as a fourth set that goes stale the moment either of the
+-- real three is corrected. Loading GT3 and then adding Touring builds the same
+-- field out of the sets that are already maintained.
+--
+-- ONE HANDLER FOR BOTH, because everything except the last step is identical:
+-- the same idle lock, the same read, the same rebuild of a stored entry into a
+-- live one. A second handler would be a near-copy of this, and the half that
+-- matters to get right is the rebuild.
 function RM_onLoadGarageSet(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
   local name = gset.cleanName(data.name)
   if name == '' then return end
+  local append = data.append == true
   if sessionUnderWay() then
     MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
       added = false,
-      message = 'Finish the session before loading a different garage set' }))
+      message = 'Finish the session before ' .. (append and 'adding another'
+        or 'loading a different') .. ' garage set' }))
     return
   end
   local stored, why = gset.read(name)
@@ -7943,6 +8138,11 @@ function RM_onLoadGarageSet(pid, rawData)
     return
   end
   local g = getGarage()
+  -- ADDING TO AN EMPTY LIST IS A LOAD, and has to be, because the mode comes
+  -- off the set. Nothing to disagree with and nothing to merge into: the first
+  -- Add of an evening behaves exactly like Load Set, which is also what an
+  -- admin pressing it expects.
+  if append and #g.list == 0 then append = false end
   -- Rebuilt through the same shape loadGarageFromDisk produces, so a set written
   -- by an older build, or edited by hand, cannot put a half-formed entry on the
   -- live list.
@@ -7964,27 +8164,93 @@ function RM_onLoadGarageSet(pid, rawData)
       }
     end
   end
-  g.list = list
   -- The mode travels with the series; the enforcement switch never does.
-  g.mode = (stored.mode == 'strict') and 'strict' or 'parts'
+  local mode = (stored.mode == 'strict') and 'strict' or 'parts'
+
+  local added, skipped = #list, 0
+  if append then
+    -- THE MODES HAVE TO AGREE, and this is the one thing a merge can refuse on.
+    -- Parts and Strict disagree about who is legal, not about who is on the
+    -- list: adopting one set's mode would silently re-rule every car already
+    -- approved under the other, and dropping the incoming set's mode would
+    -- silently re-rule the cars arriving. Neither is a thing to do quietly, so
+    -- neither is done.
+    if mode ~= g.mode then
+      MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+        added = false,
+        message = '"' .. name .. '" is a ' .. (mode == 'strict' and 'Strict' or 'Parts')
+          .. ' set and the list is ' .. (g.mode == 'strict' and 'Strict' or 'Parts')
+          .. '. The two rule cars differently, so they cannot be merged: load it '
+          .. 'on its own, or re-save one of them in the other mode.' }))
+      return
+    end
+    -- DEDUPED ON THE FULL SIGNATURE, and on nothing looser. Two sets sharing a
+    -- car should not list it twice; two TUNES of the same parts should still be
+    -- two entries, because the list is also the menu a driver spawns from and
+    -- collapsing them takes a car away from them. So the test is "is this the
+    -- same entry", not "is this the same rule".
+    local have = {}
+    for _, e in ipairs(g.list) do have[e.sig] = true end
+    local fresh = {}
+    for _, e in ipairs(list) do
+      if have[e.sig] then
+        skipped = skipped + 1
+      else
+        have[e.sig] = true
+        fresh[#fresh + 1] = e
+      end
+    end
+    -- REFUSED WHOLE RATHER THAN PART-LOADED. Adding the eleven that fit out of
+    -- fifteen leaves a field that looks loaded and is four cars short, and the
+    -- four are found by a driver being deleted on a race night.
+    if #g.list + #fresh > MAX_GARAGE_ENTRIES then
+      MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+        added = false,
+        message = 'Adding "' .. name .. '" would need ' .. (#g.list + #fresh)
+          .. ' entries and the Garage List holds ' .. MAX_GARAGE_ENTRIES
+          .. '. Nothing was added.' }))
+      return
+    end
+    for _, e in ipairs(fresh) do g.list[#g.list + 1] = e end
+    added = #fresh
+  else
+    g.list = list
+    g.mode = mode
+  end
   -- saveGarageToDisk persists the live list AND re-judges every driver against
   -- it, so the grid is re-ruled by the swap rather than at each driver's next
   -- declaration.
   saveGarageToDisk()
   broadcastState()
-  local msg = string.format('[RaceManager] Garage set "%s" loaded by %s (%d car(s), %s%s)',
-    name, MP.GetPlayerName(pid) or pid, #list,
-    g.mode == 'strict' and 'Strict' or 'Parts',
+  local dupNote = skipped > 0
+    and (', ' .. skipped .. ' already on the list') or ''
+  local msg = string.format('[RaceManager] Garage set "%s" %s by %s (%d car(s)%s, %d total, %s%s)',
+    name, append and 'added' or 'loaded', MP.GetPlayerName(pid) or pid, added, dupNote,
+    #g.list, g.mode == 'strict' and 'Strict' or 'Parts',
     g.enforce and ', enforcing' or ', not enforced')
   MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
-    added = true, message = 'Loaded "' .. name .. '": ' .. #list .. ' car(s), '
-      .. (g.mode == 'strict' and 'Strict' or 'Parts')
+    added = true,
+    message = (append
+      and ('Added "' .. name .. '": ' .. added .. ' car(s)' .. dupNote
+           .. ', ' .. #g.list .. ' on the list')
+      or ('Loaded "' .. name .. '": ' .. added .. ' car(s)'))
+      .. ', ' .. (g.mode == 'strict' and 'Strict' or 'Parts')
       .. (g.enforce and '' or ' (enforcement is still off)') }))
   MP.SendChatMessage(-1, msg)
   print(msg)
 end
 
+-- ADMIN ONLY, alongside deleting a layout and for the same reason. A garage set
+-- is a whole field captured car by car, and nothing puts a deleted one back.
+--
+-- Clear Garage is NOT admin-only and is not an inconsistency: it empties the
+-- live list, which any saved set puts straight back. This deletes the set.
+--
+-- The guard is its own line rather than a flag on adminPayload. Two booleans
+-- positionally is exactly how the wrong one gets passed, and this reads the same
+-- way RM_onDeleteLayout and RM_onClearResults do.
 function RM_onDeleteGarageSet(pid, rawData)
+  if not auth.requireFull(pid) then return end
   local data = adminPayload(pid, rawData)
   if not data then return end
   local name = gset.cleanName(data.name)
@@ -8181,6 +8447,9 @@ derbyMod.init({
   isEntrant = isEntrant, jsonParse = jsonParse, jsonStringify = jsonStringify,
   onlinePlayers = onlinePlayers, releaseSpectators = releaseSpectators,
   requireAuth = requireAuth, respawnField = respawnField,
+  -- The arena store has a delete in it too, and deleting an arena is the same
+  -- irreversible thing as deleting a track layout. It gets the same guard.
+  requireAdmin = auth.requireFull,
   uniqueResultsPath = uniqueResultsPath,
   players = players, race = race, sanitizeCheckpoints = sanitizeCheckpoints,
 })
