@@ -120,10 +120,10 @@ jobs:
           unzip -l package/Client/RaceManager.zip
           fail() { echo "::error::$1"; exit 1; }
           test -f package/Client/RaceManager.zip             || fail "Client/RaceManager.zip missing (check the folder case)"
-          for f in lua/ge/extensions/raceManager.lua                    lua/ge/extensions/raceManager/derby.lua                    lua/ge/extensions/raceManager/render.lua                    scripts/raceManager/modScript.lua                    ui/modules/apps/RaceManager/app.html                    ui/modules/apps/RaceManager/app.js                    ui/modules/apps/RaceManager/app.json; do
+          for f in lua/ge/extensions/raceManager.lua                    lua/ge/extensions/raceManager/derby.lua                    lua/ge/extensions/raceManager/drag.lua                    lua/ge/extensions/raceManager/render.lua                    scripts/raceManager/modScript.lua                    ui/modules/apps/RaceManager/app.html                    ui/modules/apps/RaceManager/app.js                    ui/modules/apps/RaceManager/app.json; do
             unzip -l package/Client/RaceManager.zip | grep -q " $f$"               || fail "$f is missing from the client zip: the mod will mount and then fail its require"
           done
-          for f in main.lua derby.lua; do
+          for f in main.lua derby.lua drag.lua; do
             test -f "package/Server/RaceManager/$f"               || fail "Server/RaceManager/$f missing (check the folder case)"
           done
 

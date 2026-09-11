@@ -1104,6 +1104,25 @@ local derbyEntryListChanged
 -- Hung off `race` rather than given a local of its own, for the register budget
 -- documented in ARCHITECTURE.md.
 race.derbyUnderWay = function () return false end
+-- THE DRAG LADDER HANGS THREE NAMES HERE, and not one of them is a local.
+--
+-- `race` is the register-budget escape hatch this file already uses for
+-- derbyUnderWay, and the drag module needs three crossings rather than one --
+-- which is two locals this chunk does not have. It has FIVE free, measured by
+-- padding the file with dummies until it stopped compiling, and a file that
+-- stops compiling takes the whole plugin off the server with no error.
+--
+-- All three are inert by default, so a drag.lua that fails to load costs the
+-- drag tab and nothing else:
+--   dragUnderWay    is there a pass on the strip? Cars placed and frozen on the
+--                   start positions is not a thing to drop a racing grid onto
+--   dragEntryChanged the entry list moved, so the ids on the ladder have to
+--                   follow the people
+--   dragWarm        boot-time load of a ladder left half-run
+race.dragUnderWay    = function () return false end
+race.dragEntryChanged = function () end
+race.dragWarm        = function () end
+race.dragSetCupHooks = function () end
 
 -- Forward declarations for the two modules at the bottom of this file. Both
 -- need the JSON codec and the layout directory, which are defined far below the
@@ -1123,6 +1142,11 @@ race.derbyUnderWay = function () return false end
 -- a roster entry is an admin's decision, and only an admin's.
 --   cupOnSessionComplete  a session finished: score it into the cup, if one is
 --                         running. Called from finishSession and nowhere else.
+--   cupOnDragComplete     the same for a drag tournament, called from the end
+--                         of a ladder. Takes the finishing order and the
+--                         meeting's low ET, for the same reason the derby
+--                         hands over a classification: the cup never reaches
+--                         into another module's tables.
 --   cupOnDerbyComplete    the same for a demo derby, called from finishDerby.
 --                         Takes the finished classification as an argument
 --                         rather than reading derbyPlayers, so the cup never
@@ -1143,6 +1167,7 @@ local rosterBindTo, rosterList, rosterForget
 --                         the same reason the three above it are: the cup lives
 --                         at the bottom of this file and the draw does not.
 local cupOnSessionComplete, cupOnDerbyComplete, cupResultsLines, cupSeasonPoints
+local cupOnDragComplete
 -- Boot-time cache warm for the two, called from onInit. They exist because both
 -- modules are wrapped in a `do ... end` block: Lua allows 200 locals per
 -- function and this chunk was already close to it, so everything those modules
@@ -1671,7 +1696,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.13.2'
+local RM_BUILD = '0.14.0'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -1715,13 +1740,31 @@ end
 --
 -- 'countdown' is in the list for the race's sake and does no harm here;
 -- qualifying reaches 'qualifying' directly from the grid.
+--
+-- 'waiting' IS IN IT, AND IT IS THE HALF THAT WAS MISSING. A driver who never
+-- started this session is exactly as dangerous to it as one who has finished --
+-- more so, because they have a whole race to fill and no reason to stay off the
+-- road. Three kinds of driver carry that status while a session runs, and every
+-- one of them was solid to the field:
+--
+--   * a driver drawn into a heat that is not the one being run;
+--   * a driver who pressed Sit Out;
+--   * a driver who connected mid-session.
+--
+-- The last two had `bystander` set, which ghosts the FIELD on their own client
+-- and does nothing on anybody else's -- so they could not be hit, and could
+-- still hit. Naming them here is what makes it mutual.
+--
+-- 'grid' IS IN THE PHASE LIST for the same reason. The grid hold can stand for
+-- minutes while an admin waits, and a car that is not in the session must not
+-- be able to shove the front row off its slots before the lights go out.
 local function finishedRoster()
   local list = {}
   if race.phase ~= 'racing' and race.phase ~= 'countdown'
-     and race.phase ~= 'qualifying' then return list end
+     and race.phase ~= 'qualifying' and race.phase ~= 'grid' then return list end
   for _, rec in pairs(players) do
     local st = rec.status
-    if st == 'finished' or st == 'dnf' or st == 'dsq' then
+    if st == 'finished' or st == 'dnf' or st == 'dsq' or st == 'waiting' then
       list[#list + 1] = rec.id
     end
   end
@@ -2276,11 +2319,46 @@ local function qualiClassification()
   return list
 end
 
+-- DID THIS DRIVER TAKE PART IN THE SESSION THAT HAS JUST BEEN RUN?
+--
+-- `players` is everybody CONNECTED, which is not the same list and stopped being
+-- the same list the day heats arrived: a four-car heat on a twelve-car server
+-- leaves eight records that were never gridded, never turned a wheel and are
+-- still sitting in the table when the results are written.
+--
+-- FOUR TESTS, NOT ONE, and the extra three are the guard rather than the rule.
+-- A grid slot is what taking part actually means, and every session goes through
+-- formGrid to hand them out. The other three catch anybody who somehow has a
+-- result without one, because the cost of the two mistakes is not symmetric:
+-- listing a driver who did nothing is untidy, and dropping a driver who raced
+-- loses a result somebody earned.
+local function tookPart(rec)
+  if rec == nil then return false end
+  return rec.gridPos ~= nil
+    or rec.finishTime ~= nil
+    or (rec.currentLap or 0) > 0
+    or rec.status == 'dnf' or rec.status == 'dsq'
+end
+
 -- Race classification: finishers by finish time, then unclassified by laps
 -- completed, excluded drivers, DNFs last (same ordering the live table uses).
+--
+-- PARTICIPANTS ONLY, and this is the single filter that keeps a heat's paperwork
+-- honest. Everything that decides what a session PRODUCED reads this list --
+-- the results file, the session awards, the cup round, the heat transfer -- so
+-- a driver waiting for their own heat was being written into every one of them:
+-- a DNF row in heat 1's results, and a cup entry with a round banked against it.
+-- Under a `dnfScoring` of 'classified' or 'held' that round was worth real
+-- championship points for a race they watched.
+--
+-- NOT the live timing board, which is buildDrivers and still shows everybody.
+-- A driver waiting for heat 3 belongs on the screen, marked Waiting; they do not
+-- belong in the file.
 local function raceClassification()
   local list = {}
-  for _, rec in pairs(players) do list[#list + 1] = rec end
+  for _, rec in pairs(players) do
+    if tookPart(rec) then list[#list + 1] = rec end
+  end
   table.sort(list, raceOrderLess)
   return list
 end
@@ -3142,6 +3220,7 @@ function RM_onSetSpectating(pid, rawData)
   -- count that is one race behind presses Start Derby expecting a different set
   -- of cars than the one that turns up.
   if derbyEntryListChanged then derbyEntryListChanged() end
+  race.dragEntryChanged()
   -- TWICE, AND BOTH ARE NEEDED.
   --
   -- Everyone gets the entrant count, which just changed. But `youSpectating` is
@@ -3462,6 +3541,13 @@ formGrid = function (kind, byName)
       skipped[#skipped + 1] = rec.name
       rec.gridPos = nil
       rec.status  = 'waiting'
+      -- AND A GHOST, BOTH WAYS. finishedRoster names every 'waiting' driver, so
+      -- the field cannot hit them; this is the other direction, and it is the
+      -- one a driver waiting out a heat notices -- they keep their car, their
+      -- controls and the run of the map, and drive through the race rather than
+      -- into it. Set here rather than only in Sit Out because a heat draw puts
+      -- drivers in this state without anybody pressing anything.
+      rec.bystander = true
       assignGridSlot(rec.id, nil)
     end
   end
@@ -8112,6 +8198,42 @@ derbyEntryListChanged = derbyMod.entryListChanged
 -- ===========================================================================
 
 -- ===========================================================================
+-- DRAG RACING: its own module, on the derby's pattern
+-- ===========================================================================
+-- A tournament ladder run down a drag strip. It reads TWO things from this
+-- file's racing state and writes neither: race.startPositions, which is where
+-- the lanes are, and race.slotCount, which is how it knows the loaded layout
+-- has a finish line to cross. The strip IS the loaded point-to-point layout --
+-- see the note at the top of drag.lua -- so there is no second track editor
+-- and no second layout store.
+--
+-- Every RM_Drag* handler it defines is global and reached by name, so the
+-- registrations further down need nothing from this block.
+-- IN A BLOCK, so the handle costs this chunk no permanent local at all: Lua's
+-- 200 is a cap on locals ALIVE AT ONCE, and this one dies at the `end`. The
+-- roster and the cup are wrapped the same way for the same reason.
+do
+  local mod = require('drag')
+  mod.init({
+    LAYOUTS_DIR = LAYOUTS_DIR, RM_PROTOCOL = RM_PROTOCOL,
+    displayName = displayName, ensureLayoutsDir = ensureLayoutsDir,
+    ensureResultsDir = ensureResultsDir, forceSpectate = forceSpectate,
+    isEntrant = isEntrant, jsonParse = jsonParse, jsonStringify = jsonStringify,
+    onlinePlayers = onlinePlayers, releaseSpectators = releaseSpectators,
+    requireAuth = requireAuth, uniqueResultsPath = uniqueResultsPath,
+    players = players, race = race,
+  })
+  race.dragUnderWay     = mod.underWay
+  race.dragEntryChanged = mod.entryListChanged
+  race.dragWarm         = mod.warm
+  race.dragSetCupHooks  = mod.setCupHooks
+end
+
+-- ===========================================================================
+-- End of DRAG RACING module
+-- ===========================================================================
+
+-- ===========================================================================
 -- DRIVER ROSTER (persistent display names)
 -- ===========================================================================
 -- Display names used to last exactly as long as a connection did. That was not
@@ -8557,6 +8679,15 @@ local CUP_BONUSES = {
   -- when somebody actually survived, which is what "last man standing" means.
   { key = 'derbyWin',    kind = 'derby', label = 'Last Man Standing',
     award = function (ctx) return ctx.winnerPid end },
+  -- Drag. TWO of them, because a drag meeting has two things worth paying for
+  -- and they are routinely won by different people: the ladder, and the
+  -- quickest single run anybody made all night. Low ET is the strip's answer to
+  -- Fastest Lap, and like Fastest Lap it is what a quick car that went out
+  -- early can still take home.
+  { key = 'dragWin',     kind = 'drag',  label = 'Event Win',
+    award = function (ctx) return ctx.winnerPid end },
+  { key = 'dragLowET',   kind = 'drag',  label = 'Low ET',
+    award = function (ctx) return ctx.lowETPid end },
 }
 
 local function cupBonusesFor(kind)
@@ -8605,6 +8736,14 @@ local cup = {
     -- it without touching the race table.
     derbyPreset = '30p-aggressive',
     derby  = cupCopyTable(cupPresetByKey('30p-aggressive').race),
+    -- ...and drag gets a third, for the reason the derby got a second. A drag
+    -- ladder is a MEETING rather than a race: the field is whoever turned up,
+    -- the winner made four passes and the driver knocked out first made one.
+    -- What that is worth beside a ten-lap race is a league decision, and this
+    -- is where they make it. Defaults to the same preset so an all-drag cup
+    -- scores the moment it is started.
+    dragPreset = '30p-aggressive',
+    drag   = cupCopyTable(cupPresetByKey('30p-aggressive').race),
     -- Empty means qualifying scores nothing, which is the default: a cup that
     -- has not been told to pay for qualifying does not pay for it.
     quali  = {},
@@ -8727,6 +8866,17 @@ local function loadCupFromDisk()
       cup.scoring.derby = cupCopyTable(cup.scoring.race)
       cup.scoring.derbyPreset = cup.scoring.preset
     end
+    -- Same fallback, same reasoning: a cup written before drag racing existed
+    -- carries no drag table, and loading that as "drag is worth nothing" would
+    -- decide something the admin never said. The race table is the safe answer
+    -- because it is the one they DID say.
+    if s.drag ~= nil then
+      cup.scoring.drag = cupSanitizeTable(s.drag)
+      cup.scoring.dragPreset = type(s.dragPreset) == 'string' and s.dragPreset or 'custom'
+    else
+      cup.scoring.drag = cupCopyTable(cup.scoring.race)
+      cup.scoring.dragPreset = cup.scoring.preset
+    end
     cup.scoring.bonus  = cupDefaultBonus()
     for _, b in ipairs(CUP_BONUSES) do
       local n = math.floor(tonumber(type(s.bonus) == 'table' and s.bonus[b.key] or 0) or 0)
@@ -8832,11 +8982,14 @@ local function cupEntryTotals(e)
   local t = {
     race  = { rounds = 0, wins = 0, points = 0, quali = 0, bonus = 0, total = 0 },
     derby = { rounds = 0, wins = 0, points = 0, bonus = 0, total = 0 },
+    drag  = { rounds = 0, wins = 0, points = 0, bonus = 0, total = 0 },
     adjust = 0, rounds = #e.rounds, total = 0,
   }
   for _, r in ipairs(e.rounds) do
-    local derbyRound = r.kind == 'derby'
-    local side = derbyRound and t.derby or t.race
+    -- A round records which kind it was. Anything unrecognised is a RACE, which
+    -- is what every round written before the other two existed was.
+    local kind = (r.kind == 'derby' or r.kind == 'drag') and r.kind or 'race'
+    local side = t[kind]
     side.rounds = side.rounds + 1
     side.points = side.points + (tonumber(r.racePts) or 0)
     -- What counts as a win differs by discipline, and deliberately so. A race
@@ -8845,27 +8998,34 @@ local function cupEntryTotals(e)
     -- admin ends early is topped by somebody who was merely still going. That
     -- driver has not won anything, and a wins column that said otherwise would
     -- disagree with the last-man-standing bonus sitting next to it.
-    if derbyRound then
-      if r.status == 'winner' then side.wins = side.wins + 1 end
-    elseif tonumber(r.racePos) == 1 then
+    -- A RACE is won by finishing first. A derby is won by being the last one
+    -- running, and a drag meeting by taking the ladder -- and neither of those
+    -- is the same as topping the classification. A derby an admin ends early is
+    -- topped by somebody who was merely still going; a ladder abandoned halfway
+    -- is topped by whoever had won most passes. Neither has won anything, and a
+    -- wins column saying they had would disagree with the bonus beside it.
+    if kind == 'race' then
+      if tonumber(r.racePos) == 1 then side.wins = side.wins + 1 end
+    elseif r.status == 'winner' then
       side.wins = side.wins + 1
     end
     for _, b in ipairs(CUP_BONUSES) do
       side.bonus = side.bonus + (tonumber(r.bonus and r.bonus[b.key]) or 0)
     end
-    if r.kind ~= 'derby' then
+    if kind == 'race' then
       t.race.quali = t.race.quali + (tonumber(r.qualiPts) or 0)
     end
   end
   t.race.total  = t.race.points + t.race.quali + t.race.bonus
   t.derby.total = t.derby.points + t.derby.bonus
+  t.drag.total  = t.drag.points + t.drag.bonus
   for _, a in ipairs(e.adjustments) do
     t.adjust = t.adjust + (tonumber(a.delta) or 0)
   end
   -- Manual adjustments sit outside both disciplines. They are a correction to a
   -- driver's standing in the CUP, not to one of its halves, and pretending to
   -- know which half a penalty belonged to would be inventing information.
-  t.total = t.race.total + t.derby.total + t.adjust
+  t.total = t.race.total + t.derby.total + t.drag.total + t.adjust
   return t
 end
 
@@ -8892,9 +9052,13 @@ local function cupStandings()
       derbyRounds = t.derby.rounds, derbyWins = t.derby.wins,
       derbyPts = t.derby.points, derbyBonusPts = t.derby.bonus,
       derbyTotal = t.derby.total,
+      -- Drag side.
+      dragRounds = t.drag.rounds, dragWins = t.drag.wins,
+      dragPts = t.drag.points, dragBonusPts = t.drag.bonus,
+      dragTotal = t.drag.total,
       -- Combined.
-      wins      = t.race.wins + t.derby.wins,
-      bonusPts  = t.race.bonus + t.derby.bonus,
+      wins      = t.race.wins + t.derby.wins + t.drag.wins,
+      bonusPts  = t.race.bonus + t.derby.bonus + t.drag.bonus,
       adjustPts = t.adjust,
       total     = t.total,
       -- The ledger itself, so an admin can see what each adjustment was for
@@ -8912,6 +9076,7 @@ local function cupStandings()
   end
   rank('raceTotal',  'raceWins',  'racePos')
   rank('derbyTotal', 'derbyWins', 'derbyPos')
+  rank('dragTotal',  'dragWins',  'dragPos')
   -- Combined last, so the array is left in the order the summary shows.
   rank('total', 'wins', 'pos')
   return list
@@ -8989,6 +9154,8 @@ broadcastCupState = function (targetPid)
     racePoints   = cup.scoring.race,
     derbyPreset  = cup.scoring.derbyPreset,
     derbyPoints  = cup.scoring.derby,
+    dragPreset   = cup.scoring.dragPreset,
+    dragPoints   = cup.scoring.drag,
     qualiPoints  = cup.scoring.quali,
     bonuses      = cupBonusList(),
     presets      = cupPresetList(),
@@ -9295,6 +9462,83 @@ local function cupScoreDerby(classification, info)
   return round
 end
 
+-- A DRAG TOURNAMENT ENDED. This is the only place a drag round is banked.
+--
+-- It takes the finishing order the ladder produced rather than reaching into
+-- the drag module for it, exactly as the derby hands over a classification --
+-- the cup stays a consumer of results and neither module can see the other's
+-- state. Every entrant in the tournament is scored, not just the ones who made
+-- the final: a drag meeting is a full field and going out in round one is a
+-- result like any other.
+local function cupScoreDrag(classification, info)
+  if cup.round >= MAX_CUP_ROUNDS then
+    print('[RaceManager] Cup: round limit reached (' .. MAX_CUP_ROUNDS .. '), not scoring')
+    return
+  end
+  local round = cup.round + 1
+  -- THE LADDER CALLS ITS WINNER A CHAMPION, and the word matters here: the drag
+  -- module marks the entrant who took the tournament `champion`, while a derby
+  -- marks its survivor `winner`. Both are accepted rather than one of the two
+  -- modules being made to rename a status its own board reads.
+  local winnerPid = nil
+  for _, rec in ipairs(classification) do
+    if rec.status == 'champion' or rec.status == 'winner' then
+      winnerPid = rec.id
+      break
+    end
+  end
+
+  local scored, byPid = 0, {}
+  for i, rec in ipairs(classification) do
+    local entry = cupEntryFor(rec)
+    if entry then
+      local row = {
+        kind    = 'drag',
+        round   = round,
+        racePos = i,
+        racePts = cupPointsFor(cup.scoring.drag, i),
+        bonus   = {},
+        -- 'winner' is the ladder taken, and it is deliberately not the same as
+        -- topping the order: a tournament an admin clears halfway is topped by
+        -- whoever had won most passes, and they have not won it.
+        -- The ROW says 'winner' either way: cupEntryTotals counts a win on
+        -- that one word, across all three disciplines.
+        status  = rec.id == winnerPid and winnerPid ~= nil and 'winner' or 'out',
+      }
+      entry.rounds[#entry.rounds + 1] = row
+      -- `classified` is what the fastest-lap rule reads and it is a race
+      -- concept; every drag row is a real result, so it is simply true here.
+      byPid[rec.id] = { entry = entry, row = row, classified = true }
+      scored = scored + 1
+    end
+  end
+
+  cupAwardBonuses('drag', {
+    winnerPid = winnerPid,
+    -- The quickest single pass anybody made all meeting, worked out by the
+    -- module that timed them. Frequently not the winner, which is the whole
+    -- reason it is worth a bonus of its own.
+    lowETPid  = info and info.lowETPid,
+  }, byPid)
+
+  cup.round = round
+  -- A drag tournament does not consume held qualifying points: those belong to
+  -- a RACE round. A ladder seeded off a qualifying session is a different use
+  -- of the same times and must not eat the points that session banked.
+  saveCupToDisk()
+
+  local standings = cupStandings()
+  local leader = standings[1]
+  print(string.format('[RaceManager] Cup "%s" round %d (drag) scored for %d driver(s)',
+    cup.name ~= '' and cup.name or 'unnamed', round, scored))
+  if leader then
+    MP.SendChatMessage(-1, string.format(
+      '[RaceManager] Cup round %d (drag) scored: %s leads on %d point%s.',
+      round, leader.name, leader.total, leader.total == 1 and '' or 's'))
+  end
+  return round
+end
+
 -- THE entry points, filling the forward declarations beside the entry list.
 -- One call at the end of finishSession for each kind of session, one at the end
 -- of finishDerby, and one boolean test when no cup is running.
@@ -9440,6 +9684,20 @@ cupOnDerbyComplete = function (classification, info)
   return cupScoreDerby(classification, info)
 end
 
+-- The same contract again for a drag tournament: nil when nothing was scored,
+-- which includes a cup that does not pay for drag racing at all.
+--
+-- An empty drag points table means drag is not part of THIS cup, and it means
+-- it completely -- no round banked and no drag bonus paid. Same trap the derby
+-- note describes: leaving the bonuses live over an empty table would pay a Low
+-- ET to somebody in a championship an admin has said drag does not count in.
+cupOnDragComplete = function (classification, info)
+  if not getCup().enabled then return nil end
+  if #cup.scoring.drag == 0 then return nil end
+  if type(classification) ~= 'table' or #classification == 0 then return nil end
+  return cupScoreDrag(classification, info)
+end
+
 -- ---------------------------------------------------------------------------
 -- Admin events
 -- ---------------------------------------------------------------------------
@@ -9510,9 +9768,13 @@ function RM_onCupSetPreset(pid, rawData)
     print('[RaceManager] Unknown cup scoring preset: ' .. tostring(key))
     return
   end
-  local target = decodeString(rawData, 'target') == 'derby' and 'derby' or 'race'
+  local sent = decodeString(rawData, 'target')
+  local target = (sent == 'derby' or sent == 'drag') and sent or 'race'
   getCup()
-  if target == 'derby' then
+  if target == 'drag' then
+    cup.scoring.dragPreset = preset.key
+    cup.scoring.drag = cupCopyTable(preset.race)
+  elseif target == 'derby' then
     cup.scoring.derbyPreset = preset.key
     cup.scoring.derby = cupCopyTable(preset.race)
   else
@@ -9611,6 +9873,11 @@ function RM_onCupSetScoring(pid, rawData)
     cup.scoring.derbyPreset = 'custom'
     touched = true
   end
+  if type(data.drag) == 'table' then
+    cup.scoring.drag = cupSanitizeTable(data.drag)
+    cup.scoring.dragPreset = 'custom'
+    touched = true
+  end
   if type(data.quali) == 'table' then
     cup.scoring.quali = cupSanitizeTable(data.quali)
     touched = true
@@ -9643,6 +9910,8 @@ function RM_onCupSetScoring(pid, rawData)
   print('[RaceManager] Cup scoring updated by ' .. (MP.GetPlayerName(pid) or pid)
     .. ' (race ' .. #cup.scoring.race .. ' deep, derby '
     .. (#cup.scoring.derby > 0 and (#cup.scoring.derby .. ' deep') or 'off')
+    .. ', drag '
+    .. (#cup.scoring.drag > 0 and (#cup.scoring.drag .. ' deep') or 'off')
     .. ', quali '
     .. (#cup.scoring.quali > 0 and (#cup.scoring.quali .. ' deep') or 'off') .. ')')
 end
@@ -9922,6 +10191,11 @@ installRosterAndCup()
 -- its `local function` line, so it handed the derby two nils and the cup
 -- stopped scoring derbies. cup_test caught it.
 derbyMod.setCupHooks(cupOnDerbyComplete, cupResultsLines)
+-- ...and the drag ladder's, through `race` for the register budget documented
+-- where the module is required. The cup is assigned at the very end of this
+-- file, long after that module loaded, so these cannot travel through its init
+-- for the same reason the derby's cannot.
+race.dragSetCupHooks(cupOnDragComplete, cupResultsLines)
 
 -- ===========================================================================
 -- End of CUP module
@@ -10079,7 +10353,10 @@ function RM_onPlayerJoin(pid)
   -- rec.bystander is what the CLIENTS act on: it ghosts that car for everyone,
   -- so a driver arriving in the middle of a race cannot put anyone into a wall
   -- before they have worked out what is going on.
-  if sessionUnderWay() or race.derbyUnderWay() then
+  -- ...and a DRAG PASS counts, for the same reason a derby does: cars are
+  -- placed and frozen on the start positions with a tree about to drop, and
+  -- somebody arriving solid in the middle of that is standing on a lane.
+  if sessionUnderWay() or race.derbyUnderWay() or race.dragUnderWay() then
     rec.status    = 'waiting'
     rec.bystander = true
     MP.SendChatMessage(pid, '[RaceManager] A session is already running: you are '
@@ -10248,6 +10525,25 @@ function onInit()
   MP.RegisterEvent('RM_DerbyCountdownTick', 'RM_DerbyCountdownTick')
   MP.RegisterEvent('onPlayerJoin',          'RM_Derby_onPlayerJoin')
   MP.RegisterEvent('onPlayerDisconnect',    'RM_Derby_onPlayerDisconnect')
+  -- Drag racing (isolated module; see drag.lua). The ladder, the strip and the
+  -- tree, on their own event namespace and their own broadcast channel.
+  MP.RegisterEvent('RM_DragSetConfig',    'RM_onDragSetConfig')
+  MP.RegisterEvent('RM_DragBuild',        'RM_onDragBuild')
+  MP.RegisterEvent('RM_DragClear',        'RM_onDragClear')
+  MP.RegisterEvent('RM_DragStage',        'RM_onDragStage')
+  MP.RegisterEvent('RM_DragPractice',     'RM_onDragPractice')
+  MP.RegisterEvent('RM_DragRun',          'RM_onDragRun')
+  MP.RegisterEvent('RM_DragAbort',        'RM_onDragAbort')
+  MP.RegisterEvent('RM_DragWithdraw',     'RM_onDragWithdraw')
+  MP.RegisterEvent('RM_DragSetDial',      'RM_onDragSetDial')
+  MP.RegisterEvent('RM_DragStaged',       'RM_onDragStaged')
+  MP.RegisterEvent('RM_DragFoul',         'RM_onDragFoul')
+  MP.RegisterEvent('RM_DragResult',       'RM_onDragResult')
+  MP.RegisterEvent('RM_DragRequestState', 'RM_onDragRequestState')
+  -- A timer event only fires if it is registered like any other event. The
+  -- derby countdown froze on 3 forever for want of exactly this line.
+  MP.RegisterEvent('RM_DragTick',         'RM_DragTick')
+  MP.RegisterEvent('onPlayerDisconnect',  'RM_Drag_onPlayerDisconnect')
   -- Cup / series points (isolated module; see the CUP section). No client sends
   -- these yet -- the admin panel comes with the UI work -- but the handlers are
   -- registered so the module is complete and reachable the moment it does.
@@ -10278,6 +10574,7 @@ function onInit()
   derbyMod.getDerbyLayouts()  -- and the saved derby arenas
   rosterWarm()       -- and the display names an admin has already assigned
   cupWarm()          -- and a cup left running when the server went down
+  race.dragWarm()    -- and a drag ladder left half-run when it did
   print('[RaceManager] Server plugin loaded (build ' .. RM_BUILD
     .. ', circuit edition, map: ' .. getCurrentMap() .. ')')
 end

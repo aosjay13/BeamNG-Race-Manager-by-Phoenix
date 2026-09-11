@@ -11,7 +11,7 @@ The BeamMP server has no physics access, so the mod is split in three:
 |------|------|---------|------|
 | Server plugin | `server/RaceManager/main.lua` | BeamMP server (Lua 5.3, `MP.*` API) | Authoritative race state machine: grid, countdown, one shared clock, finish timestamps, broadcasts the driver table |
 | Mod entry point | `scripts/raceManager/modScript.lua` | In-game (runs at mod mount) | Loads the client bridge - BeamNG **never** auto-loads GE extensions shipped in a mod zip |
-| Client bridge | `lua/ge/extensions/raceManager.lua` | In-game GE Lua (LuaJIT / 5.1) | Waypoint editor, local finish-line detection (the server has no physics), relays server broadcasts to the UI |
+| Client bridge | `lua/ge/extensions/raceManager.lua` | In-game GE Lua (LuaJIT / 5.1) | Waypoint editor, local finish-line detection (the server has no physics), the drag christmas tree and its reaction timing, relays server broadcasts to the UI |
 | UI app | `ui/modules/apps/RaceManager/` | In-game UI (Angular) | Race controls, live driver table, waypoint editor panel |
 
 Event flow: local car crosses the start/finish gate → `RM_QualiLap`/`RM_Lap`
@@ -29,6 +29,7 @@ one so the headless tests exercise the real file format).
 |------|-------|-----------|
 | `layouts.json` | Saved track layouts per map: gates, joker route, branch gates, starting grid | Overwriting a name |
 | `derbyArenas.json` | Saved derby arenas per map | Deleting an arena |
+| `dragLadder.json` | The drag tournament in progress: rules, entrants, records, every round drawn so far | Clear Ladder |
 | `garage.json` | Approved vehicles/setups and the enforcement switch | Clear Garage |
 | `roster.json` | Saved drivers: the display names an admin has assigned | Deleting a driver |
 | `cup.json` | Cup scoring rules, standings, per-round breakdown, adjustments | End Cup |
@@ -40,11 +41,33 @@ routine housekeeping can destroy is not persistent in any sense that matters.
 
 ## Modules inside the server plugin
 
-Three parts of `main.lua` are self-contained: **Demo Derby**, the **driver
-roster** and the **cup**. Each has its own state tables, its own `RM_*` event
-namespace and its own broadcast channel, and none of them is reachable from the
-racing state machine except through a handful of named functions declared at the
-top of the file.
+Four parts of the plugin are self-contained: **Demo Derby**, **drag racing**,
+the **driver roster** and the **cup**. Each has its own state tables, its own
+`RM_*` event namespace and its own broadcast channel, and none of them is
+reachable from the racing state machine except through a handful of named
+functions declared at the top of the file.
+
+The first two are separate FILES (`derby.lua`, `drag.lua`) required as
+siblings; the other two are `do ... end` blocks inside `main.lua`. Same
+isolation either way, reached two different ways for the same reason: Lua's
+200-local ceiling.
+
+**Drag racing reads two things from the racing state and writes neither**:
+`race.startPositions`, which is where the lanes are, and `race.slotCount`,
+which is how it knows the loaded layout has a finish line. Both are properties
+of the loaded TRACK rather than of a session. That is the whole reuse: a drag
+strip is a point-to-point layout, its start positions are the lanes and its
+last gate is the finish, so there is no second track editor and no second
+layout store. Three names cross back the other way, and all three hang off
+`race` rather than taking a local: `dragUnderWay`, `dragEntryChanged`,
+`dragWarm`.
+
+**Where the timing happens is split differently from everywhere else.** A
+reaction time is decided in the third decimal place, so the christmas tree runs
+on each CLIENT against its own clock -- the server sends the shape of the tree
+and every client measures its own launch against its own green. A tree driven
+from server ticks would measure the network. The server still owns the bracket,
+the ranking and the result.
 
 That is enforced rather than promised - the roster and cup live inside one
 installer function, so the only names crossing the boundary are the ones

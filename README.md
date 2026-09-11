@@ -11,7 +11,7 @@ it build the starting grid, and the server writes a results file at the flag.
 |---|---|
 | **[Install](#install)** | Two files, then restart the server |
 | **[Run a race night](#run-a-race-night)** | The whole flow, start to finish |
-| **[What else it does](#what-else-it-does)** | Reset limits, joker laps, car locking, Demo Derby |
+| **[What else it does](#what-else-it-does)** | Reset limits, joker laps, car locking, Demo Derby, drag racing |
 | **[Troubleshooting](#troubleshooting)** | Mostly "the app doesn't show up" |
 
 > **This page is the short version.** Every feature in full is in
@@ -187,6 +187,7 @@ expect without touching any of it.
 | **[Time behind](docs/REFERENCE.md#time-behind)** | Gap to the leader and interval to the car ahead on every board, measured off the shared clock at the last checkpoint both cars reached - not estimated from speed or distance. Reads `+1 LAP` once a driver is lapped. |
 | **[Live position tracking](docs/REFERENCE.md#live-position-tracking)** | True running order from laps, checkpoints cleared and distance to the next gate, not just the grid order. |
 | **[Demo Derby](docs/REFERENCE.md#demo-derby-parallel-game-mode)** | A separate last-man-standing mode with its own arena, timers and results, fully isolated from the racing. |
+| **[Drag racing](docs/REFERENCE.md#drag-racing-parallel-game-mode)** | A tournament ladder down a drag strip: single or double elimination, or a points shootout. Two to eight cars a pass with any number going through, a christmas tree with real red lights, reaction times, elapsed times and trap speeds, and dial-in bracket racing. Scores into the cup on a table of its own. The strip is an ordinary point-to-point layout, so the track editor already builds one, and a practice pass lets one driver try it before a field turns up. |
 | **[Broadcast board](docs/REFERENCE.md#broadcast-board-spectators)** | A spectator's board for streaming: the whole field, the drivers who are out and why, cup standings, and click a name to put the camera on that car in orbit. |
 | **[Driver UI](docs/REFERENCE.md#driver-ui-non-admins)** | Non-admins see just the leaderboard. Resizable, fades so it doesn't block the view, and collapses to a single status line. Alerts still get through. |
 

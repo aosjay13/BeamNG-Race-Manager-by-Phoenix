@@ -184,9 +184,46 @@ for _, pid in ipairs(g) do
 end
 check(lastState.entrants == 4, 'and the entrant count is the heat, not the night')
 
+-- THE EIGHT DRIVERS WHO ARE NOT IN THIS HEAT ARE GHOSTS TO IT, from the moment
+-- the grid forms. They keep their cars and their controls -- a heat night is
+-- most of the server sitting out most of the evening, and taking the map away
+-- from them for three quarters of it is worse than the problem -- so the only
+-- thing standing between a bored driver and somebody's race is this list.
+--
+-- Checked on the GRID as well as under way, because the hold can stand for
+-- minutes while an admin waits and a shove there costs a front-row start.
+local function ghostedNow()
+  local t = {}
+  for _, id in ipairs(lastState.ghostFinished or {}) do t[tonumber(id)] = true end
+  return t
+end
+do
+  local ghosts, waiting = ghostedNow(), 0
+  for pid = 1, 12 do
+    if heatOf(pid) ~= 1 then
+      waiting = waiting + 1
+      check(ghosts[pid] == true,
+        'D' .. pid .. ' is waiting for a later heat and is a ghost on the grid')
+    else
+      check(ghosts[pid] ~= true, 'D' .. pid .. ' is racing this heat and is solid')
+    end
+  end
+  check(waiting == 8, 'eight of the twelve are waiting (got ' .. waiting .. ')')
+end
+
 RM_onStartCountdown(0)
 RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
 check(lastState.phase == 'racing', 'heat 1 is running')
+
+do
+  local ghosts = ghostedNow()
+  for pid = 1, 12 do
+    if heatOf(pid) ~= 1 then
+      check(ghosts[pid] == true,
+        'D' .. pid .. ' is still a ghost once the heat is under way')
+    end
+  end
+end
 
 -- Two laps each, in an order we choose: the first driver home wins the heat.
 local h1 = {}
@@ -215,6 +252,52 @@ for pid = 1, 12 do if heatOf(pid) == 2 then other = pid break end end
 check(driver(other).heatPos == nil,
   'a driver waiting for heat 2 was given no position in heat 1')
 check(driver(other).transferred == nil, 'and no transfer out of it')
+
+-- ---------------------------------------------------------------------------
+-- ...AND THE PAPERWORK ONLY KNOWS ABOUT THE HEAT THAT RAN
+-- ---------------------------------------------------------------------------
+-- The race classification is built from every record the server holds, which is
+-- everybody CONNECTED. On a heat night that is the whole room, so heat 1's
+-- results file was listing eight drivers who never turned a wheel in it -- as
+-- DNFs, because that is what a driver with no finish time looks like from the
+-- outside.
+do
+  local path = nil
+  for _, m in ipairs(chatLog) do
+    local p = m:match('(Resources/Server/RaceManager/Data/results/[%w%-_%./]+%.txt)')
+    if p then path = p end
+  end
+  check(path ~= nil, 'heat 1 wrote a results file')
+  local text = ''
+  if path then
+    local f = io.open(path, 'r')
+    if f then text = f:read('*a'); f:close() end
+  end
+  -- Split on the section header: the QUALIFYING table above it is the whole
+  -- night's field on purpose (heats are drawn FROM it and are never split), so
+  -- only the race half of the file is being asserted on here.
+  local raceHalf = text:match('%-%-%- RACE RESULTS %-%-%-(.*)') or ''
+  check(raceHalf ~= '', 'and it has a race results section')
+  -- The header counts the classification, so it is the cheapest single proof
+  -- that the filter ran at all: twelve here means every waiting driver was
+  -- written into the file below it.
+  check(text:find(' Drivers: 4', 1, true) ~= nil,
+    'the header counts the heat (4), not the room (12)')
+  for _, pid in ipairs(h1) do
+    check(raceHalf:find('D' .. pid, 1, true) ~= nil,
+      'D' .. pid .. ' raced heat 1 and is in its results')
+  end
+  for pid = 1, 12 do
+    if heatOf(pid) ~= 1 then
+      -- 'D1' is a prefix of 'D10', so the search has to be anchored on the
+      -- padded name column rather than the bare string -- otherwise this passes
+      -- by accident on every two-digit driver.
+      check(raceHalf:find('D' .. pid .. ' ', 1, true) == nil
+        and raceHalf:find('D' .. pid .. '\n', 1, true) == nil,
+        'D' .. pid .. ' was waiting for a later heat and is NOT in heat 1 results')
+    end
+  end
+end
 
 -- ---------------------------------------------------------------------------
 -- Heats 2 and 3
@@ -456,6 +539,63 @@ check(lastState.heatCount == 0, 'Reset Session ends the heat program')
 check(lastState.heatsDrawn == false, 'and the draw with it')
 check(lastState.heatCurrent == 0, 'leaving nothing pointing into a heat nobody is in')
 check(lastState.heatLaps == 0, 'and the heat distance goes with the night')
+
+-- ---------------------------------------------------------------------------
+-- A CUP RUNNING UNDER A HEAT NIGHT SCORES THE HEAT, NOT THE ROOM
+-- ---------------------------------------------------------------------------
+-- The cup banks a round from the race classification, and cupEntryFor CREATES an
+-- entry for anybody in it. With the classification holding every connected
+-- driver, one heat enrolled the whole server and banked a round against each of
+-- them -- and 'classified' is the setting that makes that expensive rather than
+-- merely untidy, because it scores a DNF at its place in the order. A driver
+-- sitting in the paddock waiting for heat 3 was being paid championship points
+-- for heat 1.
+--
+-- Deliberately the WORST case: the harmless default ('none') would pass this
+-- file with the bug still in it, since zero points look like no entry until you
+-- read the standings.
+RM_onCupStart(0, '{"name":"Heat Night"}')
+RM_onCupSetScoring(0, '{"dnfScoring":"classified"}')
+-- Reset Session put the admin back in the field (sitting out is a per-session
+-- decision and the reset is what ends the session), and an admin left on the
+-- grid never laps -- so the heat would never reach "all drivers finished" and
+-- the cup would never be scored. Nothing to do with heats; just the harness.
+RM_onSetSpectating(0, '{"spectating":true}')
+RM_onSetTotalLaps(0, '{"laps":2}')
+RM_onSetHeats(0, '{"count":3,"transfer":2}')
+RM_onDrawHeats(0)
+RM_onGenerateGrid(0)
+RM_onStartCountdown(0)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+local cupHeat = {}
+for pid = 1, 12 do if heatOf(pid) == 1 then cupHeat[#cupHeat + 1] = pid end end
+table.sort(cupHeat)
+for _ = 1, 2 do
+  for _, pid in ipairs(cupHeat) do lap(pid) end
+end
+seconds(7)
+
+do
+  local f = io.open('Resources/Server/RaceManager/Data/cup.json', 'r')
+  local text = f and f:read('*a') or ''
+  if f then f:close() end
+  check(text ~= '', 'the cup was written to disk')
+  for _, pid in ipairs(cupHeat) do
+    check(text:find('"D' .. pid .. '"', 1, true) ~= nil,
+      'D' .. pid .. ' raced heat 1 and has a cup entry')
+  end
+  for pid = 1, 12 do
+    if heatOf(pid) ~= 1 then
+      check(text:find('"D' .. pid .. '"', 1, true) == nil,
+        'D' .. pid .. ' watched heat 1 and is NOT enrolled in the cup by it')
+    end
+  end
+end
+
+-- Left clean: cup.json outlives this process, and a cup still enabled here is a
+-- CUP section appearing in whatever suite writes results next.
+RM_onCupReset(0)
+RM_onResetLeaderboard(0)
 
 if fails == 0 then
   print(string.format('heats_test: %d checks, 0 failures', checks))

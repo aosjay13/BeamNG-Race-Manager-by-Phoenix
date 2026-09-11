@@ -732,6 +732,9 @@
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('derby')}"
             ng-click="selectAdminTab('derby')"
             title="Demo Derby: rules, entry, live standings and the arena editor">Derby <span class="rm-tab-count" ng-if="derby.boundaryCount">{{ derby.boundaryCount }}</span></button>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('drag')}"
+            ng-click="selectAdminTab('drag')"
+            title="Drag racing: the tournament ladder, the tree and the strip. The strip itself is a point-to-point layout built in Track.">Drag <span class="rm-tab-count" ng-if="drag.entrants.length">{{ drag.entrants.length }}</span></button>
     <!-- A WORD, NOT A GEAR. It was a gear to save the row's margin at 560px,
          but a gear is where people look for app settings and this tab is the
          server's: the password, the results, the session. The row wraps rather
@@ -1396,6 +1399,70 @@
         <span class="rm-cup-hint" ng-if="b.value">Only when somebody actually survived.</span>
       </div>
 
+      <!-- ---- Drag -------------------------------------------------------
+           A drag meeting is a MEETING rather than a race: the field is
+           whoever turned up, the winner made four passes and the driver
+           knocked out first made one. What that is worth beside a ten-lap
+           race is a league's call, so it scores on a table of its own. -->
+      <div class="rm-cup-sep">Drag</div>
+      <div class="rm-cup-row">
+        <label>Preset</label>
+        <div class="rm-layout-dropdown rm-cup-picker"
+             ng-class="{'rm-layout-dropdown-open': cupMenuOpen('drag')}">
+          <button type="button" class="rm-layout-trigger" ng-click="cupToggleMenu('drag')">
+            <span class="rm-layout-trigger-label">{{ cupDragPresetPick() }}</span>
+            <span class="rm-layout-caret">&#9662;</span>
+          </button>
+          <div class="rm-layout-menu" ng-if="cupMenuOpen('drag')">
+            <div class="rm-layout-option" ng-repeat="p in cup.presets track by p.key"
+                 ng-class="{'rm-layout-option-active': p.key === cupUi.dragPreset}"
+                 ng-click="cupPickPreset('drag', p)">{{ p.label }}</div>
+          </div>
+        </div>
+        <button class="rm-btn rm-btn-mini" ng-click="cupApplyDragPreset()"
+                ng-disabled="!cupUi.dragPreset">Load</button>
+        <span class="rm-cup-hint">Drag position is how far up the ladder you got: the winner, then the round you went out in.</span>
+      </div>
+      <div class="rm-cup-row">
+        <label>Drag points</label>
+        <input type="text" class="rm-cup-line" ng-model="cupLine.drag"
+               ng-change="cupLineChanged('drag')"
+               placeholder="25,18,15,12,10,8,6,4,2,1"
+               title="Points for P1 downward, separated by commas. A position past the end of the list scores nothing.">
+        <button class="rm-btn rm-btn-mini" ng-click="cupClearTable('drag')"
+                ng-disabled="cupTableEmpty('drag')"
+                title="Set every position to zero. Nothing is sent until you press Apply.">Clear</button>
+        <button class="rm-btn rm-btn-mini" ng-click="cupCopyFromRace('drag')"
+                title="Copy the race table into this one.">Same as race</button>
+      </div>
+      <div class="rm-cup-row rm-cup-table-row">
+        <label>Per position</label>
+        <span class="rm-cup-cell" ng-repeat="p in cupPositions track by $index">
+          <span class="rm-cup-pos">P{{ p }}</span>
+          <input type="number" class="rm-cup-num" min="0" max="9999" step="1"
+                 ng-model="cupUi.drag[$index]" ng-change="cupSyncLine('drag')">
+        </span>
+      </div>
+      <div class="rm-cup-row">
+        <button class="rm-btn rm-btn-mini" ng-click="cupApplyDrag()"
+                ng-disabled="!cupDragDirty()">Apply drag points</button>
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="cupDisableDrag()"
+                ng-disabled="!cupDragEnabled()">Turn drag points off</button>
+        <span class="rm-cup-hint">
+          Every entrant scores: going out in round one is a result, not a failure to produce one.
+        </span>
+      </div>
+      <div class="rm-cup-row" ng-repeat="b in cupBonusesFor('drag') track by b.key">
+        <label>{{ b.label }}</label>
+        <input type="number" class="rm-cup-num" min="0" max="9999" step="1"
+               ng-model="cupUi.bonus[b.key]">
+        <button class="rm-btn rm-btn-mini" ng-click="cupApplyBonus(b)"
+                ng-disabled="!cupBonusRowDirty(b)">Apply</button>
+        <span class="rm-cup-hint" ng-if="!b.value">Off, pays nothing</span>
+        <span class="rm-cup-hint" ng-if="b.value && b.key === 'dragWin'">Only to the driver who actually took the ladder.</span>
+        <span class="rm-cup-hint" ng-if="b.value && b.key === 'dragLowET'">The quickest single pass of the meeting, whoever made it.</span>
+      </div>
+
       <div class="rm-cup-sep">Qualifying</div>
 
       <!-- TYPE THE TABLE, or nudge the boxes below: same buffer, both ways.
@@ -1452,6 +1519,8 @@
                 ng-click="cupSetView('race')" title="Races only">Races</button>
         <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': cupIsView('derby')}"
                 ng-click="cupSetView('derby')" title="Derbies only">Derbies</button>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': cupIsView('drag')}"
+                ng-click="cupSetView('drag')" title="Drag meetings only">Drag</button>
       </div>
 
       <!-- Combined summary -->
@@ -1460,11 +1529,12 @@
           <span class="rm-cup-stpos">#</span>
           <span class="rm-cup-stname">Driver</span>
           <span class="rm-cup-stnum" title="Events scored">Ev</span>
-          <span class="rm-cup-stnum" title="Wins across races and derbies">Won</span>
+          <span class="rm-cup-stnum" title="Wins across every discipline this cup has run">Won</span>
           <!-- A discipline the cup has never held gets no column: an all-race
                cup should not carry a Derby column of zeroes. -->
           <span class="rm-cup-stnum" ng-if="cupHasRaces()" title="Points from races, including qualifying and race bonuses">Race</span>
           <span class="rm-cup-stnum" ng-if="cupHasDerbies()" title="Points from derbies, including derby bonuses">Derby</span>
+          <span class="rm-cup-stnum" ng-if="cupHasDrags()" title="Points from drag meetings, including the event win and low ET bonuses">Drag</span>
           <span class="rm-cup-stnum" title="Manual admin adjustments">Adj</span>
           <span class="rm-cup-sttotal">Total</span>
         </div>
@@ -1480,6 +1550,7 @@
             <span class="rm-cup-stnum">{{ s.wins }}</span>
             <span class="rm-cup-stnum" ng-if="cupHasRaces()">{{ s.raceTotal }}</span>
             <span class="rm-cup-stnum" ng-if="cupHasDerbies()">{{ s.derbyTotal }}</span>
+            <span class="rm-cup-stnum" ng-if="cupHasDrags()">{{ s.dragTotal }}</span>
             <span class="rm-cup-stnum" ng-class="{'rm-cup-adj': s.adjustPts}">{{ s.adjustPts }}</span>
             <span class="rm-cup-sttotal">{{ s.total }}</span>
             <button class="rm-btn rm-btn-mini rm-cup-adjbtn" ng-click="cupOpenAdjust(s)"
@@ -1571,6 +1642,28 @@
           <span class="rm-cup-stnum">{{ s.derbyPts }}</span>
           <span class="rm-cup-stnum">{{ s.derbyBonusPts }}</span>
           <span class="rm-cup-sttotal">{{ s.derbyTotal }}</span>
+        </div>
+      </div>
+
+      <!-- Drag only -->
+      <div class="rm-cup-standings" ng-if="cupIsMixed() && cupIsView('drag')">
+        <div class="rm-cup-strow rm-cup-sthead">
+          <span class="rm-cup-stpos">#</span>
+          <span class="rm-cup-stname">Driver</span>
+          <span class="rm-cup-stnum" title="Drag meetings scored">Mt</span>
+          <span class="rm-cup-stnum" title="Ladders taken outright">Won</span>
+          <span class="rm-cup-stnum" title="Points from how far up the ladder they got">Pos</span>
+          <span class="rm-cup-stnum" title="Points from the event win and low ET bonuses">Bonus</span>
+          <span class="rm-cup-sttotal">Total</span>
+        </div>
+        <div class="rm-cup-strow" ng-repeat="s in cup.standings | orderBy:'dragPos' track by s.entryId">
+          <span class="rm-cup-stpos">{{ s.dragPos }}</span>
+          <span class="rm-cup-stname">{{ s.name }}</span>
+          <span class="rm-cup-stnum">{{ s.dragRounds }}</span>
+          <span class="rm-cup-stnum">{{ s.dragWins }}</span>
+          <span class="rm-cup-stnum">{{ s.dragPts }}</span>
+          <span class="rm-cup-stnum">{{ s.dragBonusPts }}</span>
+          <span class="rm-cup-sttotal">{{ s.dragTotal }}</span>
         </div>
       </div>
     </div>
@@ -2758,6 +2851,242 @@
     <div class="rm-derby-warning-timer">DEMOLISHED IN {{ derbyWarning.remaining.toFixed(1) }}s</div>
   </div>
 
+
+  <!-- ================= DRAG RACING =====================================
+       The tournament ladder, its rules and the pass in front of you.
+
+       THERE IS NO STRIP EDITOR HERE, and that is the whole reuse: a drag strip
+       is an ordinary point-to-point layout built in the Track tab. Its start
+       positions are the lanes and its last gate is the finish line, so the
+       Track editor already builds one and this panel only ever runs it.
+
+       The STANDINGS are not repeated in this panel. In drag mode the
+       leaderboard at the bottom of the app IS the ladder board, so the field is
+       read from one place - the same arrangement the derby settled on after
+       having the table on screen twice. -->
+  <div class="rm-drag" ng-if="isAdminTab('drag')">
+    <div class="rm-derby-title">
+      Drag Racing
+      <span class="rm-derby-phase rm-drag-phase-{{ drag.phase }}">{{ dragPhaseLabel() }}</span>
+      <span class="rm-derby-markers" ng-if="drag.roundLabel">{{ drag.roundLabel }}</span>
+      <span class="rm-derby-markers" ng-if="drag.passCount">Pass {{ drag.passIndex }} / {{ drag.passCount }}</span>
+      <span class="rm-derby-markers" ng-if="drag.phase === 'staging' && drag.stageMode === 'rollup'">
+        {{ dragStagedCount() }} / {{ drag.current.lanes.length }} staged
+      </span>
+      <span class="rm-derby-markers">{{ drag.stripLanes }} lane{{ drag.stripLanes === 1 ? '' : 's' }} on the strip</span>
+    </div>
+
+    <!-- The strip has to exist before anything else can. Said plainly, with
+         what to do about it, rather than leaving Build Ladder looking broken. -->
+    <div class="rm-derby-hint" ng-if="!dragStripReady()">
+      No drag strip loaded. Build one in the <b>Track</b> tab: a
+      <b>point-to-point</b> layout with a start line and a finish line, and one
+      start position per lane. Then load it and come back.
+    </div>
+
+    <!-- ---------------- the rules ---------------- -->
+    <div class="rm-derby-settings">
+      <span class="rm-setting rm-setting-mode" title="How the ladder narrows. Single elimination sends you home on one loss. Double gives you a losers bracket and a second life. Points runs everybody every round and cuts the bottom of the board between them.">
+        <label>Format</label>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': dragUi.format === 'single'}"
+                ng-click="dragSetFormat('single')" ng-disabled="dragLive()"
+                title="One loss and you are out.">Single</button>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': dragUi.format === 'double'}"
+                ng-click="dragSetFormat('double')" ng-disabled="dragLive()"
+                title="Losing once drops you to the losers bracket; losing there is the end of it.">Double</button>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': dragUi.format === 'points'}"
+                ng-click="dragSetFormat('points')" ng-disabled="dragLive()"
+                title="Nobody is knocked out by one pass: score by finishing position and cut the bottom between rounds.">Points</button>
+      </span>
+      <span class="rm-setting" title="Cars on the line at once. Two is a drag race; eight is a shootout. Capped by the start positions the loaded strip has.">
+        <label>Lanes</label>
+        <input type="number" class="rm-width-num" min="2" max="8" step="1" ng-model="dragUi.lanes"
+               ng-model-options="{debounce: 600}" ng-change="dragApplyConfig()"
+               ng-disabled="dragLive()">
+      </span>
+      <span class="rm-setting" ng-if="dragUi.format !== 'points'" title="How many come out of each pass still in it. One with two lanes is the classic ladder; four with eight lanes is top half of the shootout goes through. The pass that decides the tournament always advances exactly one.">
+        <label>Through</label>
+        <input type="number" class="rm-width-num" min="1" max="7" step="1" ng-model="dragUi.advance"
+               ng-model-options="{debounce: 600}" ng-change="dragApplyConfig()"
+               ng-disabled="dragLive()">
+      </span>
+      <span class="rm-setting" ng-if="dragUi.format === 'points'" title="How many are cut from the bottom of the standings after each round. Zero runs the whole field to the end and ranks it on points.">
+        <label>Cut</label>
+        <input type="number" class="rm-width-num" min="0" max="32" step="1" ng-model="dragUi.cut"
+               ng-model-options="{debounce: 600}" ng-change="dragApplyConfig()"
+               ng-disabled="dragLive()">
+      </span>
+      <span class="rm-setting" ng-if="dragUi.format === 'points'" title="How many rounds the shootout runs.">
+        <label>Rounds</label>
+        <input type="number" class="rm-width-num" min="1" max="32" step="1" ng-model="dragUi.rounds"
+               ng-model-options="{debounce: 600}" ng-change="dragApplyConfig()"
+               ng-disabled="dragLive()">
+      </span>
+      <span class="rm-setting rm-setting-mode" title="The pro tree drops all three ambers together and greens four tenths later. The sportsman tree steps them half a second apart. Pro rewards a practised light; sportsman is what most brackets run.">
+        <label>Tree</label>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': dragUi.tree === 'sportsman'}"
+                ng-click="dragSetTree('sportsman')" ng-disabled="dragActive()">Sportsman</button>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': dragUi.tree === 'pro'}"
+                ng-click="dragSetTree('pro')" ng-disabled="dragActive()">Pro</button>
+      </span>
+      <span class="rm-setting rm-setting-mode" title="How the ladder is seeded. Qualifying reads the best lap set on this strip, which on a point-to-point layout is a timed pass down it: run a qualifying session first and the ladder draws itself.">
+        <label>Seed</label>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': dragUi.seed === 'random'}"
+                ng-click="dragSetSeed('random')" ng-disabled="dragLive()">Random</button>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': dragUi.seed === 'order'}"
+                ng-click="dragSetSeed('order')" ng-disabled="dragLive()">Join order</button>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': dragUi.seed === 'quali'}"
+                ng-click="dragSetSeed('quali')" ng-disabled="dragLive()">Qualifying</button>
+      </span>
+      <span class="rm-setting rm-setting-mode" title="Bracket racing in the drag strip sense: every entrant declares the time they expect to run, and the slower car leaves first by the difference. Run your number and you arrive together, so a street car and a race car meet on equal terms.">
+        <label>Dial-in</label>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': dragUi.dialIn}"
+                ng-click="dragToggleDialIn()" ng-disabled="dragActive()">{{ dragUi.dialIn ? 'On' : 'Off' }}</button>
+        <button class="rm-btn rm-btn-mini" ng-if="dragUi.dialIn"
+                ng-class="{'rm-admin-tab-active': dragUi.breakout}"
+                ng-click="dragToggleBreakout()" ng-disabled="dragActive()"
+                title="Running quicker than your own dial-in is a breakout, and a breakout loses the pass however fast it was.">Breakout {{ dragUi.breakout ? 'on' : 'off' }}</button>
+      </span>
+      <span class="rm-setting rm-setting-mode" title="How a car gets onto the line. Roll up is what a drag strip does: the car is placed a few metres short and the driver creeps into the beams themselves. Hold places it on the line and freezes it, which is quicker for an eight-wide shootout where waiting for eight people to creep is most of the evening.">
+        <label>Staging</label>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': dragUi.stageMode === 'rollup'}"
+                ng-click="dragSetStageMode('rollup')" ng-disabled="dragActive()"
+                title="Placed short of the line and free. Creep forward until both blue bulbs are lit.">Roll up</button>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': dragUi.stageMode === 'hold'}"
+                ng-click="dragSetStageMode('hold')" ng-disabled="dragActive()"
+                title="Placed on the line and frozen. Staged the moment the car lands.">Hold</button>
+      </span>
+      <span class="rm-setting rm-setting-mode" ng-if="dragUi.stageMode === 'rollup'" title="Automatic drops the tree by itself once every lane is in the beams, which is what a starter does. Manual leaves it to Run. Run works either way: under automatic it is the override for a driver who will not stage.">
+        <label>Start</label>
+        <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': dragUi.autoStart}"
+                ng-click="dragToggleAutoStart()" ng-disabled="dragActive()">{{ dragUi.autoStart ? 'Automatic' : 'Manual' }}</button>
+      </span>
+      <span class="rm-setting" ng-if="dragUi.stageMode === 'rollup'" title="How long the pass waits for the field to stage before the tree drops on whoever is in the beams. A car still creeping is late, which is a result rather than a deadlock.">
+        <label>Courtesy stage</label>
+        <input type="number" class="rm-width-num" min="5" max="300" step="5" ng-model="dragUi.stageWait"
+               ng-model-options="{debounce: 600}" ng-change="dragApplyStaging()"
+               ng-disabled="dragActive()">
+        <span class="rm-setting-val">s</span>
+      </span>
+      <span class="rm-setting" title="How long a car has to reach the finish line before the pass gives up on it and records no time. Measured from the green, not from the button.">
+        <label>Pass limit</label>
+        <input type="number" class="rm-width-num" min="10" max="600" step="5" ng-model="dragUi.timeout"
+               ng-model-options="{debounce: 600}" ng-change="dragApplyConfig()"
+               ng-disabled="dragActive()">
+        <span class="rm-setting-val">s</span>
+      </span>
+    </div>
+
+    <!-- ---------------- running it ---------------- -->
+    <div class="rm-derby-settings">
+      <button class="rm-btn" ng-click="dragBuild()"
+              ng-disabled="!dragStripReady() || dragLive()"
+              title="Snapshot the field, seed it and draw the first round. The entry list is taken ONCE: a bracket that redrew itself every time somebody joined to watch would not be a bracket.">Build Ladder</button>
+      <button class="rm-btn" ng-click="dragStage()"
+              ng-disabled="drag.phase !== 'ready'"
+              title="Put this pass's cars on their lanes and hold them there.">Stage</button>
+      <button class="rm-btn" ng-click="dragPractice()"
+              ng-disabled="!dragStripTestable() || dragActive()"
+              title="One pass down the strip that scores nothing: everybody here, up to the lanes the strip has, staged and timed exactly as a real pass. It works with one car, so the strip can be tried before a field turns up, and it is where a dial-in comes from.">Practice Pass</button>
+      <button class="rm-btn rm-btn-go" ng-click="dragRunPass()"
+              ng-disabled="drag.phase !== 'staging'"
+              title="Drop the tree now. Under automatic starting this is the override for a driver who will not stage, which is the job the courtesy stage rule does at a real strip.">{{ drag.stageMode === 'rollup' && drag.autoStart ? 'Run now' : 'Run' }}</button>
+      <button class="rm-btn" ng-click="dragAbort()"
+              ng-disabled="!dragActive() || drag.phase === 'result'"
+              title="Wave this pass off. Nothing is scored and the same pass is offered again.">Wave Off</button>
+      <button class="rm-btn rm-btn-danger" ng-click="dragClearLadder()"
+              ng-disabled="drag.phase === 'idle'"
+              title="Tear the whole tournament down. The results file of a finished one is already written.">Clear Ladder</button>
+    </div>
+
+    <div class="rm-drag-champion" ng-if="drag.champion">🏆 WINNER: {{ drag.champion }}</div>
+
+    <!-- ---------------- the pass in front of you ---------------- -->
+    <div class="rm-drag-pass" ng-if="drag.current">
+      <div class="rm-drag-pass-head">
+        <span ng-if="!drag.practice">{{ drag.current.roundLabel }} &middot; pass {{ drag.current.index }} of {{ drag.current.count }}</span>
+        <span ng-if="drag.practice">Practice pass &middot; nothing is scored</span>
+        <span class="rm-drag-bye" ng-if="drag.current.bye && !drag.practice">BYE RUN</span>
+      </div>
+      <table class="rm-table rm-drag-lanes">
+        <thead>
+          <tr>
+            <th class="rm-col-grid">Ln</th>
+            <th class="rm-col-name">Driver</th>
+            <th ng-if="drag.dialIn">Dial</th>
+            <th ng-if="drag.dialIn" title="The head start this lane's dial-in buys it. The slower car leaves first.">Head start</th>
+            <th ng-if="drag.stageMode === 'rollup'" title="Whether this car is in the beams yet. Half means pre-staged: rolled up far enough for the first bulb, not yet the second.">Stg</th>
+            <th title="Reaction time: the gap between this driver's green and their car moving. A negative number is a red light.">RT</th>
+            <th title="Elapsed time: stage to finish line.">ET</th>
+            <th>MPH</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr ng-repeat="ln in drag.current.lanes track by ln.lane"
+              ng-class="{'rm-drag-row-through': ln.through, 'rm-drag-row-foul': ln.foul}">
+            <td class="rm-col-grid">{{ ln.lane }}</td>
+            <td class="rm-col-name">{{ ln.name }}</td>
+            <td ng-if="drag.dialIn">{{ dragET(ln.dial) }}</td>
+            <td ng-if="drag.dialIn">{{ dragET(ln.delay) }}</td>
+            <td ng-if="drag.stageMode === 'rollup'" class="rm-drag-note">{{ ln.staged ? 'IN' : (ln.prestaged ? 'pre' : '--') }}</td>
+            <td>{{ dragET(ln.rt) }}</td>
+            <td>{{ dragET(ln.et) }}</td>
+            <td>{{ dragMPH(ln.speed) }}</td>
+            <td class="rm-drag-note">{{ dragLaneNote(ln) }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ---------------- dial-ins ---------------- -->
+    <div class="rm-derby-settings" ng-if="drag.dialIn">
+      <span class="rm-setting" title="The elapsed time you expect to run. The slower car leaves first by the difference between the two dials, so this is what puts you on equal terms with a quicker car.">
+        <label>My dial-in</label>
+        <input type="number" class="rm-width-num" min="0.1" max="99" step="0.01" ng-model="dragUi.dial">
+        <button class="rm-btn rm-btn-mini" ng-click="dragSetDial()"
+                ng-disabled="dragActive()">Set</button>
+        <button class="rm-btn rm-btn-mini" ng-click="dragDialFromLast()"
+                ng-if="dragLast.et != null" ng-disabled="dragActive()"
+                title="Take the elapsed time you just ran as your dial-in.">Use {{ dragET(dragLast.et) }}</button>
+      </span>
+      <span class="rm-setting" title="Set a dial for somebody who has not opened the app. Their seed number is on the board.">
+        <label>Set for seed</label>
+        <input type="number" class="rm-width-num" min="1" max="64" step="1" ng-model="dragUi.dialSeed">
+        <input type="number" class="rm-width-num" min="0.1" max="99" step="0.01" ng-model="dragUi.dialFor">
+        <button class="rm-btn rm-btn-mini" ng-click="dragSetDialFor()"
+                ng-disabled="dragActive()">Set</button>
+      </span>
+    </div>
+
+    <!-- ---------------- the ladder ---------------- -->
+    <div class="rm-drag-ladder" ng-if="drag.board.length">
+      <div class="rm-drag-round" ng-repeat="r in drag.board track by r.n"
+           ng-class="{'rm-drag-round-live': r.n === drag.round}">
+        <div class="rm-drag-round-head">
+          {{ r.label }}
+          <span class="rm-drag-side" ng-if="r.side === 'l'">losers bracket</span>
+        </div>
+        <div class="rm-drag-pass-row" ng-repeat="p in r.passes track by $index"
+             ng-class="{'rm-drag-pass-done': p.done}">
+          <span class="rm-drag-lane" ng-repeat="ln in p.lanes track by ln.lane"
+                ng-class="{'rm-drag-lane-through': ln.through,
+                           'rm-drag-lane-out': p.done && !ln.through}">
+            <b>{{ ln.seed }}</b> {{ ln.name }}
+            <i ng-if="p.done">{{ dragET(ln.et) }}</i>
+            <em ng-if="dragLaneNote(ln)">{{ dragLaneNote(ln) }}</em>
+          </span>
+          <span class="rm-drag-bye" ng-if="p.bye">bye</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="rm-derby-hint" ng-if="drag.phase === 'idle' && dragStripReady()">
+      Strip loaded and ready. Set the rules, then <b>Build Ladder</b>: the field
+      is snapshotted, seeded and drawn into rounds.
+    </div>
+  </div>
+
   <!-- ================= Start lights ================= -->
   <!-- Three lamps going amber one at a time on 3-2-1, then all three snapping
        green together on GO. That is what a short-track or oval start actually
@@ -2772,6 +3101,62 @@
       <span class="rm-lamp" ng-class="countdown === 0 ? 'rm-lamp-green' : (countdown <= 1 ? 'rm-lamp-amber' : '')"></span>
     </div>
     <div class="rm-count-num" ng-class="{'rm-count-go': countdown === 0}">{{ countdown === 0 ? 'GO!' : countdown }}</div>
+  </div>
+
+  <!-- ================= The christmas tree =================
+       Not the start-lights overlay above, and deliberately a second thing: a
+       drag tree counts DOWN a column of bulbs rather than along a gantry, and a
+       driver who has staged at a strip reads the shape before reading anything
+       written on it.
+
+       IT RUNS ON THIS CLIENT. The lights are driven frame by frame by the Lua
+       module, which is handed the pattern and the pre-roll and runs the
+       sequence against its own clock - see the header of
+       lua/ge/extensions/raceManager/drag.lua for why a reaction time cannot be
+       timed from the server.
+
+       A DRIVER WITH A HANDICAP SEES THEIR OWN TREE, later than the lane
+       alongside by the difference between the two dial-ins. That is what a
+       handicap start is: not a hold after the green, but a tree that starts
+       when it is your turn. -->
+  <div class="rm-drag-tree" ng-if="dragLight.stage !== 'off'">
+    <div class="rm-drag-bulbs">
+      <!-- PRE-STAGE, then STAGE. These used to light together the moment the
+           tree appeared, which made them decoration: the car was placed on the
+           line and frozen, so there was nothing for them to report. Under
+           roll-up they are the whole of the staging procedure -- creep forward,
+           the first one catches, creep a little further and you are in. Under
+           'hold' the client reports both lit from placement, which is exactly
+           what that mode means. -->
+      <span class="rm-drag-bulb rm-drag-bulb-stage"
+            ng-class="{'rm-drag-lit-stage': dragLight.prestaged}"></span>
+      <span class="rm-drag-bulb rm-drag-bulb-stage"
+            ng-class="{'rm-drag-lit-stage': dragLight.staged}"></span>
+      <span class="rm-drag-bulb rm-drag-bulb-amber"
+            ng-class="{'rm-drag-lit-amber': dragLight.stage === 'amber1' || dragLight.stage === 'amber2' || dragLight.stage === 'amber3'}"></span>
+      <span class="rm-drag-bulb rm-drag-bulb-amber"
+            ng-class="{'rm-drag-lit-amber': dragLight.stage === 'amber2' || dragLight.stage === 'amber3'}"></span>
+      <span class="rm-drag-bulb rm-drag-bulb-amber"
+            ng-class="{'rm-drag-lit-amber': dragLight.stage === 'amber3'}"></span>
+      <span class="rm-drag-bulb rm-drag-bulb-green"
+            ng-class="{'rm-drag-lit-green': dragLight.stage === 'green'}"></span>
+      <span class="rm-drag-bulb rm-drag-bulb-red"
+            ng-class="{'rm-drag-lit-red': dragLight.stage === 'red'}"></span>
+    </div>
+    <div class="rm-drag-tree-note" ng-if="dragLight.lane">
+      LANE {{ dragLight.lane }}<span ng-if="dragLight.dial"> &middot; dial {{ dragET(dragLight.dial) }}</span><span ng-if="dragLight.delay > 0"> &middot; +{{ dragET(dragLight.delay) }} head start</span>
+    </div>
+    <div class="rm-drag-tree-red" ng-if="dragLight.stage === 'red'">RED LIGHT</div>
+  </div>
+
+  <!-- This driver's own numbers, held on screen after the lights go out. The
+       board agrees a beat later; this is the one that is already there when
+       they look up from the top end. -->
+  <div class="rm-drag-slip" ng-if="dragLast.et != null || dragLast.rt != null">
+    <span class="rm-drag-slip-tag" ng-class="{'rm-drag-slip-foul': dragLast.foul}">{{ dragLast.foul ? 'RED' : 'PASS' }}</span>
+    <span class="rm-drag-slip-num">RT {{ dragET(dragLast.rt) }}</span>
+    <span class="rm-drag-slip-num">ET {{ dragET(dragLast.et) }}</span>
+    <span class="rm-drag-slip-num">{{ dragMPH(dragLast.speed) }} mph</span>
   </div>
 
   <!-- ================= Regulation banners (always visible) ================ -->
@@ -3321,8 +3706,77 @@
          title="Drag to resize the leaderboard"></div>
   </div>
 
+  <!-- ================= Drag ladder board =================
+       In drag mode this replaces the race table, for the reason the derby's
+       does: `drivers` still holds the LAST race's field while a ladder runs, so
+       leaving the race table up would show the previous race's results and let
+       an admin read them as the drag standings.
+
+       A DRIVER GETS THIS WITHOUT ASKING. They have no tab row to open, so the
+       board follows the ladder: it appears when one is built and stays until it
+       is cleared. -->
+  <div class="rm-table-wrap" ng-if="dragBoardOnly() && !broadcastMode()" ng-style="minimalMode() && lbStyle()">
+    <table class="rm-table" ng-if="drag.entrants.length">
+      <thead>
+        <tr>
+          <th class="rm-col-grid" title="Where this driver was seeded in the draw">Sd</th>
+          <th class="rm-col-name">Driver</th>
+          <th class="rm-col-status">Status</th>
+          <th ng-if="drag.format === 'points'">Pts</th>
+          <th ng-if="drag.format !== 'points'" title="Passes won, and passes they did not come out of">W-L</th>
+          <th ng-if="drag.dialIn" title="The elapsed time this driver expects to run">Dial</th>
+          <th title="Quickest elapsed time this driver has run in the tournament">Best ET</th>
+          <th title="Best reaction time. A red light never sets one.">Best RT</th>
+          <th title="Fastest trap speed at the finish line">MPH</th>
+          <!-- Admin only, and only while there is a tournament to pull somebody
+               out of. A driver reading the board does not need a column of
+               buttons they cannot press. -->
+          <th ng-if="isAdmin && dragLive()"></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr ng-repeat="e in dragStandings() track by e.seed"
+            ng-class="{'rm-derby-row-out': e.status === 'out' || e.status === 'withdrawn',
+                       'rm-derby-row-winner': e.status === 'champion',
+                       'rm-drag-row-me': e.you}">
+          <td class="rm-col-grid">{{ e.seed }}</td>
+          <td class="rm-col-name">{{ e.name }}</td>
+          <td class="rm-col-status">
+            <span class="rm-light" ng-class="{'rm-light-racing': e.status === 'in' && e.online,
+                                              'rm-light-dnf': e.status === 'out' || e.status === 'withdrawn',
+                                              'rm-light-finished': e.status === 'champion'}"></span>
+            <span class="rm-status-text">{{ dragEntrantStatus(e) }}</span>
+          </td>
+          <td ng-if="drag.format === 'points'">{{ e.points }}</td>
+          <td ng-if="drag.format !== 'points'">{{ e.wins }}-{{ e.losses }}</td>
+          <td ng-if="drag.dialIn">{{ dragET(e.dial) }}</td>
+          <td>{{ dragET(e.bestET) }}</td>
+          <td>{{ dragET(e.bestRT) }}</td>
+          <td>{{ dragMPH(e.bestSpeed) }}</td>
+          <td ng-if="isAdmin && dragLive()">
+            <button class="rm-btn rm-btn-mini" ng-click="dragWithdraw(e.seed)"
+                    ng-if="e.status === 'in'" ng-disabled="dragActive()"
+                    title="Pull this driver out for good. Whoever else is in their remaining passes gets the walkover, which is better than a lane that never reports and a pass that runs to its limit.">Withdraw</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <!-- Empty states. An admin can sit in Drag mode with no ladder built, and a
+         bare table header reads as something that failed to load. -->
+    <div class="rm-derby-hint" ng-if="!drag.entrants.length && !dragStripReady()">
+      No drag strip loaded. A strip is a point-to-point layout with a finish
+      line and one start position per lane: build one in <b>Track</b>.
+    </div>
+    <div class="rm-derby-hint" ng-if="!drag.entrants.length && dragStripReady()">
+      No ladder yet. Set the format and press <b>Build Ladder</b>: the field
+      appears here with its bracket.
+    </div>
+    <div class="rm-lb-grip" ng-if="minimalMode()" ng-mousedown="startLeaderboardResize($event)"
+         title="Drag to resize the leaderboard"></div>
+  </div>
+
   <!-- ================= Qualifying table ================= -->
-  <div class="rm-table-wrap" ng-if="isQualiView() && !derbyBoardOnly() && !broadcastMode()" ng-style="minimalMode() && lbStyle()">
+  <div class="rm-table-wrap" ng-if="isQualiView() && !derbyBoardOnly() && !dragBoardOnly() && !broadcastMode()" ng-style="minimalMode() && lbStyle()">
     <table class="rm-table">
       <thead>
         <tr>
@@ -3381,7 +3835,7 @@
   </div>
 
   <!-- ================= Race table ================= -->
-  <div class="rm-table-wrap" ng-if="!isQualiView() && !derbyBoardOnly() && !broadcastMode()" ng-style="minimalMode() && lbStyle()">
+  <div class="rm-table-wrap" ng-if="!isQualiView() && !derbyBoardOnly() && !dragBoardOnly() && !broadcastMode()" ng-style="minimalMode() && lbStyle()">
     <table class="rm-table">
       <thead>
         <tr>
@@ -4451,6 +4905,219 @@
     border-top: 1px dashed rgba(234, 67, 53, 0.35);
   }
 
+
+  /* ---------------------------------------------------------------------
+     DRAG RACING
+     ---------------------------------------------------------------------
+     The panel borrows the derby's rows wholesale (.rm-derby-title,
+     .rm-derby-settings, .rm-setting, .rm-derby-hint) because they are the same
+     shape of control and a second set of near-identical rules is a second set
+     to keep in step. Only what is genuinely drag-shaped gets its own rule: the
+     ladder, the lane table and the tree. */
+  .rm-drag { padding: 6px 10px 10px; }
+
+  /* The phase badge. Distinct colours only where the phase means something an
+     admin has to act on: staged means press Run, and the tree means do not
+     touch anything. */
+  .rm-drag-phase-ready   { background: rgba(66, 133, 244, 0.28); }
+  .rm-drag-phase-staging { background: rgba(251, 188, 5, 0.30); }
+  .rm-drag-phase-tree    { background: rgba(251, 188, 5, 0.45); }
+  .rm-drag-phase-running { background: rgba(52, 168, 83, 0.32); }
+  .rm-drag-phase-result  { background: rgba(255, 255, 255, 0.16); }
+  .rm-drag-phase-complete{ background: rgba(52, 168, 83, 0.45); }
+
+  .rm-drag-champion {
+    margin: 6px 0;
+    padding: 5px 9px;
+    border-radius: 4px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    background: rgba(52, 168, 83, 0.22);
+    border: 1px solid rgba(52, 168, 83, 0.5);
+  }
+
+  /* The pass in front of you */
+  .rm-drag-pass { margin: 8px 0; }
+  .rm-drag-pass-head {
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    opacity: 0.85;
+    margin-bottom: 3px;
+  }
+  .rm-drag-lanes td, .rm-drag-lanes th { padding: 2px 6px; }
+  .rm-drag-row-through { background: rgba(52, 168, 83, 0.14); }
+  .rm-drag-row-foul    { background: rgba(234, 67, 53, 0.14); }
+  .rm-drag-note { font-weight: 700; font-size: 0.85em; letter-spacing: 0.05em; }
+  .rm-drag-row-me  { outline: 1px solid rgba(255, 255, 255, 0.22); }
+
+  /* The ladder. One block per round, one row per pass, so the whole tournament
+     reads top to bottom in the order it will actually be run. */
+  .rm-drag-ladder {
+    margin-top: 8px;
+    /* The ladder is the one part of this panel with no bound on its height: a
+       sixty-four car single elimination is six rounds and sixty-three passes.
+       It scrolls inside itself rather than pushing the leaderboard off the
+       bottom edge, which .rm-root (overflow:hidden) would simply cut. */
+    max-height: 260px;
+    overflow-y: auto;
+  }
+  .rm-drag-round {
+    border-left: 2px solid rgba(255, 255, 255, 0.12);
+    padding-left: 7px;
+    margin-bottom: 7px;
+  }
+  .rm-drag-round-live { border-left-color: rgba(251, 188, 5, 0.7); }
+  .rm-drag-round-head {
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    margin-bottom: 2px;
+  }
+  .rm-drag-side { font-weight: 400; opacity: 0.6; margin-left: 6px; }
+  .rm-drag-pass-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    padding: 2px 0;
+    border-bottom: 1px dotted rgba(255, 255, 255, 0.07);
+  }
+  .rm-drag-pass-done { opacity: 0.85; }
+  .rm-drag-lane {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.05);
+  }
+  .rm-drag-lane b { opacity: 0.55; font-weight: 600; }
+  .rm-drag-lane i { font-style: normal; opacity: 0.75; }
+  .rm-drag-lane em {
+    font-style: normal;
+    font-weight: 700;
+    font-size: 0.8em;
+    letter-spacing: 0.05em;
+    color: rgba(234, 67, 53, 0.95);
+  }
+  .rm-drag-lane-through { background: rgba(52, 168, 83, 0.20); }
+  /* Struck through rather than merely dimmed: on a board an admin scans while
+     a field waits, "did not advance" has to survive being read at a glance. */
+  .rm-drag-lane-out { opacity: 0.5; text-decoration: line-through; }
+  .rm-drag-bye {
+    font-size: 0.8em;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    opacity: 0.7;
+    align-self: center;
+  }
+
+  /* ---------------------------------------------------------------------
+     The christmas tree
+     ---------------------------------------------------------------------
+     A column, not a gantry. Two blue stage bulbs, three ambers, a green and a
+     red, which is the shape every drag strip in the world uses and the one a
+     driver reads without being told. */
+  /* PINNED TO ONE SIDE, NOT OVER THE PANEL.
+     It was a full-window overlay like the countdown, and that is wrong for
+     this one: a countdown lasts three seconds and nobody has anything to press
+     during it, while a tree is up from the moment the cars stage until the
+     moment they leave -- and Run and Wave Off are underneath it that whole
+     time. An admin staged a practice pass and could not see the button that
+     starts it.
+     pointer-events:none meant the clicks would have gone through, which is
+     worse rather than better: the control was reachable and invisible.
+     A strip down the right edge keeps the lights in view for the whole
+     sequence and covers nothing. The bulbs keep their own dark plate so they
+     read against whatever is behind them. */
+  .rm-drag-tree {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    z-index: 5;
+    pointer-events: none;
+  }
+  .rm-drag-bulbs {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+  }
+  .rm-drag-bulb {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    /* Unlit is a dark socket rather than nothing, so the tree reads as seven
+       bulbs waiting rather than as however many happen to be on. Same reasoning
+       as the start-lights gantry above. */
+    background: rgba(255, 255, 255, 0.07);
+    border: 2px solid rgba(255, 255, 255, 0.16);
+    transition: background 60ms linear, box-shadow 60ms linear;
+  }
+  .rm-drag-bulb-stage { width: 18px; height: 18px; align-self: center; }
+  .rm-drag-lit-stage {
+    background: rgba(80, 160, 255, 0.9);
+    box-shadow: 0 0 10px rgba(80, 160, 255, 0.7);
+  }
+  .rm-drag-lit-amber {
+    background: rgba(251, 188, 5, 0.95);
+    box-shadow: 0 0 14px rgba(251, 188, 5, 0.75);
+  }
+  .rm-drag-lit-green {
+    background: rgba(52, 168, 83, 0.95);
+    box-shadow: 0 0 18px rgba(52, 168, 83, 0.85);
+  }
+  .rm-drag-lit-red {
+    background: rgba(234, 67, 53, 0.95);
+    box-shadow: 0 0 18px rgba(234, 67, 53, 0.85);
+  }
+  .rm-drag-tree-note {
+    font-size: 0.72em;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    opacity: 0.85;
+    /* Narrow, because the strip is. The lane number is the part that has to
+       survive the wrap, so it is first in the markup. */
+    max-width: 84px;
+    text-align: center;
+    line-height: 1.25;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  }
+  .rm-drag-tree-red {
+    font-size: 0.85em;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    color: rgba(234, 67, 53, 1);
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  }
+  /* The red light also goes through pushNotice, which is what actually tells
+     the driver. This is the bulb, not the announcement. */
+
+  /* The time slip: this driver's own numbers, after the pass. */
+  .rm-drag-slip {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin: 4px 8px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.07);
+    border-left: 3px solid rgba(52, 168, 83, 0.8);
+  }
+  .rm-drag-slip-tag {
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    font-size: 0.8em;
+  }
+  .rm-drag-slip-foul { color: rgba(234, 67, 53, 1); }
+  .rm-drag-slip-num { font-variant-numeric: tabular-nums; }
+
   /* Countdown overlay */
   .rm-countdown {
     position: absolute;
@@ -5224,7 +5891,14 @@
     height: var(--rm-lb-height, 100%);
   }
   /* A driver's panel is narrow, so the gantry shrinks with it rather than
-     pushing the lamps off the side. */
+     pushing the lamps off the side. The drag tree is a COLUMN pinned down one
+     edge, so what it runs out of is height rather than width -- seven bulbs at
+     full size are taller than a minimal panel is. It is not in the
+     full-window confinement group above because it is not a full-window
+     overlay: it is already inside the panel by construction. */
+  .rm-minimal .rm-drag-bulb { width: 16px; height: 16px; }
+  .rm-minimal .rm-drag-bulb-stage { width: 11px; height: 11px; }
+  .rm-minimal .rm-drag-bulbs { gap: 3px; padding: 5px 7px; }
   .rm-minimal .rm-lamp { width: 22px; height: 22px; }
   .rm-minimal .rm-lights { gap: 8px; }
   .rm-minimal .rm-count-num { font-size: 30px; }

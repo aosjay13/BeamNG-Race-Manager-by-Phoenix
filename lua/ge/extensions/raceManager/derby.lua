@@ -14,9 +14,12 @@
 --   * mutable scalars the extension owns (phase, isAdmin, visualize, ...) come
 --     through GETTERS, because a value captured at init would be a snapshot of
 --     whatever it happened to be when the file loaded
---   * tables (spectate, startPositions) and the shared derby reset allowance
---     come by reference, so both halves see the same object rather than copies
---     that drift
+--   * tables come by reference (spectate, and the shared derby reset
+--     allowance), so both halves see the same object rather than copies that
+--     drift -- but ONLY where the extension clears that table in place. A
+--     field it REASSIGNS, such as track.startPositions, has to come through a
+--     getter too, or the reference here is the table the mod booted with and
+--     stays that way. tests/wiring_test.lua checks which is which
 --
 -- The reset allowance is genuinely shared and stays that way: the reset code in
 -- the extension polices race and derby resets through one path, so this module

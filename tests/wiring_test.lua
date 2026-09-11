@@ -30,22 +30,32 @@ end
 
 local server = readFile('server/RaceManager/main.lua')
 
--- The plugin is more than its entry point now: the demo derby is a required
--- sibling, and it defines twenty-seven of the RM_Derby* handlers registered
--- below. Registration is BY STRING, so a handler living in another file is
+-- The plugin is more than its entry point now: the demo derby and the drag
+-- ladder are required siblings, and between them they define every RM_Derby*
+-- and RM_Drag* handler registered below. Registration is BY STRING, so a handler living in another file is
 -- resolved identically at fire time -- but a check that only reads main.lua
 -- would call every one of them missing.
 --
 -- Concatenated rather than searched file by file, because the question this
 -- test asks is "does a global by this name exist anywhere in the plugin", and
 -- that is exactly what BeamMP asks when the event fires.
-local serverModules = { 'derby' }
+local serverModules = { 'derby', 'drag' }
 local plugin = server
 for _, m in ipairs(serverModules) do
   plugin = plugin .. readFile('server/RaceManager/' .. m .. '.lua')
 end
 local client = readFile('lua/ge/extensions/raceManager.lua')
 local ui     = readFile('ui/modules/apps/RaceManager/app.js')
+
+-- The client modules, for the export check further down. Read separately from
+-- `client` because what they prove is different: a name reaches the UI either
+-- because raceManager.lua defines it, or because it is MERGED onto M from one
+-- of these -- and the merge is a quoted string in a list, which on its own
+-- proves nothing about whether the module actually has the function.
+local clientModules = {}
+for _, m in ipairs({ 'derby', 'drag', 'render' }) do
+  clientModules[#clientModules + 1] = readFile('lua/ge/extensions/raceManager/' .. m .. '.lua')
+end
 
 -- Everything the server plugin registers a handler for.
 local registered = {}
@@ -213,6 +223,113 @@ end
 noDupes('the client bridge (M.*)',      client, '\nfunction M%.([%a_][%w_]*)')
 noDupes('the server plugin (RM_* globals)', server, '\nfunction (RM_[%a_][%w_]*)')
 noDupes('the UI app ($scope handlers)', ui,     '%$scope%.([%a_][%w_]*)%s*=%s*function')
+
+-- ---------------------------------------------------------------------------
+-- A module init may not take a REASSIGNED host table by reference
+-- ---------------------------------------------------------------------------
+-- The client modules are handed pieces of the extension's state through
+-- init(host). Tables go by reference so both halves see the same object -- but
+-- that only holds for a table the extension CLEARS IN PLACE. A field the
+-- extension REASSIGNS (`track.startPositions = starts`) leaves the module
+-- holding the old object forever, and nothing about that is visible at the
+-- call site: the two lines look identical.
+--
+-- It has now cost two bugs. `track.route` is reassigned when a layout loads,
+-- which was caught while writing the drag module. `track.startPositions` is
+-- reassigned by the same path, which was NOT caught -- it was passed by
+-- reference under a comment asserting the opposite, and every car staged for a
+-- drag pass was placed against the empty table the mod booted with. The
+-- symptom is "Start position 1 is not placed on this track" on a track that
+-- plainly has one, which sends you looking at the editor.
+--
+-- So the compiler cannot see it and a reviewer reads past it: this is the only
+-- thing that catches it. A reassigned field must be passed as a GETTER
+-- (`field = function () return track.x end`), which is resolved at call time
+-- and therefore always current.
+do
+  -- Which `track` fields does the extension reassign? A bare `track.x = ` at
+  -- the start of a statement. Comparisons (`==`) are excluded by requiring a
+  -- single `=`, and `track.x.y = ` by requiring the name to end at the space.
+  local reassigned = {}
+  -- A newline, optional indent, then `track.x = `. Anchored on the line
+  -- start so `race.track.x` and a comment mentioning one do not count.
+  for name in client:gmatch('\n%s*track%.([%a_][%w_]*)%s*=[^=]') do
+    reassigned[name] = true
+  end
+  expect(reassigned.route ~= nil,
+    'found the reassignment sites (route is one of them)')
+  expect(reassigned.startPositions ~= nil,
+    'and startPositions, the field this check exists for')
+
+  -- Now every `x = track.y,` inside a MODULE INIT CALL, and only those.
+  --
+  -- Scoped to the init blocks on purpose. The same line shape appears all over
+  -- this file in payload tables -- `pushRouteState` builds one every frame --
+  -- and there it is correct: a payload is a snapshot being sent somewhere, not
+  -- a reference somebody keeps. Flagging those would bury the real finding in
+  -- noise, and a lint with noise in it gets switched off.
+  local scanned, passed, mentions = 0, 0, 0
+  for body in client:gmatch('%.init%((%b{})%)') do
+    scanned = scanned + 1
+    for _ in body:gmatch('track%.') do mentions = mentions + 1 end
+    for field in body:gmatch('=%s*track%.([%a_][%w_]*)%s*,') do
+      passed = passed + 1
+      expect(not reassigned[field],
+        'a module init is handed track.' .. field .. ' BY REFERENCE, and the '
+          .. 'extension reassigns it, so the module holds the old table for '
+          .. 'ever. Pass a getter instead: function () return track.'
+          .. field .. ' end')
+    end
+  end
+  expect(scanned >= 3, 'found the module init calls (got ' .. scanned .. ')')
+  -- ZERO BY-REFERENCE FIELDS IS THE GOAL, not a broken scan, so the sanity
+  -- check is that the init blocks mention `track` at all. Without it a rename
+  -- of that local would leave this passing while checking nothing -- and every
+  -- field would be flagged clean because none of them matched the pattern any
+  -- more. `passed` is reported so the number is visible when it is not zero.
+  expect(mentions > 0, 'the init blocks still take track state (got '
+    .. mentions .. ' mention(s), ' .. passed .. ' of them by reference)')
+end
+
+-- ---------------------------------------------------------------------------
+-- Every raceManager.x() the UI calls actually exists on the extension
+-- ---------------------------------------------------------------------------
+-- The UI reaches Lua through bngApi.engineLua('raceManager.thing()'), which is
+-- a STRING. Nothing checks it: a typo, a renamed function or a module whose
+-- entry points were never merged onto M all fail the same silent way -- the
+-- button does nothing, no console says why, and it looks like a server problem.
+--
+-- A name counts as exported three ways, and all three are real:
+--   * `function M.name` or `M.name =` in the extension itself
+--   * merged from a module: the extension names it as a quoted string in one of
+--     the `M[name] = mod[name]` lists, AND a module defines it
+-- The second half of that pair is what makes this worth running: a merge list
+-- entry with no function behind it is exactly as dead as a typo, and reads as
+-- correct.
+do
+  local wanted, seen = {}, {}
+  for name in ui:gmatch("raceManager%.([%a][%w_]*)%s*%(") do
+    if not seen[name] then seen[name] = true; wanted[#wanted + 1] = name end
+  end
+  expect(#wanted > 20, 'found the UI calls into the extension (got ' .. #wanted .. ')')
+  for _, name in ipairs(wanted) do
+    local direct = client:find('function M%.' .. name .. '%s*%(') ~= nil
+                or client:find('M%.' .. name .. '%s*=') ~= nil
+    local merged = false
+    if not direct and client:find("'" .. name .. "'", 1, true) then
+      for _, mod in ipairs(clientModules) do
+        if mod:find('function D%.' .. name .. '%s*%(') ~= nil
+           or mod:find('D%.' .. name .. '%s*=') ~= nil then
+          merged = true
+          break
+        end
+      end
+    end
+    expect(direct or merged,
+      'the UI calls raceManager.' .. name .. '(), which nothing on the extension '
+        .. 'defines or merges onto M: that button does nothing and says nothing')
+  end
+end
 
 if fails == 0 then
   print('wiring_test: ' .. checks .. ' checks, 0 failures')

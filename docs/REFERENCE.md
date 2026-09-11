@@ -1,7 +1,8 @@
 # Race Manager - full reference
 
 Every feature in detail: the complete race-night walkthrough, league
-regulations, the Demo Derby, and how live positions are worked out.
+regulations, the Demo Derby, drag racing, and how live positions are
+worked out.
 The [README](../README.md) has the short version.
 
 [← Back to the README](../README.md)
@@ -1483,6 +1484,25 @@ works exactly as it always did &mdash; the grid, the hold, the countdown or pace
 lap, the flags, the results file. Generate Grid simply forms a grid of that
 heat's drivers, and the entrant count reads the heat rather than the night.
 
+**The drivers waiting for a later heat keep their cars and their controls, and
+become ghosts.** They are not teleported, not frozen and not sent to a spectator
+camera: they can drive the map, park on the hill and watch, or tab between the
+cars in the race, for as long as the heat lasts. What they cannot do is touch it.
+From the moment the grid forms until the flag, every client ghosts them and they
+ghost every client, so a bored driver on the racing line is scenery rather than a
+race-ending accident. The panel says which heat they are in and which one is
+running, and a notice on screen says the same in words.
+
+Their cars go solid again at the flag, along with everyone else's &mdash; the
+un-ghost at the end of a session is one rule for the whole field.
+
+**A heat's results are the heat's.** The results file, the session awards and the
+cup round are built from the drivers who actually started it, so a twelve-car
+night run as three heats writes three four-driver result files rather than three
+twelve-driver ones with eight DNFs in each. The qualifying table at the top of
+the file is still the whole night's field, because that is what the draw was made
+from and qualifying is never split.
+
 **The feature grid is the transfer order:** the heat winners on the front row,
 then all the seconds, then all the thirds, with heat number breaking the tie
 inside each row. So a three-heat night lines up 1st-of-H1, 1st-of-H2, 1st-of-H3,
@@ -2330,6 +2350,7 @@ they survive a reconnect and a server restart like everything else.
 | **Garage** | Allowed vehicles and setups |
 | **Cup** | Championship scoring, bonuses and standings |
 | **Derby** | Demo Derby rules, entry, live standings and the arena editor |
+| **Drag** | The drag tournament ladder: format, lanes, the tree, dial-ins and the bracket |
 | **⚙** | Master password, results housekeeping |
 
 **Session controls stay above the tabs** and are never one click away: Start
@@ -2381,6 +2402,296 @@ There is one copy of each board in the app, not one per panel.
 A **driver's** leaderboard is not driven by the tab row, which they never see:
 it follows the session. Once a derby forms up, their board is the derby
 standings, through the countdown and the derby itself.
+
+
+## Drag racing (parallel game mode)
+
+A tournament ladder run down a drag strip: its own server events, its own
+panel, its own board and its own results file. Like the Demo Derby it is
+isolated from the circuit racing systems above, so running a ladder never
+touches qualifying or race state and vice versa. Pick the **Drag** tab.
+
+### The strip is a point-to-point layout
+
+There is no separate strip editor, and that is deliberate. A drag strip is
+already something the Track editor builds:
+
+- a **point-to-point** layout, which is driven once from the first gate to the
+  last rather than lapped;
+- its **last gate is the finish line** - the client detects the crossing with
+  the same test it uses for a lap;
+- its **start positions are the lanes** - one per lane, in lane order.
+
+So: build a sprint stage in **Track** with a start line, a finish line and two
+to eight start positions, save it, load it, and it is a drag strip. Nothing
+about the layout is drag-specific; the same file can be raced as an ordinary
+sprint stage.
+
+The panel refuses to build a ladder until a layout is loaded and says which
+half is missing. Eight lanes on a four-lane strip is reduced to four rather
+than stacking cars on top of each other.
+
+### Formats
+
+| Format | How it narrows |
+|---|---|
+| **Single elimination** | One loss and you are out |
+| **Double elimination** | Losing once drops you into a losers bracket; losing there is the end of it |
+| **Points shootout** | Nobody is knocked out by one pass. Every entrant runs every round, scores by finishing position, and the **cut** takes the bottom off the board between rounds |
+
+Two more settings shape all three:
+
+- **Lanes** (2-8): cars on the line at once. Two is a drag race; eight is a
+  shootout.
+- **Through** (ladders only): how many come out of each pass still in it. One
+  with two lanes is the classic ladder. **Four with eight lanes is "top half of
+  the shootout goes through"**, which is the shape most club nights want.
+
+**The pass that decides the tournament always advances exactly one**, whatever
+Through says: once the whole remaining field fits in one pass, that pass is the
+final and the winner takes it.
+
+**Byes are drawn automatically.** Five cars over two lanes is three passes, and
+the first of them holds one seed - the top seed, which is the rule every bracket
+sheet uses. A bye is a real pass: the entrant stages, runs and puts an elapsed
+time on the board, and advances whatever happens, including a run they never
+finish.
+
+**Double elimination gets its reset.** If the entrant who reaches the final
+undefeated does not win it, they have spent the second life the format promised
+them rather than lost the tournament, and the two of them go again in a
+**Final (reset)**.
+
+### Seeding
+
+| Seed | The draw |
+|---|---|
+| **Random** | A shuffle |
+| **Join order** | Connection order |
+| **Qualifying** | Fastest qualifying time first, no time last |
+
+A point-to-point layout timed once **is** a qualifying pass, so running an
+ordinary qualifying session on the strip first and then seeding the ladder from
+it needs nothing new: the ladder draws itself off the times.
+
+### Running a pass
+
+1. **Stage** puts this pass's cars on the strip.
+2. The tree comes down, by itself or on **Run**, depending on the settings
+   below.
+3. The result settles itself when every lane is home, or when the pass limit
+   runs out under whoever is left.
+
+**Wave Off** cancels a pass without scoring it and offers the same pass again.
+
+### Staging: roll up, or hold
+
+| Mode | What Stage does |
+|---|---|
+| **Roll up** (default) | The car is placed a few metres **short** of the line and left free. The driver creeps forward into the beams themselves. |
+| **Hold** | The car is placed **on** the line and frozen. Staged the moment it lands. |
+
+Roll up is what a drag strip actually does, and it is what makes the two blue
+bulbs mean something: creep forward and the **pre-stage** bulb catches, creep a
+little further and you are **staged**. Roll too far and you drop out of the
+beams again, so overshooting is fixed by backing up rather than by waving the
+pass off.
+
+Hold is quicker, and it is the right choice for an eight-wide shootout where
+waiting for eight people to creep into the beams is most of the evening.
+
+### Who drops the tree
+
+Under roll up, **Start** picks between two answers and both are useful:
+
+- **Automatic** drops the tree by itself once every lane is in the beams, after
+  a short settle so the last car in gets the same moment everybody else got.
+  This is what a starter does, and it takes the admin out of the loop for a
+  forty-pass evening.
+- **Manual** leaves it to **Run**, which is what you want the first time on a
+  new strip, or while somebody is still explaining the rules.
+
+**Run works either way.** Under automatic it is the override for the driver who
+will not stage, which is the job the courtesy stage rule does at a real strip.
+
+**Courtesy stage** is the backstop: after that many seconds the tree drops on
+whoever is in the beams. A car still creeping is late, which is a result rather
+than a deadlock, and an unattended server must not be able to sit on one pass
+for ever.
+
+A car that rolls **out** of the beams cancels the pending tree, and the settle
+starts again when it returns. Nobody gets a green dropped on them mid-manoeuvre.
+
+### The tree, and the red light
+
+Two patterns. The **sportsman** tree steps three ambers half a second apart and
+greens half a second after the last; the **pro** tree drops all three together
+and greens four tenths later. Every pass gets a randomised pre-roll of 1.0 to
+2.5 seconds before the first light, so the tree cannot be anticipated.
+
+**The hold comes off at the first light, not at the green.** A staged driver is
+free to go whenever they like, and going early is a **red light** - a foul that
+loses the pass - rather than something the game prevents. A car frozen until
+the green cannot foul, which would delete half of what a drag race is. The run
+still counts: a red light still puts an elapsed time on the board, and still
+loses to anybody who left legally.
+
+**The lights run on each driver's own machine.** A reaction time is decided in
+the third decimal place, and timing that against a server tick would measure the
+network instead - whoever sat furthest from the box would post the worst light
+however well they drove. The server sends the shape of the tree (the pattern,
+the pre-roll it drew, and this lane's head start) and every client runs the same
+lights against its own clock, the same trade the lap timer already makes. What
+it costs is that two cars are not exactly level on screen; what it buys is that
+every number the pass is decided on was measured the same way.
+
+### What a pass measures
+
+| | |
+|---|---|
+| **RT** | Reaction time: the green to the car moving. Negative is a red light. |
+| **ET** | Elapsed time: leaving the line to the finish gate. |
+| **MPH** | Trap speed at the finish line. |
+
+A lane is ranked on **who got there first**, which is its head start plus its
+reaction plus its elapsed time. With no dial-ins the head start is zero for
+everybody and that is simply reaction plus ET.
+
+Four tiers, and no run in a lower tier ever beats one above it: a clean run, a
+breakout, a red light, then no time at all.
+
+### Bracket racing (dial-ins)
+
+Switch **Dial-in** on and every entrant declares the elapsed time they expect to
+run. The **slower car leaves first**, by exactly the difference between the two
+dials, so both should arrive together and the pass is decided by who drove
+better rather than by who brought more engine. A street car and a race car can
+meet on equal terms.
+
+The handicap is the **whole tree**, not a hold after the green: a driver with a
+head start owed to them simply sees their own tree start later, and launches on
+their own green like anybody else.
+
+**Breakout** (on by default) makes running quicker than your own dial a loss,
+however fast it was. Between two breakouts the one who broke out by less takes
+it, which is the real rule rather than a tie-break.
+
+A driver sets their own dial from the panel; an admin can set one for somebody
+who has not opened the app. Neither can be changed for a car already on the
+line. With **Qualifying** seeding the dial is pre-filled from that driver's
+qualifying time, which is the only number anybody has yet.
+
+### The board
+
+The **Drag** tab shows the ladder round by round, pass by pass, with each lane's
+time and whether they went through. The leaderboard underneath becomes the
+standings: seed, status, record, best ET, best RT and best trap speed. Drivers
+get the standings without asking - they have no tab row to open, so the board
+appears when a ladder is built and stays until it is cleared.
+
+### What survives a restart
+
+The ladder is written to `Resources/Server/RaceManager/Data/dragLadder.json` on
+every change and comes back at boot. A tournament is an evening, not a session,
+and losing four rounds of it to a restart means running the whole thing again.
+
+**The pass in front of you is not saved.** A pass interrupted by a restart has
+to be run again: the cars are no longer staged and the tree is no longer
+running. The ladder comes back at the pass boundary before it.
+
+Entrants come back **by name**, because a BeamMP session id is not one. A
+restored entrant nobody on the server answers to is kept, shown offline, and can
+be withdrawn by hand - a ladder full of holes an admin cannot fix would be
+worse. This is a narrow, deliberate exception to the rule that a name is never
+an identity here; no championship points hang on it (see *Display names*).
+
+### Results
+
+When a tournament finishes the server announces the winner in chat and writes
+`drag_results_YYYY-MM-DD_HH-MM-SS.txt` to
+`Resources/Server/RaceManager/Data/results/`: the rules it ran under, the
+finishing order for the whole field with each driver's best numbers, then the
+whole ladder round by round with every lane's run and every red light.
+
+### Cup points
+
+A finished tournament banks a cup round like a race or a derby, on a **points
+table of its own** (Cup tab, under *Drag*). A drag meeting is not a ten-lap
+race: the field is whoever turned up, the winner made four passes and the
+driver knocked out first made one. What that is worth is a league decision, so
+it gets its own table, its own preset picker and its own **Turn drag points
+off**.
+
+Points are scored on the **finishing order** the ladder produced, which is the
+whole field and not just the drivers who reached the final. Going out in round
+one is a result.
+
+Two bonuses, and they are routinely won by different people:
+
+| Bonus | Paid to |
+|---|---|
+| **Event Win** | The driver who actually took the ladder |
+| **Low ET** | Whoever made the quickest single pass of the meeting |
+
+Low ET is the strip's answer to Fastest Lap, and like Fastest Lap it is what a
+quick car that went out early can still take home. **A red light still counts
+for it**: the car went down the strip and the clocks caught it, and leaving
+early lost that pass without saying anything about the time.
+
+**An empty drag table means drag racing is not part of this cup**, and it means
+it completely. No round is banked and no drag bonus is paid, which is the same
+rule qualifying and the derby already follow.
+
+A cup started before drag racing existed carries no drag table. It falls back
+to the **race** table rather than to nothing, because loading it as "drag is
+worth zero" would decide something the admin never said.
+
+The standings gain a **Drag** column once a meeting has been scored, and a
+drag-only view beside the race and derby ones.
+
+### A practice pass
+
+**One pass down the strip that scores nothing.** Press **Practice Pass** and
+everybody eligible, up to the number of lanes the strip has, is staged, held,
+given the tree and timed exactly as a real pass. Two presses instead of three:
+Practice puts them on the line, Run drops the tree.
+
+**It works with one driver**, which is most of why it exists. A bracket needs a
+field, and until one turns up there is otherwise no way to find out whether the
+finish line is where you think it is, whether the lanes are the right way
+round, or whether the tree feels right.
+
+It writes nothing down. No win, no loss, no elimination, no best-ever number,
+and no round on the ladder. Run one between rounds and the tournament does not
+notice.
+
+The other reason it exists is the **dial-in**. Declaring the time you expect to
+run, on a strip you have never seen, is a guess until you have made a pass down
+it. After a practice pass the dial-in box offers a **Use 11.250** button that
+takes the elapsed time you just ran.
+
+### Who has to stay off the strip
+
+**While a pass is on the strip, everybody who is not in it stands down** - the
+drivers waiting for a later pass, the ones already knocked out, and anybody who
+wandered over to watch. They get their car and their camera back the moment the
+pass settles.
+
+**Being knocked out does not cost you your car.** That is where a ladder differs
+from a derby: a derby ends within minutes of your elimination, so standing you
+down until it does costs nothing, while a ladder runs for an hour and losing in
+round one should not mean forty minutes in freecam. Somebody who is out is
+simply never called for another pass.
+
+### Other things worth knowing
+
+- **A driver who disconnects mid-pass is DNF at once** rather than holding the
+  pass open until the limit expires. Their lane still appears on the board.
+- **Withdraw** pulls an entrant out for good; whoever else is in their remaining
+  passes gets the walkover.
+- **The entry list is snapshotted when the ladder is built** and never re-read.
+  A bracket that redrew itself every time somebody joined to watch would not be
+  a bracket.
 
 ## Demo Derby (parallel game mode)
 

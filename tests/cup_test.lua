@@ -554,7 +554,12 @@ check(byKey['collision-course'] ~= nil, 'Collision Course is offered as a preset
 check(#lastCup.racePoints == 3 and lastCup.racePoints[1] == 3
   and lastCup.racePoints[2] == 2 and lastCup.racePoints[3] == 1,
   'and pays 3, 2, 1 with nothing behind it')
-check(#lastCup.bonuses == 4, 'and the bonus registry, so the panel renders itself from it')
+-- SIX: three race (fastest lap, halfway led, hard charger), one derby (last
+-- man standing) and two drag (event win, low ET). Pinned rather than left
+-- open, because the panel renders itself FROM this list -- a bonus added to
+-- the registry and forgotten in the UI is a points award nobody can configure,
+-- and the count is the only place that shows up before a league notices.
+check(#lastCup.bonuses == 6, 'and the bonus registry, so the panel renders itself from it')
 check(lastCup.bonuses[1].key ~= nil and lastCup.bonuses[1].label ~= nil,
   'each bonus arrives with a key and a label')
 local kinds = {}

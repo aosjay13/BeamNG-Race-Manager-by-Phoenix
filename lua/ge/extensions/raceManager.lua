@@ -234,7 +234,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.13.2'
+local RM_BUILD = '0.14.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -300,6 +300,11 @@ local session = {
   heatCount    = 0,
   heatCurrent  = 0,
   heatLaps     = 0,
+  -- Which heat WE were drawn into, read off our own driver row. nil means no
+  -- draw has happened (or we are not in it); it is only ever compared against
+  -- heatCurrent, to tell a driver waiting out somebody else's heat why their
+  -- car has gone intangible.
+  myHeat       = nil,
   -- This driver's own lap, measured here because only the client sees the car
   -- cross anything. The server scores what this reports.
   localLap     = 1,
@@ -7412,14 +7417,29 @@ local function ghostUpdate(dt)
   if isBystander ~= (ghost.field.bystander == true) then
     setGhostReason('bystander', isBystander)
     if isBystander then
-      -- TWO WAYS TO BECOME ONE, and they need different words. A mid-session
+      -- THREE WAYS TO BECOME ONE, and they need different words. A mid-session
       -- arrival is a ghost because a race is running; somebody who pressed
       -- Spectate is a ghost because they asked to sit out, and telling them a
       -- session is running when the panel says WAITING and they just logged in
       -- alone is how a working feature reads as a broken one.
-      pushNotice('spectate', selfSpectating
-        and 'You are spectating: your car is a ghost, so nobody can hit it.'
-        or  'A session is already running: you are a ghost until it ends')
+      --
+      -- The third is a HEAT NIGHT, and it is the one that most needs saying: the
+      -- driver did not ask for this, has not finished anything, and is about to
+      -- spend a whole heat wondering whether the mod has broken. Tested FIRST
+      -- because a driver waiting out a heat is not spectating and did not join
+      -- late, so both of the other two would be a lie.
+      local why
+      if session.myHeat and session.heatCurrent > 0
+         and session.myHeat ~= session.heatCurrent then
+        why = 'Heat ' .. session.heatCurrent .. ' is running and you are in heat '
+          .. session.myHeat .. '. Drive where you like: your car is a ghost, so '
+          .. 'you cannot touch the race or be touched by it.'
+      elseif selfSpectating then
+        why = 'You are spectating: your car is a ghost, so nobody can hit it.'
+      else
+        why = 'A session is already running: you are a ghost until it ends'
+      end
+      pushNotice('spectate', why)
     end
   end
 
@@ -7605,7 +7625,12 @@ derby.init({
   maxResets = function () return session.maxResets end,
   -- Tables, by reference, so both halves see the same object.
   spectate = spectate,
-  startPositions = track.startPositions,
+  -- A GETTER, like the drag module's copy of it and for the same reason: the
+  -- extension REASSIGNS this table when a layout loads, so a reference taken
+  -- here would be the empty one the mod booted with, for ever. Nothing in the
+  -- derby reads it today -- an arena carries its own start slots -- so this is
+  -- a trap being removed rather than a bug being fixed.
+  startPositions = function () return track.startPositions end,
   -- The derby reset allowance is genuinely shared: the reset code above
   -- polices race and derby resets through one path, so it reads what the
   -- module writes. One table rather than three variables and a copy.
@@ -7636,6 +7661,56 @@ for _, name in ipairs({
   M[name] = derby[name]
 end
 
+
+local drag = require('raceManager/drag')
+
+drag.init({
+  -- Plain functions.
+  inMultiplayer = inMultiplayer, fromCurrentServer = fromCurrentServer,
+  localServerId = localServerId,
+  sampledVehicle = sampledVehicle, pushNotice = pushNotice,
+  queueFieldPlacement = queueFieldPlacement,
+  releaseGridHold = releaseGridHold, requestHold = requestHold,
+  segmentCrossesGate = segmentCrossesGate,
+  -- IS THIS CAR STILL LANDING? The drag module will not lift a hold the
+  -- placement queue is about to re-apply, and will not measure a launch from an
+  -- anchor taken mid-flight. A getter, not the table: `field` is this file's
+  -- and nothing outside it has business writing to it.
+  placementActive = function () return field.active end,
+  -- THE FINISH LINE, THROUGH A GETTER AND NOT BY REFERENCE. `track.route` is
+  -- REASSIGNED when a layout loads rather than cleared in place (see the two
+  -- `track.route = ` sites), so a reference captured here would go on pointing
+  -- at the gates of whatever track happened to be loaded first. The derby's
+  -- tables are the opposite case and come by reference; this one cannot.
+  finishGate = function ()
+    local n = #track.route
+    return n > 0 and track.route[n] or nil
+  end,
+  -- THE LANES ARE THE LOADED TRACK'S START POSITIONS, and this is a GETTER for
+  -- the same reason the finish gate is.
+  --
+  -- It was passed by reference first, with a comment claiming the table was
+  -- cleared in place. It is not: `track.startPositions` is REASSIGNED at four
+  -- sites, one of them the layout-apply path -- so the reference captured here
+  -- at load stayed pointing at the empty table the mod started with, and every
+  -- staged car was placed against it. The symptom is "Start position 1 is not
+  -- placed on this track" on a strip that plainly has two.
+  --
+  -- Reassigned-versus-cleared-in-place is not a detail anybody can hold in
+  -- their head per field, so tests/wiring_test.lua now checks it instead.
+  startPositions = function () return track.startPositions end,
+})
+
+-- NOT ALIASED INTO LOCALS, for the reason spelled out where the derby module is
+-- required: an alias costs the forward declaration it was meant to save, and it
+-- captures the function at load time.
+for _, name in ipairs({
+  'dragAbort', 'dragBuild', 'dragClear', 'dragPractice', 'dragRequestState',
+  'dragRun', 'dragSetConfig', 'dragSetDial', 'dragSetStaging', 'dragStage',
+  'dragWithdraw',
+}) do
+  M[name] = drag[name]
+end
 
 -- Post-join: ask the server for the current state once its socket has had a
 -- moment to come up, so a driver who joins a server mid-session sees the live
@@ -7676,6 +7751,9 @@ function M.onUpdate(dt)
   vehicleConfigUpdate(dt)   -- Module 4: declare setup changes to the server
   derby.derbyUpdate(dt)
   derby.derbyDrawBoundary()
+  -- The drag pass: the tree, the launch, the finish line and the trap speed.
+  -- Costs one comparison a frame when no ladder is running.
+  drag.dragUpdate(dt)
 end
 
 -- ---------------------------------------------------------------------------
@@ -9604,6 +9682,11 @@ local function onServerUpdate(rawData)
   local wasLapped  = session.beingLapped
   local wasLapping = session.lappingAhead
   session.beingLapped, session.lappingAhead = false, false
+  -- WHICH HEAT WE WERE DRAWN INTO, off the same row. On the session table rather
+  -- than in a local of its own for the reason everything else here is: this file
+  -- is close enough to Lua's 200-local ceiling that a new one is a real cost, and
+  -- the ceiling fails by making the whole mod vanish with no error.
+  session.myHeat = nil
   if myId and type(data.drivers) == 'table' then
     for _, d in ipairs(data.drivers) do
       if tonumber(d.id) == myId then
@@ -9614,6 +9697,7 @@ local function onServerUpdate(rawData)
         -- the same array, or a targeted send per driver, for two booleans.
         session.beingLapped  = d.blue == true
         session.lappingAhead = d.lapping == true
+        session.myHeat       = tonumber(d.heat)
         break
       end
     end
@@ -10721,6 +10805,15 @@ function M.cupSetDerbyPoints(csv)
   end
 end
 
+-- The drag ladder's own table, on the same contract: an empty string sends an
+-- empty table, which on the server is what "drag racing does not score in this
+-- cup" means -- and it means it completely, bonuses included.
+function M.cupSetDragPoints(csv)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_CupSetScoring', jsonEncode({ drag = cupParsePoints(csv) }))
+  end
+end
+
 -- An empty string is how qualifying points are switched OFF: it sends an empty
 -- table, and on the server an empty table is what "qualifying does not score"
 -- means. One representation, no separate flag to disagree with it.
@@ -10914,6 +11007,12 @@ local DISPATCH = {
   RM_DerbyGridAssign = derby.onDerbyGridAssign,
   RM_DerbyLifeLost   = derby.onDerbyLifeLost,
   RM_DerbyCountdown  = derby.onDerbyCountdown,
+  -- Drag racing module
+  RM_DragUpdate      = drag.onDragUpdate,
+  RM_DragLane        = drag.onDragLane,
+  RM_DragTree        = drag.onDragTree,
+  RM_DragTreeWatch   = drag.onDragTreeWatch,
+  RM_DragAborted     = drag.onDragAborted,
 }
 
 local function bindServerHandlers()
@@ -11039,6 +11138,7 @@ local function resetToIdle(reason)
   session.heatCount       = 0
   session.heatCurrent     = 0
   session.heatLaps        = 0
+  session.myHeat          = nil
   track.pitRoute        = {}
   pit.active      = false
   pit.left        = 0

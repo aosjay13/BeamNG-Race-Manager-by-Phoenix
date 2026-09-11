@@ -477,7 +477,7 @@ angular.module('beamng.apps')
       // empty panel. Which also means a new tab is TWO edits: the button and
       // this. Miss the second and the button lands on Race with no error.
       var TABS = { race: true, quali: true, grid: true, track: true, garage: true,
-                   cup: true, derby: true, admin: true };
+                   cup: true, derby: true, drag: true, admin: true };
       var DEFAULT_TAB = 'race';
 
       // WHICH MODE A TAB PUTS THE PANEL IN. Only the derby is a mode in any
@@ -485,7 +485,11 @@ angular.module('beamng.apps')
       // Everything else is a race, INCLUDING the admin tab -- opening the
       // password panel is not a reason to take the race controls off screen,
       // which is what making it a third mode used to do.
-      var TAB_MODE = { derby: 'derby' };
+      // Two modes now, and drag is one for the same reason the derby is: it
+      // swaps the board underneath. `drivers` still holds the LAST race's field
+      // while a ladder runs, so leaving the race table up would show an admin
+      // the previous race's results and call them the drag standings.
+      var TAB_MODE = { derby: 'derby', drag: 'drag' };
 
       function tabOf(value) { return TABS[value] ? value : DEFAULT_TAB; }
       function modeForTab(tab) { return TAB_MODE[tab] || 'race'; }
@@ -576,6 +580,12 @@ angular.module('beamng.apps')
         if ($scope.mode === 'derby') {
           bngApi.engineLua('raceManager.derbyRequestState()');
         }
+        // The ladder is pushed only when it changes, so a panel opened long
+        // after the last pass would render an empty board until the next one.
+        // Same pull, same reason as the derby's above.
+        if ($scope.adminTab === 'drag') {
+          bngApi.engineLua('raceManager.dragRequestState()');
+        }
         // The cup is pushed only when it changes, so a panel opened long after
         // the last change would otherwise render an empty table until the next
         // race finished. Same reason the derby pulls its own state here.
@@ -656,6 +666,11 @@ angular.module('beamng.apps')
         // the same achievement as winning a ten-lap race.
         derbyPreset: '',
         derbyPoints: [],       // empty = derbies do not score
+        // ...and drag gets a third. A ladder is a meeting rather than a race:
+        // the winner made four passes and the driver knocked out first made
+        // one, and what that is worth is a league's call.
+        dragPreset: '',
+        dragPoints: [],        // empty = drag racing does not score
         qualiPoints: [],       // empty = qualifying does not score
         // The preset and bonus lists come FROM the server rather than being
         // duplicated here, so adding a bonus or a preset later needs no change
@@ -687,8 +702,10 @@ angular.module('beamng.apps')
         saveName: '',
         preset: '',
         derbyPreset: '',
+        dragPreset: '',
         points: [],
         derby: [],
+        drag: [],
         quali: [],
         bonus: {},
         confirmReset: false,
@@ -739,6 +756,9 @@ angular.module('beamng.apps')
       $scope.cupDerbyDirty = function () {
         return cupTableDiffers($scope.cupUi.derby, $scope.cup.derbyPoints);
       };
+      $scope.cupDragDirty = function () {
+        return cupTableDiffers($scope.cupUi.drag, $scope.cup.dragPoints);
+      };
       $scope.cupQualiDirty = function () {
         return cupTableDiffers($scope.cupUi.quali, $scope.cup.qualiPoints);
       };
@@ -772,8 +792,9 @@ angular.module('beamng.apps')
       // Remembering what the server last said separates the two: if that has
       // moved, the server changed and the buffer follows; if it has not, any
       // difference is the admin's typing and is left alone.
-      var cupSeen = { race: null, derby: null, quali: null, bonus: null,
-                      preset: null, derbyPreset: null };
+      var cupSeen = { race: null, derby: null, drag: null, quali: null,
+                      bonus: null, preset: null, derbyPreset: null,
+                      dragPreset: null };
 
       function cupSig(list) { return (list || []).join(','); }
       function cupBonusSig(list) {
@@ -809,6 +830,12 @@ angular.module('beamng.apps')
           $scope.cupSyncLine('derby');
         }
 
+        sig = cupSig($scope.cup.dragPoints);
+        if (cupSeen.drag !== sig) {
+          cupFill($scope.cupUi.drag, $scope.cup.dragPoints); cupSeen.drag = sig;
+          $scope.cupSyncLine('drag');
+        }
+
         sig = cupSig($scope.cup.qualiPoints);
         if (cupSeen.quali !== sig) {
           cupFill($scope.cupUi.quali, $scope.cup.qualiPoints); cupSeen.quali = sig;
@@ -833,6 +860,10 @@ angular.module('beamng.apps')
         if (cupSeen.derbyPreset !== $scope.cup.derbyPreset) {
           $scope.cupUi.derbyPreset = $scope.cup.derbyPreset;
           cupSeen.derbyPreset = $scope.cup.derbyPreset;
+        }
+        if (cupSeen.dragPreset !== $scope.cup.dragPreset) {
+          $scope.cupUi.dragPreset = $scope.cup.dragPreset;
+          cupSeen.dragPreset = $scope.cup.dragPreset;
         }
       }
 
@@ -862,7 +893,8 @@ angular.module('beamng.apps')
         if ($scope.cupOpenMenu) { revealDropdown('.rm-cup .rm-layout-menu'); }
       };
       $scope.cupPickPreset = function (which, preset) {
-        if (which === 'derby') { $scope.cupUi.derbyPreset = preset.key; }
+        if (which === 'derby')     { $scope.cupUi.derbyPreset = preset.key; }
+        else if (which === 'drag') { $scope.cupUi.dragPreset = preset.key; }
         else { $scope.cupUi.preset = preset.key; }
         $scope.cupOpenMenu = null;
       };
@@ -903,18 +935,24 @@ angular.module('beamng.apps')
       //               replaced showed the pick immediately, and so does this.
       $scope.cupPresetLabel = function () { return cupLabelFor($scope.cup.preset); };
       $scope.cupDerbyPresetLabel = function () { return cupLabelFor($scope.cup.derbyPreset); };
+      $scope.cupDragPresetLabel = function () { return cupLabelFor($scope.cup.dragPreset); };
       $scope.cupPresetPick = function () {
         return cupLabelFor($scope.cupUi.preset || $scope.cup.preset);
       };
       $scope.cupDerbyPresetPick = function () {
         return cupLabelFor($scope.cupUi.derbyPreset || $scope.cup.derbyPreset);
       };
+      $scope.cupDragPresetPick = function () {
+        return cupLabelFor($scope.cupUi.dragPreset || $scope.cup.dragPreset);
+      };
       // How deep each table actually pays, which is the one number an admin
       // needs to sanity-check a preset against their field size.
       $scope.cupScoringDepth = function () { return $scope.cup.racePoints.length; };
       $scope.cupDerbyDepth = function () { return $scope.cup.derbyPoints.length; };
+      $scope.cupDragDepth = function () { return $scope.cup.dragPoints.length; };
       $scope.cupQualiEnabled = function () { return $scope.cup.qualiPoints.length > 0; };
       $scope.cupDerbyEnabled = function () { return $scope.cup.derbyPoints.length > 0; };
+      $scope.cupDragEnabled = function () { return $scope.cup.dragPoints.length > 0; };
       $scope.cupNextRound = function () { return ($scope.cup.round || 0) + 1; };
 
       // Bonus rows for one discipline, so the panel can file them under the
@@ -937,10 +975,12 @@ angular.module('beamng.apps')
       $scope.cupSortKey = function () {
         if ($scope.cupUi.view === 'race')  { return 'racePos'; }
         if ($scope.cupUi.view === 'derby') { return 'derbyPos'; }
+        if ($scope.cupUi.view === 'drag')  { return 'dragPos'; }
         return 'pos';
       };
-      // Has this cup actually seen both kinds of event? A cup of nothing but
-      // races has no reason to offer a derby table, and vice versa.
+      // Has this cup actually seen this kind of event? A cup of nothing but
+      // races has no reason to offer a derby table, and vice versa -- and a
+      // discipline that has never run gets no column and no tab.
       $scope.cupHasRaces = function () {
         for (var i = 0; i < $scope.cup.standings.length; i++) {
           if ($scope.cup.standings[i].raceRounds > 0) { return true; }
@@ -953,8 +993,22 @@ angular.module('beamng.apps')
         }
         return false;
       };
+      $scope.cupHasDrags = function () {
+        for (var i = 0; i < $scope.cup.standings.length; i++) {
+          if ($scope.cup.standings[i].dragRounds > 0) { return true; }
+        }
+        return false;
+      };
+      // MORE THAN ONE DISCIPLINE HAS RUN, which is what decides whether the
+      // standings need per-discipline columns at all. Any two of the three,
+      // not races-and-derbies: a season of derbies and drag meetings is just
+      // as mixed as one with races in it.
       $scope.cupIsMixed = function () {
-        return $scope.cupHasRaces() && $scope.cupHasDerbies();
+        var kinds = 0;
+        if ($scope.cupHasRaces()) { kinds++; }
+        if ($scope.cupHasDerbies()) { kinds++; }
+        if ($scope.cupHasDrags()) { kinds++; }
+        return kinds > 1;
       };
 
       $scope.cupStart = function () {
@@ -989,6 +1043,11 @@ angular.module('beamng.apps')
         if (!$scope.cupUi.derbyPreset) { return; }
         cupExpectReseed('derby');
         bngApi.engineLua('raceManager.cupSetPreset("' + $scope.cupUi.derbyPreset + '", "derby")');
+      };
+      $scope.cupApplyDragPreset = function () {
+        if (!$scope.cupUi.dragPreset) { return; }
+        cupExpectReseed('drag');
+        bngApi.engineLua('raceManager.cupSetPreset("' + $scope.cupUi.dragPreset + '", "drag")');
       };
       // Saving the current race table as a named system.
       //
@@ -1075,8 +1134,9 @@ angular.module('beamng.apps')
 
       // Split out so the three tables share one implementation rather than
       // three that drift. `which` names the buffer and the label only.
-      var CUP_TABLES = { race: 'points', derby: 'derby', quali: 'quali' };
-      $scope.cupLine = { race: '', derby: '', quali: '' };
+      var CUP_TABLES = { race: 'points', derby: 'derby', drag: 'drag',
+                         quali: 'quali' };
+      $scope.cupLine = { race: '', derby: '', drag: '', quali: '' };
 
       // Rebuild the visible line from the buffer. Called whenever a spinner
       // moves and whenever the server reseeds a table.
@@ -1120,6 +1180,13 @@ angular.module('beamng.apps')
       $scope.cupDisableDerby = function () {
         cupExpectReseed('derby');
         bngApi.engineLua('raceManager.cupSetDerbyPoints("")');
+      };
+      $scope.cupApplyDrag = function () {
+        bngApi.engineLua('raceManager.cupSetDragPoints("' + cupCsv($scope.cupUi.drag) + '")');
+      };
+      $scope.cupDisableDrag = function () {
+        cupExpectReseed('drag');
+        bngApi.engineLua('raceManager.cupSetDragPoints("")');
       };
       $scope.cupApplyQuali = function () {
         bngApi.engineLua('raceManager.cupSetQualiPoints("' + cupCsv($scope.cupUi.quali) + '")');
@@ -1358,6 +1425,67 @@ angular.module('beamng.apps')
       // Dot rule again: these inputs live inside the ng-if derby panel.
       $scope.derbyUi = { oob: 5, demo: 10, lives: 1, resets: -1, mode: 'lms',
                          name: '', selected: '' };
+
+      // ----------------------------------------------------------------
+      // DRAG RACING (isolated module) - the tournament ladder, the strip and
+      // the christmas tree. Separate state, separate events, separate board;
+      // nothing here touches the circuit racing scope or the derby's.
+      // ----------------------------------------------------------------
+      $scope.drag = {
+        // idle | ready | staging | tree | running | result | complete
+        phase: 'idle',
+        format: 'single', lanes: 2, advance: 1, cut: 0, roundLimit: 3,
+        tree: 'sportsman', seed: 'random',
+        dialIn: false, breakout: true, timeout: 60,
+        // How a car gets onto the line, and who drops the tree once it is
+        // there. 'rollup' is the strip's own answer to both.
+        stageMode: 'rollup', autoStart: true, stageWait: 45,
+        // What the LOADED TRACK offers. The strip is the loaded point-to-point
+        // layout: its start positions are the lanes and its last gate is the
+        // finish line, so a ladder cannot be built until one is loaded and the
+        // panel has to be able to say why.
+        stripLanes: 0, stripGates: 0,
+        round: 0, roundLabel: '', roundSide: 'w', roundCount: 0,
+        passIndex: 0, passCount: 0,
+        champion: null,
+        // What is on the strip right now is a warm-up rather than a round of
+        // the tournament. The controls look identical, so the panel says which.
+        practice: false,
+        finishOrder: [],
+        entrants: [],     // the whole field, in seed order, with its records
+        board: [],        // the ladder: rounds, each with its passes
+        current: null     // the pass in front of you, lane by lane
+      };
+      // Dot rule: these inputs live inside the ng-if drag panel, so a bare
+      // scalar would be shadowed on the child scope and the Apply button would
+      // post the default. See the header of tests/ui_bindings_test.lua.
+      $scope.dragUi = { format: 'single', lanes: 2, advance: 1, cut: 0,
+                        rounds: 3, tree: 'sportsman', seed: 'random',
+                        dialIn: false, breakout: true, timeout: 60, dial: '',
+                        dialSeed: '', dialFor: '',
+                        stageMode: 'rollup', autoStart: true, stageWait: 45 };
+      // THE CHRISTMAS TREE, as this client's own lights. Pushed frame by frame
+      // by the Lua module, which runs the sequence locally -- see the note at
+      // the top of lua/ge/extensions/raceManager/drag.lua for why the lights are
+      // not driven from the server.
+      // The two blue bulbs are their own fact, separate from the amber
+      // sequence: an amber is a moment in a countdown, a stage bulb is where
+      // the car is standing. Under 'hold' the client reports both lit from
+      // the moment the car is placed, which is what that mode means.
+      $scope.dragLight = { stage: 'off', lane: null, delay: 0, dial: null,
+                           prestaged: false, staged: false, rollup: false };
+      // ...and this driver's own last pass, held on screen after the lights
+      // have gone out. The board agrees a beat later; this is the number that
+      // is already there when they look up.
+      $scope.dragLast = { rt: null, et: null, speed: null, foul: false };
+      // Last config values mirrored from the server. A broadcast only
+      // overwrites an input while it still shows the previous server value, so
+      // an edit in progress survives one -- the same rule the derby's config
+      // inputs follow, and for the same reason.
+      var dragCfgSeen = { format: null, lanes: null, advance: null, cut: null,
+                          rounds: null, tree: null, seed: null, timeout: null,
+                          stageWait: null };
+
       // The rectangle sliders. Width and length are the FULL span in meters,
       // which is what an admin measures an arena in - the server stores half
       // extents and the conversion happens in the Lua command. `square` links
@@ -1473,7 +1601,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.13.2';
+      var APP_BUILD = '0.14.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -3066,8 +3194,10 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.cup.round = data.round || 0;
           $scope.cup.preset = data.preset || 'custom';
           $scope.cup.derbyPreset = data.derbyPreset || 'custom';
+          $scope.cup.dragPreset = data.dragPreset || 'custom';
           $scope.cup.racePoints = toArray(data.racePoints);
           $scope.cup.derbyPoints = toArray(data.derbyPoints);
+          $scope.cup.dragPoints = toArray(data.dragPoints);
           $scope.cup.qualiPoints = toArray(data.qualiPoints);
           $scope.cup.presets = toArray(data.presets);
           $scope.cup.bonuses = toArray(data.bonuses);
@@ -3223,6 +3353,354 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         bngApi.engineLua('raceManager.derbySetConfig(' + oob + ', ' + demo + ', '
           + resets + ', ' + lives + ", '" + ($scope.derbyUi.mode || 'lms') + "')");
       };
+
+      // ----------------------------------------------------------------
+      // DRAG RACING: broadcasts in, commands out
+      // ----------------------------------------------------------------
+      // Only overwrite an input the admin has not touched. `seen` holds the
+      // last value the server sent; if the box still shows it, the box was not
+      // being edited and may follow. Same helper shape as the derby's config
+      // inputs, factored because there are eight of them here rather than four.
+      function dragSeed(key, uiKey, value) {
+        if (value === undefined || value === null) { return; }
+        if (dragCfgSeen[key] === null || $scope.dragUi[uiKey] === dragCfgSeen[key]
+            || Number($scope.dragUi[uiKey]) === dragCfgSeen[key]) {
+          $scope.dragUi[uiKey] = value;
+        }
+        dragCfgSeen[key] = value;
+      }
+
+      $scope.$on('RaceManagerDrag', function (event, data) {
+        if (!data) { return; }
+        $scope.$evalAsync(function () {
+          var d = $scope.drag;
+          // ABSENT IS NOT THE SAME AS EMPTY, and getting that wrong here is
+          // what a partial broadcast would cost. A lane reporting its time
+          // sends the pass and the phase and leaves the ladder, the entrants
+          // and the rules OUT, because none of them changed - so a plain
+          // `data.lanes || 2` would reset the panel to two lanes eight times a
+          // pass. Every field below is only written when it actually arrived.
+          function take(key, target, fallback) {
+            if (data[key] === undefined || data[key] === null) { return; }
+            d[target || key] = data[key];
+            if (fallback !== undefined && d[target || key] === null) {
+              d[target || key] = fallback;
+            }
+          }
+          d.phase = data.dragPhase || 'idle';
+          take('format'); take('lanes'); take('advance'); take('cut');
+          take('roundLimit'); take('tree'); take('seed'); take('timeout');
+          take('stripLanes'); take('stripGates');
+          take('round'); take('roundLabel'); take('roundSide');
+          take('roundCount'); take('passIndex'); take('passCount');
+          if (data.practice !== undefined) { d.practice = data.practice === true; }
+          if (data.stageMode !== undefined) { d.stageMode = data.stageMode; }
+          if (data.autoStart !== undefined) { d.autoStart = data.autoStart === true; }
+          if (data.stageWait !== undefined) { d.stageWait = data.stageWait; }
+          if (data.dialIn !== undefined) { d.dialIn = data.dialIn === true; }
+          if (data.breakout !== undefined) { d.breakout = data.breakout !== false; }
+          // The ladder, the field and the finishing order travel together and
+          // only on a full broadcast. `champion` rides with them: a partial one
+          // has no opinion about it, and reading its absence as "nobody won"
+          // would clear the winner off the board mid-pass.
+          if (data.entrants !== undefined) {
+            d.entrants = toArray(data.entrants);
+            d.board = toArray(data.board);
+            d.finishOrder = toArray(data.finishOrder);
+            d.champion = data.champion || null;
+          }
+          d.current = (data.current && typeof data.current === 'object')
+            ? data.current : null;
+          // The rules are only re-seeded while nothing is on the strip: an
+          // admin cannot change them mid-pass anyway (the server refuses), and
+          // a box that rewrites itself under a hand mid-edit is worse than one
+          // that is a broadcast behind.
+          if (!$scope.dragActive()) {
+            dragSeed('format', 'format', data.format);
+            dragSeed('lanes', 'lanes', data.lanes);
+            dragSeed('advance', 'advance', data.advance);
+            dragSeed('cut', 'cut', data.cut);
+            dragSeed('rounds', 'rounds', data.roundLimit);
+            dragSeed('tree', 'tree', data.tree);
+            dragSeed('seed', 'seed', data.seed);
+            dragSeed('timeout', 'timeout', data.timeout);
+            $scope.dragUi.dialIn = d.dialIn;
+            $scope.dragUi.breakout = d.breakout;
+            $scope.dragUi.stageMode = d.stageMode;
+            $scope.dragUi.autoStart = d.autoStart;
+            dragSeed('stageWait', 'stageWait', data.stageWait);
+          }
+          // The dial box follows this driver's own entry, so somebody who set
+          // one on a previous evening sees it rather than an empty field.
+          var me = $scope.dragMyEntry();
+          if (me && me.dial != null && $scope.dragUi.dial === '') {
+            $scope.dragUi.dial = me.dial;
+          }
+        });
+      });
+
+      // The lights, pushed by the Lua module as they change.
+      $scope.$on('RaceManagerDragTree', function (event, data) {
+        $scope.$evalAsync(function () {
+          $scope.dragLight.stage = (data && data.stage) || 'off';
+          $scope.dragLight.lane  = data && data.lane;
+          $scope.dragLight.delay = (data && data.delay) || 0;
+          $scope.dragLight.dial  = data && data.dial;
+          $scope.dragLight.prestaged = !!(data && data.prestaged);
+          $scope.dragLight.staged    = !!(data && data.staged);
+          $scope.dragLight.rollup    = !!(data && data.rollup);
+        });
+      });
+
+      // This driver's own numbers, the moment they have them.
+      $scope.$on('RaceManagerDragRun', function (event, data) {
+        $scope.$evalAsync(function () {
+          if (!data || data.aborted) {
+            $scope.dragLast = { rt: null, et: null, speed: null, foul: false };
+            return;
+          }
+          $scope.dragLast = { rt: data.rt, et: data.et, speed: data.speed,
+                              foul: data.foul === true };
+        });
+      });
+
+      // --- what the panel asks about the ladder ---------------------------
+      // Cars on the strip: placed, or with the lights running, or on the way to
+      // the finish line, or sitting at the top end while the board holds the
+      // times up. Every rule that must not change mid-pass is gated on this.
+      $scope.dragActive = function () {
+        var p = $scope.drag.phase;
+        return p === 'staging' || p === 'tree' || p === 'running' || p === 'result';
+      };
+      // A ladder exists at all. Distinct from the above: between passes there
+      // is a tournament running and nothing on the strip.
+      $scope.dragLive = function () {
+        return $scope.drag.phase !== 'idle';
+      };
+      // Whose board the leaderboard shows. An admin decides by opening the tab;
+      // a driver gets it whenever a ladder is running, because they have no tab
+      // row to open. Same shape as derbyBoardOnly, which it defers to: a derby
+      // and a ladder can both be live, and the derby is the one with cars in an
+      // arena right now.
+      $scope.dragBoardOnly = function () {
+        if ($scope.derbyBoardOnly()) { return false; }
+        return $scope.isAdmin ? $scope.isMode('drag') : $scope.dragLive();
+      };
+      // MY OWN ROW, marked by the Lua module before the board got here -- the
+      // server sends one broadcast to everybody and cannot address it. Used for
+      // the driver's own dial-in box and for highlighting them on the board.
+      $scope.dragMyEntry = function () {
+        var list = $scope.drag.entrants || [];
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].you) { return list[i]; }
+        }
+        return null;
+      };
+      var DRAG_PHASE_LABEL = {
+        idle: 'No ladder', ready: 'Ready', staging: 'Staging',
+        tree: 'Tree', running: 'On the strip', result: 'Result',
+        complete: 'Complete'
+      };
+      $scope.dragPhaseLabel = function () {
+        return DRAG_PHASE_LABEL[$scope.drag.phase] || $scope.drag.phase;
+      };
+      var DRAG_FORMAT_LABEL = {
+        single: 'Single elimination', double: 'Double elimination',
+        points: 'Points shootout'
+      };
+      $scope.dragFormatLabel = function (key) {
+        return DRAG_FORMAT_LABEL[key || $scope.drag.format] || key;
+      };
+      // Three decimals, because the third one decides passes. A missing number
+      // is a dash rather than a zero somebody will read as a very good run.
+      $scope.dragET = function (t) {
+        return (t === null || t === undefined) ? '--' : Number(t).toFixed(3);
+      };
+      $scope.dragMPH = function (v) {
+        return (v === null || v === undefined) ? '--' : Number(v).toFixed(1);
+      };
+      $scope.dragLaneNote = function (lane) {
+        if (!lane) { return ''; }
+        if (lane.foul) { return 'RED'; }
+        if (lane.brokeOut) { return 'BREAKOUT'; }
+        if (lane.dnf) { return 'DNF'; }
+        return '';
+      };
+      $scope.dragEntrantStatus = function (e) {
+        if (!e) { return ''; }
+        if (e.status === 'champion') { return 'WINNER'; }
+        if (e.status === 'withdrawn') { return 'Withdrawn'; }
+        if (e.status === 'out') {
+          return 'Out' + (e.outRound ? ' (R' + e.outRound + ')' : '');
+        }
+        if (!e.online) { return 'Offline'; }
+        return 'In';
+      };
+      // The board, ordered the way the format is decided. A finished
+      // tournament shows the order it finished in; a running one shows the
+      // people still in it first, because that is what the next pass is drawn
+      // from.
+      $scope.dragStandings = function () {
+        var list = ($scope.drag.entrants || []).slice();
+        var points = $scope.drag.format === 'points';
+        list.sort(function (a, b) {
+          if (points) {
+            if (a.points !== b.points) { return b.points - a.points; }
+          } else {
+            var ao = a.status === 'out' ? (a.outRound || 0) : Infinity;
+            var bo = b.status === 'out' ? (b.outRound || 0) : Infinity;
+            if (ao !== bo) { return bo - ao; }
+            if (a.wins !== b.wins) { return b.wins - a.wins; }
+          }
+          var ae = a.bestET == null ? Infinity : a.bestET;
+          var be = b.bestET == null ? Infinity : b.bestET;
+          if (ae !== be) { return ae - be; }
+          return a.seed - b.seed;
+        });
+        return list;
+      };
+      // Can a ladder be built at all? The strip has to exist first, and saying
+      // WHY it cannot is the whole point of asking separately.
+      $scope.dragStripReady = function () {
+        return $scope.drag.stripGates >= 1 && $scope.drag.stripLanes >= 2;
+      };
+      // A PRACTICE PASS NEEDS ONE LANE, not two. Gating it on the same
+      // predicate as Build Ladder disabled the one control that exists for a
+      // strip nobody has run yet -- on a single-lane test strip the server
+      // would happily have run it and the button refused to be pressed.
+      $scope.dragStripTestable = function () {
+        return $scope.drag.stripGates >= 1 && $scope.drag.stripLanes >= 1;
+      };
+
+      // --- commands -------------------------------------------------------
+      $scope.dragApplyConfig = function () {
+        var u = $scope.dragUi;
+        var lanes = parseInt(u.lanes, 10);
+        var advance = parseInt(u.advance, 10);
+        if (isNaN(lanes) || lanes < 2) { lanes = 2; }
+        if (isNaN(advance) || advance < 1) { advance = 1; }
+        // Advancing everybody out of a pass is a round that narrows nothing.
+        // The server clamps this too; doing it here as well means the box shows
+        // the number that was actually applied.
+        if (advance > lanes - 1) { advance = lanes - 1; u.advance = advance; }
+        var cut = parseInt(u.cut, 10);
+        var rounds = parseInt(u.rounds, 10);
+        var timeout = parseInt(u.timeout, 10);
+        if (isNaN(cut) || cut < 0) { cut = 0; }
+        if (isNaN(rounds) || rounds < 1) { rounds = 1; }
+        if (isNaN(timeout) || timeout < 10) { timeout = 10; }
+        bngApi.engineLua("raceManager.dragSetConfig('" + (u.format || 'single')
+          + "', " + lanes + ', ' + advance + ', ' + cut + ', ' + rounds
+          + ", '" + (u.tree || 'sportsman') + "', '" + (u.seed || 'random')
+          + "', " + (u.dialIn ? 'true' : 'false') + ', '
+          + (u.breakout ? 'true' : 'false') + ', ' + timeout + ')');
+      };
+      // Picking one of these applies straight away rather than waiting for
+      // anything to be submitted: they change which boxes are on screen, and a
+      // panel that rearranges itself without having saved is one an admin
+      // cannot trust. Same reasoning as derbySetMode.
+      $scope.dragSetFormat = function (f) {
+        if (f !== 'single' && f !== 'double' && f !== 'points') { return; }
+        $scope.dragUi.format = f;
+        $scope.dragApplyConfig();
+      };
+      $scope.dragSetTree = function (t) {
+        if (t !== 'pro' && t !== 'sportsman') { return; }
+        $scope.dragUi.tree = t;
+        $scope.dragApplyConfig();
+      };
+      $scope.dragSetSeed = function (sd) {
+        if (sd !== 'random' && sd !== 'order' && sd !== 'quali') { return; }
+        $scope.dragUi.seed = sd;
+        $scope.dragApplyConfig();
+      };
+      // The start procedure. Applied on the press rather than waiting to be
+      // submitted, for the reason every other picker here is: it changes which
+      // controls are on screen, and a panel that rearranges itself without
+      // having saved anything is one an admin cannot trust.
+      $scope.dragApplyStaging = function () {
+        var wait = parseInt($scope.dragUi.stageWait, 10);
+        if (isNaN(wait) || wait < 5) { wait = 5; }
+        bngApi.engineLua("raceManager.dragSetStaging('"
+          + ($scope.dragUi.stageMode || 'rollup') + "', "
+          + ($scope.dragUi.autoStart ? 'true' : 'false') + ', ' + wait + ')');
+      };
+      $scope.dragSetStageMode = function (m) {
+        if (m !== 'hold' && m !== 'rollup') { return; }
+        $scope.dragUi.stageMode = m;
+        $scope.dragApplyStaging();
+      };
+      $scope.dragToggleAutoStart = function () {
+        $scope.dragUi.autoStart = !$scope.dragUi.autoStart;
+        $scope.dragApplyStaging();
+      };
+      // How many lanes are in the beams, for the header. Under roll-up this is
+      // the one number an admin watches between pressing Stage and the tree.
+      $scope.dragStagedCount = function () {
+        var lanes = ($scope.drag.current && $scope.drag.current.lanes) || [];
+        var n = 0;
+        for (var i = 0; i < lanes.length; i++) { if (lanes[i].staged) { n++; } }
+        return n;
+      };
+      $scope.dragToggleDialIn = function () {
+        $scope.dragUi.dialIn = !$scope.dragUi.dialIn;
+        $scope.dragApplyConfig();
+      };
+      $scope.dragToggleBreakout = function () {
+        $scope.dragUi.breakout = !$scope.dragUi.breakout;
+        $scope.dragApplyConfig();
+      };
+      $scope.dragBuild = function () {
+        bngApi.engineLua('raceManager.dragBuild()');
+      };
+      $scope.dragClearLadder = function () {
+        bngApi.engineLua('raceManager.dragClear()');
+      };
+      $scope.dragStage = function () {
+        bngApi.engineLua('raceManager.dragStage()');
+      };
+      // A warm-up pass: stages and holds in one press, times the run, scores
+      // nothing. Works with one car, which is what makes the strip testable
+      // before a field turns up.
+      $scope.dragPractice = function () {
+        bngApi.engineLua('raceManager.dragPractice()');
+      };
+      // The elapsed time you just ran, straight into the dial-in box. On a
+      // strip nobody has seen before this is where the number comes from -- and
+      // typing a figure you just watched go past on screen is a transcription
+      // error waiting to happen.
+      $scope.dragDialFromLast = function () {
+        if ($scope.dragLast.et == null) { return; }
+        $scope.dragUi.dial = Number($scope.dragLast.et).toFixed(3);
+        $scope.dragSetDial();
+      };
+      $scope.dragRunPass = function () {
+        bngApi.engineLua('raceManager.dragRun()');
+      };
+      $scope.dragAbort = function () {
+        bngApi.engineLua('raceManager.dragAbort()');
+      };
+      $scope.dragWithdraw = function (seed) {
+        bngApi.engineLua('raceManager.dragWithdraw(' + (Number(seed) || 0) + ')');
+      };
+      // A driver declaring their own dial-in. One event; the server refuses the
+      // admin form (a seed number) from anybody who is not one.
+      $scope.dragSetDial = function () {
+        var d = parseFloat($scope.dragUi.dial);
+        if (!isFinite(d) || d <= 0) { return; }
+        bngApi.engineLua('raceManager.dragSetDial(' + d + ')');
+      };
+      // ...and an admin setting one FOR somebody, which is the path for a
+      // driver who has not opened the app. Two boxes rather than one per row:
+      // a per-row model would be wiped by the next broadcast, which arrives
+      // every time anything on the ladder moves.
+      $scope.dragSetDialFor = function () {
+        var seed = parseInt($scope.dragUi.dialSeed, 10);
+        var d = parseFloat($scope.dragUi.dialFor);
+        if (isNaN(seed) || seed < 1 || !isFinite(d) || d <= 0) { return; }
+        bngApi.engineLua('raceManager.dragSetDial(' + d + ', ' + seed + ')');
+      };
+
       // Picking a mode applies immediately rather than waiting for the settings
       // to be submitted: it changes which boxes are on screen, and a panel that
       // rearranges itself without having saved anything is a panel an admin

@@ -1910,7 +1910,11 @@ do
     expect(attrs:find('!broadcastMode()', 1, true) ~= nil,
       'a leaderboard renders under the broadcast board: ' .. attrs)
   end
-  expect(wraps == 3, 'checked all three leaderboards (found ' .. wraps .. ')')
+  -- FOUR of them now: race, qualifying, the derby board and the drag ladder.
+  -- The count is asserted rather than left open so that adding a fifth is a
+  -- deliberate edit here, which is what makes the !broadcastMode() sweep above
+  -- a guarantee rather than a sample.
+  expect(wraps == 4, 'checked all four leaderboards (found ' .. wraps .. ')')
   -- Matched on the CONDITION, not on the whole attribute. The body picked up a
   -- second guard when the setup started folding away during a session, and an
   -- exact-string match would have read that as the broadcast guard going
