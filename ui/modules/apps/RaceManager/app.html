@@ -2839,19 +2839,13 @@
     </div>
   </div>
 
-  </div><!-- /.rm-admin-body -->
-
-  <!-- ================= Derby warning overlays (hidden by default) ========= -->
-  <div class="rm-derby-warning rm-derby-warning-oob" ng-if="derbyWarning && derbyWarning.type === 'oob'">
-    <div class="rm-derby-warning-title">OUT OF BOUNDS!</div>
-    <div class="rm-derby-warning-timer">RETURN IN {{ derbyWarning.remaining.toFixed(1) }}s</div>
-  </div>
-  <div class="rm-derby-warning rm-derby-warning-stop" ng-if="derbyWarning && derbyWarning.type === 'stopped'">
-    <div class="rm-derby-warning-title">VEHICLE STOPPED!</div>
-    <div class="rm-derby-warning-timer">DEMOLISHED IN {{ derbyWarning.remaining.toFixed(1) }}s</div>
-  </div>
-
-
+  <!-- INSIDE .rm-admin-body, and that is not incidental. The wrapper is
+       what carries ng-if="isAdmin": isAdminTab() only answers WHICH tab is
+       open, never whether the person looking may see it. This panel was
+       first placed after the wrapper closed, so every driver who joined
+       got the format buttons, the lane count and Build Ladder without ever
+       logging in. tests/ui_bindings_test.lua now checks the whole set.
+  -->
   <!-- ================= DRAG RACING =====================================
        The tournament ladder, its rules and the pass in front of you.
 
@@ -3086,6 +3080,20 @@
       is snapshotted, seeded and drawn into rounds.
     </div>
   </div>
+
+  </div><!-- /.rm-admin-body -->
+
+  <!-- ================= Derby warning overlays (hidden by default) ========= -->
+  <div class="rm-derby-warning rm-derby-warning-oob" ng-if="derbyWarning && derbyWarning.type === 'oob'">
+    <div class="rm-derby-warning-title">OUT OF BOUNDS!</div>
+    <div class="rm-derby-warning-timer">RETURN IN {{ derbyWarning.remaining.toFixed(1) }}s</div>
+  </div>
+  <div class="rm-derby-warning rm-derby-warning-stop" ng-if="derbyWarning && derbyWarning.type === 'stopped'">
+    <div class="rm-derby-warning-title">VEHICLE STOPPED!</div>
+    <div class="rm-derby-warning-timer">DEMOLISHED IN {{ derbyWarning.remaining.toFixed(1) }}s</div>
+  </div>
+
+
 
   <!-- ================= Start lights ================= -->
   <!-- Three lamps going amber one at a time on 3-2-1, then all three snapping

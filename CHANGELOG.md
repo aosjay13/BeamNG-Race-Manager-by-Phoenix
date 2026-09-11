@@ -6,6 +6,27 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.14.2 - The Drag panel stops greeting everybody who joins
+
+#### Fixed
+
+- **The Drag panel was shown to everybody, logged in or not.** Every driver
+  joining a server got the format buttons, the lane count, the staging rules
+  and Build Ladder, without ever pressing Login.
+
+  `isAdminTab()` answers WHICH TAB IS OPEN and nothing else. What carries
+  `ng-if="isAdmin"` is the `.rm-admin-body` wrapper every other panel sits
+  inside, and this one had been placed after that wrapper closed. Nothing
+  about the markup looks wrong at either end -- the only thing separating a
+  gated panel from an ungated one is a closing div two hundred lines away.
+
+  **Nothing was actually reachable.** Every admin handler in the drag module
+  calls `requireAuth` on arrival, so the buttons were refused by the server;
+  this was controls on screen that should not have been, not a way in.
+
+  `tests/ui_bindings_test.lua` now checks that every `isAdminTab` panel falls
+  between the wrapper opening and closing, and names the ones that do not.
+
 ## 0.14.1 - The time slip stops outliving the pass
 
 #### Changed

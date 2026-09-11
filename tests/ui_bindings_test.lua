@@ -1536,6 +1536,56 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+-- Every admin panel is INSIDE the wrapper that carries ng-if="isAdmin"
+-- ---------------------------------------------------------------------------
+-- isAdminTab() answers WHICH TAB IS OPEN and nothing else. It does not, and
+-- should not, ask whether the person looking is allowed to see it -- that is
+-- the .rm-admin-body wrapper's job, and every panel relies on sitting inside
+-- it.
+--
+-- A panel placed after the wrapper closes still renders, because the tab it
+-- names is still the remembered one. The tab STRIP is hidden from a non-admin,
+-- so there is nothing on screen to suggest anything is wrong: the panel simply
+-- appears, for everybody, with its buttons live. That is exactly what happened
+-- to the drag panel -- every driver who joined a fresh server got the format
+-- buttons, the lane count and Build Ladder without ever logging in.
+--
+-- Nothing about the markup looks wrong at either end. The only thing that
+-- distinguishes the two is a closing div two hundred lines away, which is why
+-- this is a test rather than a habit.
+do
+  local open = html:find('<div class="rm%-admin%-body"')
+  local close = html:find('</div><!%-%- /%.rm%-admin%-body %-%->', 1)
+  expect(open ~= nil, 'found the admin body wrapper')
+  expect(close ~= nil, 'and the comment marking where it closes')
+  -- The wrapper is what carries the gate; if that ever moves onto something
+  -- else this check is measuring the wrong thing.
+  local head = html:sub(open, open + 120)
+  expect(head:find('isAdmin', 1, true) ~= nil,
+    'and the wrapper is the thing carrying ng-if="isAdmin"')
+
+  local panels, outside = 0, {}
+  if open and close then
+    local at = 1
+    while true do
+      local i = html:find('ng%-if="isAdminTab%(', at)
+      if not i then break end
+      panels = panels + 1
+      if i < open or i > close then
+        -- Name it, so the failure says which panel rather than how many.
+        local which = html:sub(i, i + 60):match("isAdminTab%('([%w_]+)'") or '?'
+        outside[#outside + 1] = which
+      end
+      at = i + 1
+    end
+  end
+  expect(panels >= 8, 'found the admin panels (got ' .. panels .. ')')
+  expect(#outside == 0,
+    'these panels render OUTSIDE the isAdmin wrapper and are therefore shown '
+      .. 'to everybody: ' .. table.concat(outside, ', '))
+end
+
+-- ---------------------------------------------------------------------------
 -- Every full-window overlay is confined to the panel in minimal mode
 -- ---------------------------------------------------------------------------
 -- These are `position: absolute; inset: 0` against the root, and the root is the
