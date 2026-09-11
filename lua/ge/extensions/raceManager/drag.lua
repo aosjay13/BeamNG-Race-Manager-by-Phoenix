@@ -67,6 +67,19 @@ local DRAG_PRO_LIGHTS  = 0.4
 local DRAG_SPORT_STEP  = 0.5
 local DRAG_SPORT_LIGHTS = DRAG_SPORT_STEP * 3
 local MPS_TO_MPH = 2.236936
+-- HOW LONG THE TIME SLIP STAYS UP.
+--
+-- It is a RESULT, not a state, and it was written as though it were a state:
+-- pushed once when the pass ended and left on screen for ever. It outlived the
+-- pass, the ladder and the tab -- an admin on the Race tab was still being
+-- shown somebody's elapsed time from twenty minutes earlier, over a panel that
+-- had nothing to do with it.
+--
+-- Long enough to drive back and read it, short enough that it is gone before
+-- it is a lie. Every path that means "there is no run to show" clears it early
+-- (see clearSlip); this is the backstop for the ones nobody thought of, which
+-- is what the original was missing.
+local DRAG_SLIP_SECONDS = 25
 
 -- ONE TABLE, not fifteen file-scope locals. Same discipline as everywhere else
 -- in this mod: Lua caps a function at 200 locals, the top level of a file is a
@@ -106,8 +119,9 @@ D.dragState = {
   preStaged = false,
   inBeams   = false,
   -- The last pass this driver made, held so the HUD can show it after the
-  -- lights have gone out.
+  -- lights have gone out, and the seconds it has left to live.
   lastRT = nil, lastET = nil, lastSpeed = nil,
+  slipLeft = 0,
   -- A spectator's copy of the tree, so everybody watching sees the same lights
   -- come on as the cars on the line.
   watching = false,
@@ -166,9 +180,30 @@ local function releaseForLaunch()
   if landing and S.t < (S.greenAt or 0) then return end
   local _, pos = host.sampledVehicle()
   S.released = true
-  S.anchor  = pos and { x = pos.x, y = pos.y, z = pos.z } or nil
-  S.prevPos = pos
+  -- UNDER ROLL-UP THE ANCHOR IS ALREADY SET, at the stage beam, and moving it
+  -- now would be moving the start line under a car that may already be
+  -- leaving. Only take a fresh one when there is none -- a held car, or a
+  -- roll-up car the courtesy stage timed out on before it ever staged.
+  if not S.anchor then
+    S.anchor = pos and { x = pos.x, y = pos.y, z = pos.z } or nil
+  end
+  S.prevPos = S.prevPos or pos
   host.releaseGridHold('drag')
+end
+
+-- Take the time slip down. Pushed to the panel rather than only cleared here,
+-- because the panel is what is showing it.
+local function clearSlip()
+  if S.slipLeft <= 0 and S.lastET == nil and S.lastRT == nil then return end
+  S.slipLeft = 0
+  S.lastRT, S.lastET, S.lastSpeed = nil, nil, nil
+  guihooks.trigger('RaceManagerDragRun', { clear = true })
+end
+
+local function slipUpdate(dt)
+  if S.slipLeft <= 0 then return end
+  S.slipLeft = S.slipLeft - dt
+  if S.slipLeft <= 0 then clearSlip() end
 end
 
 local function reportResult(et, speed)
@@ -194,6 +229,7 @@ local function reportResult(et, speed)
   else
     host.pushNotice('drag', 'No time: the pass ran out of road.')
   end
+  S.slipLeft = DRAG_SLIP_SECONDS
   guihooks.trigger('RaceManagerDragRun', {
     rt = rt, et = et, speed = speed, foul = S.foul, lane = S.lane,
   })
@@ -223,6 +259,20 @@ local function stagingUpdate()
   if not d then return end
   local pre = d >= S.preAt and d <= S.pastAt
   local inb = d >= S.stageAt and d <= S.pastAt
+  -- THE LAUNCH IS MEASURED FROM THE STAGE BEAM, so the anchor is taken here
+  -- and not when the lights start.
+  --
+  -- It used to be taken at the first amber, which is correct under 'hold' --
+  -- the car is frozen until then and cannot have moved -- and wrong under
+  -- roll-up, where the car has been free since it was placed. A driver who
+  -- left during the pre-roll had no anchor to be measured against, so the
+  -- foul was never seen AND the anchor was then taken from wherever they had
+  -- got to, timing the run from a rolling start.
+  --
+  -- Kept current while the car sits in the beams, because staging deeper is a
+  -- thing drivers do on purpose, and frozen the instant the tree starts:
+  -- stagingUpdate does not run while the pass is running.
+  if inb and pos then S.anchor = { x = pos.x, y = pos.y, z = pos.z } end
   if pre == S.preStaged and inb == S.inBeams then return end
   S.preStaged, S.inBeams = pre, inb
   -- ON CHANGE ONLY. Two booleans at sixty hertz is sixty times the traffic
@@ -242,6 +292,10 @@ end
 -- unless this client is in the pass. A driver watching from the fence runs the
 -- spectator tree below and nothing else.
 function D.dragUpdate(dt)
+  -- BEFORE EVERY EARLY RETURN BELOW, and that is the point: the slip has to
+  -- expire whatever else this client is or is not doing. The frame is the only
+  -- thing that runs unconditionally.
+  slipUpdate(dt)
   if S.watching and not S.running then
     -- Spectator tree: the lights, and nothing that touches a car.
     S.t = S.t + dt
@@ -265,7 +319,13 @@ function D.dragUpdate(dt)
   if not S.released and S.t >= (S.treeAt or 0) then releaseForLaunch() end
 
   -- The lights, on this driver's own tree.
-  if not S.reported then
+  --
+  -- NOT ONCE FOULED. The launch below turns the bulb red, and this block runs
+  -- first on every later frame -- so during the pre-roll it put 'staged' back
+  -- over the top and the red light was visible for exactly one frame. A red
+  -- light stays red for the rest of the run, which is what the tree at a strip
+  -- does and what the driver has to be able to see.
+  if not S.reported and not S.foul then
     if S.t < (S.treeAt or 0) then
       pushTree('staged')
     elseif S.t >= (S.greenAt or 0) then
@@ -349,6 +409,11 @@ D.onDragUpdate = function (rawData)
       host.releaseGridHold('drag')
       S.lane, S.delay = nil, 0
     end
+    -- THE LADDER IS GONE, so the slip goes with it. This is the path Clear
+    -- Ladder takes, and it is also the only one available after a practice
+    -- pass: that leaves the phase at 'idle', where the Clear Ladder button is
+    -- disabled and cannot be the thing that tidies up.
+    if newPhase == 'idle' then clearSlip() end
   end
   S.phase = newPhase
   -- WHICH ROW IS MINE. The board arrives as one broadcast to the whole server,
@@ -377,7 +442,10 @@ D.onDragLane = function (rawData)
   S.delay = tonumber(data.delay) or 0
   S.reported = false
   S.foul = false
-  S.lastRT, S.lastET, S.lastSpeed = nil, nil, nil
+  -- A NEW PASS ON THE LINE: last time's numbers are done. This used to null
+  -- the three fields and tell nobody, so the panel went on showing them until
+  -- a fresh result happened to replace them.
+  clearSlip()
   S.rollup = data.rollup == true
   S.preStaged, S.inBeams = not S.rollup, not S.rollup
   S.line = nil
@@ -453,10 +521,16 @@ D.onDragTree = function (rawData)
   S.released = false
   S.running  = true
   S.watching = false
-  -- NO ANCHOR AND NO RELEASE YET. Both wait for this driver's own first light --
-  -- see releaseForLaunch for why taking them here was wrong twice over. Until
-  -- then the car is still held on its lane, which is where a staged car belongs.
-  S.anchor, S.prevPos = nil, nil
+  -- NO ANCHOR AND NO RELEASE YET under 'hold': both wait for this driver's own
+  -- first light -- see releaseForLaunch for why taking them here was wrong
+  -- twice over. Until then the car is frozen on its lane, which is where a
+  -- held car belongs.
+  --
+  -- UNDER ROLL-UP THE ANCHOR ALREADY EXISTS and is kept: it is the stage beam
+  -- the driver rolled into, and it is what makes a pre-roll departure a red
+  -- light rather than an untimed one.
+  if not S.rollup then S.anchor = nil end
+  S.prevPos = nil
   pushTree('staged')
 end
 
@@ -480,7 +554,7 @@ D.onDragAborted = function (rawData)
   S.reported = true          -- nothing to report: the pass never counted
   S.lane, S.delay = nil, 0
   endRun('off')
-  guihooks.trigger('RaceManagerDragRun', { aborted = true })
+  clearSlip()
 end
 
 -- ===========================================================================

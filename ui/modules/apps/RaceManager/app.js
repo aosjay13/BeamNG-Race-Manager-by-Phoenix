@@ -1601,7 +1601,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.14.0';
+      var APP_BUILD = '0.14.1';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -3455,7 +3455,11 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // This driver's own numbers, the moment they have them.
       $scope.$on('RaceManagerDragRun', function (event, data) {
         $scope.$evalAsync(function () {
-          if (!data || data.aborted) {
+          // `clear` is the slip expiring or being stood down; `aborted` is a
+          // waved-off pass. Both mean the same thing to this panel -- there is
+          // no run to show -- and both are accepted so an older client half
+          // still clears rather than leaving a number on screen for ever.
+          if (!data || data.clear || data.aborted) {
             $scope.dragLast = { rt: null, et: null, speed: null, foul: false };
             return;
           }

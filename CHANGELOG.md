@@ -6,6 +6,52 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.14.1 - The time slip stops outliving the pass
+
+#### Changed
+
+- **The pass result in chat carries the trap speed.** It is the third of the
+  three numbers a pass produces and the one people call out to each other, and
+  it was the only one that never left the driver's own screen. The three are
+  labelled now rather than slash-separated: "0.137 / 8.446 / 162.4" needs you
+  to know the order before it means anything, and two of the three are seconds.
+
+#### Fixed
+
+- **The time slip outlived the pass, the ladder and the tab.** It was written
+  as a state and it is a result: pushed once when the pass ended and then left
+  on screen. An admin on the Race tab was still being shown an elapsed time
+  from twenty minutes earlier, over a panel that had nothing to do with it.
+
+  It has a lifetime now, and every path that means "there is no run to show"
+  takes it down early: a new pass staging, a waved-off pass, and the ladder
+  going idle. That last one is the path that matters, because after a practice
+  pass the phase IS idle, which is exactly where the Clear Ladder button is
+  disabled and so could never have been the thing that tidied up.
+
+- **A red light was visible for one frame.** The lights block re-asserted the
+  staged bulb on every frame of the pre-roll, painting over the red one the
+  launch had just lit. A red light stays red for the rest of the run now,
+  which is what a tree at a strip does.
+
+- **A car that left during the pre-roll could not foul, and was timed from a
+  rolling start.** The launch anchor was taken when the lights started, which
+  is right under hold staging -- the car is frozen until then and cannot have
+  moved -- and wrong under roll-up, where it has been free since it was
+  placed. The anchor is the stage beam now, taken when the car rolls into it
+  and kept current while it sits there, so staging deeper still works and
+  leaving early is seen.
+
+#### Added
+
+- **`tests/drag_client_test.lua`**, because the client half had no coverage at
+  all and has now produced three bugs. Every other suite here tests the
+  server, which is where the rules live -- but the client is where the tree,
+  the beams and the timing are, and none of that needs a vehicle to
+  demonstrate. The module takes everything it touches through `init(host)`, so
+  it loads headlessly against four stubbed globals and a position this test
+  moves by hand.
+
 ## 0.14.0 - A drag strip with a bracket on it, and the drivers waiting for their heat stop being an obstacle
 
 #### Added

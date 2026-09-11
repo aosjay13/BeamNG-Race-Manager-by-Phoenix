@@ -392,6 +392,14 @@ check(won.winner == entrantBySeed(2).name, 'the clean run beats the red light')
 check(won.lanes[1].foul == true, 'and the red light is on the board')
 check(entrantBySeed(1).bestET == 9.5, 'a red light still puts its ET on the record')
 check(entrantBySeed(1).bestRT == nil, 'but never on the reaction record')
+
+-- ALL THREE NUMBERS REACH THE CHAT. The trap speed used to stop at the
+-- driver's own screen, which is the one place the people arguing about it are
+-- not looking.
+check(lastChat and lastChat:find('RT 0.180', 1, true), 'the chat line carries the light')
+check(lastChat and lastChat:find('ET 10.500', 1, true), 'and the elapsed time')
+check(lastChat and lastChat:find('135.0 mph', 1, true),
+  'and the trap speed: ' .. tostring(lastChat))
 clearResult()
 check(lastDrag.dragPhase == 'complete', 'a two-car ladder is one pass long')
 

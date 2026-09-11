@@ -1605,9 +1605,17 @@ settlePass = function (reason)
   pass.time = 0
   local top = nil
   for _, t in ipairs(results) do if t.pos == 1 then top = t end end
-  MP.SendChatMessage(-1, string.format('[RaceManager] Drag %s pass %d: %s takes it (%s / %s)%s',
+  -- THE TRAP SPEED GOES IN THE CHAT LINE TOO. It is the third of the three
+  -- numbers a pass produces and the one people call out to each other, and it
+  -- was the only one not making it off the driver's own screen.
+  --
+  -- Labelled rather than slash-separated. "0.137 / 8.446 / 162.4" needs you to
+  -- know the order before it means anything, and two of the three are seconds.
+  MP.SendChatMessage(-1, string.format(
+    '[RaceManager] Drag %s pass %d: %s takes it (RT %s, ET %s, %s mph)%s',
     r.label, ladder.pass, top and top.entrant.name or '?',
     top and fmtET(top.rt) or '--', top and fmtET(top.et) or '--',
+    top and fmtSpeed(top.speed) or '--',
     p.bye and '  (bye run)' or ''))
   print('[RaceManager] Drag pass settled: ' .. tostring(reason))
   saveLadder()
