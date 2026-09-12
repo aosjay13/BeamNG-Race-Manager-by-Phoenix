@@ -396,6 +396,28 @@ D.derbyDrawBoundary = function ()
       host.drawStartPosition(D.derbyState.starts[D.derbyState.slot], D.derbyState.slot, true)
     end
   end
+  -- THE POINT PLACE MODE HAS HOLD OF, drawn over everything else.
+  --
+  -- Marked separately rather than by recolouring the thing itself, because the
+  -- arena's geometry is cached on the boundary table's identity and a selection
+  -- that changed colour would rebuild the whole perimeter every time it moved.
+  -- This is one post a frame and touches no cache.
+  --
+  -- Drawn before the early return below, so the arena center is still marked on
+  -- a rectangle whose boundary has not been derived yet.
+  if authoring then
+    local pick = host.nudgePick and host.nudgePick() or nil
+    if pick and pick.x then
+      local col = host.palette().nudged
+      local base = vec3(pick.x, pick.y, pick.z)
+      local top  = vec3(pick.x, pick.y, pick.z + DERBY_POLE_HEIGHT)
+      pcall(function ()
+        debugDrawer:drawCylinder(base, top, DERBY_POLE_RADIUS * 1.6, col)
+        debugDrawer:drawSphere(top, DERBY_POLE_RADIUS * 3, col)
+      end)
+    end
+  end
+
   local boundary = D.derbyState.boundary
   local n = #boundary
   if n == 0 then return end
@@ -744,6 +766,139 @@ function D.derbyPreviewMarker(index)
   end
 end
 
+-- ===========================================================================
+-- PLACE MODE: the mouse editing the race editor already has, on the arena
+-- ===========================================================================
+-- The extension owns the mouse, the raycast and the picking -- one
+-- implementation, shared -- and calls in here for the two things it cannot
+-- know: WHICH list a derby target means, and HOW a change to it reaches the
+-- server.
+--
+-- That split is the whole reason this is four small functions rather than a
+-- second copy of nudge. The race editor's lists are this client's own, so it
+-- edits them in place and broadcasts the result; the arena belongs to the
+-- SERVER, so every change here is a request, and the drawing does not move
+-- until the broadcast agrees. The one exception is a drag in progress, which
+-- moves the local copy every frame and sends once on release: sending per frame
+-- would be a server broadcast to the whole lobby per frame, to describe a
+-- marker being slid a few meters.
+--
+-- Every target is refused while a derby is live. The server refuses them too
+-- (derbyActive() guards each handler) -- this half only stops the panel
+-- offering an edit that would be thrown away.
+
+-- THE ARENA CENTER AS A ONE-ELEMENT LIST.
+--
+-- Place mode picks and drags entries out of a list, so the center is presented
+-- as one. It is a PROXY rather than the shape itself: the shape carries the
+-- extents and the rotation as well, and handing those to something that will
+-- write x/y/z into them is how a drag would quietly resize the arena.
+--
+-- Rebuilt from the shape on every broadcast (see the sync in onDerbyUpdate),
+-- and mutated in place by a drag in between. The table identity is kept so a
+-- selection held across a broadcast still points at the same entry.
+D.centreList = {}
+
+function D.syncCentreList()
+  local s = D.derbyState.shape
+  if not s then D.centreList[1] = nil; return end
+  local c = D.centreList[1]
+  if not c then c = {}; D.centreList[1] = c end
+  c.x, c.y, c.z = s.cx, s.cy, s.cz
+  -- A facing, so the center draws like every other placement rather than as a
+  -- bare point. It is the rectangle's own rotation, and nothing writes it back:
+  -- the Rotation slider owns that.
+  c.hx, c.hy = math.sin(s.rot or 0), math.cos(s.rot or 0)
+end
+
+-- Which list a Place-mode target means, or nil when the target is not ours.
+-- nil is the answer that keeps the race editor's targets working unchanged.
+function D.editList(target)
+  if target == 'derbyMarker' then
+    -- Rectangle corners are DERIVED from the shape and are rebuilt from it on
+    -- every change, so dragging one would be undone by the next broadcast. The
+    -- center is the handle in that mode, which is what derbyCenter is for.
+    if D.derbyState.boundaryMode == 'rect' then return nil end
+    return D.derbyState.boundary
+  end
+  if target == 'derbyStart'  then return D.derbyState.starts end
+  if target == 'derbyCenter' then
+    if D.derbyState.boundaryMode ~= 'rect' then return nil end
+    return D.centreList
+  end
+  return nil
+end
+
+-- Can this target be edited at all right now? The panel greys out on the same
+-- answer, so a refusal is visible before it is attempted rather than after.
+function D.editAllowed()
+  return D.derbyState.phase ~= 'running' and host.inMultiplayer()
+end
+
+-- Ctrl+click on open ground. The center has no "place": there is exactly one
+-- of it and it already exists, so it is moved and never created.
+function D.editPlace(target, place)
+  if not (D.editAllowed() and place) then return false end
+  if target == 'derbyMarker' then
+    TriggerServerEvent('RM_DerbyAddMarker',
+      jsonEncode({ x = place.x, y = place.y, z = place.z }))
+    return true
+  end
+  if target == 'derbyStart' then
+    TriggerServerEvent('RM_DerbyAddStart', jsonEncode({
+      x = place.x, y = place.y, z = place.z,
+      hx = place.hx or 0, hy = place.hy or 1,
+    }))
+    return true
+  end
+  return false
+end
+
+-- A drag has ended, or a button moved the entry. `wp` is the local copy the
+-- extension has already moved, so this only has to say where it now is.
+function D.editMove(target, index, wp)
+  if not (D.editAllowed() and wp) then return false end
+  index = math.floor(tonumber(index) or 0)
+  if index < 1 then return false end
+  if target == 'derbyMarker' then
+    TriggerServerEvent('RM_DerbyMoveMarker',
+      jsonEncode({ index = index, x = wp.x, y = wp.y, z = wp.z }))
+    return true
+  end
+  if target == 'derbyStart' then
+    TriggerServerEvent('RM_DerbyMoveStart', jsonEncode({
+      index = index, x = wp.x, y = wp.y, z = wp.z,
+      hx = wp.hx or 0, hy = wp.hy or 1,
+    }))
+    return true
+  end
+  if target == 'derbyCenter' then
+    -- ONLY the center. RM_DerbySetShape takes any subset of the rectangle and
+    -- keeps what it is not sent, so naming just these three is what stops a
+    -- drag touching the extents or the rotation.
+    TriggerServerEvent('RM_DerbySetShape',
+      jsonEncode({ cx = wp.x, cy = wp.y, cz = wp.z }))
+    return true
+  end
+  return false
+end
+
+function D.editRemove(target, index)
+  if not D.editAllowed() then return false end
+  index = math.floor(tonumber(index) or 0)
+  if index < 1 then return false end
+  if target == 'derbyMarker' then
+    TriggerServerEvent('RM_DerbyRemoveMarker', jsonEncode({ index = index }))
+    return true
+  end
+  if target == 'derbyStart' then
+    TriggerServerEvent('RM_DerbyRemoveStart', jsonEncode({ index = index }))
+    return true
+  end
+  -- The center cannot be deleted: switch the boundary mode instead.
+  return false
+end
+
 -- The Derby Editor sub-tab opening and closing. Client-local and purely a
 -- render gate, exactly like setEditorOpen for the race checkpoints: it decides
 -- whether this client draws the arena's authoring view or its driving view, and
@@ -950,6 +1105,10 @@ D.onDerbyUpdate = function (rawData)
   else
     D.derbyState.shape = nil
   end
+  -- The center's one-element proxy list follows the shape. Rebuilt here rather
+  -- than per frame so a drag between broadcasts is not undone by its own
+  -- reader: see D.centreList.
+  D.syncCentreList()
 
   -- Derby starting grid (a placement + a facing per slot, like the race grid).
   local starts = {}

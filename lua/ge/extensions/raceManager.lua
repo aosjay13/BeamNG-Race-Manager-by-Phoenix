@@ -234,7 +234,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.15.6'
+local RM_BUILD = '0.16.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -8160,6 +8160,18 @@ local drawGates          = render.drawGates
 
 local derby = require('raceManager/derby')
 
+-- WHICH TARGETS BELONG TO THE ARENA rather than to the track. Place mode is one
+-- implementation shared by both editors, and this is the only thing that tells
+-- them apart: a derby target reads its list out of the derby module and sends
+-- every change to the server, because the SERVER owns the arena.
+--
+-- DECLARED HERE, directly under the module it names, and not beside
+-- setEditorTarget where it reads like it belongs. The derby init table below
+-- closes over it, and that table is built ABOVE setEditorTarget -- so a local
+-- declared there was a nil GLOBAL to it, which compiles cleanly and throws the
+-- first time the arena is drawn with Place mode on.
+local DERBY_TARGETS = { derbyMarker = true, derbyStart = true, derbyCenter = true }
+
 -- WHY ARE MY INPUTS DEAD? The same shape as diagnoseVehicleConfig above, and it
 -- exists for the same reason: a control that does nothing has several unrelated
 -- causes and exactly one visible form.
@@ -8251,6 +8263,19 @@ derby.init({
   -- the first; only a question about the camera itself takes the second.
   playerVehicle = playerVehicle, ownVehicle = ownVehicle,
   vehiclePlacement = vehiclePlacement,
+  -- WHICH ARENA POINT THE MOUSE HAS HOLD OF, or nil. The derby draws its own
+  -- highlight from this: the arena's geometry is cached on the boundary table's
+  -- identity, so colouring one marker differently would mean rebuilding the
+  -- whole perimeter whenever the selection moved. A separate mark drawn over
+  -- the top costs one shape a frame and leaves the cache alone.
+  --
+  -- Answers nil for every track target, so the derby cannot light up a point
+  -- because a checkpoint happens to be picked on another tab.
+  nudgePick = function ()
+    if not (nudge.on and nudge.sel and DERBY_TARGETS[edit.target]) then return nil end
+    local list = derby.editList(edit.target)
+    return list and list[nudge.sel] or nil
+  end,
   placeOnStartPosition = placeOnStartPosition,
   setLocalVehicleFrozen = setLocalVehicleFrozen,
   queueFieldPlacement = queueFieldPlacement, pushNotice = pushNotice,
@@ -8476,13 +8501,20 @@ function M.setEditorTarget(target)
   target = tostring(target or 'main')
   if target ~= 'joker' and target ~= 'start' and target ~= 'pit'
      and target ~= 'pitEntry' and target ~= 'pitExit'
-     and target ~= 'branch' and target ~= 'marker' then target = 'main' end
+     and target ~= 'branch' and target ~= 'marker'
+     and not DERBY_TARGETS[target] then target = 'main' end
   edit.target = target
   pushRouteState()
   log('I', 'raceManager', 'Editor target: ' .. edit.target)
 end
 
 local function activeEditorRoute()
+  -- The arena's lists first: they are the derby module's, and it answers nil
+  -- for anything that is not one of its own, which is what leaves every track
+  -- target below untouched.
+  if DERBY_TARGETS[edit.target] then
+    return derby.editList(edit.target) or {}
+  end
   if edit.target == 'joker' then return track.jokerRoute end
   if edit.target == 'pit'   then return track.pitRoute end
   if edit.target == 'pitEntry' then return track.pitEntry end
@@ -8597,6 +8629,10 @@ end
 -- own camera toggle; a captured one costs them the whole UI.
 function nudge.release()
   if not nudge.on then return end
+  -- Anything still un-sent goes now: leaving the mode with a moved marker that
+  -- the server never heard about would put the panel and the arena out of step
+  -- until the next broadcast redrew it back where it started.
+  nudge.flush()
   nudge.on, nudge.sel, nudge.dragging, nudge.list = false, nil, false, nil
   if nudge.wasFree == false then
     nudge.cursor(false)
@@ -8761,6 +8797,16 @@ function nudge.place(list, hit, ray)
   local after = (nudge.sel and edit.target ~= 'branch') and list[nudge.sel] or list[#list]
   local hx, hy = nudge.headingFor(list, x, y, ray, after)
   local place = { x = x, y = y, z = z, hx = hx, hy = hy }
+  -- THE ARENA IS THE SERVER'S. Nothing is inserted locally: the request goes up
+  -- and the drawing moves when the broadcast comes back, so what is on screen
+  -- is always what the server actually holds. The selection is deliberately
+  -- left alone -- the new entry's index is not knowable until that broadcast,
+  -- and guessing it would point the controls at somebody else's marker.
+  if DERBY_TARGETS[edit.target] then
+    derby.editPlace(edit.target, place)
+    nudge.dragging = false
+    return
+  end
   -- A branch gate belongs to a slot rather than a position in an order, so it is
   -- always an add: insertCheckpoint refuses them for the same reason.
   if nudge.sel and edit.target ~= 'branch' then
@@ -8775,6 +8821,29 @@ function nudge.place(list, hit, ray)
   pushRouteState()
 end
 
+-- SEND AN ARENA EDIT UP, ONCE, WHEN IT HAS FINISHED MOVING.
+--
+-- A drag moves the local copy every frame, because that is what makes it feel
+-- like dragging. Every one of those frames going to the server would be a
+-- broadcast to the whole lobby per frame, to describe a marker being slid a few
+-- meters -- so the frames are local and this is what actually asks for the
+-- change, on mouse release and after each button press.
+--
+-- `nudge.pending` is the index that moved rather than a boolean, because the
+-- selection can change between the move and the flush (a broadcast landing, the
+-- list being replaced) and the one that must be sent is the one that was
+-- edited. A no-op when nothing moved, which is the common case for a click that
+-- merely picked.
+function nudge.flush()
+  local i = nudge.pending
+  nudge.pending = nil
+  if not i then return end
+  if not DERBY_TARGETS[edit.target] then return end
+  local list = derby.editList(edit.target)
+  local wp = list and list[i]
+  if wp then derby.editMove(edit.target, i, wp) end
+end
+
 -- Turn the picked gate from the panel. The scroll wheel is the fast way and not
 -- everybody has one, so the same step is on a pair of buttons. `dir` is -1 or 1.
 function M.nudgeTurn(dir)
@@ -8786,6 +8855,12 @@ function M.nudgeTurn(dir)
   if not wp then return end
   nudge.turn(wp, (tonumber(dir) or 1) >= 0 and nudge.TURN_PER_STEP or -nudge.TURN_PER_STEP)
   if edit.target == 'branch' then branch.rebuild() end
+  -- A button press is one discrete change, so it goes up immediately rather
+  -- than waiting for a release that is never coming.
+  if DERBY_TARGETS[edit.target] then
+    nudge.pending = nudge.sel
+    nudge.flush()
+  end
   pushRouteState()
 end
 
@@ -8812,6 +8887,10 @@ function M.nudgeLift(dir)
       TUNE.GROUND_CLEAR)
   end
   if edit.target == 'branch' then branch.rebuild() end
+  if DERBY_TARGETS[edit.target] then
+    nudge.pending = nudge.sel
+    nudge.flush()
+  end
   pushRouteState()
 end
 
@@ -8821,6 +8900,11 @@ function M.nudgeDelete()
   if not (nudge.on and nudge.sel) then return end
   local i = nudge.sel
   nudge.sel, nudge.dragging = nil, false
+  if DERBY_TARGETS[edit.target] then
+    derby.editRemove(edit.target, i)
+    pushRouteState()
+    return
+  end
   if edit.target == 'start' then
     M.removeStartPosition(i)
   else
@@ -8836,7 +8920,18 @@ function nudge.update()
   -- The editor closing, the admin logging out, or a session starting all end it.
   -- Authoring a track while it is being raced on is not a thing to allow, and
   -- the cursor has to go back either way.
-  if not (edit.open and session.isAdmin) or sessionRunning() then
+  -- WHICH EDITOR HAS TO BE OPEN depends on what is being edited. The track
+  -- targets need the track editor; the arena's need the Derby Editor, which is
+  -- a different sub-tab with its own open flag. Gating both on the track
+  -- editor's flag is what would make Place mode close itself the instant it was
+  -- switched to a marker.
+  local ownerOpen
+  if DERBY_TARGETS[edit.target] then
+    ownerOpen = derby.derbyState.editorOpen
+  else
+    ownerOpen = edit.open
+  end
+  if not (ownerOpen and session.isAdmin) or sessionRunning() then
     nudge.release()
     return
   end
@@ -8921,6 +9016,8 @@ function nudge.update()
   if up then
     nudge.dragging = false
     nudge.grabX, nudge.grabY = nil, nil
+    -- The moment a drag ends is the moment the arena's owner is told about it.
+    nudge.flush()
   end
 
   local wp = nudge.sel and list[nudge.sel]
@@ -8961,6 +9058,8 @@ function nudge.update()
         wp.z = liftAboveGround(wp.x, wp.y, wp.z, TUNE.GROUND_CLEAR)
         if edit.target == 'branch' then branch.rebuild() end
         if edit.target == 'start' then branch.gridTool.generated = false end
+        -- Noted, not sent: nudge.flush is what tells the server, on release.
+        if DERBY_TARGETS[edit.target] then nudge.pending = nudge.sel end
         pushRouteState()
       end
     end

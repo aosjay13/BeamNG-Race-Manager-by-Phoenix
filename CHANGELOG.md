@@ -6,6 +6,40 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.16.0 - Place mode reaches the arena
+
+#### Added
+
+- **The derby editor gets the race editor's mouse.** Boundary markers, start
+  positions and the rectangle's center can be placed, moved, turned and deleted
+  by clicking, instead of driving to each spot and pressing a button. Ctrl+click
+  open ground adds one, drag moves it, shift+scroll raises and lowers it, and on
+  a start position scroll turns it.
+
+  It is the SAME Place mode, not a second copy: one implementation of the mouse,
+  the raycast and the picking, with the editor target saying which list a click
+  means. The arena panel gets its own toggle and a three-way target picker,
+  because both editors are never on screen at once but only one thing can be
+  being edited at a time.
+
+  One difference runs through all of it, and it is why the derby's half is four
+  small functions rather than a fork: THE SERVER OWNS THE ARENA. A track gate is
+  this client's own and is edited in place; a marker is a request. So nothing is
+  added, moved or deleted locally and called done, and a drag sends exactly once
+  when it is released rather than once a frame, because a request a frame would
+  be a broadcast to the whole lobby a frame to describe a marker being slid a
+  few meters.
+
+  In rectangle mode the four corners stay underivable by hand, as they always
+  were, and the center is the handle instead: dragging it moves the whole arena
+  and deliberately sends only the center, so the extents and the rotation that
+  the sliders own are untouched.
+
+  The picked point is marked in the world so it is clear what the mouse has hold
+  of. It is drawn over the arena rather than by recolouring it, because the
+  arena's geometry is cached on the boundary's identity and a selection that
+  changed colour would rebuild the whole perimeter every time it moved.
+
 ## 0.15.6 - Reading the paint off the right fields
 
 0.15.5 carried the paint and stored none: the capture wrote an entry with no

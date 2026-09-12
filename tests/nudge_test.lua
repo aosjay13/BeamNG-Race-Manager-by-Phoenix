@@ -847,6 +847,149 @@ check(slots[3] ~= nil and slots[3].z > 15,
   'a grid generated up on a bridge is not dropped to the ground below it (z='
     .. tostring(slots[3] and slots[3].z) .. ')')
 
+-- ===========================================================================
+-- PLACE MODE ON THE ARENA: the same mouse, the derby's lists
+-- ===========================================================================
+-- The derby editor used to place everything by driving to the spot and pressing
+-- a button, which is a lap of the perimeter per correction. Place mode is the
+-- race editor's mouse editing pointed at the arena instead -- one
+-- implementation, one set of gestures.
+--
+-- What is different, and what these cases are really about: THE SERVER OWNS THE
+-- ARENA. A track gate is this client's own and is edited in place; a marker is
+-- a request. So nothing here may edit the local copy and call it done, and
+-- nothing may send a request per frame of a drag either -- that would be a
+-- broadcast to the whole lobby per frame to describe a marker being slid a few
+-- meters.
+do
+  local function sentOf(event)
+    local out = {}
+    for _, m in ipairs(sent) do
+      if m.event == event then out[#out + 1] = m.payload end
+    end
+    return out
+  end
+
+  -- An arena with three markers and one start position, as the server would
+  -- have broadcast it. Placed well away from the race gates so a pick can never
+  -- be ambiguous between the two editors.
+  local function arena()
+    handlers['RM_DerbyUpdate']({
+      rmProtocol = 2, derbyPhase = 'idle', derbyPlayers = {},
+      boundaryMode = 'polygon',
+      boundary = { { x = 500, y = 0, z = 0 }, { x = 600, y = 0, z = 0 },
+                   { x = 600, y = 100, z = 0 } },
+      startPositions = { { x = 550, y = 50, z = 0, hx = 0, hy = 1 } },
+    })
+  end
+  arena()
+  RM.setDerbyEditorOpen(true)
+  RM.setNudgeMode(true)
+  -- Burn any UI grace the track-editor cases above left armed: a button press
+  -- there suppresses the next few world clicks, which is the whole point of it.
+  for _ = 1, 10 do frame() end
+  -- The same module instance the extension holds: require caches, so this is
+  -- the live arena rather than a second copy of it.
+  local DB = require('raceManager/derby')
+  -- EVERY PANEL BUTTON ARMS A GRACE that swallows the next few world clicks,
+  -- because the panel is a CEF overlay and a press on it arrives here as a
+  -- world click too. So a case that presses a button and then clicks the world
+  -- has to let that grace expire, exactly as a human does by not moving the
+  -- mouse and clicking within three frames.
+  local function afterButton() for _ = 1, 10 do frame() end end
+
+  -- THE TARGET DECIDES WHICH LIST. Both editors are open and both have points
+  -- in the world; only the selected target may be picked out of.
+  RM.setEditorTarget('derbyMarker')
+  sent = {}
+  clickAt(600, 0)
+  check((routeState or {}).nudgeSel == 2,
+    'a click picks the arena marker under it, not a checkpoint on another tab')
+
+  -- A DRAG SENDS NOTHING UNTIL IT IS LET GO OF.
+  dragTo(620, 10)
+  dragTo(640, 20)
+  check(#sentOf('RM_DerbyMoveMarker') == 0,
+    'a drag in progress sends nothing: one request per frame would be a lobby '
+      .. 'broadcast per frame to describe a marker being slid')
+  letGo()
+  local moves = sentOf('RM_DerbyMoveMarker')
+  check(#moves == 1, 'and exactly one request when the mouse is released')
+  check(moves[1] and moves[1].index == 2,
+    'naming the marker that moved')
+  check(moves[1] and math.abs(moves[1].x - 640) < 25,
+    'and where it ended up, not where it started')
+
+  -- CTRL+CLICK ASKS FOR A NEW ONE, and adds nothing locally: the index of a
+  -- marker that does not exist yet is not knowable until the broadcast.
+  sent = {}
+  local before = #DB.derbyState.boundary
+  ctrlClickAt(700, 200)
+  check(#sentOf('RM_DerbyAddMarker') == 1, 'ctrl+click asks the server for a new marker')
+  check(#DB.derbyState.boundary == before,
+    'and nothing appears locally until the server says so: the arena on screen '
+      .. 'is always what the server actually holds')
+
+  -- DELETE IS A REQUEST TOO.
+  sent = {}
+  clickAt(500, 0)
+  RM.nudgeDelete()
+  local del = sentOf('RM_DerbyRemoveMarker')
+  check(#del == 1 and del[1].index == 1, 'delete asks the server, by index')
+  afterButton()
+
+  -- START POSITIONS ARE THE OTHER LIST, and they carry a facing.
+  RM.setEditorTarget('derbyStart')
+  sent = {}
+  clickAt(550, 50)
+  check((routeState or {}).nudgeSel == 1, 'the start position is picked on its own tab')
+  RM.nudgeTurn(1)
+  local turns = sentOf('RM_DerbyMoveStart')
+  check(#turns == 1, 'turning one sends it straight away rather than waiting for a release')
+  check(turns[1] and turns[1].hx ~= nil and turns[1].hy ~= nil,
+    'and carries the heading, which is the thing that was changed')
+  afterButton()
+
+  -- THE RECTANGLE'S CENTER. One point standing for the whole arena: dragging it
+  -- moves the rectangle and must not touch its extents or its rotation.
+  handlers['RM_DerbyUpdate']({
+    rmProtocol = 2, derbyPhase = 'idle', derbyPlayers = {},
+    boundaryMode = 'rect',
+    shape = { cx = 800, cy = 0, cz = 0, halfW = 50, halfL = 40, rot = 0.3 },
+    boundary = { { x = 750, y = -40, z = 0 }, { x = 850, y = -40, z = 0 },
+                 { x = 850, y = 40, z = 0 }, { x = 750, y = 40, z = 0 } },
+    startPositions = {},
+  })
+  RM.setEditorTarget('derbyCenter')
+  sent = {}
+  clickAt(800, 0)
+  check((routeState or {}).nudgeSel == 1, 'the arena center picks as a list of one')
+  dragTo(830, 30)
+  letGo()
+  local shapes = sentOf('RM_DerbySetShape')
+  check(#shapes == 1, 'dragging the center sends one shape request')
+  check(shapes[1] and shapes[1].cx ~= nil and shapes[1].cy ~= nil,
+    'carrying the new center')
+  check(shapes[1] and shapes[1].halfW == nil and shapes[1].halfL == nil
+        and shapes[1].rot == nil,
+    'and NOTHING else: the server keeps what it is not sent, so naming only the '
+      .. 'center is what stops a drag resizing or turning the arena')
+
+  -- A rectangle's corners are derived from the center and rebuilt on every
+  -- change, so dragging one would be undone by the next broadcast. The marker
+  -- target simply has no list in that mode.
+  RM.setEditorTarget('derbyMarker')
+  sent = {}
+  clickAt(750, -40)
+  check((routeState or {}).nudgeSel == nil,
+    'rectangle corners are not draggable: they are derived from the center, '
+      .. 'and the center is the handle')
+
+  RM.setNudgeMode(false)
+  RM.setDerbyEditorOpen(false)
+  RM.setEditorTarget('main')
+end
+
 if fails == 0 then
   print('nudge_test: ' .. checks .. ' checks, 0 failures')
 else

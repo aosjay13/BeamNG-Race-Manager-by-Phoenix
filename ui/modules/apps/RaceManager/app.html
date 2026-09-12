@@ -2536,6 +2536,76 @@
       </button>
     </div>
 
+    <!-- ===== Place mode: the same mouse editing the track editor has =====
+         The arena used to be authored only by driving to each point and
+         pressing a button, which is a lap of the perimeter per correction. This
+         is the race editor's Place mode pointed at the arena's lists instead:
+         one implementation, one set of gestures, and the target below is the
+         only thing that differs between them.
+
+         WHICH LIST is a choice the admin makes here rather than something
+         inferred, because all three are on screen at once and a click has to
+         mean exactly one of them. The center only exists in rectangle mode and
+         the markers are only editable outside it: in rectangle mode the four
+         corners are DERIVED from the center and dragging one would be undone by
+         the next broadcast. -->
+    <div class="rm-editor-controls">
+      <button class="rm-btn" ng-class="{'rm-btn-nudge-on': nudgeOn}"
+              ng-click="toggleDerbyNudge()" ng-disabled="derbyActive()"
+              title="Place, move and delete arena points with the mouse. Releases the cursor from the camera.">
+        {{ nudgeOn && derbyPlacing() ? '✋ Place: ON' : '✋ Place' }}
+      </button>
+      <button class="rm-btn rm-btn-mini"
+              ng-class="{'rm-route-tab-active': editorTarget === 'derbyMarker'}"
+              ng-click="derbyPlaceTarget('derbyMarker')"
+              ng-disabled="derbyActive() || derby.boundaryMode === 'rect'"
+              title="Edit the boundary markers. Ctrl+click open ground adds one on the end of the perimeter.">
+        Markers ({{ derby.boundaryCount }})
+      </button>
+      <button class="rm-btn rm-btn-mini"
+              ng-class="{'rm-route-tab-active': editorTarget === 'derbyStart'}"
+              ng-click="derbyPlaceTarget('derbyStart')" ng-disabled="derbyActive()"
+              title="Edit the start positions. Ctrl+click open ground adds one, facing the way the grid is running.">
+        Start positions ({{ derby.startCount }})
+      </button>
+      <button class="rm-btn rm-btn-mini"
+              ng-class="{'rm-route-tab-active': editorTarget === 'derbyCenter'}"
+              ng-click="derbyPlaceTarget('derbyCenter')"
+              ng-disabled="derbyActive() || derby.boundaryMode !== 'rect'"
+              title="Drag the whole rectangle by its center. Size and rotation are kept: those are the sliders above.">
+        Arena center
+      </button>
+    </div>
+    <div class="rm-nudge-hint" ng-if="nudgeOn && derbyPlacing()">
+      <div><b>Click</b> a point to pick it, <b>drag</b> to move it,
+      <b>shift+scroll</b> to raise and lower it, and on a start position
+      <b>scroll</b> to turn it. <b>Ctrl+click</b> open ground to add one, which
+      lands after the picked point if there is one. The arena belongs to the
+      server, so each change is sent when you let go of it.</div>
+      <div class="rm-nudge-row">
+        <button class="rm-btn rm-btn-mini" ng-click="nudgeTurn(-1)"
+                ng-disabled="!nudgeSel || editorTarget !== 'derbyStart'"
+                title="Turn the picked start position anticlockwise">↺</button>
+        <button class="rm-btn rm-btn-mini" ng-click="nudgeTurn(1)"
+                ng-disabled="!nudgeSel || editorTarget !== 'derbyStart'"
+                title="Turn the picked start position clockwise">↻</button>
+        <button class="rm-btn rm-btn-mini" ng-click="nudgeLift(1)"
+                ng-disabled="!nudgeSel"
+                title="Raise the picked point. Bigger steps than the wheel, for digging one out of a hillside.">▲ Up</button>
+        <button class="rm-btn rm-btn-mini" ng-click="nudgeLift(-1)"
+                ng-disabled="!nudgeSel"
+                title="Lower the picked point. It stops at ground level rather than burying it.">▼ Down</button>
+        <button class="rm-btn rm-btn-end rm-btn-mini" ng-click="nudgeDelete()"
+                ng-disabled="!nudgeSel || editorTarget === 'derbyCenter'"
+                title="Delete the picked point. The arena center cannot be deleted: switch the boundary mode instead.">
+          ✕ Delete picked
+        </button>
+        <span class="rm-nudge-sel">{{ nudgeSel ? 'picked #' + nudgeSel : 'nothing picked' }}</span>
+      </div>
+      <div>Turning this off leaves the cursor free, so use your own camera key to
+      give the mouse back to the view.</div>
+    </div>
+
     <!-- Wall height and depth belong to both modes: they are how the arena is
          DRAWN, not what it encloses. The out-of-bounds test is flat, so neither
          changes who is in or out. Height decides how easily a driver sees the

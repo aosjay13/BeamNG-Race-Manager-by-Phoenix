@@ -133,9 +133,15 @@ angular.module('beamng.apps')
       // Miss the second and the tab falls back to the main route, so pressing it
       // silently appends checkpoints to the lap instead of whatever it named.
       // tests/ui_bindings_test.lua checks the two agree, and caught exactly that.
+      // The last three are the ARENA's, not the track's. Place mode is one
+      // implementation shared by both editors, and the target is what says
+      // which list a click is editing -- so the derby's three live in the same
+      // set as the track's rather than in a second one.
       var EDITOR_TARGETS = { main: true, joker: true, pit: true, start: true,
                              pitEntry: true, pitExit: true,
-                             branch: true, marker: true };
+                             branch: true, marker: true,
+                             derbyMarker: true, derbyStart: true,
+                             derbyCenter: true };
       function editorTargetOf(value) {
         return EDITOR_TARGETS[value] ? value : 'main';
       }
@@ -1620,7 +1626,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.15.6';
+      var APP_BUILD = '0.16.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -2701,6 +2707,18 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         if ($scope.editorTarget === 'start') { return $scope.startPositions; }
         if ($scope.editorTarget === 'branch') { return $scope.branches; }
         if ($scope.editorTarget === 'marker') { return $scope.markers; }
+        // The ARENA's three. They are the derby panel's lists rather than the
+        // track editor's, and the track editor never shows them -- but this
+        // function is what every count and every list in the editor reads, and
+        // a target with no case here falls through to the main route and
+        // silently reports the checkpoints instead.
+        if ($scope.editorTarget === 'derbyMarker') { return $scope.derby.boundary; }
+        if ($scope.editorTarget === 'derbyStart')  { return $scope.derby.startPositions; }
+        // One element, or none before a rectangle exists: the center is a
+        // single point and Place mode treats it as a list of one.
+        if ($scope.editorTarget === 'derbyCenter') {
+          return $scope.derby.shape ? [$scope.derby.shape] : [];
+        }
         return $scope.routeWaypoints;
       };
 
@@ -2929,6 +2947,30 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // Start positions are placements, not gates: the width/height override
       // editor does not apply to them.
       $scope.editingGrid = function () { return $scope.editorTarget === 'start'; };
+
+      // --- the arena's half of Place mode ---------------------------------
+      // Which arena list the mouse is editing. Separate from the track's tab
+      // row because the two editors are different sub-tabs and only one of them
+      // is on screen at a time, but it writes the SAME editorTarget: there is
+      // one Place mode and it always knows exactly one thing it is editing.
+      $scope.derbyPlaceTarget = function (target) {
+        $scope.setEditorTarget(target);
+      };
+      $scope.derbyPlacing = function () {
+        return $scope.editorTarget === 'derbyMarker'
+            || $scope.editorTarget === 'derbyStart'
+            || $scope.editorTarget === 'derbyCenter';
+      };
+      // Turning Place on from the arena panel has to pick a list as well, or
+      // the mode comes up still pointed at the race track's checkpoints and the
+      // first click moves a gate on another tab.
+      $scope.toggleDerbyNudge = function () {
+        if (!$scope.nudgeOn && !$scope.derbyPlacing()) {
+          $scope.setEditorTarget($scope.derby.boundaryMode === 'rect'
+            ? 'derbyCenter' : 'derbyMarker');
+        }
+        $scope.toggleNudge();
+      };
 
       // ------------------------------------------------------------------
       // Regulation notices, forced spectating and vehicle rejections
