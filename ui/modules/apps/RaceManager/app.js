@@ -1620,7 +1620,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.15.2';
+      var APP_BUILD = '0.15.6';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -2477,9 +2477,21 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           // saved config behind it (a car edited in the session) has no file to
           // spawn, so it is left out rather than offered as something that
           // would quietly hand back the model's default.
+          // `spawn` rather than `pc`, because the config PATH no longer rides
+          // the broadcast: a path is only meaningful on the machine that saved
+          // the file, and the car itself is fetched on the press instead. The
+          // server answers the one question the panel actually has -- is there
+          // a car behind this row -- and the row's INDEX is how a press names
+          // it.
           $scope.garageSpawnable = [];
           for (var gsi = 0; gsi < $scope.garage.length; gsi++) {
-            if ($scope.garage[gsi] && $scope.garage[gsi].pc) {
+            if (!$scope.garage[gsi]) { continue; }
+            // Stamped on EVERY row, not only the spawnable ones. The admin's
+            // Garage tab repeats over `garage` itself and its Take button needs
+            // the same index this one does; setting it only here left that
+            // button sending nothing.
+            $scope.garage[gsi].index = gsi + 1;     // Lua counts from one
+            if ($scope.garage[gsi].spawn) {
               $scope.garageSpawnable.push($scope.garage[gsi]);
             }
           }
@@ -4353,13 +4365,17 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       };
 
       // Open to everyone: this is the driver's half of the Garage List. The
-      // spawn is entirely client-side (BeamNG loads the .pc itself), and the
-      // new car re-declares to the server like any other, so an approved entry
-      // needs no permission and an unapproved one gains nothing.
+      // spawn is still client-side, and the new car re-declares to the server
+      // like any other, so an approved entry needs no permission and an
+      // unapproved one gains nothing.
+      //
+      // BY INDEX. The entry's parts are not on the broadcast -- they are
+      // kilobytes and this list is re-sent three times a second -- so the press
+      // asks the server for that one row and the car arrives on RM_GarageCar.
       $scope.takeGarageCar = function (g, replace) {
-        if (!g || !g.pc || !g.model) { return; }
-        bngApi.engineLua('raceManager.takeGarageCar(' + luaStr(g.model) + ', '
-          + luaStr(g.pc) + ', ' + (replace ? 'true' : 'false') + ')');
+        if (!g || !g.index) { return; }
+        bngApi.engineLua('raceManager.takeGarageCar(' + g.index + ', '
+          + (replace ? 'true' : 'false') + ')');
       };
 
       // --- Saved garage sets ---------------------------------------------
@@ -5576,6 +5592,18 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       bngApi.engineLua('extensions.load("raceManager"); raceManager.requestState()');
       // Demo Derby module: pull its state separately (isolated channel).
       bngApi.engineLua('raceManager.derbyRequestState()');
+      // AND THE LADDER, for everybody rather than only an admin opening the tab.
+      //
+      // The drag state is PUSHED only when it changes, and the only pull was in
+      // afterTabChange under adminTab === 'drag'. A driver has no tab row, so
+      // they never asked -- and a driver who opened the app after the ladder was
+      // built (or whose HUD was torn down and rebuilt by the pause menu) sat on
+      // an empty board for the rest of the meeting. The phase still arrived on
+      // the next pass broadcast, so the panel knew a tournament was running and
+      // had no entrants to show for it: "no ladder yet" on a night that was
+      // three rounds deep. Reported as the leaderboard not being visible for
+      // non admins.
+      bngApi.engineLua('raceManager.dragRequestState()');
       // Re-assert both editor flags on mount. The mode and its tab are restored
       // from localStorage, so a rebuilt app can come straight back up on either
       // Editor tab -- and the Lua side was told "closed" when the old one was

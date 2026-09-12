@@ -2481,6 +2481,71 @@ do
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- THE DRAG BOARD REACHES DRIVERS, not just the admin who built it
+-- ---------------------------------------------------------------------------
+-- Two separate failures wore one name in a live session: "the drag racing
+-- leaderboard and bracket info was not visible for non admins".
+--
+--   * THE BRACKET was inside the Drag TAB, which is inside rm-admin-body, which
+--     is ng-if="isAdmin". The one thing everybody in the tournament wants to
+--     look at was the one thing only the admin could see.
+--
+--   * THE STANDINGS were outside it and correctly gated on dragBoardOnly(), but
+--     the entrants never arrived. The ladder is PUSHED only when it changes and
+--     the only pull was under adminTab === 'drag' -- a tab row a driver does
+--     not have. So the phase arrived on the next pass broadcast, the panel knew
+--     a tournament was running, and it had no field to show for it.
+--
+-- Both halves are pinned here because both are one-line regressions: moving the
+-- ladder back inside the admin body, or dropping the pull, restores the bug
+-- with nothing else looking wrong.
+do
+  -- The ladder must not be inside the admin-only body.
+  local bodyAt = html:find('class="rm%-admin%-body"')
+  local bodyEnd = html:find('/.rm%-admin%-body')
+  local ladderAt = html:find('class="rm%-drag%-ladder"')
+  expect(bodyAt ~= nil and bodyEnd ~= nil, 'the admin body is delimited in the template')
+  expect(ladderAt ~= nil, 'the drag ladder is in the template')
+  expect(ladderAt ~= nil and bodyEnd ~= nil and ladderAt > bodyEnd,
+    'the drag ladder renders OUTSIDE rm-admin-body, or a driver in the '
+      .. 'tournament cannot see the bracket they are racing in')
+
+  -- And it is gated on the same thing the standings are, so an admin still gets
+  -- it in drag mode and a driver gets it whenever a ladder is running.
+  local ladderTag = html:sub(ladderAt - 60, ladderAt + 160)
+  expect(ladderTag:find('dragBoardOnly()', 1, true) ~= nil,
+    'and hangs off dragBoardOnly(), the same gate the drag standings use')
+
+  -- The pull has to happen for everybody, not only from the admin tab switch.
+  local tabPull = js:find("if %($scope%.adminTab === 'drag'%)")
+  expect(tabPull ~= nil, 'the admin tab still pulls the ladder when it is opened')
+  local pulls = 0
+  for _ in js:gmatch("raceManager%.dragRequestState%(%)") do pulls = pulls + 1 end
+  expect(pulls >= 2,
+    'the ladder is also pulled on mount, for everybody: it is pushed only when '
+      .. 'it changes, so a driver who never opens an admin tab would sit on an '
+      .. 'empty board for the whole meeting')
+
+  -- The empty states in the SHARED board area are admin instructions and must
+  -- not be shown to drivers, who have neither button. Matched on their own
+  -- wording rather than on a prefix: the admin Drag tab carries shorter hints
+  -- that open the same way, and those are already behind rm-admin-body.
+  for _, hint in ipairs({ 'No drag strip loaded. A strip is a point-to-point',
+                          'No ladder yet. Set the format' }) do
+    local at = html:find(hint, 1, true)
+    expect(at ~= nil, 'the "' .. hint .. '" empty state is in the template')
+    if at then
+      local tag = html:sub(at - 260, at)
+      local lastIf = nil
+      for m in tag:gmatch('ng%-if="[^"]*"') do lastIf = m end
+      expect(lastIf ~= nil and lastIf:find('isAdmin', 1, true) ~= nil,
+        '"' .. hint .. '" is admin only: it tells the reader to press buttons '
+          .. 'that are not on a driver s screen')
+    end
+  end
+end
+
 if fails == 0 then
   print('ui_bindings_test: ' .. checks .. ' checks, 0 failures ('
     .. #models .. ' ng-model bindings)')

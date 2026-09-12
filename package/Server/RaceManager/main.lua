@@ -1788,7 +1788,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.15.2'
+local RM_BUILD = '0.15.6'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -7424,6 +7424,33 @@ end
 local GARAGE_FILE        = LAYOUTS_DIR .. '/garage.json'
 local MAX_GARAGE_ENTRIES = 60
 local MAX_SIG_LENGTH     = 4000
+-- THE STORED CAR: the parts and tuning of an approved entry, held so a driver
+-- on any machine can spawn it. Never inspected here beyond having a `parts`
+-- table -- the server has no rule that depends on what is in it.
+--
+-- The limit is on its ENCODED size, measured once at capture. A hundred and
+-- twenty slots plus the tuning comes out around six kilobytes, so this is
+-- generous rather than tight; the point of it is that a client cannot fill the
+-- server's disk with one press of a button.
+local MAX_CFG_LENGTH     = 32000
+
+-- A capture's configuration, if it is one, and nil if it is not. Returns the
+-- encoded length alongside, because that is the thing being limited and
+-- encoding it twice to find out would be the only cost in this path.
+--
+-- VALIDITY AND LENGTH ARE TWO QUESTIONS. Whether this is a car is answered off
+-- the table itself; how big it is can only be answered by encoding it, and an
+-- encoder that cannot answer is not evidence that the car is bad. A length of
+-- zero therefore means "not measured" and passes the cap, which is the right
+-- way round: the cap exists to stop a client filling the disk, and a
+-- configuration that will not encode never reaches the disk anyway.
+local function garageConfigOf(raw)
+  if type(raw) ~= 'table' or type(raw.parts) ~= 'table' then return nil, 0 end
+  if next(raw.parts) == nil then return nil, 0 end
+  local ok, text = pcall(Util.JsonEncode, raw)
+  if not ok then return nil, 0 end
+  return raw, (type(text) == 'string') and #text or 0
+end
 
 local garage = {
   enforce = false,   -- master switch for the whole rule
@@ -7504,6 +7531,9 @@ local function loadGarageFromDisk()
         partsSig = partsSig,
         game     = (type(e.game) == 'string' and e.game ~= '') and e.game or nil,
         pc       = (type(e.pc) == 'string' and e.pc ~= '') and e.pc or nil,
+        -- THE CAR ITSELF. Absent on every entry written before this existed,
+        -- which is what the `pc` fallback above is still here for.
+        cfg      = (garageConfigOf(e.cfg)),
       }
     end
   end
@@ -7552,11 +7582,14 @@ local function saveGarageToDisk()
   if not f then return false, tostring(ferr) end
   f:write(jsonStringify({
     -- version 2 added `mode` and the per-entry `partsSig`; version 3 added the
-    -- per-entry `class`. Every older file still loads: loadGarageFromDisk
-    -- defaults the mode, derives the missing signature half and treats a missing
-    -- class as unclassified, so downgrading the plugin is the only thing this
+    -- per-entry `class`; version 4 added the per-entry `cfg`, the car's own
+    -- parts and tuning, which is what lets a driver on another machine spawn
+    -- the entry at all. Every older file still loads: loadGarageFromDisk
+    -- defaults the mode, derives the missing signature half, treats a missing
+    -- class as unclassified and falls back to the saved config's path when
+    -- there is no `cfg` -- so downgrading the plugin is the only thing this
     -- breaks.
-    version = 3, enforce = getGarage().enforce, mode = getGarage().mode,
+    version = 4, enforce = getGarage().enforce, mode = getGarage().mode,
     list = getGarage().list,
   }))
   f:close()
@@ -7665,10 +7698,18 @@ garageSnapshot = function ()
   -- compact view (the signature stays server-side).
   local list = {}
   for i, e in ipairs(g.list) do
-    -- `pc` rides along and the signature does not, deliberately. A driver needs
-    -- the config path to spawn the car; the signature is what the server
-    -- compares against and is nobody else's business.
-    list[i] = { model = e.model, label = e.label, class = e.class, pc = e.pc }
+    -- NEITHER THE SIGNATURE NOR THE CAR RIDES ALONG, and for the same reason:
+    -- this table is encoded into every state broadcast, three times a second,
+    -- for the life of the server. The signature is what the server compares
+    -- against and is nobody else's business; the stored configuration is
+    -- kilobytes per entry and is wanted only at the instant somebody presses
+    -- Take, which RM_onTakeGarageCar answers one entry at a time.
+    --
+    -- So the broadcast carries a FLAG instead. `spawn` is the whole of what the
+    -- panel needs to decide whether to offer the button, and the index of the
+    -- row is how the press names the entry it wants.
+    list[i] = { model = e.model, label = e.label, class = e.class,
+                spawn = (e.cfg ~= nil or e.pc ~= nil) or nil }
   end
   -- The saved set NAMES ride along. They are read off the folder, so a set
   -- dropped in by hand appears without a restart; the cache below is what stops
@@ -7944,6 +7985,26 @@ function RM_onWhitelistVehicle(pid, rawData)
     -- entry moves, because the signature matched, so there is nothing else that
     -- could have changed.
     local incoming = (type(data.pc) == 'string' and data.pc ~= '') and data.pc:sub(1, 200) or nil
+    -- AND THE CAR, which is the half that matters now. Every entry captured
+    -- before the parts were stored can only be spawned by the admin who has the
+    -- file; re-capturing the same car is how it gains a configuration the rest
+    -- of the field can use, and that was refused as a duplicate.
+    local incomingCfg, cfgLen = garageConfigOf(data.cfg)
+    if incomingCfg and cfgLen > MAX_CFG_LENGTH then incomingCfg = nil end
+    if incomingCfg and dupe.cfg == nil then
+      dupe.cfg = incomingCfg
+      if incoming then dupe.pc = incoming end
+      saveGarageToDisk()
+      broadcastState()
+      MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+        added = true,
+        message = 'Added the stored parts for "' .. dupe.label
+          .. '", so every driver can take this car',
+      }))
+      print('[RaceManager] Garage entry "' .. dupe.label .. '" gained stored parts ('
+        .. cfgLen .. ' bytes, by ' .. (MP.GetPlayerName(pid) or pid) .. ')')
+      return
+    end
     if incoming and dupe.pc ~= incoming then
       local had = dupe.pc
       dupe.pc = incoming
@@ -7951,8 +8012,13 @@ function RM_onWhitelistVehicle(pid, rawData)
       broadcastState()
       MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
         added = true,
-        message = (had and 'Updated' or 'Added') .. ' the saved config for "'
-          .. dupe.label .. '", so drivers can take this car',
+        -- NOT "so drivers can take this car" any more, which is what this
+        -- said and is no longer true of a path on its own: a path resolves
+        -- only where the file is. The parts are what make an entry takeable,
+        -- and this capture had none to offer.
+        message = (had and 'Updated' or 'Added') .. ' the saved config path for "'
+          .. dupe.label .. '". This car still has no stored parts, so only '
+          .. 'someone who already has that file can take it.',
       }))
       print('[RaceManager] Garage entry "' .. dupe.label .. '" '
         .. (had and 'repointed to' or 'gained') .. ' config ' .. incoming
@@ -7977,6 +8043,7 @@ function RM_onWhitelistVehicle(pid, rawData)
   if partsSig == '' or #partsSig > MAX_SIG_LENGTH then
     partsSig = sig:match('^(.*)|vars=')
   end
+  local newCfg, newCfgLen = garageConfigOf(data.cfg)
   local entry = {
     model    = tostring(data.model or '?'),
     label    = tostring(data.label or data.model or 'Vehicle'),
@@ -7989,7 +8056,18 @@ function RM_onWhitelistVehicle(pid, rawData)
     -- in the session rather than loaded from a file; an entry without one is
     -- simply not offered.
     pc       = (type(data.pc) == 'string' and data.pc ~= '') and data.pc:sub(1, 200) or nil,
+    -- THE CAR, and the only field that makes an entry spawnable on a machine
+    -- other than the one it was captured on. Over the limit it is DROPPED
+    -- rather than truncated: half a parts list is not a car, and an entry
+    -- without one at least falls back to the path honestly.
+    cfg      = (newCfgLen <= MAX_CFG_LENGTH) and newCfg or nil,
   }
+  if newCfg and newCfgLen > MAX_CFG_LENGTH then
+    print('[RaceManager] Garage entry "' .. entry.label .. '" came with a '
+      .. newCfgLen .. ' byte configuration, over the ' .. MAX_CFG_LENGTH
+      .. ' byte limit; stored without it, so only a client that already has the '
+      .. 'saved file can take this car')
+  end
   g.list[#g.list + 1] = entry
   local wrote, werr = saveGarageToDisk()
   if not wrote then print('[RaceManager] Failed to write ' .. GARAGE_FILE .. ': ' .. tostring(werr)) end
@@ -8003,6 +8081,52 @@ function RM_onWhitelistVehicle(pid, rawData)
   MP.SendChatMessage(-1, msg)
   print(msg)
   broadcastState()
+end
+
+-- A DRIVER PRESSED TAKE. Deliberately NOT behind requireAuth.
+--
+-- Taking an approved car is the driver's half of the Garage List and always has
+-- been: the entry is already whitelisted, the spawn happens entirely on the
+-- client, and the new car re-declares itself and is ruled on like any other. An
+-- unapproved car gains nothing by being spawned this way, so there is nothing
+-- here for an admin gate to protect.
+--
+-- One entry, answered to one player. The stored configuration is kilobytes and
+-- the state broadcast goes to everybody three times a second, which is why it
+-- is not on there: this is the request that fetches it, once, on a press.
+function RM_onTakeGarageCar(pid, rawData)
+  local idx = decodeNumber(rawData, 'index')
+  if not idx then return end
+  idx = math.floor(idx)
+  local g = getGarage()
+  local e = g.list[idx]
+  if not e then
+    -- The list moved under them: an admin removed an entry, or loaded a
+    -- different set, between the broadcast that drew the button and the press.
+    -- Answered rather than dropped, because a button that does nothing is the
+    -- hardest kind of failure to report.
+    MP.TriggerClientEvent(pid, 'RM_GarageCar', Util.JsonEncode({
+      rmProtocol = RM_PROTOCOL,
+      message = 'That garage entry is gone: the list changed while you were looking at it',
+    }))
+    return
+  end
+  if not e.cfg and not e.pc then
+    MP.TriggerClientEvent(pid, 'RM_GarageCar', Util.JsonEncode({
+      rmProtocol = RM_PROTOCOL,
+      message = 'There is no saved car behind "' .. tostring(e.label)
+        .. '": an admin has to re-capture it',
+    }))
+    return
+  end
+  MP.TriggerClientEvent(pid, 'RM_GarageCar', Util.JsonEncode({
+    rmProtocol = RM_PROTOCOL,
+    model = e.model, label = e.label,
+    -- BOTH, and the client prefers the parts. The path is worth sending even
+    -- when the parts are there: nothing else would ever repair an entry whose
+    -- stored configuration turns out to be undecodable on the far side.
+    cfg = e.cfg, pc = e.pc,
+  }))
 end
 
 function RM_onClearGarage(pid)
@@ -8167,6 +8291,11 @@ function RM_onLoadGarageSet(pid, rawData)
         partsSig = partsSig,
         game     = (type(e.game) == 'string' and e.game ~= '') and e.game or nil,
         pc       = (type(e.pc) == 'string' and e.pc ~= '') and e.pc or nil,
+        -- THE CAR TRAVELS WITH THE SET. Dropped here, a series saved on Tuesday
+        -- comes back on Friday as a list of names nobody can spawn -- which is
+        -- the whole bug this field exists to fix, reintroduced by the one path
+        -- that rebuilds entries from scratch.
+        cfg      = (garageConfigOf(e.cfg)),
       }
     end
   end
@@ -10732,6 +10861,8 @@ function onInit()
   MP.RegisterEvent('RM_WhitelistVehicle', 'RM_onWhitelistVehicle')
   MP.RegisterEvent('RM_ClearGarage',      'RM_onClearGarage')
   MP.RegisterEvent('RM_RemoveGarageEntry','RM_onRemoveGarageEntry')
+  -- Open to everyone, like the Take button it answers.
+  MP.RegisterEvent('RM_TakeGarageCar',   'RM_onTakeGarageCar')
   MP.RegisterEvent('RM_SetGarageEnforce', 'RM_onSetGarageEnforce')
   MP.RegisterEvent('RM_SetGarageMode',    'RM_onSetGarageMode')
   MP.RegisterEvent('RM_SetGarageClass',   'RM_onSetGarageClass')  -- multi-class

@@ -748,7 +748,18 @@ resetHook()
 check(not queuedHas('attachCouplers'),
   'a car with no trailer does not couple to whatever is beside it on the grid')
 
--- With a trailer attached, the coupling is put back.
+-- A RIG THAT ARRIVES STILL COUPLED IS LEFT COMPLETELY ALONE, and this is the
+-- assertion that changed.
+--
+-- It used to demand the opposite: with the trailer shown as attached, the mod
+-- was expected to fire attachCouplers anyway, on the claim that re-attaching an
+-- attached coupler does nothing. The game does not work that way.
+-- beamstate.attachCouplers walks EVERY coupler node on the vehicle and arms
+-- each one to latch anything with a matching tag inside its capture radius, at
+-- a strength of 1,000,000, with no already-attached test anywhere in it. On a
+-- formed grid, where the next car is a couple of meters away, that is an
+-- invitation to latch onto a neighbour -- and two cars joined at that strength
+-- come apart violently the moment the countdown releases them.
 core_vehicles = { attachedCouplers = { { veh.id, 99, 12, 34 } } }
 serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
 veh.x, veh.y, veh.z = 0, 0, 0
@@ -756,24 +767,31 @@ frames(0.6)
 queued = {}
 gridAssign(1, 1, 1)
 resetHook()
-
--- NOT WHILE THE CAR IS STILL GHOSTED, which is the whole bug.
---
--- A field placement ghosts the car so the grid can land through itself, and a
--- ghosted vehicle has no collisions for a coupler to find. The first version of
--- this fired in the vehicle-reset echo -- during the placement, mid-ghost -- so
--- attachCouplers did nothing whatsoever and the trailer still arrived loose.
-check(not queuedHas('attachCouplers'),
-  'nothing is coupled while the placement ghost is still on: there are no '
-    .. 'collisions for the coupler to find')
-
--- ...and once the field has settled and collisions are back, it goes on.
 frames(3.5)
-check(queuedHas('attachCouplers'), 'a coupled trailer is re-attached once the ghost lifts')
-check(frozen ~= nil, 'and the grid hold still went on alongside it')
+check(not queuedHas('attachCouplers'),
+  'a rig that is still coupled after the placement is never re-coupled: arming '
+    .. 'every hitch on a packed grid is how a car latches onto its neighbour')
+check(frozen ~= nil, 'and the grid hold still went on regardless')
+
+-- THE FALLBACK STILL WORKS. If a placement really does arrive with the trailer
+-- loose, the retry reconnects it -- which is the case the window was built for
+-- and the only one it now acts on. Coupled when the placement is queued (so the
+-- mod knows there was a rig), loose by the time it settles.
+core_vehicles = { attachedCouplers = { { veh.id, 99, 12, 34 } } }
+serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+veh.x, veh.y, veh.z = 0, 0, 0
+frames(0.6)
+queued = {}
+gridAssign(1, 1, 1)
+resetHook()
+core_vehicles.attachedCouplers = {}          -- it came off on the way in
+frames(3.5)
+check(queuedHas('attachCouplers'),
+  'a trailer that genuinely arrives loose is still reconnected')
 
 -- The pair can name our vehicle on EITHER side: which end of the coupling a
--- vehicle is on says nothing about whose trailer it is.
+-- vehicle is on says nothing about whose trailer it is. Read at queue time,
+-- which is where hadRig is decided.
 core_vehicles = { attachedCouplers = { { 99, veh.id, 34, 12 } } }
 serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
 veh.x, veh.y, veh.z = 0, 0, 0
@@ -781,6 +799,7 @@ frames(0.6)
 queued = {}
 gridAssign(1, 1, 1)
 resetHook()
+core_vehicles.attachedCouplers = {}
 frames(3.5)
 check(queuedHas('attachCouplers'), 'and found when our id is the second of the pair')
 

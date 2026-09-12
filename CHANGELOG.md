@@ -6,6 +6,216 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.15.6 - Reading the paint off the right fields
+
+0.15.5 carried the paint and stored none: the capture wrote an entry with no
+colour in it and the only symptom was a car still coming back in the model's
+default, which looks exactly like the feature not existing.
+
+#### Fixed
+
+- **The paint capture read a colour accessor that answered with nothing.** It
+  went through the vehicle's colour table, which is what the game uses when it
+  saves a .pc. Nothing came back, the guard treated that as "no paint", and the
+  entry was stored without any.
+
+  It now reads veh.color, veh.colorPalette0 and veh.colorPalette1, which is the
+  exact inverse of what the spawn writes when it applies a paint, so the values
+  round trip by construction. The two readers in the game do not even agree on
+  the shape of a colour between them, one indexing an entry by name and the
+  other by number, so a guard written against either is wrong for the other.
+  These three fields carry what createVehiclePaint actually reads, with no
+  conversion in between to get wrong.
+
+- **It cannot fail silently again.** Whitelisting now logs how many parts and
+  how many paint layers were captured, and says plainly when no colour could be
+  read and the car will therefore spawn in the model default.
+  raceManager.diagnoseVehicleConfig() reports each of the three colour fields
+  separately, so "this build does not expose it" and "the read returned
+  something unexpected" stop looking identical.
+
+## 0.15.5 - The paint comes with the car
+
+#### Fixed
+
+- **A car taken off the Garage List came back in the model's default colour.**
+  Everything else about it was right: the parts, the tuning, the livery part.
+  Only the paint was missing.
+
+  Paint is not in a vehicle's configuration table at all. The game captures it
+  off the LIVE CAR when a config is saved, out of getColorFTable and the
+  metallic paint field, and writes it into the .pc under its own `paints` key.
+  So an entry rebuilt from the parts had no colour in it to apply.
+
+  The capture now reads the paint the same way core_vehicle_partmgmt does, every
+  colour layer with its metallic data, and it rides in the entry alongside the
+  parts. Taking a car passes it BOTH inside the config, where a .pc keeps it,
+  and as the spawn options paint / paint2 / paint3 -- which is the only place
+  spawn.setVehicleObject actually reads it from, and passing it in one place
+  only is what made this look like it was working.
+
+  Entries captured before this release have no paint stored. Re-capturing fills
+  it in, the same way it fills in the parts.
+
+  The paint is not part of any signature and this does not change that: both
+  lock modes deliberately leave the livery and the colour free, so carrying the
+  paint cannot make a car fail enforcement.
+
+## 0.15.4 - A trailer is not a race car
+
+Follow-up to 0.15.3, from the same night. Everyone on this server owns two
+vehicles, because the admin places donor cars and donor trailers and the field
+clones from them. "A vehicle this player owns" was being used to mean "this
+player's race car", and for half the grid those are two different things.
+
+#### Fixed
+
+- **A driver's trailer teleported onto the grid slot and exploded.** Resolving
+  our own car fell back to searching for any owned vehicle and taking the first
+  one the engine listed, which for anybody towing something was as likely to be
+  the trailer. It was then placed on the start slot while the car it was coupled
+  to stayed where it was, and the coupler between them spanned the gap.
+
+  Our car is now the one the driver was last SEATED in, remembered rather than
+  searched for, and never a trailer.
+
+- **Tabbing to your own trailer moved other people's cameras.** The camera-cycle
+  key does not point at a vehicle, it puts you in it, so every "is this ours?"
+  test answered yes and the trailer became that driver's race car. The
+  configuration poll then declared the TRAILER to the server; a trailer is on
+  nobody's Garage List, so with enforcement on the server refused it and deleted
+  it. A vehicle being deleted takes the camera of everyone watching it.
+
+  A towed vehicle is now recognised as one. BeamNG tags every model with a Type,
+  and Trailer and Prop are never treated as a race car however the camera is
+  pointed. A model with no Type at all is still treated as raceable, so nothing
+  modded changes behaviour.
+
+- **A spectator could be handed somebody's trailer to watch.** The "move to the
+  next moving car" search ranked on speed alone, and a trailer is moving exactly
+  as fast as the car towing it. It skips towed vehicles now.
+
+- **Half a rig ghosted while the other half stayed solid.** Only the reset ghost
+  covered a coupled trailer. The pit-stop ghost, the finished ghost and the
+  derby respawn ghost each applied to the car alone, so from another client a
+  finished driver was a fully opaque, fully solid trailer being towed by a car
+  faded to a third of its alpha that everything drove straight through.
+  Reported as not being able to see the car attached to somebody's trailer,
+  just the trailer driving around.
+
+  All four now go through the rig-wide path, which already existed and whose own
+  note warns about exactly this: half a rig passing through a rival while the
+  other half hits them is worse than no ghost at all.
+
+- **The grid re-coupled trailers that were never uncoupled, and could latch a
+  car to its neighbour doing it.** After every placement the mod spent three
+  seconds firing the game's coupler-attach at anyone who had a trailer, on the
+  written assumption that re-attaching an attached coupler does nothing.
+
+  It does plenty. beamstate.attachCouplers walks EVERY coupler node on the
+  vehicle and arms each one to latch anything with a matching tag inside its
+  capture radius, at a strength of 1,000,000, with no already-attached test
+  anywhere in it. On a formed grid the next car is a couple of meters away, so
+  this was an invitation to latch onto a neighbour, eight times over, and two
+  cars joined at that strength come apart violently the moment the countdown
+  releases them.
+
+  The premise was wrong as well. BeamNG keeps a coupled pair together through a
+  reset or a recovery by itself, which this mod already knew and relied on for
+  driver resets; the engine-side trailer respawn handling is live in 0.36, which
+  is why the vehicle-collection path in the game's own core/vehicles.lua sits
+  commented out with a TODO saying exactly that. And the game's recovery
+  teleports through the same setPositionRotation call this mod makes, so there
+  was never a reason the grid teleport would uncouple a rig when the recover key
+  does not.
+
+  The retry is kept and guarded rather than removed: it now has to be true that
+  the rig is actually loose, and the window closes the instant it is not.
+
+## 0.15.3 - The camera stopped deciding whose car this is
+
+Four reports from one multiplayer night. Three of them are the same mistake in
+different clothes, and the fourth is the garage handing out a file that only one
+person had.
+
+#### Fixed
+
+- **A driver watching another car was credited with that car's laps.** Tab the
+  camera onto a rival mid race and the leaderboard moved you up the order while
+  your own car sat still, which also pushed everybody you passed down a place.
+
+  `getPlayerVehicle` answers "what is the camera attached to", and the per-frame
+  sample every measurement is taken from was reading it. So the gate crossings,
+  the progress report, the pit lane gates and the flag proximity check were all
+  measuring WHOEVER WAS BEING WATCHED. The sample now resolves ownership through
+  BeamMP instead, which is a narrowing rather than a switch-off: a driver may
+  perfectly well watch a rival while their own car is still running, and their
+  own laps still count.
+
+- **A car freezing or exploding for everyone except its own driver.** The same
+  mistake, in the half of the mod that WRITES to a vehicle rather than reading
+  one.
+
+  Nine places aimed a teleport or a freeze at the attached vehicle: the grid
+  hold, the start-position placement, the blocked-reset restore, the checkpoint
+  relocate, the recovery undo, the last-good-position snapshot, the derby stand
+  down, the derby's out-of-bounds watch, and every editor placement. Any of them
+  landing while the camera was on somebody else pinned or dragged THAT car on
+  this client, while BeamMP went on syncing its real position into it. The two
+  fight, and the car tears itself apart -- for this client, and for every other
+  one whose camera was pointed the same way. Reported as a car revving to the
+  limiter and detonating for everybody but its driver.
+
+  All nine now take the driver's own car. `tests/tabbed_camera_test.lua` pins
+  both halves: a watched car's laps belong to its own driver, and a watched car
+  is never frozen or moved.
+
+- **Garage configs spawned the stock car for everyone except the admin who
+  saved them.** A whitelisted entry carried the saved config's PATH, and BeamNG
+  takes a path verbatim -- `prepareConfigData` calls `FS:fileExists`, and a
+  config it cannot find does not fail, it falls back to the MODEL'S DEFAULT. So
+  the file resolved on exactly one machine. Everyone else took an approved car
+  and got a stock one, and then, with enforcement on, that stock car did not
+  match the entry it was spawned from and was deleted.
+
+  An entry now stores the car's PARTS AND TUNING, which need no file anywhere:
+  `buildConfigFromString` takes a table and returns it as the configuration
+  directly, the same door an in-session edit goes through.
+
+  The parts do NOT ride the state broadcast -- that carries the whole garage
+  list three times a second, and a parts table per entry would be kilobytes a
+  tick to describe a list nobody is reading. The broadcast carries a flag saying
+  an entry has a car behind it; the car itself is fetched one entry at a time,
+  when somebody presses Take.
+
+  **Existing lists need re-capturing.** An entry saved before this release has
+  no stored parts and still falls back to its path, which still only works for
+  whoever has the file. Driving each car and pressing Whitelist Current Vehicle
+  again fills it in -- a re-capture of a car already on the list is no longer
+  refused as a duplicate when it has parts to add. Saved garage sets carry the
+  parts too, so a series only has to be done once.
+
+- **The drag leaderboard and bracket were invisible to non-admins.** Two
+  separate failures under one name.
+
+  The bracket sat inside the Drag tab, which is inside the admin panel, which is
+  `ng-if="isAdmin"` -- so the one thing everybody in the tournament wants to look
+  at was the one thing only the admin could see. It now renders with the drag
+  standings, on the same gate: an admin gets it in drag mode, a driver gets it
+  whenever a ladder is running. Nothing about the bracket itself changed.
+
+  The standings were already reachable but never had a field to show. The ladder
+  is pushed only when it CHANGES, and the only pull was behind the admin tab
+  row, which a driver does not have -- so the phase arrived on the next pass
+  broadcast and the entrants never did. The ladder is now pulled on app mount
+  and again on joining a server, so a driver arriving three rounds into a
+  meeting sees the board they are racing in.
+
+#### Changed
+
+- The two "no strip loaded" / "no ladder yet" empty states on the drag board are
+  admin-only now. They are instructions to press buttons a driver does not have.
+
 ## 0.15.2 - A way to ask why the inputs are dead
 
 #### Added

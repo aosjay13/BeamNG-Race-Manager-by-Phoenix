@@ -50,6 +50,13 @@ function veh:getRotation() return { x = 0, y = 0, z = 0, w = 1 } end
 function veh:getDirectionVector() return { x = 0, y = 1, z = 0 } end
 function veh:getVelocity() return { x = 0, y = 0, z = 0 } end
 function veh:getJBeamFilename() return 'etk800' end
+-- THE COLOUR, on the three fields spawn.setVehicleObject writes it to. Two
+-- layers set and the third absent, which is what a car with a base colour and
+-- one palette entry looks like -- and which pins that the reader stops at the
+-- hole instead of storing white for it.
+veh.color         = { x = 0.9, y = 0.1, z = 0.2, w = 1 }
+veh.colorPalette0 = { x = 0.0, y = 0.5, z = 1.0, w = 1 }
+veh.colorPalette1 = nil
 function veh:setPositionRotation() end
 local primed = false
 local queued = {}
@@ -64,6 +71,10 @@ function veh:setMeshAlpha() end
 local partConfigField = nil
 function veh:getField(name)
   if name == 'partConfig' then return partConfigField end
+  -- The paint's metallic data, which the game stores as a space separated
+  -- string per colour layer: metallic, roughness, clearcoat, clearcoat
+  -- roughness.
+  if name == 'metallicPaintData' then return '0.3 0.6 0.9 0.1' end
   return nil
 end
 
@@ -117,6 +128,27 @@ AddEventHandler = function (e, fn) handlers[e] = fn end
 jsonEncode = function (t) return t end
 jsonDecode = function (v) return v end
 math.atan2 = math.atan2 or function (y, x) return math.atan(y, x) end
+
+-- THE PAINT GLOBALS, which live in ge_utils.lua in the real game. The mod reads
+-- a car's colour exactly the way core_vehicle_partmgmt does, so the stubs are
+-- the same shape: a colour table off the vehicle, the metallic data out of a
+-- string field, and createVehiclePaint to assemble the two.
+function createVehiclePaint(color, metallicData)
+  metallicData = type(metallicData) == 'table' and metallicData or {}
+  return {
+    baseColor = { color.x, color.y, color.z, color.w },
+    metallic  = metallicData[1] or 0.2,
+    roughness = metallicData[2] or 0.5,
+    clearcoat = metallicData[3] or 0.8,
+    clearcoatRoughness = metallicData[4] or 0.0,
+  }
+end
+function validateVehiclePaint() end
+function stringToTable(str)
+  local out = {}
+  for n in tostring(str or ''):gmatch('[^ ]+') do out[#out + 1] = tonumber(n) end
+  return out
+end
 
 package.path = 'lua/ge/extensions/?.lua;' .. package.path
 local RM = dofile('lua/ge/extensions/raceManager.lua')
@@ -1470,62 +1502,210 @@ end
 -- ---------------------------------------------------------------------------
 -- 24. TAKING A CAR OFF THE GARAGE LIST
 -- ---------------------------------------------------------------------------
--- The driver's half. An entry carries the saved config's PATH, and BeamNG takes
--- that verbatim: prepareConfigData in core/vehicles.lua reads opts.config as
--- "a basename or a full path" and loads the .pc itself. So nothing is rebuilt
--- here and no parts table is shipped.
+-- The driver's half, and it is a REQUEST now rather than a local spawn.
 --
--- replaceVehicle for Take (swaps the car under the driver, no vehicle cap) and
--- spawnNewVehicle for an extra one. Which of the two gets called is the whole
--- of what this pins, plus that the path is passed through untouched.
+-- An entry used to be spawned straight from the saved config's PATH, which the
+-- state broadcast carried. That works on exactly one machine: the one the file
+-- is on. prepareConfigData takes a path verbatim and calls FS:fileExists, and a
+-- config it cannot find does not error -- it falls back to the MODEL'S DEFAULT.
+-- So the field took a whitelisted car and got a stock one, and with enforcement
+-- on that stock car did not match the entry and was deleted. Reported from a
+-- live session as garage configs not loading for anybody but the host.
+--
+-- So the car itself travels. The parts cannot ride the state broadcast (it
+-- carries the whole list three times a second), so a press asks the server for
+-- one entry by index and the answer comes back on RM_GarageCar, which is where
+-- the spawn happens.
 do
   local calls = {}
   local realCV = core_vehicles
   core_vehicles = {
     removeCurrent = function () end,
     replaceVehicle = function (model, opt)
-      calls[#calls + 1] = { how = 'replace', model = model, config = opt and opt.config }
+      calls[#calls + 1] = { how = 'replace', model = model,
+                            config = opt and opt.config, opt = opt }
     end,
     spawnNewVehicle = function (model, opt)
-      calls[#calls + 1] = { how = 'spawn', model = model, config = opt and opt.config }
+      calls[#calls + 1] = { how = 'spawn', model = model,
+                            config = opt and opt.config, opt = opt }
     end,
   }
 
-  local PC = 'vehicles/BWR_Pro_2/75  Skoda.pc'
-  RM.takeGarageCar('BWR_Pro_2', PC, true)
+  local function asked()
+    for _, x in ipairs(sent) do
+      if x.event == 'RM_TakeGarageCar' then return x.payload end
+    end
+    return nil
+  end
+  -- The server's answer. jsonEncode/jsonDecode are identities in this harness,
+  -- so the payload is handed over as the table it would decode to -- except
+  -- `cfg`, which the real client decodes separately and which therefore has to
+  -- stay a value jsonDecode can be handed.
+  local function answer(t)
+    t.rmProtocol = 2
+    handlers['RM_GarageCar'](t)
+  end
+
+  -- THE PRESS ASKS, and nothing is spawned off the broadcast.
+  clearLog(); calls = {}
+  RM.takeGarageCar(3, true)
+  check(asked() ~= nil and asked().index == 3,
+    'Take asks the server for that entry by index')
+  check(#calls == 0,
+    'and spawns nothing until the answer arrives: the broadcast never carried '
+      .. 'the car, only whether there was one')
+
+  -- THE ANSWER SPAWNS IT, from the PARTS rather than from a path.
+  local PARTS = { parts = { body = 'etk800_body', engine = 'etk800_engine_i6' },
+                  vars = { ['$fueltank'] = 0.5 } }
+  clearLog(); calls = {}
+  answer({ model = 'etk800', cfg = PARTS })
   check(#calls == 1 and calls[1].how == 'replace',
     'Take REPLACES the car the driver is in, which has no vehicle-count limit')
-  check(calls[1].model == 'BWR_Pro_2' and calls[1].config == PC,
-    'and hands BeamNG the model and the .pc path verbatim, spaces and all: the '
-      .. 'engine resolves the file, this does not')
+  check(calls[1].model == 'etk800' and type(calls[1].config) == 'table'
+        and calls[1].config.parts.body == 'etk800_body',
+    'and hands BeamNG the PARTS TABLE, which needs no file on this machine: '
+      .. 'buildConfigFromString takes a table and returns it as the config')
 
-  calls = {}
-  RM.takeGarageCar('BWR_Pro_2', PC, false)
+  -- THE PAINT REACHES THE SPAWN OPTIONS.
+  --
+  -- It travels inside the config because that is where a .pc keeps it, but the
+  -- call that actually colours the car is spawn.setVehicleObject and that reads
+  -- options.paint / paint2 / paint3 and never looks at the config. Passing it in
+  -- one place only is why the car came back in the model's default colour.
+  clearLog(); calls = {}
+  local PAINTED = { parts = { body = 'etk800_body' }, vars = {},
+                    paints = { { baseColor = { 0.9, 0.1, 0.2, 1 }, metallic = 0.3 },
+                               { baseColor = { 0, 0.5, 1, 1 }, metallic = 0.3 } } }
+  RM.takeGarageCar(2, true)
+  answer({ model = 'etk800', cfg = PAINTED })
+  check(#calls == 1 and calls[1].opt and calls[1].opt.paint
+        and calls[1].opt.paint.baseColor[1] == 0.9,
+    'the stored paint is passed as a spawn OPTION, which is the only thing the '
+      .. 'engine reads it from')
+  check(calls[1].opt and calls[1].opt.paint2
+        and calls[1].opt.paint2.baseColor[3] == 1,
+    'and every layer goes, not just the first')
+
+  -- + New goes to the other call. The replace/spawn choice is remembered
+  -- locally across the round trip, because the server has no opinion about it.
+  clearLog(); calls = {}
+  RM.takeGarageCar(3, false)
+  answer({ model = 'etk800', cfg = PARTS })
   check(#calls == 1 and calls[1].how == 'spawn',
-    'and asking for an extra car goes to spawnNewVehicle instead')
+    'asking for an extra car goes to spawnNewVehicle instead, and the choice '
+      .. 'survives the round trip to the server and back')
 
-  -- An entry with no saved config behind it must never reach the engine: with
-  -- no config BeamNG spawns the model's DEFAULT, which is a different car
-  -- wearing the approved car's name.
-  calls = {}
-  clearLog()
-  RM.takeGarageCar('BWR_Pro_2', '', true)
-  check(#calls == 0, 'an entry with no saved config is refused rather than '
+  -- THE PATH IS STILL THE FALLBACK, for entries captured before parts were
+  -- stored. It is right on a client that happens to have the file and spawns
+  -- the model's default on one that does not, so the driver is told.
+  local PC = 'vehicles/BWR_Pro_2/75  Skoda.pc'
+  clearLog(); calls = {}
+  RM.takeGarageCar(1, true)
+  answer({ model = 'BWR_Pro_2', pc = PC })
+  check(#calls == 1 and calls[1].config == PC,
+    'an entry with no stored parts falls back to the saved path, verbatim, '
+      .. 'spaces and all: the engine resolves the file, this does not')
+  check(refusal() ~= nil,
+    'and the driver is warned, because a missing file spawns a stock car '
+      .. 'rather than failing, which reads as the wrong car being whitelisted')
+
+  -- An answer with neither must never reach the engine: with no config BeamNG
+  -- spawns the model's DEFAULT, which is a different car wearing the approved
+  -- car's name.
+  clearLog(); calls = {}
+  answer({ model = 'BWR_Pro_2' })
+  check(#calls == 0, 'an entry with no car behind it is refused rather than '
     .. 'spawning the models default and calling it the approved car')
   check(refusal() ~= nil, 'and the driver is told why')
 
-  calls = {}
-  RM.takeGarageCar('', PC, true)
-  check(#calls == 0, 'and a missing model is refused too')
+  -- The server's own refusals come down the same channel and are shown as-is.
+  clearLog(); calls = {}
+  answer({ message = 'That garage entry is gone' })
+  check(#calls == 0 and refusal() == 'That garage entry is gone',
+    'a refusal from the server is shown to the driver and spawns nothing')
+
+  -- A broadcast from a DIFFERENT server is dropped, like every other channel.
+  clearLog(); calls = {}
+  handlers['RM_GarageCar']({ model = 'etk800', cfg = PARTS })
+  check(#calls == 0, 'an answer with no protocol stamp is not acted on')
+
+  clearLog(); calls = {}
+  RM.takeGarageCar(0, true)
+  check(asked() == nil, 'an index of zero asks nothing')
 
   -- A build without the spawn API must not raise: the panel offers the button
   -- from a server broadcast, and the client may be anything.
   calls = {}
   core_vehicles = { removeCurrent = function () end }
-  local ok = pcall(RM.takeGarageCar, 'BWR_Pro_2', PC, true)
+  local ok = pcall(RM.takeGarageCar, 1, true)
   check(ok, 'a build with no spawn API is reported, not an error thrown through the UI')
 
   core_vehicles = realCV
+end
+
+-- ---------------------------------------------------------------------------
+-- 25. THE CAPTURE CARRIES THE CAR, not just a path to it
+-- ---------------------------------------------------------------------------
+-- The other end of the same fix. Whitelisting has to send the PARTS, or there
+-- is nothing for the server to hand back and every entry falls through to the
+-- path, which only resolves on the machine the file is on.
+do
+  local function tree(parts)
+    local kids = {}
+    for slot, part in pairs(parts) do
+      kids[slot] = { chosenPartName = part, children = {} }
+    end
+    return { chosenPartName = 'buggy', children = kids }
+  end
+  partmgmtConfig = { parts = {}, vars = {} }
+  vehicleDataConfig = {
+    model = 'TrackfabLightBuggy',
+    partConfigFilename = 'vehicles/TrackfabLightBuggy/shortcourse.pc',
+    -- An empty slot among the chosen ones, because that is the case the two
+    -- spellings disagree about.
+    partsTree = tree({ buggy_body = 'light', buggy_engine = 'v8', buggy_wing = '' }),
+    vars = { camber = -1.5 },
+  }
+  clearLog()
+  RM.onVehicleSpawned(VEH_ID)
+  partConfigField = 'vehicles/TrackfabLightBuggy/shortcourse.pc'
+  advance(20); RM.onVehicleDigest('0:0:0:0', '15:120:9876:5432')
+  settle(); clearLog(); RM.whitelistCurrentVehicle()
+  local w = whitelisted()
+  check(w ~= nil and type(w.cfg) == 'table' and type(w.cfg.parts) == 'table',
+    'the capture carries the car s PARTS, which is what makes the entry '
+      .. 'spawnable on a machine that never had the admin s saved file')
+  check(w and w.cfg and w.cfg.parts.buggy_engine == 'v8',
+    'with each chosen part under its slot name')
+  -- collectPartsTree records an empty slot as '-' because it is building a
+  -- SIGNATURE, where "no wing" has to be distinguishable from "wing". A .pc
+  -- spells that same fact as '', and the loader reads '-' as a part it cannot
+  -- find -- so the two are translated rather than either side bent to suit.
+  check(w and w.cfg and w.cfg.parts.buggy_wing == '',
+    'and an empty slot spelled the way a .pc spells it, not the way a '
+      .. 'signature does')
+  check(w and w.cfg and w.cfg.vars and w.cfg.vars.camber == -1.5,
+    'and the TUNING with it, so a car taken off the list is set up the way it '
+      .. 'was captured rather than reset to the defaults')
+  -- The path still travels. It is the fallback for a client that happens to
+  -- have the file, and the only thing that repairs an entry whose stored parts
+  -- turn out to be unreadable on the far side.
+  check(w and w.pc == 'vehicles/TrackfabLightBuggy/shortcourse.pc',
+    'the saved path still rides along as the fallback it now is')
+
+  -- AND THE PAINT, which is not in the configuration table at all.
+  --
+  -- partmgmt captures it off the live car at save time, so a garage entry built
+  -- from the parts alone comes back in the model's default colour. Reported
+  -- from a solo test as the paint not coming along while everything else was
+  -- correct.
+  check(w and w.cfg and type(w.cfg.paints) == 'table' and #w.cfg.paints == 2,
+    'the capture carries the car s PAINT, one entry per colour layer')
+  check(w and w.cfg and w.cfg.paints[1] and w.cfg.paints[1].baseColor[1] == 0.9,
+    'with the base colour as the game stores it')
+  check(w and w.cfg and w.cfg.paints[1] and w.cfg.paints[1].metallic == 0.3,
+    'and the metallic data alongside it, so a metallic finish survives too')
 end
 
 print(string.format('garage_test: %d checks, %d failures', checks, fails))

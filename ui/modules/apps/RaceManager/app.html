@@ -496,7 +496,7 @@
     </div>
     <div class="rm-garage-pickrow" ng-if="garagePickUi.open"
          ng-repeat="g in garageSpawnable track by $index">
-      <span class="rm-garage-label" title="{{ g.pc }}">{{ g.label }}</span>
+      <span class="rm-garage-label" title="{{ g.model }}">{{ g.label }}</span>
       <span class="rm-garage-class" ng-if="g.class">{{ g.class }}</span>
       <button class="rm-btn rm-btn-mini rm-btn-grid" ng-click="takeGarageCar(g, true)"
               title="Replace the car you are in with this one">Take</button>
@@ -504,8 +504,9 @@
               title="Spawn this as an additional vehicle">+ New</button>
     </div>
     <div class="rm-garage-sets-note" ng-if="garagePickUi.open">
-      Take replaces the car you are in. The config has to be installed on your
-      client, which it is when it came from this server's mods.
+      Take replaces the car you are in. The parts come from the server, so these
+      cars build correctly whether or not you have the admin's saved file. A car
+      using vehicles or parts from a mod still needs that mod installed.
     </div>
   </div>
 
@@ -1807,8 +1808,8 @@
         <span class="rm-garage-model">{{ g.model }}</span>
         <!-- The same Take a driver gets, because an admin building a grid wants
              to be IN one of these cars as often as anybody. Absent on an entry
-             with no saved config behind it: there would be no file to spawn. -->
-        <button class="rm-btn rm-btn-mini rm-btn-grid" ng-if="g.pc"
+             with no car stored behind it: there would be nothing to spawn. -->
+        <button class="rm-btn rm-btn-mini rm-btn-grid" ng-if="g.spawn"
                 ng-click="takeGarageCar(g, true)"
                 title="Replace the car you are in with this one">Take</button>
         <!-- THE CLASS THIS CAR RUNS IN. On the entry rather than on the driver
@@ -3139,27 +3140,9 @@
       </span>
     </div>
 
-    <!-- ---------------- the ladder ---------------- -->
-    <div class="rm-drag-ladder" ng-if="drag.board.length">
-      <div class="rm-drag-round" ng-repeat="r in drag.board track by r.n"
-           ng-class="{'rm-drag-round-live': r.n === drag.round}">
-        <div class="rm-drag-round-head">
-          {{ r.label }}
-          <span class="rm-drag-side" ng-if="r.side === 'l'">losers bracket</span>
-        </div>
-        <div class="rm-drag-pass-row" ng-repeat="p in r.passes track by $index"
-             ng-class="{'rm-drag-pass-done': p.done}">
-          <span class="rm-drag-lane" ng-repeat="ln in p.lanes track by ln.lane"
-                ng-class="{'rm-drag-lane-through': ln.through,
-                           'rm-drag-lane-out': p.done && !ln.through}">
-            <b>{{ ln.seed }}</b> {{ ln.name }}
-            <i ng-if="p.done">{{ dragET(ln.et) }}</i>
-            <em ng-if="dragLaneNote(ln)">{{ dragLaneNote(ln) }}</em>
-          </span>
-          <span class="rm-drag-bye" ng-if="p.bye">bye</span>
-        </div>
-      </div>
-    </div>
+    <!-- The ladder itself is NOT here any more: it moved out to sit with the
+         drag leaderboard, because a bracket is something a DRIVER reads. See
+         "the ladder" below the drag standings table. -->
 
     <div class="rm-derby-hint" ng-if="drag.phase === 'idle' && dragStripReady()">
       Strip loaded and ready. Set the rules, then <b>Build Ladder</b>: the field
@@ -3809,6 +3792,38 @@
        A DRIVER GETS THIS WITHOUT ASKING. They have no tab row to open, so the
        board follows the ladder: it appears when one is built and stays until it
        is cleared. -->
+  <!-- ---------------- the ladder ----------------
+       OUTSIDE the admin body, and that is the fix rather than the tidy. It used
+       to live inside the Drag tab, which is wrapped in ng-if="isAdmin" -- so
+       the one thing every driver in the tournament wants to look at was the one
+       thing only the admin could see. Reported from a live session as the
+       bracket not being visible for non admins.
+
+       Nothing about the bracket itself changed: same board, same rows, same
+       rules. It is a SCOREBOARD, and it now hangs off the same gate the drag
+       standings do, so an admin gets it in drag mode and a driver gets it
+       whenever a ladder is running. -->
+  <div class="rm-drag-ladder" ng-if="dragBoardOnly() && !broadcastMode() && drag.board.length">
+    <div class="rm-drag-round" ng-repeat="r in drag.board track by r.n"
+         ng-class="{'rm-drag-round-live': r.n === drag.round}">
+      <div class="rm-drag-round-head">
+        {{ r.label }}
+        <span class="rm-drag-side" ng-if="r.side === 'l'">losers bracket</span>
+      </div>
+      <div class="rm-drag-pass-row" ng-repeat="p in r.passes track by $index"
+           ng-class="{'rm-drag-pass-done': p.done}">
+        <span class="rm-drag-lane" ng-repeat="ln in p.lanes track by ln.lane"
+              ng-class="{'rm-drag-lane-through': ln.through,
+                         'rm-drag-lane-out': p.done && !ln.through}">
+          <b>{{ ln.seed }}</b> {{ ln.name }}
+          <i ng-if="p.done">{{ dragET(ln.et) }}</i>
+          <em ng-if="dragLaneNote(ln)">{{ dragLaneNote(ln) }}</em>
+        </span>
+        <span class="rm-drag-bye" ng-if="p.bye">bye</span>
+      </div>
+    </div>
+  </div>
+
   <div class="rm-table-wrap" ng-if="dragBoardOnly() && !broadcastMode()" ng-style="minimalMode() && lbStyle()">
     <table class="rm-table" ng-if="drag.entrants.length">
       <thead>
@@ -3856,12 +3871,18 @@
       </tbody>
     </table>
     <!-- Empty states. An admin can sit in Drag mode with no ladder built, and a
-         bare table header reads as something that failed to load. -->
-    <div class="rm-derby-hint" ng-if="!drag.entrants.length && !dragStripReady()">
+         bare table header reads as something that failed to load.
+
+         ADMIN ONLY, because both of them are instructions: build a strip, press
+         Build Ladder. A driver has neither button, and now that this board is
+         theirs too they would be told to press things that are not on their
+         screen -- in the one window between a ladder existing and its entrants
+         arriving, which is where a driver sees this at all. -->
+    <div class="rm-derby-hint" ng-if="isAdmin && !drag.entrants.length && !dragStripReady()">
       No drag strip loaded. A strip is a point-to-point layout with a finish
       line and one start position per lane: build one in <b>Track</b>.
     </div>
-    <div class="rm-derby-hint" ng-if="!drag.entrants.length && dragStripReady()">
+    <div class="rm-derby-hint" ng-if="isAdmin && !drag.entrants.length && dragStripReady()">
       No ladder yet. Set the format and press <b>Build Ladder</b>: the field
       appears here with its bracket.
     </div>

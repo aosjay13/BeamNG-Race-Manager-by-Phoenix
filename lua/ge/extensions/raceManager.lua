@@ -234,7 +234,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.15.2'
+local RM_BUILD = '0.15.6'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -1205,18 +1205,122 @@ local function vehicleId(veh)
   return nil
 end
 
+-- The id the scan below last settled on, so a driver who is watching somebody
+-- else does not pay for the scan every frame.
+--
+-- THIS IS A PERFORMANCE CACHE AND NOTHING ELSE. It is re-verified against
+-- BeamMP's ownership on every use and dropped the moment it fails, so a stale
+-- entry costs one lookup rather than a wrong answer -- which matters, because
+-- vehicle ids are REUSED and the next car handed this id may belong to anybody.
+-- IS THIS THING TOWED RATHER THAN RACED?
+--
+-- BeamNG tags every model with a Type in its info.json, and the shipped set uses
+-- exactly five values: Car, Truck, Trailer, Prop and Heavy Machinery. The first
+-- two are things people race; Trailer and Prop are things people tow and park.
+--
+-- This exists because "a vehicle this player owns" turned out to be a much
+-- weaker statement than the code assumed. On this league's server the admin
+-- places donor cars AND donor trailers and the field clones from them, so an
+-- ordinary driver owns two vehicles and can sit in either of them -- pressing
+-- the camera-cycle key onto your own trailer puts you IN it, and
+-- getPlayerVehicle then answers with the trailer.
+--
+-- Everything downstream then treated the trailer as that driver's race car: its
+-- position was measured through the gates, the grid placement teleported it away
+-- from the car it was coupled to, and -- worst -- the configuration poll
+-- declared the TRAILER to the server as that driver's car. A trailer is not on
+-- the Garage List, so with enforcement on the server refused it and deleted it.
+-- A vehicle vanishing takes the camera of everyone who was watching it with it,
+-- which is how one racer tabbing to their own trailer moved other people's
+-- views.
+--
+-- Cached by model name. getModel walks the model's info and there is no reason
+-- to ask twice about a model that cannot change its type mid-session.
+--
+-- UNKNOWN IS NOT A TRAILER. A modded vehicle with no Type, or a build with no
+-- getModel to ask, answers false and is treated as raceable -- which is what
+-- every version before this did for everything, so an unrecognised model
+-- behaves exactly as it always has rather than quietly becoming unracing.
+local towed = { cache = {} }
+
+function towed.is(veh)
+  if not veh then return false end
+  local model = nil
+  pcall(function () model = tostring(veh:getJBeamFilename()) end)
+  if not model or model == '' then return false end
+  local known = towed.cache[model]
+  if known ~= nil then return known end
+  local kind = nil
+  pcall(function ()
+    if not (core_vehicles and core_vehicles.getModel) then return end
+    local info = core_vehicles.getModel(model)
+    kind = info and info.model and info.model.Type or nil
+  end)
+  local is = (kind == 'Trailer' or kind == 'Prop')
+  towed.cache[model] = is
+  return is
+end
+
+-- THE CAR THIS DRIVER WAS LAST SITTING IN, which is a different question from
+-- "a vehicle they own" and the reason this is remembered rather than searched
+-- for. A driver with a trailer OWNS TWO VEHICLES, and a search answers with
+-- whichever the engine happens to list first.
+--
+-- Written only from the attached vehicle, never from the search below, so it
+-- can only ever name something the driver actually sat in. Re-verified against
+-- BeamMP's ownership on every use and dropped the moment it fails, because
+-- vehicle ids are REUSED and the next car handed this id may belong to anybody.
+local ownVehId = nil
+
 -- The local player's OWN vehicle, or nil when they genuinely have none.
--- Falls back to a scan when the attached vehicle turns out to belong to someone
--- else: our car may still exist, we are simply not looking at it.
+--
+-- WHICH OF THEIR VEHICLES, and this is the whole difficulty. A driver towing a
+-- trailer owns the car AND the trailer; so does anybody who cloned a trailer
+-- off the ones an admin placed. "Ours" is true of both, and every caller here
+-- means the car: the one that gets placed on a grid slot, frozen for a start,
+-- measured through the gates, and handed back its collisions.
+--
+-- So the answer is the attached vehicle when that is ours, and the last
+-- attached vehicle that WAS ours when it is not. A trailer can only be that if
+-- the driver climbed into the trailer, which is their business.
+--
+-- The blind scan is the last resort and stays one: it can return a trailer, and
+-- did. Reaching it means this client has never yet seen the driver in a vehicle
+-- of their own -- the first seconds of a session, before there is a trailer to
+-- confuse it with -- so it is right often enough to be worth having and wrong
+-- too rarely to lead with. It deliberately does NOT seed the cache: a guess
+-- must not become the remembered answer.
+--
+-- THE SCAN IS ALSO ON A PER-FRAME PATH. sampledVehicle() resolves through here
+-- every frame of a session, and its whole point is the case where the attached
+-- vehicle is not ours -- a driver tabbed onto a rival, which is an ordinary
+-- thing to do for a minute at a time. getAllVehicles() builds a table, so that
+-- minute would be several thousand of them for an answer that does not change.
+-- The remembered id is what keeps that to one lookup.
 local function ownVehicle()
   local veh = playerVehicle()
   if not ownershipFn() then return veh end
-  if veh and isOwnVehicle(vehicleId(veh)) then return veh end
+  if veh then
+    local id = vehicleId(veh)
+    -- SITTING IN IT AND IT IS NOT A TRAILER. Both halves matter: a driver can
+    -- tab into their own trailer, and that is a camera move rather than a
+    -- change of race car. See towed.is for what treating it as one costs.
+    if id ~= nil and isOwnVehicle(id) and not towed.is(veh) then
+      ownVehId = id
+      return veh
+    end
+  end
+  -- Re-verified, not trusted: see the note on ownVehId.
+  if ownVehId ~= nil then
+    local got, found = pcall(getObjectByID, ownVehId)
+    if got and found and isOwnVehicle(ownVehId) then return found end
+    ownVehId = nil
+  end
   if type(getAllVehicles) == 'function' then
     local ok, list = pcall(getAllVehicles)
     if ok and type(list) == 'table' then
       for _, v in ipairs(list) do
-        if v and isOwnVehicle(vehicleId(v)) then return v end
+        if v and isOwnVehicle(vehicleId(v)) and not towed.is(v) then return v end
       end
     end
   end
@@ -1235,12 +1339,28 @@ end
 -- and querying a vehicle every frame while sitting in the menus would be a
 -- worse deal than the one this replaces. `localTime` advances exactly once per
 -- frame, which makes it the frame stamp.
+--
+-- OUR OWN CAR, NOT THE ONE THE CAMERA IS ON, and that is the whole of the
+-- distinction this samples through ownVehicle() rather than playerVehicle().
+--
+-- Tabbing the camera onto a rival is an ordinary thing to do mid race, and
+-- getPlayerVehicle follows the camera. Every measurement taken off this sample
+-- was therefore taken against WHOEVER WAS BEING WATCHED: the gate-crossing
+-- test, the progress report, the pit lane gates and the flag proximity check.
+-- Reported from a live session as spectating drivers being credited with laps
+-- they had not driven, moving them up the leaderboard while their own car sat
+-- still -- which is exactly right, because the rival's car was crossing the
+-- line and this was reading the rival's car.
+--
+-- The scan inside ownVehicle() only runs while the camera is OFF our car, and
+-- this samples once per frame, so a driver watching their own car pays nothing
+-- and one watching somebody else pays one table walk a frame.
 local sample = { at = -1, veh = nil, pos = nil }
 
 local function sampledVehicle()
   if sample.at == localTime then return sample.veh, sample.pos end
   sample.at  = localTime
-  sample.veh = playerVehicle()
+  sample.veh = ownVehicle()
   sample.pos = sample.veh and sample.veh:getPosition() or nil
   return sample.veh, sample.pos
 end
@@ -1313,8 +1433,12 @@ local nudge = {
 nudge.PICK_RADIUS  = 8
 nudge.TURN_PER_STEP = math.rad(5)   -- one scroll notch
 
+-- WHERE THE PLACEMENT GOES, and it is our own car rather than the camera's.
+-- An admin lining a track up tabs between cars like anybody else, and a gate
+-- placed at whoever they happened to be watching lands somewhere they never
+-- drove to.
 local function vehiclePlacement()
-  local veh = playerVehicle()
+  local veh = ownVehicle()
   if not veh then return nil end
   local pos = veh:getPosition()
   local dir = veh:getDirectionVector()
@@ -2983,6 +3107,112 @@ function garage.partsFromTree(cfg)
   return out
 end
 
+-- THE CAR ITSELF, in the shape BeamNG will spawn from, rather than a path to a
+-- file only the admin who captured it has.
+--
+-- This is the whole of the garage's multiplayer fix. An entry used to carry the
+-- saved config's PATH and nothing else, and core_vehicles takes a path
+-- verbatim: prepareConfigData calls FS:fileExists, finds nothing on a client
+-- that never had the admin's local .pc, and falls back to the model's DEFAULT
+-- rather than failing. So a whitelisted car spawned correctly for the admin who
+-- saved it and as a stock car for everybody else -- and then, with enforcement
+-- on, that stock car did not match the entry it was spawned from and was
+-- deleted. Reported exactly that way from a live session.
+--
+-- Shipping the parts instead needs no file anywhere. buildConfigFromString
+-- takes a TABLE and returns it as the configuration directly, which is the same
+-- door an in-session edit goes through, so a car built here is built from the
+-- same data the admin's car was.
+--
+-- '-' BECOMES EMPTY. collectPartsTree records an empty slot as '-' because it
+-- is building a SIGNATURE, where "no roof rack" has to be a distinguishable
+-- value. A .pc spells that same fact as '', and the loader reads '-' as a part
+-- name it cannot find -- so the two are translated here rather than either side
+-- being changed to suit the other.
+-- THE PAINT, which is not in the configuration table and has to be read off the
+-- vehicle itself.
+--
+-- A .pc carries `paints` alongside `parts` and `vars`, but nothing puts it
+-- there: core_vehicle_partmgmt captures it from the live car at save time, out
+-- of getColorFTable and the metallicPaintData field, and only when the admin
+-- ticked "save paints". So a garage entry built from the parts alone comes back
+-- in whatever colour the model defaults to -- reported as the paint not coming
+-- along with the config while everything else was right.
+--
+-- Read exactly the way partmgmt reads it, including validateVehiclePaint, so a
+-- car taken off the list is the same shape the game would have written to a
+-- file. Every call is guarded: a build without one of these globals loses the
+-- paint, not the capture.
+--
+-- NOT PART OF ANY SIGNATURE, and nothing here changes that. Both lock modes
+-- deliberately leave the livery and the paint free -- see the note on `sig` --
+-- so carrying the colour cannot make a car fail enforcement.
+function garage.paintsFrom(veh)
+  if not veh or type(createVehiclePaint) ~= 'function' then return nil end
+  local out = {}
+  -- THE THREE LAYERS, READ BACK OFF THE FIELDS THE SPAWN WRITES THEM TO.
+  --
+  -- This is the exact inverse of spawn.setVehicleObject, which sets veh.color,
+  -- veh.colorPalette0 and veh.colorPalette1 from options.paint, paint2 and
+  -- paint3. Reading the same three fields is therefore guaranteed to round
+  -- trip, and the game's own getVehicleColor and getVehicleColorPalette read
+  -- them exactly this way.
+  --
+  -- The first attempt went through veh:getColorFTable() instead, because that
+  -- is what core_vehicle_partmgmt uses when it saves a .pc. It came back with
+  -- nothing every time and the capture silently stored no paint at all. The two
+  -- readers do not even agree on the SHAPE of a colour: partmgmt indexes its
+  -- entries as .r/.g/.b/.a, while convertVehicleColorsToPaints indexes the same
+  -- kind of table as [1]..[4] -- so a guard written for one is wrong for the
+  -- other, and a colour that is neither is skipped. These three fields carry
+  -- x/y/z/w, which is what createVehiclePaint actually reads, with no
+  -- conversion in between to get wrong.
+  -- `paintField` rather than `field`: this file has a top-level local of that
+  -- name for the placement queue, and shadowing it here reads as a use before
+  -- its declaration. tests/scope_test.lua fails on exactly that.
+  for i, paintField in ipairs({ 'color', 'colorPalette0', 'colorPalette1' }) do
+    local got = nil
+    pcall(function ()
+      local c = veh[paintField]
+      -- TESTED, not assumed. createVehiclePaint silently substitutes WHITE for
+      -- anything without a numeric .x, so a layer this build does not expose
+      -- would be stored as white paint and then painted ON, rather than left
+      -- alone. That is worse than carrying no paint.
+      if type(c.x) ~= 'number' then return end
+      local md = nil
+      pcall(function ()
+        if type(stringToTable) == 'function' then
+          md = stringToTable(veh:getField('metallicPaintData', i - 1))
+        end
+      end)
+      if type(md) ~= 'table' then md = nil end
+      local paint = createVehiclePaint(c, md)
+      if type(validateVehiclePaint) == 'function' then pcall(validateVehiclePaint, paint) end
+      got = paint
+    end)
+    -- Stop at the first layer that is not there: the list is positional, and a
+    -- hole in it would shift paint3 into paint2's slot on the way back.
+    if not got then break end
+    out[#out + 1] = got
+  end
+  return (#out > 0) and out or nil
+end
+
+function garage.spawnConfigFrom(cfg)
+  local parts = garage.partsFromTree(cfg)
+  if not parts and type(cfg) == 'table' and type(cfg.parts) == 'table'
+     and next(cfg.parts) ~= nil then
+    parts = cfg.parts
+  end
+  if not parts then return nil end
+  local out = {}
+  for slot, part in pairs(parts) do
+    out[slot] = (part == '-') and '' or part
+  end
+  return { parts = out,
+           vars = (type(cfg) == 'table' and type(cfg.vars) == 'table') and cfg.vars or {} }
+end
+
 -- THE PARTS, FROM BEAMMP'S SPAWN RECORD.
 --
 -- This is the source that should have been used from the start, and the console
@@ -3335,6 +3565,10 @@ local function localVehicleConfig(userAsked)
   -- by a driver: core_vehicles.replaceVehicle takes it as opts.config verbatim.
   -- nil for a car edited in the session, because there is no file to spawn.
   local parts, vars, configName, source, configPc = {}, {}, nil, nil, nil
+  -- The car in the shape another client can SPAWN it from. See
+  -- garage.spawnConfigFrom: the path above only works on the machine that saved
+  -- the file, and this works everywhere.
+  local spawnCfg = nil
   local offered, notes = 0, {}
 
   -- First non-empty answer wins. An empty parts table is never an answer: no
@@ -3352,6 +3586,12 @@ local function localVehicleConfig(userAsked)
     if not got then return end
     parts      = got
     vars       = type(cfg.vars) == 'table' and cfg.vars or {}
+    -- Taken off the SAME table the signature parts came from, so an entry can
+    -- never be whitelisted on one car and spawned as another.
+    spawnCfg   = garage.spawnConfigFrom(cfg)
+    -- The colour rides in the same table, under the key a .pc uses for it, and
+    -- is read off the VEHICLE rather than this config: see garage.paintsFrom.
+    if spawnCfg then spawnCfg.paints = garage.paintsFrom(veh) end
     configName = configDisplayName(cfg)
     -- Same table the parts came out of. BeamJoy reads it from here too.
     if type(cfg.partConfigFilename) == 'string' and cfg.partConfigFilename ~= '' then
@@ -3807,8 +4047,12 @@ local function localVehicleConfig(userAsked)
     -- panel and are not the same bug.
     source   = source,
     -- The saved config this car was built from, when it was built from one.
-    -- Carried so the Garage List can hand it back to a driver to spawn.
+    -- Kept for the log, and as a last resort on a client that happens to have
+    -- the same file; `cfg` below is what actually spawns the car.
     pc       = configPc,
+    -- WHAT THE CAR IS, rather than where its file lives. The only field a
+    -- driver on another machine can build the car from.
+    cfg      = spawnCfg,
   }
 end
 
@@ -4049,11 +4293,44 @@ function M.whitelistCurrentVehicle()
     log('W', 'raceManager', 'Whitelist refused: ' .. tostring(why))
     return
   end
+  -- THE CAR TRAVELS WITH THE CAPTURE, as an ordinary nested table.
+  --
+  -- The server stores it, caps its size and hands it back on request; it has no
+  -- rule that depends on what is inside it. What matters is that it does NOT go
+  -- on the state broadcast, which carries the garage list three times a second
+  -- for the life of the server -- see garageSnapshot, which ships a flag.
   TriggerServerEvent('RM_WhitelistVehicle', jsonEncode({
     model = cfg.model, label = cfg.label,
     sig = cfg.sig, partsSig = cfg.partsSig, game = gameVersion(),
-    pc = cfg.pc,
+    pc = cfg.pc, cfg = cfg.cfg,
   }))
+  if type(cfg.cfg) ~= 'table' then
+    -- SAID OUT LOUD, because the entry still goes on the list and still looks
+    -- correct on the panel. Without the parts it can only be spawned by
+    -- somebody who already has the file, which is the admin who captured it and
+    -- nobody else.
+    log('W', 'raceManager', 'Whitelisted without a spawnable configuration: '
+      .. 'drivers on other machines cannot take this car')
+  else
+    -- AND THE PAINT, COUNTED. This failed silently once already: the colour was
+    -- read through an accessor that answered with nothing, the entry stored no
+    -- paint, and the only symptom was a car coming back in the model's default
+    -- colour with everything else correct -- which reads as the paint not being
+    -- carried at all rather than as a read that returned empty.
+    local layers = type(cfg.cfg.paints) == 'table' and #cfg.cfg.paints or 0
+    log('I', 'raceManager', 'Captured configuration: '
+      .. tostring(cfg.cfg.parts and (function ()
+           local n = 0
+           for _ in pairs(cfg.cfg.parts) do n = n + 1 end
+           return n
+         end)() or 0) .. ' parts, ' .. layers .. ' paint layer(s)')
+    if layers == 0 then
+      log('W', 'raceManager', 'No paint could be read off this car, so the entry '
+        .. 'will spawn in the model default colour. Run '
+        .. 'raceManager.diagnoseVehicleConfig() to see which colour fields this '
+        .. 'build exposes')
+    end
+  end
   -- THE CAPTURED SIGNATURE, in full.
   --
   -- The server files the car under this exact string and compares later
@@ -4130,6 +4407,26 @@ function M.diagnoseVehicleConfig()
   -- this feature was every source reporting zero, so the resolved one is worth
   -- naming when somebody is looking at a refusal.
   local pcc = garage.pcCache
+  -- THE COLOUR, field by field, because "the paint did not come with it" has
+  -- two causes that look identical from the panel: a build that does not expose
+  -- these fields, and a read that returns something this code does not accept.
+  -- Naming each one separates them.
+  do
+    local bits = {}
+    for _, paintField in ipairs({ 'color', 'colorPalette0', 'colorPalette1' }) do
+      local got = nil
+      pcall(function ()
+        local c = veh and veh[paintField]
+        got = (type(c) == 'nil') and 'absent' or (type(c.x) == 'number' and 'ok' or ('no .x (' .. type(c) .. ')'))
+      end)
+      bits[#bits + 1] = paintField .. '=' .. tostring(got or 'raised')
+    end
+    local paints = garage.paintsFrom(veh)
+    line('paint: ' .. (paints and (#paints .. ' layer(s)') or 'NONE -- the car will '
+      .. 'spawn in the model default colour') .. '  [' .. table.concat(bits, ', ') .. ']')
+    line('  createVehiclePaint: ' .. type(createVehiclePaint)
+      .. ', stringToTable: ' .. type(stringToTable))
+  end
   line('spawn config: ' .. tostring(pcc and pcc.from or 'none')
     .. ', ' .. tostring(pcc and pcc.count or 0) .. ' parts')
   line('--- end ---')
@@ -4319,46 +4616,123 @@ end
 
 -- TAKE A CAR OFF THE GARAGE LIST. Open to everyone, not just admins.
 --
--- The entry carries the saved config's PATH, and BeamNG takes that verbatim:
--- prepareConfigData in core/vehicles.lua reads opts.config as "a basename or a
--- full path" and loads the .pc itself. So there is nothing to rebuild here and
--- no parts table to ship: the path IS the car.
+-- ASKED FOR BY INDEX, AND THE SERVER SENDS THE CAR BACK.
 --
--- THE FILE HAS TO EXIST ON THIS CLIENT. prepareConfigData calls
--- FS:fileExists, and a config that ships inside a server mod is present on
--- everyone who joined; one an admin saved locally is not. A missing file spawns
--- the model's default rather than erroring, which is worth saying out loud
--- because it looks like the wrong car rather than a failure.
+-- This used to spawn straight from the entry's saved config PATH, which the
+-- state broadcast already carried, and that worked for exactly one person: the
+-- admin whose machine the file was on. prepareConfigData takes a path verbatim
+-- and calls FS:fileExists; on any other client the file is absent, and a
+-- missing config does not error, it falls back to the MODEL'S DEFAULT. So the
+-- whole field took a whitelisted car and got a stock one -- and then, with
+-- enforcement on, the stock car did not match the entry it was spawned from and
+-- was deleted. Reported exactly that way from a live session.
 --
--- `replace` swaps the car under the driver, which is the common case and has no
--- vehicle-count limit. Spawning a new one goes through canSpawnAnotherVehicle
--- and can simply be refused when the server is at its cap.
-function M.takeGarageCar(model, pc, replace)
-  model = tostring(model or '')
-  pc = tostring(pc or '')
-  if model == '' or pc == '' then
-    guihooks.trigger('RaceManagerEditorMsg', { msg = 'That garage entry has no saved config to spawn' })
+-- The parts cannot ride the broadcast instead: that carries the garage list
+-- three times a second for the life of the server, and a parts table per entry
+-- would be kilobytes a tick to describe a list nobody is reading. So the
+-- broadcast goes on carrying only what the panel DISPLAYS, and the car itself
+-- is fetched once, when somebody actually presses the button.
+--
+-- The reply lands on RM_GarageCar below, which is where the spawn happens.
+function M.takeGarageCar(index, replace)
+  index = math.floor(tonumber(index) or 0)
+  if index < 1 then return end
+  if not inMultiplayer() then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'The Garage List needs a BeamMP server' })
     return
   end
   if not (core_vehicles and core_vehicles.replaceVehicle and core_vehicles.spawnNewVehicle) then
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'This game build cannot spawn a vehicle' })
     return
   end
-  local ok, err = pcall(function ()
+  -- Remembered rather than sent, because the server has no opinion about it:
+  -- whether this swaps the current car or adds one is a local question, and
+  -- sending it would only mean carrying it back again.
+  garage.takeReplace = (replace == true or replace == 1)
+  TriggerServerEvent('RM_TakeGarageCar', jsonEncode({ index = index }))
+end
+
+-- The server's answer: one garage entry, with the car in it.
+--
+-- `cfg` is the parts and the tuning, encoded, and it is what makes this work on
+-- a machine that has never seen the admin's saved file. buildConfigFromString
+-- takes the decoded TABLE and hands it back as the configuration directly, so
+-- the car is built from the same data it was captured from.
+--
+-- `pc` is the last resort, and it stays for the entries that predate `cfg`. It
+-- is right on a client that happens to have the file -- a config shipping
+-- inside a server-side mod is on everyone who joined -- and on one that does
+-- not it spawns the model's default, which is the old behaviour and is why the
+-- message below says so rather than claiming success.
+local function onGarageCar(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  if not fromCurrentServer(data) then return end
+  if type(data.message) == 'string' and data.message ~= '' then
+    guihooks.trigger('RaceManagerEditorMsg', { msg = data.message })
+    return
+  end
+  local model = tostring(data.model or '')
+  if model == '' then return end
+
+  -- ENCODED OR ALREADY DECODED, because both happen. The server stores and
+  -- sends an opaque string, but whether a payload arrives as JSON or as a table
+  -- depends on the BeamMP build -- the same reason the spawn-event reader a
+  -- thousand lines above tests for both.
+  local config, fromParts = nil, false
+  local raw = data.cfg
+  if type(raw) == 'string' and raw ~= '' then
+    local okC, decoded = pcall(jsonDecode, raw)
+    raw = okC and decoded or nil
+  end
+  if type(raw) == 'table' and type(raw.parts) == 'table' then
+    config, fromParts = raw, true
+  end
+  if not config and type(data.pc) == 'string' and data.pc ~= '' then
+    config = data.pc
+  end
+  if not config then
+    guihooks.trigger('RaceManagerEditorMsg',
+      { msg = 'That garage entry has no configuration to spawn' })
+    return
+  end
+
+  -- THE PAINT GOES IN THE OPTIONS, NOT ONLY IN THE CONFIG.
+  --
+  -- It travels inside the config table because that is where a .pc keeps it,
+  -- and any engine path that reads a config's paints finds it there. But the
+  -- one that actually colours the car is spawn.setVehicleObject, and that reads
+  -- options.paint / paint2 / paint3 off the SPAWN OPTIONS and never looks at
+  -- the config. Passing it in one place only is why the car came back in the
+  -- model's default colour with everything else correct.
+  local opts = { config = config }
+  if type(config) == 'table' and type(config.paints) == 'table' then
+    opts.paint  = config.paints[1]
+    opts.paint2 = config.paints[2]
+    opts.paint3 = config.paints[3]
+  end
+  local replace = garage.takeReplace == true
+  local spawned, err = pcall(function ()
     if replace then
-      core_vehicles.replaceVehicle(model, { config = pc })
+      core_vehicles.replaceVehicle(model, opts)
     else
-      core_vehicles.spawnNewVehicle(model, { config = pc })
+      core_vehicles.spawnNewVehicle(model, opts)
     end
   end)
-  if not ok then
-    log('E', 'raceManager', 'Could not take garage car ' .. model .. ' (' .. pc
-      .. '): ' .. tostring(err))
+  if not spawned then
+    log('E', 'raceManager', 'Could not take garage car ' .. model .. ': ' .. tostring(err))
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'The game refused that spawn' })
     return
   end
   log('I', 'raceManager', (replace and 'Replaced with ' or 'Spawned ') .. model
-    .. ' from ' .. pc)
+    .. ' from ' .. (fromParts and 'its stored parts' or ('the saved file ' .. tostring(config))))
+  if not fromParts then
+    -- NOT SILENT, because this failure is invisible: a missing file spawns a
+    -- stock car rather than nothing, so it reads as the wrong car having been
+    -- whitelisted rather than as a file that is not on this machine.
+    guihooks.trigger('RaceManagerEditorMsg', { msg = 'That entry predates stored parts: '
+      .. 'if this is not the right car, an admin should re-capture it' })
+  end
   -- The new car re-declares itself on its own: onVehicleSpawned arms the report
   -- and the poll picks it up, so the Garage List rules on it like any other.
 end
@@ -4871,7 +5245,10 @@ function spectate.attachToRunner()
   if not ok or type(list) ~= 'table' then return false end
   local best, bestSpeed = nil, 0.5      -- m/s; below this a car is parked
   for _, v in ipairs(list) do
-    if v and not isOwnVehicle(vehicleId(v)) then
+    -- Never a trailer. It is the fastest moving thing on the track whenever the
+    -- car towing it is, so a spectator looking for a race to watch was as
+    -- likely to be handed the box on the back as the car pulling it.
+    if v and not isOwnVehicle(vehicleId(v)) and not towed.is(v) then
       local moving = 0
       pcall(function ()
         local vel = v:getVelocity()
@@ -5201,7 +5578,11 @@ local function snapshotUpdate(dt)
   snapshot.left = snapshot.left - dt
   if snapshot.left > 0 then return end
   snapshot.left = snapshot.EVERY
-  local veh = playerVehicle()
+  -- OUR car. This position is what restoreLastGoodPosition TELEPORTS to, so a
+  -- sample taken off a rival being watched does not merely read wrong: it puts
+  -- this driver wherever that rival was standing the next time a reset is
+  -- refused.
+  local veh = ownVehicle()
   if not veh then return end
   local ok = pcall(function ()
     local pos = veh:getPosition()
@@ -5269,7 +5650,10 @@ end
 -- caught as a real attempt.
 local function isSelfTeleportEcho()
   if block.selfTeleport.left <= 0 then return false end
-  local veh = playerVehicle()
+  -- The question is where OUR car is, not where the camera is: a driver
+  -- watching a rival would measure the rival's distance from our teleport and
+  -- call every one of our own resets a driver reset.
+  local veh = ownVehicle()
   if not veh then return false end
   local elapsed = block.TELEPORT_WINDOW - block.selfTeleport.left
   if elapsed < 0 then elapsed = 0 end
@@ -5324,7 +5708,9 @@ function pit.setGhost(on)
     local vehId = veh and vehicleId(veh) or nil
     if not vehId then return end
     pit.ghostVeh = vehId
-    ghost.reason(vehId, 'pit', true, veh)
+    -- reasonRig, not reason: a trailer on the hitch is part of the car for
+    -- every purpose this ghost has. See ghost.reasonRig.
+    ghost.reasonRig(vehId, 'pit', true, veh)
     -- Only tell the server if a RESET ghost is not already running on this car.
     -- The two share one per-player ghost on the server, so announcing a 5 s pit
     -- ghost over a 15 s reset ghost would cut the longer one short for everyone
@@ -5342,7 +5728,7 @@ function pit.setGhost(on)
     local vehId = pit.ghostVeh
     if not vehId then return end
     pit.ghostVeh = nil
-    ghost.reason(vehId, 'pit', false)
+    ghost.reasonRig(vehId, 'pit', false)
     -- Symmetrically: only end what we started. Ending a broadcast we did not
     -- send would drop a reset ghost that is still running.
     if pit.ghostSent and inMultiplayer() and ghost.own.vehId == nil then
@@ -5696,7 +6082,12 @@ end
 -- vehicle-reset echo it provokes is never miscounted, and the gate becomes the
 -- new "last good position" so a blocked follow-up reset restores there.
 local function relocateToGate(wp)
-  local veh = playerVehicle()
+  -- ownVehicle(), and every teleport in this file says the same thing for the
+  -- same reason: setPositionRotation moves whatever it is handed, and in BeamMP
+  -- the camera is regularly on somebody else's car. Moving THAT one drags a
+  -- rival across the map on this client while their own client holds them where
+  -- they are, and BeamMP resolves the disagreement by tearing the car apart.
+  local veh = ownVehicle()
   if not veh or not wp then return false end
   -- Facing the way the car was GOING, not the way the gate points.
   --
@@ -5734,7 +6125,7 @@ end
 -- the car by the time onVehicleResetted fires, so the block is applied after
 -- the fact: put the car back exactly where it was standing a moment ago.
 local function restoreLastGoodPosition()
-  local veh = playerVehicle()
+  local veh = ownVehicle()      -- a teleport: see relocateToGate
   if not veh or not snapshot.pos then return false end
   local rot = snapshot.rot or quat(0, 0, 0, 1)
   -- Armed BEFORE the teleport: the hook it triggers may arrive on this very
@@ -5892,8 +6283,11 @@ function M.onVehicleResetted(vehId)
     --     from before the teleport, the distance comes out as nothing, and the
     --     undo stands down. That is why a recovery key still stranded drivers on
     --     their start position.
+    --   * ownVehicle(), not the attached one. This undoes the teleport by
+    --     issuing another, and the car it must land on is ours: see
+    --     relocateToGate for what moving a rival's car costs.
     local was = session.prevPos
-    local veh = playerVehicle()
+    local veh = ownVehicle()
     local pos = nil
     if veh then pcall(function () pos = veh:getPosition() end) end
     if pos and was then
@@ -6030,6 +6424,10 @@ end
 -- real ghost on it does nothing at all. Dropped here rather than aged out.
 function M.onVehicleDestroyed(vehId)
   if vehId == nil then return end
+  -- The own-vehicle cache is id-keyed too, and ids are reused. It is
+  -- re-verified on every use so a stale one could never give a wrong answer,
+  -- but dropping it here is what stops the next lookup paying for a miss.
+  if ownVehId == vehId then ownVehId = nil end
   ghost.veh[vehId]     = nil
   ghost.applied[vehId] = nil
   ghost.left[vehId]    = nil
@@ -6088,7 +6486,13 @@ local freezeSource = nil
 -- The direct call is kept as a fallback for builds without the bridge; it is
 -- still what the game's older exploration.lua uses.
 setLocalVehicleFrozen = function (frozen, source)
-  local veh = playerVehicle()
+  -- OUR car, for the reason every teleport here uses ownVehicle() and then
+  -- some: a freeze applied to a RIVAL's car pins their body on this client
+  -- while BeamMP goes on syncing their real position into it. The two fight,
+  -- and the car detonates -- for us, and for anyone else whose camera was on
+  -- it when their own client did the same. Reported from a live session as a
+  -- car revving to the limiter and exploding for everybody except its driver.
+  local veh = ownVehicle()
   if not veh then return false end
   local want = frozen and true or false
   local ok = false
@@ -6111,7 +6515,7 @@ end
 -- Rotation comes from headingRot (Module 1), which bakes in the half-turn for
 -- BeamNG's -Y vehicle forward - placements used to come out 180° backwards.
 placeOnStartPosition = function (sp)
-  local veh = playerVehicle()
+  local veh = ownVehicle()      -- a teleport: see relocateToGate
   if not veh or not sp then return false end
   local rot = headingRot(sp.hx, sp.hy)
   -- Same story as the blocked-reset restore: this teleport comes back as a
@@ -6589,9 +6993,42 @@ local function fieldUpdate(dt)
     if field.coupleNext <= 0 then
       field.coupleNext = FIELD.COUPLE_EVERY
       local rigVeh = ownVehicle()
-      if rigVeh then
-        -- Attaching an already-attached coupler does nothing, so repeating this
-        -- costs a queued command and cannot double-couple anything.
+      local rigId  = rigVeh and vehicleId(rigVeh) or nil
+      -- ALREADY COUPLED IS THE NORMAL CASE, AND THEN THIS MUST NOT FIRE.
+      --
+      -- The claim this replaces was that "attaching an already-attached coupler
+      -- does nothing, so repeating this cannot double-couple anything". That is
+      -- not what the game does. beamstate.attachCouplers walks EVERY coupler
+      -- node on the vehicle and calls obj:attachCoupler on each, filtered only
+      -- on not being welded -- there is no already-attached test anywhere in it.
+      -- Each call arms that node to latch anything with a matching tag inside
+      -- its capture radius (0.2 m by default) at a strength of 1,000,000.
+      --
+      -- So on a formed grid, where cars are parked close together, this was
+      -- arming every hitch and tow point on the car eight times over three
+      -- seconds and inviting them to grab whatever was in reach -- including a
+      -- coupler node on the car in the next slot. Two vehicles latched together
+      -- at that strength come apart violently the moment the countdown releases
+      -- them, which is what a trailer "exploding as soon as it connected" looks
+      -- like from the driver's seat.
+      --
+      -- The premise underneath it looks wrong too. BeamNG keeps a coupled pair
+      -- together through a reset or a recovery on its own -- the engine-side
+      -- trailer respawn handling is live in 0.36, which is why the vehicle
+      -- collection path in core/vehicles.lua is commented out with a TODO
+      -- saying exactly that -- and the game's own recovery teleports through the
+      -- same setPositionRotation this mod calls. There is no reason our teleport
+      -- would uncouple a rig when the recover key does not.
+      --
+      -- KEPT, GUARDED, rather than deleted: if some path really does arrive with
+      -- a loose trailer, this still reconnects it. It now has to be true that
+      -- the rig is loose first, and the window closes the instant it is not.
+      local coupled = false
+      if rigId then coupled = next(ghost.rigMates(rigId)) ~= nil end
+      if coupled then
+        field.coupleLeft = 0
+        field.coupleNext = 0
+      elseif rigVeh then
         pcall(function () rigVeh:queueLuaCommand('beamstate.attachCouplers()') end)
       end
     end
@@ -6827,6 +7264,23 @@ end
 -- The trailer gets no countdown of its own. It carries the same named reason as
 -- the car, so it goes solid on exactly the same tick the car does rather than
 -- on a second timer that could drift.
+--
+-- EVERY PER-CAR REASON COMES THROUGH HERE NOW, not just the reset one.
+--
+-- It used to be the reset ghost alone, and the other three -- the pit stop, the
+-- finished ghost and the derby respawn -- ghosted the car and left the trailer
+-- behind. What that looks like from another client is precisely what was
+-- reported: a solid, fully opaque trailer being towed by a car that is faded to
+-- a third of its alpha and that everything drives straight through. "Nobody
+-- could see the car attached to the trailer, just the trailer driving around."
+--
+-- It is also the failure this function's own note warns about -- half a rig
+-- passing through a rival while the other half hits them -- so the fix is to
+-- use it, not to explain it again at each call site.
+--
+-- The FIELD-wide reasons are already right and deliberately do not come through
+-- here: setGhostReason walks every vehicle in the scene, so a rival's trailer
+-- is reached as a vehicle in its own right, and our own rig is excluded by id.
 function ghost.reasonRig(vehId, reason, on, veh)
   ghost.reason(vehId, reason, on, veh)
   for id in pairs(ghost.rigMates(vehId)) do
@@ -7390,7 +7844,7 @@ function ghost.setFinished(on)
     -- makes the reason path re-issue the command; the engine call is idempotent,
     -- so a redundant one costs nothing.
     ghost.applied[vehId] = nil
-    ghost.reason(vehId, 'finished', true, veh)
+    ghost.reasonRig(vehId, 'finished', true, veh)
   else
     -- Cleared off the RECORDED id, not off ownVehicle(): by the time a race
     -- ends the driver may be sitting in a different car (they reset, or
@@ -7400,9 +7854,9 @@ function ghost.setFinished(on)
     ghost.finishedOwn = nil
     if id then
       local got, found = pcall(getObjectByID, id)
-      ghost.reason(id, 'finished', false, got and found or nil)
+      ghost.reasonRig(id, 'finished', false, got and found or nil)
     end
-    if vehId and vehId ~= id then ghost.reason(vehId, 'finished', false, veh) end
+    if vehId and vehId ~= id then ghost.reasonRig(vehId, 'finished', false, veh) end
   end
 end
 
@@ -7419,7 +7873,7 @@ function ghost.applyFinishedRoster(list)
       local veh, vehId = ghost.vehicleForPid(pid)
       ghost.remoteVeh[pid] = vehId
       if vehId and not (ghost.finishedRemote[tostring(pid)]) then
-        ghost.reason(vehId, 'finished', true, veh)
+        ghost.reasonRig(vehId, 'finished', true, veh)
       end
       ghost.finishedRemote[tostring(pid)] = vehId or true
     end
@@ -7432,7 +7886,7 @@ function ghost.applyFinishedRoster(list)
       ghost.finishedRemote[pid] = nil
       if type(vehId) == 'number' then
         local got, found = pcall(getObjectByID, vehId)
-        ghost.reason(vehId, 'finished', false, got and found or nil)
+        ghost.reasonRig(vehId, 'finished', false, got and found or nil)
       end
     end
   end
@@ -7791,7 +8245,12 @@ end
 derby.init({
   -- Plain functions.
   palette = render.palette, drawStartPosition = render.drawStartPosition,
-  playerVehicle = playerVehicle, vehiclePlacement = vehiclePlacement,
+  -- BOTH, and the derby picks deliberately. ownVehicle() is our car;
+  -- playerVehicle() is whatever the camera is attached to, which in BeamMP is
+  -- regularly a rival. Anything that MOVES, FREEZES, MEASURES or PLACES takes
+  -- the first; only a question about the camera itself takes the second.
+  playerVehicle = playerVehicle, ownVehicle = ownVehicle,
+  vehiclePlacement = vehiclePlacement,
   placeOnStartPosition = placeOnStartPosition,
   setLocalVehicleFrozen = setLocalVehicleFrozen,
   queueFieldPlacement = queueFieldPlacement, pushNotice = pushNotice,
@@ -7902,6 +8361,11 @@ local function joinRequestUpdate(dt)
   if joinRequestLeft > 0 then return end
   joinRequestLeft = nil
   M.requestState()
+  -- THE LADDER TOO, because it is pushed only when it changes and it lives on
+  -- its own channel: requestState does not carry it. A driver joining a meeting
+  -- that is three rounds deep would otherwise see an empty board until the next
+  -- pass settled, and no entrants at all until somebody built a new ladder.
+  drag.dragRequestState()
 end
 
 function M.onUpdate(dt)
@@ -10040,7 +10504,7 @@ function ghost.onDerbyRespawn(rawData)
   end
   if not vehId then return end
   ghost.respawn[vehId] = seconds
-  ghost.reason(vehId, 'derbyRespawn', true, veh)
+  ghost.reasonRig(vehId, 'derbyRespawn', true, veh)
   log('I', 'raceManager', ('Derby respawn ghost: vehicle %s for %.1fs')
     :format(tostring(vehId), seconds))
 end
@@ -10055,7 +10519,7 @@ function ghost.respawnUpdate(dt)
     left = left - dt
     if left <= 0 then
       ghost.respawn[vehId] = nil
-      ghost.reason(vehId, 'derbyRespawn', false)
+      ghost.reasonRig(vehId, 'derbyRespawn', false)
     else
       ghost.respawn[vehId] = left
     end
@@ -11231,6 +11695,8 @@ local DISPATCH = {
   -- Module 4: garage list enforcement feedback
   RM_VehicleRejected = onVehicleRejected,
   RM_GarageResult    = onGarageResult,
+  -- One garage entry with its car in it, answering a press of Take.
+  RM_GarageCar       = onGarageCar,
   RM_AliasResult     = onAliasResult,
   -- Starting grid: the server hands out slots, this client places the car.
   RM_GridAssign      = onGridAssign,

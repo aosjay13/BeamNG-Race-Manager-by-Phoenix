@@ -9,7 +9,7 @@
 -- THE CONTRACT. Nothing here reaches back into the extension by name. Everything
 -- it needs arrives once through `init(host)`:
 --
---   * plain functions (playerVehicle, pushNotice, releaseGridHold, ...) are
+--   * plain functions (ownVehicle, pushNotice, releaseGridHold, ...) are
 --     called straight off the host table
 --   * mutable scalars the extension owns (phase, isAdmin, visualize, ...) come
 --     through GETTERS, because a value captured at init would be a snapshot of
@@ -177,7 +177,11 @@ D.derbyState = {
 local function derbyStandDown(down)
   if down == D.derbyState.stoodDown then return end
   D.derbyState.stoodDown = down
-  local veh = host.playerVehicle()
+  -- OUR car. These queue inputs into the vehicle's own Lua VM and then freeze
+  -- it, and the camera is regularly on somebody else at the end of a derby --
+  -- so the attached one would take a rival's throttle off and pin their body on
+  -- this client while BeamMP kept syncing their real position into it.
+  local veh = host.ownVehicle()
   if down then
     if veh then
       -- Order matters: let go of the throttle before anything locks.
@@ -242,7 +246,10 @@ D.derbyUpdate = function (dt)
     return
   end
   D.derbyState.runTime = D.derbyState.runTime + dt
-  local veh = host.playerVehicle()
+  -- OUR car, or a driver watching somebody else is policed on THAT car's
+  -- movement and position: they sit still and are never called stopped, or the
+  -- car they are watching leaves the arena and they are eliminated for it.
+  local veh = host.ownVehicle()
   if not veh then
     D.derbyClearWarnings()
     return
@@ -536,7 +543,7 @@ end
 -- --- Derby UI commands (called by the UI app) ------------------------------
 
 function D.derbyAddMarker()
-  local veh = host.playerVehicle()
+  local veh = host.ownVehicle()
   if not veh then
     log('W', 'raceManager', 'Derby: no player vehicle, cannot place boundary marker')
     return
@@ -565,7 +572,7 @@ function D.derbySetBoundaryMode(mode)
   end
   mode = (mode == 'rect') and 'rect' or 'polygon'
   local payload = { mode = mode }
-  local veh = host.playerVehicle()
+  local veh = host.ownVehicle()
   if veh then
     local pos = veh:getPosition()
     payload.cx, payload.cy, payload.cz = pos.x, pos.y, pos.z
@@ -584,7 +591,7 @@ function D.derbySetShapeCenter()
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Demo Derby needs a BeamMP server' })
     return
   end
-  local veh = host.playerVehicle()
+  local veh = host.ownVehicle()
   if not veh then
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
     return
@@ -667,7 +674,7 @@ function D.derbyMoveMarker(index)
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Demo Derby needs a BeamMP server' })
     return
   end
-  local veh = host.playerVehicle()
+  local veh = host.ownVehicle()
   if not veh then
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
     return

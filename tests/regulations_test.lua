@@ -15,6 +15,7 @@ local spectated   = {}    -- [pid] = last RM_ForceSpectate payload
 local released    = {}    -- ordered list of RM_ReleaseSpectate payloads
 local rejected    = {}    -- [pid] = last RM_VehicleRejected payload
 local garageMsg   = nil   -- last RM_GarageResult payload
+local takenCar    = nil   -- last RM_GarageCar payload (the answer to Take)
 local removedVehicles = {}
 local timers = {}
 local hostedMap = '/levels/gridmap_v2/info.json'
@@ -34,6 +35,7 @@ MP = {
     if event == 'RM_ReleaseSpectate' then released[#released + 1] = payload end
     if event == 'RM_VehicleRejected' then rejected[target] = payload end
     if event == 'RM_GarageResult'    then garageMsg = payload end
+    if event == 'RM_GarageCar'       then takenCar = payload end
   end,
   RemoveVehicle = function (pid, vid)
     removedVehicles[#removedVehicles + 1] = { pid = pid, vid = vid }
@@ -926,71 +928,103 @@ RM_onDeleteGarageSet(1, '{"name":"GT3"}')
 check(not hasSet('GT3') and hasSet('Trucks'), 'an admin deletes one set and leaves the rest')
 
 -- ---------------------------------------------------------------------------
--- THE SAVED CONFIG PATH, so a driver can take an approved car
+-- THE STORED CAR, so a driver can take an approved entry ON ANY MACHINE
 -- ---------------------------------------------------------------------------
--- An entry carries the .pc it was built from. BeamNG spawns straight from that
--- path (prepareConfigData in core/vehicles.lua reads opts.config as "a basename
--- or a full path"), so it is the whole of what a driver needs.
+-- An entry used to carry only the .pc it was built from, and the broadcast
+-- carried that path to every client. BeamNG spawns straight from a path, so it
+-- looked like the whole of what a driver needs -- and it is, on exactly one
+-- machine: the one the file is on. prepareConfigData calls FS:fileExists, and a
+-- config it cannot find falls back to the MODEL'S DEFAULT rather than failing.
+-- The field took a whitelisted car and got a stock one; with enforcement on,
+-- that stock car then did not match the entry and was deleted.
 --
--- It reaches EVERY client, admin or not, while the signature reaches none.
+-- So the entry stores the PARTS, and the broadcast carries neither them nor the
+-- path. It carries a FLAG: there is a car behind this row. The parts are
+-- kilobytes and this list is encoded into every state broadcast three times a
+-- second, so they are fetched one entry at a time, on a press, by index.
 RM_onClearGarage(1)
 RM_onWhitelistVehicle(1, '{"model":"etk800","label":"Cup Car","sig":"' .. SIG_A
-  .. '","pc":"vehicles/etk800/cup.pc"}')
-check(#lastState.garage == 1 and lastState.garage[1].pc == 'vehicles/etk800/cup.pc',
-  'the saved config path is broadcast with the entry, which is what a driver spawns from')
+  .. '","pc":"vehicles/etk800/cup.pc","cfg":{"parts":{"body":"etk800_body"},"vars":{}}}')
+check(#lastState.garage == 1 and lastState.garage[1].spawn == true,
+  'the broadcast says an entry HAS a car behind it, which is all the panel '
+    .. 'needs to decide whether to offer Take')
 check(lastState.garage[1].sig == nil,
   'and the signature still is not: that is the servers comparison, not a drivers business')
+check(lastState.garage[1].cfg == nil and lastState.garage[1].pc == nil,
+  'and neither the parts nor the path ride the broadcast: this table is '
+    .. 'encoded three times a second for the life of the server')
 
--- An edited car has no file behind it. The entry is still valid to race under,
--- it simply cannot be handed to anybody to spawn.
+-- THE PRESS FETCHES THE CAR. One entry, to one player, with the parts in it.
+takenCar = nil
+RM_onTakeGarageCar(3, '{"index":1}')
+check(takenCar ~= nil and takenCar.model == 'etk800',
+  'a press of Take is answered with that entry, and needs no admin: an '
+    .. 'approved car is the drivers half of the Garage List')
+check(takenCar ~= nil and type(takenCar.cfg) == 'table'
+      and takenCar.cfg.parts.body == 'etk800_body',
+  'and carries the PARTS, which is what builds the car on a machine that never '
+    .. 'had the admins saved file')
+check(takenCar ~= nil and takenCar.pc == 'vehicles/etk800/cup.pc',
+  'with the path alongside as the fallback it now is')
+
+takenCar = nil
+RM_onTakeGarageCar(3, '{"index":9}')
+check(takenCar ~= nil and takenCar.message ~= nil and takenCar.model == nil,
+  'an index that is no longer there is answered with a refusal rather than '
+    .. 'ignored: a button that does nothing is the hardest failure to report')
+
+-- An edited car has no file and may have no readable parts either. The entry is
+-- still valid to race under, it simply cannot be handed to anybody to spawn.
 RM_onWhitelistVehicle(1, '{"model":"pigeon","label":"Home Build","sig":"' .. SIG_B .. '"}')
-check(#lastState.garage == 2 and lastState.garage[2].pc == nil,
-  'an entry captured from a car with no saved config carries no path, so the '
-    .. 'panel can leave it out instead of spawning the models default and '
-    .. 'calling it the approved car')
+check(#lastState.garage == 2 and lastState.garage[2].spawn == nil,
+  'an entry captured from a car with nothing readable behind it is not '
+    .. 'offered, instead of spawning the models default and calling it the '
+    .. 'approved car')
 
--- A RE-CAPTURE BACKFILLS THE PATH ONTO AN ENTRY THAT HAS NONE.
+-- A RE-CAPTURE BACKFILLS THE CAR ONTO AN ENTRY THAT HAS NONE.
 --
--- Every list captured before this field existed has no `pc`, so the Take button
--- is hidden for all of them. Re-capturing the same car was refused as an exact
--- duplicate, which left Clear Garage and rebuild as the only way to fix a
--- league's whole garage. Reported from a live server with exactly one entry.
+-- Every list captured before the parts were stored can only be spawned by the
+-- admin who has the file. Re-capturing the same car is how such a list is
+-- repaired, and it was refused as an exact duplicate -- which left Clear Garage
+-- and rebuild as the only way to fix a league's whole season.
 RM_onClearGarage(1)
 RM_onWhitelistVehicle(1, '{"model":"etk800","label":"Old Entry","sig":"' .. SIG_A .. '"}')
-check(#lastState.garage == 1 and lastState.garage[1].pc == nil,
-  'an entry captured with no path has none, as every pre-existing one does')
+check(#lastState.garage == 1 and lastState.garage[1].spawn == nil,
+  'an entry captured with nothing behind it has nothing, as every pre-existing '
+    .. 'one does')
 
 garageMsg = nil
 RM_onWhitelistVehicle(1, '{"model":"etk800","label":"Old Entry","sig":"' .. SIG_A
-  .. '","pc":"vehicles/etk800/cup.pc"}')
+  .. '","pc":"vehicles/etk800/cup.pc","cfg":{"parts":{"body":"etk800_body"},"vars":{}}}')
 check(#lastState.garage == 1, 'a re-capture of the same car does not duplicate it')
-check(lastState.garage[1].pc == 'vehicles/etk800/cup.pc',
-  'and FILLS IN the saved config path, which is the only way an existing league '
-    .. 'garage becomes spawnable without being rebuilt from nothing')
+check(lastState.garage[1].spawn == true,
+  'and FILLS IN the car, which is the only way an existing league garage '
+    .. 'becomes spawnable for the field without being rebuilt from nothing')
 check(garageMsg ~= nil and garageMsg.added == true,
   'and says so, rather than reporting the duplicate refusal it used to')
 
 -- With nothing new to add it is still a duplicate, so the message is honest.
 garageMsg = nil
 RM_onWhitelistVehicle(1, '{"model":"etk800","label":"Old Entry","sig":"' .. SIG_A
-  .. '","pc":"vehicles/etk800/cup.pc"}')
+  .. '","pc":"vehicles/etk800/cup.pc","cfg":{"parts":{"body":"etk800_body"},"vars":{}}}')
 check(garageMsg ~= nil and garageMsg.added == false,
   'capturing it again with nothing changed is still reported as already listed')
 
 RM_onClearGarage(1)
 RM_onWhitelistVehicle(1, '{"model":"etk800","label":"Cup Car","sig":"' .. SIG_A
-  .. '","pc":"vehicles/etk800/cup.pc"}')
+  .. '","pc":"vehicles/etk800/cup.pc","cfg":{"parts":{"body":"etk800_body"},"vars":{}}}')
 RM_onWhitelistVehicle(1, '{"model":"pigeon","label":"Home Build","sig":"' .. SIG_B .. '"}')
 
 -- IT SURVIVES A SET, which is the point: a series saved on Tuesday is still
--- spawnable on Friday.
+-- spawnable on Friday. The set loader rebuilds every entry from scratch, so it
+-- is the one path that can silently drop the car again.
 RM_onSaveGarageSet(1, '{"name":"PathTest"}')
 RM_onClearGarage(1)
 check(#lastState.garage == 0, 'cleared before the reload, so the reload is what proves it')
 RM_onLoadGarageSet(1, '{"name":"PathTest"}')
-check(#lastState.garage == 2 and lastState.garage[1].pc == 'vehicles/etk800/cup.pc',
-  'a saved set keeps the config path, so a series stays spawnable after a reload')
-check(lastState.garage[2].pc == nil, 'and the entry without one still has none')
+check(#lastState.garage == 2 and lastState.garage[1].spawn == true,
+  'a saved set keeps the stored car, so a series stays spawnable after a reload')
+check(lastState.garage[2].spawn == nil, 'and the entry without one still has none')
 RM_onDeleteGarageSet(1, '{"name":"PathTest"}')
 
 -- PUT THE STORE BACK AS THIS SECTION FOUND IT. garage.json persists the
