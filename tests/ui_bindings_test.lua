@@ -2546,6 +2546,50 @@ do
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- SAVED ARENAS: Save As New, Overwrite, and a question before either destroys
+-- ---------------------------------------------------------------------------
+-- The server replaces a same-named arena without asking, and that used to be the
+-- ONLY way to overwrite one: retype the name exactly and press Save. So the most
+-- common edit had no button, and the button there was would silently destroy any
+-- arena whose name was typed again. Pinned because each half is a one-line
+-- regression that looks fine on screen.
+do
+  local function body(fnName)
+    local at = js:find('$scope.' .. fnName .. ' = function', 1, true)
+    if not at then return nil end
+    local stop = js:find(NL .. '      };', at, true)
+    return stop and js:sub(at, stop) or nil
+  end
+
+  local save = body('derbySaveLayout')
+  expect(save ~= nil, 'derbySaveLayout exists')
+  expect(save and save:find('existingDerbyLayout', 1, true) ~= nil,
+    'Save As New checks for an arena of the same name before sending: the '
+      .. 'server replaces it without asking, so a retyped name would silently '
+      .. 'destroy the saved arena')
+  expect(save and save:find('askDerby', 1, true) ~= nil,
+    'and asks before replacing one')
+
+  local over = body('derbyOverwriteLayout')
+  expect(over ~= nil, 'an Overwrite exists for saved arenas')
+  expect(over and over:find('derbyUi.selected', 1, true) ~= nil,
+    'Overwrite targets the arena SELECTED in the picker, so the common edit '
+      .. 'needs no name typed')
+  expect(over and over:find('askDerby', 1, true) ~= nil,
+    'and is behind a confirmation, because nothing puts the old one back')
+
+  local del = body('derbyDeleteLayout')
+  expect(del and del:find('askDerby', 1, true) ~= nil,
+    'deleting a saved arena asks first, like deleting a track layout')
+
+  expect(html:find('ng-click="derbyOverwriteLayout()"', 1, true) ~= nil,
+    'the Overwrite button is in the arena panel')
+  expect(html:find('ng-if="derbyUi.confirm"', 1, true) ~= nil,
+    'and the arena panel has somewhere to show the question it asks, or every '
+      .. 'confirmation would be set and never seen')
+end
+
 if fails == 0 then
   print('ui_bindings_test: ' .. checks .. ' checks, 0 failures ('
     .. #models .. ' ng-model bindings)')

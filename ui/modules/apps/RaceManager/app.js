@@ -1448,8 +1448,10 @@ angular.module('beamng.apps')
         players: []           // { id, name, status, reason, elimTime, resets }
       };
       // Dot rule again: these inputs live inside the ng-if derby panel.
+      // `confirm` is the pending Replace / Overwrite / Delete question, the same
+      // shape the track layouts use: null when nothing is being asked.
       $scope.derbyUi = { oob: 5, demo: 10, lives: 1, resets: -1, mode: 'lms',
-                         name: '', selected: '' };
+                         name: '', selected: '', confirm: null };
 
       // ----------------------------------------------------------------
       // DRAG RACING (isolated module) - the tournament ladder, the strip and
@@ -1626,7 +1628,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.16.0';
+      var APP_BUILD = '0.16.1';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -3969,21 +3971,96 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         });
       });
 
+      // --- Saved arenas: the track layouts' three-way split, on the arena ---
+      //
+      // THE SERVER REPLACES A SAME-NAMED ARENA WITHOUT ASKING, and that was the
+      // only way to overwrite one: retype its name exactly and press Save. So
+      // the edit an admin makes most -- load an arena, move a marker, put it
+      // back -- had no button, and the button it did have would silently
+      // destroy any arena whose name happened to be typed again. The track
+      // layouts solved both years ago with Save As New and Overwrite, and this
+      // is that, for the same reasons.
+
+      // Case-insensitive, like the server: "Pit" would otherwise look new here
+      // and still replace "pit" there.
+      function existingDerbyLayout(name) {
+        var lower = (name || '').trim().toLowerCase();
+        for (var i = 0; i < $scope.derbyLayouts.length; i++) {
+          if (($scope.derbyLayouts[i].name || '').toLowerCase() === lower) {
+            return $scope.derbyLayouts[i];
+          }
+        }
+        return null;
+      }
+      function askDerby(text, ok, action) {
+        $scope.derbyUi.confirm = { text: text, ok: ok, action: action };
+      }
+      $scope.confirmDerbyAction = function () {
+        var c = $scope.derbyUi.confirm;
+        $scope.derbyUi.confirm = null;
+        if (c && c.action) { c.action(); }
+      };
+      $scope.cancelDerbyAction = function () {
+        $scope.derbyUi.confirm = null;
+      };
+      // One send for both buttons, so an overwrite can never save less than a
+      // new arena does. The timer fields go first so the arena is stored with
+      // what is on screen rather than the last value the server saw.
+      function sendDerbySave(name) {
+        $scope.derbyApplyConfig();
+        bngApi.engineLua('raceManager.derbySaveLayout(' + luaStr(name) + ')');
+      }
+      // What the arena on screen is, in the words a confirmation needs.
+      function derbyArenaSummary() {
+        var parts = [];
+        if ($scope.derby.boundaryMode === 'rect') { parts.push('a rectangle'); }
+        else { parts.push($scope.derby.boundaryCount + ' markers'); }
+        parts.push($scope.derby.startCount + ' start position'
+          + ($scope.derby.startCount === 1 ? '' : 's'));
+        return parts.join(', ');
+      }
+
+      // A name that is already taken is an overwrite wearing the wrong button,
+      // so it asks rather than replacing quietly.
       $scope.derbySaveLayout = function () {
         var name = ($scope.derbyUi.name || '').trim();
         if (!name) { return; }
-        // Send the timer fields first so the arena is saved with what the admin
-        // currently has on screen, not the last value the server saw.
-        $scope.derbyApplyConfig();
-        bngApi.engineLua('raceManager.derbySaveLayout(' + luaStr(name) + ')');
+        var clash = existingDerbyLayout(name);
+        if (clash) {
+          askDerby('"' + clash.name + '" already exists on this map. Saving replaces it '
+            + 'with the arena on screen now (' + derbyArenaSummary() + ').',
+            'Replace it', function () { sendDerbySave(name); });
+          return;
+        }
+        sendDerbySave(name);
       };
+
+      // Overwrite the SELECTED arena -- no name to type, which is the point of
+      // it: the common edit is load, adjust, put it back. The selected name is
+      // sent verbatim so the saved entry keeps its exact spelling and casing.
+      $scope.derbyOverwriteLayout = function () {
+        var name = $scope.derbyUi.selected;
+        if (!name || $scope.derby.boundaryCount < 3) { return; }
+        askDerby('Replace "' + name + '" with the arena on screen now ('
+          + derbyArenaSummary() + ')? The saved version is gone for good.',
+          'Overwrite', function () { sendDerbySave(name); });
+      };
+
       $scope.derbyLoadLayout = function () {
         if (!$scope.derbyUi.selected) { return; }
         bngApi.engineLua('raceManager.derbyLoadLayout(' + luaStr($scope.derbyUi.selected) + ')');
       };
+      // Behind a confirmation now, like the track layout Delete it sits beside
+      // in spirit: an arena is a boundary built corner by corner and a grid
+      // placed slot by slot, and nothing puts a deleted one back.
       $scope.derbyDeleteLayout = function () {
-        if (!$scope.derbyUi.selected) { return; }
-        bngApi.engineLua('raceManager.derbyDeleteLayout(' + luaStr($scope.derbyUi.selected) + ')');
+        var name = $scope.derbyUi.selected;
+        if (!name) { return; }
+        askDerby('Delete "' + name + '" from the server? This cannot be undone.',
+          'Delete', function () {
+            bngApi.engineLua('raceManager.derbyDeleteLayout(' + luaStr(name) + ')');
+            if ($scope.derbyUi.selected === name) { $scope.derbyUi.selected = ''; }
+          });
       };
       // Same custom-dropdown reasoning as the track layout picker: a native
       // <select> popup does not render in BeamNG's embedded browser.

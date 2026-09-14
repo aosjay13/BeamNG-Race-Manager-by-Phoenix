@@ -2715,8 +2715,8 @@
                ng-model="derbyUi.name">
         <button class="rm-btn rm-btn-start" ng-click="derbySaveLayout()"
                 ng-disabled="derby.boundaryCount < 3 || !derbyUi.name || derbyActive()"
-                title="Save the current boundary and both timers on the server under this name">
-          Save Current Arena
+                title="Save the arena on screen as a NEW arena under this name. An existing name asks before it is replaced.">
+          Save As New
         </button>
       </div>
       <div class="rm-layouts-row">
@@ -2742,6 +2742,13 @@
                 title="Broadcast this arena's boundary and timers to every connected player">
           Load Arena
         </button>
+        <!-- Overwrites the arena SELECTED in the picker beside it, so the usual
+             edit -- load it, adjust it, put it back -- needs no name typed. -->
+        <button class="rm-btn rm-btn-grid" ng-click="derbyOverwriteLayout()"
+                ng-disabled="!derbyUi.selected || derby.boundaryCount < 3 || derbyActive()"
+                title="Replace the selected arena with the one on screen now">
+          Overwrite
+        </button>
         <!-- ADMIN ONLY, for the same reason the track layout Delete is: an
              arena is a boundary driven corner by corner and a grid placed slot
              by slot, and deleting one is not undoable. -->
@@ -2749,9 +2756,17 @@
                 ng-disabled="!derbyUi.selected || derbyActive()"
                 title="Delete this saved arena from the server">✕</button>
       </div>
+      <div class="rm-layouts-confirm" ng-if="derbyUi.confirm">
+        <div class="rm-layouts-confirm-text">{{ derbyUi.confirm.text }}</div>
+        <div class="rm-layouts-row">
+          <button class="rm-btn rm-btn-end" ng-click="confirmDerbyAction()">{{ derbyUi.confirm.ok }}</button>
+          <button class="rm-btn" ng-click="cancelDerbyAction()">Cancel</button>
+        </div>
+      </div>
       <div class="rm-layouts-hint">
         An arena is its boundary polygon, both timers, the reset limit and the
         starting grid, stored per map: the same way track layouts are.
+        <b>Overwrite</b> replaces the arena selected above with the one on screen.
       </div>
     </div>
 

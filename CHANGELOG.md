@@ -6,6 +6,30 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.16.1 - Overwrite a saved arena
+
+#### Added
+
+- **Overwrite, for saved derby arenas.** It sits beside Load Arena and replaces
+  the arena selected in the picker with the one on screen, so the edit an admin
+  makes most -- load an arena, adjust it, put it back -- needs no name typed.
+  It asks first, because nothing puts the old version back.
+
+#### Fixed
+
+- **Saving an arena under a name that already existed destroyed the old one
+  without a word.** The server replaces a same-named arena by design, and that
+  was the only way to overwrite one: retype its name exactly and press Save. So
+  the button meant for new arenas was also a silent overwrite for any name typed
+  again. It is now Save As New, and a name that is already taken asks before it
+  replaces anything. The name match is case-insensitive, like the server's, so
+  "Pit" is recognised as the arena called "pit" rather than looking new.
+
+- **Deleting a saved arena now asks first**, the same as deleting a track layout.
+
+This is the track layouts' Save As New and Overwrite split, which they have had
+for a long time, brought across to the arena panel for the same reasons.
+
 ## 0.16.0 - Place mode reaches the arena
 
 #### Added
