@@ -623,6 +623,9 @@ angular.module('beamng.apps')
         if ($scope.adminTab === 'cup' || $scope.adminTab === 'admin') {
           bngApi.engineLua('raceManager.cupRequestState()');
         }
+        if ($scope.adminTab === 'admin') {
+          bngApi.engineLua('raceManager.mapRequest()');
+        }
       }
       // The one entry point. Kept named selectAdminTab because every caller in
       // the template already says that, and because what it selects IS the tab
@@ -1628,7 +1631,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.16.1';
+      var APP_BUILD = '0.17.1';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -3233,6 +3236,11 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           }
           // Admin status gates the editor, so the Lua-side flag moves with it.
           pushEditorOpen();
+          // Logging in with the Admin tab already open changes no tab, so the
+          // map list would never be asked for.
+          if (ok && $scope.adminTab === 'admin') {
+            bngApi.engineLua('raceManager.mapRequest()');
+          }
         });
       });
 
@@ -4289,6 +4297,117 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.clearLocalResults = function () {
         $scope.resultsUi.confirmLocal = false;
         bngApi.engineLua('raceManager.clearLocalResults()');
+      };
+
+      // ------------------------------------------------------------------
+      // Map switching and map votes
+      // ------------------------------------------------------------------
+      // An admin switches at will (Admin tab); anyone may call a vote, which
+      // passes at the server's percentage of everyone connected. A switch
+      // disconnects everyone and restarts the server, so it asks first and can
+      // be stopped during the countdown. The server owns the list: the map
+      // zips it can see plus the stock levels.
+      $scope.maps = { list: [], current: '', phase: 'idle', left: 0, voting: true, votePercent: 60 };
+      // `where` is the panel whose menu is open: 'admin' or 'driver'.
+      $scope.mapsUi = { menu: null, pick: null, confirm: false, percent: 60, myVote: null,
+                        percentEditing: false, driverOpen: false };
+      $scope.$on('RaceManagerMaps', function (event, data) {
+        if (!data) { return; }
+        $scope.$evalAsync(function () {
+          // Every push is the whole state except the list, which only comes
+          // when asked for. Replaced, not merged, so a finished vote clears.
+          var list = data.list ? toArray(data.list) : $scope.maps.list;
+          $scope.maps = data;
+          $scope.maps.list = list;
+          if (data.phase !== 'idle') { $scope.mapsUi.confirm = false; }
+          if (!$scope.mapsUi.percentEditing) { $scope.mapsUi.percent = data.votePercent; }
+          if (!data.vote || !$scope.mapsUi.myVote || $scope.mapsUi.myVote.id !== data.vote.id) {
+            $scope.mapsUi.myVote = null;
+          }
+        });
+      });
+      $scope.mapsRefresh = function () {
+        bngApi.engineLua('raceManager.mapRequest()');
+      };
+      $scope.mapsMenuOpen = function (where) { return $scope.mapsUi.menu === where; };
+      $scope.mapsToggleMenu = function (where) {
+        $scope.mapsUi.menu = $scope.mapsUi.menu === where ? null : where;
+        if (!$scope.mapsUi.menu) { return; }
+        // Asked for on every open: a driver has no tab change to trigger it.
+        $scope.mapsRefresh();
+        revealDropdown(where === 'admin' ? '.rm-maps .rm-layout-menu' : '.rm-mapvote .rm-layout-menu');
+      };
+      $scope.mapsPick = function (m) {
+        $scope.mapsUi.menu = null;
+        $scope.mapsUi.confirm = false;
+        $scope.mapsUi.pick = m && !m.current ? m : null;
+      };
+      $scope.mapsLabel = function (m) {
+        return m ? (m.label || m.name) : '';
+      };
+      $scope.mapsCurrentLabel = function () {
+        var list = $scope.maps.list;
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].current) { return list[i].label || list[i].name; }
+        }
+        return $scope.maps.current || 'unknown';
+      };
+      $scope.mapsAsk = function () {
+        if ($scope.mapsUi.pick) { $scope.mapsUi.confirm = true; }
+      };
+      $scope.mapsCancelAsk = function () { $scope.mapsUi.confirm = false; };
+      $scope.mapsSwitch = function () {
+        var m = $scope.mapsUi.pick;
+        $scope.mapsUi.confirm = false;
+        if (!m) { return; }
+        bngApi.engineLua('raceManager.mapSwitch(' + luaStr(m.name) + ')');
+      };
+      $scope.mapsCancel = function () {
+        bngApi.engineLua('raceManager.mapCancel()');
+      };
+      $scope.mapsVoteStart = function () {
+        var m = $scope.mapsUi.pick;
+        if (!m) { return; }
+        $scope.mapsUi.confirm = false;
+        bngApi.engineLua('raceManager.mapVoteStart(' + luaStr(m.name) + ')');
+      };
+      $scope.mapsVote = function (yes) {
+        var v = $scope.maps.vote;
+        if (!v) { return; }
+        $scope.mapsUi.myVote = { id: v.id, yes: !!yes };
+        bngApi.engineLua('raceManager.mapVote(' + (!!yes) + ')');
+      };
+      $scope.mapsVoted = function (yes) {
+        var mine = $scope.mapsUi.myVote;
+        return !!mine && mine.yes === !!yes;
+      };
+      $scope.mapsVoteCancel = function () {
+        bngApi.engineLua('raceManager.mapVoteCancel()');
+      };
+      $scope.mapsVoteLock = function (locked) {
+        bngApi.engineLua('raceManager.mapVoteConfig(' + (!locked) + ', nil)');
+      };
+      $scope.mapsVotePercent = function () {
+        $scope.mapsUi.percentEditing = false;
+        var n = parseInt($scope.mapsUi.percent, 10);
+        if (!(n >= 1 && n <= 100)) { $scope.mapsUi.percent = $scope.maps.votePercent; return; }
+        bngApi.engineLua('raceManager.mapVoteConfig(nil, ' + n + ')');
+      };
+      // The driver's panel asks for the list as it opens: there is no tab
+      // change on a driver's screen to ask for it.
+      $scope.mapsDriverToggle = function () {
+        $scope.mapsUi.driverOpen = !$scope.mapsUi.driverOpen;
+        if ($scope.mapsUi.driverOpen) { $scope.mapsRefresh(); }
+      };
+      // What config.json's mapRestart will do, before a switch has resolved it.
+      $scope.mapsRestartText = function () {
+        switch ($scope.maps.restart) {
+          case 'watch':    return "Restart: the Management Tool's config check.";
+          case 'relaunch': return 'Restart: Race Manager starts the server again.';
+          case 'exit':     return 'Restart: your service manager, when the server stops.';
+          case 'manual':   return 'Restart: by hand.';
+          default:         return 'Restart: the Management Tool if it started the server, otherwise Race Manager.';
+        }
       };
 
       // ------------------------------------------------------------------

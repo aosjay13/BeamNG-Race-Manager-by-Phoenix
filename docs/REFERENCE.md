@@ -1247,7 +1247,7 @@ Some details worth knowing:
 
 ```
 Resources/Server/RaceManager/
-    main.lua  derby.lua          the plugin. REPLACED by every deploy.
+    main.lua  derby.lua  ...     the plugin. REPLACED by every deploy.
     Data/                        everything the server owns. Never written by a release.
         Race Layout/<map>.json   every race on that map
         Derby Arena/<map>.json   every arena on that map
@@ -1256,6 +1256,7 @@ Resources/Server/RaceManager/
         roster.json              display names
         garage.json              the allowed vehicles
         results/                 one .txt per session
+        mapSwitch.json           a map switch waiting for its restart; gone after it
 ```
 
 Everything under `Data/` belongs to the server: the tracks an admin built, the
@@ -2515,6 +2516,109 @@ There is one copy of each board in the app, not one per panel.
 A **driver's** leaderboard is not driven by the tab row, which they never see:
 it follows the session. Once a derby forms up, their board is the derby
 standings, through the countdown and the derby itself.
+
+## Switching maps
+
+The **Map** row on the **⚙** tab changes the map the server runs. BeamMP reads
+its map and its list of client mods once, at startup, so a switch always means a
+restart:
+
+1. A 10 second countdown, shown to everyone. **Stop** cancels it.
+2. Everyone is disconnected with a message saying which map is coming and to
+   rejoin in about a minute. New joins are turned away until the restart.
+3. The map zips move, the `Map` line in `ServerConfig.toml` is rewritten, and
+   the server restarts (see [How the server restarts](#how-the-server-restarts)).
+4. After the restart the Map row says whether the switch took.
+
+Either admin tier can switch: switching back undoes it, and choosing the
+night's venue is part of running it. Nothing is switched while a race,
+qualifying, a derby or a drag pass is running.
+
+### Where the maps come from
+
+The list is the stock levels plus every map zip the server can see, read from
+inside the zips (the level name is often not the zip name:
+`DardsBarkRiverInternational.zip` holds `bark_river_sc`). It uses the BeamMP
+Server Management Tool's folders, so the tool and Race Manager agree:
+
+| Folder | Holds |
+|---|---|
+| `custom_maps/` beside `BeamMP-Server.exe` | Map zips that are not running. Put new maps here. |
+| `Resources/Client/` | The running map's zip, with your vehicle mods |
+
+On a switch, the old map's zip moves to `custom_maps/` and the new one moves into
+`Resources/Client/`, so players only ever download the map in use. Vehicle mods
+are never touched. If a move fails, everything is put back and the server keeps
+running the old map.
+
+Map zips anywhere else, such as a `Resources/Maps/` folder, are not listed. Move
+them into `custom_maps/`.
+
+### Map votes
+
+Any driver can call a vote from the **Map: call a vote** band under the board.
+Everyone gets 30 seconds and a Yes / No bar at the top of the app, and it passes
+when the yes votes reach the pass mark **of everyone connected**. Not voting
+counts as no, so a few keen drivers cannot move a lobby that is not paying
+attention. A driver alone on the server passes their own vote, which is how
+someone gets onto a different map to practice.
+
+A vote settles as soon as it can: it passes the moment enough have said yes, and
+fails the moment the drivers who have not voted could no longer carry it. A
+passed vote starts the normal countdown, which an admin can still **Stop**.
+After a driver's vote fails, drivers wait 60 seconds before calling another.
+
+The **Map votes** row on the **⚙** tab is the race director's control:
+
+- **Open / Locked**: locked stops drivers calling votes, and stops a driver's
+  vote that is already running. Admins can always call one.
+- **Pass at N%**: the share of everyone connected who must vote yes (default
+  60).
+- **Start Vote** on the Map row calls one for the chosen map, and **Stop Vote**
+  ends a vote in progress. **Switch Map** overrides a running vote.
+
+Both settings are saved to `config.json` (`mapVoting`, `mapVotePercent`), so a
+lock survives the restart the next switch causes.
+
+### How the server restarts
+
+Set by `mapRestart` in `config.json`:
+
+| Value | What happens |
+|---|---|
+| `auto` (default) | `watch` if the Management Tool started the server, `relaunch` otherwise |
+| `watch` | Waits for the Management Tool's config check to restart the server, up to `mapRestartGrace` seconds (default 90), then relaunches it itself |
+| `relaunch` | Starts a small helper script, stops the server, and the helper starts it again in the same folder with the same command line once the old one has exited |
+| `exit` | Stops the server. For a service manager, hosting panel or restart loop that starts it again on its own |
+| `manual` | Moves the files and rewrites the config, then waits. Restart the server yourself |
+
+**With the BeamMP Server Management Tool (v3.1):** open **Auto Restart Timers**,
+tick **Check for config update and restart** and set **Seconds between config
+checks** (10 to 20 is plenty), then **Save**. The tool keeps that setting. It
+restarts the server whenever `ServerConfig.toml` changes, which is exactly what a
+switch does, and the server stays under the tool's control.
+
+Race Manager reads the tool's saved settings, so it knows when that check is
+off. It then restarts the server itself instead of waiting, and says so on the
+Map row. That works, but the new server runs in its own console window outside
+the tool: the tool shows it as stopped, and its scheduled restarts and console
+no longer apply until you stop that window and start the server from the tool
+again.
+
+After a switch from the game, press **Reload** in the Management Tool before
+saving anything there. The tool's main window still shows the old map, and
+saving it would put the old map back and try to move zips that have already
+moved.
+
+**Started by hand** (double-clicking `BeamMP-Server.exe`): `auto` relaunches. The
+old console window closes and a new one opens on the new map. The helper is
+`Data/relaunch.cmd` (`relaunch.sh` on Linux); it waits up to five minutes for the
+old server to exit and is deleted on the next start.
+
+**Linux:** `relaunch` works for a server started from a shell. Under systemd,
+Docker or a hosting panel, set `mapRestart` to `exit` and let the service
+manager bring it back; a second copy started by the helper would fight it for
+the port.
 
 
 ## Drag racing (parallel game mode)

@@ -510,6 +510,49 @@
     </div>
   </div>
 
+  <!-- A MAP VOTE IN PROGRESS, for everyone, admins included: they are in the
+       lobby too. Not voting counts as no, so the tally is against everyone
+       connected rather than against the votes cast. -->
+  <div class="rm-mapvote-live" ng-if="maps.vote && !broadcastMode()">
+    <span class="rm-cup-title">Map vote</span>
+    <span class="rm-mapvote-q">Switch to {{ maps.vote.label }}?</span>
+    <span class="rm-cup-state">{{ maps.vote.yes }} of {{ maps.vote.needed }} yes needed · {{ maps.vote.left }}s</span>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-start': mapsVoted(true)}" ng-click="mapsVote(true)"
+            title="The server restarts onto this map if enough of the lobby agrees">Yes</button>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-end': mapsVoted(false)}" ng-click="mapsVote(false)">No</button>
+  </div>
+
+  <!-- CALLING A MAP VOTE, from a driver's side. Collapsed by default for the
+       same reason the garage is. Hidden while an admin has voting locked. -->
+  <div class="rm-mapvote" ng-if="!isAdmin && !minimalMode() && !broadcastMode() && maps.voting && !maps.vote">
+    <div class="rm-cup-head rm-garage-pickhead" ng-click="mapsDriverToggle()">
+      <span class="rm-cup-title">{{ mapsUi.driverOpen ? '▾' : '▸' }} Map: call a vote</span>
+      <span class="rm-cup-state">{{ maps.votePercent }}% of the lobby to pass</span>
+    </div>
+    <div class="rm-mapvote-row" ng-if="mapsUi.driverOpen && maps.phase === 'idle'">
+      <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': mapsMenuOpen('driver')}">
+        <button type="button" class="rm-layout-trigger"
+                ng-class="{'rm-layout-trigger-empty': !mapsUi.pick}"
+                ng-click="mapsToggleMenu('driver')">
+          <span class="rm-layout-trigger-label">{{ mapsUi.pick ? mapsLabel(mapsUi.pick) : 'Choose a map…' }}</span>
+          <span class="rm-layout-caret">▾</span>
+        </button>
+        <div class="rm-layout-menu" ng-if="mapsMenuOpen('driver')">
+          <div class="rm-layout-option" ng-repeat="m in maps.list track by m.name"
+               ng-class="{'rm-cup-off': m.current}" ng-click="mapsPick(m)">
+            {{ mapsLabel(m) }}<span ng-if="m.current"> (current)</span>
+          </div>
+          <div class="rm-layout-option rm-cup-off" ng-if="!maps.list.length">Loading maps…</div>
+        </div>
+      </div>
+      <button class="rm-btn rm-btn-mini rm-btn-start" ng-disabled="!mapsUi.pick || maps.voteWait > 0"
+              ng-click="mapsVoteStart()"
+              title="Everyone gets 30 seconds to vote. If it passes, the server restarts onto the map.">Start Vote</button>
+      <span class="rm-layouts-hint" ng-if="maps.voteWait > 0">Next vote in {{ maps.voteWait }}s</span>
+      <span class="rm-maps-error" ng-if="maps.error">{{ maps.error }}</span>
+    </div>
+  </div>
+
 
   <!-- ================= Session controls (race mode, admin only) ==========
        These stay outside the tab bar on purpose: they are the buttons an
@@ -2831,6 +2874,83 @@
         the moderator login off again.
       </span>
     </div>
+
+    <!-- MAP. Either tier: a switch is undone by switching back. It disconnects
+         everyone and restarts the server, so it asks first. A custom menu,
+         not a native <select>: CEF never draws an OS popup over the game. -->
+    <div class="rm-adminbar rm-maps" ng-if="isAdmin">
+      <span class="rm-adminbar-label">Map</span>
+      <span class="rm-maps-current" title="The map the server is running">{{ mapsCurrentLabel() }}</span>
+
+      <div class="rm-layout-dropdown" ng-if="maps.phase === 'idle' && !maps.vote"
+           ng-class="{'rm-layout-dropdown-open': mapsMenuOpen('admin')}">
+        <button type="button" class="rm-layout-trigger"
+                ng-class="{'rm-layout-trigger-empty': !mapsUi.pick}"
+                ng-click="mapsToggleMenu('admin')"
+                title="Map zips in custom_maps and Resources/Client, then the stock levels">
+          <span class="rm-layout-trigger-label">{{ mapsUi.pick ? mapsLabel(mapsUi.pick) : 'Choose a map…' }}</span>
+          <span class="rm-layout-caret">▾</span>
+        </button>
+        <div class="rm-layout-menu" ng-if="mapsMenuOpen('admin')">
+          <div class="rm-layout-option" ng-repeat="m in maps.list track by m.name"
+               ng-class="{'rm-cup-off': m.current}" ng-click="mapsPick(m)">
+            {{ mapsLabel(m) }}<span class="rm-maps-zip" ng-if="m.zip"> {{ m.zip }}</span><span ng-if="m.current"> (current)</span>
+          </div>
+          <div class="rm-layout-option rm-cup-off" ng-if="!maps.list.length">No maps found</div>
+        </div>
+      </div>
+
+      <button class="rm-btn rm-btn-mini rm-btn-end" ng-if="maps.phase === 'idle' && !maps.vote && !mapsUi.confirm"
+              ng-disabled="!mapsUi.pick" ng-click="mapsAsk()"
+              title="Disconnects everyone and restarts the server onto the chosen map">Switch Map</button>
+      <button class="rm-btn rm-btn-mini" ng-if="maps.phase === 'idle' && !maps.vote && !mapsUi.confirm"
+              ng-disabled="!mapsUi.pick" ng-click="mapsVoteStart()"
+              title="Let the lobby decide. Runs even while voting is locked for drivers.">Start Vote</button>
+      <span class="rm-confirm" ng-if="maps.phase === 'idle' && mapsUi.confirm">
+        Switch to {{ mapsLabel(mapsUi.pick) }}? Everyone is disconnected and the server restarts.
+        <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="mapsSwitch()">Yes, switch</button>
+        <button class="rm-btn rm-btn-mini" ng-click="mapsCancelAsk()">Cancel</button>
+      </span>
+      <span class="rm-confirm" ng-if="maps.vote">
+        Vote for {{ maps.vote.label }}: {{ maps.vote.yes }} of {{ maps.vote.needed }} yes, {{ maps.vote.left }}s
+        <button class="rm-btn rm-btn-mini" ng-click="mapsVoteCancel()">Stop Vote</button>
+      </span>
+      <span class="rm-confirm" ng-if="maps.phase === 'countdown'">
+        Switching to {{ maps.targetLabel }} in {{ maps.left }}s
+        <button class="rm-btn rm-btn-mini" ng-click="mapsCancel()">Stop</button>
+      </span>
+      <span class="rm-confirm" ng-if="maps.phase === 'kicking' || maps.phase === 'restarting'">
+        Restarting onto {{ maps.targetLabel }}…
+      </span>
+      <span class="rm-confirm" ng-if="maps.phase === 'staged'">
+        {{ maps.targetLabel }} is set: restart the server to load it.
+      </span>
+      <button class="rm-btn rm-btn-mini" ng-if="maps.phase === 'idle' && !maps.vote && !mapsUi.confirm"
+              ng-click="mapsRefresh()" title="Look for map zips again">Refresh</button>
+
+      <span class="rm-maps-error" ng-if="maps.error">{{ maps.error }}</span>
+      <span class="rm-layouts-hint" ng-if="maps.last && !maps.error">
+        Last switch: {{ maps.last.to }}{{ maps.last.ok ? ', done' : ', failed' }}<span ng-if="maps.last.ok && maps.last.secs">
+        in {{ maps.last.secs }}s</span><span ng-if="maps.last.note">. {{ maps.last.note }}</span>
+      </span>
+      <span class="rm-layouts-hint">
+        {{ maps.note || mapsRestartText() }} Inactive map zips live in the
+        server's custom_maps folder.
+      </span>
+    </div>
+
+    <!-- MAP VOTES. Locking stops drivers calling one; an admin still can. -->
+    <div class="rm-adminbar" ng-if="isAdmin">
+      <span class="rm-adminbar-label">Map votes</span>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-start': maps.voting}"
+              ng-click="mapsVoteLock(maps.voting)"
+              title="Open: any driver may call a map vote. Locked: only admins can.">{{ maps.voting ? 'Open' : 'Locked' }}</button>
+      <span class="rm-layouts-hint">Pass at</span>
+      <input type="number" class="rm-login-input rm-maps-percent" min="1" max="100"
+             ng-model="mapsUi.percent" ng-focus="mapsUi.percentEditing = true"
+             ng-blur="mapsVotePercent()" ng-keydown="$event.keyCode === 13 && mapsVotePercent()">
+      <span class="rm-layouts-hint">% of everyone connected voting yes. Not voting counts as no.</span>
+    </div>
     <div class="rm-adminbar">
       <span class="rm-adminbar-label">Results</span>
       <!-- Two presses. The file this deletes is the only record a league has of
@@ -4408,6 +4528,9 @@
   .rm-login-error { font-size: 11px; color: #f28b82; font-weight: 600; }
   .rm-login-hint { font-size: 10px; color: #9aa0a6; }
   .rm-pw-msg { font-size: 11px; color: #7ee2a8; font-weight: 600; }
+  .rm-maps-current { font-size: 12px; font-weight: 600; color: #e8eaed; }
+  .rm-maps-zip { font-size: 10px; color: #9aa0a6; }
+  .rm-maps-error { font-size: 11px; color: #ff8a80; font-weight: 600; }
 
   /* ============ Admin tabs =============================================== */
   /* One admin panel at a time. Before this, every panel stacked and the app
@@ -5641,6 +5764,24 @@
     background: rgba(66, 133, 244, 0.04);
   }
   .rm-garage-pickhead { cursor: pointer; }
+  /* Map votes: the same band as the garage, and the live vote above it. */
+  .rm-mapvote {
+    padding: 5px 10px;
+    border-bottom: 1px solid rgba(52, 168, 83, 0.25);
+    background: rgba(52, 168, 83, 0.04);
+  }
+  .rm-mapvote-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .rm-mapvote-live {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 6px 10px;
+    border-bottom: 1px solid rgba(52, 168, 83, 0.45);
+    background: rgba(52, 168, 83, 0.12);
+  }
+  .rm-mapvote-q { font-size: 12px; font-weight: 600; color: #e8eaed; }
+  .rm-maps-percent { width: 52px; }
   .rm-garage-pickrow {
     display: flex;
     align-items: center;

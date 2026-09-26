@@ -6,6 +6,58 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.17.1 - The restarted server gets its port back
+
+#### Fixed
+
+- **A server Race Manager restarted after a map switch shut straight down**
+  with `UDPServer bind() failed` in its log, leaving nothing running. The
+  helper that starts the new server was launched with cmd's `start`, which
+  hands it every socket the old server had open, and it passed them on to the
+  new server: so the new server held the old UDP socket and could not bind its
+  own port. It is launched through PowerShell's `Start-Process` now, which
+  passes nothing on, and it also waits until the UDP port is free before
+  starting the server.
+
+- **The helper calls `find`, `tasklist` and `netstat` by full path.** With Git
+  or Cygwin on the PATH, `find` is the Unix one, every check read as "the old
+  server is gone", and the new server started on top of the old.
+
+This only affected the restart Race Manager does itself. The Management Tool's
+own config check restarts the server from the tool and never had the problem.
+
+## 0.17.0 - Switch the map, or let the lobby vote for one
+
+#### Added
+
+- **Map switching from the Admin tab.** Pick a map and press Switch Map: a 10
+  second countdown everyone can see, then everyone is disconnected, the map zips
+  move, `ServerConfig.toml` gets the new `Map`, and the server restarts onto it.
+  The list is the stock levels plus every map zip in `custom_maps/` and
+  `Resources/Client/`, named by the level inside each zip. Either admin tier can
+  switch; nothing switches while a session, derby or drag pass is running.
+
+- **Map votes.** Any driver can call a vote. It passes when the yes votes reach
+  a pass mark (default 60%) of everyone connected, so not voting counts as no.
+  A driver alone on the server passes their own, which is how somebody gets onto
+  another map to practice. Admins can call a vote, stop one, switch over one,
+  and lock voting for drivers while race directing. The lock and the pass mark
+  are saved in `config.json`.
+
+- **The restart happens on its own**, under the BeamMP Server Management Tool or
+  without it. Under the tool, its "Check for config update and restart" does
+  it, and Race Manager reads the tool's settings to know when that check is off.
+  Started by hand, Race Manager starts the server again itself. `mapRestart` in
+  `config.json` picks the method, including `exit` for a service manager.
+
+#### Notes
+
+- The switch code is its own module, `maps.lua`, on both sides. It costs
+  `main.lua` and `raceManager.lua` no top-level locals.
+- `maps.lua` sorts after `main.lua`, and BeamMP runs every `.lua` in the plugin
+  folder on its own, so its handlers are installed by `init()` rather than at
+  file scope. `tests/maps_test.lua` checks it.
+
 ## 0.16.1 - Overwrite a saved arena
 
 #### Added

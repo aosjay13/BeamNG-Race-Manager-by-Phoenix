@@ -234,7 +234,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.16.1'
+local RM_BUILD = '0.17.1'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -8377,6 +8377,19 @@ for _, name in ipairs({
   M[name] = drag[name]
 end
 
+-- Map switching. In a block, so the handle is not a local for the rest of the
+-- file; everything reaches it through M. onMaps is the RM_Maps handler.
+do
+  local maps = require('raceManager/maps')
+  maps.init({ inMultiplayer = inMultiplayer })
+  for _, name in ipairs({
+    'mapRequest', 'mapSwitch', 'mapCancel', 'onMaps',
+    'mapVoteStart', 'mapVote', 'mapVoteCancel', 'mapVoteConfig',
+  }) do
+    M[name] = maps[name]
+  end
+end
+
 -- Post-join: ask the server for the current state once its socket has had a
 -- moment to come up, so a driver who joins a server mid-session sees the live
 -- race without having to open the app and press anything.
@@ -8391,6 +8404,8 @@ local function joinRequestUpdate(dt)
   -- that is three rounds deep would otherwise see an empty board until the next
   -- pass settled, and no entrants at all until somebody built a new ladder.
   drag.dragRequestState()
+  -- And whether a map vote is running or voting is locked, for the vote band.
+  M.mapRequest(false)
 end
 
 function M.onUpdate(dt)
@@ -11825,6 +11840,8 @@ local DISPATCH = {
   RM_DragTree        = drag.onDragTree,
   RM_DragTreeWatch   = drag.onDragTreeWatch,
   RM_DragAborted     = drag.onDragAborted,
+  -- Map switching module: the map list and the switch in progress.
+  RM_Maps            = M.onMaps,
 }
 
 local function bindServerHandlers()

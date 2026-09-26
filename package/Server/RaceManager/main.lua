@@ -150,6 +150,12 @@ local CFG = {
   maxQualiTime    = 7200,    -- seconds (2 h)
   maxRaceTime     = 21600,   -- seconds (6 h), so an endurance race is expressible
   unlimitedResets = -1,      -- the sentinel, not a preference: do not change
+
+  -- Map switching and voting. See maps.lua.
+  mapRestart      = 'auto',  -- auto | watch | relaunch | exit | manual
+  mapRestartGrace = 90,      -- seconds to wait for an outside restart (watch)
+  mapVoting       = true,    -- drivers may call a map vote; admins always can
+  mapVotePercent  = 60,      -- share of everyone connected who must vote yes
 }
 -- Broadcast cadence while racing. This is also the live-position refresh rate:
 -- every push re-sorts the running order and re-stamps each driver's position,
@@ -1788,7 +1794,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.16.1'
+local RM_BUILD = '0.17.1'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -6233,6 +6239,10 @@ local function applyConfigTable(data)
   num('ghostMaxSeconds', 0, 300)
   num('holdTolerance', 0.1, 10)
   num('holdCorrectEvery', 0.05, 5)
+  str('mapRestart', { auto = true, watch = true, relaunch = true, exit = true, manual = true })
+  num('mapRestartGrace', 10, 3600)
+  bool('mapVoting')
+  num('mapVotePercent', 1, 100)
   -- The ghost window has to be a window. A file with min above max would ghost
   -- nobody, silently, for the whole season.
   if CFG.ghostMinSeconds > CFG.ghostMaxSeconds then
@@ -6298,6 +6308,10 @@ local function configFileText()
     ghostMaxSeconds = CFG.ghostMaxSeconds,
     holdTolerance   = CFG.holdTolerance,
     holdCorrectEvery = CFG.holdCorrectEvery,
+    mapRestart      = CFG.mapRestart,
+    mapRestartGrace = CFG.mapRestartGrace,
+    mapVoting       = CFG.mapVoting,
+    mapVotePercent  = CFG.mapVotePercent,
   })
 end
 
@@ -8638,6 +8652,44 @@ end
 -- ===========================================================================
 
 -- ===========================================================================
+-- MAP SWITCHING: its own module
+-- ===========================================================================
+-- A function called in place, not a do-block: its locals come out of its own
+-- budget of 200. A do-block's count against this chunk while it runs, and two
+-- here sat one above the file's peak.
+--
+-- pcall'd: a maps.lua that fails to load costs the Map row and nothing else.
+-- Its RM_Map* handlers are installed by init, not at file scope; maps.lua
+-- says why.
+;(function ()
+  local ok, mod = pcall(require, 'maps')
+  if ok and type(mod) == 'table' then
+    mod.paths.data = DATA_DIR
+    mod.init({
+      CFG = CFG, saveConfig = saveConfigToDisk,
+      -- Either tier: a switch is undone by switching back, and running the
+      -- night is the moderator's job.
+      requireAuth = requireAuth, isAdmin = isAuthenticated,
+      notifyField = notifyField,
+      getCurrentMap = getCurrentMap,
+      jsonParse = jsonParse, jsonStringify = jsonStringify,
+      listDirectory = listDirectory, makeDirectory = makeDirectory,
+      removeFile = removeFile,
+      -- Why a switch has to wait, or nil. A restart ends whatever is running.
+      busy = function ()
+        if sessionUnderWay() then return 'a session is running' end
+        if race.derbyUnderWay() then return 'a derby is running' end
+        if race.dragUnderWay() then return 'a drag pass is running' end
+        return nil
+      end,
+    })
+    race.mapsWarm = mod.warm
+  else
+    print('[RaceManager] maps.lua did not load, so map switching is off: ' .. tostring(mod))
+  end
+end)()
+
+-- ===========================================================================
 -- DRIVER ROSTER (persistent display names)
 -- ===========================================================================
 -- Display names used to last exactly as long as a connection did. That was not
@@ -10950,6 +11002,17 @@ function onInit()
   -- derby countdown froze on 3 forever for want of exactly this line.
   MP.RegisterEvent('RM_DragTick',         'RM_DragTick')
   MP.RegisterEvent('onPlayerDisconnect',  'RM_Drag_onPlayerDisconnect')
+  -- Map switching (isolated module; see maps.lua). RM_MapTick is its timer.
+  MP.RegisterEvent('RM_MapRequest',       'RM_onMapRequest')
+  MP.RegisterEvent('RM_MapSwitch',        'RM_onMapSwitch')
+  MP.RegisterEvent('RM_MapCancel',        'RM_onMapCancel')
+  MP.RegisterEvent('RM_MapVoteStart',     'RM_onMapVoteStart')
+  MP.RegisterEvent('RM_MapVote',          'RM_onMapVote')
+  MP.RegisterEvent('RM_MapVoteCancel',    'RM_onMapVoteCancel')
+  MP.RegisterEvent('RM_MapVoteConfig',    'RM_onMapVoteConfig')
+  MP.RegisterEvent('RM_MapTick',          'RM_MapTick')
+  MP.RegisterEvent('onPlayerAuth',        'RM_Map_onPlayerAuth')
+  MP.RegisterEvent('onPlayerDisconnect',  'RM_Map_onPlayerDisconnect')
   -- Cup / series points (isolated module; see the CUP section). No client sends
   -- these yet -- the admin panel comes with the UI work -- but the handlers are
   -- registered so the module is complete and reachable the moment it does.
@@ -10981,6 +11044,7 @@ function onInit()
   rosterWarm()       -- and the display names an admin has already assigned
   cupWarm()          -- and a cup left running when the server went down
   race.dragWarm()    -- and a drag ladder left half-run when it did
+  if race.mapsWarm then race.mapsWarm() end  -- and whether a map switch took
   print('[RaceManager] Server plugin loaded (build ' .. RM_BUILD
     .. ', circuit edition, map: ' .. getCurrentMap() .. ')')
 end
