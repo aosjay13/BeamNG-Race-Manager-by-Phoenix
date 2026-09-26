@@ -234,7 +234,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.17.1'
+local RM_BUILD = '0.17.2'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -9840,6 +9840,36 @@ function M.setSpectating(on)
   end
 end
 
+-- Ready for the grid: the server puts the car on its slot. Refused here with
+-- no car to put there, because the server would mark them ready and the
+-- placement would find nothing to move.
+function M.setReady(on)
+  if not inMultiplayer() then return end
+  if on ~= false and not ownVehicle() then
+    pushNotice('grid', 'Get in a car first', { sub = 'Then press Ready' })
+    return
+  end
+  TriggerServerEvent('RM_SetReady', jsonEncode({ ready = on ~= false }))
+end
+
+-- Admin: ready somebody else (their panel is closed or broken), or everyone.
+function M.readyDriver(pid)
+  pid = tonumber(pid)
+  if pid and inMultiplayer() then
+    TriggerServerEvent('RM_SetReady', jsonEncode({ ready = true, pid = pid }))
+  end
+end
+
+function M.readyAll()
+  if inMultiplayer() then TriggerServerEvent('RM_ReadyAll', '') end
+end
+
+function M.setReadyCheck(on)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetReadyCheck', jsonEncode({ on = on == true }))
+  end
+end
+
 -- ---------------------------------------------------------------------------
 -- Broadcast camera: put the view on a named driver
 -- ---------------------------------------------------------------------------
@@ -10460,9 +10490,15 @@ local function onServerUpdate(rawData)
   -- is close enough to Lua's 200-local ceiling that a new one is a real cost, and
   -- the ceiling fails by making the whole mod vanish with no error.
   session.myHeat = nil
+  -- Our own status and slot, for the Ready button. 'called' means the grid is
+  -- waiting on us. On session for the same reason myHeat is.
+  local wasStatus = session.myStatus
+  session.myStatus, session.myGridPos = nil, nil
   if myId and type(data.drivers) == 'table' then
     for _, d in ipairs(data.drivers) do
       if tonumber(d.id) == myId then
+        session.myStatus  = d.status
+        session.myGridPos = tonumber(d.gridPos)
         isBystander = d.bystander == true
         -- The blue flag rides on the row rather than on a field of its own,
         -- because it is a fact about ONE driver and this loop is already here
@@ -10489,6 +10525,15 @@ local function onServerUpdate(rawData)
   -- read it.
   if session.lappingAhead and not wasLapping and sessionRunning() then
     pushNotice('session', 'Backmarker ahead: they are being shown the blue flag')
+  end
+  -- Called to the grid. On the HUD, because the driver it is for may not
+  -- have the app open, and on the edge, so a late arrival is told too. Not
+  -- after pressing Not ready: they did that themselves.
+  if session.myStatus == 'called' and wasStatus ~= 'called' and wasStatus ~= 'gridded' then
+    pushNotice('grid', 'The grid is forming', {
+      sub = 'Press READY in Race Manager to take '
+        .. (session.myGridPos and ('slot P' .. session.myGridPos) or 'your slot'),
+    })
   end
 
   -- Display names on BeamMP's nametags. The switch is the server's so every
@@ -10571,6 +10616,8 @@ local function onServerUpdate(rawData)
   -- route state. Logging out and back in is such a thing, which is why that
   -- looked like the cure.
   data.driverFlag = driverFlag()
+  data.myStatus   = session.myStatus
+  data.myGridPos  = session.myGridPos
   guihooks.trigger('RaceManagerUpdate', data)
 end
 

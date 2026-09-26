@@ -353,6 +353,19 @@
       </button>
     </span>
 
+    <!-- CALLED TO THE GRID. The car goes onto the slot on Ready and not before,
+         so nobody is put on the grid in the middle of something else. -->
+    <span class="rm-ready" ng-if="phase === 'grid' && myStatus === 'called'">
+      <button class="rm-btn rm-btn-start rm-btn-ready" ng-click="setReady(true)"
+              title="Put your car on your grid slot and hold it there until the start">READY</button>
+      Grid forming: press Ready to take {{ myGridPos ? 'slot P' + myGridPos : 'your slot' }}.
+    </span>
+    <span class="rm-ready" ng-if="phase === 'grid' && readyCheck && myStatus === 'gridded'">
+      ✓ Ready on {{ myGridPos ? 'P' + myGridPos : 'the grid' }}
+      <button class="rm-btn rm-btn-mini" ng-click="setReady(false)"
+              title="Off your slot again, as a ghost, to fix something. Press Ready again before the start or you sit it out.">Not ready</button>
+    </span>
+
     <span class="rm-entry-state" ng-if="sessionUnderWay() && !spectating && !retireUi.confirm">
       <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="retireUi.confirm = true"
               title="Pull out of this session. You keep a classified position and score like any other retirement.">
@@ -576,11 +589,29 @@
          rather than sitting beside it, and the server refuses whichever of the
          two the session is not set up for. -->
     <button class="rm-btn rm-btn-start" ng-click="startCountdown()"
-            ng-if="phase === 'grid' && !paceStart()"
-            title="Count the field down and release the hold. Starts whichever session is on the grid.">Start Countdown</button>
+            ng-if="phase === 'grid' && !paceStart() && !readyUi.confirm"
+            ng-disabled="readyNobody()"
+            title="{{ readyNobody() ? 'Nobody is ready yet: wait, or press Ready All' : 'Count the field down and release the hold. Starts whichever session is on the grid.' }}">Start Countdown</button>
     <button class="rm-btn rm-btn-start rm-btn-pace" ng-click="startRace()"
-            ng-if="phase === 'grid' && paceStart()"
-            title="Release the field under yellow for a pace lap. The green flag falls as the leader comes back to the line.">Start Race</button>
+            ng-if="phase === 'grid' && paceStart() && !readyUi.confirm"
+            ng-disabled="readyNobody()"
+            title="{{ readyNobody() ? 'Nobody is ready yet: wait, or press Ready All' : 'Release the field under yellow for a pace lap. The green flag falls as the leader comes back to the line.' }}">Start Race</button>
+    <!-- THE CALL TO THE GRID: who is on their slot, and the way past whoever
+         is not. Whoever is still not ready at the start sits that session out,
+         so starting without them asks first. -->
+    <span class="rm-ready-sum" ng-if="readyShown()"
+          ng-class="{'rm-ready-all': readyCount().ready === readyCount().total}"
+          title="Drivers on their slot. Anyone not ready when you start sits the session out.">
+      Ready {{ readyCount().ready }}/{{ readyCount().total }}
+    </span>
+    <button class="rm-btn rm-btn-mini" ng-if="readyShown() && readyCount().ready < readyCount().total && !readyUi.confirm"
+            ng-click="readyAll()"
+            title="Put every driver who has not pressed Ready on their slot now">Ready All</button>
+    <span class="rm-confirm" ng-if="readyUi.confirm && phase === 'grid'">
+      Start without {{ notReadyNames() }}?
+      <button class="rm-btn rm-btn-mini rm-btn-start" ng-click="readyConfirmStart()">Start anyway</button>
+      <button class="rm-btn rm-btn-mini" ng-click="readyCancelStart()">Wait</button>
+    </span>
     <!-- RED IS ITS OWN INSTRUMENT and it is the only flag button a RACE offers.
          Red is a condition laid over the session -- stop, something is being
          cleaned up -- and it is the one thing neither the caution nor the
@@ -1099,6 +1130,13 @@
               ng-disabled="!canSetRules()"
               title="The feature grid from the heat results: winners on the front row, then the seconds, interleaved by heat.">Heats</button>
       <span class="rm-setting-val">{{ startSlots }} start position{{ startSlots === 1 ? '' : 's' }}</span>
+    </span>
+    <span class="rm-setting" title="On: Generate Grid and Start Quali call drivers to the grid, and each presses Ready to be put on their slot. Off: everyone is placed at once.">
+      <label>Ready check</label>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': readyCheck}"
+              ng-click="setReadyCheck(true)" ng-disabled="!canSetRules()">On</button>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': !readyCheck}"
+              ng-click="setReadyCheck(false)" ng-disabled="!canSetRules()">Off</button>
     </span>
     <span class="rm-setting-warn" ng-if="startSlots > 0 && entrants > startSlots">
       ⚠ {{ entrants }} entered but only {{ startSlots }} start positions placed
@@ -4139,6 +4177,8 @@
           <td class="rm-col-status">
             <span class="rm-light" ng-class="'rm-light-' + row.status"></span>
             <span class="rm-status-text">{{ row.spectating ? 'Spectating' : statusLabel(row.status) }}</span>
+            <button class="rm-btn rm-btn-mini" ng-if="isAdmin && phase === 'grid' && row.status === 'called'"
+                    ng-click="readyDriver(row)" title="Put this driver on their slot now">Place</button>
           </td>
         </tr>
         <tr ng-if="!drivers.length">
@@ -4249,6 +4289,8 @@
             <span class="rm-light" ng-class="'rm-light-' + row.status"></span>
             <span ng-if="row.status === 'finished'" class="rm-finished-flag">🏁</span>
             <span class="rm-status-text" title="{{ row.outReason }}">{{ (row.finishTime != null && row.status !== 'dsq') ? formatLap(row.finishTime) : outcomeLabel(row) }}</span>
+            <button class="rm-btn rm-btn-mini" ng-if="isAdmin && phase === 'grid' && row.status === 'called'"
+                    ng-click="readyDriver(row)" title="Put this driver on their slot now">Place</button>
           </td>
         </tr>
         <tr ng-if="!drivers.length">
@@ -5637,6 +5679,12 @@
   .rm-light-waiting    { background: #9aa0a6; }
   .rm-light-qualifying { background: #ab47bc; box-shadow: 0 0 5px rgba(171, 71, 188, 0.8); }
   .rm-light-gridded    { background: #4285f4; box-shadow: 0 0 5px rgba(66, 133, 244, 0.8); }
+  .rm-light-called     { background: #fbbc05; box-shadow: 0 0 5px rgba(251, 188, 5, 0.8); }
+  /* The call to the grid: the driver's Ready prompt and the admin's count. */
+  .rm-ready { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #e8eaed; }
+  .rm-btn-ready { font-weight: 700; letter-spacing: 0.5px; padding: 4px 14px; }
+  .rm-ready-sum { font-size: 12px; font-weight: 700; color: #fbbc05; }
+  .rm-ready-sum.rm-ready-all { color: #7ee2a8; }
   .rm-light-racing     { background: #34a853; box-shadow: 0 0 6px rgba(52, 168, 83, 0.9); }
   .rm-light-finished   { background: #e8eaed; }
   .rm-light-dnf        { background: #ea4335; }

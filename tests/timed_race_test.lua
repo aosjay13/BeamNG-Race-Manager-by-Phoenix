@@ -88,7 +88,9 @@ local function lap(pid)
 end
 
 onInit()
-RM_onLogin(0, '{"password":"phoenix"}')
+-- The ready check is off after every admin login here: this suite pins the
+-- race engine behind it. tests/ready_test.lua covers calling the grid.
+RM_onLogin(0, '{"password":"phoenix"}'); RM_onSetReadyCheck(0, '{"on":false}')
 for pid in pairs(connected) do RM_onPlayerJoin(pid) end
 -- The admin runs the session rather than driving it, so the field under test is
 -- three cars and the leader is unambiguous.

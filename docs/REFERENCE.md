@@ -376,8 +376,9 @@ out and then had no way back in.
 
 Press **Start Quali**, then **Start Countdown**. Start Quali forms a
 qualifying grid exactly the way Generate Grid forms a race one - every
-entrant is stood on a start position and held - and the countdown releases
-the field.
+entrant is called to the grid, and stood on a start position and held once
+they press Ready (see [The ready check](#the-ready-check)) - and the countdown
+releases the field.
 
 **The out lap.** The field starts from a standing grid, so the first lap is
 the lap you spent getting off the line. It is given away: **not timed, not
@@ -552,14 +553,18 @@ the stragglers are taken where they stand and the session closes normally.
      column and press Enter. Pinning a slot someone else holds takes it off
      them rather than doubling up; unpinned drivers fall in behind by quali
      time.
-3. Press **Generate Grid**. Every entered driver is **placed on their start
-   position and held there** - you cannot move until the countdown finishes,
-   so nobody jumps the start. The header shows your slot and a `HOLD` tag.
-   If there are more drivers than placed start positions, chat warns you.
-   Cars are ghosted while the field forms up and land one after another
-   rather than all at once, so a full grid cannot refuse a placement for an
-   occupied slot or arrive interpenetrated and blow itself apart; collisions
-   come back once everyone is standing still on their slot.
+3. Press **Generate Grid**. Every entered driver is **called to the grid**:
+   they get a slot, and a **READY** button in the Race Entry row (plus a HUD
+   notice, for anyone with the app closed). Nobody is moved until they press
+   it. See [The ready check](#the-ready-check).
+
+   Once a driver is ready they are **placed on their start position and held
+   there** - you cannot move until the countdown finishes, so nobody jumps
+   the start. The header shows your slot and a `HOLD` tag. If there are more
+   drivers than placed start positions, chat warns you. Cars are ghosted while
+   they land, so a placement cannot be refused for an occupied slot or arrive
+   interpenetrated and blow itself apart; collisions come back once the car is
+   standing still on its slot.
 4. Press **Start Countdown**: everyone gets a synchronized 3‑2‑1‑**GO!**
    shown as **start lights**. Three lamps go amber one at a time as the count
    falls, then all three snap green together on GO, which is what a short-track
@@ -950,6 +955,47 @@ It is per session - a new race starts with nobody holding it - and it is decided
 by the server, so every leaderboard agrees. Qualifying highlights the **quali
 best** (the time that session is scored on); the race highlights the **race
 best**.
+
+### The ready check
+
+Forming a grid (Generate Grid or Start Quali) used to put every entrant on a
+slot and freeze them there at once, whatever they were doing: tuning, in a
+menu, halfway across the map. Now it **calls** them to the grid instead.
+
+**For a driver:**
+
+- A **READY** button appears in the Race Entry row, with your slot
+  (`Grid forming: press Ready to take slot P3`). A HUD notice says the same, so
+  you see it with the app closed.
+- Press it and your car goes onto your slot and is held for the start. You need
+  to be in a car; the button says so if you are not.
+- **Not ready** takes you back off the slot, as a ghost so you can drive away
+  through the parked field. Press Ready again before the start.
+- **Not ready when the session starts** means you sit that one out: you stay a
+  ghost and watch, and you are called again for the next grid. Nothing is
+  recorded against you; you never started.
+- Joining the server, or pressing Race after Spectate, while the grid is being
+  called puts you at the **back** of it with a Ready button of your own, until
+  the start positions run out.
+
+**For an admin or moderator**, beside Start Countdown:
+
+- **Ready 5/7** counts drivers on their slots. It turns green when the grid is
+  full, and chat tells you the moment the last driver readies.
+- **Ready All** puts everyone still not ready onto their slots now: the old
+  behavior, for when you just want to go.
+- **Place**, on a driver's row, readies that one driver, for somebody whose
+  panel is closed or broken.
+- **Start Countdown** (or Start Race) with drivers still not ready asks first:
+  *Start without Bob, Cara?* Starting with **nobody** ready is refused.
+- Pressing **Generate Grid** again keeps everyone who is already ready.
+
+On the board, a driver waiting on the call shows **Not Ready** with an amber
+light, and a driver on their slot shows **Ready**.
+
+**Ready check: On / Off** in the Grid settings, and `readyCheck` in
+`config.json`. Off forms the grid the old way, with everyone placed and held at
+once. It applies from the next grid.
 
 ### Holding the grid
 

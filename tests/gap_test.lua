@@ -80,7 +80,9 @@ end
 local function push() RM_onRequestState(1) end
 
 onInit()
-RM_onLogin(1, '{"password":"phoenix"}')
+-- The ready check is off after every admin login here: this suite pins the
+-- race engine behind it. tests/ready_test.lua covers calling the grid.
+RM_onLogin(1, '{"password":"phoenix"}'); RM_onSetReadyCheck(1, '{"on":false}')
 for pid = 1, 4 do RM_onPlayerJoin(pid) end
 RM_onSetTotalLaps(1, '{"laps":5}')
 RM_onGenerateGrid(1)

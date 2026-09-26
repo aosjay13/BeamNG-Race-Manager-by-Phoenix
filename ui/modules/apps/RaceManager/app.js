@@ -1593,6 +1593,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         waiting:    'Waiting',
         qualifying: 'On Track',
         gridded:    'On Grid',
+        called:     'Not Ready',
         racing:     'Racing',
         finished:   'Finished',
         dsq:        'Disqualified',
@@ -1631,7 +1632,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.17.1';
+      var APP_BUILD = '0.17.2';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -1769,7 +1770,11 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         }
         return PHASE_LABELS[$scope.phase] || $scope.phase;
       };
-      $scope.statusLabel = function (s) { return STATUS_LABELS[s] || s; };
+      $scope.statusLabel = function (s) {
+        // While a grid is being called, on the slot means Ready.
+        if (s === 'gridded' && $scope.readyCheck && $scope.phase === 'grid') { return 'Ready'; }
+        return STATUS_LABELS[s] || s;
+      };
 
       // Should this driver's row read OUT LAP where its lap time goes?
       //
@@ -2432,6 +2437,12 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.entrants = data.entrants || 0;
           $scope.gridMode = data.gridMode || 'quali';
           $scope.startSlots = data.startSlots || 0;
+          // The ready check. myStatus and myGridPos are this client's own row,
+          // added by the extension, which is the one that knows its server id.
+          $scope.readyCheck = data.readyCheck !== false;
+          $scope.myStatus = data.myStatus || null;
+          $scope.myGridPos = data.myGridPos || null;
+          if (data.phase !== 'grid') { $scope.readyUi.confirm = null; }
           // Qualifying rules. The inputs are re-seeded the same way the laps
           // and resets fields are: only when the server's value actually moved,
           // so an edit in progress is never yanked out from under the admin.
@@ -4190,14 +4201,71 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.generateGrid = function () {
         bngApi.engineLua('raceManager.generateGrid()');
       };
+      // Starting with drivers still not ready asks first: they sit the session
+      // out, and they are usually a friend who is about to be.
       $scope.startCountdown = function () {
+        if (readyNeedsConfirm()) { $scope.readyUi.confirm = 'countdown'; return; }
         bngApi.engineLua('raceManager.startCountdown()');
       };
       // Start the race behind the pace car. The ALTERNATIVE to the countdown,
       // not a step before it -- see paceStart() for which of the two the panel
       // puts on screen.
       $scope.startRace = function () {
+        if (readyNeedsConfirm()) { $scope.readyUi.confirm = 'race'; return; }
         bngApi.engineLua('raceManager.startRace()');
+      };
+
+      // ------------------------------------------------------------------
+      // Ready check
+      // ------------------------------------------------------------------
+      // Forming the grid calls drivers to it ('called'); each presses Ready and
+      // is put on their slot ('gridded'). Counted off the driver rows, which
+      // already carry every status.
+      $scope.readyUi = { confirm: null };
+      $scope.readyCount = function () {
+        var ready = 0, total = 0;
+        for (var i = 0; i < $scope.drivers.length; i++) {
+          var st = $scope.drivers[i].status;
+          if (st === 'gridded') { ready++; total++; } else if (st === 'called') { total++; }
+        }
+        return { ready: ready, total: total };
+      };
+      $scope.readyShown = function () {
+        return $scope.phase === 'grid' && $scope.readyCheck && $scope.readyCount().total > 0;
+      };
+      // Nobody ready: the server refuses the start, so the button says so.
+      $scope.readyNobody = function () {
+        return $scope.readyShown() && $scope.readyCount().ready === 0;
+      };
+      function readyNeedsConfirm() {
+        if (!$scope.readyShown()) { return false; }
+        var c = $scope.readyCount();
+        return c.ready > 0 && c.ready < c.total;
+      }
+      $scope.notReadyNames = function () {
+        var names = [];
+        for (var i = 0; i < $scope.drivers.length; i++) {
+          if ($scope.drivers[i].status === 'called') { names.push($scope.driverName($scope.drivers[i])); }
+        }
+        return names.join(', ');
+      };
+      $scope.readyConfirmStart = function () {
+        var which = $scope.readyUi.confirm;
+        $scope.readyUi.confirm = null;
+        bngApi.engineLua(which === 'race' ? 'raceManager.startRace()' : 'raceManager.startCountdown()');
+      };
+      $scope.readyCancelStart = function () { $scope.readyUi.confirm = null; };
+      $scope.setReady = function (on) {
+        bngApi.engineLua('raceManager.setReady(' + (on !== false) + ')');
+      };
+      $scope.readyDriver = function (row) {
+        if (row) { bngApi.engineLua('raceManager.readyDriver(' + row.id + ')'); }
+      };
+      $scope.readyAll = function () {
+        bngApi.engineLua('raceManager.readyAll()');
+      };
+      $scope.setReadyCheck = function (on) {
+        bngApi.engineLua('raceManager.setReadyCheck(' + (!!on) + ')');
       };
       // Does this grid start behind the pace car? Qualifying never does: there
       // is no field to form up, and the server refuses it -- so a grid formed by

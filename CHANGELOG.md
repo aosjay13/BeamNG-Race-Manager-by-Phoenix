@@ -6,6 +6,27 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.17.2 - Ready when you are
+
+#### Added
+
+- **The ready check.** Generate Grid and Start Quali no longer teleport every
+  entrant onto a slot and freeze them there. They CALL the grid: each driver
+  gets their slot and a READY button (and a HUD notice), and their car goes onto
+  the slot when they press it. Not ready takes a driver back off, as a ghost.
+- **Who is ready, on the board.** Not Ready (amber) and Ready, per driver, and a
+  Ready 5/7 count beside Start Countdown for the admin, who is told in chat the
+  moment the last driver readies.
+- **The admin's way past it.** Ready All places everyone still not ready; Place
+  on a driver's row readies one. Starting with drivers not ready asks first
+  (Start without Bob, Cara?), and they sit that session out as ghosts. Starting
+  with nobody ready is refused.
+- **Arriving during the call** (joining, or Race after Spectate) is a slot at
+  the back of the grid with a Ready button, instead of watching a race you
+  turned up in time for.
+- **Ready check: On / Off** in the Grid settings, and `readyCheck` in
+  `config.json`. Off forms the grid the old way.
+
 ## 0.17.1 - The restarted server gets its port back
 
 #### Fixed

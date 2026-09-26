@@ -151,6 +151,10 @@ local CFG = {
   maxRaceTime     = 21600,   -- seconds (6 h), so an endurance race is expressible
   unlimitedResets = -1,      -- the sentinel, not a preference: do not change
 
+  -- Forming the grid calls drivers to it and each presses Ready to be placed.
+  -- false places everyone at once, the way it worked before 0.17.2.
+  readyCheck      = true,
+
   -- Map switching and voting. See maps.lua.
   mapRestart      = 'auto',  -- auto | watch | relaunch | exit | manual
   mapRestartGrace = 90,      -- seconds to wait for an outside restart (watch)
@@ -374,6 +378,11 @@ local race = {
   --   custom  -- the order the admin set by hand (RM_SetDriverGrid)
   gridMode     = 'quali',
   startSlots   = 0,          -- start positions the loaded track layout has
+  -- Ready check: forming the grid gives each driver a slot but only places the
+  -- car when they press Ready. gridSize is the last slot handed out, so a late
+  -- arrival can be called to the back.
+  readyCheck   = CFG.readyCheck,
+  gridSize     = 0,
   -- Is the loaded track a sprint stage rather than a circuit? A point-to-point
   -- run is driven ONCE, first gate to last, and the last gate is a finish
   -- rather than a line crossed again. Setting a circuit to one lap times the
@@ -1794,7 +1803,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.17.1'
+local RM_BUILD = '0.17.2'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -1862,7 +1871,7 @@ local function finishedRoster()
      and race.phase ~= 'qualifying' and race.phase ~= 'grid' then return list end
   for _, rec in pairs(players) do
     local st = rec.status
-    if st == 'finished' or st == 'dnf' or st == 'dsq' or st == 'waiting' then
+    if st == 'finished' or st == 'dnf' or st == 'dsq' or st == 'waiting' or st == 'called' then
       list[#list + 1] = rec.id
     end
   end
@@ -1959,6 +1968,7 @@ local function broadcastState(targetPid)
     entrants     = entrantCount(),
     gridMode     = race.gridMode,
     startSlots   = race.startSlots,
+    readyCheck   = race.readyCheck,
     pointToPoint = race.pointToPoint,
     -- Branch gates: whether this track has any, and whether its grid gives an out
     -- lap away. The gates themselves ride with the layout (RM_ApplyLayout) exactly
@@ -2136,6 +2146,99 @@ local function assignGridSlot(pid, slot, order, count)
   MP.TriggerClientEvent(pid, 'RM_GridAssign', Util.JsonEncode({
     slot = slot, order = order, count = count,
   }))
+end
+
+-- ---------------------------------------------------------------------------
+-- Ready check
+-- ---------------------------------------------------------------------------
+-- With race.readyCheck on, forming the grid CALLS each driver to it: they get
+-- a slot and status 'called', and their car is only put on the slot when they
+-- press Ready. Anyone still 'called' when the lights start sits that session
+-- out. Hung off `race`: this chunk has no locals to spare.
+--
+-- A called driver is a ghost (bystander, and in finishedRoster). They are
+-- still driving about while the field parks, and a solid car loose on a grid
+-- of held ones is a car into the grid.
+race.callToGrid = function (rec, gridPos)
+  rec.gridPos   = gridPos
+  rec.status    = 'called'
+  rec.bystander = true
+  assignGridSlot(rec.id, nil)
+end
+
+-- Onto the slot and held. A lone ready-up lands at once (order 1 of 1); only a
+-- batch needs the stagger that keeps a whole grid from landing in one tick.
+race.readyUp = function (rec, order, count)
+  rec.status    = 'gridded'
+  rec.bystander = nil
+  assignGridSlot(rec.id, rec.gridPos, order or 1, count or 1)
+end
+
+-- A driver who arrives, or rejoins from Spectate, while the grid is being
+-- called goes to the back of it. Not past the last placed start position:
+-- a slot with nowhere to stand is a Ready button that does nothing.
+race.callLate = function (rec)
+  if race.phase ~= 'grid' or not race.readyCheck or not isEntrant(rec) then return false end
+  if rec.status == 'called' or rec.status == 'gridded' then return false end
+  local nextPos = (race.gridSize or 0) + 1
+  if race.startSlots > 0 and nextPos > race.startSlots then
+    MP.SendChatMessage(rec.id, '[RaceManager] The grid is full: every start position '
+      .. 'is taken. You are in the next one.')
+    return false
+  end
+  race.gridSize = nextPos
+  race.callToGrid(rec, nextPos)
+  return true
+end
+
+-- How many are on their slots, and how many have been called in all.
+race.readyCounts = function ()
+  local ready, called = 0, 0
+  for _, rec in pairs(players) do
+    if rec.status == 'gridded' then ready = ready + 1
+    elseif rec.status == 'called' then called = called + 1 end
+  end
+  return ready, ready + called
+end
+
+-- Told once, when the last driver readies: the admin is at a desk and the
+-- count is on the panel, but nobody watches a number for the moment it fills.
+race.announceIfAllReady = function ()
+  local ready, total = race.readyCounts()
+  if total == 0 or ready < total then return end
+  for adminPid in pairs(authenticatedPlayers) do
+    MP.SendChatMessage(adminPid, string.format(
+      '[RaceManager] Everyone is ready (%d/%d). Start when you like.', ready, total))
+  end
+end
+
+-- At the start of a session: whoever is still 'called' sits it out, ghosted
+-- for the whole of it like a driver who joined mid-race. Returns false, and
+-- changes nothing, when drivers were called and nobody is ready: that start
+-- would be a race with nobody in it.
+race.dropUnready = function ()
+  local ready, out = 0, {}
+  for _, rec in pairs(players) do
+    if rec.status == 'gridded' then ready = ready + 1
+    elseif rec.status == 'called' then out[#out + 1] = rec end
+  end
+  if ready == 0 and #out > 0 then return false end
+  local names = {}
+  for _, rec in ipairs(out) do
+    rec.status, rec.gridPos, rec.bystander = 'waiting', nil, true
+    names[#names + 1] = rec.name
+    MP.TriggerClientEvent(rec.id, 'RM_Notice', Util.JsonEncode({
+      kind = 'session', msg = 'The session started without you',
+      sub = 'You were not ready. You can watch, and you are in the next one.',
+    }))
+  end
+  if #names > 0 then
+    table.sort(names)
+    MP.SendChatMessage(-1, '[RaceManager] Starting without ' .. table.concat(names, ', ')
+      .. ' (not ready).')
+    print('[RaceManager] Not ready at the start, sitting out: ' .. table.concat(names, ', '))
+  end
+  return true
 end
 
 -- TELL THE FIELD SOMETHING, on the channel they can actually read.
@@ -3376,9 +3479,13 @@ function RM_onSetSpectating(pid, rawData)
     rec.status  = 'waiting'
     assignGridSlot(rec.id, nil)
     MP.SendChatMessage(-1, '[RaceManager] ' .. rec.name .. ' is spectating.')
+    -- The one driver still not ready may have been the one who just left.
+    if race.phase == 'grid' then race.announceIfAllReady() end
   else
     rec.bystander = nil
     MP.SendChatMessage(-1, '[RaceManager] ' .. rec.name .. ' rejoined the field.')
+    -- While the grid is being called, rejoining is a slot at the back of it.
+    race.callLate(rec)
   end
   print(string.format('[RaceManager] %s set spectating=%s', rec.name, tostring(want)))
   -- The derby DERIVES its field from this list, so its panel goes stale the
@@ -3664,6 +3771,9 @@ end
 --
 -- Returns true when a grid was actually formed.
 formGrid = function (kind, byName)
+  -- Forming it again over a grid already called keeps whoever pressed Ready:
+  -- they go straight onto their new slot instead of being asked twice.
+  local reform = race.phase == 'grid'
   race.sessionKind = (kind == 'quali') and 'quali' or 'race'
   race.time = 0.0
   -- The hold goes with the clock it was measured against.
@@ -3745,7 +3855,9 @@ formGrid = function (kind, byName)
   -- The client coalesces the two: it puts its car back and stands it on the
   -- slot as one ghosted, staggered operation.
   releaseSpectators('race')
+  race.gridSize = #ordered
   for gridPos, rec in ipairs(ordered) do
+    local wasReady = reform and rec.status == 'gridded'
     rec.gridPos    = gridPos
     rec.status     = 'gridded'
     rec.raceBest   = nil
@@ -3794,10 +3906,16 @@ formGrid = function (kind, byName)
     -- is exactly where a mid-session arrival stops being one.
     rec.bystander = nil
     progress.clear(rec)
-    -- Put the car on its start position and hold it there until GO. The order
-    -- and the field size travel with the slot so the client can stagger its
-    -- placement instead of every car being teleported in the same instant.
-    assignGridSlot(rec.id, gridPos, gridPos, #ordered)
+    if race.readyCheck and not wasReady then
+      -- Called, not placed: the slot is theirs and the car goes onto it when
+      -- they press Ready. The client tells them so when its status turns.
+      race.callToGrid(rec, gridPos)
+    else
+      -- Put the car on its start position and hold it there until GO. The order
+      -- and the field size travel with the slot so the client can stagger its
+      -- placement instead of every car being teleported in the same instant.
+      assignGridSlot(rec.id, gridPos, gridPos, #ordered)
+    end
   end
 
   race.phase = 'grid'
@@ -3819,6 +3937,12 @@ formGrid = function (kind, byName)
   print(string.format('[RaceManager] %s grid formed by %s (%d drivers, %s order, pole: %s)',
     isQualiSession() and 'Qualifying' or 'Race', tostring(byName), #ordered, race.gridMode,
     ordered[1] and ordered[1].name or 'n/a'))
+  if race.readyCheck then
+    local ready, total = race.readyCounts()
+    MP.SendChatMessage(-1, string.format('[RaceManager] Grid called: press Ready in the '
+      .. 'Race Manager panel to take your slot (%d/%d ready).', ready, total))
+    race.announceIfAllReady()
+  end
   return true
 end
 
@@ -3862,6 +3986,69 @@ function RM_onGenerateGrid(pid)
     print('[RaceManager] Qualifying superseded by Generate Grid (' .. who .. ')')
   end
   formGrid('race', who)
+end
+
+-- READY, or not ready any more. A driver's own call, so no admin needed; an
+-- admin may make it for somebody else by naming them (`pid`), for the driver
+-- whose panel is closed or broken. Only while the grid is being called.
+--
+-- Not ready takes a placed car back off the slot and ghosts it, so the driver
+-- can go and fix whatever they found without driving into the held field.
+function RM_onSetReady(pid, rawData)
+  local data = {}
+  if type(rawData) == 'string' and rawData ~= '' then
+    local ok, d = pcall(Util.JsonDecode, rawData)
+    if ok and type(d) == 'table' then data = d end
+  end
+  local want = data.ready ~= false
+  local target = pidKey(pid)
+  if data.pid ~= nil and pidKey(data.pid) ~= target then
+    if not requireAuth(pid) then return end
+    target = pidKey(data.pid)
+  end
+  local rec = target and players[target]
+  if not rec or race.phase ~= 'grid' then
+    broadcastState(pid)
+    return
+  end
+  local by = target == pidKey(pid) and '' or (' (by ' .. (MP.GetPlayerName(pid) or pid) .. ')')
+  if want and rec.status == 'called' then
+    race.readyUp(rec)
+    local ready, total = race.readyCounts()
+    print(string.format('[RaceManager] %s is ready%s: %d/%d', rec.name, by, ready, total))
+    race.announceIfAllReady()
+  elseif not want and rec.status == 'gridded' and race.readyCheck then
+    race.callToGrid(rec, rec.gridPos)
+    print(string.format('[RaceManager] %s is not ready any more%s', rec.name, by))
+  end
+  broadcastState()
+end
+
+-- Everyone called goes onto their slot now: the old way of forming a grid, for
+-- a night when the admin just wants to go. Staggered, as a whole grid is.
+function RM_onReadyAll(pid)
+  if not requireAuth(pid) then return end
+  if race.phase ~= 'grid' then return end
+  local called = {}
+  for _, rec in pairs(players) do
+    if rec.status == 'called' then called[#called + 1] = rec end
+  end
+  table.sort(called, function (a, b) return (a.gridPos or 0) < (b.gridPos or 0) end)
+  for i, rec in ipairs(called) do race.readyUp(rec, i, #called) end
+  print(string.format('[RaceManager] Ready All by %s: %d placed',
+    MP.GetPlayerName(pid) or pid, #called))
+  broadcastState()
+end
+
+-- The switch between calling the grid and placing it. Takes effect on the next
+-- grid; the one already called is finished with Ready All.
+function RM_onSetReadyCheck(pid, rawData)
+  local data = adminPayload(pid, rawData, true)
+  if not data or type(data.on) ~= 'boolean' then return end
+  race.readyCheck = data.on
+  print(string.format('[RaceManager] Ready check %s by %s',
+    data.on and 'on' or 'off', MP.GetPlayerName(pid) or pid))
+  broadcastState()
 end
 
 -- How the grid gets filled. Locked once the countdown/race starts.
@@ -4590,6 +4777,11 @@ end
 function RM_onStartCountdown(pid)
   if not requireAuth(pid) then return end
   if race.phase ~= 'grid' then return end
+  if not race.dropUnready() then
+    MP.SendChatMessage(pid, '[RaceManager] Nobody is ready yet. Wait for Ready, '
+      .. 'or press Ready All to place everyone.')
+    return
+  end
   reportGridAudit(pid)
   race.phase = 'countdown'
   countdownValue = CFG.countdownFrom
@@ -5348,6 +5540,11 @@ function RM_onStartRace(pid)
       .. 'the pace lap on in Race settings.')
     return
   end
+  if not race.dropUnready() then
+    MP.SendChatMessage(pid, '[RaceManager] Nobody is ready yet. Wait for Ready, '
+      .. 'or press Ready All to place everyone.')
+    return
+  end
   reportGridAudit(pid)
   -- No countdown overlay to hide, but one may be up from an aborted start.
   broadcastCountdown(-1)
@@ -5368,6 +5565,8 @@ function RM_onEndRace(pid)
     race.phase = 'waiting'
     for _, rec in pairs(players) do
       if rec.status == 'gridded' then rec.status = 'waiting' end
+      -- Called and never placed: the ghost was only for the call.
+      if rec.status == 'called' then rec.status, rec.bystander = 'waiting', nil end
     end
     respawnAll('race')
     broadcastState()
@@ -6239,6 +6438,7 @@ local function applyConfigTable(data)
   num('ghostMaxSeconds', 0, 300)
   num('holdTolerance', 0.1, 10)
   num('holdCorrectEvery', 0.05, 5)
+  bool('readyCheck')
   str('mapRestart', { auto = true, watch = true, relaunch = true, exit = true, manual = true })
   num('mapRestartGrace', 10, 3600)
   bool('mapVoting')
@@ -6308,6 +6508,7 @@ local function configFileText()
     ghostMaxSeconds = CFG.ghostMaxSeconds,
     holdTolerance   = CFG.holdTolerance,
     holdCorrectEvery = CFG.holdCorrectEvery,
+    readyCheck      = CFG.readyCheck,
     mapRestart      = CFG.mapRestart,
     mapRestartGrace = CFG.mapRestartGrace,
     mapVoting       = CFG.mapVoting,
@@ -6342,6 +6543,7 @@ local function applyConfigToRace()
   race.heatLaps       = CFG.heatLaps
   race.qualiLapLimit  = CFG.qualiLapLimit
   race.qualiTimeLimit = CFG.qualiTimeLimit
+  race.readyCheck     = CFG.readyCheck
   auth.adminPw        = CFG.adminPassword
   auth.modPw          = CFG.moderatorPassword
 end
@@ -10822,6 +11024,10 @@ function RM_onPlayerJoin(pid)
       rec.name))
   elseif race.phase == 'qualifying' and isEntrant(rec) then
     rec.status = 'qualifying'
+  else
+    -- Arriving while the grid is being called: a slot at the back and a Ready
+    -- button, instead of watching a race they turned up in time for.
+    race.callLate(rec)
   end
   broadcastState()
 end
@@ -10851,8 +11057,11 @@ function RM_onPlayerDisconnect(pid)
   end
   if onTrack(rec) or rec.status == 'gridded' then
     retireAsDnf(rec, 'DNF - Disconnected')
-  elseif rec.status == 'waiting' then
+  elseif rec.status == 'waiting' or rec.status == 'called' then
+    -- Called and never placed is never having started: no DNF for it.
+    local wasCalled = rec.status == 'called'
     players[pid] = nil
+    if wasCalled then race.announceIfAllReady() end
   end
   -- If the last driver out on track just dropped, the session is over.
   if sessionRunning() then
@@ -10883,6 +11092,9 @@ function onInit()
   MP.RegisterEvent('RM_ChangePassword',   'RM_onChangePassword')
   MP.RegisterEvent('RM_StartQualifying',  'RM_onStartQualifying')
   MP.RegisterEvent('RM_GenerateGrid',     'RM_onGenerateGrid')
+  MP.RegisterEvent('RM_SetReady',         'RM_onSetReady')       -- ready check
+  MP.RegisterEvent('RM_ReadyAll',         'RM_onReadyAll')
+  MP.RegisterEvent('RM_SetReadyCheck',    'RM_onSetReadyCheck')
   MP.RegisterEvent('RM_SetTotalLaps',     'RM_onSetTotalLaps')
   MP.RegisterEvent('RM_SetRaceLimits',    'RM_onSetRaceLimits')
   MP.RegisterEvent('RM_SetAlias',         'RM_onSetAlias')

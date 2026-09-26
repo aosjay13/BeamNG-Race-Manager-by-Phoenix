@@ -184,7 +184,9 @@ local function bootPlugin()
   dofile('server/RaceManager/main.lua')
   onInit()
   for id in pairs(connected) do RM_onPlayerJoin(id) end
-  RM_onLogin(9, '{"password":"phoenix"}')
+  -- The ready check is off after every admin login here: this suite pins the
+  -- race engine behind it. tests/ready_test.lua covers calling the grid.
+  RM_onLogin(9, '{"password":"phoenix"}'); RM_onSetReadyCheck(9, '{"on":false}')
 end
 
 local function setName(target, name)
@@ -438,7 +440,7 @@ RM_onCupReset(9)
 -- An added entry belongs to nobody until a connection is assigned to it, which
 -- is what makes it offerable in both the Cup panel and Display Names.
 do
-  RM_onLogin(9, '{"password":"phoenix"}')
+  RM_onLogin(9, '{"password":"phoenix"}'); RM_onSetReadyCheck(9, '{"on":false}')
   local function rosterHas(name)
     for _, e in ipairs((lastCup and lastCup.roster) or {}) do
       if e.name == name then return e end
@@ -494,7 +496,7 @@ end
 -- Reported as "the leaderboard does not show the set name". The board was
 -- right; the picker beside it was stale, which is the more confusing half.
 do
-  RM_onLogin(9, '{"password":"phoenix"}')
+  RM_onLogin(9, '{"password":"phoenix"}'); RM_onSetReadyCheck(9, '{"on":false}')
   local function entryNamed(name)
     for _, e in ipairs((lastCup and lastCup.roster) or {}) do
       if e.name == name then return e end

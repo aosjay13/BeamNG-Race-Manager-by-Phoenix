@@ -65,7 +65,9 @@ end
 local function push() RM_onRequestState(1) end
 
 onInit()
-RM_onLogin(1, '{"password":"phoenix"}')
+-- The ready check is off after every admin login here: this suite pins the
+-- race engine behind it. tests/ready_test.lua covers calling the grid.
+RM_onLogin(1, '{"password":"phoenix"}'); RM_onSetReadyCheck(1, '{"on":false}')
 RM_onPlayerJoin(1); RM_onPlayerJoin(2); RM_onPlayerJoin(3); RM_onPlayerJoin(4)
 -- These suites predate the entry list; run them with entry open to everyone.
 

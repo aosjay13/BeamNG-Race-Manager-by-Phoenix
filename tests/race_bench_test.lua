@@ -184,7 +184,9 @@ onInit()
 local ADMIN = 99
 connected[ADMIN] = 'Admin'
 for id in pairs(connected) do RM_onPlayerJoin(id) end
-RM_onLogin(ADMIN, '{"password":"phoenix"}')
+-- The ready check is off after every admin login here: this suite pins the
+-- race engine behind it. tests/ready_test.lua covers calling the grid.
+RM_onLogin(ADMIN, '{"password":"phoenix"}'); RM_onSetReadyCheck(ADMIN, '{"on":false}')
 
 -- One race, tick by tick, the way the server actually runs one. Returns CPU for
 -- the first and second halves separately: the two must be comparable, or the

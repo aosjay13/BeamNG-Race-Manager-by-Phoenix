@@ -220,7 +220,9 @@ onInit()
 -- master password. Verify rejection, grant, and password rotation before the
 -- rest of the suite logs in and drives the session.
 -- ---------------------------------------------------------------------------
-local function adminLogin(pid) RM_onLogin(pid, '{"password":"phoenix"}') end
+-- The ready check is off after every admin login here: this suite pins the
+-- race engine behind it. tests/ready_test.lua covers calling the grid.
+local function adminLogin(pid) RM_onLogin(pid, '{"password":"phoenix"}'); RM_onSetReadyCheck(pid, '{"on":false}') end
 
 RM_onLogin(1, '{"password":"wrong"}')          -- bad password: no admin rights
 -- Cleared first: server startup legitimately broadcasts once (clearing the track
@@ -721,7 +723,7 @@ RM_onRequestLayouts(1)
 RM_onLogout(2)
 RM_onRequestLayouts(2)
 check(#layoutsFor(2).layouts == 0, 'a logged-out client holds the driver list')
-RM_onLogin(2, '{"password":"phoenix"}')
+RM_onLogin(2, '{"password":"phoenix"}'); RM_onSetReadyCheck(2, '{"on":false}')
 check(#lastLayouts.layouts > 0,
   'and logging in resends it in full, without the client having to ask')
 
@@ -930,7 +932,7 @@ check(fileExists(ghostPath1) and fileExists(ghostPath2),
 -- incrementally as laps are scored -- a lap arrives a few times a minute, a
 -- broadcast goes out three times a second, so scanning the field per broadcast
 -- would be the wrong way round.
-RM_onLogin(1, '{"password":"phoenix"}')
+RM_onLogin(1, '{"password":"phoenix"}'); RM_onSetReadyCheck(1, '{"on":false}')
 RM_onResetLeaderboard(1)
 for id in pairs(connected) do RM_onPlayerJoin(id) end
 -- A long race, so nobody takes the flag part-way through this and stops being
@@ -973,7 +975,7 @@ connected[3] = 'Cara'
 -- Where a driver STARTED is half of what makes a result readable -- "P2" means
 -- nothing without knowing they qualified eighth -- and the Hard Charger is the
 -- driver who gained the most places between the two.
-RM_onLogin(1, '{"password":"phoenix"}')
+RM_onLogin(1, '{"password":"phoenix"}'); RM_onSetReadyCheck(1, '{"on":false}')
 RM_onResetLeaderboard(1)
 connected[3] = 'Cara'
 for id in pairs(connected) do RM_onPlayerJoin(id) end
@@ -1130,7 +1132,7 @@ check(shortText ~= '' and shortText:find('HALF-WAY LEADER', 1, true) == nil,
 -- Setting a circuit to one lap times the same thing, which is why that was the
 -- workaround. The difference is that it reads as a one-lap circuit everywhere,
 -- and the lap count stops being a setting the admin has to remember.
-RM_onLogin(1, '{"password":"phoenix"}')
+RM_onLogin(1, '{"password":"phoenix"}'); RM_onSetReadyCheck(1, '{"on":false}')
 RM_onResetLeaderboard(1)
 for id in pairs(connected) do RM_onPlayerJoin(id) end
 RM_onSetTotalLaps(1, '{"laps":7}')
@@ -1957,7 +1959,7 @@ do
 
   -- The password from the file is the one that works, and the shipped default
   -- is not. A league that changed it must not still be open on 'phoenix'.
-  RM_onLogin(5, '{"password":"phoenix"}')
+  RM_onLogin(5, '{"password":"phoenix"}'); RM_onSetReadyCheck(5, '{"on":false}')
   check(lastLogin and lastLogin.success ~= true,
     'the shipped default password stops working once the file sets another')
   RM_onLogin(5, '{"password":"thursday"}')

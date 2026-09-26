@@ -67,7 +67,9 @@ local function driver(name)
     if d.name == name then return d end
   end
 end
-local function adminLogin(pid) RM_onLogin(pid, '{"password":"phoenix"}') end
+-- The ready check is off after every admin login here: this suite pins the
+-- race engine behind it. tests/ready_test.lua covers calling the grid.
+local function adminLogin(pid) RM_onLogin(pid, '{"password":"phoenix"}'); RM_onSetReadyCheck(pid, '{"on":false}') end
 
 local RESULTS_DIR = 'Resources/Server/RaceManager/Data/results'
 local function readResults()
