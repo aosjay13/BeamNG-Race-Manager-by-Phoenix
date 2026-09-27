@@ -1630,6 +1630,42 @@ do
   handlers['RM_GarageCar']({ model = 'etk800', cfg = PARTS })
   check(#calls == 0, 'an answer with no protocol stamp is not acted on')
 
+  -- A STUCK UI IS RE-ENTERED. Joining a remote server, the router's "play"
+  -- transition can time out and leave UINav holding the pad (stick and buttons
+  -- dead, triggers alive). The game's vehicle selector navigates to play and
+  -- clears it; a garage spawn has to do the same, but only when stuck.
+  local realExt = rawget(_G, 'extensions')
+  local navs = {}
+  extensions = { ui_router = { navigate = function (r) navs[#navs + 1] = r end } }
+
+  calls = {}
+  RM.takeGarageCar(3, true)
+  answer({ model = 'etk800', cfg = PARTS })
+  check(#navs == 0, 'a healthy UI is not navigated: it would bounce an open menu')
+
+  RM.onAfterRouteChange({})
+  RM.routeChangeCancelled({ toRoute = { name = 'play' },
+                            reason = 'route_mounted_not_acknowledged' })
+  RM.takeGarageCar(3, true)
+  answer({ model = 'etk800', cfg = PARTS })
+  check(#navs == 1 and navs[1] == 'play',
+    'a play transition that timed out is re-entered on the next garage spawn')
+  RM.takeGarageCar(3, true)
+  answer({ model = 'etk800', cfg = PARTS })
+  check(#navs == 1, 'and only once')
+
+  RM.routeChangeCancelled({ toRoute = { name = 'play' }, reason = 'timeout_reached' })
+  RM.onAfterRouteChange({})
+  RM.takeGarageCar(3, true)
+  answer({ model = 'etk800', cfg = PARTS })
+  check(#navs == 1, 'a transition that committed since means the UI recovered on its own')
+
+  RM.routeChangeCancelled({ toRoute = { name = 'pause' }, reason = 'timeout_reached' })
+  RM.takeGarageCar(3, true)
+  answer({ model = 'etk800', cfg = PARTS })
+  check(#navs == 1, 'only a stuck PLAY route counts')
+  extensions = realExt
+
   clearLog(); calls = {}
   RM.takeGarageCar(0, true)
   check(asked() == nil, 'an index of zero asks nothing')

@@ -592,6 +592,10 @@ local function livePass()
     -- is the part everybody in the pits is watching.
     lane.prestaged = pass.prestaged and pass.prestaged[i] == true
     lane.home   = pass.times and pass.times[i] ~= nil
+    -- The ready check: false is a driver called and not yet on the strip.
+    -- The id lets each client find its own lane for the Ready button.
+    lane.id     = p.lanes[i] and p.lanes[i].id or nil
+    if pass.ready and pass.lanes == p.lanes then lane.ready = pass.ready[i] end
     -- THE RED LIGHT SHOWS THE MOMENT IT HAPPENS, not when the pass settles. It
     -- is reported at the launch and the time at the finish, so between the two
     -- the foul lives only here -- and the seconds where everybody in the pits
@@ -1419,6 +1423,29 @@ end
 
 local settlePass  -- assigned below; the tick and the reports both reach it
 
+-- Put one lane's car on the strip. `order` and `count` stagger a batch; a
+-- lone ready-up is 1 of 1 and lands at once.
+function drag.sendLane(i, e, p, order, count)
+  local rollup = drag.stageMode == 'rollup'
+  -- UNDER 'HOLD' THE CAR IS STAGED THE MOMENT IT IS PLACED. There is nothing
+  -- for the driver to do and nothing to wait for, so the bulbs are lit from
+  -- the start and Run is live immediately. Under 'rollup' nobody is staged
+  -- yet: the client reports it when the car reaches the beams.
+  pass.staged[i] = not rollup
+  pass.prestaged[i] = not rollup
+  MP.TriggerClientEvent(e.id, 'RM_DragLane', Util.JsonEncode({
+    lane = i, slot = i, count = count or #p.lanes, order = order or i,
+    -- The freeze and the roll-up are the same decision seen twice: a car
+    -- that is held cannot creep, and a car that must creep cannot be held.
+    hold = not rollup, rollup = rollup,
+    back = rollup and DRAG_ROLLUP_BACK or nil,
+    prestageAt = rollup and DRAG_PRESTAGE_AT or nil,
+    stageAt = rollup and DRAG_STAGE_AT or nil,
+    stagePast = rollup and DRAG_STAGE_PAST or nil,
+    dial = e.dial, delay = p.delay[i],
+  }))
+end
+
 -- Put this pass's cars on their lanes and hold them there.
 local function stagePass(index)
   local r = activeRound()
@@ -1450,27 +1477,19 @@ local function stagePass(index)
       forceSpectate(id, 'A drag pass is on the strip', 'drag')
     end
   end
-  local rollup = drag.stageMode == 'rollup'
+  -- THE READY CHECK: with it on, Stage CALLS the pass. Each lane driver's car
+  -- goes onto the strip when they press Ready (drag.sendLane from
+  -- RM_onDragReady); a lane still not ready when the tree drops is a no-show.
+  local called = race.readyCheck == true
+  pass.ready = {}
   for i, e in ipairs(p.lanes) do
     if e.id then
-      -- UNDER 'HOLD' THE CAR IS STAGED THE MOMENT IT IS PLACED. There is
-      -- nothing for the driver to do and nothing to wait for, so the bulbs
-      -- are lit from the start and Run is live immediately. Under 'rollup'
-      -- nobody is staged yet: the client reports it when the car reaches the
-      -- beams.
-      pass.staged[i] = not rollup
-      pass.prestaged[i] = not rollup
-      MP.TriggerClientEvent(e.id, 'RM_DragLane', Util.JsonEncode({
-        lane = i, slot = i, count = #p.lanes,
-        -- The freeze and the roll-up are the same decision seen twice: a car
-        -- that is held cannot creep, and a car that must creep cannot be held.
-        hold = not rollup, rollup = rollup,
-        back = rollup and DRAG_ROLLUP_BACK or nil,
-        prestageAt = rollup and DRAG_PRESTAGE_AT or nil,
-        stageAt = rollup and DRAG_STAGE_AT or nil,
-        stagePast = rollup and DRAG_STAGE_PAST or nil,
-        dial = e.dial, delay = p.delay[i],
-      }))
+      pass.ready[i] = not called
+      if called then
+        pass.staged[i], pass.prestaged[i] = false, false
+      else
+        drag.sendLane(i, e, p, i, #p.lanes)
+      end
     else
       -- OFFLINE ENTRANTS ARE ALREADY DNF, before the tree has even run. There is
       -- nobody to stage and nobody to time, and leaving the lane pending would
@@ -1491,9 +1510,13 @@ local function stagePass(index)
       p.bye and '  (bye run)' or ''))
   print(string.format('[RaceManager] Drag pass staged: %s pass %d (%s)',
     r.label, index, table.concat(names, ', ')))
+  if called then
+    MP.SendChatMessage(-1, '[RaceManager] Drag: press Ready in the Race Manager '
+      .. 'panel to put your car on the strip.')
+  end
   -- The tick runs through STAGING too under roll-up: something has to notice
   -- that the field is in the beams, and something has to give up waiting.
-  if rollup then MP.CreateEventTimer('RM_DragTick', DRAG_TICK_MS) end
+  if drag.stageMode == 'rollup' then MP.CreateEventTimer('RM_DragTick', DRAG_TICK_MS) end
   broadcastDragState()
   return true
 end
@@ -1534,6 +1557,32 @@ end
 local function runPass()
   local p, r = currentPass()
   if not p then return false end
+  -- NOT READY WHEN THE TREE DROPS IS A NO-SHOW: no car on the strip, no time,
+  -- the bottom of the pass, and stood down like everybody else not in it. With
+  -- nobody ready there is no pass to run, and nothing is changed.
+  local anyReady, noShow = false, {}
+  for i, e in ipairs(p.lanes) do
+    if e.id then
+      if pass.ready and pass.ready[i] == false then
+        noShow[#noShow + 1] = i
+      else
+        anyReady = true
+      end
+    end
+  end
+  if not anyReady and #noShow > 0 then return false end
+  if #noShow > 0 then
+    local names = {}
+    for _, i in ipairs(noShow) do
+      local e = p.lanes[i]
+      pass.times[i] = { entrant = e, lane = i, rt = nil, et = nil, speed = nil,
+                        foul = false, brokeOut = false }
+      forceSpectate(e.id, 'You were not ready for this pass', 'drag')
+      names[#names + 1] = e.name
+    end
+    MP.SendChatMessage(-1, '[RaceManager] Drag: ' .. table.concat(names, ', ')
+      .. ' not ready, no-show this pass.')
+  end
   seedOnce()
   local preroll = DRAG_TREE_PREROLL_MIN
     + math.random() * (DRAG_TREE_PREROLL_MAX - DRAG_TREE_PREROLL_MIN)
@@ -1541,7 +1590,7 @@ local function runPass()
   drag.phase = 'tree'
   pass.time = 0
   for i, e in ipairs(p.lanes) do
-    if e.id then
+    if e.id and not (pass.ready and pass.ready[i] == false) then
       MP.TriggerClientEvent(e.id, 'RM_DragTree', Util.JsonEncode({
         pattern = drag.tree, preroll = preroll, delay = p.delay and p.delay[i] or 0,
         lane = i, timeout = drag.timeout, dial = e.dial,
@@ -1691,7 +1740,9 @@ function RM_DragTick()
       -- server must not be able to sit on one pass for ever.
       MP.SendChatMessage(-1, '[RaceManager] Drag: courtesy stage expired, the '
         .. 'tree is coming down.')
-      runPass()
+      -- Nobody ready at all: nothing to run, so the pass is waved off and
+      -- offered again rather than scored as everybody failing to turn up.
+      if not runPass() then drag.waveOff('nobody was ready') end
     end
     return
   end
@@ -1987,7 +2038,70 @@ function RM_onDragRun(pid)
     end
     return
   end
-  runPass()
+  if not runPass() then
+    MP.SendChatMessage(pid, '[RaceManager] Nobody in this pass is ready yet. Wait '
+      .. 'for Ready, or press Ready All to put every car on the strip.')
+  end
+end
+
+-- READY, for a drag pass. The driver's own call; an admin may make it for a
+-- lane driver by naming them. Not ready takes the car off the strip again.
+function RM_onDragReady(pid, rawData)
+  local ok, data = pcall(Util.JsonDecode, (rawData and rawData ~= '') and rawData or '{}')
+  if not ok or type(data) ~= 'table' then data = {} end
+  local target = pid
+  if data.pid ~= nil and tonumber(data.pid) ~= pid then
+    if not requireAuth(pid) then return end
+    target = tonumber(data.pid)
+  end
+  local p = currentPass()
+  if drag.phase ~= 'staging' or not p or not pass.ready then return end
+  for i, e in ipairs(p.lanes) do
+    if e.id == target then
+      if data.ready ~= false and pass.ready[i] == false then
+        pass.ready[i] = true
+        drag.sendLane(i, e, p, 1, 1)
+        print('[RaceManager] Drag: ' .. e.name .. ' is ready (lane ' .. i .. ')')
+        drag.announceIfAllReady(p)
+      elseif data.ready == false and pass.ready[i] == true and race.readyCheck then
+        pass.ready[i], pass.staged[i], pass.prestaged[i] = false, false, false
+        MP.TriggerClientEvent(e.id, 'RM_DragLane', Util.JsonEncode({ release = true }))
+        print('[RaceManager] Drag: ' .. e.name .. ' is not ready any more')
+      end
+      break
+    end
+  end
+  broadcastDragState()
+end
+
+function RM_onDragReadyAll(pid)
+  if not requireAuth(pid) then return end
+  local p = currentPass()
+  if drag.phase ~= 'staging' or not p or not pass.ready then return end
+  local todo = {}
+  for i, e in ipairs(p.lanes) do
+    if e.id and pass.ready[i] == false then todo[#todo + 1] = i end
+  end
+  for n, i in ipairs(todo) do
+    pass.ready[i] = true
+    drag.sendLane(i, p.lanes[i], p, n, #todo)
+  end
+  print(string.format('[RaceManager] Drag Ready All by %s: %d placed',
+    MP.GetPlayerName(pid) or pid, #todo))
+  broadcastDragState()
+end
+
+function drag.announceIfAllReady(p)
+  local ready, total = 0, 0
+  for i, e in ipairs(p.lanes) do
+    if e.id then
+      total = total + 1
+      if pass.ready[i] ~= false then ready = ready + 1 end
+    end
+  end
+  if total > 0 and ready == total then
+    race.tellAdmins(string.format('Everyone in this drag pass is ready (%d/%d).', ready, total))
+  end
 end
 
 -- Wave a pass off. Nothing is scored, the cars go back, and the same pass is
@@ -1996,6 +2110,12 @@ end
 function RM_onDragAbort(pid)
   if not requireAuth(pid) then return end
   if drag.phase ~= 'staging' and drag.phase ~= 'tree' and drag.phase ~= 'running' then return end
+  drag.waveOff('by ' .. (MP.GetPlayerName(pid) or pid))
+end
+
+-- Wave the pass off: nothing scored, the same pass offered again. From the
+-- admin's button, and from a courtesy stage that ran out with nobody ready.
+function drag.waveOff(why)
   MP.CancelEventTimer('RM_DragTick')
   local p = currentPass()
   if p then p.results, p.delay = nil, nil end
@@ -2013,8 +2133,8 @@ function RM_onDragAbort(pid)
   MP.TriggerClientEvent(-1, 'RM_DragAborted', Util.JsonEncode({ reason = 'waved off' }))
   releaseSpectators('drag')
   broadcastDragState()
-  MP.SendChatMessage(-1, '[RaceManager] Drag pass waved off. Re-staging.')
-  print('[RaceManager] Drag pass aborted by ' .. (MP.GetPlayerName(pid) or pid))
+  MP.SendChatMessage(-1, '[RaceManager] Drag pass waved off (' .. why .. '). Re-staging.')
+  print('[RaceManager] Drag pass waved off: ' .. why)
 end
 
 function RM_onDragClear(pid)

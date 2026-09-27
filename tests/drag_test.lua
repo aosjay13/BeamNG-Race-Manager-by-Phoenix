@@ -83,7 +83,9 @@ end
 local ADMIN = 1
 
 local function login(pid)
-  RM_onLogin(pid, '{"password":"phoenix"}')
+  -- The ready check is off after every admin login here: this suite pins
+  -- the drag ladder behind it. tests/ready_test.lua covers the call.
+  RM_onLogin(pid, '{"password":"phoenix"}'); RM_onSetReadyCheck(pid, '{"on":false}')
 end
 
 -- The drag strip: a point-to-point layout with two gates (a start line and a

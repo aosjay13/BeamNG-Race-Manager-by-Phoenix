@@ -6,6 +6,36 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.17.3 - The derby and the strip wait for you too
+
+#### Added
+
+- **The ready check reaches the derby and the drag strip.** Form Up calls the
+  derby field and Stage (or Practice Pass) calls a pass's lane drivers; each
+  car goes onto its slot or lane when its driver presses Ready, and Not ready
+  takes it off again.
+- **One READY banner** at the top of the panel for all three modes, in every
+  panel layout, so the button is in the same place whatever is being run.
+- **The admin's side matches the race:** Ready n/m, Ready All, Place on a
+  row or lane, and a confirm before Start Derby or Run without somebody.
+  Nothing starts with nobody ready.
+- **Not ready at the start:** a derby driver sits it out, stood down where
+  they are with driving and the engine off so nothing loose drives into the
+  arena, and gets control back at the end. A drag lane is a no-show: no time,
+  bottom of the pass. A courtesy stage that runs out with nobody ready waves
+  the pass off instead of scoring it.
+- **Joining during a derby Form Up** adds you to the field with a Ready
+  button. Leaving during Form Up takes you out of it, instead of leaving a
+  car-less entry in the derby.
+
+#### Fixed
+
+- **A controller that only had pedals after a garage Take or + New.** Joining
+  a remote server, BeamNG's UI can time out entering driving mode and keep
+  thinking a menu is open, so the stick and buttons go to menu navigation and
+  only the triggers reach the car. Spawning from the game's vehicle selector
+  cleared it; a garage spawn now does the same when the UI is stuck.
+
 ## 0.17.2 - Ready when you are
 
 #### Added

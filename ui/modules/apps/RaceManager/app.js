@@ -1632,7 +1632,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.17.2';
+      var APP_BUILD = '0.17.3';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -2442,7 +2442,10 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.readyCheck = data.readyCheck !== false;
           $scope.myStatus = data.myStatus || null;
           $scope.myGridPos = data.myGridPos || null;
-          if (data.phase !== 'grid') { $scope.readyUi.confirm = null; }
+          if (data.phase !== 'grid'
+              && ($scope.readyUi.confirm === 'countdown' || $scope.readyUi.confirm === 'race')) {
+            $scope.readyUi.confirm = null;
+          }
           // Qualifying rules. The inputs are re-seeded the same way the laps
           // and resets fields are: only when the server's value actually moved,
           // so an edit in progress is never yanked out from under the admin.
@@ -3349,6 +3352,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.derby.boundaryCount = $scope.derby.boundary.length;
           $scope.derby.startCount = $scope.derby.startPositions.length;
           $scope.derby.players = toArray(data.players);
+          if ($scope.derby.phase !== 'forming' && $scope.readyUi.confirm === 'derby') {
+            $scope.readyUi.confirm = null;
+          }
           $scope.derby.boundaryMode = data.boundaryMode === 'rect' ? 'rect' : 'polygon';
           $scope.derby.shape = (data.shape && typeof data.shape === 'object')
             ? data.shape : null;
@@ -3424,6 +3430,10 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
 
       $scope.derbyStatusLabel = function (p) {
         if (p.status === 'winner') { return 'WINNER'; }
+        // Forming up under the ready check: who is on their slot.
+        if ($scope.readyCheck && $scope.derby.phase === 'forming') {
+          return p.ready === false ? 'Not Ready' : 'Ready';
+        }
         if (p.status === 'alive') { return 'In Arena'; }
         return p.reason || 'Eliminated';
       };
@@ -3498,6 +3508,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
             }
           }
           d.phase = data.dragPhase || 'idle';
+          if (d.phase !== 'staging' && $scope.readyUi.confirm === 'drag') {
+            $scope.readyUi.confirm = null;
+          }
           take('format'); take('lanes'); take('advance'); take('cut');
           take('roundLimit'); take('tree'); take('seed'); take('timeout');
           take('stripLanes'); take('stripGates');
@@ -3635,6 +3648,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       };
       $scope.dragLaneNote = function (lane) {
         if (!lane) { return ''; }
+        if ($scope.drag.phase === 'staging' && lane.ready === false) { return 'Not ready'; }
         if (lane.foul) { return 'RED'; }
         if (lane.brokeOut) { return 'BREAKOUT'; }
         if (lane.dnf) { return 'DNF'; }
@@ -3789,6 +3803,11 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         $scope.dragSetDial();
       };
       $scope.dragRunPass = function () {
+        var c = $scope.dragReadyCount();
+        if ($scope.dragReadyShown() && c.ready > 0 && c.ready < c.total) {
+          $scope.readyUi.confirm = 'drag';
+          return;
+        }
         bngApi.engineLua('raceManager.dragRun()');
       };
       $scope.dragAbort = function () {
@@ -3969,6 +3988,11 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.derbyStart = function () {
         // No config push here - the rules were sent at Form Up and are locked
         // from that point, so this is purely "release the field".
+        var c = $scope.derbyReadyCount();
+        if ($scope.derbyReadyShown() && c.ready > 0 && c.ready < c.total) {
+          $scope.readyUi.confirm = 'derby';
+          return;
+        }
         bngApi.engineLua('raceManager.derbyStart()');
       };
       $scope.derbyEnd = function () {
@@ -4242,17 +4266,121 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         var c = $scope.readyCount();
         return c.ready > 0 && c.ready < c.total;
       }
-      $scope.notReadyNames = function () {
-        var names = [];
-        for (var i = 0; i < $scope.drivers.length; i++) {
-          if ($scope.drivers[i].status === 'called') { names.push($scope.driverName($scope.drivers[i])); }
+      // Who is still not ready, for the "start without them?" question in
+      // whichever mode is asking it.
+      $scope.notReadyNames = function (mode) {
+        var names = [], i;
+        if (mode === 'derby') {
+          var ps = $scope.derby.players || [];
+          for (i = 0; i < ps.length; i++) {
+            if (ps[i].ready === false) { names.push($scope.driverName(ps[i])); }
+          }
+        } else if (mode === 'drag') {
+          var lanes = dragLanes();
+          for (i = 0; i < lanes.length; i++) {
+            if (lanes[i].ready === false) { names.push(lanes[i].name); }
+          }
+        } else {
+          for (i = 0; i < $scope.drivers.length; i++) {
+            if ($scope.drivers[i].status === 'called') { names.push($scope.driverName($scope.drivers[i])); }
+          }
         }
         return names.join(', ');
       };
       $scope.readyConfirmStart = function () {
         var which = $scope.readyUi.confirm;
         $scope.readyUi.confirm = null;
+        if (which === 'derby') { bngApi.engineLua('raceManager.derbyStart()'); return; }
+        if (which === 'drag') { bngApi.engineLua('raceManager.dragRun()'); return; }
         bngApi.engineLua(which === 'race' ? 'raceManager.startRace()' : 'raceManager.startCountdown()');
+      };
+
+      // The same call for a derby form-up and a drag pass. A derby row is
+      // called while `ready === false`; a drag lane likewise, and a lane with
+      // no driver in it carries no ready flag at all.
+      $scope.derbyReadyCount = function () {
+        var ps = $scope.derby.players || [], ready = 0, total = 0;
+        for (var i = 0; i < ps.length; i++) {
+          total++;
+          if (ps[i].ready !== false) { ready++; }
+        }
+        return { ready: ready, total: total };
+      };
+      $scope.derbyReadyShown = function () {
+        return $scope.readyCheck && $scope.derby.phase === 'forming'
+          && $scope.derbyReadyCount().total > 0;
+      };
+      $scope.derbyReadyNobody = function () {
+        return $scope.derbyReadyShown() && $scope.derbyReadyCount().ready === 0;
+      };
+      function dragLanes() {
+        var c = $scope.drag && $scope.drag.current;
+        return c ? toArray(c.lanes) : [];
+      }
+      $scope.dragReadyCount = function () {
+        var lanes = dragLanes(), ready = 0, total = 0;
+        for (var i = 0; i < lanes.length; i++) {
+          if (lanes[i].id == null || lanes[i].ready == null) { continue; }
+          total++;
+          if (lanes[i].ready !== false) { ready++; }
+        }
+        return { ready: ready, total: total };
+      };
+      $scope.dragReadyShown = function () {
+        return $scope.readyCheck && $scope.drag.phase === 'staging'
+          && $scope.dragReadyCount().total > 0;
+      };
+      $scope.dragReadyNobody = function () {
+        return $scope.dragReadyShown() && $scope.dragReadyCount().ready === 0;
+      };
+      $scope.derbyReadyDriver = function (p) {
+        if (p) { bngApi.engineLua('raceManager.derbyReadyDriver(' + p.id + ')'); }
+      };
+      $scope.derbyReadyAll = function () { bngApi.engineLua('raceManager.derbyReadyAll()'); };
+      $scope.dragReadyDriver = function (ln) {
+        if (ln && ln.id != null) { bngApi.engineLua('raceManager.dragReadyDriver(' + ln.id + ')'); }
+      };
+      $scope.dragReadyAll = function () { bngApi.engineLua('raceManager.dragReadyAll()'); };
+
+      // WHAT IS WAITING ON THIS DRIVER, whichever mode called them: the race
+      // grid, a derby form-up or a drag pass. One banner, so the button is in
+      // the same place whatever is being run. Used as !!readyPrompt() in an
+      // ng-if: it returns a fresh object, which a watch would never see settle.
+      $scope.readyPrompt = function () {
+        if (!$scope.readyCheck) { return null; }
+        if ($scope.phase === 'grid'
+            && ($scope.myStatus === 'called' || $scope.myStatus === 'gridded')) {
+          return { mode: 'race', ready: $scope.myStatus === 'gridded',
+                   label: $scope.sessionKind === 'quali' ? 'Qualifying grid forming' : 'Grid forming',
+                   where: $scope.myGridPos ? 'slot P' + $scope.myGridPos : 'your slot' };
+        }
+        if ($scope.derby.phase === 'forming') {
+          var ps = $scope.derby.players || [];
+          for (var i = 0; i < ps.length; i++) {
+            if (ps[i].you && ps[i].ready != null) {
+              return { mode: 'derby', ready: ps[i].ready !== false, label: 'Derby forming up',
+                       where: ps[i].slot ? 'slot ' + ps[i].slot : 'your place' };
+            }
+          }
+        }
+        if ($scope.drag.phase === 'staging') {
+          var lanes = dragLanes();
+          for (var j = 0; j < lanes.length; j++) {
+            if (lanes[j].you && lanes[j].ready != null) {
+              return { mode: 'drag', ready: lanes[j].ready !== false, label: 'Your drag pass is up',
+                       where: 'lane ' + lanes[j].lane };
+            }
+          }
+        }
+        return null;
+      };
+      $scope.readyPress = function (on) {
+        var p = $scope.readyPrompt();
+        if (!p) { return; }
+        on = on !== false;
+        if (p.mode === 'derby') { bngApi.engineLua('raceManager.derbyReady(' + on + ')'); return; }
+        if (p.mode === 'drag') { bngApi.engineLua('raceManager.dragReady(' + on + ')'); return; }
+        $scope.setReady(on);
       };
       $scope.readyCancelStart = function () { $scope.readyUi.confirm = null; };
       $scope.setReady = function (on) {

@@ -552,7 +552,9 @@ local function respawnDerbyField()
     participants[#participants + 1] = rec
   end
   table.sort(participants, function (a, b) return a.id < b.id end)
-  respawnField('derby', participants)
+  -- The drivers benched for not being ready get their cars back with the rest.
+  respawnField('derby', participants, derby.benched)
+  derby.benched = {}
 end
 
 -- Single exit point for every way a derby ends (last man standing, admin
@@ -1318,6 +1320,11 @@ function RM_onDerbyFormUp(pid)
   end
   derby.phase = 'forming'
   releaseSpectators('derby')  -- fresh derby: nobody carries a stale penalty
+  derby.benched = {}
+  -- THE READY CHECK: with it on, form-up CALLS the field. Every participant
+  -- keeps a slot, and their car goes onto it only when they press Ready.
+  local called = race.readyCheck == true
+  for _, rec in pairs(derbyPlayers) do rec.ready = not called end
   broadcastDerbyState()
   -- Slots go out AFTER the state broadcast, so every client already holds the
   -- slot list it is about to be told to use. Join order (pid ascending) is
@@ -1335,14 +1342,18 @@ function RM_onDerbyFormUp(pid)
     -- disconnected: the list is keyed by pid and shrinks when one leaves.
     local rec = derbyPlayers[id]
     if rec then rec.slot = placed end
-    MP.TriggerClientEvent(id, 'RM_DerbyGridAssign', Util.JsonEncode({
-      slot = placed,
-      hold = true,
-    }))
+    if not called then
+      MP.TriggerClientEvent(id, 'RM_DerbyGridAssign', Util.JsonEncode({
+        slot = placed,
+        hold = true,
+      }))
+    end
   end
-  MP.SendChatMessage(-1, string.format(
-    '[RaceManager] Demo derby forming up: %d driver%s held for the start.',
-    count, count == 1 and '' or 's'))
+  MP.SendChatMessage(-1, called
+    and string.format('[RaceManager] Demo derby forming up: press Ready in the '
+      .. 'Race Manager panel to take your slot (%d driver%s).', count, count == 1 and '' or 's')
+    or string.format('[RaceManager] Demo derby forming up: %d driver%s held for the start.',
+      count, count == 1 and '' or 's'))
   print('[RaceManager] Derby formed up by ' .. (MP.GetPlayerName(pid) or pid)
     .. ' (' .. count .. ' drivers, ' .. #derby.startPositions .. ' slots placed)')
 end
@@ -1357,6 +1368,30 @@ function RM_onDerbyStart(pid)
         .. 'field and holds it for the countdown.')
     end
     return
+  end
+  -- Whoever is still not ready sits this derby out: stood down with no car,
+  -- so nothing loose can drive into the arena, and given it back at the end.
+  local ready, out = 0, {}
+  for _, rec in pairs(derbyPlayers) do
+    if rec.ready == false then out[#out + 1] = rec else ready = ready + 1 end
+  end
+  if ready == 0 then
+    MP.SendChatMessage(pid, '[RaceManager] Nobody is ready yet. Wait for Ready, '
+      .. 'or press Ready All to place everyone.')
+    return
+  end
+  if #out > 0 then
+    local names = {}
+    for _, rec in ipairs(out) do
+      derbyPlayers[rec.id] = nil
+      derby.benched[#derby.benched + 1] = rec
+      names[#names + 1] = displayName(rec)
+      forceSpectate(rec.id, 'You were not ready: sitting this derby out', 'derby')
+    end
+    table.sort(names)
+    MP.SendChatMessage(-1, '[RaceManager] Derby starting without '
+      .. table.concat(names, ', ') .. ' (not ready).')
+    print('[RaceManager] Derby: not ready at the start, benched: ' .. table.concat(names, ', '))
   end
   derby.phase = 'countdown'
   derbyCountdownValue = DERBY_COUNTDOWN_FROM
@@ -1408,6 +1443,11 @@ function RM_onDerbyEnd(pid)
     derby.winner = nil
     derby.time   = 0
     derbyPlayers = {}
+    -- Benched at Start Derby and aborted in the countdown: cars back.
+    if derby.benched and #derby.benched > 0 then
+      respawnField('derby', {}, derby.benched)
+    end
+    derby.benched = {}
     broadcastDerbyCountdown(-1)
     broadcastDerbyState()
     MP.SendChatMessage(-1, '[RaceManager] Demo derby start aborted.')
@@ -1488,9 +1528,93 @@ function RM_onDerbyRequestState(pid)
   broadcastDerbyState(pid)
 end
 
+-- ---------------------------------------------------------------------------
+-- Ready check
+-- ---------------------------------------------------------------------------
+-- With race.readyCheck on, Form Up calls the field (rec.ready = false) and a
+-- car goes onto its slot and is held when its driver presses Ready. A lone
+-- ready-up lands at once (order 1 of 1); Ready All staggers its batch.
+function derby.readyUp(rec, order, count)
+  rec.ready = true
+  MP.TriggerClientEvent(rec.id, 'RM_DerbyGridAssign', Util.JsonEncode({
+    slot = rec.slot, hold = true, order = order or 1, count = count or 1,
+  }))
+end
+
+function derby.announceIfAllReady()
+  local ready, total = 0, 0
+  for _, rec in pairs(derbyPlayers) do
+    total = total + 1
+    if rec.ready ~= false then ready = ready + 1 end
+  end
+  if total > 0 and ready == total then
+    race.tellAdmins(string.format('Everyone is ready for the derby (%d/%d). '
+      .. 'Start when you like.', ready, total))
+  end
+end
+
+-- The driver's own call; an admin may make it for somebody else by naming them.
+-- Not ready takes the car off the slot and lets the hold go.
+function RM_onDerbyReady(pid, rawData)
+  local ok, data = pcall(Util.JsonDecode, (rawData and rawData ~= '') and rawData or '{}')
+  if not ok or type(data) ~= 'table' then data = {} end
+  local target = pid
+  if data.pid ~= nil and tonumber(data.pid) ~= pid then
+    if not requireAuth(pid) then return end
+    target = tonumber(data.pid)
+  end
+  local rec = target and derbyPlayers[target]
+  if derby.phase ~= 'forming' or not rec then
+    broadcastDerbyState(pid)
+    return
+  end
+  if data.ready ~= false and rec.ready == false then
+    derby.readyUp(rec)
+    print('[RaceManager] Derby: ' .. rec.name .. ' is ready')
+    derby.announceIfAllReady()
+  elseif data.ready == false and rec.ready == true and race.readyCheck then
+    rec.ready = false
+    MP.TriggerClientEvent(rec.id, 'RM_DerbyGridAssign', Util.JsonEncode({ release = true }))
+    print('[RaceManager] Derby: ' .. rec.name .. ' is not ready any more')
+  end
+  broadcastDerbyState()
+end
+
+function RM_onDerbyReadyAll(pid)
+  if not requireAuth(pid) then return end
+  if derby.phase ~= 'forming' then return end
+  local called = {}
+  for _, rec in pairs(derbyPlayers) do
+    if rec.ready == false then called[#called + 1] = rec end
+  end
+  table.sort(called, function (a, b) return (a.slot or math.huge) < (b.slot or math.huge) end)
+  for i, rec in ipairs(called) do derby.readyUp(rec, i, #called) end
+  print(string.format('[RaceManager] Derby Ready All by %s: %d placed',
+    MP.GetPlayerName(pid) or pid, #called))
+  broadcastDerbyState()
+end
+
 -- Registered as an ADDITIONAL handler on onPlayerJoin/onPlayerDisconnect so
 -- the circuit-racing handlers above stay untouched.
 function RM_Derby_onPlayerJoin(pid)
+  -- Arriving while the field is being called: a place in it and a Ready
+  -- button, behind the last slot handed out.
+  local rec = players[pid]
+  if derby.phase == 'forming' and race.readyCheck and not derbyPlayers[pid]
+      and ((not rec) or isEntrant(rec)) then
+    local top = 0
+    for _, r in pairs(derbyPlayers) do
+      if r.slot and r.slot > top then top = r.slot end
+    end
+    local slot = top + 1
+    derbyPlayers[pid] = {
+      id = pid, name = MP.GetPlayerName(pid) or ('Player ' .. pid),
+      status = 'alive', resets = 0, lives = derby.lives, ready = false,
+      slot = (slot <= #derby.startPositions) and slot or nil,
+    }
+    broadcastDerbyState()
+    return
+  end
   broadcastDerbyState(pid)  -- late joiners spectate the running derby
 end
 
@@ -1498,6 +1622,11 @@ function RM_Derby_onPlayerDisconnect(pid)
   if derby.phase == 'running' and derbyPlayers[pid]
       and derbyPlayers[pid].status == 'alive' then
     derbyEliminate(pid, 'Disqualified')
+  elseif derby.phase == 'forming' and derbyPlayers[pid] then
+    -- Gone before the lights: out of the field, not a car-less participant.
+    derbyPlayers[pid] = nil
+    broadcastDerbyState()
+    derby.announceIfAllReady()
   end
 end
 

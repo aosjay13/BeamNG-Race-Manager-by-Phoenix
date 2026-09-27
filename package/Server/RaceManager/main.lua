@@ -151,7 +151,8 @@ local CFG = {
   maxRaceTime     = 21600,   -- seconds (6 h), so an endurance race is expressible
   unlimitedResets = -1,      -- the sentinel, not a preference: do not change
 
-  -- Forming the grid calls drivers to it and each presses Ready to be placed.
+  -- Forming a grid, a derby form-up and a drag pass call the drivers, and
+  -- each presses Ready to be placed.
   -- false places everyone at once, the way it worked before 0.17.2.
   readyCheck      = true,
 
@@ -1803,7 +1804,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.17.2'
+local RM_BUILD = '0.17.3'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -2201,15 +2202,20 @@ race.readyCounts = function ()
   return ready, ready + called
 end
 
+-- Chat to whoever is logged in to run the night. The derby and drag modules
+-- reach it through `race` for their own ready checks.
+race.tellAdmins = function (msg)
+  for adminPid in pairs(authenticatedPlayers) do
+    MP.SendChatMessage(adminPid, '[RaceManager] ' .. msg)
+  end
+end
+
 -- Told once, when the last driver readies: the admin is at a desk and the
 -- count is on the panel, but nobody watches a number for the moment it fills.
 race.announceIfAllReady = function ()
   local ready, total = race.readyCounts()
   if total == 0 or ready < total then return end
-  for adminPid in pairs(authenticatedPlayers) do
-    MP.SendChatMessage(adminPid, string.format(
-      '[RaceManager] Everyone is ready (%d/%d). Start when you like.', ready, total))
-  end
+  race.tellAdmins(string.format('Everyone is ready (%d/%d). Start when you like.', ready, total))
 end
 
 -- At the start of a session: whoever is still 'called' sits it out, ghosted
@@ -11183,6 +11189,8 @@ function onInit()
   MP.RegisterEvent('RM_DerbyDemolished',    'RM_onDerbyDemolished')
   MP.RegisterEvent('RM_DerbyRequestState',  'RM_onDerbyRequestState')
   MP.RegisterEvent('RM_DerbyFormUp',        'RM_onDerbyFormUp')
+  MP.RegisterEvent('RM_DerbyReady',         'RM_onDerbyReady')     -- ready check
+  MP.RegisterEvent('RM_DerbyReadyAll',      'RM_onDerbyReadyAll')
   -- Derby arena layouts (save/load, mirroring the track layout workflow)
   MP.RegisterEvent('RM_DerbyRequestLayouts','RM_onDerbyRequestLayouts')
   MP.RegisterEvent('RM_DerbySaveLayout',    'RM_onDerbySaveLayout')
@@ -11203,6 +11211,8 @@ function onInit()
   MP.RegisterEvent('RM_DragStage',        'RM_onDragStage')
   MP.RegisterEvent('RM_DragPractice',     'RM_onDragPractice')
   MP.RegisterEvent('RM_DragRun',          'RM_onDragRun')
+  MP.RegisterEvent('RM_DragReady',        'RM_onDragReady')      -- ready check
+  MP.RegisterEvent('RM_DragReadyAll',     'RM_onDragReadyAll')
   MP.RegisterEvent('RM_DragAbort',        'RM_onDragAbort')
   MP.RegisterEvent('RM_DragWithdraw',     'RM_onDragWithdraw')
   MP.RegisterEvent('RM_DragSetDial',      'RM_onDragSetDial')

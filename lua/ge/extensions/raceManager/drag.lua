@@ -426,6 +426,23 @@ D.onDragUpdate = function (rawData)
       row.you = (row.id ~= nil and row.id == me) or nil
     end
   end
+  -- ...and our lane in the pass on the strip, for the Ready button. The HUD
+  -- says so the first time we are called: not after Not ready, which the
+  -- driver pressed themselves.
+  local wasReady = S.myReady
+  S.myReady = nil
+  if me and type(data.current) == 'table' and type(data.current.lanes) == 'table' then
+    for _, ln in ipairs(data.current.lanes) do
+      if ln.id ~= nil and ln.id == me then
+        ln.you = true
+        if newPhase == 'staging' then S.myReady = ln.ready end
+      end
+    end
+  end
+  if S.myReady == false and wasReady == nil then
+    host.pushNotice('drag', 'Your drag pass is up',
+      { sub = 'Press READY in Race Manager to put your car on the strip' })
+  end
   guihooks.trigger('RaceManagerDrag', data)
 end
 
@@ -437,6 +454,13 @@ end
 D.onDragLane = function (rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
+  -- Not ready any more: off the strip, and the hold goes with it.
+  if data.release == true then
+    host.releaseGridHold('drag')
+    S.lane, S.delay = nil, 0
+    endRun('off')
+    return
+  end
   S.lane  = tonumber(data.lane)
   S.dial  = tonumber(data.dial)
   S.delay = tonumber(data.delay) or 0
@@ -478,7 +502,7 @@ D.onDragLane = function (rawData)
                   z = sp.z, hx = sp.hx, hy = sp.hy } },
       hold  = false,
       holdSource = 'drag',
-      order = slot, count = count,
+      order = tonumber(data.order) or slot, count = count,
     })
     host.pushNotice('drag', 'Roll up into the beams: creep forward until both '
       .. 'blue lights are on.')
@@ -488,7 +512,7 @@ D.onDragLane = function (rawData)
       slots = slots,
       hold  = data.hold == true,
       holdSource = 'drag',
-      order = slot,
+      order = tonumber(data.order) or slot,
       count = count,
     })
   end
@@ -617,6 +641,21 @@ function D.dragStage()           send('RM_DragStage') end
 -- press, because a warm-up should not need the ceremony a tournament round does.
 function D.dragPractice()        send('RM_DragPractice') end
 function D.dragRun()             send('RM_DragRun') end
+-- The ready check: put this car on its lane, or take it off again. Refused
+-- here with no car, because the server would mark it ready with nothing to move.
+function D.dragReady(on)
+  if on ~= false and not host.ownVehicle() then
+    host.pushNotice('drag', 'Get in a car first', { sub = 'Then press Ready' })
+    return
+  end
+  send('RM_DragReady', jsonEncode({ ready = on ~= false }))
+end
+-- Admin: ready one lane driver whose panel is closed, or every lane.
+function D.dragReadyDriver(pid)
+  pid = tonumber(pid)
+  if pid then send('RM_DragReady', jsonEncode({ ready = true, pid = pid })) end
+end
+function D.dragReadyAll()        send('RM_DragReadyAll') end
 function D.dragAbort()           send('RM_DragAbort') end
 function D.dragWithdraw(seed)
   send('RM_DragWithdraw', '{"seed":' .. (tonumber(seed) or 0) .. '}')

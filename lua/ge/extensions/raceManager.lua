@@ -234,7 +234,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.17.2'
+local RM_BUILD = '0.17.3'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -2875,6 +2875,9 @@ local garage = {
   -- key on different things, so the identity would jump on a car that may only
   -- have been resprayed. See readSpawnConfig.
   mpDropped = {},
+  -- The game's UI router timed out entering "play" and has not finished a
+  -- transition since. See garage.unstickUi.
+  uiPlayStuck = false,
 }
 
 -- THE CAR'S OWN ANSWER, sent up from the vehicle's Lua VM.
@@ -4733,8 +4736,47 @@ local function onGarageCar(rawData)
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'That entry predates stored parts: '
       .. 'if this is not the right car, an admin should re-capture it' })
   end
+  garage.unstickUi()
   -- The new car re-declares itself on its own: onVehicleSpawned arms the report
   -- and the poll picks it up, so the Garage List rules on it like any other.
+end
+
+-- A GAMEPAD THAT ONLY HAS PEDALS.
+--
+-- Joining a remote server, BeamNG's UI router starts the "play" transition
+-- while the level is still settling, the UI never acknowledges the mount, and
+-- after 3s it cancels (route_mounted_not_acknowledged in the log). The UI is
+-- then left believing a menu is up, so UINav takes the pad: stick and face
+-- buttons go to menu navigation ("Couldn't locate any button anywhere") and
+-- only the triggers, which UINav does not use, reach the car.
+--
+-- The game's vehicle selector ends with navigate("play"), which is why using
+-- it once fixed the rest of the session. A garage spawn never navigates, so it
+-- inherited the stuck state. Same call here, only when the router says it is
+-- stuck: navigating an already-healthy UI would bounce whatever is open.
+function garage.unstickUi()
+  if not garage.uiPlayStuck then return end
+  local router = extensions and extensions.ui_router
+  if not (router and router.navigate) then return end
+  garage.uiPlayStuck = false
+  local ok = pcall(router.navigate, 'play')
+  log('I', 'raceManager', 'UI was stuck short of "play" after joining; re-entered it'
+    .. (ok and '' or ' (navigate threw)'))
+end
+
+-- Router hooks. A timed-out "play" marks the UI stuck; any transition that
+-- commits afterwards means it is not. The commit hook fires before the mount
+-- ack, so the timeout that follows it still lands last and wins.
+function M.routeChangeCancelled(payload)
+  local to = type(payload) == 'table' and payload.toRoute
+  if type(to) == 'table' and to.name == 'play'
+     and payload.reason ~= 'navigation_replaced' then
+    garage.uiPlayStuck = true
+  end
+end
+
+function M.onAfterRouteChange()
+  garage.uiPlayStuck = false
 end
 
 -- NAMED GARAGE SETS. A race night runs several series and re-whitelisting each
@@ -8321,7 +8363,7 @@ for _, name in ipairs({
   'derbyRequestState', 'derbySaveLayout', 'derbySetBoundaryMode',
   'derbySetConfig', 'derbySetShape',
   'derbySetShapeCenter', 'derbyStart', 'derbyToggleVisualize',
-  'setDerbyEditorOpen',
+  'setDerbyEditorOpen', 'derbyReady', 'derbyReadyDriver', 'derbyReadyAll',
 }) do
   M[name] = derby[name]
 end
@@ -8334,6 +8376,7 @@ drag.init({
   inMultiplayer = inMultiplayer, fromCurrentServer = fromCurrentServer,
   localServerId = localServerId,
   sampledVehicle = sampledVehicle, pushNotice = pushNotice,
+  ownVehicle = ownVehicle,
   queueFieldPlacement = queueFieldPlacement,
   releaseGridHold = releaseGridHold, requestHold = requestHold,
   segmentCrossesGate = segmentCrossesGate,
@@ -8372,7 +8415,7 @@ drag.init({
 for _, name in ipairs({
   'dragAbort', 'dragBuild', 'dragClear', 'dragPractice', 'dragRequestState',
   'dragRun', 'dragSetConfig', 'dragSetDial', 'dragSetStaging', 'dragStage',
-  'dragWithdraw',
+  'dragWithdraw', 'dragReady', 'dragReadyDriver', 'dragReadyAll',
 }) do
   M[name] = drag[name]
 end

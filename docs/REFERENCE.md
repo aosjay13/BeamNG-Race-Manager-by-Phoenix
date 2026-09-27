@@ -993,9 +993,28 @@ menu, halfway across the map. Now it **calls** them to the grid instead.
 On the board, a driver waiting on the call shows **Not Ready** with an amber
 light, and a driver on their slot shows **Ready**.
 
+**The derby and the drag strip are called the same way.** The READY banner at
+the top of the panel is the same one in all three modes.
+
+| | Called by | Ready puts you | Not ready at the start |
+|---|---|---|---|
+| **Race** | Generate Grid, Start Quali | On your grid slot, held | You sit the session out as a ghost |
+| **Derby** | Form Up | On your derby slot, held | You sit the derby out: stood down where you are with driving and the engine off, so nothing loose drives into the arena, and you get control back when it ends |
+| **Drag** | Stage, Practice Pass | On your lane (held, or short of the line under roll up) | Your lane is a **no-show** when the tree drops: no time, the bottom of the pass, stood down until it settles |
+
+The admin controls are the same too: **Ready n/m** beside Start Derby or Run,
+**Ready All**, **Place** on a driver's row or lane, and a confirm before starting
+without somebody. Nothing starts with nobody ready. Under roll up with
+automatic starting, the tree waits for every lane to be ready **and** in the
+beams; if the courtesy stage runs out with nobody ready, the pass is waved off
+and offered again rather than scored as everybody failing to turn up.
+
+A driver who joins during a derby Form Up is added to the field with a Ready
+button, the same as joining while a race grid is called.
+
 **Ready check: On / Off** in the Grid settings, and `readyCheck` in
-`config.json`. Off forms the grid the old way, with everyone placed and held at
-once. It applies from the next grid.
+`config.json`. One switch for all three modes. Off places everyone at once, the
+old way. It applies from the next grid, form-up or pass.
 
 ### Holding the grid
 
@@ -2739,7 +2758,8 @@ it needs nothing new: the ladder draws itself off the times.
 
 ### Running a pass
 
-1. **Stage** puts this pass's cars on the strip.
+1. **Stage** calls this pass's drivers, and each one's car goes onto the strip
+   when they press **Ready** (see [The ready check](#the-ready-check)).
 2. The tree comes down, by itself or on **Run**, depending on the settings
    below.
 3. The result settles itself when every lane is home, or when the pass limit
@@ -3076,7 +3096,8 @@ it, and derby controls are not shown anywhere else - see
    how many would be in a derby started right now, and the field is locked from
    Form Up onward.
 4. **Form Up**, then **Start Derby** - the same two steps a circuit race uses.
-   **Form Up** stands every participant on a start slot and **holds them there**;
+   **Form Up** calls every participant: each presses **Ready** and is stood on
+   a start slot and **held there** (see [The ready check](#the-ready-check));
    the header reads *Formed up - held*. **Start Derby** then runs a synchronised
    3‑2‑1‑**GO!**, and that same broadcast releases every car at once, so nobody
    can creep away early. A driver with no slot placed for them is held where

@@ -306,6 +306,24 @@
   <!-- Being connected is not the same as being in the race. This bar is the
        one control a plain driver needs, so it sits above the admin panels and
        is visible to spectators too (outside minimal mode). -->
+  <!-- CALLED: the race grid, a derby form-up or a drag pass is waiting on
+       this driver. One banner for all three, in every panel mode, so the
+       button is always in the same place. The car goes on its slot on Ready
+       and not before, so nobody is moved in the middle of something else. -->
+  <div class="rm-readybar" ng-if="!!readyPrompt() && !broadcastMode()"
+       ng-class="{'rm-readybar-done': readyPrompt().ready}">
+    <span class="rm-ready" ng-if="!readyPrompt().ready">
+      <button class="rm-btn rm-btn-start rm-btn-ready" ng-click="readyPress(true)"
+              title="Put your car on {{ readyPrompt().where }} and hold it there until the start">READY</button>
+      {{ readyPrompt().label }}: press Ready to take {{ readyPrompt().where }}.
+    </span>
+    <span class="rm-ready" ng-if="readyPrompt().ready">
+      ✓ Ready on {{ readyPrompt().where }}
+      <button class="rm-btn rm-btn-mini" ng-click="readyPress(false)"
+              title="Off your place again, to fix something. Press Ready again before the start or you sit it out.">Not ready</button>
+    </span>
+  </div>
+
   <div class="rm-entry" ng-if="!minimalMode()">
     <span class="rm-entry-label">Race Entry</span>
     <!-- ONE SWITCH, AND IT IS THE DRIVER'S. Everyone on the server races; a
@@ -351,19 +369,6 @@
                         : 'Sit the next session out. Your car stays where it is as a ghost, and you watch with your own camera controls.' }}">
         👁 Spectate
       </button>
-    </span>
-
-    <!-- CALLED TO THE GRID. The car goes onto the slot on Ready and not before,
-         so nobody is put on the grid in the middle of something else. -->
-    <span class="rm-ready" ng-if="phase === 'grid' && myStatus === 'called'">
-      <button class="rm-btn rm-btn-start rm-btn-ready" ng-click="setReady(true)"
-              title="Put your car on your grid slot and hold it there until the start">READY</button>
-      Grid forming: press Ready to take {{ myGridPos ? 'slot P' + myGridPos : 'your slot' }}.
-    </span>
-    <span class="rm-ready" ng-if="phase === 'grid' && readyCheck && myStatus === 'gridded'">
-      ✓ Ready on {{ myGridPos ? 'P' + myGridPos : 'the grid' }}
-      <button class="rm-btn rm-btn-mini" ng-click="setReady(false)"
-              title="Off your slot again, as a ghost, to fix something. Press Ready again before the start or you sit it out.">Not ready</button>
     </span>
 
     <span class="rm-entry-state" ng-if="sessionUnderWay() && !spectating && !retireUi.confirm">
@@ -731,8 +736,22 @@
       Form Up
     </button>
     <button class="rm-btn rm-btn-start" ng-click="derbyStart()"
-            ng-disabled="derby.phase !== 'forming'"
-            title="Release the field with a 3-2-1 countdown. Form Up first.">Start Derby</button>
+            ng-if="readyUi.confirm !== 'derby'"
+            ng-disabled="derby.phase !== 'forming' || derbyReadyNobody()"
+            title="{{ derbyReadyNobody() ? 'Nobody is ready yet: wait, or press Ready All' : 'Release the field with a 3-2-1 countdown. Form Up first.' }}">Start Derby</button>
+    <span class="rm-ready-sum" ng-if="derbyReadyShown()"
+          ng-class="{'rm-ready-all': derbyReadyCount().ready === derbyReadyCount().total}"
+          title="Drivers on their slot. Anyone not ready at Start Derby sits it out.">
+      Ready {{ derbyReadyCount().ready }}/{{ derbyReadyCount().total }}
+    </span>
+    <button class="rm-btn rm-btn-mini" ng-if="derbyReadyShown() && derbyReadyCount().ready < derbyReadyCount().total && readyUi.confirm !== 'derby'"
+            ng-click="derbyReadyAll()"
+            title="Put every driver who has not pressed Ready on their slot now">Ready All</button>
+    <span class="rm-confirm" ng-if="readyUi.confirm === 'derby'">
+      Start without {{ notReadyNames('derby') }}?
+      <button class="rm-btn rm-btn-mini rm-btn-start" ng-click="readyConfirmStart()">Start anyway</button>
+      <button class="rm-btn rm-btn-mini" ng-click="readyCancelStart()">Wait</button>
+    </span>
     <button class="rm-btn rm-btn-end" ng-click="derbyEnd()"
             ng-disabled="derby.phase === 'idle'"
             title="Abort, end the derby, or reset to setup, depending on the phase.">
@@ -1131,7 +1150,7 @@
               title="The feature grid from the heat results: winners on the front row, then the seconds, interleaved by heat.">Heats</button>
       <span class="rm-setting-val">{{ startSlots }} start position{{ startSlots === 1 ? '' : 's' }}</span>
     </span>
-    <span class="rm-setting" title="On: Generate Grid and Start Quali call drivers to the grid, and each presses Ready to be put on their slot. Off: everyone is placed at once.">
+    <span class="rm-setting" title="On: forming a grid, forming up a derby and staging a drag pass call the drivers, and each presses Ready to be put in place. Off: everyone is placed at once.">
       <label>Ready check</label>
       <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-toggle-on': readyCheck}"
               ng-click="setReadyCheck(true)" ng-disabled="!canSetRules()">On</button>
@@ -3313,8 +3332,22 @@
               ng-disabled="!dragStripTestable() || dragActive()"
               title="One pass down the strip that scores nothing: everybody here, up to the lanes the strip has, staged and timed exactly as a real pass. It works with one car, so the strip can be tried before a field turns up, and it is where a dial-in comes from.">Practice Pass</button>
       <button class="rm-btn rm-btn-go" ng-click="dragRunPass()"
-              ng-disabled="drag.phase !== 'staging'"
+              ng-if="readyUi.confirm !== 'drag'"
+              ng-disabled="drag.phase !== 'staging' || dragReadyNobody()"
               title="Drop the tree now. Under automatic starting this is the override for a driver who will not stage, which is the job the courtesy stage rule does at a real strip.">{{ drag.stageMode === 'rollup' && drag.autoStart ? 'Run now' : 'Run' }}</button>
+      <span class="rm-ready-sum" ng-if="dragReadyShown()"
+            ng-class="{'rm-ready-all': dragReadyCount().ready === dragReadyCount().total}"
+            title="Lane drivers on the strip. A lane not ready when the tree drops is a no-show.">
+        Ready {{ dragReadyCount().ready }}/{{ dragReadyCount().total }}
+      </span>
+      <button class="rm-btn rm-btn-mini" ng-if="dragReadyShown() && dragReadyCount().ready < dragReadyCount().total && readyUi.confirm !== 'drag'"
+              ng-click="dragReadyAll()"
+              title="Put every lane driver who has not pressed Ready on the strip now">Ready All</button>
+      <span class="rm-confirm" ng-if="readyUi.confirm === 'drag'">
+        Run without {{ notReadyNames('drag') }}? They are a no-show.
+        <button class="rm-btn rm-btn-mini rm-btn-start" ng-click="readyConfirmStart()">Run anyway</button>
+        <button class="rm-btn rm-btn-mini" ng-click="readyCancelStart()">Wait</button>
+      </span>
       <button class="rm-btn" ng-click="dragAbort()"
               ng-disabled="!dragActive() || drag.phase === 'result'"
               title="Wave this pass off. Nothing is scored and the same pass is offered again.">Wave Off</button>
@@ -3357,7 +3390,10 @@
             <td>{{ dragET(ln.rt) }}</td>
             <td>{{ dragET(ln.et) }}</td>
             <td>{{ dragMPH(ln.speed) }}</td>
-            <td class="rm-drag-note">{{ dragLaneNote(ln) }}</td>
+            <td class="rm-drag-note">{{ dragLaneNote(ln) }}
+              <button class="rm-btn rm-btn-mini" ng-if="isAdmin && drag.phase === 'staging' && ln.ready === false"
+                      ng-click="dragReadyDriver(ln)" title="Put this driver on the strip now">Place</button>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -4005,8 +4041,10 @@
           <td class="rm-col-grid">{{ $index + 1 }}</td>
           <td class="rm-col-name" title="{{ driverName(p) }}{{ realName(p) ? ' (' + realName(p) + ')' : '' }}">{{ driverName(p) }}</td>
           <td class="rm-col-status">
-            <span class="rm-light" ng-class="{'rm-light-racing': p.status === 'alive', 'rm-light-dnf': p.status === 'eliminated', 'rm-light-finished': p.status === 'winner'}"></span>
+            <span class="rm-light" ng-class="{'rm-light-called': derbyReadyShown() && p.ready === false, 'rm-light-racing': p.status === 'alive' && !(derbyReadyShown() && p.ready === false), 'rm-light-dnf': p.status === 'eliminated', 'rm-light-finished': p.status === 'winner'}"></span>
             <span class="rm-status-text">{{ derbyStatusLabel(p) }}</span>
+            <button class="rm-btn rm-btn-mini" ng-if="isAdmin && derbyReadyShown() && p.ready === false"
+                    ng-click="derbyReadyDriver(p)" title="Put this driver on their slot now">Place</button>
           </td>
           <td class="rm-col-reset" ng-if="derbyLivesOn()">{{ p.status === 'eliminated' ? '-' : (p.lives == null ? '-' : p.lives) }}</td>
           <td class="rm-col-time">{{ p.status === 'eliminated' ? formatDerbyTime(p.elimTime) : '-' }}</td>
@@ -5685,6 +5723,15 @@
   .rm-btn-ready { font-weight: 700; letter-spacing: 0.5px; padding: 4px 14px; }
   .rm-ready-sum { font-size: 12px; font-weight: 700; color: #fbbc05; }
   .rm-ready-sum.rm-ready-all { color: #7ee2a8; }
+  .rm-readybar {
+    padding: 6px 10px;
+    border-bottom: 1px solid rgba(251, 188, 5, 0.5);
+    background: rgba(251, 188, 5, 0.12);
+  }
+  .rm-readybar.rm-readybar-done {
+    border-bottom-color: rgba(52, 168, 83, 0.45);
+    background: rgba(52, 168, 83, 0.08);
+  }
   .rm-light-racing     { background: #34a853; box-shadow: 0 0 6px rgba(52, 168, 83, 0.9); }
   .rm-light-finished   { background: #e8eaed; }
   .rm-light-dnf        { background: #ea4335; }

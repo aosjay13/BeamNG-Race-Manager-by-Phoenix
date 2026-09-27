@@ -84,8 +84,10 @@ onInit()
 -- session is rejected, then log in the admin sessions the suite drives with.
 RM_onDerbyFormUp(1)
 check(lastDerby == nil, 'derby form-up ignored before authentication')
-RM_onLogin(1, '{"password":"phoenix"}')
-RM_onLogin(2, '{"password":"phoenix"}')
+-- The ready check is off after every admin login here: this suite pins
+-- the derby behind it. tests/ready_test.lua covers the call.
+RM_onLogin(1, '{"password":"phoenix"}'); RM_onSetReadyCheck(1, '{"on":false}')
+RM_onLogin(2, '{"password":"phoenix"}'); RM_onSetReadyCheck(2, '{"on":false}')
 -- Login broadcasts circuit state (adminPresent); clear it so the isolation
 -- assertion at the end still proves the derby itself never touches RM_Update.
 lastState = nil

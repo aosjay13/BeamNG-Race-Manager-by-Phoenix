@@ -929,6 +929,29 @@ function D.derbyEnd()
   if host.inMultiplayer() then TriggerServerEvent('RM_DerbyEnd', '') end
 end
 
+-- The ready check: put this car on its slot, or take it off again. Refused
+-- here with no car, because the server would mark it ready with nothing to move.
+function D.derbyReady(on)
+  if not host.inMultiplayer() then return end
+  if on ~= false and not host.ownVehicle() then
+    host.pushNotice('derby', 'Get in a car first', { sub = 'Then press Ready' })
+    return
+  end
+  TriggerServerEvent('RM_DerbyReady', jsonEncode({ ready = on ~= false }))
+end
+
+-- Admin: ready one driver whose panel is closed, or everyone still called.
+function D.derbyReadyDriver(pid)
+  pid = tonumber(pid)
+  if pid and host.inMultiplayer() then
+    TriggerServerEvent('RM_DerbyReady', jsonEncode({ ready = true, pid = pid }))
+  end
+end
+
+function D.derbyReadyAll()
+  if host.inMultiplayer() then TriggerServerEvent('RM_DerbyReadyAll', '') end
+end
+
 function D.derbyRequestState()
   if host.inMultiplayer() then
     TriggerServerEvent('RM_DerbyRequestState', '')
@@ -1133,6 +1156,17 @@ D.onDerbyUpdate = function (rawData)
     for _, p in ipairs(data.players) do
       if tonumber(p.id) == myId then mine = p; break end
     end
+    -- The ready check. `you` marks our row for the panel's Ready button, and
+    -- the HUD says so the first time we are called: not after Not ready,
+    -- which the driver pressed themselves.
+    local wasReady = D.derbyState.myReady
+    D.derbyState.myReady = nil
+    if mine and data.derbyPhase == 'forming' then D.derbyState.myReady = mine.ready end
+    if mine then mine.you = true end
+    if D.derbyState.myReady == false and wasReady == nil then
+      host.pushNotice('derby', 'The derby is forming up',
+        { sub = 'Press READY in Race Manager to take your slot' })
+    end
     if mine then
       if mine.status ~= 'alive' then
         -- The ruling came back as an elimination.
@@ -1242,6 +1276,12 @@ end
 D.onDerbyGridAssign = function (rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
+  -- Not ready any more: off the slot, and the hold goes with it.
+  if data.release == true then
+    D.derbyState.slot = nil
+    host.releaseGridHold('derby')
+    return
+  end
   local slot = tonumber(data.slot)
   D.derbyState.slot = slot and math.floor(slot) or nil
 
@@ -1261,8 +1301,10 @@ D.onDerbyGridAssign = function (rawData)
       slots = D.derbyState.starts,
       hold  = data.hold == true,
       holdSource = 'derby',
-      order = D.derbyState.slot,
-      count = math.max(#D.derbyState.starts, D.derbyState.slot),
+      -- A lone ready-up arrives as 1 of 1 and lands at once; a whole field
+      -- is staggered by slot number.
+      order = tonumber(data.order) or D.derbyState.slot,
+      count = tonumber(data.count) or math.max(#D.derbyState.starts, D.derbyState.slot),
     })
   elseif data.hold == true then
     -- No slot placed for this driver: hold them where they stand.
