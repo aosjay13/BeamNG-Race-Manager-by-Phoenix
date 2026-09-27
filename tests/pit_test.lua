@@ -404,7 +404,7 @@ check(sent[1] and sent[1].payload.confirmDrop == true,
 -- ===========================================================================
 -- THE LANE IS ONLY ON SCREEN ONCE YOU ARE IN IT
 -- ===========================================================================
--- A lane of stalls is three draws each and used to sit off to the side for the
+-- A lane of stalls is eight draws each and used to sit off to the side for the
 -- whole race, for something a driver uses once. A track with an ENTRY GATE now
 -- shows that gate while racing and the stalls only behind it.
 --
@@ -461,6 +461,84 @@ frames(0.2)
 check(lastRoute().pitInLane == false,
   'clearing a checkpoint takes the driver out of the lane, so missing the exit '
     .. 'gate cannot strand the markers on screen')
+
+-- ===========================================================================
+-- A STALL IS A CAR-SIZED BOX WITH ITS OWN WIDTH AND LENGTH
+-- ===========================================================================
+-- Reported: racers could not tell where the pit box was or where to stop. A
+-- stall took the CHECKPOINT width, so its "box" ran 20 to 40 m across the lane.
+-- It has a width and a length of its own now, set per stall in the editor, and
+-- the rule tests exactly the box that is drawn.
+local function stall(i) return (lastRoute().pitRoute or {})[i] end
+serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+handlers['RM_ClearTrack']({ reason = 'test' })
+RM.setEditorTarget('main')
+veh.x, veh.y = 0, 200; RM.editorAdd()
+veh.x, veh.y = 0, 400; RM.editorAdd()
+RM.setEditorTarget('pit')
+veh.x, veh.y = 50, 0; RM.editorAdd()
+check(stall(1) and stall(1).width == 3.5 and stall(1).length == 6,
+  'a new stall is the default 3.5 x 6 m box, not a checkpoint width (got '
+    .. tostring(stall(1) and stall(1).width) .. ' x ' .. tostring(stall(1) and stall(1).length) .. ')')
+
+RM.setPitStallSize(1, 5, 8)
+check(stall(1).width == 5 and stall(1).length == 8, 'a stall can be resized')
+veh.x, veh.y = 50, 30; RM.editorAdd()
+check(stall(2) and stall(2).width == 5 and stall(2).length == 8,
+  'and the next stall placed takes the size of the one before it')
+RM.setPitStallSize(1, 999, 0.1)
+check(stall(1).width == 20 and stall(1).length == 3, 'sizes are clamped to 2-20 wide, 3-30 long')
+RM.setPitStallSize(1, 0, nil)
+check(stall(1).width == 3.5 and stall(1).length == 6, 'and blank puts the default back')
+RM.setEditorTarget('main')
+
+-- The rule follows the box. The stall faces +Y (the placing car's heading), so
+-- across is x and along is y.
+racing()
+veh.speed = 0
+veh.x, veh.y = 52.5, 0                 -- 2.5 m to the side: outside a 3.5 m box
+frames(0.3)
+check(frozen ~= true, 'stopped beside a 3.5 m box is not in it')
+veh.x, veh.y = 50, 3.5                 -- 3.5 m along: outside a 6 m box
+frames(0.3)
+check(frozen ~= true, 'nor is stopping past the front of it')
+serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+RM.setPitStallSize(1, 6, 8)
+racing()
+veh.x, veh.y = 0, 0
+frames(9.0)                            -- clear any cooldown
+veh.x, veh.y = 52.5, 3.5
+frames(0.3)
+check(frozen == true, 'resized to 6 x 8, the same spot is inside and starts the stop')
+frames(TUNE_PIT_HOLD + 1.0)
+veh.x, veh.y = 0, 0
+frames(0.5)
+
+-- Saved and loaded with the layout.
+serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+clearLog()
+RM.saveLayout('sized')
+local saved = sent[1] and sent[1].payload
+check(saved and saved.pits and saved.pits[1].width == 6 and saved.pits[1].length == 8,
+  'a save carries each stall width and length')
+handlers['RM_ApplyLayout']({
+  name = 'sized', width = 20, height = 10,
+  checkpoints = { {x=0,y=100,z=0,hx=0,hy=1}, {x=0,y=200,z=0,hx=0,hy=1} },
+  pits = {
+    { x = -50, y = 100, z = 0, hx = 1, hy = 0, width = 6, length = 8 },
+    { x = -50, y = 120, z = 0, hx = 1, hy = 0, width = 30 },   -- saved before stalls had a length
+  },
+})
+check(stall(1).width == 6 and stall(1).length == 8, 'and a load keeps them')
+check(stall(2).width == 3.5 and stall(2).length == 6,
+  'a stall from an older layout, which carried a checkpoint width, comes up at '
+    .. 'the default box instead (got ' .. tostring(stall(2).width) .. ' x '
+    .. tostring(stall(2).length) .. ')')
+
+-- Resizing is an edit, and the editor is shut while a session runs.
+racing()
+RM.setPitStallSize(1, 4, 5)
+check(stall(1).width == 6 and stall(1).length == 8, 'a stall cannot be resized mid-session')
 
 print(string.format('pit_test: %d checks, %d failures', checks, fails))
 if fails > 0 then os.exit(1) end

@@ -1139,5 +1139,42 @@ rival.x, rival.y = 500, 500
 core_vehicles = nil
 world[TRAILER_ID] = nil
 
+-- ===========================================================================
+-- Called to the grid is not "a session is already running"
+-- ===========================================================================
+-- Reported: that message came up the moment Generate Grid was pressed. With the
+-- ready check on, every driver is CALLED and their car is a ghost until they
+-- press Ready, and the ghost going on was what said it. The words wait for the
+-- lights now, for a driver who really is out of the running session.
+local function spectateNotices()
+  local n = {}
+  for _, h in ipairs(hooks) do
+    if h.event == 'RaceManagerNotice' and h.payload.kind == 'spectate' then
+      n[#n + 1] = tostring(h.payload.msg)
+    end
+  end
+  return n
+end
+serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+frames(0.5)
+clearLog()
+serverState({ phase = 'grid', readyCheck = true, maxResets = -1, totalLaps = 3,
+  drivers = { { id = OWN_PID, name = 'Me', status = 'called', gridPos = 1, bystander = true } } })
+frames(0.5)
+check(#spectateNotices() == 0,
+  'being called to the grid says nothing about a session running (got "'
+    .. tostring(spectateNotices()[1]) .. '")')
+-- The lights go out and we never pressed Ready.
+serverState({ phase = 'racing', maxResets = -1, totalLaps = 3,
+  drivers = { { id = OWN_PID, name = 'Me', status = 'waiting', bystander = true } } })
+frames(0.5)
+local said = spectateNotices()
+check(#said == 1 and said[1]:find('already running', 1, true) ~= nil,
+  'the race starting without us is when it is said (got ' .. #said .. ')')
+frames(2)
+check(#spectateNotices() == 1, 'and it is said once, not every frame')
+serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+frames(0.5)
+
 print(string.format('ghost_test: %d checks, %d failures', checks, fails))
 if fails > 0 then os.exit(1) end

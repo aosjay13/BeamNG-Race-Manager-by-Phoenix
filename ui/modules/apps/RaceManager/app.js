@@ -77,6 +77,8 @@ angular.module('beamng.apps')
       $scope.raceMode = 'laps';   // 'laps' | 'timed' | 'endurance'
       $scope.raceTimeLimit = 0;   // seconds, 0 = the race runs to a lap count
       $scope.raceLeft = null;     // seconds remaining, null when not a timed race
+      $scope.raceClock = null;    // race time from the green, held under red
+      $scope.clockStopped = false; // a red flag is holding the race clock
       $scope.raceExpired = false; // clock out, waiting on the leader's crossing
       $scope.lastLapNum = null;   // the lap everyone still running finishes on
       $scope.maxResets = -1;      // authoritative value mirrored from the server
@@ -98,7 +100,7 @@ angular.module('beamng.apps')
       // Called and not yet official: the field is racing back to the line and
       // the board is still live. A different thing to say from POSITIONS FROZEN.
       $scope.cautionPending = false;
-      // A restart is called and the green falls as the leader reaches the line.
+      // A restart is called and the green falls on the leader's run to the line.
       $scope.restartPending = false;
       // The free pass: the rule, and the driver who took it this caution.
       $scope.luckyDog = false;
@@ -289,6 +291,19 @@ angular.module('beamng.apps')
           }
         }, LAP_TICK_MS);
       }
+      // THE PIT CLOCK RUNS HERE. pitLeft only arrives with the route state,
+      // which is pushed as the stop starts and ends and not between, so the bar
+      // sat on 5.0s for the whole stop. Each push re-anchors the end time.
+      var pitTicker = null;
+      $scope.pitEndsAt = 0;
+      $scope.pitClock = function () {
+        return Math.max(0, ($scope.pitEndsAt - Date.now()) / 1000);
+      };
+      function pitTickerOn(on) {
+        if (on && !pitTicker) { pitTicker = $interval(function () {}, 100); }
+        if (!on && pitTicker) { $interval.cancel(pitTicker); pitTicker = null; }
+      }
+
       function stopLapTicker() {
         if (lapTicker) { $interval.cancel(lapTicker); lapTicker = null; }
       }
@@ -653,7 +668,7 @@ angular.module('beamng.apps')
       // Per-checkpoint override editor: which gate (1-based) is selected, plus
       // its edit fields. Blank fields mean "use the global default".
       $scope.selectedCp = null;
-      $scope.cpEdit = { width: '', height: '', depth: '' };
+      $scope.cpEdit = { width: '', height: '', depth: '', length: '' };
 
       // Track layout state (server-side persistent layouts, current map only)
       $scope.layouts = [];              // [{ name, map, width, checkpoints }]
@@ -2354,6 +2369,10 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.sessionKind = data.sessionKind === 'quali' ? 'quali' : 'race';
           if (typeof data.sessionLaps === 'number') { $scope.sessionLaps = data.sessionLaps; }
           $scope.raceTime = data.raceTime || 0;
+          // The race clock, which is not raceTime: it starts at the green, not at
+          // the release, and stands still under a red flag.
+          $scope.raceClock = (typeof data.raceClock === 'number') ? data.raceClock : null;
+          $scope.clockStopped = !!data.clockStopped;
           // Who holds the session's fastest lap. One id, compared per row when
           // the table renders - no scan, and no second sorted copy of the field.
           $scope.bestLapPid = (data.bestLapPid === undefined) ? null : data.bestLapPid;
@@ -2400,6 +2419,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.jokerEnabled = !!data.jokerEnabled;
           $scope.paceLap = !!data.paceLap;
           $scope.pacing = !!data.pacing;
+          $scope.greenReady = !!data.greenReady;
           $scope.caution = !!data.caution;
           $scope.cautionLaps = data.cautionLaps || 0;
           $scope.cautionPending = !!data.cautionPending;
@@ -2610,6 +2630,8 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.pitExit  = toArray(data.pitExit);
           $scope.pitActive = !!data.pitActive;
           $scope.pitLeft = data.pitLeft || 0;
+          if ($scope.pitActive) { $scope.pitEndsAt = Date.now() + $scope.pitLeft * 1000; }
+          pitTickerOn($scope.pitActive);
           $scope.nextWp = data.nextWp || 1;
           $scope.visualize = data.visualize !== false;
           // Free practice. Mirrored rather than tracked locally: the client Lua
@@ -3039,8 +3061,13 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         // the road going past: legible on an admin's dark panel and very nearly
         // invisible on everybody else's, which is how it went unnoticed.
         fastest:  { rank: 10, flash: true,  ms: 4500, color: 'gold' },
-        // Everything else (grid, joker, pit, reset, ghost, finish, server)
-        // takes NOTICE_DEFAULT. They are the running commentary.
+        // A pit stop is a sequence where only the latest step is true: stop in
+        // the box, the hold, GO. Queued at the default nine seconds each, GO
+        // came up long after the car had left, so each one REPLACES the last.
+        // Above the session notices: the driver in the box is waiting on it.
+        pit:      { rank: 22, flash: false, ms: 4000, replace: true },
+        // Everything else (grid, joker, reset, ghost, finish, server) takes
+        // NOTICE_DEFAULT. They are the running commentary.
       };
       function noticeStyle(kind) {
         var s = NOTICE_STYLE[kind] || NOTICE_DEFAULT;
@@ -3048,7 +3075,8 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           rank:   s.rank   !== undefined ? s.rank   : NOTICE_DEFAULT.rank,
           flash:  s.flash  !== undefined ? s.flash  : NOTICE_DEFAULT.flash,
           ms:     s.ms     !== undefined ? s.ms     : NOTICE_DEFAULT.ms,
-          color: s.color !== undefined ? s.color : NOTICE_DEFAULT.color
+          color: s.color !== undefined ? s.color : NOTICE_DEFAULT.color,
+          replace: s.replace === true
         };
       }
 
@@ -3097,6 +3125,16 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         var st = noticeStyle(kind);
         var item = { kind: kind, msg: msg, sub: sub || null, rank: st.rank,
                      flash: st.flash, ms: st.ms, color: st.color };
+        // A kind that replaces: drop anything of its kind still waiting, and if
+        // one is up, take its place now rather than after it.
+        if (st.replace) {
+          noticeQueue = noticeQueue.filter(function (q) { return q.kind !== kind; });
+          if ($scope.notice && $scope.notice.kind === kind) {
+            noticeQueue.push(item);
+            noticeAdvance();
+            return;
+          }
+        }
         // Nothing showing: straight up.
         if (!$scope.notice) {
           noticeQueue.push(item);
@@ -5070,12 +5108,18 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       //
       // Only while RACING. Once it is over, the elapsed time is what a result
       // is read against, and a finished race frozen at 0:00 says nothing at all.
+      //
+      // Elapsed is the RACE clock, from the green: a pace lap reads 0:00 and a
+      // red flag holds it. raceTime is only the fallback for an older server.
       $scope.sessionClock = function () {
+        var t;
         if ($scope.phase === 'racing'
             && $scope.raceLeft !== null && $scope.raceLeft !== undefined) {
-          return $scope.formatRaceTime($scope.raceLeft);
+          t = $scope.formatRaceTime($scope.raceLeft);
+        } else {
+          t = $scope.formatRaceTime($scope.raceClock !== null ? $scope.raceClock : $scope.raceTime);
         }
-        return $scope.formatRaceTime($scope.raceTime);
+        return $scope.clockStopped ? ('\u23F8\uFE0E ' + t) : t;
       };
       // So the readout can say which way it is running rather than leaving a
       // driver to work it out from whether the digits are going up or down.
@@ -5189,8 +5233,26 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         $scope.cpEdit = {
           width:  (typeof wp.width === 'number') ? wp.width : '',
           height: (typeof wp.height === 'number') ? wp.height : '',
-          depth:  (typeof wp.depth === 'number') ? wp.depth : ''
+          depth:  (typeof wp.depth === 'number') ? wp.depth : '',
+          length: (typeof wp.length === 'number') ? wp.length : ''
         };
+      };
+
+      // A pit stall's box. Its own call, not the gate override: a stall is
+      // car-sized and has a length where a gate has height and depth.
+      // 0 stands in for blank, which is the default size.
+      $scope.applyPitSize = function () {
+        if (!$scope.selectedCp) { return; }
+        var w = parseFloat($scope.cpEdit.width)  || 0;
+        var l = parseFloat($scope.cpEdit.length) || 0;
+        bngApi.engineLua('raceManager.setPitStallSize('
+          + $scope.selectedCp + ', ' + w + ', ' + l + ')');
+      };
+      $scope.resetPitSize = function () {
+        if (!$scope.selectedCp) { return; }
+        $scope.cpEdit.width = 3.5;
+        $scope.cpEdit.length = 6;
+        bngApi.engineLua('raceManager.setPitStallSize(' + $scope.selectedCp + ', 0, 0)');
       };
 
       // Push the edit fields to the client. A blank field clears that override
@@ -5219,6 +5281,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // before that was true, and the client fills those in as it loads.
       $scope.cpDim = function (wp, field) {
         if (wp && typeof wp[field] === 'number') { return wp[field]; }
+        if (field === 'length') { return 6; }
         if (field === 'width') { return $scope.settingsUi.width; }
         if (field === 'depth') { return $scope.settingsUi.depth; }
         return $scope.settingsUi.height;

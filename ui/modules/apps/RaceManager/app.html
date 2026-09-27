@@ -54,8 +54,8 @@
          move a number. -->
     <span class="rm-timing" ng-if="showTiming()">
     <span class="rm-clock" ng-if="phase === 'racing' || phase === 'finished'"
-          ng-class="{'rm-clock-down': sessionClockDown()}"
-          title="{{ sessionClockDown() ? 'Race time remaining' : 'Race time elapsed' }}">{{ sessionClock() }}</span>
+          ng-class="{'rm-clock-down': sessionClockDown(), 'rm-clock-stopped': clockStopped}"
+          title="{{ clockStopped ? 'Race clock stopped: red flag' : (sessionClockDown() ? 'Race time remaining' : 'Race time elapsed') }}">{{ sessionClock() }}</span>
     <span class="rm-wp-progress" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">CP {{ nextWp }}/{{ routeWaypoints.length }}</span>
     <!-- Live distance to your own next checkpoint (the third position metric) -->
     <span class="rm-dist" ng-if="phase === 'racing' && progress && progress.dist != null">{{ formatDistance(progress.dist) }}</span>
@@ -235,13 +235,15 @@
           title="The yellow is out and the field is racing back to the line. Positions lock as you complete this lap, on the lap the leader is on.">CAUTION &middot; RACE BACK TO THE LINE</span>
     <span class="rm-pace-badge" ng-if="caution &amp;&amp; !restartPending"
           title="Full-course caution: hold position, no overtaking. Places are locked in the order the field came back to the line.">CAUTION &middot; POSITIONS FROZEN<b ng-if="cautionLaps"> &middot; LAP {{ cautionLaps }}</b></span>
-    <span class="rm-restart-badge" ng-if="caution &amp;&amp; restartPending"
-          title="A restart is called: the green flag falls as the leader reaches the start/finish line.">RESTART THIS LAP &middot; GREEN AT THE LINE</span>
+    <span class="rm-restart-badge" ng-if="caution &amp;&amp; restartPending &amp;&amp; !greenReady"
+          title="A restart is called: GET READY comes as the leader nears the line, then the green at a random point in the last 50 m.">RESTART THIS LAP &middot; GREEN ON THE RUN IN</span>
     <!-- ONE BADGE FOR THE WHOLE FORMATION LAP: what it is, what to do, and that
          it does not count. Three badges used to carry those between them and a
          driver forming up has no time to read three. -->
-    <span class="rm-pace-badge" ng-if="pacing"
-          title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. It is not timed and is not one of the race laps. The green flag falls as the leader reaches the line.">PACE LAP &middot; HOLD &middot; 40 MPH / 64 KM/H &middot; NOT SCORED</span>
+    <span class="rm-pace-badge" ng-if="pacing &amp;&amp; !greenReady"
+          title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. It is not timed and is not one of the race laps. GET READY comes as the leader nears the line, then the green at a random point in the last 50 m.">PACE LAP &middot; HOLD &middot; 40 MPH / 64 KM/H &middot; NOT SCORED</span>
+    <span class="rm-restart-badge" ng-if="greenReady &amp;&amp; (pacing || restartPending)"
+          title="The leader is on the run to the line: the green flag falls at a random point in the last 50 m. Hold position until it does.">GET READY &middot; GREEN FLAG COMING</span>
     <span class="rm-p2p-badge" ng-if="pointToPoint"
           title="This track is a point-to-point stage: driven once, first gate to last. Laps do not apply.">POINT TO POINT</span>
     <span class="rm-derby-badge" ng-if="derby.phase === 'running'">DERBY LIVE {{ formatDerbyTime(derby.time) }}</span>
@@ -600,7 +602,7 @@
     <button class="rm-btn rm-btn-start rm-btn-pace" ng-click="startRace()"
             ng-if="phase === 'grid' && paceStart() && !readyUi.confirm"
             ng-disabled="readyNobody()"
-            title="{{ readyNobody() ? 'Nobody is ready yet: wait, or press Ready All' : 'Release the field under yellow for a pace lap. The green flag falls as the leader comes back to the line.' }}">Start Race</button>
+            title="{{ readyNobody() ? 'Nobody is ready yet: wait, or press Ready All' : 'Release the field under yellow for a pace lap. GET READY 100 m out, then the green at a random point in the last 50 m.' }}">Start Race</button>
     <!-- THE CALL TO THE GRID: who is on their slot, and the way past whoever
          is not. Whoever is still not ready at the start sits that session out,
          so starting without them asks first. -->
@@ -631,7 +633,7 @@
       <button class="rm-btn rm-btn-redflag"
               ng-click="setFlag(flag === 'red' ? 'green' : 'red')"
               ng-class="{'rm-flag-on': flag === 'red'}"
-              title="Red flag: stop where you are. The session keeps running. Press again to lift it.">{{ flag === 'red' ? 'Lift red' : 'Red flag' }}</button>
+              title="Red flag: stop where you are. The race clock stops until you lift it. Press again to lift it.">{{ flag === 'red' ? 'Lift red' : 'Red flag' }}</button>
       <!-- THE ADVISORY YELLOW AND GREEN BELONG TO QUALIFYING ALONE now, and that
            is the whole of why they used to sit beside the Caution button showing
            two yellows and two greens at once. In a RACE the caution IS the
@@ -674,7 +676,7 @@
           title="The yellow is out and the field is racing back to the line. The caution goes official when the leader crosses.">RACING BACK TO THE LINE</span>
     <button class="rm-btn rm-btn-green rm-btn-restart" ng-click="callRestart()"
             ng-if="cautionAvailable() &amp;&amp; caution &amp;&amp; !restartPending"
-            title="Restart on this lap: the green falls as the leader reaches the line.">Restart</button>
+            title="Restart on this lap: GET READY 100 m out, then the green at a random point in the last 50 m.">Restart</button>
     <button class="rm-btn rm-btn-caution rm-btn-waveoff" ng-click="cancelRestart()"
             ng-if="cautionAvailable() &amp;&amp; caution &amp;&amp; restartPending"
             title="Wave the restart off. The race stays under caution and the board stays frozen.">Cancel restart</button>
@@ -2024,7 +2026,8 @@
         Joker gates are drawn violet. Enable the joker lap in Race settings to enforce it.
       </span>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'pit'">
-        Stalls are drawn amber. Driving into one repairs the car in place; they are not checkpoints.
+        Stalls are amber boxes on the ground. A driver stops inside, nose to the white line, and
+        the box turns green while they are in it. Click a stall to set its width and length.
         <b ng-if="!pitEntry.length">No entry gate, so every stall is drawn for the whole race.</b>
       </span>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'pitEntry'">
@@ -2285,10 +2288,15 @@
                     ng-click="$event.stopPropagation(); setMarkerKind(k, mIndex + 1)"
                     title="{{ markerLabelOf(k) }}">{{ markerGlyph(k) }}</button>
           </span>
-          <span class="rm-editor-dims">
+          <span class="rm-editor-dims" ng-if="editorTarget !== 'pit'">
             <span ng-class="{'rm-dim-set': wp.width != null}">W{{ cpDim(wp, 'width') }}</span>
             <span ng-class="{'rm-dim-set': wp.height != null}">↑{{ cpDim(wp, 'height') }}</span>
             <span ng-class="{'rm-dim-set': wp.depth != null}">↓{{ cpDim(wp, 'depth') }}</span>
+          </span>
+          <!-- A stall is a box on the ground: across and along, nothing vertical. -->
+          <span class="rm-editor-dims" ng-if="editorTarget === 'pit'">
+            <span class="rm-dim-set">W{{ cpDim(wp, 'width') }}</span>
+            <span class="rm-dim-set">L{{ cpDim(wp, 'length') }}</span>
           </span>
           <!-- The same pair the starting grid has: stand the car on a placed
                gate, or move the gate to where the car is. Without them a gate
@@ -2317,7 +2325,22 @@
                   ng-click="$event.stopPropagation(); removeCheckpoint($index + 1)">✕</button>
         </div>
         <!-- Per-checkpoint override editor (expands under the selected gate) -->
-        <div class="rm-cp-edit" ng-if="selectedCp === $index + 1">
+        <div class="rm-cp-edit" ng-if="selectedCp === $index + 1 && editorTarget === 'pit'">
+          <span class="rm-setting rm-cp-dim" title="Across the stall, side to side"><label>W</label>
+            <input type="range" min="2" max="20" step="0.5" ng-model="cpEdit.width"
+                   ng-change="applyPitSize()">
+            <input type="number" min="2" max="20" step="0.5" ng-model="cpEdit.width"
+                   placeholder="width"></span>
+          <span class="rm-setting rm-cp-dim" title="Along the stall, the way the car faces"><label>L</label>
+            <input type="range" min="3" max="30" step="0.5" ng-model="cpEdit.length"
+                   ng-change="applyPitSize()">
+            <input type="number" min="3" max="30" step="0.5" ng-model="cpEdit.length"
+                   placeholder="length"></span>
+          <button class="rm-btn rm-btn-mini rm-btn-start" ng-click="applyPitSize()">Apply</button>
+          <button class="rm-btn rm-btn-mini" ng-click="resetPitSize()"
+                  title="Back to the standard 3.5 x 6 m box. Only this stall changes.">Default</button>
+        </div>
+        <div class="rm-cp-edit" ng-if="selectedCp === $index + 1 && editorTarget !== 'pit'">
           <!-- Same ranges and the same slider-plus-number pairing as the
                defaults above, so a gate dimension is adjusted the same way
                wherever it is being edited. Blank still means "inherit". -->
@@ -3545,7 +3568,7 @@
   <!-- Pit stop: this driver is held in a stall while the car is repaired. -->
   <div class="rm-pit" ng-if="pitActive">
     <span class="rm-pit-title">IN THE PITS</span>
-    <span class="rm-pit-clock">{{ pitLeft | number:1 }}s</span>
+    <span class="rm-pit-clock">{{ pitClock() | number:1 }}s</span>
   </div>
 
   <!-- Reset ghost: this driver's own countdown to contact resuming. Shown only
@@ -3598,8 +3621,8 @@
          move a number. -->
     <span class="rm-timing" ng-if="showTiming()">
     <span class="rm-driverbar-label" ng-if="phase === 'racing' || phase === 'finished'">
-      RACE <b ng-class="{'rm-clock-down': sessionClockDown()}"
-              title="{{ sessionClockDown() ? 'Time remaining' : 'Time elapsed' }}">{{ sessionClock() }}</b>
+      RACE <b ng-class="{'rm-clock-down': sessionClockDown(), 'rm-clock-stopped': clockStopped}"
+              title="{{ clockStopped ? 'Race clock stopped: red flag' : (sessionClockDown() ? 'Time remaining' : 'Time elapsed') }}">{{ sessionClock() }}</b>
     </span>
     <span class="rm-driverbar-label" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">
       CP <b>{{ nextWp }}/{{ routeWaypoints.length }}</b>
@@ -3705,13 +3728,15 @@
           title="The yellow is out and the field is racing back to the line. Positions lock as you complete this lap, on the lap the leader is on.">CAUTION &middot; RACE BACK TO THE LINE</span>
     <span class="rm-pace-badge" ng-if="caution &amp;&amp; !restartPending"
           title="Full-course caution: hold position, no overtaking. Places are locked in the order the field came back to the line.">CAUTION &middot; POSITIONS FROZEN<b ng-if="cautionLaps"> &middot; LAP {{ cautionLaps }}</b></span>
-    <span class="rm-restart-badge" ng-if="caution &amp;&amp; restartPending"
-          title="A restart is called: the green flag falls as the leader reaches the start/finish line.">RESTART THIS LAP &middot; GREEN AT THE LINE</span>
+    <span class="rm-restart-badge" ng-if="caution &amp;&amp; restartPending &amp;&amp; !greenReady"
+          title="A restart is called: GET READY comes as the leader nears the line, then the green at a random point in the last 50 m.">RESTART THIS LAP &middot; GREEN ON THE RUN IN</span>
     <!-- ONE BADGE FOR THE WHOLE FORMATION LAP: what it is, what to do, and that
          it does not count. Three badges used to carry those between them and a
          driver forming up has no time to read three. -->
-    <span class="rm-pace-badge" ng-if="pacing"
-          title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. It is not timed and is not one of the race laps. The green flag falls as the leader reaches the line.">PACE LAP &middot; HOLD &middot; 40 MPH / 64 KM/H &middot; NOT SCORED</span>
+    <span class="rm-pace-badge" ng-if="pacing &amp;&amp; !greenReady"
+          title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. It is not timed and is not one of the race laps. GET READY comes as the leader nears the line, then the green at a random point in the last 50 m.">PACE LAP &middot; HOLD &middot; 40 MPH / 64 KM/H &middot; NOT SCORED</span>
+    <span class="rm-restart-badge" ng-if="greenReady &amp;&amp; (pacing || restartPending)"
+          title="The leader is on the run to the line: the green flag falls at a random point in the last 50 m. Hold position until it does.">GET READY &middot; GREEN FLAG COMING</span>
     <span class="rm-driverbar-label" ng-if="jokerEnabled">
       JOKER <b ng-class="{'rm-joker-done': jokerTaken}">{{ jokerTaken ? 'DONE (lap ' + jokerLap + ')' : 'PENDING' }}</b>
     </span>
@@ -3790,8 +3815,8 @@
       <span class="rm-phase rm-bc-phase rm-phase-racing" ng-if="derbyActive()">{{ derbyPhaseLabel() }}</span>
       <span class="rm-bc-stat" ng-if="broadcastLap()">LAP <b>{{ broadcastLap() }}</b></span>
       <span class="rm-bc-stat" ng-if="!derbyActive() && (phase === 'racing' || phase === 'finished')">
-        <b ng-class="{'rm-clock-down': sessionClockDown()}"
-           title="{{ sessionClockDown() ? 'Time remaining' : 'Time elapsed' }}">{{ sessionClock() }}</b>
+        <b ng-class="{'rm-clock-down': sessionClockDown(), 'rm-clock-stopped': clockStopped}"
+           title="{{ clockStopped ? 'Race clock stopped: red flag' : (sessionClockDown() ? 'Time remaining' : 'Time elapsed') }}">{{ sessionClock() }}</b>
       </span>
       <!-- A DERBY OWNS THE STRIP WHILE ONE IS ON, and every readout above and
            below honors that. Nothing stops an admin forming a derby up with a
@@ -5196,6 +5221,7 @@
      the direction is visible at a glance instead of having to be inferred from
      two readings a second apart. */
   .rm-clock-down  { color: #8ab4f8; }
+  .rm-clock-stopped { color: #ff5252; }
   /* Time is up but the session is still running: read as urgent, not as over. */
   .rm-final-lap { color: #ffd54f; font-weight: 700; letter-spacing: 0.06em; }
   .rm-ghost-badge {

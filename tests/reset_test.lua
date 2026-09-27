@@ -396,6 +396,89 @@ resetHook()
 check(#teleports == 1, 'the checkpoint respawn is not heard back as a fresh reset')
 
 -- ===========================================================================
+-- Last Checkpoint respawn height comes from the road the car drove, not the gate
+-- ===========================================================================
+-- Reported: a start/finish gate under a metal arch, placed by ctrl+click, sat
+-- ON the arch. Its 7m depth still caught cars passing underneath, and every
+-- reset there stood the car on top of the arch.
+--
+-- Static world as a list of surfaces, each hit only by a ray starting above it.
+-- The arch is a slab from 5.0 to 5.5 over the gate.
+local surfaces = {}
+castRayStatic = function (origin, dir, maxDist)
+  local best
+  for _, s in ipairs(surfaces) do
+    local z = s(origin.x, origin.y)
+    if z and z <= origin.z and (best == nil or origin.z - z < best) then
+      best = origin.z - z
+    end
+  end
+  if best == nil or best > maxDist then return maxDist end
+  return best
+end
+local function overArch(x, y) return math.abs(y - 50) < 2 end
+local function crossAndReset(crossX, crossZ)
+  veh.x, veh.y, veh.z = crossX, 45, crossZ
+  RM.onUpdate(0.1)
+  veh.x, veh.y, veh.z = crossX, 55, crossZ
+  RM.onUpdate(0.1)
+  frames(1.0)
+  clearLog()
+  driverPressedReset(30, 30, 0)
+  resetHook()
+  return teleports[1]
+end
+local function checkpointTrack(gateZ)
+  serverState({ phase = 'waiting', maxResets = -1, resetMode = 'checkpoint',
+    totalLaps = 3, drivers = {} })
+  RM.setFinishLine(0, 50, gateZ, 0, 1)
+  RM.setCheckpointDepth(7)
+  serverState({ phase = 'racing', maxResets = -1, resetMode = 'checkpoint',
+    totalLaps = 3, drivers = {} })
+end
+
+surfaces = {
+  function () return 0 end,                                    -- flat road
+  function (x, y) return overArch(x, y) and 5.0 or nil end,    -- arch underside
+  function (x, y) return overArch(x, y) and 5.5 or nil end,    -- arch top
+}
+checkpointTrack(6.0)   -- where a click on the arch puts the gate
+local t = crossAndReset(0, 0.5)
+check(t and math.abs(t.z - 0.5) < 1e-6,
+  'a gate sitting on an arch respawns the car on the road under it (z=' .. tostring(t and t.z) .. ')')
+
+-- A tall vehicle keeps its own ride height rather than the flat clearance.
+checkpointTrack(6.0)
+t = crossAndReset(0, 1.2)
+check(t and math.abs(t.z - 1.2) < 1e-6,
+  'a truck respawns at the height it rode through the gate (z=' .. tostring(t and t.z) .. ')')
+
+-- Airborne through the gate: capped, not respawned in the air.
+checkpointTrack(6.0)
+t = crossAndReset(0, 4.0)
+check(t and t.z <= 3.0 + 1e-6,
+  'a car airborne through the gate respawns no higher than the ride cap (z=' .. tostring(t and t.z) .. ')')
+
+-- Banked mesh track with terrain far beneath it, crossed low on the banking.
+-- A probe straight down from the road at the gate's center starts under the
+-- banking and would find the terrain; the nearest surface is the banking.
+surfaces = {
+  function (x) return 0.2 * x end,     -- banking, rising toward +x
+  function () return -10 end,          -- terrain under the mesh
+}
+checkpointTrack(0.5)
+t = crossAndReset(-8, -1.6 + 0.5)
+check(t and math.abs(t.z - 0.5) < 1e-6,
+  'crossed low on a banking: respawn on the banking at the center, not the terrain under it (z='
+    .. tostring(t and t.z) .. ')')
+
+-- No ray API (the harness default): the gate's own height, as before.
+castRayStatic = nil
+checkpointTrack(0)
+t = crossAndReset(0, 0.5)
+check(t and t.z == 0, 'without castRayStatic the respawn falls back to the gate height')
+
+-- ===========================================================================
 -- No resets at all in a derby (isolated from the race ruleset)
 -- ===========================================================================
 -- This was an ALLOWANCE, defaulting to unlimited -- which is to say defaulting

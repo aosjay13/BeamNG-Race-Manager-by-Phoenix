@@ -120,6 +120,17 @@ local function palette()
     -- lane is legible at a glance while the one being aimed at still stands out
     -- without being a different shape.
     pitFar       = ColorF(1, 0.72, 0.1, 0.45),
+    -- The see-through walls, two bands so they fade upward: solid enough at the
+    -- ground to read down a lane, faint at the top so the car behind shows.
+    pitWallLow   = ColorF(1, 0.72, 0.1, 0.34),
+    pitWallHigh  = ColorF(1, 0.72, 0.1, 0.12),
+    -- The front edge: where the nose stops. White, because amber is the box.
+    pitStop      = ColorF(1, 1, 1, 0.95),
+    -- The box the car is standing in turns green: you are in, now stop.
+    pitIn        = ColorF(0.25, 1, 0.45, 1),
+    pitInFill    = ColorF(0.25, 1, 0.45, 0.22),
+    pitInLow     = ColorF(0.25, 1, 0.45, 0.34),
+    pitInHigh    = ColorF(0.25, 1, 0.45, 0.12),
     -- Direction markers. Cyan, because every other color on a track already
     -- means something a driver has learned -- green is the gate they are
     -- driving at, orange the rest of the route, violet the joker, amber the
@@ -148,6 +159,9 @@ local function palette()
     -- Fainter than the other two: it sits on a gate the driver is aiming
     -- THROUGH, where the cross and the tick sit on one they must not take.
     glyphOpen    = ColorF(0.85, 0.7, 1, 0.28),
+    -- The P on a pit entry gate. White, like a parking sign's P, so it reads
+    -- against the amber fill it sits on.
+    glyphPit     = ColorF(1, 1, 1, 0.9),
     -- Demo derby arena. Its own entries rather than its own table: the derby
     -- module keeps its state and its logic separate, but a color is a color,
     -- and building these per frame is what this exists to stop.
@@ -171,6 +185,15 @@ local function palette()
     slotMine     = ColorF(0.2, 0.85, 0.35, 0.95),   -- the slot that is yours
     slotPole     = ColorF(1, 0.85, 0.2, 0.85),      -- P1
     slotOther    = ColorF(0.35, 0.65, 1, 0.75),     -- everyone else
+  }
+  -- A stall's colors come as a set, picked by state. Built here so choosing
+  -- one per frame is a table lookup, not four ColorF.
+  local P = PALETTE
+  P.pitSets = {
+    near  = { line = P.pit,    fill = P.pitFill,   low = P.pitWallLow, high = P.pitWallHigh, arrow = P.pitArrow },
+    far   = { line = P.pitFar, fill = P.pitFill,   low = P.pitWall,    high = P.pitWall,     arrow = P.pitArrow },
+    inbox = { line = P.pitIn,  fill = P.pitInFill, low = P.pitInLow,   high = P.pitInHigh,   arrow = P.pitIn },
+    sel   = { line = P.nudged, fill = P.pitFill,   low = P.pitWallLow, high = P.pitWallHigh, arrow = P.pitArrow },
   }
   return PALETTE
 end
@@ -551,6 +574,12 @@ local function glyphPoints(g)
     down = at(0, -1), up = at(0, 1), armL = at(-0.55, 0.3), armR = at(0.55, 0.3),
     -- The tick's elbow.
     tickA = at(-0.9, 0.1), tickB = at(-0.25, -0.85),
+    -- The P: a stem and a bowl with its corners cut.
+    pBase = at(-0.5, -1), pTop = at(-0.5, 1), pTopR = at(0.2, 1),
+    pUpper = at(0.55, 0.7), pLower = at(0.55, 0.35), pMidR = at(0.2, 0.05),
+    pMid = at(-0.5, 0.05),
+    -- A label clear of the glyph, so the words do not sit across the letter.
+    label = at(0, 1.5),
   }
   g.glyph = gp
   return gp
@@ -575,6 +604,16 @@ function paint.glyph(g, kind)
     -- A tick: short stroke down into the corner, long stroke up and out.
     debugDrawer:drawCylinder(at.tickA, at.tickB, r, p.glyphDone)
     debugDrawer:drawCylinder(at.tickB, at.tr, r, p.glyphDone)
+  elseif kind == 'pit' then
+    -- A P: the pit entry. Yellow alone did not say "pits" to anyone who had not
+    -- been told.
+    local w = r * 1.2
+    debugDrawer:drawCylinder(at.pBase, at.pTop, w, p.glyphPit)
+    debugDrawer:drawCylinder(at.pTop, at.pTopR, w, p.glyphPit)
+    debugDrawer:drawCylinder(at.pTopR, at.pUpper, w, p.glyphPit)
+    debugDrawer:drawCylinder(at.pUpper, at.pLower, w, p.glyphPit)
+    debugDrawer:drawCylinder(at.pLower, at.pMidR, w, p.glyphPit)
+    debugDrawer:drawCylinder(at.pMidR, at.pMid, w, p.glyphPit)
   end
 end
 
@@ -749,121 +788,129 @@ function paint.markerPanel(wp, lineCol, fill)
   debugDrawer:drawCylinder(g.postC, g.postD, TUNE.POLE_RADIUS, lineCol)
 end
 
--- THE PIT STALL IS A BOX, SO IT IS DRAWN AS ONE.
+-- THE PIT STALL IS A BOX ON THE GROUND WITH SEE-THROUGH WALLS.
 --
--- pit.inside tests a volume: the gate's width across, TUNE.PIT_DEPTH either way
--- along, the gate's height vertically, measured on the stall's own axes. Two
--- poles showed a PLANE for a rule that is a volume, and then the mod asked the
--- driver to "come to a stop inside the box" without ever drawing the box. This
--- draws the actual test.
+-- Third shape, and each earlier one failed a live test for a different reason.
+-- A translucent floor over tarmac read as tarmac. Two poles could be seen but
+-- said nothing about where to stop, and the box they stood for inherited a
+-- checkpoint's width, 20 to 40 m across the lane. Now: a car-sized box (its own
+-- width and length, pit.dims), an opaque outline like a grid slot, walls on
+-- both sides and the front that fade upward, the rear left open as the way in,
+-- a white stop bar at the front edge, and the whole box green while the car is
+-- in it.
 --
--- The walls are low on purpose. The height half of the test excludes nobody -- a
--- car on the road is always within a few meters of the stall vertically -- so
--- drawing it at full gate height would be a tall pair of walls implying a
--- constraint that is not doing any work. The FOOTPRINT is the part that decides,
--- so the footprint is what is drawn honestly and the rest is kept out of the way.
--- Stall geometry, cached exactly as gateGeometry caches a gate's.
---
--- FOURTEEN vec3 per stall per frame, and this one is not editor furniture: a
--- driver gets the nearest stall drawn for the whole session (drawDriverGate),
--- so this was the single largest per-frame allocator left on the racing path.
--- The width is re-derived every frame for gateGeometry's reason -- it is two
--- clamps and a table read, and a global width change has to be picked up with
--- nothing telling us about it.
+-- Geometry cached per stall like a gate's, rebuilt only when it moves or is
+-- resized: a driver draws stalls every frame and the budget there is zero
+-- allocations.
 local pitCache = setmetatable({}, { __mode = 'k' })
 
+-- Ground under (x, y), probed from just above the stall, or nil. A stall placed
+-- by driving sits at the car's origin, half a meter up, and a box drawn there
+-- floats. Short range, so a garage roof overhead is never found. Runs only on a
+-- geometry rebuild.
+local function stallGround(x, y, z)
+  if type(castRayStatic) ~= 'function' then return nil end
+  local ok, dist = pcall(castRayStatic, vec3(x, y, z + 1), vec3(0, 0, -1), 3)
+  if ok and type(dist) == 'number' and dist < 3 then return z + 1 - dist end
+  return nil
+end
+
 local function pitGeometry(wp)
-  -- HEIGHT COMES FROM THE LAYOUT, like a checkpoint's does. It used to be
-  -- TUNE.PIT_WALL_H, a fixed 1.4 m, which was the right size for the WALLS of
-  -- the box this used to draw and far too short for a pole: the markers sat on
-  -- the ground and could not be raised, which is the whole thing poles were
-  -- meant to fix.
-  --
-  -- gateDims already answers this per waypoint, so a stall follows the same
-  -- height control every gate on the track does.
-  local w, gh = gateDims(wp)
+  local w, len = pit.dims(wp)
+  local _, gh = gateDims(wp)     -- only for the retired poles, below
   local g = pitCache[wp]
-  if g and g.w == w and g.h == gh and g.x == wp.x and g.y == wp.y and g.z == wp.z
+  if g and g.w == w and g.len == len and g.h == gh
+      and g.x == wp.x and g.y == wp.y and g.z == wp.z
       and g.hx == wp.hx and g.hy == wp.hy then
     return g
   end
 
-  local hw = w * 0.5
-  local d  = TUNE.PIT_DEPTH
+  local hw, hl = w * 0.5, len * 0.5
   local fx, fy = wp.hx or 0, wp.hy or 1
   local rx, ry = fy, -fx
-  local z = wp.z
-  -- corner(sr, sf): center + lateral*sr*hw + forward*sf*d
-  local function corner(sr, sf, up)
-    return vec3(wp.x + rx * sr * hw + fx * sf * d,
-                wp.y + ry * sr * hw + fy * sf * d,
-                z + (up or 0))
+  local base = stallGround(wp.x, wp.y, wp.z) or wp.z
+  local H = TUNE.PIT_WALL_H
+  -- Each corner stands on its own ground, so a box on a sloped lane lies on it.
+  -- Returns the corner at three heights: floor, band split, wall top.
+  local function corner(sr, sf)
+    local x = wp.x + rx * sr * hw + fx * sf * hl
+    local y = wp.y + ry * sr * hw + fy * sf * hl
+    local z = stallGround(x, y, wp.z) or base
+    return vec3(x, y, z + 0.04), vec3(x, y, z + H * 0.45), vec3(x, y, z + H)
   end
-  -- Sized off the stall's DEPTH rather than its width, so the chevron stays
-  -- car-sized on a stall that inherited a wide checkpoint's span.
-  local tip  = vec3(wp.x + fx * d * 0.55, wp.y + fy * d * 0.55, z + 0.06)
-  local barb = math.min(hw, d * 0.5)
-  local h    = gh
-  g = {
-    w = w, h = gh, x = wp.x, y = wp.y, z = wp.z, hx = wp.hx, hy = wp.hy,
-    bl = corner(-1, -1), br = corner(1, -1),
-    fl = corner(-1,  1), fr = corner(1,  1),
-    blu = corner(-1, -1, h), flu = corner(-1, 1, h),
-    bru = corner(1, -1, h),  fru = corner(1, 1, h),
-    ml = vec3(wp.x + rx * hw, wp.y + ry * hw, z + 0.05),
-    mr = vec3(wp.x - rx * hw, wp.y - ry * hw, z + 0.05),
-    -- Tops of the two poles that mark the stall. A pole is visible across a
-    -- pit lane where a translucent floor is not: the box read as empty tarmac
-    -- until a driver was almost standing in it.
-    mlu = vec3(wp.x + rx * hw, wp.y + ry * hw, z + h),
-    mru = vec3(wp.x - rx * hw, wp.y - ry * hw, z + h),
-    tip  = tip,
-    tail = vec3(wp.x - fx * d * 0.35, wp.y - fy * d * 0.35, z + 0.06),
-    barbL = vec3(tip.x - fx * d * 0.4 + rx * barb,
-                 tip.y - fy * d * 0.4 + ry * barb, z + 0.06),
-    barbR = vec3(tip.x - fx * d * 0.4 - rx * barb,
-                 tip.y - fy * d * 0.4 - ry * barb, z + 0.06),
-    -- The editor's label, over the middle of the box where the car ends up.
-    label = vec3(wp.x, wp.y, z + h + 0.9),
-  }
+  g = { w = w, len = len, h = gh, x = wp.x, y = wp.y, z = wp.z, hx = wp.hx, hy = wp.hy }
+  g.bl, g.blM, g.blT = corner(-1, -1)
+  g.br, g.brM, g.brT = corner( 1, -1)
+  g.fl, g.flM, g.flT = corner(-1,  1)
+  g.fr, g.frM, g.frT = corner( 1,  1)
+  -- The chevron: which way the car faces when it stops. Sized off the box, so
+  -- it stays inside it whatever the stall's shape.
+  local cz = base + 0.06
+  local tip  = vec3(wp.x + fx * hl * 0.55, wp.y + fy * hl * 0.55, cz)
+  local barb = math.min(hw * 0.6, hl * 0.4)
+  g.tip   = tip
+  g.tail  = vec3(wp.x - fx * hl * 0.45, wp.y - fy * hl * 0.45, cz)
+  g.barbL = vec3(tip.x - fx * hl * 0.4 + rx * barb, tip.y - fy * hl * 0.4 + ry * barb, cz)
+  g.barbR = vec3(tip.x - fx * hl * 0.4 - rx * barb, tip.y - fy * hl * 0.4 - ry * barb, cz)
+  -- The editor's label, over the box.
+  g.label = vec3(wp.x, wp.y, base + H + 0.6)
+  -- The retired two-pole marker's points, for paint.pitPoles.
+  g.ml  = vec3(wp.x + rx * hw, wp.y + ry * hw, wp.z + 0.05)
+  g.mr  = vec3(wp.x - rx * hw, wp.y - ry * hw, wp.z + 0.05)
+  g.mlu = vec3(wp.x + rx * hw, wp.y + ry * hw, wp.z + gh)
+  g.mru = vec3(wp.x - rx * hw, wp.y - ry * hw, wp.z + gh)
   pitCache[wp] = g
   return g
 end
 
--- The stall's FOOTPRINT, one draw. Unused since every stall became two poles,
--- and kept rather than cut: the footprint is what pit.inside actually tests,
--- so this is the drawing that matches the rule exactly. It is one call away if
--- a lane ever needs the volume shown as well as the stop point.
---
--- A driver has to know where they may pit before they are on top of it, and the
--- box below is eleven draws: giving every stall one would be five to ten times
--- the whole frame's shape budget on a twenty-stall lane. The floor alone says
--- where a stall is, which is the question being asked at distance; the nearest
--- one still gets walls, posts and a chevron so the stall being aimed at is
--- unmistakable.
---
--- Geometry comes from the same cache the full box uses, so this allocates
--- nothing however many stalls a lane has.
+-- The stall's floor alone, one draw. Unused: pitBox draws it. Kept for a lane
+-- that ever needs a cheaper far stall.
 function paint.pitFloor(wp)
   local g = pitGeometry(wp)
   debugDrawer:drawQuadSolid(g.bl, g.br, g.fr, g.fl, palette().pitFill)
 end
 
-function paint.pitBox(wp, color)
+-- One stall. `set` is a palette().pitSets entry. `full` is the stall a driver
+-- is aiming at (and every stall in the editor): two-band walls, the white stop
+-- bar and the chevron, 14 draws. Otherwise one band and no markings, 8 draws,
+-- which still reads as a box down the lane.
+function paint.pitBox(wp, set, full)
+  local g = pitGeometry(wp)
+  debugDrawer:drawQuadSolid(g.bl, g.br, g.fr, g.fl, set.fill)
+  -- The outline, on the ground like a grid slot. The rear edge is the way in.
+  debugDrawer:drawCylinder(g.bl, g.br, 0.08, set.line)
+  debugDrawer:drawCylinder(g.bl, g.fl, 0.08, set.line)
+  debugDrawer:drawCylinder(g.br, g.fr, 0.08, set.line)
+  if not full then
+    debugDrawer:drawCylinder(g.fl, g.fr, 0.08, set.line)
+    debugDrawer:drawQuadSolid(g.bl, g.fl, g.flT, g.blT, set.low)
+    debugDrawer:drawQuadSolid(g.br, g.fr, g.frT, g.brT, set.low)
+    debugDrawer:drawQuadSolid(g.fl, g.fr, g.frT, g.flT, set.low)
+    return
+  end
+  local p = palette()
+  -- Stop here: the nose goes up to this and no further.
+  debugDrawer:drawCylinder(g.fl, g.fr, 0.14, p.pitStop)
+  -- Sides and front, dense at the ground and faint at the top. No rear wall:
+  -- a wall across the way in reads as a barrier to drive around.
+  debugDrawer:drawQuadSolid(g.bl,  g.fl,  g.flM, g.blM, set.low)
+  debugDrawer:drawQuadSolid(g.blM, g.flM, g.flT, g.blT, set.high)
+  debugDrawer:drawQuadSolid(g.br,  g.fr,  g.frM, g.brM, set.low)
+  debugDrawer:drawQuadSolid(g.brM, g.frM, g.frT, g.brT, set.high)
+  debugDrawer:drawQuadSolid(g.fl,  g.fr,  g.frM, g.flM, set.low)
+  debugDrawer:drawQuadSolid(g.flM, g.frM, g.frT, g.flT, set.high)
+  debugDrawer:drawCylinder(g.tail, g.tip, 0.07, set.arrow)
+  debugDrawer:drawCylinder(g.tip, g.barbL, 0.07, set.arrow)
+  debugDrawer:drawCylinder(g.tip, g.barbR, 0.07, set.arrow)
+end
+
+-- The two-pole stall marker this replaced. Unused, kept per the fallback rule:
+-- it is the version that read at the longest distance, if a lane ever needs it.
+function paint.pitPoles(wp, color)
   local g = pitGeometry(wp)
   local r = TUNE.POLE_RADIUS
-  -- TWO POLES AND A STOP LINE, the same shape a checkpoint uses, for the same
-  -- reason: it is read at a distance. The old stall was a walled box with a
-  -- translucent floor, three quads and eight cylinders of it, and none of that
-  -- carried across a pit lane. A driver found each stall by arriving at it.
-  --
-  -- The poles stand on the stall's CENTRE line, which is where the car is meant
-  -- to come to rest, so the marker points at the answer rather than outlining
-  -- the room. pit.inside still tests the full width and depth: this changed how
-  -- a stall looks, never where it is.
   debugDrawer:drawCylinder(g.ml, g.mlu, r, color)
   debugDrawer:drawCylinder(g.mr, g.mru, r, color)
-  -- The spot between them: stop here.
   debugDrawer:drawCylinder(g.ml, g.mr, r * 0.6, color)
 end
 
@@ -882,8 +929,8 @@ local function drawPoleGate(wp, color, label, fill, glyph)
     -- ON the gate, not floating above it. A label at `mid` hangs over the top
     -- edge, which reads as a sign near the gate rather than a fact about it, and
     -- from a car it can sit against the sky with nothing behind it.
-    debugDrawer:drawTextAdvanced(fill and g.center or g.mid,
-      String(label), p.text, true, false, p.textBg)
+    local at = (glyph == 'pit' and glyphPoints(g).label) or (fill and g.center or g.mid)
+    debugDrawer:drawTextAdvanced(at, String(label), p.text, true, false, p.textBg)
   end
 end
 
@@ -983,22 +1030,23 @@ local function drawDriverGate(derbyLive)
   end
   -- THE LANE'S MOUTH, AND THE LANE ITSELF ONLY ONCE YOU ARE IN IT.
   --
-  -- A lane of stalls is three draws each and used to be on screen for the whole
-  -- race, off to the side, for something a driver uses once. So a track with an
-  -- ENTRY GATE shows that gate while racing and nothing else; the stalls appear
-  -- behind it. On a twelve-stall lane that is thirty-six draws a frame down to
-  -- three until somebody actually pits.
+  -- A lane of stalls is eight draws each (fourteen for the nearest) and used to
+  -- be on screen for the whole race, off to the side, for something a driver
+  -- uses once. So a track with an ENTRY GATE shows that gate while racing and
+  -- nothing else; the stalls appear behind it. On a twelve-stall lane that is a
+  -- hundred draws a frame down to three until somebody actually pits.
   --
   -- A track WITHOUT an entry gate keeps every stall on screen, exactly as
   -- before. An existing layout must not go blank because of a field it has
   -- never heard of.
   local gated = #track.pitEntry > 0
   if gated and not pit.inLane then
-    -- Racing. One gate at the mouth: poles, a translucent panel between them
-    -- and the arrow that says "in here", which is the joker gate's own shape
-    -- because a driver has already learned to read it.
+    -- Racing. One gate at the mouth: poles, a translucent panel, a big P and
+    -- the words PIT IN. The one gate a driver sees that carries text: it is a
+    -- sign read on the approach, not a checkpoint read at the apex, and amber
+    -- alone meant "pits" only to drivers who had been told.
     for _, wp in ipairs(track.pitEntry) do
-      drawPoleGate(wp, p.pit, nil, p.pitFill, 'open')
+      drawPoleGate(wp, p.pit, 'PIT IN', p.pitFill, 'pit')
     end
   elseif #track.pitRoute > 0 then
     local _, ppos = sampledVehicle()
@@ -1010,21 +1058,23 @@ local function drawDriverGate(derbyLive)
         if d < bestD then best, bestD = i, d end
       end
     end
-    -- ALL OF THEM, and all the same. Poles read across a pit lane, so there is
-    -- no cheap version for the far ones and a detailed version for the near
-    -- one: three draws each is affordable for a lane you are standing in.
-    --
-    -- The nearest is drawn last and brighter, so "the one you are aiming at" is
-    -- still obvious without being a different object.
+    -- Every stall as a box; the nearest in full, with its stop bar and chevron,
+    -- and GREEN once the car is inside it or serving its stop there. That is
+    -- the answer to "am I in the box", given before the car has stopped.
+    local sets = p.pitSets
     for i, wp in ipairs(track.pitRoute) do
-      if i ~= best then paint.pitBox(wp, p.pitFar) end
+      if i ~= best then paint.pitBox(wp, sets.far, false) end
     end
-    if track.pitRoute[best] then paint.pitBox(track.pitRoute[best], p.pit) end
+    local near = track.pitRoute[best]
+    if near then
+      local inBox = pit.active or (ppos ~= nil and pit.inside(near, ppos))
+      paint.pitBox(near, inBox and sets.inbox or sets.near, true)
+    end
     -- The way out, drawn only from inside, so it is never furniture on the
     -- racing line.
     if gated then
       for _, wp in ipairs(track.pitExit) do
-        drawPoleGate(wp, p.pitFar, nil, p.pitFill, nil)
+        drawPoleGate(wp, p.pitFar, 'PIT OUT', p.pitFill, nil)
       end
     end
   end
@@ -1104,19 +1154,10 @@ local function drawGates(derbyLive)
   end
 
   for i, wp in ipairs(track.pitRoute) do
-    local col = nudgeSelected(track.pitRoute, i) and p.nudged or p.pit
-    -- THE BOX, AND ONLY THE BOX.
-    --
-    -- This used to draw the footprint and then a full-height gate on top of it,
-    -- which is two shapes for one rule and the taller one won: a stall read as a
-    -- pair of tall amber poles, exactly like a checkpoint it is not, while the
-    -- rectangle on the ground that actually decides the stop was lost underneath
-    -- them.
-    --
-    -- A stall is a footprint. It is drawn as one, with its corner posts for
-    -- distance, and the label floats over the middle where the car is meant to
-    -- end up rather than being pinned to a gate that is no longer there.
-    paint.pitBox(wp, col)
+    -- The same box a driver sees, in full, so the size being set is the size
+    -- they get. Magenta outline when Place mode has hold of it.
+    local sets = p.pitSets
+    paint.pitBox(wp, nudgeSelected(track.pitRoute, i) and sets.sel or sets.near, true)
     debugDrawer:drawTextAdvanced(pitGeometry(wp).label, String(pitLabel(i)),
       p.text, true, false, p.textBg)
   end
@@ -1137,7 +1178,7 @@ local function drawGates(derbyLive)
   -- and finding out in game. drawPoleGate already places a gate's label.
   for i, wp in ipairs(track.pitEntry) do
     local col = nudgeSelected(track.pitEntry, i) and p.nudged or p.pit
-    drawPoleGate(wp, col, 'PIT IN ' .. i, p.pitFill, 'open')
+    drawPoleGate(wp, col, 'PIT IN ' .. i, p.pitFill, 'pit')
   end
   for i, wp in ipairs(track.pitExit) do
     local col = nudgeSelected(track.pitExit, i) and p.nudged or p.pitFar

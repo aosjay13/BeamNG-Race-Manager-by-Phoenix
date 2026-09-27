@@ -102,6 +102,13 @@ local TUNE = {
   -- lowest surface above it wins and overhead geometry is never reached.
   GROUND_RESCUE_STEPS = { 2, 5, 12, 30, 60, 150 },
   GROUND_PROBE_DOWN = 200,
+  -- Last Checkpoint respawn (snapshot.trackZ). Heights above the road to look
+  -- for a higher surface at the gate's center, for a car that crossed low on a
+  -- banking. Short steps first, so an arch over the line is never reached.
+  RESPAWN_SEARCH_UP = { 0.5, 1, 2, 3, 4, 6, 8, 10 },
+  -- Most ride height a respawn keeps. A car airborne through the gate must not
+  -- respawn in the air.
+  RESPAWN_RIDE_MAX = 3.0,
   -- Reset ghosting. The DURATIONS are not here: they are a league rule, so the
   -- server owns them and broadcasts them (see ghost.rules). What is left is
   -- local presentation and local geometry, which no other client has an opinion
@@ -196,7 +203,14 @@ local TUNE = {
   -- render.lua.
   MARKER_SHAPE_STROKE = 0.07,
   PIT_COOLDOWN   = 8.0,   -- before the same stall can trigger again
-  PIT_DEPTH      = 3.0,   -- meters along the stall a car counts as being in it
+  -- A stall's own footprint, in meters: across and along. Car-sized, not
+  -- checkpoint-sized. A stall used to take the gate width, so a 30 m "box" ran
+  -- across the whole lane and nobody could tell where to stop. The rule tests
+  -- the car's center, so this is room to park, not the car's outline.
+  PIT_BOX_WIDTH  = 3.5,
+  PIT_BOX_LENGTH = 6.0,
+  PIT_BOX_MIN_W  = 2,  PIT_BOX_MAX_W = 20,
+  PIT_BOX_MIN_L  = 3,  PIT_BOX_MAX_L = 30,
   -- m/s below which the car counts as stopped IN the stall. A pit stop is
   -- something a driver performs, not something that happens to them: the stall
   -- used to trigger on the box alone, so clipping a corner of it at racing
@@ -206,14 +220,10 @@ local TUNE = {
   -- swallow physics jiggle.
   PIT_STOP_SPEED = 0.7,
   PIT_PROMPT_EVERY = 1.5, -- seconds between "stop in the box" reminders
-  -- How high a pit stall's side walls are DRAWN. Not a rule: the height half of
-  -- pit.inside excludes nobody, so the walls are kept low and out of the way
-  -- while the footprint, which is the part that decides, is drawn honestly.
-  -- Unused since a stall became two poles: the poles take the layout's gate
-  -- height so they can be raised like every other marker on the track. Kept
-  -- because it is the wall height paint.pitFloor's box wants if the footprint
-  -- is ever drawn again.
-  PIT_WALL_H     = 1.4,
+  -- How high a stall's see-through walls are DRAWN. Not a rule: the height half
+  -- of pit.inside excludes nobody. Tall enough to read over a car in the next
+  -- stall, low enough not to look like a checkpoint.
+  PIT_WALL_H     = 1.5,
   START_SLOT_LEN  = 4.6,  -- meters; roughly one car long
   START_SLOT_WIDE = 2.2,
   -- The joker gate's pole color, and its color once the joker has been taken.
@@ -1004,6 +1014,9 @@ local snapshot = {
   rot   = nil,    -- quaternion { x, y, z, w } for the same sample
   left  = 0,      -- seconds until the next sample is due
   EVERY = 0.25,   -- seconds between "last good position" samples
+  -- Where the car was when it crossed `wp`, which becomes lastGate. The one
+  -- height known to be on the track: see snapshot.trackZ.
+  crossed = { wp = nil, x = 0, y = 0, z = 0 },
 }
 
 -- What a LEGAL reset does while racing (mirrored from the server):
@@ -2026,11 +2039,14 @@ local sticky = {
 -- each other on the road even where the flags overlap.
 local function stickyMessage()
   if not sessionRunning() or session.spectatorLock then return nil end
+  if session.greenReady then
+    return 'ready', 'GET READY - green flag coming. Hold position until it falls.'
+  end
   if session.pacing then
-    return 'pace', 'PACE LAP - hold position, 40 mph / 64 km/h. Green at the line.'
+    return 'pace', 'PACE LAP - hold position, 40 mph / 64 km/h. Get ready called 100 m out.'
   end
   if session.restartPending then
-    return 'restart', 'RESTART THIS LAP - green as the leader reaches the line. Get ready.'
+    return 'restart', 'RESTART THIS LAP - hold position. Get ready called 100 m out.'
   end
   if session.cautionPending then
     return 'caution', 'CAUTION - race back to the line. Positions lock as you complete this lap.'
@@ -2490,6 +2506,10 @@ local function checkGates()
     if crossed then
       lastGate     = wp   -- the "Last Checkpoint" reset mode respawns here
       lastGateBack = backwards
+      do
+        local c = snapshot.crossed
+        c.wp, c.x, c.y, c.z = wp, pos.x, pos.y, pos.z
+      end
       -- BACK ON THE RACING LINE, so the pit lane is behind us however we left
       -- it. The exit gate is the tidy way out; this is the one that cannot be
       -- missed, and without it a driver who drove past the exit would carry the
@@ -5719,14 +5739,32 @@ end
 -- would let a car trigger a pit stop by clipping the box at racing speed, which
 -- is the opposite of what a pit stop is.
 function pit.inside(wp, pos)
-  local w, h, d = gateDims(wp)
+  local _, h, d = gateDims(wp)
+  local w, len = pit.dims(wp)
   local dx, dy, dz = pos.x - wp.x, pos.y - wp.y, pos.z - wp.z
   local fx, fy = wp.hx or 0, wp.hy or 1
   local lat = dx * fy - dy * fx          -- across the stall
   local fwd = dx * fx + dy * fy          -- along it
   return math.abs(lat) <= w * 0.5
-     and math.abs(fwd) <= TUNE.PIT_DEPTH
+     and math.abs(fwd) <= len * 0.5
      and dz <= h and dz >= -d
+end
+
+-- A stall's footprint, clamped: width across, length along. Its own fields,
+-- never gateDims' width, which is a checkpoint's span across the track. The
+-- renderer reads this too, so what is drawn is what is tested.
+function pit.dims(wp)
+  local w = tonumber(wp.width) or TUNE.PIT_BOX_WIDTH
+  local l = tonumber(wp.length) or TUNE.PIT_BOX_LENGTH
+  if w < TUNE.PIT_BOX_MIN_W then w = TUNE.PIT_BOX_MIN_W elseif w > TUNE.PIT_BOX_MAX_W then w = TUNE.PIT_BOX_MAX_W end
+  if l < TUNE.PIT_BOX_MIN_L then l = TUNE.PIT_BOX_MIN_L elseif l > TUNE.PIT_BOX_MAX_L then l = TUNE.PIT_BOX_MAX_L end
+  return w, l
+end
+
+-- A new stall takes the size of the one it follows, like a gate does; the
+-- first takes the default. Overwrites the checkpoint width editorAdd gave it.
+function pit.sizeFrom(place, prev)
+  place.width, place.length = pit.dims(prev or {})
 end
 
 -- Ghosting for the duration of a stop.
@@ -6119,6 +6157,45 @@ local function lowerToGround(x, y, z, step, clear)
   return (want < floor) and floor or want
 end
 
+-- Respawn height for `wp`, taken from the road the car drove over at the
+-- crossing, never from the gate's own z. A ctrl+click under a start arch lands
+-- the gate ON the arch, a deep gate still registers cars passing underneath,
+-- and the gate's z then stood every reset on top of the arch.
+--
+-- Nil when there is no crossing sample for this gate or no surface is found.
+-- A table field rather than a local: see the locals ceiling note on `block`.
+function snapshot.trackZ(wp)
+  local c = snapshot.crossed
+  if not wp or c.wp ~= wp or type(castRayStatic) ~= 'function' then return nil end
+  local road = groundAt(c.x, c.y, c.z)
+  if not road then return nil end
+  -- The surface at the gate's center NEAREST the road, looked for both ways. A
+  -- plain probe down from the road would miss a banking the car crossed low on
+  -- and find the terrain under a mesh track instead.
+  local below, above
+  local ok, dist = pcall(castRayStatic, vec3(wp.x, wp.y, road + 0.05),
+    vec3(0, 0, -1), TUNE.GROUND_PROBE_DOWN)
+  if ok and type(dist) == 'number' and dist < TUNE.GROUND_PROBE_DOWN then
+    below = road + 0.05 - dist
+  end
+  for _, up in ipairs(TUNE.RESPAWN_SEARCH_UP) do
+    ok, dist = pcall(castRayStatic, vec3(wp.x, wp.y, road + up), vec3(0, 0, -1), up + 0.1)
+    if ok and type(dist) == 'number' and dist <= up then
+      above = road + up - dist
+      break
+    end
+  end
+  local g = below
+  if above and (not g or (above - road) < (road - g)) then g = above end
+  if not g then return nil end
+  -- As high above it as the car rode through the gate, so a truck is not stood
+  -- with its wheels in the dirt at the flat GROUND_CLEAR a car gets.
+  local ride = c.z - road
+  if ride < TUNE.GROUND_CLEAR then ride = TUNE.GROUND_CLEAR end
+  if ride > TUNE.RESPAWN_RIDE_MAX then ride = TUNE.RESPAWN_RIDE_MAX end
+  return g + ride
+end
+
 -- "Last Checkpoint" reset mode: stand the car on a gate's center, facing the
 -- gate's direction of travel. The teleport is flagged as our own so the
 -- vehicle-reset echo it provokes is never miscounted, and the gate becomes the
@@ -6149,7 +6226,11 @@ local function relocateToGate(wp)
   -- at a gate's z has its ORIGIN there, which is half a car underground. Rather
   -- than ask every admin to re-place their tracks, the respawn refuses to put a
   -- car below the ground under it whatever the gate claims.
-  local z = liftAboveGround(wp.x, wp.y, wp.z, TUNE.GROUND_CLEAR)
+  --
+  -- Now only the fallback: snapshot.trackZ answers from where the car drove,
+  -- and this runs when it cannot (no crossing sample, no ray API, no hit).
+  -- Kept because it is the path every layout was tested against.
+  local z = snapshot.trackZ(wp) or liftAboveGround(wp.x, wp.y, wp.z, TUNE.GROUND_CLEAR)
   noteSelfTeleport(wp.x, wp.y, z)
   local ok = pcall(function ()
     veh:setPositionRotation(wp.x, wp.y, z, rot.x, rot.y, rot.z, rot.w)
@@ -8011,7 +8092,16 @@ local function ghostUpdate(dt)
   -- the flag does, and the flag is cleared when the next grid forms.
   if isBystander ~= (ghost.field.bystander == true) then
     setGhostReason('bystander', isBystander)
-    if isBystander then
+  end
+  -- SAID WHEN THE SESSION IS RUNNING, not when the ghost goes on. Forming the
+  -- grid with the ready check CALLS every driver, and a called car is a ghost
+  -- until its driver presses Ready: announcing that ghost told the whole field
+  -- "a session is already running" the moment Generate Grid was pressed. The
+  -- words wait for the lights, when a driver still out really is spectating.
+  local sayOut = isBystander and sessionRunning()
+  if sayOut ~= (ghost.outSaid == true) then
+    ghost.outSaid = sayOut
+    if sayOut then
       -- THREE WAYS TO BECOME ONE, and they need different words. A mid-session
       -- arrival is a ghost because a race is running; somebody who pressed
       -- Spectate is a ghost because they asked to sit out, and telling them a
@@ -9249,6 +9339,7 @@ function M.editorAdd(place)
     place.width  = clampWidth(prev and prev.width  or track.checkpointWidth)
     place.height = clampHeight(prev and prev.height or track.checkpointHeight)
     place.depth  = clampDepth(prev and prev.depth  or track.checkpointDepth)
+    if edit.target == 'pit' then pit.sizeFrom(place, prev) end
   end
   -- A branch gate is placed AGAINST A CHECKPOINT: it is not a new checkpoint, it
   -- is the other way of taking one that already exists. Placing it is what makes
@@ -9535,6 +9626,7 @@ function M.insertCheckpoint(index, place)
     place.width  = clampWidth(prev and prev.width  or track.checkpointWidth)
     place.height = clampHeight(prev and prev.height or track.checkpointHeight)
     place.depth  = clampDepth(prev and prev.depth  or track.checkpointDepth)
+    if edit.target == 'pit' then pit.sizeFrom(place, prev) end
   end
   if edit.target == 'branch' then
     guihooks.trigger('RaceManagerEditorMsg', {
@@ -9836,6 +9928,22 @@ function M.setCheckpointOverride(index, w, h, d)
   pushRouteState()
 end
 
+-- A pit stall's box: width across, length along. Blank or zero is the default
+-- size. Its own entry point because setCheckpointOverride clamps to checkpoint
+-- ranges, and a stall is car-sized.
+function M.setPitStallSize(index, w, l)
+  local wp = track.pitRoute[math.floor(tonumber(index) or 0)]
+  if not wp then
+    log('W', 'raceManager', 'setPitStallSize: no pit stall at index ' .. tostring(index))
+    return
+  end
+  w, l = tonumber(w), tonumber(l)
+  wp.width  = (w and w > 0) and w or nil
+  wp.length = (l and l > 0) and l or nil
+  wp.width, wp.length = pit.dims(wp)
+  pushRouteState()
+end
+
 -- The local scratch route file (editorSave/editorLoad) is gone. Loading it
 -- rebuilt the route while emptying the joker route and the grid, so a Load there
 -- followed by a Save here overwrote a server layout with a partial one. Server
@@ -10040,6 +10148,7 @@ function M.saveLayout(name, confirmDrop)
       if tonumber(wp.width)  then out[i].width  = clampWidth(wp.width)   end
       if tonumber(wp.height) then out[i].height = clampHeight(wp.height) end
       if tonumber(wp.depth)  then out[i].depth  = clampDepth(wp.depth)   end
+      if tonumber(wp.length) then out[i].length = tonumber(wp.length)    end  -- pit stalls
       if wp.oneWay == true   then out[i].oneWay = true end
       -- A marker's SYMBOL is the only thing that distinguishes one from
       -- another, so it travels with the geometry. Validated on the way out
@@ -10312,7 +10421,7 @@ for _, name in ipairs({
   'editorAdd', 'editorUndo', 'editorClear', 'setFinishLine',
   'moveCheckpoint', 'removeCheckpoint', 'insertCheckpoint', 'reorderCheckpoint',
   'setCheckpointWidth', 'setCheckpointHeight', 'setCheckpointDepth',
-  'setCheckpointOverride', 'setPointToPoint',
+  'setCheckpointOverride', 'setPitStallSize', 'setPointToPoint',
   'moveStartPosition', 'removeStartPosition',
   'generateStartPositions', 'respaceGrid', 'flipStartPositions',
   'setBranchSlot', 'setBranchGateSlot', 'removeBranchGate',
@@ -10372,8 +10481,11 @@ local function onServerUpdate(rawData)
   -- is the opposite of what a driver forming up should do. This one is pushed
   -- second so it is the one left on screen.
   local wasPacing = session.pacing
+  local wasReady  = session.greenReady
   session.paceLap = data.paceLap == true
   session.pacing  = data.pacing == true
+  -- GET READY: the leader is on the run to the line and the green is coming.
+  session.greenReady = data.greenReady == true
   -- The caution, and its own notice on the edge. The yellow flash a line below
   -- says CAUTION already, but "race back to the line" is what an advisory
   -- yellow means and it is the opposite of what a neutralised race wants -- so
@@ -10419,6 +10531,12 @@ local function onServerUpdate(rawData)
     pushNotice('flag', 'PACE LAP',
       { sub = 'Hold position - 40 mph / 64 km/h', color = 'yellow' })
   end
+  -- Pushed here, not by the server, so it can carry a color: a server notice
+  -- has none, and this one has to stand out from the yellow it arrives under.
+  if session.greenReady and not wasReady then
+    pushNotice('flag', 'GET READY',
+      { sub = 'Green flag coming - hold position until it falls', color = 'green' })
+  end
   -- THREE EDGES, THREE DIFFERENT INSTRUCTIONS, and the order they are written in
   -- is the order a driver meets them. Collapsing them into one CAUTION notice is
   -- how a driver ends up holding station on a lap they were supposed to race
@@ -10434,7 +10552,7 @@ local function onServerUpdate(rawData)
     -- The one warning that matters under a caution: the green is coming, and it
     -- is coming at the line rather than whenever the marshal pressed a button.
     pushNotice('flag', 'RESTART THIS LAP',
-      { sub = 'Green as the leader reaches the line - get ready', color = 'green' })
+      { sub = 'Hold position - get ready is called 100 m from the line', color = 'green' })
   elseif wasRestart and not session.restartPending and session.caution then
     pushNotice('flag', 'RESTART WAVED OFF',
       { sub = 'Stay under caution, hold your position', color = 'yellow' })
@@ -11074,6 +11192,18 @@ local function onApplyLayout(rawData)
   local pits = {}
   if type(data.pits) == 'table' and #data.pits > 0 then
     pits = unbundle(data.pits, 'pit stall') or {}
+    -- A stall saved before stalls had a length inherited a CHECKPOINT's width,
+    -- 20 to 40 m across the lane, which is the box nobody could find. It comes
+    -- up at the default size instead; the next save stores its length.
+    local migrated = 0
+    for i, s in ipairs(pits) do
+      s.length = tonumber(data.pits[i].length)
+      if not s.length then s.width = nil; migrated = migrated + 1 end
+      s.width, s.length = pit.dims(s)
+    end
+    if migrated > 0 then
+      log('I', 'raceManager', migrated .. ' pit stall(s) from an older layout set to the default box size')
+    end
   end
   local pitIn, pitOut = {}, {}
   if type(data.pitEntry) == 'table' and #data.pitEntry > 0 then

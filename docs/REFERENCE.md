@@ -273,13 +273,23 @@ Switch the editor to the **Pit Stalls** tab, drive into each stall and press
 **+ Place Pit Stall Here**. Stalls are drawn amber and labeled `PIT 1`, `PIT 2`.
 
 **The box is drawn, because the box is the rule.** A stall is not a gate you
-cross, it is a volume you occupy: the gate's width across, three meters either
-way along it, measured on the stall's own axes so an angled stall still reads
-correctly. On track it appears as a translucent amber floor with low side walls
-and a corner post at each corner, open front and back because a stall is driven
-into and out of. The walls are deliberately short: the height part of the test
-excludes nobody, so drawing it full height would imply a constraint that is not
-doing any work, while the footprint, which is what decides, is drawn exactly.
+cross, it is a box you park in, measured on the stall's own axes so an angled
+stall still reads correctly. Each stall has its own **width** (across) and
+**length** (along, the way the car faces): 3.5 x 6 m by default, 2 to 20 m wide
+and 3 to 30 m long. Click a stall in the list to change it; the next stall you
+place takes the same size. The rule tests the car's center, so the box is room
+to park rather than the car's outline.
+
+On track a stall is an amber box on the ground with an outline like a grid slot
+and see-through walls on both sides and the front, fading upward. The rear is
+left open as the way in. The stall you are nearest to also gets a **white stop
+bar** across the front edge and a chevron pointing at it: stop with the nose at
+the bar. The box turns **green** the moment your car is inside it, before you
+have stopped, and stays green for the stop.
+
+Stalls from a layout saved before stalls had a length took a checkpoint's width,
+often 20 m or more across the lane. They load at the default 3.5 x 6 m instead;
+resize them if needed and save the layout.
 
 **You have to stop in the box yourself.** Driving into a stall is not enough
 the car has to actually come to a stop inside it. While you are in the box and
@@ -312,8 +322,11 @@ as one. Every stop is logged server-side with the driver, the stall and the lap.
 They are **not** respawn points. A stall repairs a car where it stands and does
 nothing else - a later reset still goes wherever the reset ruleset says.
 
-Drivers get a pole on the **nearest** stall so the lane can be found; a whole
-lane wearing poles would read as a wall of gates across the track.
+Every stall in the lane is drawn as a box; only the nearest gets the stop bar,
+the chevron and the two-band walls. With a **Pit In** gate placed, the stalls
+appear only once a driver has crossed it. That gate carries a large white **P**
+across its face and the words **PIT IN**, the one gate a driver sees with text
+on it; the exit gate is labeled **PIT OUT**.
 
 #### Placing the starting grid
 
@@ -579,7 +592,7 @@ the stragglers are taken where they stand and the session closes normally.
 
    **Or press Start Race**, if the [pace lap](#pace-lap) is armed. There is no
    countdown: the field is released under yellow and forms up for a lap, and the
-   green falls as the leader comes back to the line. The two buttons are
+   green falls somewhere on the leader's run back to the line. The two buttons are
    alternatives and only one is ever on screen -- counting a field down to GO and
    then telling it to hold position at 40 mph is two instructions for the same
    moment, and a driver obeys whichever they read.
@@ -933,6 +946,11 @@ Last-checkpoint mode applies whether or not resets are limited; before the
 first checkpoint of a session it falls back to in-place. Like every
 regulation it is locked once the countdown starts.
 
+The respawn height comes from the road the car drove over when it crossed the
+gate, not from the gate's own height. A gate that ended up sitting on an arch,
+bridge or sign over the track still respawns cars on the track under it, at the
+ride height the car went through at.
+
 Two details keep a spent allowance from turning into a stuck car. BeamNG
 reports every teleport as a vehicle reset, including the ones the mod performs
 itself, so the car being put back - and being stood on its grid slot - is
@@ -1228,8 +1246,8 @@ line**. Press **Caution** while a race is running and:
    came back &mdash; wherever they happen to be on the road.
 5. Optionally the **free pass** gives the first car a lap down its lap back
    before the green.
-6. **Restart** is *called*, and the green falls as the leader reaches the line.
-   It can be waved off until it does.
+6. **Restart** is *called*, and the green falls somewhere on the leader's run to
+   the line. It can be waved off until it does.
 
 **The freeze is the feature, and it is the only half of a caution this mod can
 enforce.** The server has no physics access: it cannot slow a car, close a gap or
@@ -1266,9 +1284,10 @@ would quietly stop working for the rest of the race.
 #### The restart, and calling it off
 
 Pressing **Restart** does not go green. It says **the current lap is the
-restart** and the green falls as the **leader reaches the start/finish line**, so
-the field is packed up and looking at it rather than being waved off round the
-back of the circuit at whatever moment the marshal decided.
+restart**: GET READY 100 m out and the green at a random point in the last
+50 m, as on the pace lap (see [Pace lap](#pace-lap)), so the field is
+packed up and looking at it rather than being waved off round the back of the
+circuit at whatever moment the marshal decided.
 
 **Cancel restart** waves the call off. Only the call goes: the race stays
 neutralised, the board stays frozen and the caution laps go on counting. Pressing
@@ -1283,7 +1302,10 @@ Some details worth knowing:
   anything. They now belong to **qualifying**, which has no running order to
   freeze &mdash; there a yellow really is only a hazard being pointed at.
 - **Red is its own instrument, in both sessions.** It means stop where you are;
-  the session keeps running. Pressing it again lifts it, and **lifting a red
+  the session keeps running. **A red stops the race clock**: a timed race's
+  countdown, the elapsed race clock, qualifying's clock and the final-lap grace
+  all hold until it is lifted, the header clock turns red with a pause mark, and
+  finish times leave the stoppage out. Pressing it again lifts it, and **lifting a red
   returns the field to whatever it was already under** &mdash; a neutralised race
   goes back to its caution rather than being waved off the instant the wreck is
   moved. A red also holds the restart: a leader who rolls the last few meters to
@@ -1676,10 +1698,20 @@ Press it and:
    your speed to 40 mph / 64 km/h*, and the driver bar carries a
    `PACE LAP 40 MPH / 64 KM/H` badge for as long as it lasts.
 2. The field runs a **formation lap**.
-3. The **green flag falls automatically** as the leader comes back within
-   **10 m** of the start/finish line -- waved on the approach, not once the
-   leader is already past, which is what a marshal actually does.
-4. Every driver's own crossing of the line then starts **their** lap 1. The
+3. **GET READY** is called as the leader comes within **100 m** of the line:
+   a green notice, and the badge and on-screen instruction change to say the
+   green is coming.
+4. The **green flag falls automatically** at a **random point between 1 and
+   50 m** before the line, drawn fresh for every pace lap so the field cannot
+   learn the spot and jump it. The point is never sent to any client.
+
+   Both only happen once the leader has cleared the **last checkpoint before
+   the line**: distance alone cannot be trusted earlier, because a back
+   straight can pass within 100 m of the line mid-lap. So on a final sector
+   shorter than 100 m, GET READY comes as the leader clears that checkpoint,
+   and the green point is kept inside the sector. Place the last checkpoint at
+   least 100 m out for the full warning.
+5. Every driver's own crossing of the line then starts **their** lap 1. The
    green is one event for the whole field, but the field is strung out, so the
    lap each driver is on is still decided at the line by that driver.
 
@@ -1700,9 +1732,10 @@ This is the one place the pace lap differs from the out lap a
 *racing* lap that merely sets no time, so it comes **out** of the distance; a
 formation lap is not a racing lap at all, so it goes **on top**.
 
-**A timed race's clock starts at the green**, not at the release. Ninety seconds
-of forming up still leaves the full ten minutes of racing, and the header's
-countdown does not move until the green falls.
+**The race clock starts at the green**, not at the release. Ninety seconds of
+forming up still leaves the full ten minutes of a timed race, the header reads
+0:00 through the formation lap, and finish times in the results are measured from
+the green.
 
 Two things stop a pace lap from hanging:
 
@@ -1725,11 +1758,13 @@ point-to-point sprint stage is driven once from the first gate to the last and
 has no lap to form up on, so the switch is grayed out there, the server refuses
 it if asked anyway, and loading a sprint stage switches it back off.
 
-The trigger distances are server settings: `paceGreenAt` (10 m, where the green
-falls) and `paceArmAt` (50 m, how far the leader must first get *away* from the
-line before that means anything -- the field starts the lap standing on the line,
-so without it the green would fall the instant the cars were let go). Both live
-in `config.json` beside the lap count.
+The distances are server settings in `config.json`: `paceReadyAt` (100 m,
+GET READY), `paceGreenNear` and `paceGreenFar` (1 and 50 m, the green range; set
+them equal for a fixed point). A restart after a caution uses the same three. On
+a track built in the editor and never saved, the server has no checkpoint count
+to find the final sector with, so there is no GET READY and the green falls at
+`paceGreenAt` (10 m) once the leader has first got `paceArmAt` (50 m) away from
+the line.
 
 ### Rallycross joker laps
 
@@ -1766,7 +1801,7 @@ markers, which could not be made bright enough to see.
 **No text on them.** The poles say where the gate is and the color says which
 one is next; "CP 3" read at racing speed tells a driver nothing they can act on,
 and it is one more thing painted across the racing line. Pit stalls are the same:
-amber, unlabeled, drawn as the box they test.
+amber boxes, unlabeled, drawn as the box they test.
 
 **The joker is marked out, but not with words either.** It is the one gate whose
 state changes what you should *do* - owed, taken, or forbidden on lap 1 - and

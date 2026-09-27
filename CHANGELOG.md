@@ -27,6 +27,22 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 - **Joining during a derby Form Up** adds you to the field with a Ready
   button. Leaving during Form Up takes you out of it, instead of leaving a
   car-less entry in the derby.
+- **Pit stalls are boxes you can see.** Each stall is a car-sized box on the
+  ground with its own width and length (3.5 x 6 m by default, set per stall in
+  the editor), see-through walls on the sides and front, and a white stop bar
+  with a chevron pointing at it. The box turns green as soon as your car is in
+  it. Stalls from older layouts took a checkpoint's width, 20 m or more across
+  the lane; they load at the default size, so resize any that need it and save.
+- **The pit entry is signed.** The Pit In gate carries a large P and the words
+  PIT IN; the exit gate reads PIT OUT.
+- **A red flag stops the race clock.** The timed-race countdown, the elapsed
+  race clock, qualifying's clock and the final-lap grace all hold until the red
+  is lifted, and the header clock turns red with a pause mark.
+- **GET READY, then a green at a random point.** On a pace lap or a restart,
+  GET READY is called as the leader comes within 100 m of the line on the final
+  sector, and the green falls at a secret point 1 to 50 m out, drawn fresh each
+  time so the field cannot learn it. `paceReadyAt`, `paceGreenNear` and
+  `paceGreenFar` in config.json set the three distances.
 
 #### Fixed
 
@@ -35,6 +51,21 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   thinking a menu is open, so the stick and buttons go to menu navigation and
   only the triggers reach the car. Spawning from the game's vehicle selector
   cleared it; a garage spawn now does the same when the UI is stuck.
+- **A Last Checkpoint reset under an arch put the car on top of it.** A gate
+  that ended up on an overhead structure stood reset cars wherever the gate
+  was. The respawn height now comes from the road the car drove over at that
+  gate, at the car's own ride height.
+- **The race clock ran through the pace lap.** The header's elapsed clock and
+  every finish time in the results included the formation lap. Both start at
+  the green now; a timed race's countdown already did.
+- **"A session is already running" as soon as the grid was called.** With the
+  ready check on, a called driver is a ghost until they press Ready, and that
+  ghost was announced as though the race had started without them. It is only
+  said once the session is actually running.
+- **The pit stop's messages lagged the pit stop.** "Stop in the box", the hold
+  and GO each waited nine seconds behind the last, so GO arrived long after the
+  car had left. Each pit message now replaces the one before it, and the IN THE
+  PITS countdown runs down instead of sitting on its starting value.
 
 ## 0.17.2 - Ready when you are
 

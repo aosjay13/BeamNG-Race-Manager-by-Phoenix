@@ -94,7 +94,17 @@ local CFG = {
   -- Meters from the leader to the start/finish line when the green flag falls.
   -- The flag is waved as the leader ARRIVES, not once they are past: a green
   -- thrown at the line is a green nobody at the front can react to.
+  -- Now only the fallback: the green point on a track the server holds no route
+  -- for, where the random point below cannot be placed.
   paceGreenAt   = 10.0,
+  -- THE RUN TO THE GREEN, on a track the server knows. GET READY as the leader
+  -- comes within paceReadyAt of the line on the final sector, then the green at
+  -- a random point between paceGreenNear and paceGreenFar, drawn fresh for each
+  -- pace lap and restart so the field cannot learn it. Set the two equal for a
+  -- fixed point.
+  paceReadyAt   = 100.0,
+  paceGreenNear = 1.0,
+  paceGreenFar  = 50.0,
   -- ...and how far the leader must first get AWAY from the line before that
   -- means anything. The field starts the pace lap standing at the line, so
   -- distance-to-line is near zero at the release as well as at the end of the
@@ -237,6 +247,12 @@ local race = {
   -- CFG.paceArmAt: until this is set, being near the line means the field has
   -- not left it rather than that it has come back to it.
   paceArmed    = false,
+  -- Meters before the line the green falls at, drawn per pace lap and per
+  -- restart (race.drawGreenZone). Never broadcast: a number a driver can read is
+  -- a spot a driver can learn.
+  greenZone    = nil,
+  -- GET READY has been called for this pace lap or restart.
+  greenReady   = false,
   -- ---------------------------------------------------------------------
   -- THE CAUTION
   -- ---------------------------------------------------------------------
@@ -2072,6 +2088,15 @@ local function broadcastState(targetPid)
     -- have to be subtracted the same way.
     raceLeft       = race.raceTimeLimit > 0
       and math.max(race.raceTimeLimit - raceElapsed(), 0) or nil,
+    -- The race clock the header counts UP: from the green, zero through the pace
+    -- lap, held under red. NOT raceTime, which is the session clock every client
+    -- anchors its ghost timers to and so has to run from the release.
+    raceClock      = raceElapsed(),
+    -- GET READY is out: the green is coming on this run to the line.
+    greenReady     = (race.pacing or race.restartPending) and race.greenReady or nil,
+    -- The phase test inline: sessionRunning is declared further down this file.
+    clockStopped   = race.flag == 'red'
+      and (race.phase == 'racing' or race.phase == 'qualifying') or nil,
     raceExpired    = race.raceExpired,
     lastLapNum     = race.lastLapNum,
     -- Approved vehicle/setup list (Module 4).
@@ -3109,7 +3134,10 @@ end
 local function retireDriver(rec, reason)
   if not onTrack(rec) then return false end
   rec.status = 'finished'
-  rec.finishTime = race.time
+  -- RACE time, from the green and without red-flag stoppages: the pace lap is
+  -- not part of anyone's race. Only ever compared with other finish times, so
+  -- the shift changes the results file and nothing else.
+  rec.finishTime = race.time - race.greenAt
   -- The RESET ghost ends here, and only that one. It is a timed thing that
   -- exists to cover a car materialising in the pack, and a driver who has just
   -- taken the flag is not doing that.
@@ -4820,6 +4848,8 @@ local function releaseField(pacing)
   race.flag   = race.pacing and 'yellow' or 'green'
   -- The latch on CFG.paceArmAt starts closed: the field is standing at the line.
   race.paceArmed = false
+  race.greenZone = nil
+  if race.pacing then race.drawGreenZone() end
   -- NOTHING CARRIES A CAUTION INTO A NEW SESSION. A yellow belongs to the race
   -- it was called in, and a frozen order that outlived it would silently decide
   -- the running order of the next one -- the same class of state the flag reset
@@ -4898,8 +4928,8 @@ local function releaseField(pacing)
   -- nothing to half the grid is a number half the grid ignores.
   if race.pacing then
     notifyField('flag', 'PACE LAP', 'Maintain position and limit '
-      .. 'your speed to 40 mph / 64 km/h. No overtaking. The GREEN FLAG falls as '
-      .. 'the leader reaches the start/finish line.')
+      .. 'your speed to 40 mph / 64 km/h. No overtaking. The GREEN FLAG can fall '
+      .. 'anywhere on the run to the start/finish line: be ready.')
   elseif outLapOwed() and isQualiSession() then
     notifyField('flag', 'GO! Your first lap is an OUT LAP', 'It is '
       .. 'not timed and does not count. Timing starts as you cross the line.')
@@ -4955,6 +4985,69 @@ local function dropGreenFlag(why)
     why or 'pace lap complete'))
   broadcastState()
   return true
+end
+
+-- The final sector's length, straight line: the last checkpoint before the
+-- line (or its nearest branch gate) to the line. nil when the server does not
+-- hold the route, which is a track built in the editor and never loaded.
+function race.finalSectorLength()
+  local cps = type(race.layout) == 'table' and race.layout.checkpoints
+  if type(cps) ~= 'table' or #cps < 2 then return nil end
+  local n, sf = #cps, cps[#cps]
+  local function dist(g)
+    local dx, dy, dz = (g.x or 0) - sf.x, (g.y or 0) - sf.y, (g.z or 0) - sf.z
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+  end
+  local best = dist(cps[n - 1])
+  for _, b in ipairs(race.branches or {}) do
+    if tonumber(b.slot) == n - 1 and dist(b) < best then best = dist(b) end
+  end
+  return best
+end
+
+-- WHERE THE GREEN FALLS: a fresh random distance before the line for every pace
+-- lap and every restart, between CFG.paceGreenNear and CFG.paceGreenFar, so the
+-- field cannot learn the spot and jump it.
+--
+-- Capped inside the final sector. The zone only opens once the leader has
+-- cleared the last checkpoint, and a distance longer than that sector would put
+-- the green at that checkpoint every single time.
+function race.drawGreenZone()
+  race.greenReady = false
+  local lo, hi = CFG.paceGreenNear, CFG.paceGreenFar
+  local sector = race.slotCount >= 2 and race.finalSectorLength() or nil
+  if sector then hi = math.min(hi, sector * 0.9) end
+  if not sector or hi <= lo then
+    race.greenZone = lo
+  else
+    -- Lua 5.3 starts every boot on the same sequence, which would make the first
+    -- green of every night land on the same spot.
+    if not randomSeeded then
+      math.randomseed(os.time() + os.clock() * 1000)
+      randomSeeded = true
+    end
+    race.greenZone = lo + math.random() * (hi - lo)
+  end
+  print(string.format('[RaceManager] Green zone: %.0fm before the line (range %.0f-%.0fm)',
+    race.greenZone, lo, math.max(lo, hi)))
+  return race.greenZone
+end
+
+-- THE RUN TO THE GREEN, for the pace lap and the restart alike. The caller has
+-- already put the leader on the final sector. GET READY once, as they come
+-- within paceReadyAt of the line; true once they reach the drawn green point.
+--
+-- On a final sector shorter than paceReadyAt the call comes as the leader
+-- clears the last checkpoint: distance alone cannot be trusted before that,
+-- because a back straight can pass within 100 m of the line mid-lap.
+function race.greenApproach(leader)
+  if not race.greenReady and leader.distNext <= CFG.paceReadyAt then
+    race.greenReady = true
+    print(string.format('[RaceManager] GET READY: %s is %.0fm from the line',
+      leader.name, leader.distNext))
+    broadcastState()
+  end
+  return leader.distNext <= (race.greenZone or CFG.paceGreenNear)
 end
 
 -- WHO IS LEADING THE PACE LAP, and how far they still are from the line.
@@ -5026,13 +5119,32 @@ local function paceLapWatch()
   -- Released, but this driver's first telemetry has not landed yet. Nothing can
   -- be judged from a distance we do not have, so the pace lap simply waits.
   if not leader.distNext then return end
-  if not race.paceArmed then
-    if leader.distNext > CFG.paceArmAt then
+  if race.slotCount >= 2 then
+    -- THE FINAL SECTOR OPENS THE RUN IN, the restart's rule. GET READY at
+    -- 100 m is further out than the arming distance below, so "got away and
+    -- came back" by distance alone would call it seconds after the release.
+    if (leader.cpCleared or 0) < race.slotCount - 1 then return end
+    if not race.paceArmed then
       race.paceArmed = true
-      print(string.format('[RaceManager] Pace lap under way: %s leads, %.0fm from the line',
+      print(string.format('[RaceManager] Pace lap on its final sector: %s leads, %.0fm from the line',
         leader.name, leader.distNext))
     end
+    if race.greenApproach(leader) then
+      dropGreenFlag(string.format('%s is %.1fm from the line', leader.name, leader.distNext))
+    end
     return
+  else
+    -- No route on the server, so no checkpoint count to trust: the distance
+    -- latch and the fixed green point, as before the zone existed. No GET
+    -- READY either: the latch trips 50 m out, already inside 100.
+    if not race.paceArmed then
+      if leader.distNext > CFG.paceArmAt then
+        race.paceArmed = true
+        print(string.format('[RaceManager] Pace lap under way: %s leads, %.0fm from the line',
+          leader.name, leader.distNext))
+      end
+      return
+    end
   end
   if leader.distNext <= CFG.paceGreenAt then
     dropGreenFlag(string.format('%s is %.1fm from the line', leader.name, leader.distNext))
@@ -5419,7 +5531,7 @@ local function restartWatch()
   local leader = cautionLeader()
   if not leader or not leader.distNext then return end
   if (leader.cpCleared or 0) < race.slotCount - 1 then return end
-  if leader.distNext <= CFG.paceGreenAt then
+  if race.greenApproach(leader) then
     restartRace(string.format('%s is %.1fm from the line', leader.name, leader.distNext))
   end
 end
@@ -5496,14 +5608,15 @@ function RM_onRestart(pid)
   end
   if race.restartPending then
     MP.SendChatMessage(pid, '[RaceManager] A restart is already called: the green '
-      .. 'falls as the leader reaches the line. Cancel it to hold the caution.')
+      .. 'falls on the run to the line. Cancel it to hold the caution.')
     return
   end
   race.restartPending = true
+  race.drawGreenZone()
   local who = MP.GetPlayerName(pid) or pid
   MP.SendChatMessage(-1, string.format(
-    '[RaceManager] RESTART THIS LAP: the green flag falls as the leader reaches '
-    .. 'the line. Close up, hold position until then. By %s.', tostring(who)))
+    '[RaceManager] RESTART THIS LAP: the green flag can fall anywhere on the run '
+    .. 'to the line. Close up, hold position until then. By %s.', tostring(who)))
   print(string.format('[RaceManager] Restart called by %s at %.1fs, waiting on the leader',
     tostring(who), race.time))
   broadcastState()
@@ -6430,6 +6543,9 @@ local function applyConfigTable(data)
   -- with the two crossed over, the latch could never trip before the trigger
   -- did and the green would fall on the tick the field was released.
   num('paceGreenAt', 1, 100)
+  num('paceReadyAt', 1, 2000)
+  num('paceGreenNear', 0.5, 1000)
+  num('paceGreenFar', 0.5, 1000)
   num('paceArmAt', 20, 1000)
   bool('luckyDog')
   -- 0 is a value here and not a floor: it means "a heat runs the race distance".
@@ -6467,6 +6583,16 @@ local function applyConfigTable(data)
       .. 'paceGreenAt or the green falls at the release; raised it to %.0fm',
       CFG.paceArmAt))
   end
+  -- GET READY has to come before the green can: a warning inside the green zone
+  -- can arrive after the flag it warns about.
+  if CFG.paceGreenFar < CFG.paceGreenNear then
+    CFG.paceGreenNear, CFG.paceGreenFar = CFG.paceGreenFar, CFG.paceGreenNear
+  end
+  if CFG.paceReadyAt < CFG.paceGreenFar then
+    CFG.paceReadyAt = CFG.paceGreenFar
+    print(string.format('[RaceManager] config.json: paceReadyAt is inside the green '
+      .. 'zone, so GET READY could come after the green; raised it to %.0fm', CFG.paceReadyAt))
+  end
   -- The blue flag's two thresholds, and the same treatment for the same reason.
   -- A clear distance at or below the show distance is no hysteresis at all: the
   -- flag lights and clears within one broadcast of itself and strobes, which is
@@ -6501,6 +6627,9 @@ local function configFileText()
     endDelay       = CFG.endDelay,
     paceLap        = CFG.paceLap,
     paceGreenAt    = CFG.paceGreenAt,
+    paceReadyAt    = CFG.paceReadyAt,
+    paceGreenNear  = CFG.paceGreenNear,
+    paceGreenFar   = CFG.paceGreenFar,
     paceArmAt      = CFG.paceArmAt,
     luckyDog       = CFG.luckyDog,
     heatLaps       = CFG.heatLaps,
@@ -6612,7 +6741,8 @@ local function loadConfigFromDisk()
     n, n == 1 and '' or 's', CFG.totalLaps,
     CFG.maxResets < 0 and 'unlimited' or tostring(CFG.maxResets),
     CFG.countdownFrom, CFG.ghostMinSeconds, CFG.ghostMaxSeconds,
-    CFG.paceLap and string.format('on (green at %.0fm)', CFG.paceGreenAt) or 'off'))
+    CFG.paceLap and string.format('on (get ready at %.0fm, green %.0f-%.0fm before the line)',
+      CFG.paceReadyAt, CFG.paceGreenNear, CFG.paceGreenFar) or 'off'))
   if text ~= configFileText() then
     if saveConfigToDisk() then
       print('[RaceManager] Rewrote ' .. CONFIG_FILE
@@ -6902,6 +7032,9 @@ sanitizeCheckpoints = function (raw)
     -- Carried, not validated against height: they are independent, and a gate
     -- with no depth is a legal gate that simply does not reach below the surface.
     if tonumber(cp.depth) then out[i].depth = tonumber(cp.depth) end
+    -- A pit stall's box length. Dropped here, the client would treat every
+    -- stall as an old one and reset its size on each load.
+    if tonumber(cp.length) then out[i].length = tonumber(cp.length) end
     -- Gates score in either direction; oneWay puts one back for the geometry
     -- where direction is the only thing separating two legs of a track. Carried
     -- only when set, like the size overrides above.
@@ -7366,7 +7499,7 @@ function RM_onSetFlag(pid, rawData)
   if want == 'green' and race.flag == 'red' and (race.pacing or race.caution) then
     race.flag = 'yellow'
     MP.SendChatMessage(-1, string.format(
-      '[RaceManager] The red is lifted: %s. By %s.',
+      '[RaceManager] The red is lifted and the clock runs again: %s. By %s.',
       race.pacing and 'the PACE LAP resumes, hold position'
                   or  'the race is STILL UNDER CAUTION, hold your position',
       tostring(MP.GetPlayerName(pid) or pid)))
@@ -7398,15 +7531,19 @@ function RM_onSetFlag(pid, rawData)
     return
   end
   if want == race.flag then return end
-  race.flag = want
   local who = MP.GetPlayerName(pid) or pid
+  local wasRed = race.flag == 'red'
+  race.flag = want
   if want == 'red' then
     MP.SendChatMessage(-1, '[RaceManager] RED FLAG: stop where you are and wait. '
-      .. 'The session is still running; it goes yellow, then green. By ' .. who .. '.')
+      .. 'The session is still running; the race clock is stopped until the red '
+      .. 'is lifted. By ' .. who .. '.')
   elseif want == 'yellow' then
-    MP.SendChatMessage(-1, '[RaceManager] YELLOW FLAG: caution called, race back to the line. By ' .. who .. '.')
+    MP.SendChatMessage(-1, '[RaceManager] YELLOW FLAG: caution called, race back to the line. '
+      .. (wasRed and 'The race clock is running again. ' or '') .. 'By ' .. who .. '.')
   else
-    MP.SendChatMessage(-1, '[RaceManager] GREEN FLAG: racing. By ' .. who .. '.')
+    MP.SendChatMessage(-1, '[RaceManager] GREEN FLAG: racing. '
+      .. (wasRed and 'The race clock is running again. ' or '') .. 'By ' .. who .. '.')
   end
   print('[RaceManager] Flag set to ' .. want .. ' by ' .. tostring(who))
   broadcastState()
@@ -10877,13 +11014,28 @@ function RM_Tick()
   -- One clock for both sessions. race.time is the session clock every finish
   -- time is stamped from; qualifying additionally runs its own wall clock,
   -- which is what closes the session when the admin set a time limit.
-  race.time = race.time + CFG.tickMs / 1000.0
+  local dt = CFG.tickMs / 1000.0
+  race.time = race.time + dt
   -- The hold at the flag. Checked before anything else in the tick: once it
   -- expires there is no session left for the rest of this function to run.
   if race.endsAt and race.time >= race.endsAt then
     local reason = race.endReason or 'race over'
     race.endsAt, race.endReason = nil, nil
     finishSession(reason)
+    return
+  end
+  -- A RED FLAG STOPS THE RACE CLOCK. race.time cannot stop (ghost end times are
+  -- on it), so the anchors the race clocks are measured from move with it
+  -- instead: the green, the time-up mark, and the two countdowns simply do not
+  -- run. Lifting the red lets them all go again from where they stood.
+  if race.flag == 'red' then
+    race.greenAt = race.greenAt + dt
+    if race.raceExpiredAt then race.raceExpiredAt = race.raceExpiredAt + dt end
+    tickCounter = tickCounter + 1
+    if tickCounter >= CFG.pushEveryTicks then
+      tickCounter = 0
+      broadcastState()
+    end
     return
   end
   -- THE GRACE, and it is one rule for both session kinds now. Once the flag is

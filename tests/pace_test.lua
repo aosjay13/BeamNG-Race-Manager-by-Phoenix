@@ -197,7 +197,8 @@ check(lastState.flag == 'yellow', 'released under yellow, which is what a format
 check(noticeHas('PACE LAP'), 'and the field is told, on the channel a driver can read')
 check(noticeHas('40 mph'), 'in miles per hour...')
 check(noticeHas('64 km/h'), '...and in km/h, because the grid is not all in one country')
-check(noticeHas('GREEN FLAG falls as the leader'), 'and told what ends it')
+check(noticeHas('GREEN FLAG can fall anywhere'),
+  'and told what ends it, and that it is not at a fixed spot')
 check(driver(1).status == 'racing', 'the drivers are racing-status: gates armed, laps reported')
 check(driver(1).currentLap == 1, 'everyone is on lap 1')
 check(driver(1).outLap == true,

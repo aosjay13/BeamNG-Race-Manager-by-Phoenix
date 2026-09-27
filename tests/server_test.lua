@@ -805,7 +805,7 @@ check(lastApplied and lastApplied.startPositions
 local fullJson = '{"name":"Full Track","width":20,"height":10,"checkpoints":'
   .. '[{"x":0,"y":100,"z":0,"hx":0,"hy":1},{"x":0,"y":200,"z":0,"hx":0,"hy":1}]'
   .. ',"joker":[{"x":50,"y":150,"z":0,"hx":1,"hy":0}]'
-  .. ',"pits":[{"x":-50,"y":100,"z":0,"hx":1,"hy":0}]'
+  .. ',"pits":[{"x":-50,"y":100,"z":0,"hx":1,"hy":0,"width":5,"length":8}]'
   .. ',"startPositions":[{"x":0,"y":0,"z":0,"hx":0,"hy":1},{"x":4,"y":0,"z":0,"hx":0,"hy":1}]}'
 RM_onSaveLayout(1, fullJson)
 local function storedLayout(name)
@@ -815,6 +815,10 @@ local full = storedLayout('Full Track')
 check(full and full.joker and #full.joker == 1 and full.pits and #full.pits == 1
   and full.startPositions and #full.startPositions == 2,
   'the full track saves with its joker route, pit lane and grid')
+-- Dropped here, every stall would come back as an old one and be reset to the
+-- default box on the next load.
+check(full and full.pits[1].width == 5 and full.pits[1].length == 8,
+  'a pit stall keeps its box width and length through a save')
 
 -- The exact shape of the loss: same name, same gates, everything else gone.
 local strippedJson = '{"name":"Full Track","width":20,"height":14,"checkpoints":'

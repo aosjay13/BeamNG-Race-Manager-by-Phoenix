@@ -271,8 +271,8 @@ do
     'a pending caution says the field is racing back to the line')
   expect(html:find('POSITIONS FROZEN', 1, true) ~= nil,
     'an official one says the board is frozen')
-  expect(html:find('GREEN AT THE LINE', 1, true) ~= nil,
-    'and a called restart says where the green falls')
+  expect(html:find('GREEN ON THE RUN IN', 1, true) ~= nil,
+    'and a called restart says the green comes on the run in, not at a fixed spot')
   expect(js:find('$scope.cautionPending = !!data.cautionPending', 1, true) ~= nil
     and js:find('$scope.restartPending = !!data.restartPending', 1, true) ~= nil,
     'and all three are read off the state broadcast, not guessed at')
@@ -2588,6 +2588,20 @@ do
   expect(html:find('ng-if="derbyUi.confirm"', 1, true) ~= nil,
     'and the arena panel has somewhere to show the question it asks, or every '
       .. 'confirmation would be set and never seen')
+end
+
+-- THE PIT STOP'S WORDS KEEP UP WITH THE PIT STOP. Reported: "stop in the box",
+-- "PIT STOP 5s" and "GO" were still on screen after the car had left, because
+-- each waited nine seconds in the queue behind the last. A pit notice replaces
+-- the one before it, and the IN THE PITS clock counts down locally instead of
+-- sitting on the value pushed as the stop began.
+do
+  expect(js:find("pit:%s*{[^}]*replace:%s*true") ~= nil,
+    'pit notices replace each other rather than queue')
+  expect(js:find('if (st.replace) {', 1, true) ~= nil,
+    'and the queue honors that')
+  expect(html:find('{{ pitClock() | number:1 }}s', 1, true) ~= nil,
+    'the IN THE PITS clock runs off the local clock, not the last pushed value')
 end
 
 if fails == 0 then

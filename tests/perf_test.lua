@@ -256,18 +256,14 @@ local steadyAllocs, steadyDraws, steadyTris = allocs, draws, tris
 -- the track; what gets drawn is the armed gate, the one after it, and whichever
 -- joker or pit furniture applies. If this scales with the route the whole lap is
 -- being painted across the racing line.
--- THE BUDGET SCALES WITH THE PIT LANE, and only with the pit lane. Every stall
--- is drawn the same way now, as two poles and a stop line: three draws, read
--- across a lane where a translucent floor could not be seen until a driver was
--- almost standing in it.
---
--- Three per stall is what this pins. The walled box it replaced was ELEVEN, so
--- putting that back on every stall fails here by more than double, and so does
--- anything that starts drawing per checkpoint.
-local drawBudget = 24 + 3 * #pits
+-- THE BUDGET SCALES WITH THE PIT LANE, and only with the pit lane. A stall is a
+-- box with see-through walls: eight draws, and fourteen for the nearest, which
+-- also gets its stop bar, two-band walls and chevron. Drawing every stall in
+-- full, or anything per checkpoint, fails here.
+local drawBudget = 24 + 8 * #pits + 6
 check(steadyDraws <= drawBudget, string.format(
   'a steady frame draws %d shapes on a twelve-gate circuit with %d pit stalls, '
-    .. 'not the whole lap (budget %d: 24 plus three per stall)',
+    .. 'not the whole lap (budget %d: 24, eight per stall, six more for the nearest)',
   steadyDraws, #pits, drawBudget))
 
 -- The marker board, which is the only thing here that draws triangles. Its
@@ -376,7 +372,7 @@ check(editAllocs == 0, string.format(
 -- second pass over the route.
 -- ~343 as it stands: twelve gates and two joker gates at nine shapes each
 -- (filled face, four edges, a label and a three-piece direction arrow), a
--- branch gate, a pit stall at twelve, twenty-four grid slots at eight, and the
+-- branch gate, a pit stall at fifteen, twenty-four grid slots at eight, and the
 -- marker's two posts. The budget is that plus headroom, and it is a budget on
 -- the ITEMS rather than on the route: check 3's scaling test is what catches
 -- the whole lap being painted.

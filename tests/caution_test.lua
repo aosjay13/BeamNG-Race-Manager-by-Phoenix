@@ -257,7 +257,8 @@ check(lastState.caution == true,
   'and the race is STILL under caution: calling one is not taking one')
 check(lastState.flag == 'yellow', 'the yellow is still out')
 check(chatHas('RESTART THIS LAP'), 'the field is warned')
-check(chatHas('as the leader reaches'), 'and told what drops the green')
+check(chatHas('anywhere on the run to the line'),
+  'and told the green can come anywhere on the run in, not at a fixed spot')
 seconds(0.5)
 check(order() == '3,1,2,4',
   'the board stays frozen while the restart is waited on (got ' .. order() .. ')')
@@ -483,8 +484,9 @@ report(1, driver(1).currentLap, 1, 8.0)
 seconds(0.5)
 check(lastState.caution == true,
   'and does NOT fall on a leader who is close to some other checkpoint')
--- ...now on the last leg, inside the trigger.
-report(1, driver(1).currentLap, 2, 8.0)
+-- ...now on the last leg, inside the trigger. Half a meter out, because the
+-- green point is random between 1 and 50 m and 8 m would only sometimes be in.
+report(1, driver(1).currentLap, 2, 0.5)
 seconds(0.5)
 check(lastState.caution == false, 'the green falls as the leader reaches the LINE')
 check(lastState.flag == 'green', 'and the flag follows')

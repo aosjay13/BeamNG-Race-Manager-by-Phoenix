@@ -678,59 +678,146 @@ check(jokerLabels == 0,
   'a driver gets no joker label at all, from any draw path (got '
     .. jokerLabels .. ')')
 
--- THE STALL IS TWO POLES AND A STOP LINE, and this is a deliberate reversal.
+-- THE STALL IS A BOX ON THE GROUND WITH SEE-THROUGH WALLS.
 --
--- It used to be drawn as the BOX pit.inside tests: a floor, two walls, corner
--- posts and a chevron, on the reasoning that two poles show a plane for a rule
--- that is a volume. That reasoning was right and lost anyway, because none of
--- it could be SEEN. A translucent floor over tarmac reads as tarmac, so a
--- driver found each stall by arriving at it, which is the report that changed
--- this.
+-- Reported: racers could not tell what was a pit box or where to stop. The two
+-- poles before this could be seen but marked a line, not a place, and the box
+-- they stood for had a checkpoint's width. Pinned: the stall's own car-sized
+-- footprint on the floor, walls on the sides and front only, a white stop bar
+-- on the front edge, and green while the car is inside.
 --
--- The volume is still the rule and pit.inside still tests it. What is DRAWN is
--- the thing a driver can pick out down a pit lane, standing on the stall's
--- centre line where the car is meant to come to rest, so the marker points at
--- the answer rather than outlining the room.
---
--- Pinned here: the poles span the stall's WIDTH and stand up off the ground. A
--- marker that collapsed to a dot on the tarmac would be the old bug again.
-local poleL, poleR, spanY = nil, nil, 0
-for _, c in ipairs(cylinders) do
-  if c.a.x < -20 and c.b.x < -20 then      -- the pit stall is out at x = -50
-    if c.a.z ~= c.b.z then                 -- an upright: a pole
-      if not poleL or c.a.y < poleL.a.y then poleL = c end
-      if not poleR or c.a.y > poleR.a.y then poleR = c end
-    else                                   -- flat: the stop line between them
-      local d = math.abs(c.a.y - c.b.y)
-      if d > spanY then spanY = d end
+-- The fixture stall is saved WITHOUT a length, the shape of every stall in an
+-- older layout, and faces +x from (-50, 100). Its checkpoint width is 20.
+local function stallShapes()
+  local floor, walls, stop, arrows = nil, {}, nil, 0
+  for _, q in ipairs(quads) do
+    if q.a.x < -40 and q.a.x > -60 then
+      if near(q.a.z, q.b.z) and near(q.b.z, q.c.z) and near(q.c.z, q.d.z) then
+        floor = q
+      else
+        walls[#walls + 1] = q
+      end
     end
   end
+  for _, c in ipairs(cylinders) do
+    if c.a.x < -40 and c.a.x > -60 then
+      if c.color and c.color[1] == 1 and c.color[2] == 1 and c.color[3] == 1 then stop = c end
+      if c.radius and near(c.radius, 0.07) then arrows = arrows + 1 end
+    end
+  end
+  return floor, walls, stop, arrows
 end
-check(poleL ~= nil and poleR ~= nil, 'the stall is marked by uprights a driver can see')
-check(poleL and poleR and near(math.abs(poleR.a.y - poleL.a.y), 20),
-  'the poles stand at the stall width (20 m, got '
-    .. tostring(poleL and poleR and math.abs(poleR.a.y - poleL.a.y) or -1) .. ')')
-check(poleL and poleL.b.z > poleL.a.z,
-  'and they stand UP off the ground, which is the whole reason they replaced a '
-    .. 'floor that could not be seen over tarmac')
--- AND IT COMES FROM THE LAYOUT, not from a constant. The first cut used
--- TUNE.PIT_WALL_H (1.4 m), which was the right size for the WALLS of the box it
--- replaced and left the poles lying on the ground with no way to raise them:
--- the reported symptom, and the one thing poles were for.
---
--- The height goes through gateDims now, the same call every gate uses, so the
--- track's height control raises a stall too. NOT asserted equal to a route
--- gate: a waypoint carrying a legacy height and no depth has that height split
--- between above and below, so the two only match when both were saved the same
--- way, and asserting it would be pinning the fixture's migration rather than
--- the rule. Reverting to PIT_WALL_H fails this by a factor of three.
-check(poleL and (poleL.b.z - poleL.a.z) > 3,
-  'a pit pole takes its height from the layout rather than the 1.4 m wall '
-    .. 'constant it used to inherit (got '
-    .. tostring(poleL and (poleL.b.z - poleL.a.z) or -1) .. ')')
-check(near(spanY, 20),
-  'the stop line runs between them, marking where to come to rest (20 m, got '
-    .. tostring(spanY) .. ')')
+local function extent(q, axis)
+  local lo, hi = math.huge, -math.huge
+  for _, v in ipairs({ q.a, q.b, q.c, q.d }) do
+    if v[axis] < lo then lo = v[axis] end
+    if v[axis] > hi then hi = v[axis] end
+  end
+  return hi - lo, lo, hi
+end
+
+-- On the ground: a stall placed by driving sits at the car's origin, and the box
+-- is dropped onto whatever is under it. Ground here is half a meter below.
+castRayStatic = function (origin, dir, maxDist)
+  local d = origin.z - 4.5
+  if d >= 0 and d <= maxDist then return d end
+  return maxDist
+end
+handlers['RM_ApplyLayout']({
+  name = 'pits', width = 20, height = 10,
+  checkpoints = {
+    { x = 0, y = 100, z = 5, hx = 0, hy = 1 },
+    { x = 0, y = 200, z = 5, hx = 0, hy = 1 },
+  },
+  pits = { { x = -50, y = 100, z = 5, hx = 1, hy = 0 } },
+})
+serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
+veh.x, veh.y, veh.z = 0, 0, 5
+cylinders, texts, quads = {}, {}, {}
+frame()
+local floor, walls, stop, arrows = stallShapes()
+check(floor ~= nil, 'the stall has a floor on the ground')
+local long, across = floor and extent(floor, 'x') or -1, floor and extent(floor, 'y') or -1
+check(near(long, 6) and near(across, 3.5), string.format(
+  'an older stall comes up at the default 3.5 x 6 m box, not its checkpoint '
+    .. 'width of 20 (got %.2f across, %.2f long)', across, long))
+check(floor and math.abs(floor.a.z - 4.54) < 1e-6,
+  'and the floor lies on the ground under the stall, not at the car-origin '
+    .. 'height it was placed at (z=' .. tostring(floor and floor.a.z) .. ')')
+
+-- The walls: two bands on each of three sides, rising PIT_WALL_H off the floor.
+check(#walls == 6, 'see-through walls on the sides and front, two bands each (got '
+  .. #walls .. ')')
+local top = -math.huge
+local rearWall = false
+for _, q in ipairs(walls) do
+  local _, _, hi = extent(q, 'z')
+  if hi > top then top = hi end
+  -- The rear edge is x = -53: the way in. A wall there is a barrier to drive round.
+  local _, lo, hiX = extent(q, 'x')
+  if near(lo, -53) and near(hiX, -53) then rearWall = true end
+end
+check(math.abs(top - (4.5 + 1.5)) < 1e-6,
+  'the walls rise 1.5 m off the ground (top z=' .. tostring(top) .. ')')
+check(not rearWall, 'and the rear is left open as the way in')
+local faint, dense = 1, 0
+for _, q in ipairs(walls) do
+  local a = q.color[4]
+  if a < faint then faint = a end
+  if a > dense then dense = a end
+end
+check(dense > faint, 'the walls fade upward: a denser band low, a fainter one high')
+
+-- Where to stop: a white bar along the front edge, and the chevron inside.
+check(stop ~= nil and near(stop.a.x, -47) and near(stop.b.x, -47)
+    and near(math.abs(stop.a.y - stop.b.y), 3.5),
+  'a white stop bar runs across the front edge of the box')
+check(arrows == 3, 'and a chevron on the floor points at it (got ' .. arrows .. ' strokes)')
+
+-- Green once the car is in the box, before it has stopped.
+local function outlineColor()
+  for _, c in ipairs(cylinders) do
+    if c.a.x < -40 and c.a.x > -60 and c.radius and near(c.radius, 0.08) then return c.color end
+  end
+end
+local amber = outlineColor()
+check(amber and amber[2] < 0.9, 'amber while the car is elsewhere')
+veh.x, veh.y, veh.z = -50, 100, 5
+cylinders, texts, quads = {}, {}, {}
+frame()
+local green = outlineColor()
+check(green and green[1] < 0.5 and green[2] == 1,
+  'the box turns green while the car is inside it')
+veh.x, veh.y, veh.z = 0, 0, 0
+castRayStatic = nil
+
+-- THE PIT ENTRY IS SIGNED. Reported: amber poles said "pits" only to drivers
+-- who had been told. It carries a big P across its face and the words PIT IN,
+-- the one gate a driver sees with text on it.
+handlers['RM_ApplyLayout']({
+  name = 'pit entry', width = 20, height = 10,
+  checkpoints = {
+    { x = 0, y = 100, z = 5, hx = 0, hy = 1 },
+    { x = 0, y = 200, z = 5, hx = 0, hy = 1 },
+  },
+  pits     = { { x = -50, y = 100, z = 5, hx = 1, hy = 0 } },
+  pitEntry = { { x = -50, y = 40, z = 5, hx = 0, hy = 1, width = 12, height = 8, depth = 2 } },
+})
+serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
+frame()
+local pitText
+for _, t in ipairs(texts) do
+  if t.text == 'PIT IN' then pitText = t end
+end
+check(pitText ~= nil, 'the pit entry gate is labeled PIT IN in the driver view')
+local pStrokes = 0
+for _, c in ipairs(cylinders) do
+  local white = c.color and c.color[1] == 1 and c.color[2] == 1 and c.color[3] == 1
+  if white and math.abs((c.a.y + c.b.y) * 0.5 - 40) < 0.01 then pStrokes = pStrokes + 1 end
+end
+check(pStrokes == 6, 'and carries a white P across its face (got ' .. pStrokes .. ' strokes)')
+check(pitText and pitText.at.z > 5 + 3,
+  'with the words above the letter rather than across it')
 
 
 -- ===========================================================================
