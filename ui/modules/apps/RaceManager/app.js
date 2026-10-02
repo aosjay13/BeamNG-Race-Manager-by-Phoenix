@@ -1647,7 +1647,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.17.3';
+      var APP_BUILD = '0.18.0';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -4544,7 +4544,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.maps = { list: [], current: '', phase: 'idle', left: 0, voting: true, votePercent: 60 };
       // `where` is the panel whose menu is open: 'admin' or 'driver'.
       $scope.mapsUi = { menu: null, pick: null, confirm: false, percent: 60, myVote: null,
-                        percentEditing: false, driverOpen: false };
+                        percentEditing: false, driverOpen: false, rename: null };
       $scope.$on('RaceManagerMaps', function (event, data) {
         if (!data) { return; }
         $scope.$evalAsync(function () {
@@ -4584,7 +4584,40 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         for (var i = 0; i < list.length; i++) {
           if (list[i].current) { return list[i].label || list[i].name; }
         }
-        return $scope.maps.current || 'unknown';
+        return $scope.maps.currentLabel || $scope.maps.current || 'unknown';
+      };
+      // A level name as the server shows it. Only the current map has a label
+      // on every client, and the layout and arena lists are always for it.
+      $scope.mapShown = function (name) {
+        if (name && name === $scope.maps.current && $scope.maps.currentLabel) {
+          return $scope.maps.currentLabel;
+        }
+        return name;
+      };
+      // DISPLAY NAMES. The picked map, or the current one when nothing is
+      // picked (the current map cannot be picked: it is not a switch target).
+      $scope.mapsRenameTarget = function () {
+        if ($scope.mapsUi.pick) { return $scope.mapsUi.pick; }
+        var list = $scope.maps.list;
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].current) { return list[i]; }
+        }
+        return null;
+      };
+      $scope.mapsRenameOpen = function () {
+        var m = $scope.mapsRenameTarget();
+        if (!m) { return; }
+        $scope.mapsUi.menu = null;
+        $scope.mapsUi.rename = { name: m.name, label: m.label || m.name,
+                                 def: m['default'] || m.name, custom: !!m.custom };
+      };
+      $scope.mapsRenameCancel = function () { $scope.mapsUi.rename = null; };
+      $scope.mapsRenameSave = function (useDefault) {
+        var r = $scope.mapsUi.rename;
+        if (!r) { return; }
+        $scope.mapsUi.rename = null;
+        bngApi.engineLua('raceManager.mapRename(' + luaStr(r.name) + ', '
+          + luaStr(useDefault ? '' : (r.label || '')) + ')');
       };
       $scope.mapsAsk = function () {
         if ($scope.mapsUi.pick) { $scope.mapsUi.confirm = true; }
@@ -4633,6 +4666,17 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         $scope.mapsUi.driverOpen = !$scope.mapsUi.driverOpen;
         if ($scope.mapsUi.driverOpen) { $scope.mapsRefresh(); }
       };
+      // The pick is re-read from each new list, so a renamed pick shows its name.
+      $scope.$watch('maps.list', function (list) {
+        var pick = $scope.mapsUi.pick;
+        if (!pick || !list) { return; }
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].name === pick.name) {
+            $scope.mapsUi.pick = list[i].current ? null : list[i];
+            return;
+          }
+        }
+      });
       // What config.json's mapRestart will do, before a switch has resolved it.
       $scope.mapsRestartText = function () {
         switch ($scope.maps.restart) {
@@ -4642,6 +4686,77 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           case 'manual':   return 'Restart: by hand.';
           default:         return 'Restart: the Management Tool if it started the server, otherwise Race Manager.';
         }
+      };
+
+      // ------------------------------------------------------------------
+      // Lap records
+      // ------------------------------------------------------------------
+      // One board per saved layout on this map, kept by the server and scored
+      // at the end of every session. Open to everyone; clearing is the admin
+      // tier's, because there is no undo.
+      $scope.records = { layouts: [], laps: [], layout: '', loaded: null, total: 0,
+                         mapLabel: '', file: '', error: null };
+      $scope.recordsUi = { open: false, menu: false, confirmClear: false, confirmRow: null };
+      $scope.$on('RaceManagerRecords', function (event, data) {
+        if (!data) { return; }
+        $scope.$evalAsync(function () {
+          var r = $scope.records;
+          var list = toArray(data.layouts);
+          // The loaded track is always on the menu, with or without times.
+          var loaded = data.loaded || null;
+          if (loaded && !list.some(function (l) { return l.name.toLowerCase() === loaded.toLowerCase(); })) {
+            list.unshift({ name: loaded, count: 0 });
+          }
+          r.layouts = list;
+          r.loaded = loaded;
+          r.mapLabel = data.mapLabel || data.map || '';
+          r.file = data.file || '';
+          r.error = data.error || null;
+          // A change pushed to everyone moves nobody off the board they are reading.
+          var mine = r.layout;
+          if (data.changed && mine && data.layout
+              && mine.toLowerCase() !== String(data.layout).toLowerCase()) { return; }
+          var laps = toArray(data.laps);
+          var first = laps.length ? laps[0].time : 0;
+          laps.forEach(function (l, i) { l.gap = i ? l.time - first : null; });
+          r.layout = data.layout || '';
+          r.laps = laps;
+          r.total = data.total || 0;
+          $scope.recordsUi.confirmClear = false;
+          $scope.recordsUi.confirmRow = null;
+        });
+      });
+      $scope.recordsRequest = function (layout) {
+        bngApi.engineLua('raceManager.recordsRequest(' + (layout ? luaStr(layout) : 'nil') + ')');
+      };
+      // Asked for as it opens: the board can change while it is shut.
+      $scope.recordsToggle = function () {
+        $scope.recordsUi.open = !$scope.recordsUi.open;
+        $scope.recordsUi.menu = false;
+        if ($scope.recordsUi.open) { $scope.recordsRequest($scope.records.layout); }
+      };
+      $scope.recordsToggleMenu = function () {
+        $scope.recordsUi.menu = !$scope.recordsUi.menu;
+        if ($scope.recordsUi.menu) { revealDropdown('.rm-records .rm-layout-menu'); }
+      };
+      $scope.recordsPick = function (l) {
+        $scope.recordsUi.menu = false;
+        $scope.records.layout = l.name;
+        $scope.recordsRequest(l.name);
+      };
+      $scope.recordsAskClear = function () { $scope.recordsUi.confirmClear = true; };
+      $scope.recordsCancelClear = function () { $scope.recordsUi.confirmClear = false; };
+      $scope.recordsClear = function () {
+        $scope.recordsUi.confirmClear = false;
+        if (!$scope.records.layout) { return; }
+        bngApi.engineLua('raceManager.recordsClear(' + luaStr($scope.records.layout) + ')');
+      };
+      $scope.recordsAskRemove = function (l) { $scope.recordsUi.confirmRow = l.driver; };
+      $scope.recordsCancelRemove = function () { $scope.recordsUi.confirmRow = null; };
+      $scope.recordsRemove = function (l) {
+        $scope.recordsUi.confirmRow = null;
+        bngApi.engineLua('raceManager.recordsRemove(' + luaStr($scope.records.layout) + ', '
+          + luaStr(l.driver) + ')');
       };
 
       // ------------------------------------------------------------------

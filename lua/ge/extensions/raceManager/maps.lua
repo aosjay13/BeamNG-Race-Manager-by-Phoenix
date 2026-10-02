@@ -52,6 +52,12 @@ function D.mapVoteConfig(enabled, percent)
   TriggerServerEvent('RM_MapVoteConfig', jsonEncode(data))
 end
 
+-- A display name only. An empty label puts the default back.
+function D.mapRename(name, label)
+  if type(name) ~= 'string' or name == '' or not host.inMultiplayer() then return end
+  TriggerServerEvent('RM_MapRename', jsonEncode({ map = name, label = tostring(label or '') }))
+end
+
 function D.onMaps(rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end

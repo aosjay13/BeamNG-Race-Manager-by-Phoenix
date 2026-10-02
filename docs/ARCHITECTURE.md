@@ -35,6 +35,8 @@ one so the headless tests exercise the real file format).
 | `cup.json` | Cup scoring rules, standings, per-round breakdown, adjustments | End Cup |
 | `results/*.txt` | One results file per finished session | Clear Results Cache |
 | `mapSwitch.json` | A map switch waiting for its restart, so the next boot can say whether it took | The next boot |
+| `mapNames.json` | Display names for maps, by level name | Renaming each map back |
+| `Lap Records/<map>.json` | Each driver's best lap per saved layout on that map | Clear Board, or deleting the file |
 
 `roster.json` and `cup.json` are deliberately **not** under `results/`: Clear
 Results Cache deletes every `.txt` it finds there, and a championship that
@@ -42,23 +44,25 @@ routine housekeeping can destroy is not persistent in any sense that matters.
 
 ## Modules inside the server plugin
 
-Five parts of the plugin are self-contained: **Demo Derby**, **drag racing**,
-**map switching**, the **driver roster** and the **cup**. Each has its own
+Six parts of the plugin are self-contained: **Demo Derby**, **drag racing**,
+**map switching**, **lap records**, the **driver roster** and the **cup**. Each has its own
 state tables, its own `RM_*` event namespace and its own broadcast channel, and
 none of them is reachable from the racing state machine except through a
 handful of named functions declared at the top of the file.
 
-The first three are separate FILES (`derby.lua`, `drag.lua`, `maps.lua`)
-required as siblings; the other two are `do ... end` blocks inside `main.lua`.
+The first four are separate FILES (`derby.lua`, `drag.lua`, `maps.lua`,
+`records.lua`) required as siblings; the other two are `do ... end` blocks
+inside `main.lua`.
 Same isolation either way, reached two different ways for the same reason:
 Lua's 200-local ceiling.
 
 **BeamMP runs every `.lua` in the plugin folder on its own**, alphabetically,
 before `main.lua` requires any of them. `derby.lua` and `drag.lua` sort before
 `main.lua`, so the copy `main.lua` initialises is the one whose global handlers
-win. `maps.lua` sorts after, so it defines nothing global at file scope: its
-`RM_Map*` handlers are installed by `init()`, and `tests/maps_test.lua` checks
-that loading the file alone defines nothing. A new module must do the same
+win. `maps.lua` and `records.lua` sort after, so they define nothing global at
+file scope: their `RM_Map*` and `RM_Records*` handlers are installed by
+`init()`, and `tests/maps_test.lua` and `tests/records_test.lua` check that
+loading either file alone defines nothing. A new module must do the same
 unless its name sorts before `main`.
 
 **Map switching restarts the server**, because BeamMP reads its map and hashes
@@ -68,6 +72,11 @@ layout), rewrites only the `Map` value in `ServerConfig.toml`, and restarts by
 whichever means is available: the Management Tool's config watch, a detached
 helper that waits for this process to exit and starts it again, or `exit()` for
 a service manager. See [Switching maps](REFERENCE.md#switching-maps).
+
+**Lap records are a consumer of results, like the cup.** `finishSession` calls
+them once per session through `race.recordsSession`, after the joker ruling.
+The file on disk is the board: every read opens it and every write reads it
+first, so a hand edit is never overwritten by a copy held in memory.
 
 **Drag racing reads two things from the racing state and writes neither**:
 `race.startPositions`, which is where the lanes are, and `race.slotCount`,

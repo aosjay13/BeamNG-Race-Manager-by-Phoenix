@@ -218,18 +218,86 @@ function M.zipLevels(path)
   return levels
 end
 
--- ---------------------------------------------------------------------------
--- The catalog
--- ---------------------------------------------------------------------------
 local function same(a, b)
   return type(a) == 'string' and type(b) == 'string' and a:lower() == b:lower()
 end
 
+-- ---------------------------------------------------------------------------
+-- Display names
+-- ---------------------------------------------------------------------------
+-- A level name is often all a zip has to go by (bark_river_sc), so any map can
+-- be given a name to show instead. DISPLAY ONLY: the zip, ServerConfig.toml and
+-- every per-map file in Data keep the level name.
+--
+-- Data/mapNames.json maps level name to label. Re-read whenever the list is
+-- built, so a hand edit shows on the next Refresh. A file that does not parse
+-- is never written over.
+M.MAX_LABEL = 40
+M.names = nil       -- [lower level name] = { name, label }
+M.namesOk = true
+
+local function namesPath() return at(M.paths.data .. '/mapNames.json') end
+
+-- Control characters out, spaces collapsed. nil for nothing left.
+function M.cleanLabel(raw)
+  if type(raw) ~= 'string' then return nil end
+  local s = raw:gsub('%c', ' '):gsub('%s+', ' '):gsub('^ ', ''):gsub(' $', '')
+  if s == '' then return nil end
+  return s:sub(1, M.MAX_LABEL)
+end
+
+function M.loadNames()
+  local names, ok = {}, true
+  local text = readFile(namesPath())
+  if text then
+    local parsed, data = pcall(host.jsonParse, text)
+    ok = parsed and type(data) == 'table'
+    for k, v in pairs(ok and data or {}) do
+      local label = type(k) == 'string' and M.cleanLabel(v)
+      if label then names[k:lower()] = { name = k, label = label } end
+    end
+    if not ok then
+      print('[RaceManager] Could not parse ' .. namesPath()
+        .. ': map display names are off until it is fixed. It is left as it is.')
+    end
+  end
+  M.names, M.namesOk = names, ok
+  return names
+end
+
+-- The last name removed takes the file with it: an empty table writes as [].
+local function saveNames()
+  local out, any = {}, false
+  for _, e in pairs(M.names) do out[e.name] = e.label; any = true end
+  if not any then
+    host.removeFile(namesPath())
+    return readFile(namesPath()) == nil
+  end
+  host.makeDirectory(at(M.paths.data))
+  return host.writeFile(namesPath(), host.jsonStringify(out)) ~= nil
+end
+
+local function stockLabel(name)
+  for _, s in ipairs(M.STOCK) do
+    if same(s[1], name) then return s[2] end
+  end
+end
+
+function M.labelFor(name)
+  if type(name) ~= 'string' then return name end
+  local e = (M.names or M.loadNames())[name:lower()]
+  return e and e.label or stockLabel(name) or name
+end
+
+-- ---------------------------------------------------------------------------
+-- The catalog
+-- ---------------------------------------------------------------------------
 -- Every map this server can be switched to:
---   { name, label, zip, where = 'client' | 'store' | 'stock', current }
+--   { name, label, default, custom, zip, where = 'client' | 'store' | 'stock', current }
 -- A map zip wins a level name over the stock level of the same name, since it
 -- is what the clients would load. Resources/Client wins over custom_maps.
 function M.catalog()
+  M.loadNames()
   local current = host.getCurrentMap()
   local list, byName = {}, {}
   local function add(e)
@@ -242,6 +310,10 @@ function M.catalog()
       return
     end
     e.current = same(e.name, current)
+    local named = M.names[key]
+    e.default = e.label
+    e.label = named and named.label or e.label
+    e.custom = named ~= nil or nil
     byName[key] = e
     list[#list + 1] = e
   end
@@ -574,8 +646,9 @@ end
 
 local function snapshot(withList, err)
   local s, v = M.state, M.vote
+  local current = host.getCurrentMap()
   local out = {
-    current = host.getCurrentMap(),
+    current = current,
     phase   = s.phase,
     target  = s.target and s.target.name or nil,
     targetLabel = s.target and s.target.label or nil,
@@ -599,10 +672,12 @@ local function snapshot(withList, err)
     local list = {}
     for _, e in ipairs(M.catalog()) do
       list[#list + 1] = { name = e.name, label = e.label, zip = e.zip,
-        where = e.where, current = e.current }
+        where = e.where, current = e.current, default = e.default, custom = e.custom }
     end
     out.list = list
   end
+  -- After the list, which re-reads the names.
+  out.currentLabel = M.labelFor(current)
   return out
 end
 
@@ -912,6 +987,28 @@ function M.request(pid, raw)
   send(pid, not (ok and type(data) == 'table' and data.list == false))
 end
 
+-- Either tier: a display name is undone by renaming it back. An empty label
+-- (or the default one) goes back to the default.
+function M.rename(pid, raw)
+  if not host.requireAuth(pid) then return end
+  local ok, data = pcall(Util.JsonDecode, raw or '')
+  if not ok or type(data) ~= 'table' or type(data.map) ~= 'string' then return end
+  local _, byName = M.catalog()
+  local e = byName[data.map:lower()]
+  if not e then return tell(pid, 'No map called "' .. data.map .. '" on this server.') end
+  if not M.namesOk then
+    return tell(pid, 'mapNames.json in the Data folder does not parse. Fix it on the server first.')
+  end
+  local label = M.cleanLabel(data.label)
+  if label == e.default then label = nil end
+  M.names[e.name:lower()] = label and { name = e.name, label = label } or nil
+  if not saveNames() then return tell(pid, 'Could not write mapNames.json.') end
+  print(string.format('[RaceManager] Map %s is now shown as "%s" (%s)', e.name,
+    label or e.default, MP.GetPlayerName(pid) or pid))
+  -- Everyone's list: the name shows in their vote menu and in a switch too.
+  MP.TriggerClientEvent(-1, 'RM_Maps', Util.JsonEncode(snapshot(true)))
+end
+
 -- An admin switches at will, and that includes over a vote in progress.
 function M.switch(pid, raw)
   if not host.requireAuth(pid) then return end
@@ -986,6 +1083,7 @@ function M.init(h)
   function RM_onMapVote(pid, raw) M.castVote(pid, raw) end
   function RM_onMapVoteCancel(pid) M.voteCancel(pid) end
   function RM_onMapVoteConfig(pid, raw) M.voteConfig(pid, raw) end
+  function RM_onMapRename(pid, raw) M.rename(pid, raw) end
   function RM_MapTick() M.tick() end
   function RM_Map_onPlayerAuth() return M.onPlayerAuth() end
   function RM_Map_onPlayerDisconnect(pid) M.onPlayerDisconnect(pid) end

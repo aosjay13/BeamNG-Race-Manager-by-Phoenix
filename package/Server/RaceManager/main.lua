@@ -794,7 +794,7 @@ function auth.requireFull(pid)
     .. (MP.GetPlayerName(pid) or tostring(pid)))
   MP.TriggerClientEvent(pid, 'RM_Denied', Util.JsonEncode({
     reason = 'That needs the admin password: a moderator cannot change '
-      .. 'passwords, clear the results or delete a layout.',
+      .. 'passwords, clear the results or lap records, or delete a layout.',
   }))
   return false
 end
@@ -1168,6 +1168,9 @@ local function rememberIdentity(rec)
     -- anyway, but "anyway" is up to a couple of seconds after the grid forms.
     class       = rec.class,
     transferred = rec.transferred,
+    -- The car's name, for the lap records. A client declares its car only when
+    -- it changes, so a record rebuilt after the purge would never hear it again.
+    car         = rec.carLabel,
   }
 end
 
@@ -1204,6 +1207,7 @@ local function ensurePlayer(pid)
       rec.heatPos     = ident.heatPos
       rec.class       = ident.class
       rec.transferred = ident.transferred
+      rec.carLabel    = ident.car
     end
     players[pid] = rec
     rememberIdentity(rec)
@@ -1820,7 +1824,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.17.3'
+local RM_BUILD = '0.18.0'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -3310,6 +3314,7 @@ local function finishSession(reason)
     -- that follows will be. Scored here rather than at the grid because this is
     -- where the times are final. Does nothing at all unless a cup is running.
     if cupOnSessionComplete then cupOnSessionComplete('quali') end
+    if race.recordsSession then race.recordsSession('quali') end
     respawnAll('race')
     broadcastState()
     MP.SendChatMessage(-1, '[RaceManager] Qualifying is over: ' .. reason .. '.')
@@ -3369,6 +3374,8 @@ local function finishSession(reason)
   -- up there: a cup at its round cap scores nothing, and a file that asked the
   -- cup for "the current round" would then print the previous race's points.
   local cupRound = cupOnSessionComplete and cupOnSessionComplete('race') or nil
+  -- After the joker ruling, for the same reason: a disqualified lap sets no record.
+  if race.recordsSession then race.recordsSession('race') end
   -- The session is over: every car taken off the track comes back.
   respawnAll('race')
   broadcastState()
@@ -5927,7 +5934,11 @@ function RM_onLap(pid, rawData)
   -- thing that changes is that nothing goes on the board for it.
   if untimedFirstLap then lapTime = nil end
   if lapTime and lapTime > 0 then
-    if not rec.raceBest or lapTime < rec.raceBest then rec.raceBest = lapTime end
+    if not rec.raceBest or lapTime < rec.raceBest then
+      rec.raceBest = lapTime
+      -- The car it was set in, for the lap records: a driver can change cars.
+      rec.bestCar = rec.carLabel
+    end
     -- Fastest lap of the SESSION, across everyone. One comparison per scored
     -- lap; nothing walks the field for this.
     if not race.bestLapTime or lapTime < race.bestLapTime then
@@ -9019,7 +9030,7 @@ end
       getCurrentMap = getCurrentMap,
       jsonParse = jsonParse, jsonStringify = jsonStringify,
       listDirectory = listDirectory, makeDirectory = makeDirectory,
-      removeFile = removeFile,
+      removeFile = removeFile, writeFile = writeLayoutFile,
       -- Why a switch has to wait, or nil. A restart ends whatever is running.
       busy = function ()
         if sessionUnderWay() then return 'a session is running' end
@@ -9029,8 +9040,35 @@ end
       end,
     })
     race.mapsWarm = mod.warm
+    race.mapLabel = mod.labelFor
   else
     print('[RaceManager] maps.lua did not load, so map switching is off: ' .. tostring(mod))
+  end
+end)()
+
+-- ===========================================================================
+-- LAP RECORDS: its own module, installed the way maps.lua is and for the
+-- same reasons. Scored from finishSession through race.recordsSession.
+-- ===========================================================================
+;(function ()
+  local ok, mod = pcall(require, 'records')
+  if not (ok and type(mod) == 'table') then
+    print('[RaceManager] records.lua did not load, so lap records are off: ' .. tostring(mod))
+    return
+  end
+  mod.init({
+    DATA_DIR = DATA_DIR, race = race, players = players,
+    displayName = displayName, fmtLap = fmtLap, getCurrentMap = getCurrentMap,
+    mapLabel = function (map) return race.mapLabel and race.mapLabel(map) or map end,
+    jsonParse = jsonParse, jsonStringify = jsonStringify, writeFile = writeLayoutFile,
+    makeDirectory = makeDirectory, removeFile = removeFile,
+    -- Clearing cannot be undone, so it is the admin tier's, like deleting a layout.
+    requireFull = auth.requireFull,
+  })
+  -- A records fault must never stop a session closing.
+  race.recordsSession = function (kind)
+    local done, err = pcall(mod.onSession, kind)
+    if not done then print('[RaceManager] Lap records failed: ' .. tostring(err)) end
   end
 end)()
 
@@ -11384,9 +11422,14 @@ function onInit()
   MP.RegisterEvent('RM_MapVote',          'RM_onMapVote')
   MP.RegisterEvent('RM_MapVoteCancel',    'RM_onMapVoteCancel')
   MP.RegisterEvent('RM_MapVoteConfig',    'RM_onMapVoteConfig')
+  MP.RegisterEvent('RM_MapRename',        'RM_onMapRename')
   MP.RegisterEvent('RM_MapTick',          'RM_MapTick')
   MP.RegisterEvent('onPlayerAuth',        'RM_Map_onPlayerAuth')
   MP.RegisterEvent('onPlayerDisconnect',  'RM_Map_onPlayerDisconnect')
+  -- Lap records (isolated module; see records.lua). Request is open to anyone.
+  MP.RegisterEvent('RM_RecordsRequest',   'RM_onRecordsRequest')
+  MP.RegisterEvent('RM_RecordsClear',     'RM_onRecordsClear')
+  MP.RegisterEvent('RM_RecordsRemove',    'RM_onRecordsRemove')
   -- Cup / series points (isolated module; see the CUP section). No client sends
   -- these yet -- the admin panel comes with the UI work -- but the handlers are
   -- registered so the module is complete and reachable the moment it does.

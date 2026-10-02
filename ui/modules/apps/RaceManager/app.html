@@ -480,6 +480,79 @@
     </div>
   </div>
 
+  <!-- ================= Lap records (everyone) ============================
+       The fastest lap each driver has set on each saved layout of this map,
+       kept by the server across restarts. Collapsed by default, like the
+       garage: up to fifty rows of watched expressions on a driver's screen. -->
+  <div class="rm-records" ng-if="!minimalMode() && !broadcastMode()">
+    <div class="rm-cup-head rm-garage-pickhead" ng-click="recordsToggle()">
+      <span class="rm-cup-title">{{ recordsUi.open ? '▾' : '▸' }} Lap records</span>
+      <span class="rm-cup-state" ng-if="records.laps.length">
+        {{ records.layout }}: {{ formatLap(records.laps[0].time) }} {{ records.laps[0].driver }}
+      </span>
+    </div>
+    <div ng-if="recordsUi.open">
+      <div class="rm-mapvote-row">
+        <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': recordsUi.menu}">
+          <button type="button" class="rm-layout-trigger"
+                  ng-class="{'rm-layout-trigger-empty': !records.layout}"
+                  ng-disabled="!records.layouts.length" ng-click="recordsToggleMenu()">
+            <span class="rm-layout-trigger-label">{{ records.layout || 'No saved layout yet' }}</span>
+            <span class="rm-layout-caret">▾</span>
+          </button>
+          <div class="rm-layout-menu" ng-if="recordsUi.menu">
+            <div class="rm-layout-option" ng-repeat="l in records.layouts track by $index"
+                 ng-class="{'rm-layout-option-active': l.name === records.layout}"
+                 ng-click="recordsPick(l)">
+              {{ l.name }}<span class="rm-maps-zip"> {{ l.count ? (l.count + (l.count === 1 ? ' driver' : ' drivers')) : 'no times yet' }}</span><span
+                ng-if="l.name === records.loaded"> (loaded)</span>
+            </div>
+          </div>
+        </div>
+        <span class="rm-layouts-hint">{{ records.mapLabel }}</span>
+      </div>
+      <div class="rm-maps-error" ng-if="records.error">{{ records.error }}</div>
+      <div class="rm-records-list" ng-if="records.laps.length">
+        <div class="rm-cup-strow" ng-repeat="l in records.laps track by $index">
+          <span class="rm-cup-stpos">{{ l.pos }}</span>
+          <span class="rm-cup-stname">{{ l.driver }}</span>
+          <span class="rm-records-time">{{ formatLap(l.time) }}</span>
+          <span class="rm-records-gap">{{ l.gap === null ? '' : '+' + l.gap.toFixed(3) }}</span>
+          <span class="rm-records-car" title="{{ l.session === 'quali' ? 'Set in qualifying' : 'Set in a race' }}">{{ l.car }}</span>
+          <span class="rm-records-date">{{ l.date }}</span>
+          <button class="rm-btn rm-btn-mini rm-cup-adjbtn"
+                  ng-if="isFullAdmin() && recordsUi.confirmRow !== l.driver"
+                  ng-click="recordsAskRemove(l)" title="Take this time off the board">✕</button>
+          <span class="rm-confirm" ng-if="recordsUi.confirmRow === l.driver">
+            Remove?
+            <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="recordsRemove(l)">Yes</button>
+            <button class="rm-btn rm-btn-mini" ng-click="recordsCancelRemove()">No</button>
+          </span>
+        </div>
+      </div>
+      <div class="rm-cup-hint" ng-if="!records.laps.length && !records.error">
+        No times yet. Each driver's best lap from every qualifying and race
+        session on a saved layout goes on that layout's board.
+      </div>
+      <div class="rm-cup-hint" ng-if="records.total > records.laps.length">
+        The fastest {{ records.laps.length }} of {{ records.total }}.
+      </div>
+      <!-- Admin tier only: there is no undo. The file is the board, so a hand
+           edit on the server shows the next time it is opened. -->
+      <div class="rm-mapvote-row" ng-if="isFullAdmin() && records.laps.length">
+        <button class="rm-btn rm-btn-reset rm-btn-mini" ng-if="!recordsUi.confirmClear"
+                ng-click="recordsAskClear()"
+                title="Delete every time on this layout's board">Clear Board</button>
+        <span class="rm-confirm" ng-if="recordsUi.confirmClear">
+          Delete all {{ records.total }} times on {{ records.layout }}?
+          <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="recordsClear()">Yes, clear</button>
+          <button class="rm-btn rm-btn-mini" ng-click="recordsCancelClear()">Cancel</button>
+        </span>
+        <span class="rm-layouts-hint">Kept in Data/{{ records.file }} on the server.</span>
+      </div>
+    </div>
+  </div>
+
   <div class="rm-cup-driver" ng-if="!isAdmin && cup.enabled && !minimalMode()">
     <div class="rm-cup-head">
       <span class="rm-cup-title">{{ cup.name || 'Cup' }}: standings</span>
@@ -699,7 +772,7 @@
        the tab fold did not reclaim height. Behind the Track tab it would cost a
        click on the critical path of every single race. -->
   <div class="rm-controls rm-controls-layout" ng-if="isAdmin && isMode('race') && !setupHidden()">
-    <span class="rm-controls-label">Track<span ng-if="layoutMap">: {{ layoutMap }}</span></span>
+    <span class="rm-controls-label">Track<span ng-if="layoutMap">: {{ mapShown(layoutMap) }}</span></span>
     <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': layoutDropdownOpen}">
       <button type="button" class="rm-layout-trigger"
               ng-class="{'rm-layout-trigger-empty': !layoutUi.selected}"
@@ -770,7 +843,7 @@
        with the authoring ones. Building arenas stays in the editor; choosing one
        to run belongs beside Form Up and Start Derby. -->
   <div class="rm-controls rm-controls-layout" ng-if="isAdmin && isMode('derby')">
-    <span class="rm-controls-label">Arena<span ng-if="derbyLayoutMap">: {{ derbyLayoutMap }}</span></span>
+    <span class="rm-controls-label">Arena<span ng-if="derbyLayoutMap">: {{ mapShown(derbyLayoutMap) }}</span></span>
     <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': derbyDropdownOpen}">
       <button type="button" class="rm-layout-trigger"
               ng-class="{'rm-layout-trigger-empty': !derbyUi.selected}"
@@ -2408,7 +2481,7 @@
     <!-- ===== Track layouts: persistent, per-map, server-side ===== -->
     <div class="rm-layouts">
       <div class="rm-layouts-left">
-        <div class="rm-layouts-title">Track Layouts <span class="rm-layouts-map" ng-if="layoutMap">{{ layoutMap }}</span></div>
+        <div class="rm-layouts-title">Track Layouts <span class="rm-layouts-map" ng-if="layoutMap">{{ mapShown(layoutMap) }}</span></div>
         <div class="rm-layouts-row">
           <input type="text" class="rm-layout-name" placeholder="New layout name…" maxlength="40"
                  ng-model="layoutUi.name">
@@ -2831,7 +2904,7 @@
     <!-- ===== Derby arenas: persistent, per-map, server-side ===== -->
     <div class="rm-derby-layouts">
       <div class="rm-layouts-title">
-        Saved Arenas <span class="rm-layouts-map" ng-if="derbyLayoutMap">{{ derbyLayoutMap }}</span>
+        Saved Arenas <span class="rm-layouts-map" ng-if="derbyLayoutMap">{{ mapShown(derbyLayoutMap) }}</span>
       </div>
       <div class="rm-layouts-row">
         <input type="text" class="rm-layout-name" placeholder="Arena name…" maxlength="40"
@@ -2919,9 +2992,9 @@
       <span class="rm-layouts-hint">
         You can run the whole night from here: sessions, grids, flags, settings,
         the editor, the cup, the derby and the drag ladder. Changing either
-        password, clearing the server's results and deleting a layout need the
-        admin password, because none of the three can be undone. Your own copies
-        of the results are still yours to clear, below.
+        password, clearing the server's results or lap records and deleting a
+        layout need the admin password, because none of them can be undone.
+        Your own copies of the results are still yours to clear, below.
       </span>
     </div>
 
@@ -2974,7 +3047,7 @@
         <div class="rm-layout-menu" ng-if="mapsMenuOpen('admin')">
           <div class="rm-layout-option" ng-repeat="m in maps.list track by m.name"
                ng-class="{'rm-cup-off': m.current}" ng-click="mapsPick(m)">
-            {{ mapsLabel(m) }}<span class="rm-maps-zip" ng-if="m.zip"> {{ m.zip }}</span><span ng-if="m.current"> (current)</span>
+            {{ mapsLabel(m) }}<span class="rm-maps-zip" ng-if="m.custom"> {{ m.name }}</span><span class="rm-maps-zip" ng-if="m.zip"> {{ m.zip }}</span><span ng-if="m.current"> (current)</span>
           </div>
           <div class="rm-layout-option rm-cup-off" ng-if="!maps.list.length">No maps found</div>
         </div>
@@ -3007,6 +3080,21 @@
       </span>
       <button class="rm-btn rm-btn-mini" ng-if="maps.phase === 'idle' && !maps.vote && !mapsUi.confirm"
               ng-click="mapsRefresh()" title="Look for map zips again">Refresh</button>
+      <!-- DISPLAY ONLY. The zip, ServerConfig.toml and the per-map files keep
+           the level name; the label goes to Data/mapNames.json. -->
+      <button class="rm-btn rm-btn-mini" ng-if="!mapsUi.confirm && !mapsUi.rename"
+              ng-disabled="!mapsRenameTarget()" ng-click="mapsRenameOpen()"
+              title="Name the chosen map, or the current one, for everyone's map list. No file is renamed.">Rename</button>
+      <span class="rm-confirm rm-maps-rename" ng-if="mapsUi.rename">
+        Show {{ mapsUi.rename.name }} as
+        <input type="text" class="rm-login-input" maxlength="40" ng-model="mapsUi.rename.label"
+               ng-keydown="$event.keyCode === 13 && mapsUi.rename.label && mapsRenameSave(false)">
+        <button class="rm-btn rm-btn-mini rm-btn-start" ng-disabled="!mapsUi.rename.label"
+                ng-click="mapsRenameSave(false)">Save</button>
+        <button class="rm-btn rm-btn-mini" ng-if="mapsUi.rename.custom" ng-click="mapsRenameSave(true)"
+                title="Back to {{ mapsUi.rename.def }}">Default</button>
+        <button class="rm-btn rm-btn-mini" ng-click="mapsRenameCancel()">Cancel</button>
+      </span>
 
       <span class="rm-maps-error" ng-if="maps.error">{{ maps.error }}</span>
       <span class="rm-layouts-hint" ng-if="maps.last && !maps.error">
@@ -4636,6 +4724,8 @@
   .rm-maps-current { font-size: 12px; font-weight: 600; color: #e8eaed; }
   .rm-maps-zip { font-size: 10px; color: #9aa0a6; }
   .rm-maps-error { font-size: 11px; color: #ff8a80; font-weight: 600; }
+  /* rm-confirm's layout without its red: a rename destroys nothing. */
+  .rm-confirm.rm-maps-rename { color: #e8eaed; }
 
   /* ============ Admin tabs =============================================== */
   /* One admin panel at a time. Before this, every panel stacked and the app
@@ -5902,6 +5992,24 @@
     background: rgba(52, 168, 83, 0.12);
   }
   .rm-mapvote-q { font-size: 12px; font-weight: 600; color: #e8eaed; }
+  /* Lap records: the garage's band, in the purple timing screens use for a best. */
+  .rm-records {
+    padding: 5px 10px;
+    border-bottom: 1px solid rgba(171, 71, 188, 0.3);
+    background: rgba(171, 71, 188, 0.05);
+  }
+  .rm-records .rm-cup-title { color: #ce93d8; }
+  .rm-records-list { margin-top: 5px; max-height: 180px; overflow-y: auto; }
+  .rm-records-time { width: 64px; text-align: right; color: #e8eaed; font-weight: 700; }
+  .rm-records-gap { width: 50px; text-align: right; color: #9aa0a6; font-size: 10px; }
+  .rm-records-car {
+    width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #9aa0a6;
+  }
+  .rm-records-date { width: 66px; text-align: right; color: #9aa0a6; font-size: 10px; }
   .rm-maps-percent { width: 52px; }
   .rm-garage-pickrow {
     display: flex;

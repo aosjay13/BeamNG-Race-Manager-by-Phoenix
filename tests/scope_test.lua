@@ -39,9 +39,11 @@ local FILES = {
   'lua/ge/extensions/raceManager/derby.lua',
   'lua/ge/extensions/raceManager/render.lua',
   'lua/ge/extensions/raceManager/maps.lua',
+  'lua/ge/extensions/raceManager/records.lua',
   'server/RaceManager/main.lua',
   'server/RaceManager/derby.lua',
   'server/RaceManager/maps.lua',
+  'server/RaceManager/records.lua',
 }
 
 -- Each host file, and the modules split out of it. Used by the orphan check
@@ -55,10 +57,12 @@ local HOSTS = {
       'lua/ge/extensions/raceManager/derby.lua',
       'lua/ge/extensions/raceManager/render.lua',
       'lua/ge/extensions/raceManager/maps.lua',
+      'lua/ge/extensions/raceManager/records.lua',
     } },
   { host = 'server/RaceManager/main.lua', modules = {
       'server/RaceManager/derby.lua',
       'server/RaceManager/maps.lua',
+      'server/RaceManager/records.lua',
     } },
 }
 

@@ -244,7 +244,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.17.3'
+local RM_BUILD = '0.18.0'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -8517,9 +8517,20 @@ do
   maps.init({ inMultiplayer = inMultiplayer })
   for _, name in ipairs({
     'mapRequest', 'mapSwitch', 'mapCancel', 'onMaps',
-    'mapVoteStart', 'mapVote', 'mapVoteCancel', 'mapVoteConfig',
+    'mapVoteStart', 'mapVote', 'mapVoteCancel', 'mapVoteConfig', 'mapRename',
   }) do
     M[name] = maps[name]
+  end
+end
+
+-- Lap records, the same way. onRecords is the RM_Records handler.
+do
+  local records = require('raceManager/records')
+  records.init({ inMultiplayer = inMultiplayer })
+  for _, name in ipairs({
+    'recordsRequest', 'recordsClear', 'recordsRemove', 'onRecords',
+  }) do
+    M[name] = records[name]
   end
 end
 
@@ -12062,6 +12073,8 @@ local DISPATCH = {
   RM_DragAborted     = drag.onDragAborted,
   -- Map switching module: the map list and the switch in progress.
   RM_Maps            = M.onMaps,
+  -- Lap records module: one map's boards, asked for or changed.
+  RM_Records         = M.onRecords,
 }
 
 local function bindServerHandlers()

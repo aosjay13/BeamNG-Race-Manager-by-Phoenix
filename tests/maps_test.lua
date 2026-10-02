@@ -281,6 +281,63 @@ check(maps.state.phase == 'idle' and not timers.RM_MapTick, 'Stop during the cou
 check(next(dropped) == nil, 'and nobody was disconnected')
 
 -- ---------------------------------------------------------------------------
+-- 6a. Display names
+-- ---------------------------------------------------------------------------
+do
+  local NAMES = root .. '/Resources/Server/RaceManager/Data/mapNames.json'
+  local function entry(name)
+    for _, e in ipairs(last('RM_Maps', -1).list or {}) do
+      if e.name == name then return e end
+    end
+  end
+
+  RM_onMapRename(DRIVER, '{"map":"crandon","label":"Crandon"}')
+  check(not exists(NAMES), 'a driver cannot rename a map')
+
+  RM_onMapRename(MOD, '{"map":"crandon","label":"  Crandon   International\tRaceway "}')
+  local e = entry('crandon')
+  check(e and e.label == 'Crandon International Raceway' and e.custom == true and e.default == 'crandon',
+    'a moderator names a map, tidied, and everyone gets the new list')
+  check((read(NAMES) or ''):find('"crandon": "Crandon International Raceway"', 1, true) ~= nil,
+    'it is kept in Data/mapNames.json under the level name')
+  check(maps.labelFor('CRANDON') == 'Crandon International Raceway', 'looked up in any case')
+  check(exists(root .. '/custom_maps/crandon.zip') and read(root .. '/ServerConfig.toml') == CONFIG,
+    'display only: no zip moved and the config is untouched')
+
+  RM_onMapRename(ADMIN, '{"map":"erxmp_bullet","label":"Bullet"}')
+  RM_onMapRequest(DRIVER, '{"list":false}')
+  check(last('RM_Maps', DRIVER).currentLabel == 'Bullet', 'the current map\'s name reaches every client')
+  check(maps.labelFor('gridmap_v2') == 'Gridmap v2', 'an unnamed stock level keeps its own name')
+
+  RM_onMapRename(ADMIN, '{"map":"gridmap_v2","label":"' .. string.rep('x', 60) .. '"}')
+  check(#entry('gridmap_v2').label == maps.MAX_LABEL, 'a long name is cut to ' .. maps.MAX_LABEL)
+  RM_onMapRename(ADMIN, '{"map":"gridmap_v2","label":"Gridmap v2"}')
+  check(entry('gridmap_v2').custom == nil, 'naming a map its own default name clears it')
+  RM_onMapRename(ADMIN, '{"map":"nowhere","label":"X"}')
+  check(last('RM_Maps', ADMIN).error:find('No map called'), 'an unknown map is refused')
+
+  -- By hand, keyed in any case.
+  write(NAMES, '{\n  "PackA": "Pack Alpha",\n  "crandon": "Crandon"\n}\n')
+  RM_onMapRequest(DRIVER, '')
+  local list = last('RM_Maps', DRIVER).list
+  local byLevel = {}
+  for _, m in ipairs(list) do byLevel[m.name] = m end
+  check(byLevel.PackA.label == 'Pack Alpha' and byLevel.crandon.label == 'Crandon',
+    'a hand edit shows the next time the list is built')
+  check(byLevel.erxmp_bullet.label == 'erxmp_bullet', 'and a name taken out of the file is gone')
+
+  write(NAMES, '{ "crandon": oops')
+  RM_onMapRename(ADMIN, '{"map":"crandon","label":"Again"}')
+  check(read(NAMES) == '{ "crandon": oops', 'a file that does not parse is never written over')
+  check(last('RM_Maps', ADMIN).error:find('does not parse'), 'and the admin is told why')
+
+  write(NAMES, '{"crandon": "Crandon"}')
+  RM_onMapRename(ADMIN, '{"map":"crandon","label":""}')
+  check(not exists(NAMES), 'clearing the last name removes the file')
+  check(maps.labelFor('crandon') == 'crandon', 'and the level name is back')
+end
+
+-- ---------------------------------------------------------------------------
 -- 7. The switch itself (manual)
 -- ---------------------------------------------------------------------------
 RM_onMapSwitch(ADMIN, '{"map":"crandon"}')

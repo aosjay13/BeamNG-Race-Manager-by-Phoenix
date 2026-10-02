@@ -6,6 +6,33 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.18.0 - Name the map, keep the records
+
+#### Added
+
+- **Map display names.** **Rename** on the Map row gives any map a name to show
+  instead of its level name, so `bark_river_sc` can read *Bark River
+  International*. It shows in both map menus, the vote, the switch countdown,
+  the Track and Arena headers and the lap records. Display only: the zip,
+  `ServerConfig.toml` and every per-map file keep the level name. Either admin
+  tier can rename. Kept in `Data/mapNames.json`, which can be edited by hand.
+- **Lap records, per map and layout.** Each driver's best lap from every
+  qualifying and race session goes on the loaded layout's board, one row per
+  driver with the car and the date, and stays across restarts. A new record is
+  announced; everyone else who improved is told their time and place.
+- **Anyone can open the board** from the **Lap records** band above the session
+  controls, and pick any layout on the map that has times.
+- **Clearing is the admin tier's.** Take one time off with **✕**, or **Clear
+  Board** for a whole layout. Both ask first and both are announced.
+- **The board is a plain JSON file**, `Data/Lap Records/<map>.json`, read fresh
+  every time it is opened, so a hand edit shows at once and is never written
+  over. A file that does not parse is left alone.
+
+#### Changed
+
+- A moderator pressing an admin-only control is now told that clearing lap
+  records needs the admin password too.
+
 ## 0.17.3 - The derby and the strip wait for you too
 
 #### Added

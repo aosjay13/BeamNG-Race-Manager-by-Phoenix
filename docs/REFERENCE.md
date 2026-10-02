@@ -84,8 +84,9 @@ they are performing.
 | Change either password | ✅ | ❌ |
 | **Clear Results Cache** (the server's files) | ✅ | ❌ |
 | **Delete** a track layout, derby arena or garage set | ✅ | ❌ |
+| **Clear** a lap records board, or take a time off it | ✅ | ❌ |
 
-The three an admin keeps are the three that **cannot be undone**. A moderator
+The four an admin keeps are the four that **cannot be undone**. A moderator
 who presses one anyway is refused by the server, told why, and **stays logged
 in** - a refusal on the tier is not a refusal on the login.
 
@@ -1338,6 +1339,8 @@ Resources/Server/RaceManager/
     Data/                        everything the server owns. Never written by a release.
         Race Layout/<map>.json   every race on that map
         Derby Arena/<map>.json   every arena on that map
+        Lap Records/<map>.json   the lap records for that map's layouts
+        mapNames.json            display names for maps
         config.json              server settings
         cup.json                 the championship
         roster.json              display names
@@ -2654,6 +2657,36 @@ running the old map.
 Map zips anywhere else, such as a `Resources/Maps/` folder, are not listed. Move
 them into `custom_maps/`.
 
+### Map display names
+
+A map zip is listed by the level inside it, which is often all it has to go by:
+`bark_river_sc` rather than *Bark River International*. **Rename** on the Map row
+gives a map a name to show instead. It acts on the map chosen in the menu, or on
+the current map when nothing is chosen. **Default** puts the level name back.
+
+The name shows everywhere a map is named: both map menus, the vote banner, the
+switch countdown and its kick message, the Track and Arena headers, and the lap
+records. In the admin menu a renamed map also shows its level name, so you can
+still tell which zip it is.
+
+**Display only.** The zip, `ServerConfig.toml` and every per-map file in `Data/`
+keep the level name, so renaming a map loses no layouts, arenas or records.
+Either admin tier can rename, because renaming it back undoes it.
+
+The names are kept in `Data/mapNames.json`, level name to label:
+
+```json
+{
+  "bark_river_sc": "Bark River International",
+  "italy": "Italy GP"
+}
+```
+
+Edit it by hand if you like: it is read again whenever the map list is built, so
+**Refresh** shows a change. A file that does not parse is never written over;
+the map list shows level names until it is fixed. Renaming the last map back to
+its default removes the file.
+
 ### Map votes
 
 Any driver can call a vote from the **Map: call a vote** band under the board.
@@ -2720,6 +2753,76 @@ Docker or a hosting panel, set `mapRestart` to `exit` and let the service
 manager bring it back; a second copy started by the helper would fight it for
 the port.
 
+
+## Lap records
+
+Every saved layout on every map has a **lap records board**: the fastest lap each
+driver has set on it, fastest first, kept on the server across restarts.
+
+**Anyone can look.** **Lap records** is a band above the session controls, folded
+by default. Open it and it shows the board for the loaded layout; the menu lists
+every layout on this map that has times. Each row is the driver, the time, the
+gap to the record, the car it was set in and the date. Hovering the car says
+whether it was qualifying or a race.
+
+### What goes on the board
+
+At the end of every **qualifying** and **race** session, each driver's best lap
+of that session is compared with their row on the loaded layout's board. A
+faster lap replaces it; a slower one is ignored. One row per driver.
+
+- **Only timed laps.** A qualifying out lap and a race's standing first lap
+  never set a time, so they never set a record either.
+- **A disqualified driver sets nothing** (the joker ruling, for example).
+- **A saved layout only.** A route built in the editor and raced without saving
+  has no name to keep records under.
+- **As saved.** A circuit run point to point, or a sprint run as a circuit,
+  times something else and sets nothing.
+- **Practice does not count.** Practice laps are timed on the driver's own PC
+  and never reach the server.
+- **Reset sets nothing.** It throws the session away; End Session keeps it.
+- **Rows are matched by display name**, so give drivers their names before the
+  session. A guest name is new on every join.
+
+A new outright record is announced in chat. Everyone else who improved is told
+their new time and place, privately.
+
+Changing a layout's gates keeps its board. If the change makes the old times
+meaningless, clear it.
+
+### Clearing
+
+With the **admin** password, each row has a **✕** to take one time off, and
+**Clear Board** deletes every time on the layout shown. Both ask first and both
+are announced. A moderator cannot do either: there is no undo.
+
+### Editing the file
+
+The boards live in `Data/Lap Records/<map>.json`, one file per map, one line per
+time:
+
+```json
+{
+  "layouts": {
+    "Club": [
+      {"car": "ETK 800", "date": "2026-10-02", "driver": "Bob", "session": "race", "time": 83.5},
+      {"date": "2026-10-01", "driver": "Cara", "session": "quali", "time": 85}
+    ]
+  },
+  "map": "italy",
+  "version": 1
+}
+```
+
+`time` is in seconds. Only `driver` and `time` are required; any other field you
+add (a `"note"`, say) is kept. Rename a `driver` to merge rows: two rows with the
+same name keep the faster. Delete a layout's entry to clear its board.
+
+**The file is the board.** It is read every time somebody opens the board, and
+read again before every write, so a hand edit shows at once and is never written
+over by an older copy. While a file does not parse, nothing is written to it:
+the board says so, and that session's times on that map are not saved. A map
+whose last board is cleared loses its file.
 
 ## Drag racing (parallel game mode)
 
