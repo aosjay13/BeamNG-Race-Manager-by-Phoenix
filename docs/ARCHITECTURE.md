@@ -18,6 +18,11 @@ Event flow: local car crosses the start/finish gate → `RM_QualiLap`/`RM_Lap`
 to server → server scores it on its own clock → `RM_Update` broadcast to all
 clients → UI.
 
+`RM_Update` is the timing push, sent about three times a second while a session
+runs, so anything that changes rarely does not ride it. The Garage List goes out
+as `RM_Garage` when it changes and to each client that asks for state, numbered
+so a late copy cannot replace a newer one.
+
 ## What the server keeps
 
 Everything durable lives beside the plugin in `Resources/Server/RaceManager/`,

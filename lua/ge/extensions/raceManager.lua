@@ -244,7 +244,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.18.0'
+local RM_BUILD = '0.18.1'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -4633,6 +4633,26 @@ function M.setGarageClass(index, class)
     TriggerServerEvent('RM_SetGarageClass', jsonEncode({
       index = math.floor(tonumber(index) or 0),
       class = tostring(class or ''),
+    }))
+  end
+end
+
+-- THE GARAGE LIST, sent on its own when it changes rather than with every
+-- state push. Same stale-plugin guard as RM_Update.
+function M.onGarage(rawData)
+  local ok, data = pcall(jsonDecode, rawData)
+  if not ok or type(data) ~= 'table' then return end
+  if not fromCurrentServer(data) then return end
+  guihooks.trigger('RaceManagerGarage', data)
+end
+
+-- A Garage List entry's display name. Empty shows the captured label again.
+-- `was` is the name on screen, so the server can refuse if the list moved.
+function M.setGarageName(index, name, was)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetGarageName', jsonEncode({
+      index = math.floor(tonumber(index) or 0),
+      name = tostring(name or ''), was = tostring(was or ''),
     }))
   end
 end
@@ -12042,6 +12062,8 @@ local DISPATCH = {
   RM_GarageResult    = onGarageResult,
   -- One garage entry with its car in it, answering a press of Take.
   RM_GarageCar       = onGarageCar,
+  -- The Garage List itself, when it changes.
+  RM_Garage          = M.onGarage,
   RM_AliasResult     = onAliasResult,
   -- Starting grid: the server hands out slots, this client places the car.
   RM_GridAssign      = onGridAssign,

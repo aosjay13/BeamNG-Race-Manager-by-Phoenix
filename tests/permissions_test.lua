@@ -253,7 +253,7 @@ check(countOf('RM_Denied', 2) == deniedBefore + 1,
 -- ---------------------------------------------------------------------------
 local function garageSets()
   RM_onRequestState(2)
-  return lastOf('RM_Update', 2).garageSets or {}
+  return lastOf('RM_Garage', 2).garageSets or {}
 end
 local function hasSet(name)
   for _, s in ipairs(garageSets()) do if s == name then return true end end
@@ -278,7 +278,7 @@ RM_onClearGarage(2)
 check(countOf('RM_Denied', 2) == deniedBefore,
   'clearing the LIVE garage list is still a moderator job: a saved set puts it '
     .. 'straight back, so nothing is lost')
-check(#lastOf('RM_Update', -1).garage == 0, 'and it really did clear')
+check(#lastOf('RM_Garage', -1).garage == 0, 'and it really did clear')
 
 RM_onDeleteGarageSet(1, '{"name":"Club Night"}')
 check(not hasSet('Club Night'), 'an admin deletes it')

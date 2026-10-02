@@ -311,6 +311,9 @@ do
 
   RM_onMapRename(ADMIN, '{"map":"gridmap_v2","label":"' .. string.rep('x', 60) .. '"}')
   check(#entry('gridmap_v2').label == maps.MAX_LABEL, 'a long name is cut to ' .. maps.MAX_LABEL)
+  check(maps.cleanLabel(string.rep('é', 60)) == string.rep('é', maps.MAX_LABEL),
+    'a long name is cut on a character, never inside one: RM_Maps must encode')
+  check(maps.cleanLabel('ok\255name') == 'okname', 'a byte that is not UTF-8 is dropped')
   RM_onMapRename(ADMIN, '{"map":"gridmap_v2","label":"Gridmap v2"}')
   check(entry('gridmap_v2').custom == nil, 'naming a map its own default name clears it')
   RM_onMapRename(ADMIN, '{"map":"nowhere","label":"X"}')

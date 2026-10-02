@@ -239,11 +239,18 @@ M.namesOk = true
 local function namesPath() return at(M.paths.data .. '/mapNames.json') end
 
 -- Control characters out, spaces collapsed. nil for nothing left.
+-- VALID UTF-8 ONLY, cut on a character: Util.JsonEncode throws on a broken
+-- byte, and the label rides every RM_Maps push.
 function M.cleanLabel(raw)
   if type(raw) ~= 'string' then return nil end
-  local s = raw:gsub('%c', ' '):gsub('%s+', ' '):gsub('^ ', ''):gsub(' $', '')
+  local s = raw:gsub('%c', ' ')
+  if not utf8.len(s) then s = s:gsub('[\128-\255]', '') end
+  s = s:gsub('%s+', ' '):gsub('^ ', ''):gsub(' $', '')
   if s == '' then return nil end
-  return s:sub(1, M.MAX_LABEL)
+  if utf8.len(s) > M.MAX_LABEL then
+    s = s:sub(1, utf8.offset(s, M.MAX_LABEL + 1) - 1):gsub(' $', '')
+  end
+  return s
 end
 
 function M.loadNames()

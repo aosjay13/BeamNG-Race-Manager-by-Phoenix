@@ -9,6 +9,7 @@
 
 local connected = { [1] = 'Alice', [2] = 'Bob', [3] = 'Cara' }
 local lastState   = nil   -- last RM_Update payload
+local lastGarage  = {}    -- last RM_Garage payload: the list is not on RM_Update
 local lastChat    = nil
 local lastDerby   = nil
 local spectated   = {}    -- [pid] = last RM_ForceSpectate payload
@@ -30,6 +31,7 @@ MP = {
   end,
   TriggerClientEvent = function (target, event, payload)
     if event == 'RM_Update'          then lastState = payload end
+    if event == 'RM_Garage'          then lastGarage = payload end
     if event == 'RM_DerbyUpdate'     then lastDerby = payload end
     if event == 'RM_ForceSpectate'   then spectated[target] = payload end
     if event == 'RM_ReleaseSpectate' then released[#released + 1] = payload end
@@ -288,17 +290,17 @@ adminLogin(1)
 
 -- Unauthenticated capture attempts are dropped.
 RM_onWhitelistVehicle(3, '{"model":"pigeon","label":"Pigeon","sig":"nope"}')
-check(lastState.garage == nil or #lastState.garage == 0,
+check(lastGarage.garage == nil or #lastGarage.garage == 0,
   'whitelist capture requires authentication')
 
 RM_onWhitelistVehicle(1, '{"model":"etk800","label":"ETK 800 - Race","sig":"' .. SIG_A .. '"}')
-check(#lastState.garage == 1 and lastState.garage[1].label == 'ETK 800 - Race',
+check(#lastGarage.garage == 1 and lastGarage.garage[1].label == 'ETK 800 - Race',
   'admin captured the current vehicle into the Garage List')
-check(lastState.garage[1].sig == nil, 'signatures are not broadcast to clients')
+check(lastGarage.garage[1].sig == nil, 'signatures are not broadcast to clients')
 check(garageMsg ~= nil and garageMsg.added == true, 'capture confirmed back to the admin')
 
 RM_onWhitelistVehicle(1, '{"model":"etk800","label":"ETK 800 - Race","sig":"' .. SIG_A .. '"}')
-check(#lastState.garage == 1, 'capturing the same exact setup twice does not duplicate it')
+check(#lastGarage.garage == 1, 'capturing the same exact setup twice does not duplicate it')
 check(garageMsg.added == false, 'duplicate capture is reported as not added')
 
 -- Enforcement is inert until it is switched on.
@@ -307,7 +309,7 @@ RM_onVehicleConfig(3, '{"vid":7,"model":"pigeon","sig":"something else"}')
 check(rejected[3] == nil, 'nothing is enforced while enforcement is off')
 
 RM_onSetGarageEnforce(1, '{"enabled":true}')
-check(lastState.garageEnforce == true, 'enforcement switched on')
+check(lastGarage.garageEnforce == true, 'enforcement switched on')
 
 -- Exact approved setup: allowed.
 RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"' .. SIG_A .. '"}')
@@ -320,7 +322,7 @@ check(rejected[3] == nil, 'the exact approved setup is allowed')
 -- setting. That is a legal setup change in a spec series and an illegal one in
 -- a one-make cup, which is the whole reason the mode exists.
 rejected = {}
-check(lastState.garageMode == 'parts', 'parts is the default enforcement mode')
+check(lastGarage.garageMode == 'parts', 'parts is the default enforcement mode')
 RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"' .. SIG_B .. '"}')
 check(rejected[3] == nil, 'in parts mode a re-tune of an approved car is allowed')
 
@@ -349,7 +351,7 @@ check(#removedVehicles == 0,
 -- Strict mode: the tune is the rule as well
 -- ---------------------------------------------------------------------------
 RM_onSetGarageMode(1, '{"mode":"strict"}')
-check(lastState.garageMode == 'strict', 'enforcement mode switched to strict')
+check(lastGarage.garageMode == 'strict', 'enforcement mode switched to strict')
 rejected = {}
 RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"' .. SIG_A .. '"}')
 check(rejected[3] == nil, 'the exact captured tune is still allowed in strict mode')
@@ -359,11 +361,11 @@ check(rejected[3] ~= nil, 'the same parts on a different tune are refused in str
 check(rejected[3].detail:find('Strict', 1, true), 'and the refusal names strict mode')
 
 RM_onSetGarageMode(1, '{"mode":"nonsense"}')
-check(lastState.garageMode == 'strict', 'an unrecognized mode is refused, not applied')
+check(lastGarage.garageMode == 'strict', 'an unrecognized mode is refused, not applied')
 RM_onSetGarageMode(3, '{"mode":"parts"}')
-check(lastState.garageMode == 'strict', 'setting the mode requires authentication')
+check(lastGarage.garageMode == 'strict', 'setting the mode requires authentication')
 RM_onSetGarageMode(1, '{"mode":"parts"}')
-check(lastState.garageMode == 'parts', 'and back to parts')
+check(lastGarage.garageMode == 'parts', 'and back to parts')
 
 -- Spawn hook: a model that is not on the list at all is canceled outright.
 rejected = {}; removedVehicles = {}
@@ -453,7 +455,7 @@ local SUN_OLD = 'model=sunburst|parts=body=sunburst_body;engine=sunburst_engine|
 local SUN_NEW = 'model=sunburst|parts=body=sunburst_bodyshell;engine=sunburst_i4|vars='
 RM_onWhitelistVehicle(1,
   '{"model":"sunburst","label":"Sunburst - Cup","sig":"' .. SUN_OLD .. '","game":"0.38"}')
-check(#lastState.garage == 2, 'a capture carrying a game version is stored')
+check(#lastGarage.garage == 2, 'a capture carrying a game version is stored')
 
 -- Same model, signature built from the renamed parts, driver on the new build.
 RM_onVehicleConfig(3, '{"vid":9,"model":"sunburst","sig":"' .. SUN_NEW .. '","game":"0.39"}')
@@ -485,13 +487,13 @@ check(rejected[3] ~= nil and not rejected[3].detail:find('re%-capture'),
   'an entry with no recorded build is never reported as a version skew')
 
 RM_onRemoveGarageEntry(1, '{"index":2}')
-check(#lastState.garage == 1, 'the versioned entry removed again')
+check(#lastGarage.garage == 1, 'the versioned entry removed again')
 
 -- ---------------------------------------------------------------------------
--- The broadcast view of the Garage List is cached
+-- The view of the Garage List is cached
 -- ---------------------------------------------------------------------------
--- It is rebuilt into every state broadcast, which is a table per approved car
--- three times a second for the life of the server -- describing a list an admin
+-- It is sent to every client that asks for state, which is a table per approved
+-- car per request for the life of the server -- describing a list an admin
 -- touches perhaps twice a session. So it is built once and held.
 --
 -- Caching it moves the risk from "wasteful" to "wrong": a view that does not
@@ -499,43 +501,43 @@ check(#lastState.garage == 1, 'the versioned entry removed again')
 -- enforcing. Invalidation is one rule -- saveGarageToDisk, which every mutation
 -- already goes through -- and these checks are what say that rule is actually
 -- being applied on each of the four paths that can change it.
-local viewBefore = lastState.garage
+local viewBefore = lastGarage.garage
 RM_onRequestState(1)
-check(lastState.garage == viewBefore,
+check(lastGarage.garage == viewBefore,
   'a broadcast that changes nothing reuses the same list, it does not rebuild it')
 RM_onPlayerJoin(2)
-check(lastState.garage == viewBefore, 'and it survives other traffic untouched')
+check(lastGarage.garage == viewBefore, 'and it survives other traffic untouched')
 
 -- Capture: the view has to change, and say the right thing.
 RM_onWhitelistVehicle(1, '{"model":"covet","label":"Covet - Track","sig":"covetsig"}')
-check(lastState.garage ~= viewBefore, 'a capture rebuilds the view')
-check(#lastState.garage == 2 and lastState.garage[2].label == 'Covet - Track',
+check(lastGarage.garage ~= viewBefore, 'a capture rebuilds the view')
+check(#lastGarage.garage == 2 and lastGarage.garage[2].label == 'Covet - Track',
   'and the captured car is in it')
 
 -- Enforcement flag: same list, but the flag beside it moved.
-viewBefore = lastState.garage
+viewBefore = lastGarage.garage
 RM_onSetGarageEnforce(1, '{"enabled":false}')
-check(lastState.garageEnforce == false, 'enforcement switched off')
-check(lastState.garage ~= viewBefore, 'flipping enforcement rebuilds the view too')
+check(lastGarage.garageEnforce == false, 'enforcement switched off')
+check(lastGarage.garage ~= viewBefore, 'flipping enforcement rebuilds the view too')
 RM_onSetGarageEnforce(1, '{"enabled":true}')
 
 -- Removal.
-viewBefore = lastState.garage
+viewBefore = lastGarage.garage
 RM_onRemoveGarageEntry(1, '{"index":2}')
-check(lastState.garage ~= viewBefore, 'removing an entry rebuilds the view')
-check(#lastState.garage == 1, 'and it is gone from the list clients see')
+check(lastGarage.garage ~= viewBefore, 'removing an entry rebuilds the view')
+check(#lastGarage.garage == 1, 'and it is gone from the list clients see')
 
 -- Clearing.
-viewBefore = lastState.garage
+viewBefore = lastGarage.garage
 RM_onClearGarage(1)
-check(lastState.garage ~= viewBefore, 'clearing the garage rebuilds the view')
-check(#lastState.garage == 0, 'and leaves nothing in it')
+check(lastGarage.garage ~= viewBefore, 'clearing the garage rebuilds the view')
+check(#lastGarage.garage == 0, 'and leaves nothing in it')
 
 -- Removing the only entry disables enforcement (an empty list must not lock
 -- every player out).
 rejected = {}
 RM_onRemoveGarageEntry(1, '{"index":1}')
-check(#lastState.garage == 0, 'garage entry removed')
+check(#lastGarage.garage == 0, 'garage entry removed')
 check(RM_onVehicleSpawn(3, 30, '5-3{"jbm":"pigeon","vcf":{"parts":{}}}') == nil,
   'an empty garage never blocks anyone even with enforcement on')
 
@@ -630,10 +632,10 @@ RM_onSetGarageMode(1, '{"mode":"strict"}')
 dofile('server/RaceManager/main.lua')
 onInit()
 RM_onRequestState(1)
-check(#lastState.garage == 1 and lastState.garage[1].label == 'ETK 800 - Race',
+check(#lastGarage.garage == 1 and lastGarage.garage[1].label == 'ETK 800 - Race',
   'the Garage List survives a server restart via garage.json')
-check(lastState.garageEnforce == true, 'the enforcement switch persists too')
-check(lastState.garageMode == 'strict', 'and so does the enforcement mode')
+check(lastGarage.garageEnforce == true, 'the enforcement switch persists too')
+check(lastGarage.garageMode == 'strict', 'and so does the enforcement mode')
 
 -- A garage.json written before parts and tuning were split has no `mode` and no
 -- per-entry `partsSig`. It must load, default to the LOOSER mode, and recover
@@ -647,8 +649,8 @@ dofile('server/RaceManager/main.lua')
 onInit()
 adminLogin(1)
 RM_onRequestState(1)
-check(lastState.garageMode == 'parts', 'a pre-split garage.json loads in parts mode')
-check(#lastState.garage == 1 and lastState.garage[1].label == 'ETK 800 - Legacy',
+check(lastGarage.garageMode == 'parts', 'a pre-split garage.json loads in parts mode')
+check(#lastGarage.garage == 1 and lastGarage.garage[1].label == 'ETK 800 - Legacy',
   'and its entries load')
 rejected = {}
 RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"' .. SIG_B .. '"}')
@@ -659,7 +661,7 @@ RM_onVehicleConfig(3, '{"vid":7,"model":"etk800","sig":"' .. SIG_A .. '"}')
 check(rejected[3] == nil, 'and the exact captured setup still matches')
 
 RM_onClearGarage(1)
-check(#lastState.garage == 0, 'Clear Garage empties the list')
+check(#lastGarage.garage == 0, 'Clear Garage empties the list')
 
 -- ===========================================================================
 -- Demo Derby isolation: elimination forces spectator mode via the derby's own
@@ -718,7 +720,7 @@ check(garageMsg == nil, 'saving a garage set needs an admin')
 RM_onSaveGarageSet(1, '{"name":"GT3"}')
 check(garageMsg ~= nil and garageMsg.added == true, 'an admin saves the list under a name')
 local function hasSet(name)
-  for _, s in ipairs(lastState.garageSets or {}) do if s == name then return true end end
+  for _, s in ipairs(lastGarage.garageSets or {}) do if s == name then return true end end
   return false
 end
 check(hasSet('GT3'), 'and the set name rides the state broadcast, so the panel needs no request')
@@ -734,18 +736,18 @@ check(hasSet('GT3') and hasSet('Trucks'), 'both sets are listed')
 -- back; the switch is left exactly where the admin put it.
 RM_onSetGarageEnforce(1, '{"enabled":true}')
 RM_onLoadGarageSet(1, '{"name":"GT3"}')
-check(#lastState.garage == 1 and lastState.garage[1].label == 'GT3 Car',
+check(#lastGarage.garage == 1 and lastGarage.garage[1].label == 'GT3 Car',
   'loading a set replaces the Garage List with that series')
-check(lastState.garageMode == 'strict',
+check(lastGarage.garageMode == 'strict',
   'and restores the lock mode it was saved with, because that is the series rule')
-check(lastState.garageEnforce == true,
+check(lastGarage.garageEnforce == true,
   'ENFORCEMENT IS UNTOUCHED by a load: a set that carried it would start or '
     .. 'stop policing the grid as a side effect of swapping series')
 
 RM_onLoadGarageSet(1, '{"name":"Trucks"}')
-check(#lastState.garage == 1 and lastState.garage[1].label == 'Truck'
-  and lastState.garageMode == 'parts', 'and the other set comes back the same way')
-check(lastState.garageEnforce == true, 'still untouched on the way back')
+check(#lastGarage.garage == 1 and lastGarage.garage[1].label == 'Truck'
+  and lastGarage.garageMode == 'parts', 'and the other set comes back the same way')
+check(lastGarage.garageEnforce == true, 'still untouched on the way back')
 
 -- ---------------------------------------------------------------------------
 -- SWAPPING THE LIST RE-RULES THE CARS ALREADY OUT THERE
@@ -810,7 +812,7 @@ garageMsg = nil
 RM_onLoadGarageSet(1, '{"name":"Nothing Called This"}')
 check(garageMsg ~= nil and garageMsg.added == false,
   'loading a set that does not exist is refused with a reason, not ignored')
-check(#lastState.garage == 1 and lastState.garage[1].label == 'Truck',
+check(#lastGarage.garage == 1 and lastGarage.garage[1].label == 'Truck',
   'and leaves the live list alone')
 
 RM_onClearGarage(1)
@@ -853,9 +855,9 @@ RM_onClearGarage(1)
 RM_onLoadGarageSet(1, '{"name":"ClassA"}')
 garageMsg = nil
 RM_onLoadGarageSet(1, '{"name":"ClassB","append":true}')
-check(#lastState.garage == 2, 'adding a set merges it into the list rather than replacing it')
+check(#lastGarage.garage == 2, 'adding a set merges it into the list rather than replacing it')
 local function hasCar(label)
-  for _, e in ipairs(lastState.garage or {}) do if e.label == label then return true end end
+  for _, e in ipairs(lastGarage.garage or {}) do if e.label == label then return true end end
   return false
 end
 check(hasCar('Class A Car') and hasCar('Class B Car'),
@@ -867,7 +869,7 @@ check(garageMsg ~= nil and garageMsg.added == true, 'the admin is told it worked
 -- stay two entries, because the list is also the menu a driver spawns from.
 garageMsg = nil
 RM_onLoadGarageSet(1, '{"name":"ClassB","append":true}')
-check(#lastState.garage == 2,
+check(#lastGarage.garage == 2,
   'adding a set already on the list does not duplicate its cars')
 check(garageMsg ~= nil and garageMsg.added == true
   and garageMsg.message:find('already', 1, true) ~= nil,
@@ -878,7 +880,7 @@ check(garageMsg ~= nil and garageMsg.added == true
 RM_onClearGarage(1)
 RM_onSetGarageMode(1, '{"mode":"strict"}')
 RM_onLoadGarageSet(1, '{"name":"ClassA","append":true}')
-check(#lastState.garage == 1 and lastState.garageMode == 'parts',
+check(#lastGarage.garage == 1 and lastGarage.garageMode == 'parts',
   'adding to an empty list behaves as a load, mode included')
 
 -- THE MODES HAVE TO AGREE. Parts and Strict disagree about who is legal, not
@@ -892,14 +894,14 @@ RM_onLoadGarageSet(1, '{"name":"ClassA","append":true}')
 check(garageMsg ~= nil and garageMsg.added == false,
   'a Parts set cannot be merged into a Strict list: the two rule cars '
     .. 'differently, and adopting either mode silently re-rules somebody')
-check(#lastState.garage == 1 and lastState.garage[1].label == 'Strict Car',
+check(#lastGarage.garage == 1 and lastGarage.garage[1].label == 'Strict Car',
   'and the refusal leaves the live list exactly as it was')
-check(lastState.garageMode == 'strict', 'mode included')
+check(lastGarage.garageMode == 'strict', 'mode included')
 
 -- A LOAD still crosses modes freely: it replaces everything, so there is no
 -- half of the field left under the old rule.
 RM_onLoadGarageSet(1, '{"name":"ClassA"}')
-check(#lastState.garage == 1 and lastState.garageMode == 'parts',
+check(#lastGarage.garage == 1 and lastGarage.garageMode == 'parts',
   'loading across modes is still fine, because nothing is left behind to re-rule')
 
 -- Refused WHOLE rather than part-loaded when the merge would overflow: a field
@@ -910,12 +912,12 @@ for i = 1, 60 do
   RM_onWhitelistVehicle(1, '{"model":"filler","label":"Filler ' .. i
     .. '","sig":"model=filler|parts=body=f' .. i .. '|vars=camber=0.0000"}')
 end
-check(#lastState.garage == 60, 'the Garage List fills to its cap')
+check(#lastGarage.garage == 60, 'the Garage List fills to its cap')
 garageMsg = nil
 RM_onLoadGarageSet(1, '{"name":"ClassA","append":true}')
 check(garageMsg ~= nil and garageMsg.added == false,
   'a merge that would pass the entry cap is refused')
-check(#lastState.garage == 60,
+check(#lastGarage.garage == 60,
   'and nothing is added: a part-loaded field looks complete and is not')
 
 RM_onDeleteGarageSet(1, '{"name":"ClassA"}')
@@ -947,12 +949,12 @@ check(not hasSet('GT3') and hasSet('Trucks'), 'an admin deletes one set and leav
 RM_onClearGarage(1)
 RM_onWhitelistVehicle(1, '{"model":"etk800","label":"Cup Car","sig":"' .. SIG_A
   .. '","pc":"vehicles/etk800/cup.pc","cfg":{"parts":{"body":"etk800_body"},"vars":{}}}')
-check(#lastState.garage == 1 and lastState.garage[1].spawn == true,
+check(#lastGarage.garage == 1 and lastGarage.garage[1].spawn == true,
   'the broadcast says an entry HAS a car behind it, which is all the panel '
     .. 'needs to decide whether to offer Take')
-check(lastState.garage[1].sig == nil,
+check(lastGarage.garage[1].sig == nil,
   'and the signature still is not: that is the servers comparison, not a drivers business')
-check(lastState.garage[1].cfg == nil and lastState.garage[1].pc == nil,
+check(lastGarage.garage[1].cfg == nil and lastGarage.garage[1].pc == nil,
   'and neither the parts nor the path ride the broadcast: this table is '
     .. 'encoded three times a second for the life of the server')
 
@@ -978,7 +980,7 @@ check(takenCar ~= nil and takenCar.message ~= nil and takenCar.model == nil,
 -- An edited car has no file and may have no readable parts either. The entry is
 -- still valid to race under, it simply cannot be handed to anybody to spawn.
 RM_onWhitelistVehicle(1, '{"model":"pigeon","label":"Home Build","sig":"' .. SIG_B .. '"}')
-check(#lastState.garage == 2 and lastState.garage[2].spawn == nil,
+check(#lastGarage.garage == 2 and lastGarage.garage[2].spawn == nil,
   'an entry captured from a car with nothing readable behind it is not '
     .. 'offered, instead of spawning the models default and calling it the '
     .. 'approved car')
@@ -991,15 +993,15 @@ check(#lastState.garage == 2 and lastState.garage[2].spawn == nil,
 -- and rebuild as the only way to fix a league's whole season.
 RM_onClearGarage(1)
 RM_onWhitelistVehicle(1, '{"model":"etk800","label":"Old Entry","sig":"' .. SIG_A .. '"}')
-check(#lastState.garage == 1 and lastState.garage[1].spawn == nil,
+check(#lastGarage.garage == 1 and lastGarage.garage[1].spawn == nil,
   'an entry captured with nothing behind it has nothing, as every pre-existing '
     .. 'one does')
 
 garageMsg = nil
 RM_onWhitelistVehicle(1, '{"model":"etk800","label":"Old Entry","sig":"' .. SIG_A
   .. '","pc":"vehicles/etk800/cup.pc","cfg":{"parts":{"body":"etk800_body"},"vars":{}}}')
-check(#lastState.garage == 1, 'a re-capture of the same car does not duplicate it')
-check(lastState.garage[1].spawn == true,
+check(#lastGarage.garage == 1, 'a re-capture of the same car does not duplicate it')
+check(lastGarage.garage[1].spawn == true,
   'and FILLS IN the car, which is the only way an existing league garage '
     .. 'becomes spawnable for the field without being rebuilt from nothing')
 check(garageMsg ~= nil and garageMsg.added == true,
@@ -1022,11 +1024,11 @@ RM_onWhitelistVehicle(1, '{"model":"pigeon","label":"Home Build","sig":"' .. SIG
 -- is the one path that can silently drop the car again.
 RM_onSaveGarageSet(1, '{"name":"PathTest"}')
 RM_onClearGarage(1)
-check(#lastState.garage == 0, 'cleared before the reload, so the reload is what proves it')
+check(#lastGarage.garage == 0, 'cleared before the reload, so the reload is what proves it')
 RM_onLoadGarageSet(1, '{"name":"PathTest"}')
-check(#lastState.garage == 2 and lastState.garage[1].spawn == true,
+check(#lastGarage.garage == 2 and lastGarage.garage[1].spawn == true,
   'a saved set keeps the stored car, so a series stays spawnable after a reload')
-check(lastState.garage[2].spawn == nil, 'and the entry without one still has none')
+check(lastGarage.garage[2].spawn == nil, 'and the entry without one still has none')
 RM_onDeleteGarageSet(1, '{"name":"PathTest"}')
 
 -- PUT THE STORE BACK AS THIS SECTION FOUND IT. garage.json persists the

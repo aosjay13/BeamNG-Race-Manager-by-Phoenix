@@ -6,6 +6,34 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.18.1 - Name the cars too
+
+#### Added
+
+- **Garage car names.** **✎** on a Garage List row gives the entry a name to
+  show instead of the label it was captured with; **Default** puts the label
+  back. The name shows on the Garage tab, a driver's list of cars they may run,
+  messages about the entry and the lap records' car column. Matching is
+  untouched: a rename never changes which cars are legal. Names travel with
+  garage sets and are kept in `garage.json` beside the captured label. Either
+  admin tier; a rename is refused if the list changed while it was being typed.
+
+#### Changed
+
+- **The Garage List no longer rides every timing update.** It went to every
+  player with each status push, about three times a second during a session,
+  and at a full 60-car list it was half of every push. It is now sent on its own
+  when it changes, and to each player when they join. At 60 cars that is about
+  250 KB/s less from the server during a race, and the timing push is the same
+  size whatever the garage holds.
+
+#### Fixed
+
+- **A long map name could be cut inside a character.** A display name over 40
+  characters was cut by bytes, which can split an accented letter and leave
+  bytes BeamMP's JSON encoder refuses. Names are now cut on a character, and a
+  byte that is not valid text is dropped.
+
 ## 0.18.0 - Name the map, keep the records
 
 #### Added

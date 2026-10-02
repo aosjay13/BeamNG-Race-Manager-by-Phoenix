@@ -27,6 +27,7 @@
 
 local connected = { [0] = 'Admin', [1] = 'Alice', [2] = 'Bob', [3] = 'Cara', [4] = 'Dan' }
 local lastState = nil
+local lastGarage = {}
 local chatLog   = {}
 local timers    = {}
 
@@ -40,6 +41,7 @@ MP = {
   end,
   TriggerClientEvent = function (target, event, payload)
     if event == 'RM_Update' then lastState = payload end
+    if event == 'RM_Garage' then lastGarage = payload end
   end,
   RegisterEvent = function () end,
   CreateEventTimer = function (name) timers[name] = true end,
@@ -108,8 +110,8 @@ RM_onSetTotalLaps(0, '{"laps":10}')
 RM_onClearGarage(0)
 whitelist(0, 'fastcar')
 whitelist(0, 'slowcar')
-check(#lastState.garage == 2, 'two cars on the list')
-check(lastState.garage[1].class == nil, 'and neither carries a class yet')
+check(#lastGarage.garage == 2, 'two cars on the list')
+check(lastGarage.garage[1].class == nil, 'and neither carries a class yet')
 
 declare(1, 'fastcar'); declare(2, 'fastcar')
 declare(3, 'slowcar'); declare(4, 'slowcar')
@@ -121,12 +123,12 @@ check(driver(1).classPos == nil, 'and there are no class positions to hand out')
 -- Tagging the entries
 -- ---------------------------------------------------------------------------
 RM_onSetGarageClass(3, '{"index":1,"class":"GT3"}')
-check(lastState.garage[1].class == nil, 'tagging a class requires authentication')
+check(lastGarage.garage[1].class == nil, 'tagging a class requires authentication')
 
 RM_onSetGarageClass(0, '{"index":1,"class":"GT3"}')
 RM_onSetGarageClass(0, '{"index":2,"class":"GT4"}')
-check(lastState.garage[1].class == 'GT3', 'the first entry is GT3')
-check(lastState.garage[2].class == 'GT4', 'the second is GT4')
+check(lastGarage.garage[1].class == 'GT3', 'the first entry is GT3')
+check(lastGarage.garage[2].class == 'GT4', 'the second is GT4')
 
 -- EVERY DRIVER IS RE-JUDGED IMMEDIATELY. An admin who tags an entry has to see
 -- the drivers in that car become GT3 now, not whenever they next happen to
@@ -139,7 +141,7 @@ check(driver(3).class == 'GT4' and driver(4).class == 'GT4', 'and the others GT4
 -- ...AND IT WORKS WITH ENFORCEMENT OFF, which is the point of deriving the class
 -- separately from the verdict. Scoring two classes and policing setups are
 -- different things to want.
-check(lastState.garageEnforce ~= true, 'the garage is not being enforced')
+check(lastGarage.garageEnforce ~= true, 'the garage is not being enforced')
 check(driver(1).carOk == nil, 'so nobody has a compliance verdict')
 check(driver(1).class == 'GT3', 'and the class is there anyway')
 
@@ -185,14 +187,14 @@ check(driver(3) ~= nil and driver(3).class == 'GT4',
 -- defines the car.
 RM_onSetGarageClass(0, '{"index":2,"class":""}')
 seconds(0.5)
-check(lastState.garage[2].class == nil, 'an empty class clears the tag')
+check(lastGarage.garage[2].class == nil, 'an empty class clears the tag')
 check(driver(3).class == nil, 'and the drivers in that car are unclassified again')
 check(driver(1).class == 'GT3', 'while the other class is untouched')
 
 -- A class name is capped and cleaned: the results file is a fixed-width table
 -- and a long or multi-byte name would shear every row after it.
 RM_onSetGarageClass(0, '{"index":2,"class":"AAAAAAAAAAAAAAAAAAAA"}')
-check(#lastState.garage[2].class <= 12, 'a long class name is cut to fit the column')
+check(#lastGarage.garage[2].class <= 12, 'a long class name is cut to fit the column')
 RM_onSetGarageClass(0, '{"index":2,"class":""}')
 
 -- ---------------------------------------------------------------------------

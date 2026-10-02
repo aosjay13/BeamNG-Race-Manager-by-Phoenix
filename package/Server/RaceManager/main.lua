@@ -1824,7 +1824,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.18.0'
+local RM_BUILD = '0.18.1'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -1947,7 +1947,10 @@ local function clearAllGhosts(reason)
 end
 
 local function broadcastState(targetPid)
-  local garageInfo = garageSnapshot and garageSnapshot() or {}
+  -- The Garage List goes out on RM_Garage now, when it changes: see
+  -- garage.changed. KEPT, OFF: race.garageOnUpdate = true puts it back on
+  -- every push, for a client that predates RM_Garage.
+  local garageInfo = race.garageOnUpdate and garageSnapshot and garageSnapshot() or {}
   -- Per-player admin status. Only meaningful on a TARGETED send -- the global
   -- broadcast is one payload for everybody, so this key is left off there and
   -- clients ignore it when absent. This is what makes RM_RequestState (which
@@ -6188,6 +6191,8 @@ function RM_onRequestState(pid)
   -- connected when the admin pressed Load, and the workaround was waiting for the
   -- whole field to spawn before loading anything.
   race.sendLayoutTo(pid)
+  -- ...and the Garage List, which no longer rides the state push.
+  if race.garagePush then race.garagePush(pid) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -7858,6 +7863,29 @@ local garage = {
 }
 local garageLoaded = false
 
+-- A DISPLAY NAME, beside the label captured with the car. Matching reads
+-- neither: both are for people. `name` is set from the Garage tab, and clearing
+-- it shows the captured label again.
+garage.MAX_NAME = 40
+function garage.nameOf(e)
+  return e.name or e.label
+end
+
+-- Control characters out, spaces collapsed, capped. nil for nothing left.
+-- VALID UTF-8 ONLY, cut on a character: the list rides every state broadcast,
+-- and Util.JsonEncode throws on a broken byte, which would stop them all.
+function garage.cleanName(raw)
+  if type(raw) ~= 'string' then return nil end
+  local s = raw:gsub('%c', ' ')
+  if not utf8.len(s) then s = s:gsub('[\128-\255]', '') end
+  s = s:gsub('%s+', ' '):gsub('^ ', ''):gsub(' $', '')
+  if s == '' then return nil end
+  if utf8.len(s) > garage.MAX_NAME then
+    s = s:sub(1, utf8.offset(s, garage.MAX_NAME + 1) - 1):gsub(' $', '')
+  end
+  return s
+end
+
 local function loadGarageFromDisk()
   local f = io.open(GARAGE_FILE, 'r')
   if not f then return end
@@ -7891,6 +7919,7 @@ local function loadGarageFromDisk()
       garage.list[#garage.list + 1] = {
         model    = tostring(e.model or '?'),
         label    = tostring(e.label or e.model or 'Vehicle'),
+        name     = garage.cleanName(e.name),
         -- nil rather than '' for an entry that has none, so "unclassified" is
         -- one value everywhere instead of two that have to both be tested for.
         class    = (type(e.class) == 'string' and e.class ~= '') and e.class or nil,
@@ -7932,13 +7961,38 @@ end
 -- perhaps twice in a session.
 local garageView = nil
 
-local function saveGarageToDisk()
-  -- The one place the cached view is dropped, and deliberately the only one.
-  -- Persisting the garage and invalidating the view are the same event: every
-  -- path that alters the list or the enforcement flag has to come through here
-  -- or the change would not survive a restart either, so there is no second rule
-  -- to remember somewhere else.
+-- THE LIST GOES OUT ON ITS OWN EVENT, when it changes and to each client that
+-- asks for state. It rode every RM_Update, three times a second to everyone
+-- while a session ran: half of every push at 60 cars, for a list that changes
+-- a couple of times a night.
+--
+-- `seq` orders the pushes. A broadcast and a targeted send are not ordered
+-- against each other (the layout list lost an admin's list that way), so the
+-- client drops a list older than the one it has. `boot` tells a restarted
+-- server's seq from the last one's.
+garage.seq, garage.boot = 0, os.time()
+
+function race.garagePush(target)
+  local v = garageSnapshot()
+  MP.TriggerClientEvent(target or -1, 'RM_Garage', Util.JsonEncode({
+    rmProtocol = RM_PROTOCOL, boot = garage.boot, seq = garage.seq,
+    garage = v.list, garageEnforce = v.enforce, garageMode = v.mode, garageSets = v.sets,
+  }))
+end
+
+-- The list, the switch, the mode or the set names changed: rebuild, tell everyone.
+function garage.changed()
   garageView = nil
+  garage.seq = garage.seq + 1
+  race.garagePush(-1)
+end
+
+local function saveGarageToDisk()
+  -- Persisting the garage and announcing it are the same event: every path that
+  -- alters the list or the enforcement flag has to come through here or the
+  -- change would not survive a restart either, so there is no second rule to
+  -- remember somewhere else. Only the set NAMES change elsewhere.
+  garage.changed()
   -- And the same argument for the drivers' verdicts. A ruling reached against
   -- the OLD list is not evidence about the new one, and clients only re-declare
   -- when their own car changes -- so an admin who adds the entry that legalises
@@ -7954,12 +8008,12 @@ local function saveGarageToDisk()
     -- version 2 added `mode` and the per-entry `partsSig`; version 3 added the
     -- per-entry `class`; version 4 added the per-entry `cfg`, the car's own
     -- parts and tuning, which is what lets a driver on another machine spawn
-    -- the entry at all. Every older file still loads: loadGarageFromDisk
-    -- defaults the mode, derives the missing signature half, treats a missing
-    -- class as unclassified and falls back to the saved config's path when
-    -- there is no `cfg` -- so downgrading the plugin is the only thing this
-    -- breaks.
-    version = 4, enforce = getGarage().enforce, mode = getGarage().mode,
+    -- the entry at all; version 5 added the per-entry display `name`. Every
+    -- older file still loads: loadGarageFromDisk defaults the mode, derives the
+    -- missing signature half, treats a missing class as unclassified and falls
+    -- back to the saved config's path when there is no `cfg` -- so downgrading
+    -- the plugin is the only thing this breaks.
+    version = 5, enforce = getGarage().enforce, mode = getGarage().mode,
     list = getGarage().list,
   }))
   f:close()
@@ -8078,7 +8132,10 @@ garageSnapshot = function ()
     -- So the broadcast carries a FLAG instead. `spawn` is the whole of what the
     -- panel needs to decide whether to offer the button, and the index of the
     -- row is how the press names the entry it wants.
-    list[i] = { model = e.model, label = e.label, class = e.class,
+    -- `label` is what to SHOW; `default` is the captured label, sent only for a
+    -- renamed entry so the panel can offer it back.
+    list[i] = { model = e.model, label = garage.nameOf(e), class = e.class,
+                default = e.name and e.label or nil,
                 spawn = (e.cfg ~= nil or e.pc ~= nil) or nil }
   end
   -- The saved set NAMES ride along. They are read off the folder, so a set
@@ -8159,9 +8216,11 @@ garageRejudge = function ()
     -- mode switch and enforcement toggle, which is exactly the set of moments a
     -- class can change.
     local entry = rec.carSig and garageMatch(rec.carPartsSig, rec.carSig) or nil
-    local was = rec.class
+    local was, wasCar = rec.class, rec.carLabel
     rec.class = entry and entry.class or nil
-    if rec.class ~= was then rememberIdentity(rec) end
+    -- A rename reaches the cars already out, not just the next declaration.
+    if entry then rec.carLabel = garage.nameOf(entry) end
+    if rec.class ~= was or rec.carLabel ~= wasCar then rememberIdentity(rec) end
     local wasOk = rec.carOk
     if not enforcing or not rec.carSig then
       rec.carOk = nil
@@ -8368,10 +8427,10 @@ function RM_onWhitelistVehicle(pid, rawData)
       broadcastState()
       MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
         added = true,
-        message = 'Added the stored parts for "' .. dupe.label
+        message = 'Added the stored parts for "' .. garage.nameOf(dupe)
           .. '", so every driver can take this car',
       }))
-      print('[RaceManager] Garage entry "' .. dupe.label .. '" gained stored parts ('
+      print('[RaceManager] Garage entry "' .. garage.nameOf(dupe) .. '" gained stored parts ('
         .. cfgLen .. ' bytes, by ' .. (MP.GetPlayerName(pid) or pid) .. ')')
       return
     end
@@ -8387,10 +8446,10 @@ function RM_onWhitelistVehicle(pid, rawData)
         -- only where the file is. The parts are what make an entry takeable,
         -- and this capture had none to offer.
         message = (had and 'Updated' or 'Added') .. ' the saved config path for "'
-          .. dupe.label .. '". This car still has no stored parts, so only '
+          .. garage.nameOf(dupe) .. '". This car still has no stored parts, so only '
           .. 'someone who already has that file can take it.',
       }))
-      print('[RaceManager] Garage entry "' .. dupe.label .. '" '
+      print('[RaceManager] Garage entry "' .. garage.nameOf(dupe) .. '" '
         .. (had and 'repointed to' or 'gained') .. ' config ' .. incoming
         .. ' (by ' .. (MP.GetPlayerName(pid) or pid) .. ')')
       return
@@ -8484,14 +8543,14 @@ function RM_onTakeGarageCar(pid, rawData)
   if not e.cfg and not e.pc then
     MP.TriggerClientEvent(pid, 'RM_GarageCar', Util.JsonEncode({
       rmProtocol = RM_PROTOCOL,
-      message = 'There is no saved car behind "' .. tostring(e.label)
+      message = 'There is no saved car behind "' .. tostring(garage.nameOf(e))
         .. '": an admin has to re-capture it',
     }))
     return
   end
   MP.TriggerClientEvent(pid, 'RM_GarageCar', Util.JsonEncode({
     rmProtocol = RM_PROTOCOL,
-    model = e.model, label = e.label,
+    model = e.model, label = garage.nameOf(e),
     -- BOTH, and the client prefers the parts. The path is worth sending even
     -- when the parts are there: nothing else would ever repair an entry whose
     -- stored configuration turns out to be undecodable on the far side.
@@ -8521,7 +8580,7 @@ function RM_onRemoveGarageEntry(pid, rawData)
   local removed = table.remove(g.list, idx)
   saveGarageToDisk()
   broadcastState()
-  print('[RaceManager] "' .. removed.label .. '" removed from the Garage List by '
+  print('[RaceManager] "' .. garage.nameOf(removed) .. '" removed from the Garage List by '
     .. (MP.GetPlayerName(pid) or pid))
 end
 
@@ -8554,9 +8613,35 @@ function RM_onSetGarageClass(pid, rawData)
   saveGarageToDisk()
   broadcastState()
   print(string.format('[RaceManager] "%s" is now %s (by %s)',
-    g.list[idx].label,
+    garage.nameOf(g.list[idx]),
     g.list[idx].class and ('class ' .. g.list[idx].class) or 'unclassified',
     MP.GetPlayerName(pid) or pid))
+end
+
+-- GIVE A GARAGE ENTRY A NAME TO SHOW, or clear it with an empty string.
+--
+-- Display only, so either tier and any time, like the class. `was` is the name
+-- the admin was looking at: the list is addressed by index and an entry removed
+-- in between would otherwise rename its neighbour.
+function RM_onSetGarageName(pid, rawData)
+  local data = adminPayload(pid, rawData)
+  if not data then return end
+  local idx = math.floor(tonumber(data.index) or 0)
+  local g = getGarage()
+  local e = g.list[idx]
+  if not e then return end
+  if type(data.was) == 'string' and data.was ~= garage.nameOf(e) then
+    MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
+      added = false, message = 'The Garage List changed while you were renaming. Try again.' }))
+    return
+  end
+  local name = garage.cleanName(data.name)
+  if name == e.label then name = nil end
+  e.name = name
+  saveGarageToDisk()
+  broadcastState()
+  print(string.format('[RaceManager] Garage entry "%s" is now shown as "%s" (by %s)',
+    e.label, garage.nameOf(e), MP.GetPlayerName(pid) or pid))
 end
 
 -- Save the approved list under a name, so a series can be put back in one click.
@@ -8592,8 +8677,7 @@ function RM_onSaveGarageSet(pid, rawData)
       added = false, message = 'Could not write that garage set to disk' }))
     return
   end
-  garageView = nil       -- the set list changed, and it rides the snapshot
-  broadcastState()
+  garage.changed()       -- the set list changed, and it rides the push
   local msg = string.format('[RaceManager] Garage set "%s" %s by %s (%d car(s), %s)',
     name, existing and 'updated' or 'saved', MP.GetPlayerName(pid) or pid, #g.list, g.mode)
   MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
@@ -8656,6 +8740,8 @@ function RM_onLoadGarageSet(pid, rawData)
       list[#list + 1] = {
         model    = tostring(e.model or '?'),
         label    = tostring(e.label or e.model or 'Vehicle'),
+        -- The display name travels with the set too, for the same reason.
+        name     = garage.cleanName(e.name),
         class    = (type(e.class) == 'string' and e.class ~= '') and e.class or nil,
         sig      = e.sig,
         partsSig = partsSig,
@@ -8761,8 +8847,7 @@ function RM_onDeleteGarageSet(pid, rawData)
   local name = gset.cleanName(data.name)
   if name == '' then return end
   removeFile(gset.fileFor(name))
-  garageView = nil
-  broadcastState()
+  garage.changed()
   print('[RaceManager] Garage set "' .. name .. '" deleted by '
     .. (MP.GetPlayerName(pid) or pid))
 end
@@ -8838,7 +8923,10 @@ function RM_onVehicleConfig(pid, rawData)
   if rec then
     rec.carSig      = sig
     rec.carPartsSig = partsSig
-    rec.carLabel    = data.label and tostring(data.label) or model
+    -- The list's name for it when it is on the list, so the lap records say
+    -- what the Garage tab says.
+    rec.carLabel    = entry and garage.nameOf(entry)
+      or (data.label and tostring(data.label) or model)
     rec.carGame     = data.game and tostring(data.game) or nil
     -- THE CLASS, AND IT DOES NOT WAIT FOR ENFORCEMENT. Which class a car runs in
     -- and whether that car is legal are different questions, and a league that
@@ -8879,7 +8967,7 @@ function RM_onVehicleConfig(pid, rawData)
 
   local stale = garageVersionSkew(model, data.game and tostring(data.game) or nil)
   if stale then
-    rejectVehicle(pid, nil, 'the Garage List entry for "' .. stale.label
+    rejectVehicle(pid, nil, 'the Garage List entry for "' .. garage.nameOf(stale)
       .. '" was captured on BeamNG ' .. stale.game .. ' and you are on '
       .. tostring(data.game) .. ': a game update can rename vehicle parts, so an '
       .. 'admin needs to re-capture the Garage List')
@@ -11326,6 +11414,7 @@ function onInit()
   MP.RegisterEvent('RM_SetGarageEnforce', 'RM_onSetGarageEnforce')
   MP.RegisterEvent('RM_SetGarageMode',    'RM_onSetGarageMode')
   MP.RegisterEvent('RM_SetGarageClass',   'RM_onSetGarageClass')  -- multi-class
+  MP.RegisterEvent('RM_SetGarageName',    'RM_onSetGarageName')   -- display name
   MP.RegisterEvent('RM_SaveGarageSet',    'RM_onSaveGarageSet')   -- named sets
   MP.RegisterEvent('RM_LoadGarageSet',    'RM_onLoadGarageSet')
   MP.RegisterEvent('RM_DeleteGarageSet',  'RM_onDeleteGarageSet')

@@ -185,6 +185,8 @@ angular.module('beamng.apps')
       // which shadows the parent on first write, so the control would edit a
       // copy nobody reads. ui_bindings_test enforces this.
       $scope.garageClassUi = { input: [] };
+      // The rename editor, kept apart from `garage` for the same reason.
+      $scope.garageNameUi = { index: null, name: '', was: '', def: '', custom: false };
       $scope.garageEnforce = false;
       // Which half of a setup the list is matched on: 'parts' locks the parts
       // and leaves tuning and paint alone, 'strict' locks the tuning too. The
@@ -1647,7 +1649,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.18.0';
+      var APP_BUILD = '0.18.1';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -2515,53 +2517,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
               $scope.settingsUi.raceMins = Math.round(data.raceTimeLimit / 60);
             }
           }
-          $scope.garage = toArray(data.garage);
-          // Derived HERE rather than in a template function. ng-if and
-          // ng-repeat would both call it every digest and it allocates a list,
-          // and this app is watched for per-frame allocations. An entry with no
-          // saved config behind it (a car edited in the session) has no file to
-          // spawn, so it is left out rather than offered as something that
-          // would quietly hand back the model's default.
-          // `spawn` rather than `pc`, because the config PATH no longer rides
-          // the broadcast: a path is only meaningful on the machine that saved
-          // the file, and the car itself is fetched on the press instead. The
-          // server answers the one question the panel actually has -- is there
-          // a car behind this row -- and the row's INDEX is how a press names
-          // it.
-          $scope.garageSpawnable = [];
-          for (var gsi = 0; gsi < $scope.garage.length; gsi++) {
-            if (!$scope.garage[gsi]) { continue; }
-            // Stamped on EVERY row, not only the spawnable ones. The admin's
-            // Garage tab repeats over `garage` itself and its Take button needs
-            // the same index this one does; setting it only here left that
-            // button sending nothing.
-            $scope.garage[gsi].index = gsi + 1;     // Lua counts from one
-            if ($scope.garage[gsi].spawn) {
-              $scope.garageSpawnable.push($scope.garage[gsi]);
-            }
-          }
-          // Seeded from the server, and only where the box is not being edited:
-          // overwriting a half-typed class on the next broadcast is the bug the
-          // separate array exists to avoid, and the debounce means "half-typed"
-          // lasts most of a second.
-          for (var gi = 0; gi < $scope.garage.length; gi++) {
-            var srv = $scope.garage[gi].class || '';
-            if ($scope.garageClassUi.input[gi] === undefined) {
-              $scope.garageClassUi.input[gi] = srv;
-            }
-          }
-          $scope.garageClassUi.input.length = $scope.garage.length;
-          $scope.garageEnforce = !!data.garageEnforce;
-          if (data.garageMode === 'parts' || data.garageMode === 'strict') {
-            $scope.garageMode = data.garageMode;
-          }
-          $scope.garageSets = toArray(data.garageSets);
-          // A set deleted (or renamed) elsewhere must not stay selected, or
-          // Load and Delete point at a file that is gone.
-          if ($scope.garageSetUi.selected
-              && $scope.garageSets.indexOf($scope.garageSetUi.selected) === -1) {
-            $scope.garageSetUi.selected = '';
-          }
+          // The Garage List comes on RaceManagerGarage now. KEPT for a server
+          // that still puts it here (race.garageOnUpdate).
+          if (data.garage !== undefined) { applyGarage(data); }
           // Track whether an admin is running the session. When one appears and
           // we're just a spectator who hasn't pinned the login open, auto-hide
           // the prompt so the app is fully visible (a header Login button stays).
@@ -3308,6 +3266,69 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         }
         return [];
       }
+
+      // THE GARAGE LIST, sent on its own when it changes rather than with every
+      // state push. `seq` drops a list that arrives after a newer one: a
+      // broadcast and a reply to one client are not ordered against each other.
+      var garageRev = { boot: null, seq: -1 };
+      function applyGarage(data) {
+        $scope.garage = toArray(data.garage);
+        // Derived HERE rather than in a template function. ng-if and
+        // ng-repeat would both call it every digest and it allocates a list,
+        // and this app is watched for per-frame allocations. An entry with no
+        // saved config behind it (a car edited in the session) has no file to
+        // spawn, so it is left out rather than offered as something that
+        // would quietly hand back the model's default.
+        // `spawn` rather than `pc`, because the config PATH no longer rides
+        // the broadcast: a path is only meaningful on the machine that saved
+        // the file, and the car itself is fetched on the press instead. The
+        // server answers the one question the panel actually has -- is there
+        // a car behind this row -- and the row's INDEX is how a press names
+        // it.
+        $scope.garageSpawnable = [];
+        for (var gsi = 0; gsi < $scope.garage.length; gsi++) {
+          if (!$scope.garage[gsi]) { continue; }
+          // Stamped on EVERY row, not only the spawnable ones. The admin's
+          // Garage tab repeats over `garage` itself and its Take button needs
+          // the same index this one does; setting it only here left that
+          // button sending nothing.
+          $scope.garage[gsi].index = gsi + 1;     // Lua counts from one
+          if ($scope.garage[gsi].spawn) {
+            $scope.garageSpawnable.push($scope.garage[gsi]);
+          }
+        }
+        // Seeded from the server, and only where the box is not being edited:
+        // overwriting a half-typed class on the next broadcast is the bug the
+        // separate array exists to avoid, and the debounce means "half-typed"
+        // lasts most of a second.
+        for (var gi = 0; gi < $scope.garage.length; gi++) {
+          var srv = $scope.garage[gi].class || '';
+          if ($scope.garageClassUi.input[gi] === undefined) {
+            $scope.garageClassUi.input[gi] = srv;
+          }
+        }
+        $scope.garageClassUi.input.length = $scope.garage.length;
+        $scope.garageEnforce = !!data.garageEnforce;
+        if (data.garageMode === 'parts' || data.garageMode === 'strict') {
+          $scope.garageMode = data.garageMode;
+        }
+        $scope.garageSets = toArray(data.garageSets);
+        // A set deleted (or renamed) elsewhere must not stay selected, or
+        // Load and Delete point at a file that is gone.
+        if ($scope.garageSetUi.selected
+            && $scope.garageSets.indexOf($scope.garageSetUi.selected) === -1) {
+          $scope.garageSetUi.selected = '';
+        }
+      }
+      $scope.$on('RaceManagerGarage', function (event, data) {
+        if (!data) { return; }
+        $scope.$evalAsync(function () {
+          if (data.boot === garageRev.boot && data.seq < garageRev.seq) { return; }
+          garageRev.boot = data.boot;
+          garageRev.seq = data.seq;
+          applyGarage(data);
+        });
+      });
 
       $scope.$on('RaceManagerLayouts', function (event, data) {
         if (!data) {
@@ -5032,6 +5053,22 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         return row.class + (row.classPos ? (' P' + row.classPos) : '');
       };
 
+      // DISPLAY NAMES. What the entry matches is untouched; `was` lets the
+      // server refuse if the list moved under the editor.
+      $scope.garageRenameOpen = function (index) {
+        var g = $scope.garage[index];
+        if (!g) { return; }
+        $scope.garageNameUi = { index: index, name: g.label || '', was: g.label || '',
+                                def: g['default'] || g.label || '', custom: !!g['default'] };
+      };
+      $scope.garageRenameCancel = function () { $scope.garageNameUi.index = null; };
+      $scope.garageRenameSave = function (useDefault) {
+        var r = $scope.garageNameUi;
+        if (r.index === null) { return; }
+        bngApi.engineLua('raceManager.setGarageName(' + (r.index + 1) + ', '
+          + luaStr(useDefault ? '' : (r.name || '')) + ', ' + luaStr(r.was) + ')');
+        r.index = null;
+      };
       $scope.removeGarageEntry = function (index) {
         bngApi.engineLua('raceManager.removeGarageEntry(' + (index + 1) + ')');
       };

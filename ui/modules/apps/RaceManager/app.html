@@ -1976,10 +1976,23 @@
          in complete silence -- which reads as a dead button, and is the reason
          one was reported. -->
     <div class="rm-editor-msg" ng-if="editorMsg">{{ editorMsg }}</div>
+    <!-- DISPLAY ONLY. A name to show for the entry; the signatures it is
+         matched on are untouched. -->
+    <div class="rm-garage-controls" ng-if="garageNameUi.index !== null">
+      <span class="rm-layouts-hint">Show {{ garageNameUi.def }} as</span>
+      <input type="text" class="rm-layout-name" maxlength="40" ng-model="garageNameUi.name"
+             ng-keydown="$event.keyCode === 13 && garageNameUi.name && garageRenameSave(false)">
+      <button class="rm-btn rm-btn-mini rm-btn-start" ng-disabled="!garageNameUi.name"
+              ng-click="garageRenameSave(false)">Save</button>
+      <button class="rm-btn rm-btn-mini" ng-if="garageNameUi.custom" ng-click="garageRenameSave(true)"
+              title="Back to {{ garageNameUi.def }}">Default</button>
+      <button class="rm-btn rm-btn-mini" ng-click="garageRenameCancel()">Cancel</button>
+    </div>
     <div class="rm-garage-list" ng-if="garage.length">
       <div class="rm-garage-row" ng-repeat="g in garage track by $index">
         <span class="rm-garage-idx">{{ $index + 1 }}</span>
-        <span class="rm-garage-label" title="{{ g.label }}">{{ g.label }}</span>
+        <span class="rm-garage-label"
+              title="{{ g['default'] ? 'Captured as ' + g['default'] : g.label }}">{{ g.label }}</span>
         <span class="rm-garage-model">{{ g.model }}</span>
         <!-- The same Take a driver gets, because an admin building a grid wants
              to be IN one of these cars as often as anybody. Absent on an entry
@@ -1998,6 +2011,8 @@
                ng-change="applyGarageClass($index)"
                placeholder="class"
                title="The class this car runs in, e.g. GT3. Leave it blank for a single-class night.">
+        <button class="rm-btn rm-btn-mini" ng-click="garageRenameOpen($index)"
+                title="Give this car a name to show. What it matches is unchanged.">✎</button>
         <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="removeGarageEntry($index)">✕</button>
       </div>
     </div>

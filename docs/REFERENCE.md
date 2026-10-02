@@ -1996,6 +1996,27 @@ want to permit.
 Refusals name the mode in force, so a driver is told whether the thing to undo
 is a part swap or a tune.
 
+### Car names
+
+An entry is listed under the label the game gave the car when it was captured,
+which is often a model and a config name rather than what your league calls it.
+**✎** on a row gives it a name to show instead; **Default** puts the captured
+label back. Hovering a renamed entry shows the captured label.
+
+The name is what everyone sees: the Garage tab, a driver's *cars you may run*
+list, the messages about that entry, and the car column of the lap records for
+laps set in it. **It changes nothing about matching.** The
+model, parts and tuning signatures are untouched, so a rename never makes a car
+legal or illegal, and it travels with **Save Current** and comes back with
+**Load Set** and **+ Add Set**.
+
+Either tier can rename, at any time. If the list changes while you are typing
+(somebody removes an entry above it), the rename is refused rather than landing
+on the wrong car.
+
+It is kept in `garage.json` as a `name` beside the captured `label`. Edit it
+there if you like; delete the `name` to go back to the label.
+
 ### Garage sets
 
 A night that runs two series should not mean whitelisting both fields between
