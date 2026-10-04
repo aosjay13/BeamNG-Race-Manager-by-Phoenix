@@ -2678,7 +2678,7 @@ do
   expect(directive ~= nil and ljs:find(".directive('" .. directive .. "'", 1, true) ~= nil,
     'app.json names the directive app.js registers')
   -- NO BINDINGS is the whole cost argument for this app.
-  expect(not lhtml:find('{{', 1, true) and not lhtml:find('ng%-'),
+  expect(not lhtml:find('{{', 1, true) and not lhtml:find('%sng%-%a+='),
     'the Lights template binds nothing: it is drawn by classes set from app.js')
   expect(not ljs:find('$evalAsync', 1, true) and not ljs:find('$apply', 1, true),
     'and app.js never starts a digest')
@@ -2705,6 +2705,39 @@ do
   end
   for moment in (lua:match('local HOLD = (%b{})') or ''):gmatch('(%a+)%s*=') do
     expect(ljs:find(moment .. ':', 1, true) ~= nil, 'the app has a pattern for the "' .. moment .. '" moment')
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- THE RADAR APP
+-- ---------------------------------------------------------------------------
+-- A third app in the same zip, on the same terms as the Lights app: all four
+-- files, the directive app.json names, and no bindings. And the car fields it
+-- reads are ones radar.lua sends, or a car silently draws at the origin.
+do
+  local dir = 'ui/modules/apps/RaceManagerRadar/'
+  for _, f in ipairs({ 'app.js', 'app.html', 'app.json', 'app.png' }) do
+    local h = io.open(dir .. f, 'rb')
+    expect(h ~= nil, 'the Radar app has ' .. f)
+    if h then h:close() end
+  end
+  local rjs, rhtml, rjson = readFile(dir .. 'app.js'), readFile(dir .. 'app.html'), readFile(dir .. 'app.json')
+  local directive = rjson:match('"directive"%s*:%s*"([%w]+)"')
+  expect(directive ~= nil and rjs:find(".directive('" .. directive .. "'", 1, true) ~= nil,
+    'the Radar app.json names the directive its app.js registers')
+  expect(not rhtml:find('{{', 1, true) and not rhtml:find('%sng%-%a+='),
+    'the Radar template binds nothing')
+  expect(not rjs:find('$evalAsync', 1, true) and not rjs:find('$apply', 1, true),
+    'and the Radar app never starts a digest')
+  expect(rjs:find("$scope.$on('RaceManagerRadar'", 1, true) ~= nil,
+    'it listens for the event radar.lua pushes')
+  local lua = readFile('lua/ge/extensions/raceManager/radar.lua')
+  for _, key in ipairs({ 'x', 'y', 'a', 'l', 'w', 'g', 'gh', 'p', 'lap' }) do
+    expect(rjs:find('c%.' .. key .. '[^%w]') ~= nil, 'the app reads car field ' .. key)
+    expect(lua:find('[%s{,.]' .. key .. ' = ') ~= nil, 'and radar.lua sends car field ' .. key)
+  end
+  for cls in rjs:gmatch("'rmr%-car rmr%-(%a+)") do
+    expect(rhtml:find('%.rmr%-' .. cls .. '%s') ~= nil, 'car class rmr-' .. cls .. ' has a rule')
   end
 end
 

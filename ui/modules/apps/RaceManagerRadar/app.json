@@ -1,0 +1,15 @@
+{
+  "name": "Race Manager Radar",
+  "author": "Phoenix",
+  "version": "0.18.4",
+  "description": "The cars around you and how close they are, from Race Manager. Fades away when nobody is near. Needs the Race Manager mod on the server.",
+  "directive": "raceManagerRadar",
+  "domElement": "<race-manager-radar></race-manager-radar>",
+  "css": {
+    "top": "560px",
+    "left": "830px",
+    "width": "260px",
+    "height": "260px"
+  },
+  "types": ["ui.apps.categories.racing"]
+}

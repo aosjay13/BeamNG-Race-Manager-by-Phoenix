@@ -2683,6 +2683,37 @@ remembered.
 light changes, a handful of times a race, and the app sets classes on its lamps.
 It adds nothing to the work the main panel does on each timing update.
 
+## Race Manager Radar
+
+A third app in the same mod: the cars around you and how close they are. Add
+**Race Manager Radar** from the game's HUD Apps list (under **Racing**) and place
+and size it like any other app. It fades away when nobody is within range and
+comes back the moment somebody is; it shows itself for six seconds when it loads
+so you can see where it went.
+
+- **Heading up, your car in the middle** (the orange outline). Other cars are
+  drawn at their real size and angle out to **25 m**, and fade in from just
+  beyond that rather than popping up.
+- **Color is closeness**, measured between the cars' outlines rather than their
+  centers: **red** under 2 m, **amber** under 6 m, white beyond. Cars within 6 m
+  carry the gap in meters.
+- **The spotter bars** at the left and right edges light where a car overlaps you
+  side by side, red or amber like the car itself. They span your car and 4 m
+  either end of it.
+- **Ghosts are dashed outlines**: finished drivers, reset ghosts and parked
+  spectators cannot hit you, so they never turn red.
+- **In a race**, each car carries its position, and a car a lap or more up or
+  down on you is **blue** unless it is close. Qualifying shows neither: its order
+  is best laps, not who you are racing.
+
+Walking characters, trailers and props are left off, and so is anything around a
+car that has been taken off you or parked as a finished ghost.
+
+**Cost.** Alone, nothing is sent to the UI at all and the client checks for cars
+four times a second. With a car in range it sends a short list of the nearby
+cars twenty times a second, and the app moves a fixed set of shapes with no
+Angular bindings, so it adds nothing to the work the main panel does.
+
 ## Switching maps
 
 The **Map** row on the **Admin** panel changes the map the server runs. BeamMP reads

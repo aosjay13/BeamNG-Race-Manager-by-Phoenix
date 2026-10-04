@@ -6,6 +6,23 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.18.4 - Radar
+
+#### Added
+
+- **Race Manager Radar, a third app.** The cars around you out to 25 m, heading
+  up with your car in the middle, each at its real size and angle. Red under
+  2 m and amber under 6 m, measured between the cars' outlines, with the gap
+  shown in meters inside 6 m. Spotter bars at the edges light where a car
+  overlaps you side by side. Ghosts are dashed outlines. In a race each car
+  carries its position, and a car a lap or more up or down on you is blue
+  unless it is close. Walking characters, trailers and props are left off.
+  Add it from HUD Apps, under Racing.
+- **It fades away when nobody is near**, 1.5 seconds after the last car leaves,
+  and shows itself for six seconds when it loads. Alone, nothing is sent to the
+  UI; with a car in range, a short list twenty times a second, drawn without
+  Angular bindings.
+
 ## 0.18.3 - The pole-sitter brings them to the green
 
 #### Changed

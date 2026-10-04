@@ -1,0 +1,68 @@
+<div class="rmr-root rmr-hidden">
+  <!-- NOTHING may sit outside this root div, not even a comment: the directive
+       is `replace: true` and Angular 1.5.8 counts a sibling comment as a second
+       root, so the app never renders. Same rule as the main app.
+
+       One SVG in meters, our car at the middle facing up. The controller fills a
+       fixed pool of car shapes from each push; there are no bindings here on
+       purpose. -->
+  <svg viewBox="-31 -31 62 62" preserveAspectRatio="xMidYMid meet">
+    <circle class="rmr-disc" cx="0" cy="0" r="30.5"></circle>
+    <circle class="rmr-ring" cx="0" cy="0" r="8.33"></circle>
+    <circle class="rmr-ring" cx="0" cy="0" r="16.67"></circle>
+    <circle class="rmr-ring rmr-ring-outer" cx="0" cy="0" r="25"></circle>
+    <text class="rmr-ring-label" x="0" y="-25.8" text-anchor="middle">25 m</text>
+    <!-- The spotter bars, at the edges of the disc where they catch the corner
+         of an eye, and clear of the car drawn alongside. A segment lights
+         where another car overlaps us side by side, colored by how close it is;
+         the bars span our car and 4 m either end of it, at the radar's scale. -->
+    <rect class="rmr-bar" x="-29" y="-6.5" width="1.6" height="13" rx="0.8"></rect>
+    <rect class="rmr-bar" x="27.4" y="-6.5" width="1.6" height="13" rx="0.8"></rect>
+    <g class="rmr-segs"></g>
+    <g class="rmr-cars"></g>
+    <g class="rmr-me">
+      <rect class="rmr-me-body" x="-0.95" y="-2.25" width="1.9" height="4.5" rx="0.45"></rect>
+      <path class="rmr-me-nose" d="M 0 -2.9 L -0.6 -1.9 L 0.6 -1.9 Z"></path>
+    </g>
+    <g class="rmr-labels"></g>
+    <text class="rmr-caption" x="0" y="29" text-anchor="middle">RADAR</text>
+  </svg>
+<style>
+  .rmr-root {
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    transition: opacity 0.4s;
+  }
+  .rmr-hidden { opacity: 0; }
+  .rmr-root svg { display: block; width: 100%; height: 100%; }
+  .rmr-disc { fill: rgba(10, 11, 14, 0.62); stroke: rgba(255, 255, 255, 0.14); stroke-width: 0.25; }
+  .rmr-ring { fill: none; stroke: rgba(255, 255, 255, 0.08); stroke-width: 0.15; }
+  .rmr-ring-outer { stroke: rgba(255, 255, 255, 0.16); }
+  .rmr-ring-label { fill: #9aa0a6; font: 700 1.9px "Noto Sans", "Segoe UI", sans-serif; }
+  .rmr-bar { fill: rgba(255, 255, 255, 0.07); }
+  .rmr-me-body { fill: none; stroke: #ff6600; stroke-width: 0.35; }
+  .rmr-me-nose { fill: #ff6600; }
+  /* Closeness is the color: red under 2 m, amber under 6 m. Blue is a car a lap
+     or more up or down on you, and wins only when it is not close. */
+  .rmr-car { stroke-width: 0.25; }
+  .rmr-red    { fill: #ff2b1c; stroke: #ff9a8f; }
+  .rmr-amber  { fill: #ff8a00; stroke: #ffc680; }
+  .rmr-far    { fill: rgba(232, 234, 237, 0.6); stroke: none; }
+  .rmr-blue   { fill: rgba(66, 133, 244, 0.75); stroke: #8ab4f8; }
+  .rmr-lapped { stroke: #8ab4f8; stroke-width: 0.45; }
+  /* A ghost cannot hit you: an outline, whatever its gap. */
+  .rmr-ghost  { fill: none; stroke: #8ab4f8; stroke-dasharray: 0.6 0.5; }
+  .rmr-nose   { fill: rgba(0, 0, 0, 0.55); }
+  .rmr-seg-red   { fill: #ff2b1c; }
+  .rmr-seg-amber { fill: #ff8a00; }
+  .rmr-label {
+    fill: #ffffff;
+    font: 800 2.4px "Noto Sans", "Segoe UI", sans-serif;
+    paint-order: stroke;
+    stroke: #000000;
+    stroke-width: 0.45px;
+  }
+  .rmr-caption { fill: #bdc1c6; font: 700 2.2px "Noto Sans", "Segoe UI", sans-serif; letter-spacing: 0.4px; }
+</style>
+</div>

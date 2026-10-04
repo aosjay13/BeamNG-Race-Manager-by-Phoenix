@@ -244,7 +244,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.18.3'
+local RM_BUILD = '0.18.4'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -8579,6 +8579,24 @@ do
   end
 end
 
+-- The Radar app's cars, the same way. See radar.lua.
+do
+  local radar = require('raceManager/radar')
+  radar.init({
+    ownVehicle = ownVehicle, forEachVehicle = forEachVehicle, myPid = localServerId,
+    isTowed = function (veh) return towed.is(veh) end,
+    -- THROUGH GETTERS: ghost.applied, session.drivers and track.route are all
+    -- reassigned, so a reference taken here would go stale.
+    isGhost = function (id) return ghost.applied[id] == true end,
+    rows = function () return session.drivers end,
+    slots = function () return #track.route end,
+    racing = function () return session.phase == 'racing' and session.sessionKind ~= 'quali' end,
+    -- Nothing to show around a car that is gone or parked as a finished ghost.
+    quiet = function () return session.spectatorLock == true or ghost.finishedOwn ~= nil end,
+  })
+  M.radarUpdate = radar.radarUpdate
+end
+
 -- Post-join: ask the server for the current state once its socket has had a
 -- moment to come up, so a driver who joins a server mid-session sees the live
 -- race without having to open the app and press anything.
@@ -8628,6 +8646,8 @@ function M.onUpdate(dt)
   -- The drag pass: the tree, the launch, the finish line and the trap speed.
   -- Costs one comparison a frame when no ladder is running.
   drag.dragUpdate(dt)
+  -- The Radar app: a scan four times a second alone, twenty with a car near.
+  if M.radarUpdate then M.radarUpdate(dt) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -10542,6 +10562,8 @@ local function onServerUpdate(rawData)
   session.pacing  = data.pacing == true
   -- For the lights: a pace-lap start is a race's alone.
   if data.sessionKind then session.sessionKind = data.sessionKind end
+  -- For the radar: positions and laps of the cars around this one.
+  if type(data.drivers) == 'table' then session.drivers = data.drivers end
   -- GET READY: the leader is on the run to the line and the green is coming.
   session.greenReady = data.greenReady == true
   -- The caution, and its own notice on the edge. The yellow flash a line below

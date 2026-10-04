@@ -1799,17 +1799,18 @@ local RM_PROTOCOL = 2
 -- a call to a scope function a stale app.js does not have, so a button does
 -- nothing at all, with no error in any console.
 --
--- Bump this in ALL SIX places on EVERY change that needs redeploying -- not
+-- Bump this in ALL SEVEN places on EVERY change that needs redeploying -- not
 -- just ones that change the client/server contract. That narrower rule is what
 -- let two client-side fixes ship under one stamp: the build line read as
 -- matching while a client was a fix behind, which is precisely the situation
--- this was added to make visible. The six are:
+-- this was added to make visible. The seven are:
 --
 --   server/RaceManager/main.lua          RM_BUILD   (here)
 --   lua/ge/extensions/raceManager.lua    RM_BUILD
 --   ui/modules/apps/RaceManager/app.js   APP_BUILD
 --   ui/modules/apps/RaceManager/app.json version
 --   ui/modules/apps/RaceManagerLights/app.json version
+--   ui/modules/apps/RaceManagerRadar/app.json version
 --   tools/deploy.py                      RELEASE_NAME
 --
 -- The fifth was outside the check until 0.9.1 and duly went stale: the build
@@ -1825,7 +1826,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.18.3'
+local RM_BUILD = '0.18.4'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
