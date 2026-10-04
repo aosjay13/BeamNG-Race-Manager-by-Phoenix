@@ -96,7 +96,7 @@
       <!-- SHORT, because this is the LAP CLOCK's slot and the badges beside it
            already say which lap it is. On a pace lap this used to read "LAP 1:
            NOT TIMED" next to a badge reading "PACE LAP: NOT SCORED" next to one
-           reading "PACE LAP 40 MPH" -- three things telling a driver the same
+           reading "PACE LAP 50 MPH" -- three things telling a driver the same
            fact, in the one place they have least room to read. What belongs
            HERE is only why there is no time running. -->
       <!-- QUALIFYING ONLY, for the reason the comment above already gives: on a
@@ -236,14 +236,14 @@
     <span class="rm-pace-badge" ng-if="caution &amp;&amp; !restartPending"
           title="Full-course caution: hold position, no overtaking. Places are locked in the order the field came back to the line.">CAUTION &middot; POSITIONS FROZEN<b ng-if="cautionLaps"> &middot; LAP {{ cautionLaps }}</b></span>
     <span class="rm-restart-badge" ng-if="caution &amp;&amp; restartPending &amp;&amp; !greenReady"
-          title="A restart is called: GET READY comes as the leader nears the line, then the green at a random point in the last 50 m.">RESTART THIS LAP &middot; GREEN ON THE RUN IN</span>
+          title="A restart is called: GET READY comes as the restart leader nears the line, then the green at a random point before it.">RESTART THIS LAP &middot; GREEN ON THE RUN IN</span>
     <!-- ONE BADGE FOR THE WHOLE FORMATION LAP: what it is, what to do, and that
          it does not count. Three badges used to carry those between them and a
          driver forming up has no time to read three. -->
     <span class="rm-pace-badge" ng-if="pacing &amp;&amp; !greenReady"
-          title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. It is not timed and is not one of the race laps. GET READY comes as the leader nears the line, then the green at a random point in the last 50 m.">PACE LAP &middot; HOLD &middot; 40 MPH / 64 KM/H &middot; NOT SCORED</span>
+          title="Pace lap: hold position, no overtaking, 50 MPH or 80 KMH. It is not timed and is not one of the race laps. GET READY comes as the P1 starter nears the line, then the green at a random point before it.">PACE LAP &middot; HOLD &middot; 50 MPH OR 80 KMH &middot; NOT SCORED</span>
     <span class="rm-restart-badge" ng-if="greenReady &amp;&amp; (pacing || restartPending)"
-          title="The leader is on the run to the line: the green flag falls at a random point in the last 50 m. Hold position until it does.">GET READY &middot; GREEN FLAG COMING</span>
+          title="The run to the line has begun: the green flag falls at a random point before it. Hold position until it does.">GET READY &middot; GREEN FLAG COMING</span>
     <span class="rm-p2p-badge" ng-if="pointToPoint"
           title="This track is a point-to-point stage: driven once, first gate to last. Laps do not apply.">POINT TO POINT</span>
     <span class="rm-derby-badge" ng-if="derby.phase === 'running'">DERBY LIVE {{ formatDerbyTime(derby.time) }}</span>
@@ -654,7 +654,7 @@
 
          TWO BUTTONS, NEVER BOTH. A standing start and a formation lap are
          alternatives: counting a field down to GO and then telling it to hold
-         position at 40 mph is two instructions for one moment, and a driver
+         position at 50 mph is two instructions for one moment, and a driver
          obeys whichever they read. So the pace lap REPLACES the countdown here
          rather than sitting beside it, and the server refuses whichever of the
          two the session is not set up for. -->
@@ -665,7 +665,7 @@
     <button class="rm-btn rm-btn-start rm-btn-pace" ng-click="startRace()"
             ng-if="phase === 'grid' && paceStart() && !readyUi.confirm"
             ng-disabled="readyNobody()"
-            title="{{ readyNobody() ? 'Nobody is ready yet: wait, or press Ready All' : 'Release the field under yellow for a pace lap. GET READY 100 m out, then the green at a random point in the last 50 m.' }}">Start Race</button>
+            title="{{ readyNobody() ? 'Nobody is ready yet: wait, or press Ready All' : 'Release the field under yellow for a pace lap. GET READY as the P1 starter nears the line, then the green at a random point before it.' }}">Start Race</button>
     <!-- THE CALL TO THE GRID: who is on their slot, and the way past whoever
          is not. Whoever is still not ready at the start sits that session out,
          so starting without them asks first. -->
@@ -739,7 +739,7 @@
           title="The yellow is out and the field is racing back to the line. The caution goes official when the leader crosses.">RACING BACK TO THE LINE</span>
     <button class="rm-btn rm-btn-green rm-btn-restart" ng-click="callRestart()"
             ng-if="cautionAvailable() &amp;&amp; caution &amp;&amp; !restartPending"
-            title="Restart on this lap: GET READY 100 m out, then the green at a random point in the last 50 m.">Restart</button>
+            title="Restart on this lap: GET READY as the restart leader nears the line, then the green at a random point before it.">Restart</button>
     <button class="rm-btn rm-btn-caution rm-btn-waveoff" ng-click="cancelRestart()"
             ng-if="cautionAvailable() &amp;&amp; caution &amp;&amp; restartPending"
             title="Wave the restart off. The race stays under caution and the board stays frozen.">Cancel restart</button>
@@ -1008,7 +1008,7 @@
               ng-disabled="!canSetRules()">Last checkpoint</button>
     </span>
     <!-- Module 5: the pace lap -->
-    <span class="rm-setting" title="Start the race behind a pace car: the field is released under yellow, forms up, and the green falls as the leader returns to the line.">
+    <span class="rm-setting" title="Start the race behind a pace car: the field is released under yellow, forms up, and the green falls as the P1 starter returns to the line.">
       <label>Pace lap</label>
       <!-- Never armable on a sprint stage, which is driven once from the first
            gate to the last and so has no lap to form up on. The server refuses
@@ -3770,7 +3770,7 @@
       <!-- SHORT, because this is the LAP CLOCK's slot and the badges beside it
            already say which lap it is. On a pace lap this used to read "LAP 1:
            NOT TIMED" next to a badge reading "PACE LAP: NOT SCORED" next to one
-           reading "PACE LAP 40 MPH" -- three things telling a driver the same
+           reading "PACE LAP 50 MPH" -- three things telling a driver the same
            fact, in the one place they have least room to read. What belongs
            HERE is only why there is no time running. -->
       <!-- QUALIFYING ONLY, for the reason the comment above already gives: on a
@@ -3834,14 +3834,14 @@
     <span class="rm-pace-badge" ng-if="caution &amp;&amp; !restartPending"
           title="Full-course caution: hold position, no overtaking. Places are locked in the order the field came back to the line.">CAUTION &middot; POSITIONS FROZEN<b ng-if="cautionLaps"> &middot; LAP {{ cautionLaps }}</b></span>
     <span class="rm-restart-badge" ng-if="caution &amp;&amp; restartPending &amp;&amp; !greenReady"
-          title="A restart is called: GET READY comes as the leader nears the line, then the green at a random point in the last 50 m.">RESTART THIS LAP &middot; GREEN ON THE RUN IN</span>
+          title="A restart is called: GET READY comes as the restart leader nears the line, then the green at a random point before it.">RESTART THIS LAP &middot; GREEN ON THE RUN IN</span>
     <!-- ONE BADGE FOR THE WHOLE FORMATION LAP: what it is, what to do, and that
          it does not count. Three badges used to carry those between them and a
          driver forming up has no time to read three. -->
     <span class="rm-pace-badge" ng-if="pacing &amp;&amp; !greenReady"
-          title="Pace lap: hold position, no overtaking, 40 mph / 64 km/h. It is not timed and is not one of the race laps. GET READY comes as the leader nears the line, then the green at a random point in the last 50 m.">PACE LAP &middot; HOLD &middot; 40 MPH / 64 KM/H &middot; NOT SCORED</span>
+          title="Pace lap: hold position, no overtaking, 50 MPH or 80 KMH. It is not timed and is not one of the race laps. GET READY comes as the P1 starter nears the line, then the green at a random point before it.">PACE LAP &middot; HOLD &middot; 50 MPH OR 80 KMH &middot; NOT SCORED</span>
     <span class="rm-restart-badge" ng-if="greenReady &amp;&amp; (pacing || restartPending)"
-          title="The leader is on the run to the line: the green flag falls at a random point in the last 50 m. Hold position until it does.">GET READY &middot; GREEN FLAG COMING</span>
+          title="The run to the line has begun: the green flag falls at a random point before it. Hold position until it does.">GET READY &middot; GREEN FLAG COMING</span>
     <span class="rm-driverbar-label" ng-if="jokerEnabled">
       JOKER <b ng-class="{'rm-joker-done': jokerTaken}">{{ jokerTaken ? 'DONE (lap ' + jokerLap + ')' : 'PENDING' }}</b>
     </span>

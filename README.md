@@ -153,8 +153,9 @@ green.
 
 Turn on **Pace lap** and Start Countdown becomes **Start Race** instead. The
 field is released under a **yellow flag** with no countdown, told to hold
-position at 40 mph / 64 km/h, and runs a formation lap; the **green flag** falls
-automatically as the leader comes back within 10 m of the start/finish line. The
+position at 50 MPH or 80 KMH, and runs a formation lap; **GET READY** is called
+as the car that started P1 nears the line, and the **green flag** falls at a
+random point just before it. The
 pace lap is not scored and is not one of your laps &mdash; a 5-lap race behind
 the pace car is a formation lap plus 5 racing laps, and the board counts the
 racing ones. A red flag holds the green, and the **Green flag** button ends the
@@ -184,7 +185,7 @@ expect without touching any of it.
 | **[Multi-class racing](docs/REFERENCE.md#multi-class-racing)** | Two car types on one grid, scored as two races. Tag a class on each Garage List entry and every driver in that car is in it: a Class column with per-class positions on the board, and a section per class in the results file. The overall order is unchanged. |
 | **[The blue flag](docs/REFERENCE.md#the-blue-flag)** | Lapped traffic gets signalled instead of only displayed: the backmarker is shown blue when a car a lap up closes on them, and the car doing the lapping is told there is one ahead. Measured on the road rather than off the timing sheet, which are different orders once anybody is lapped. |
 | **[Heats and transfers](docs/REFERENCE.md#heats-and-transfers)** | Run the night as heats into a feature, with a lap count of their own. The field is split by a serpentine draw off qualifying, the top N from each heat transfer, and the feature grid is built from the results &mdash; winners on the front row, interleaved by heat. |
-| **[Pace lap](docs/REFERENCE.md#pace-lap)** | Start the race behind a pace car instead of from the lights: released under yellow, one formation lap at 40 mph / 64 km/h, green flag as the leader returns to the line. The formation lap is not scored and does not count against the distance. |
+| **[Pace lap](docs/REFERENCE.md#pace-lap)** | Start the race behind a pace car instead of from the lights: released under yellow, one formation lap at 50 MPH or 80 KMH, GET READY and a green at a random point as the pole-sitter returns to the line. The formation lap is not scored and does not count against the distance. |
 | **[Rallycross joker laps](docs/REFERENCE.md#rallycross-joker-laps)** | A second gate route that must be taken exactly once per race. Lap 1 is closed, and the server disqualifies anyone who missed it or took it twice. |
 | **[Garage List](docs/REFERENCE.md#vehicle--setup-locking-the-garage-list)** | Lock the session to exact cars *and* exact tunes. Anything else is deleted on spawn and the driver is told why. Give each entry a [name to show](docs/REFERENCE.md#car-names) without changing what it matches. |
 | **[Cup points](docs/REFERENCE.md#cup-points)** | Championship points across several events: races, derbies or both. Scoring presets, qualifying points and bonuses, and standings that survive a server restart. |

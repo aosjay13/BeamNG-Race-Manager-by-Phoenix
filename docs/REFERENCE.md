@@ -595,7 +595,7 @@ the stragglers are taken where they stand and the session closes normally.
    countdown: the field is released under yellow and forms up for a lap, and the
    green falls somewhere on the leader's run back to the line. The two buttons are
    alternatives and only one is ever on screen -- counting a field down to GO and
-   then telling it to hold position at 40 mph is two instructions for the same
+   then telling it to hold position at 50 mph is two instructions for the same
    moment, and a driver obeys whichever they read.
 5. Race. The table now shows **Pos** (live position), the starting grid slot,
    current lap, best race lap and **Led** (laps led), and it re-sorts itself
@@ -1294,8 +1294,9 @@ would quietly stop working for the rest of the race.
 #### The restart, and calling it off
 
 Pressing **Restart** does not go green. It says **the current lap is the
-restart**: GET READY 100 m out and the green at a random point in the last
-50 m, as on the pace lap (see [Pace lap](#pace-lap)), so the field is
+restart**: GET READY as the restart leader nears the line and the green at a
+random point before it, as on the pace lap (see [Pace lap](#pace-lap)), so the
+field is
 packed up and looking at it rather than being waved off round the back of the
 circuit at whatever moment the marshal decided.
 
@@ -1707,22 +1708,28 @@ Press it and:
 
 1. The field is released **immediately**, with no countdown, under a **yellow
    flag**. Chat and the on-screen notice both say: *maintain position and limit
-   your speed to 40 mph / 64 km/h*, and the driver bar carries a
-   `PACE LAP 40 MPH / 64 KM/H` badge for as long as it lasts.
+   your speed to 50 MPH or 80 KMH*, and the driver bar carries a
+   `PACE LAP 50 MPH OR 80 KMH` badge for as long as it lasts.
 2. The field runs a **formation lap**.
-3. **GET READY** is called as the leader comes within **100 m** of the line:
-   a green notice, and the badge and on-screen instruction change to say the
-   green is coming.
-4. The **green flag falls automatically** at a **random point between 1 and
-   50 m** before the line, drawn fresh for every pace lap so the field cannot
+3. **GET READY** is called as the **car that started P1** comes within
+   **50 m** of the line: an amber notice, a beep, and the badge and on-screen
+   instruction change to say the green is coming. No distance is shown.
+4. The **green flag falls automatically** at a **random point between 5 and
+   15 m** before the line, drawn fresh for every pace lap so the field cannot
    learn the spot and jump it. The point is never sent to any client.
 
-   Both only happen once the leader has cleared the **last checkpoint before
+   **The pole-sitter runs the start**, whatever the running order says: a car
+   that gets ahead of P1 on the formation lap does not call GET READY or the
+   green. If P1 is no longer on the pace lap (retired, sat out, or already
+   across the line), the leader on the road takes over, so the green still
+   falls.
+
+   Both only happen once that car has cleared the **last checkpoint before
    the line**: distance alone cannot be trusted earlier, because a back
-   straight can pass within 100 m of the line mid-lap. So on a final sector
-   shorter than 100 m, GET READY comes as the leader clears that checkpoint,
-   and the green point is kept inside the sector. Place the last checkpoint at
-   least 100 m out for the full warning.
+   straight can pass close to the line mid-lap. So on a final sector shorter
+   than 50 m, GET READY comes as P1 clears that checkpoint, and the green point
+   is kept inside the sector. Place the last checkpoint at least 50 m out for
+   the full warning.
 5. Every driver's own crossing of the line then starts **their** lap 1. The
    green is one event for the whole field, but the field is strung out, so the
    lap each driver is on is still decided at the line by that driver.
@@ -1770,9 +1777,13 @@ point-to-point sprint stage is driven once from the first gate to the last and
 has no lap to form up on, so the switch is grayed out there, the server refuses
 it if asked anyway, and loading a sprint stage switches it back off.
 
-The distances are server settings in `config.json`: `paceReadyAt` (100 m,
-GET READY), `paceGreenNear` and `paceGreenFar` (1 and 50 m, the green range; set
-them equal for a fixed point). A restart after a caution uses the same three. On
+The distances are server settings in `Data/config.json` beside the plugin:
+`paceReadyAt` (50 m, GET READY), `paceGreenNear` and `paceGreenFar` (5 and 15 m,
+the green range; set them equal for a fixed point). Edit them with the server
+stopped, or restart it after: the file is read at startup. GET READY is kept at
+least as far out as `paceGreenFar`. A restart after a caution uses the same
+three, measured off the car leading the frozen caution order: the one
+restarting in P1. On
 a track built in the editor and never saved, the server has no checkpoint count
 to find the final sector with, so there is no GET READY and the green falls at
 `paceGreenAt` (10 m) once the leader has first got `paceArmAt` (50 m) away from

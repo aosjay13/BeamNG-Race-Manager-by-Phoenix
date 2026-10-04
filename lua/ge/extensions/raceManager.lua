@@ -244,7 +244,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.18.2'
+local RM_BUILD = '0.18.3'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -2043,10 +2043,10 @@ local function stickyMessage()
     return 'ready', 'GET READY - green flag coming. Hold position until it falls.'
   end
   if session.pacing then
-    return 'pace', 'PACE LAP - hold position, 40 mph / 64 km/h. Get ready called 100 m out.'
+    return 'pace', 'PACE LAP - hold position, 50 MPH or 80 KMH. GET READY comes before the green.'
   end
   if session.restartPending then
-    return 'restart', 'RESTART THIS LAP - hold position. Get ready called 100 m out.'
+    return 'restart', 'RESTART THIS LAP - hold position. GET READY comes before the green.'
   end
   if session.cautionPending then
     return 'caution', 'CAUTION - race back to the line. Positions lock as you complete this lap.'
@@ -10587,7 +10587,7 @@ local function onServerUpdate(rawData)
   -- guesses at.
   if session.pacing and not wasPacing then
     pushNotice('flag', 'PACE LAP',
-      { sub = 'Hold position - 40 mph / 64 km/h', color = 'yellow' })
+      { sub = 'Hold position - 50 MPH or 80 KMH', color = 'yellow' })
   end
   -- AMBER, never green. Drivers could not tell GET READY from the green flag
   -- that follows it a few seconds later, and green means go.
@@ -10610,7 +10610,7 @@ local function onServerUpdate(rawData)
     -- The one warning that matters under a caution: the green is coming, and it
     -- is coming at the line rather than whenever the marshal pressed a button.
     pushNotice('flag', 'RESTART THIS LAP',
-      { sub = 'Hold position - get ready is called 100 m from the line', color = 'yellow' })
+      { sub = 'Hold position - GET READY comes before the green', color = 'yellow' })
   elseif wasRestart and not session.restartPending and session.caution then
     pushNotice('flag', 'RESTART WAVED OFF',
       { sub = 'Stay under caution, hold your position', color = 'yellow' })

@@ -6,6 +6,23 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.18.3 - The pole-sitter brings them to the green
+
+#### Changed
+
+- **The car that started P1 runs the pace lap's start.** GET READY and the
+  green come off the pole-sitter, whatever the running order says: a car that
+  got ahead of P1 on the formation lap was calling them for the field. If P1 is
+  no longer on the pace lap (retired, sat out, or already across), the leader
+  on the road takes over so the green still falls. A restart is still run by
+  the car leading the frozen caution order, the one restarting in P1.
+- **GET READY at 50 m, the green at a random point 5 to 15 m out**, down from
+  100 m and 1 to 50 m. Still `paceReadyAt`, `paceGreenNear` and `paceGreenFar`
+  in `config.json`; a server that already has the file keeps its own numbers.
+- **No distances in the messages.** GET READY, the pace lap and the restart call
+  say the green is coming without saying where.
+- **The pace speed reads 50 MPH or 80 KMH**, was 40 mph / 64 km/h.
+
 ## 0.18.2 - Lights you can see, a menu, and laps in the results
 
 #### Added

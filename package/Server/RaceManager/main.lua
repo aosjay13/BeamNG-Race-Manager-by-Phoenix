@@ -97,14 +97,14 @@ local CFG = {
   -- Now only the fallback: the green point on a track the server holds no route
   -- for, where the random point below cannot be placed.
   paceGreenAt   = 10.0,
-  -- THE RUN TO THE GREEN, on a track the server knows. GET READY as the leader
-  -- comes within paceReadyAt of the line on the final sector, then the green at
-  -- a random point between paceGreenNear and paceGreenFar, drawn fresh for each
-  -- pace lap and restart so the field cannot learn it. Set the two equal for a
-  -- fixed point.
-  paceReadyAt   = 100.0,
-  paceGreenNear = 1.0,
-  paceGreenFar  = 50.0,
+  -- THE RUN TO THE GREEN, on a track the server knows. GET READY as the car
+  -- that started P1 comes within paceReadyAt of the line on the final sector,
+  -- then the green at a random point between paceGreenNear and paceGreenFar,
+  -- drawn fresh for each pace lap and restart so the field cannot learn it. Set
+  -- the two equal for a fixed point. All three are config.json settings.
+  paceReadyAt   = 50.0,
+  paceGreenNear = 5.0,
+  paceGreenFar  = 15.0,
   -- ...and how far the leader must first get AWAY from the line before that
   -- means anything. The field starts the pace lap standing at the line, so
   -- distance-to-line is near zero at the release as well as at the end of the
@@ -1825,7 +1825,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.18.2'
+local RM_BUILD = '0.18.3'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -4952,7 +4952,7 @@ local function releaseField(pacing)
   -- nothing to half the grid is a number half the grid ignores.
   if race.pacing then
     notifyField('flag', 'PACE LAP', 'Maintain position and limit '
-      .. 'your speed to 40 mph / 64 km/h. No overtaking. The GREEN FLAG can fall '
+      .. 'your speed to 50 MPH or 80 KMH. No overtaking. The GREEN FLAG can fall '
       .. 'anywhere on the run to the start/finish line: be ready.', 'yellow')
   elseif outLapOwed() and isQualiSession() then
     notifyField('flag', 'GO! Your first lap is an OUT LAP', 'It is '
@@ -5063,7 +5063,7 @@ end
 --
 -- On a final sector shorter than paceReadyAt the call comes as the leader
 -- clears the last checkpoint: distance alone cannot be trusted before that,
--- because a back straight can pass within 100 m of the line mid-lap.
+-- because a back straight can pass close to the line mid-lap.
 function race.greenApproach(leader)
   if not race.greenReady and leader.distNext <= CFG.paceReadyAt then
     race.greenReady = true
@@ -5086,8 +5086,13 @@ end
 --
 -- Returns nil when nobody is left on the pace lap, which is a real state (the
 -- whole field has crossed) and is handled by the caller rather than here.
+--
+-- THE CAR THAT STARTED P1 RUNS THE START, whatever the order says. A car that
+-- got ahead of the pole-sitter on the formation lap was calling GET READY and
+-- the green for the field. Anyone else only once P1 is off the pace lap
+-- (retired, sat out, or already across), so the green still falls.
 local function paceLeader()
-  local best = nil
+  local best, pole = nil, nil
   for _, rec in pairs(players) do
     -- NOT gated on having reported a distance yet, and that is the difference
     -- between a pace lap and no pace lap at all. The field is released before
@@ -5098,10 +5103,11 @@ local function paceLeader()
     -- with no distance as infinitely far away, so they sort last and cost
     -- nothing; the caller waits for a distance rather than for a driver.
     if onTrack(rec) and rec.outLap then
+      if rec.gridPos == 1 then pole = rec end
       if not best or raceOrderLess(rec, best) then best = rec end
     end
   end
-  return best
+  return pole or best
 end
 
 -- The pace lap, one tick at a time.
@@ -5144,9 +5150,9 @@ local function paceLapWatch()
   -- be judged from a distance we do not have, so the pace lap simply waits.
   if not leader.distNext then return end
   if race.slotCount >= 2 then
-    -- THE FINAL SECTOR OPENS THE RUN IN, the restart's rule. GET READY at
-    -- 100 m is further out than the arming distance below, so "got away and
-    -- came back" by distance alone would call it seconds after the release.
+    -- THE FINAL SECTOR OPENS THE RUN IN, the restart's rule. GET READY can be
+    -- as far out as the arming distance below, so "got away and came back" by
+    -- distance alone could call it seconds after the release.
     if (leader.cpCleared or 0) < race.slotCount - 1 then return end
     if not race.paceArmed then
       race.paceArmed = true
@@ -5160,7 +5166,7 @@ local function paceLapWatch()
   else
     -- No route on the server, so no checkpoint count to trust: the distance
     -- latch and the fixed green point, as before the zone existed. No GET
-    -- READY either: the latch trips 50 m out, already inside 100.
+    -- READY either: without the final sector it cannot be placed.
     if not race.paceArmed then
       if leader.distNext > CFG.paceArmAt then
         race.paceArmed = true
@@ -5197,7 +5203,7 @@ end
 -- The other half of the pace lap rule: with it armed the panel offers this
 -- INSTEAD of Start Countdown, because a formation lap and a standing start are
 -- alternatives rather than a sequence. Counting a field down to GO and then
--- telling it to hold position at 40 mph is two instructions for one moment, and
+-- telling it to hold position at 50 mph is two instructions for one moment, and
 -- a driver obeys whichever of them they read.
 --
 -- Guarded exactly as Start Countdown is -- admin, on the grid, garage audited --
@@ -11249,7 +11255,7 @@ function RM_Tick()
   -- THE PACE LAP'S ONE JOB: watch the leader home and drop the green.
   --
   -- Every tick rather than every broadcast, because this is a distance the field
-  -- closes at pace speed -- ten meters is about half a second at 64 km/h, and
+  -- closes at pace speed -- ten meters is under half a second at 80 km/h, and
   -- resolving that on a three-tick cadence would wave the flag anywhere in the
   -- ten meters after the line as easily as before it.
   --

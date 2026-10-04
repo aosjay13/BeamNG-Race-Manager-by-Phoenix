@@ -3,9 +3,11 @@
 --
 -- Three reported problems, pinned here:
 --   * the green fell at the same spot every pace lap, 10 m from the line, so a
---     field could learn it and jump it. Now GET READY is called 100 m out and
---     the green falls at a random point 1 to 50 m out, drawn per pace lap and
---     per restart;
+--     field could learn it and jump it. Now GET READY is called 50 m out and
+--     the green falls at a random point 5 to 15 m out, drawn per pace lap and
+--     per restart, all three from config.json;
+--   * a car that got ahead of the pole-sitter on the formation lap called GET
+--     READY and the green. The car that started P1 runs the start now;
 --   * the race clock ran from the release, so a pace lap showed on the clock
 --     and in every finish time. It runs from the green now;
 --   * nothing could stop the clock when a race was stopped. A red flag does.
@@ -136,14 +138,71 @@ for _ = 1, 8 do
 end
 local distinct = 0
 for _ in pairs(seen) do distinct = distinct + 1 end
-check(readyLo >= 99.5 and readyHi <= 100, string.format(
-  'GET READY is called as the leader comes within 100 m of the line (got %s to %s)',
+check(readyLo >= 49.5 and readyHi <= 50, string.format(
+  'GET READY is called as the leader comes within 50 m of the line (got %s to %s)',
   readyLo, readyHi))
-check(lo >= 0.5 and hi <= 50, string.format(
-  'every green falls between 1 and 50 m before the line (got %s to %s)', lo, hi))
+check(lo >= 4.5 and hi <= 15, string.format(
+  'every green falls between 5 and 15 m before the line (got %s to %s)', lo, hi))
 check(distinct >= 3, string.format(
   'and not at the same spot each time: eight pace laps, %d different points', distinct))
 check(lastState.greenReady == nil, 'GET READY is cleared once the green has fallen')
+
+-- THE CAR THAT STARTED P1 RUNS THE START. Here another car is ahead of the
+-- pole-sitter on the final sector, closer to the line: it leads the running
+-- order, and it must not call GET READY or the green for the field.
+do
+  RM_onResetLeaderboard(0)
+  RM_onSetSpectating(0, '{"spectating":true}')
+  RM_onGenerateGrid(0)
+  RM_onStartRace(0)
+  local pole, other
+  for _, d in ipairs(lastState.drivers) do
+    if d.gridPos == 1 then pole = d.id elseif d.gridPos and not other then other = d.id end
+  end
+  check(pole ~= nil and other ~= nil, 'found the pole-sitter and a car behind them')
+  readyAt = nil
+  for d = 120, 1, -0.5 do
+    report(other, 1, 3, d)
+    report(pole, 1, 3, 150)
+    RM_Tick()
+  end
+  check(lastState.pacing == true,
+    'a car ahead of the pole-sitter reaching the line does not drop the green')
+  check(lastState.greenReady == nil, 'nor call GET READY')
+  local greenAt
+  for d = 150, 0, -0.5 do
+    currentDist = d
+    report(pole, 1, 3, d)
+    RM_Tick()
+    if lastState.pacing == false then greenAt = d break end
+  end
+  check(readyAt ~= nil and readyAt <= 50 and readyAt >= 49.5, string.format(
+    'GET READY comes off the pole-sitter, 50 m out (got %s)', tostring(readyAt)))
+  check(greenAt ~= nil and greenAt >= 4.5 and greenAt <= 15, string.format(
+    'and the green as the pole-sitter reaches the drawn point (got %s)', tostring(greenAt)))
+end
+
+-- ...UNLESS P1 IS NO LONGER ON THE PACE LAP. A pole-sitter who retires must not
+-- leave the field under yellow for ever: the leader on the road takes over.
+do
+  RM_onResetLeaderboard(0)
+  RM_onSetSpectating(0, '{"spectating":true}')
+  RM_onGenerateGrid(0)
+  RM_onStartRace(0)
+  local pole, other
+  for _, d in ipairs(lastState.drivers) do
+    if d.gridPos == 1 then pole = d.id elseif d.gridPos and not other then other = d.id end
+  end
+  RM_onRetire(pole)
+  local greenAt
+  for d = 150, 0, -0.5 do
+    report(other, 1, 3, d)
+    RM_Tick()
+    if lastState.pacing == false then greenAt = d break end
+  end
+  check(greenAt ~= nil and greenAt >= 4.5 and greenAt <= 15, string.format(
+    'with P1 retired the green comes off the leader on the road (got %s)', tostring(greenAt)))
+end
 
 -- A short final sector caps the zone inside it. Past its length the green
 -- would fall at the last checkpoint every time. GET READY cannot be trusted
@@ -156,8 +215,8 @@ for _ = 1, 6 do
   if d and d > shortHi then shortHi = d end
   shortReady = r
 end
-check(shortHi <= 27 and shortHi >= 0.5, string.format(
-  'on a 30 m final sector the green stays inside it, at most 27 m out (got %s)', shortHi))
+check(shortHi <= 15 and shortHi >= 4.5, string.format(
+  'on a 30 m final sector the green still falls 5 to 15 m out (got %s)', shortHi))
 check(shortReady ~= nil and shortReady <= 30, string.format(
   'and GET READY comes as the leader starts that sector (got %s)', tostring(shortReady)))
 
