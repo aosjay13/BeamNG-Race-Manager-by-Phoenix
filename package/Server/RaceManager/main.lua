@@ -1799,16 +1799,17 @@ local RM_PROTOCOL = 2
 -- a call to a scope function a stale app.js does not have, so a button does
 -- nothing at all, with no error in any console.
 --
--- Bump this in ALL FIVE places on EVERY change that needs redeploying -- not
+-- Bump this in ALL SIX places on EVERY change that needs redeploying -- not
 -- just ones that change the client/server contract. That narrower rule is what
 -- let two client-side fixes ship under one stamp: the build line read as
 -- matching while a client was a fix behind, which is precisely the situation
--- this was added to make visible. The five are:
+-- this was added to make visible. The six are:
 --
 --   server/RaceManager/main.lua          RM_BUILD   (here)
 --   lua/ge/extensions/raceManager.lua    RM_BUILD
 --   ui/modules/apps/RaceManager/app.js   APP_BUILD
 --   ui/modules/apps/RaceManager/app.json version
+--   ui/modules/apps/RaceManagerLights/app.json version
 --   tools/deploy.py                      RELEASE_NAME
 --
 -- The fifth was outside the check until 0.9.1 and duly went stale: the build
@@ -1824,7 +1825,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.18.1'
+local RM_BUILD = '0.18.2'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -2297,9 +2298,12 @@ end
 -- SendChatMessage(-1, ...) survives only where the message is genuinely for
 -- everyone AND is a record rather than an instruction -- the results file path
 -- being the clearest case.
-local function notifyField(kind, msg, sub)
+-- `color` picks the flash for a flag notice. Without one it flashes gray, which
+-- is how GREEN FLAG - GO! once looked like nothing in particular.
+local function notifyField(kind, msg, sub, color)
   MP.TriggerClientEvent(-1, 'RM_Notice', Util.JsonEncode({
     kind = tostring(kind or 'session'), msg = tostring(msg or ''), sub = sub,
+    color = color,
   }))
 end
 
@@ -2729,23 +2733,53 @@ local function sessionAwards(final)
   return awards
 end
 
+-- How long this race is, in words. One phrasing, so the console line, the
+-- results header and anything added later cannot drift apart. `laps` defaults
+-- to the race setting; the results pass the distance the session actually ran.
+local function raceLengthLabel(laps)
+  laps = laps or race.totalLaps
+  if race.pointToPoint then return 'point to point, driven once' end
+  if race.raceMode == 'timed' then
+    return math.floor(race.raceTimeLimit / 60) .. ' min + 1 lap'
+  end
+  if race.raceMode == 'endurance' then
+    return laps .. ' laps or ' .. math.floor(race.raceTimeLimit / 60)
+      .. ' min + 1 lap, whichever comes first'
+  end
+  return laps .. (laps == 1 and ' lap' or ' laps')
+end
+
 local function buildResultsText(cupRound)
   local quali = qualiClassification()
   local final = raceClassification()
   local lines = {}
   local function add(s) lines[#lines + 1] = s end
 
+  -- LAPS RUN, per driver, finishers and retirements alike. currentLap counts
+  -- crossings: a finisher's stops on the lap they finished, everyone else's is
+  -- one past the laps they completed. A pace lap is a crossing but not a lap.
+  local pace = race.racePaceLapRun and 1 or 0
+  local function lapsRun(rec)
+    local n = (rec.currentLap or 0) - (rec.finishTime and 0 or 1) - pace
+    return n > 0 and n or 0
+  end
+  local leaderLaps = 0
+  for _, rec in ipairs(final) do
+    local n = lapsRun(rec)
+    if n > leaderLaps then leaderLaps = n end
+  end
+  local distance = raceDistance()
+  -- A timed race has no distance until it is driven, so the laps it ran are
+  -- its distance. A lap race says so only when it was stopped short.
+  local ran = not race.pointToPoint and (race.raceMode ~= 'laps' or leaderLaps < distance)
+
   add('==================================================')
   add(' RACE MANAGER - SESSION RESULTS')
   add(' ' .. os.date('%Y-%m-%d %H:%M:%S'))
-  -- THE PACE LAP IS NAMED, because without it the header and the Laps column
-  -- disagree: a three lap race run behind the pace car puts 4 beside every
-  -- finisher, and a results file is read months later by somebody who was not
-  -- there to know why. Same reason the qualifying Format line spells out its own
-  -- out lap, a few lines below.
-  add(string.format(' Race distance: %d lap%s%s | Drivers: %d',
-    race.totalLaps, race.totalLaps == 1 and '' or 's',
-    race.racePaceLapRun and ' + pace lap (not scored, so the Laps column reads one higher)' or '',
+  add(string.format(' Race distance: %s%s%s | Drivers: %d',
+    raceLengthLabel(distance),
+    race.racePaceLapRun and ' + pace lap (not counted in Laps)' or '',
+    ran and string.format(', %d lap%s run', leaderLaps, leaderLaps == 1 and '' or 's') or '',
     #final))
   -- HOW NEUTRALISED THE RACE WAS. A race with four yellows in it read exactly
   -- like a clean one once it was over, which makes a lap chart impossible to
@@ -2797,19 +2831,13 @@ local function buildResultsText(cupRound)
   -- NO "Line" COLUMN. A branch gate is another way through a checkpoint rather
   -- than a route a driver is on, so there is no lane to name -- and a track with
   -- branch gates now exports exactly the table an ordinary race does.
-  -- 'Finish' IS PADDED ONLY WHEN SOMETHING FOLLOWS IT, and that is not fussiness.
-  -- The data rows below write the finish through '%-10s'; this header wrote it
-  -- through a bare '%s', so every optional column after it sat four characters
-  -- left of its own values. That was true of Joker and Resets before a Class
-  -- column existed to make it obvious.
-  --
-  -- Padding it unconditionally would put four trailing spaces on the header of
-  -- every plain race that has no column after it at all, and a plain race is
-  -- supposed to export byte-for-byte the table it always did.
+  -- 'Race Time' IS PADDED ONLY WHEN SOMETHING FOLLOWS IT. The data rows write it
+  -- through '%-10s', so a bare header shifts every optional column after it;
+  -- padding it always leaves trailing spaces on a plain race's header.
   local tail = classCol .. jokerCol .. resetCol
-  add(string.format('%-5s %-6s %-22s %-10s %-9s %s%s',
-    'Pos', 'Start', 'Driver', 'Best Lap', 'Laps Led',
-    tail ~= '' and string.format('%-10s', 'Finish') or 'Finish', tail))
+  add(string.format('%-5s %-6s %-22s %-10s %-9s %-5s %s%s',
+    'Pos', 'Start', 'Driver', 'Best Lap', 'Laps Led', 'Laps',
+    tail ~= '' and string.format('%-10s', 'Race Time') or 'Race Time', tail))
   -- Fastest lap, half-way leader and Hard Charger, decided once for this
   -- session (see sessionAwards) rather than worked out again here.
   local awards = sessionAwards(final)
@@ -2852,9 +2880,9 @@ local function buildResultsText(cupRound)
     local classVal = classed and string.format(' %-12s',
       rec.class and (rec.class .. (rec.classPos and (' P' .. rec.classPos) or ''))
         or '-') or ''
-    add(string.format('%-5s %-6s %-22s %-10s %-9d %-10s%s%s%s%s%s',
+    add(string.format('%-5s %-6s %-22s %-10s %-9d %-5d %-10s%s%s%s%s%s',
       pos, rec.gridPos and ('P' .. rec.gridPos) or '-',
-      displayName(rec), fmtLap(rec.raceBest), rec.lapsLed or 0, finish,
+      displayName(rec), fmtLap(rec.raceBest), rec.lapsLed or 0, lapsRun(rec), finish,
       classVal, jokerVal, resetVal, aliasNote(rec), tag))
   end
   if #final == 0 then add('(no drivers)') end
@@ -2884,8 +2912,8 @@ local function buildResultsText(cupRound)
     for _, cls in ipairs(order) do
       add('')
       add('--- CLASS: ' .. cls .. ' ---')
-      add(string.format('%-5s %-6s %-22s %-10s %s',
-        'Pos', 'Start', 'Driver', 'Best Lap', 'Finish'))
+      add(string.format('%-5s %-6s %-22s %-10s %-5s %s',
+        'Pos', 'Start', 'Driver', 'Best Lap', 'Laps', 'Race Time'))
       local n = 0
       for _, rec in ipairs(final) do
         if rec.class == cls then
@@ -2901,9 +2929,9 @@ local function buildResultsText(cupRound)
           end
           local cpos = (rec.status == 'dsq') and 'DSQ'
             or (rec.finishTime and ('P' .. (rec.classPos or n)) or 'DNF')
-          add(string.format('%-5s %-6s %-22s %-10s %s%s',
+          add(string.format('%-5s %-6s %-22s %-10s %-5d %s%s',
             cpos, rec.gridPos and ('P' .. rec.gridPos) or '-',
-            displayName(rec), fmtLap(rec.raceBest), finish,
+            displayName(rec), fmtLap(rec.raceBest), lapsRun(rec), finish,
             (n == 1 and rec.finishTime) and '  << CLASS WINNER' or ''))
         end
       end
@@ -3668,7 +3696,7 @@ local function armRaceFinalLap(fromLap, why)
   race.lastLapNum = fromLap
   broadcastState()
   notifyField('flag', 'FINAL LAP', 'The leader has taken the line. '
-    .. 'Everyone still running finishes at the end of lap ' .. fromLap .. '.')
+    .. 'Everyone still running finishes at the end of lap ' .. fromLap .. '.', 'white')
   print(string.format('[RaceManager] Timed race: final lap is lap %d (%s), %d driver(s) out',
     fromLap, why or 'leader crossed after the clock expired', driversOnTrack()))
 end
@@ -4470,20 +4498,6 @@ end
 --
 -- Refused while a session is under way (adminPayload's `idle`): changing the
 -- distance of a race that is being driven is not a setting, it is a result.
--- How long this race is, in words. One phrasing, so the console line, the
--- results header and anything added later cannot drift apart.
-local function raceLengthLabel()
-  if race.pointToPoint then return 'point to point, driven once' end
-  if race.raceMode == 'timed' then
-    return math.floor(race.raceTimeLimit / 60) .. ' min + 1 lap'
-  end
-  if race.raceMode == 'endurance' then
-    return race.totalLaps .. ' laps or ' .. math.floor(race.raceTimeLimit / 60)
-      .. ' min + 1 lap, whichever comes first'
-  end
-  return race.totalLaps .. ' laps'
-end
-
 function RM_onSetRaceLimits(pid, rawData)
   local data = adminPayload(pid, rawData, true)
   if not data then return end
@@ -4939,10 +4953,10 @@ local function releaseField(pacing)
   if race.pacing then
     notifyField('flag', 'PACE LAP', 'Maintain position and limit '
       .. 'your speed to 40 mph / 64 km/h. No overtaking. The GREEN FLAG can fall '
-      .. 'anywhere on the run to the start/finish line: be ready.')
+      .. 'anywhere on the run to the start/finish line: be ready.', 'yellow')
   elseif outLapOwed() and isQualiSession() then
     notifyField('flag', 'GO! Your first lap is an OUT LAP', 'It is '
-      .. 'not timed and does not count. Timing starts as you cross the line.')
+      .. 'not timed and does not count. Timing starts as you cross the line.', 'green')
   elseif outLapOwed() then
     -- NO FIELD NOTICE FOR A RACE. "Your first lap counts but is not timed" is a
     -- distinction about the results table, put in front of a driver at the exact
@@ -4990,7 +5004,7 @@ local function dropGreenFlag(why)
   race.flag    = 'green'
   race.greenAt = race.time
   notifyField('flag', 'GREEN FLAG - GO!', 'The pace lap is over '
-    .. 'and the race is on.')
+    .. 'and the race is on.', 'green')
   print(string.format('[RaceManager] GREEN FLAG at %.1fs: %s', race.time,
     why or 'pace lap complete'))
   broadcastState()

@@ -49,6 +49,7 @@ CLIENT_TREES = [
     'scripts/raceManager',
     'lua/ge/extensions',
     'ui/modules/apps/RaceManager',
+    'ui/modules/apps/RaceManagerLights',
 ]
 
 
@@ -84,7 +85,7 @@ def server_files():
     )
     found.sort(key=lambda f: (f != SERVER_PLUGIN, f))
     return found
-RELEASE_NAME = 'RaceManager-v0.18.1.zip'
+RELEASE_NAME = 'RaceManager-v0.18.2.zip'
 
 # Loose Race Manager files that collect in a server root from hand-installs.
 # Other mods' files are never in this list: tidying somebody else's install is

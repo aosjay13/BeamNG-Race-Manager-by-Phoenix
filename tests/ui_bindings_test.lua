@@ -716,6 +716,10 @@ local cupButtons = 0
 for _ in html:gmatch('selectAdminTab%(\'cup\'%)') do
   cupButtons = cupButtons + 1
 end
+-- The tab row is the menu bar now, and its items go through menuTab.
+for _ in html:gmatch('menuTab%(\'cup\'%)') do
+  cupButtons = cupButtons + 1
+end
 expect(cupButtons == 1,
   'the single tab row offers exactly one Cup button (found ' .. cupButtons .. ')')
 expect(html:find('ng-if="isAdminTab(\'cup\')"', 1, true) ~= nil,
@@ -1419,7 +1423,26 @@ do
       'the client pushes a "' .. colour .. '" notice but the stylesheet has no '
         .. 'rm-flash-' .. colour .. ', so it renders with no background')
   end
+  -- The server's flag notices name a color too, as notifyField's 4th argument.
+  local server = readFile('server/RaceManager/main.lua')
+  local n = 0
+  for colour in server:gmatch("notifyField%('flag',.-, '(%a+)'%)") do
+    n = n + 1
+    expect(html:find('rm%-flash%-' .. colour) ~= nil,
+      'the server sends a "' .. colour .. '" flag but there is no rm-flash-' .. colour)
+  end
+  expect(n >= 3, 'found the server flag notice colors, got ' .. n)
 end
+
+-- THE COLOR HAS TO REACH THE FLASH. Every flag is kind 'flag', so a panel that
+-- takes the color from the kind paints them all one gray, which is how GET
+-- READY and GREEN FLAG looked identical for months.
+expect(js:find("data.sub, data.color)", 1, true) ~= nil,
+  'the notice handler passes the color the client chose')
+expect(js:find("color: color || st.color", 1, true) ~= nil,
+  'and the queued notice wears it')
+expect(js:find("flag:%s*{[^}]*replace: true") ~= nil,
+  'a flag replaces the flag before it instead of queuing behind it')
 
 -- RED IS ITS OWN INSTRUMENT, in both sessions, and it is MARKED rather than
 -- removed while it is out: one button, lit when the red is flying, and pressing
@@ -2602,6 +2625,87 @@ do
     'and the queue honors that')
   expect(html:find('{{ pitClock() | number:1 }}s', 1, true) ~= nil,
     'the IN THE PITS clock runs off the local clock, not the last pushed value')
+end
+
+-- ---------------------------------------------------------------------------
+-- THE MENU BAR
+-- ---------------------------------------------------------------------------
+-- It replaced the admin tab row and the always-on sections. What has to hold:
+-- every tab is still reachable, the in-world editor follows the PANEL rather
+-- than the remembered tab, and opening a panel never hides READY or a banner.
+do
+  local bar = html:match('<div class="rm%-menubar" ng%-if="([^"]*)"')
+  expect(bar ~= nil and bar:find('!minimalMode()', 1, true) and bar:find('!broadcastMode()', 1, true),
+    'the menu bar is off the driver HUD and the broadcast board')
+  local tabs = js:match('var TABS = (%b{})') or ''
+  local n = 0
+  for tab in tabs:gmatch('(%a+):%s*true') do
+    n = n + 1
+    local count = 0
+    for _ in html:gmatch("menuTab%('" .. tab .. "'%)") do count = count + 1 end
+    expect(count == 1, 'the ' .. tab .. ' tab has exactly one menu entry (found ' .. count .. ')')
+  end
+  expect(n == 9, 'checked every admin tab (found ' .. n .. ')')
+  expect(js:find("var editing = $scope.isAdmin && !$scope.broadcastMode() && $scope.menu.open === 'tab';", 1, true) ~= nil,
+    'the in-world editor is on only while its panel is open, not while its tab is remembered')
+  -- Hidden while a panel is open: the board and the controls, and nothing else.
+  local hides = html:match('(%.rm%-menu%-open > [^{]-){%s*display:%s*none;%s*}') or ''
+  for _, cls in ipairs({ 'rm-table-wrap', 'rm-controls', 'rm-entry', 'rm-drag-ladder' }) do
+    expect(hides:find('.' .. cls, 1, true) ~= nil, 'an open panel hides .' .. cls)
+  end
+  for _, cls in ipairs({ 'rm-readybar', 'rm-spectator-bar', 'rm-pit', 'rm-ghost',
+                         'rm-notice', 'rm-vehicle-error', 'rm-mapvote-live' }) do
+    expect(not hides:find('.' .. cls, 1, true), 'an open panel never hides .' .. cls)
+    expect(html:find('%.rm%-root > %.' .. cls:gsub('%-', '%%-') .. '[,%s]') ~= nil,
+      '.' .. cls .. ' is stacked above the panel, so it stays in view')
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- THE LIGHTS APP
+-- ---------------------------------------------------------------------------
+-- A second app in the same zip. BeamNG lists an app only with all four files,
+-- and the directive named in app.json has to be the one app.js registers.
+do
+  local dir = 'ui/modules/apps/RaceManagerLights/'
+  for _, f in ipairs({ 'app.js', 'app.html', 'app.json', 'app.png' }) do
+    local h = io.open(dir .. f, 'rb')
+    expect(h ~= nil, 'the Lights app has ' .. f)
+    if h then h:close() end
+  end
+  local ljs, lhtml, ljson = readFile(dir .. 'app.js'), readFile(dir .. 'app.html'), readFile(dir .. 'app.json')
+  local directive = ljson:match('"directive"%s*:%s*"([%w]+)"')
+  expect(directive ~= nil and ljs:find(".directive('" .. directive .. "'", 1, true) ~= nil,
+    'app.json names the directive app.js registers')
+  -- NO BINDINGS is the whole cost argument for this app.
+  expect(not lhtml:find('{{', 1, true) and not lhtml:find('ng%-'),
+    'the Lights template binds nothing: it is drawn by classes set from app.js')
+  expect(not ljs:find('$evalAsync', 1, true) and not ljs:find('$apply', 1, true),
+    'and app.js never starts a digest')
+  expect(ljs:find("$scope.$on('RaceManagerLights'", 1, true) ~= nil,
+    'it listens for the one event lights.lua pushes')
+  -- Every lamp class app.js writes has a color rule.
+  for c in ljs:gmatch("lamps: '([%-%a]+)'") do
+    for ch in c:gmatch('%a') do
+      if ch ~= 'c' then
+        expect(lhtml:find('%.rml%-' .. ch .. ' {') ~= nil, 'lamp color rml-' .. ch .. ' has a rule')
+      end
+    end
+  end
+  -- A light Lua can send that the app has no pattern for would draw as idle.
+  local lua = readFile('lua/ge/extensions/raceManager/lights.lua')
+  for light in lua:gmatch("return '(%a+)'") do
+    -- 'count' .. n is composed: the app has count1 to count3.
+    local names = light == 'count' and { 'count1', 'count2', 'count3' } or { light }
+    for _, name in ipairs(names) do
+      if name ~= 'tree' and name ~= 'off' then
+        expect(ljs:find(name .. ':', 1, true) ~= nil, 'the app has a pattern for the "' .. name .. '" light')
+      end
+    end
+  end
+  for moment in (lua:match('local HOLD = (%b{})') or ''):gmatch('(%a+)%s*=') do
+    expect(ljs:find(moment .. ':', 1, true) ~= nil, 'the app has a pattern for the "' .. moment .. '" moment')
+  end
 end
 
 if fails == 0 then

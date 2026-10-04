@@ -13,6 +13,7 @@ The BeamMP server has no physics access, so the mod is split in three:
 | Mod entry point | `scripts/raceManager/modScript.lua` | In-game (runs at mod mount) | Loads the client bridge - BeamNG **never** auto-loads GE extensions shipped in a mod zip |
 | Client bridge | `lua/ge/extensions/raceManager.lua` | In-game GE Lua (LuaJIT / 5.1) | Waypoint editor, local finish-line detection (the server has no physics), the drag christmas tree and its reaction timing, relays server broadcasts to the UI |
 | UI app | `ui/modules/apps/RaceManager/` | In-game UI (Angular) | Race controls, live driver table, waypoint editor panel |
+| Lights app | `ui/modules/apps/RaceManagerLights/` | In-game UI (Angular, no bindings) | Start lights, flags and the drag tree in a box of their own. Draws the one light `raceManager/lights.lua` pushes on change, which also plays the start sounds |
 
 Event flow: local car crosses the start/finish gate → `RM_QualiLap`/`RM_Lap`
 to server → server scores it on its own clock → `RM_Update` broadcast to all

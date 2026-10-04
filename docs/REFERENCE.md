@@ -95,7 +95,7 @@ The header badge says which you are: green **ADMIN**, amber **MODERATOR**.
 **The moderator password ships empty, which means off.** Nothing changes on a
 server that never sets one: the password already in `config.json` is the admin
 password and keeps every right it had. To hand out the narrower one, log in as
-admin, open the **⚙** tab and fill in **Moderator password**. Leaving that box
+admin, open the **Admin** panel and fill in **Moderator password**. Leaving that box
 empty and pressing **Set Moderator** turns the tier off again.
 
 **Changing a password does not sign anybody out** - an admin rotating one mid
@@ -143,7 +143,7 @@ retiring, above.
 > The server ships with a **default admin password of `phoenix`** and **no
 > moderator password** (both at the top of `server/RaceManager/main.lua`).
 > **Change the admin one before your first public session:** log in, then use
-> the **Admin password** bar in the **⚙** tab - it takes effect immediately and
+> the **Admin password** bar in the **Admin** panel - it takes effect immediately and
 > is written to `config.json`, so it survives a restart.
 
 ### Step 2 - Build a track
@@ -326,8 +326,8 @@ nothing else - a later reset still goes wherever the reset ruleset says.
 Every stall in the lane is drawn as a box; only the nearest gets the stop bar,
 the chevron and the two-band walls. With a **Pit In** gate placed, the stalls
 appear only once a driver has crossed it. That gate carries a large white **P**
-across its face and the words **PIT IN**, the one gate a driver sees with text
-on it; the exit gate is labeled **PIT OUT**.
+across its face and no text; the exit gate is labeled **PIT OUT**. The editor
+still labels both, numbered.
 
 #### Placing the starting grid
 
@@ -616,10 +616,19 @@ When the race closes, the server automatically writes a results file
 `Resources/Server/RaceManager/results/` and announces the path in chat
 ready for league standings or a broadcast overlay.
 
-The race table records **Pos, Start, Driver, Best Lap, Laps Led, Finish** (plus
-Joker and Resets columns when those regulations are armed). `Start` is the grid
-slot the driver lined up on, which is what makes a finishing position readable
-P2 means something very different from eighth on the grid than it does from pole.
+The race table records **Pos, Start, Driver, Best Lap, Laps Led, Laps, Race
+Time** (plus Joker and Resets columns when those regulations are armed). `Start`
+is the grid slot the driver lined up on, which is what makes a finishing position
+readable: P2 means something very different from eighth on the grid than it does
+from pole.
+
+`Laps` is the racing laps each driver completed, finishers and retirements
+alike, so a DNF shows how far they got. A pace lap is not counted. `Race Time` is
+the finish time from the green; for a retirement it holds the reason instead.
+
+The header gives the distance. A timed race has none until it is driven, so it
+reads `10 min + 1 lap, 12 laps run`, the laps being the winner's. A lap race
+adds `laps run` only when it was stopped short of its distance.
 
 Underneath it, two awards:
 
@@ -628,11 +637,11 @@ Underneath it, two awards:
   their grid slot and the flag.
 
 ```
-Pos   Start  Driver                 Best Lap   Laps Led  Finish
-P1    P3     Cara                   1:30.000   1         0:00.000    << RACE WINNER
-P2    P1     Alice                  1:32.000   0         0:00.100
-P3    P2     Dan                    1:33.000   0         0:00.200
-DNF   P4     Erin                   1:34.000   0         DNF - Disconnected (was P3)
+Pos   Start  Driver                 Best Lap   Laps Led  Laps  Race Time
+P1    P3     Cara                   1:30.000   1         5     7:41.200    << RACE WINNER
+P2    P1     Alice                  1:32.000   4         5     7:41.300
+P3    P2     Dan                    1:33.000   0         5     7:45.900
+DNF   P4     Erin                   1:34.000   0         3     DNF - Disconnected (was P3)
 
  HALF-WAY LEADER: Alice  (led at lap 3 of 5)
  HARD CHARGER: Cara  (P3 -> P1, +2 places)
@@ -2342,7 +2351,7 @@ but ending the cup clears them.
 
 It is **off by default and entirely optional** - with no cup running, races
 behave exactly as they do without the feature. Everything below lives on the
-**Cup** tab under Race mode.
+**Cup** panel on the menu bar.
 
 ### Running a cup
 
@@ -2576,74 +2585,96 @@ they survive a reconnect and a server restart like everything else.
 > what actually happened. The cup's round count is deliberately left alone;
 > renumbering later rounds to close the gap would hide the correction.
 
-## The admin panel
+## The menu bar
 
-**One tab row**, and the panel a tab opens decides everything under it:
+One row under the title bar holds everything that is not the race in front of
+you. Each item opens its panel right under the row, and the board and the
+session controls step aside until it is closed (**✕**, or the same item again).
+A closed panel is not built at all, so the app does less work than it did when
+these were collapsed sections.
 
-| Tab | What it holds |
-|---|---|
-| **Race** | Race length, reset ruleset, joker lap |
-| **Grid** | Qualifying rules and how the starting grid is filled |
-| **Track** | The checkpoint editor, the starting-grid builder, and saved layouts |
-| **Garage** | Allowed vehicles and setups |
-| **Cup** | Championship scoring, bonuses and standings |
-| **Derby** | Demo Derby rules, entry, live standings and the arena editor |
-| **Drag** | The drag tournament ladder: format, lanes, the tree, dial-ins and the bracket |
-| **⚙** | Master passwords, results housekeeping |
+| Item | Who | What it opens |
+|---|---|---|
+| **Race ▾** | admins | **Rules** (race length, resets, pace lap, joker), **Qualifying**, **Grid and heats** |
+| **Track** | admins | Saved layouts, the checkpoint editor, the starting-grid builder and practice approval |
+| **Garage** | everyone | Admins: the Garage List. Drivers: the cars they may run, with Take and + New |
+| **Cup** | everyone | Admins: scoring, bonuses and standings. Drivers: the standings, while a cup runs |
+| **Derby** | admins | Demo Derby rules, entry and the arena editor |
+| **Drag** | admins | The drag tournament: format, lanes, the tree, dial-ins and the bracket |
+| **Practice** | everyone | Timed laps on your own, on an approved track |
+| **Records** | everyone | The lap records board for each layout on this map |
+| **Map** | drivers | Call a vote to switch maps, while voting is open |
+| **Admin** | admins | Master passwords, results housekeeping, the map switch, display names |
+| 🔊 | everyone | Start sounds on or off (see [Race Manager Lights](#race-manager-lights)) |
 
-**Session controls stay above the tabs** and are never one click away: Start
-Quali, Generate Grid, Start Countdown, End Session, Reset, and the **Track
-layout picker**. Selecting **Derby** swaps them for Form Up, Start Derby and End
-Derby, and swaps the board underneath for the derby standings - so a *Load
-Layout* button never sits over a derby nobody is setting up.
+**Never behind the menu:** the header (phase, clock, flag), the READY banner, a
+map vote in progress, and the banners for spectating, the pit box, ghosting and
+notices. The **session controls** (Start Quali, Generate Grid, Start Countdown,
+the flags, End Session, Reset) and the **Track** layout picker sit under the
+menu with the board, and come back the moment a panel closes.
 
-This replaces a two-row arrangement: a mode bar (Race / Derby / Admin) over a
-per-mode sub-tab strip. Both rows were answering the same question - which panel
-am I looking at - so an admin picked twice to reach one place and paid a row of
-height for each question. Two duplications went with the fold: **Cup** was
-listed under Race *and* Derby purely because it had to exist in both modes, and
-**Editor** meant the checkpoint editor or the arena editor depending on where
-you were. The race editor is under **Track** now and the arena editor under
-**Derby**, beside the controls each belongs to.
+**Modes.** Opening **Derby** or **Drag** puts the panel in that mode: the session
+controls become that mode's controls and the board becomes that mode's board.
+The mode stays after its panel closes, and its menu item is underlined. Open any
+**Race** item to go back.
 
-Nothing was removed. The tab you were last on is remembered.
+**A session going live closes the open panel**, so the board is what an admin
+sees once the lights go out. **Keep open** on the panel's title row stops that,
+and is remembered. A driver's panel always closes: their HUD takes over.
 
-### The board sits above the setup
+**The editors draw in the world only while their panel is open.** The Track and
+Derby editors put authoring furniture on the ground (numbered gates, slot
+outlines); closing the panel takes it away.
 
-The leaderboard used to be the last thing in the panel, under every settings and
-editor panel, so it took whatever height was left - about a tenth of the app,
-with a race running in it. It now sits directly under the session controls, and
-the setup panels scroll below it.
+A **driver's** leaderboard follows the session, not the menu. Once a derby forms
+up, their board is the derby standings, through the countdown and the derby.
 
-**And it folds away entirely while a session runs.** Once the lights go out, an
-admin's settings and editor panels are replaced by a one-line strip, and the
-board fills the panel. Drivers have had this since free practice shipped (their
-panel becomes the board and their own numbers); admins never did, and an admin
-is the one person who cannot simply close the app.
+## Race Manager Lights
 
-The strip carries two ways out: **Show** opens the setup for the session in
-front of you (and closes again when the session changes), and **Keep open**
-turns the behavior off for good. Like the collapse and the opacity, it is
+A second app in the same mod: the start lights, the flags and the drag tree in a
+box of their own, so a driver can put them where they already look. Add **Race
+Manager Lights** from the game's HUD Apps list (UI Apps before v0.39), under
+**Racing**, and place and size it like any other app. It is invisible until it
+has something to show, and shows itself for six seconds when it loads so you
+can see where it went.
+
+| Lamps | Caption | When |
+|---|---|---|
+| Unlit | ON THE GRID | The grid is formed |
+| Red, filling in | 3, 2, 1 | The countdown |
+| Green | GO | The start. Not shown for a start behind the pace car |
+| Yellow, 1st, 3rd and 5th | PACE LAP | The formation lap |
+| Amber, flashing | GET READY | The leader is on the run to the green |
+| Green | GREEN FLAG | The green falls: end of the pace lap, a restart, a red lifted |
+| Yellow, flashing | CAUTION · RACE BACK | A caution is called |
+| Yellow | CAUTION | The caution is official, positions frozen |
+| Yellow, middle dark | RESTART THIS LAP | A restart is called |
+| Yellow, flashing | YELLOW FLAG | An advisory yellow (qualifying) |
+| Red | RED FLAG | A red flag |
+| White / checkered / blue | LAST LAP / CHECKERED FLAG / BLUE FLAG | Your own white, checkered and blue flags |
+
+GO, the green and your own flags show for a few seconds and go out; the rest stay
+up for as long as they are true. A red flag or a caution always wins over a flag
+of your own.
+
+**Drag racing.** During a pass the box becomes the tree, laid on its side: PRE
+and STAGE bulbs, three ambers, green and red. Unlit bulbs keep a rim of their
+own color, so you can see which one is next. After your run it shows your RT,
+ET and speed until the slip expires.
+
+**Sounds** play whether or not the Lights app is on screen: a beep for each
+count, for GET READY and for each amber on the drag tree; the start tone for GO,
+the green and the drag green; a stop tone for a red flag. They are the game's own
+race sounds. 🔊 on the menu bar or the driver bar mutes them, and the setting is
 remembered.
 
-Both modes have an **Editor** sub-tab, and each one is a *render gate* as well as
-a panel: opening it is what puts that mode's authoring visuals in the world, and
-they belong to the admin who opened it. The **Race Entry** bar stays visible in
-every mode, because it is one entry list - a driver who is spectating sits out
-both, and nobody has to enter anything twice.
-
-**The leaderboard at the bottom follows the mode too.** In Race mode it is the
-race (or qualifying) table; in Derby mode it is the **derby standings**, on both
-derby sub-tabs - so the field stays on screen while you are building an arena.
-There is one copy of each board in the app, not one per panel.
-
-A **driver's** leaderboard is not driven by the tab row, which they never see:
-it follows the session. Once a derby forms up, their board is the derby
-standings, through the countdown and the derby itself.
+**Cost.** The app binds nothing: the client pushes one small event when the
+light changes, a handful of times a race, and the app sets classes on its lamps.
+It adds nothing to the work the main panel does on each timing update.
 
 ## Switching maps
 
-The **Map** row on the **⚙** tab changes the map the server runs. BeamMP reads
+The **Map** row on the **Admin** panel changes the map the server runs. BeamMP reads
 its map and its list of client mods once, at startup, so a switch always means a
 restart:
 
@@ -2722,7 +2753,7 @@ fails the moment the drivers who have not voted could no longer carry it. A
 passed vote starts the normal countdown, which an admin can still **Stop**.
 After a driver's vote fails, drivers wait 60 seconds before calling another.
 
-The **Map votes** row on the **⚙** tab is the race director's control:
+The **Map votes** row on the **Admin** panel is the race director's control:
 
 - **Open / Locked**: locked stops drivers calling votes, and stops a driver's
   vote that is already running. Admins can always call one.
@@ -3028,7 +3059,7 @@ qualifying time, which is the only number anybody has yet.
 The **Drag** tab shows the ladder round by round, pass by pass, with each lane's
 time and whether they went through. The leaderboard underneath becomes the
 standings: seed, status, record, best ET, best RT and best trap speed. Drivers
-get the standings without asking - they have no tab row to open, so the board
+get the standings without asking - they have no Drag panel to open, so the board
 appears when a ladder is built and stays until it is cleared.
 
 ### What survives a restart
@@ -3139,11 +3170,11 @@ simply never called for another pass.
 
 A completely separate last-man-standing mode, isolated from the circuit
 racing systems above (own server events, own UI panel, own results files
-running a derby never touches qualifying/race state). Pick the **Derby** tab;
-its controls take the place of the race controls above the tab row, and its
-arena editor is on the same tab. Race controls are not shown while you are on
-it, and derby controls are not shown anywhere else - see
-[The admin panel](#the-admin-panel).
+running a derby never touches qualifying/race state). Open **Derby** on the
+menu bar; its controls take the place of the race controls, and its arena
+editor is in the same panel. Race controls are not shown while the panel is in
+derby mode, and derby controls are not shown anywhere else - see
+[The menu bar](#the-menu-bar).
 
 1. **Set the rules**: *OOB timer* (seconds allowed outside the arena,
    default 5), *Demolished timer* (seconds a car may sit stopped before

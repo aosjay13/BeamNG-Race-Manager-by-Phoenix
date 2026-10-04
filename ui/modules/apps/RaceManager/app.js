@@ -543,6 +543,97 @@ angular.module('beamng.apps')
       $scope.isMode = function (mode) { return $scope.mode === mode; };
       $scope.isAdminTab = function (tab) { return $scope.adminTab === tab; };
 
+      // ------------------------------------------------------------------
+      // The menu bar
+      // ------------------------------------------------------------------
+      // menu.open is the panel under the bar: null, 'tab' for the admin tab in
+      // adminTab, or a shared panel ('practice', 'records', 'cup', 'garage',
+      // 'maps'). menu.group is the dropdown showing, if any.
+      //
+      // NOT REMEMBERED. The board is what anybody should come back to, and a
+      // panel left open from the last session would bury it.
+      $scope.menu = { open: null, group: null };
+      var TAB_TITLES = { race: 'Race rules', quali: 'Qualifying', grid: 'Grid and heats',
+                         track: 'Track', garage: 'Garage List', cup: 'Cup',
+                         derby: 'Demo Derby', drag: 'Drag racing', admin: 'Admin' };
+      var PANEL_TITLES = { practice: 'Practice', records: 'Lap records',
+                           cup: 'Cup standings', garage: 'Garage', maps: 'Map vote' };
+      // STILL THERE TO SHOW. A panel can go away while open: a vote starts, the
+      // cup is switched off, the admin logs out. Without this the board stays
+      // hidden behind an empty panel.
+      function menuAvailable(name) {
+        switch (name) {
+          case 'tab':      return $scope.isAdmin;
+          case 'practice': return $scope.canPractice() || !!$scope.practice;
+          case 'records':  return true;
+          case 'cup':      return !$scope.isAdmin && !!$scope.cup.enabled;
+          case 'garage':   return !$scope.isAdmin && $scope.garageSpawnable.length > 0;
+          case 'maps':     return !$scope.isAdmin && !!$scope.maps.voting && !$scope.maps.vote;
+        }
+        return false;
+      }
+      $scope.menuShowing = function () {
+        var m = $scope.menu.open;
+        return !!m && menuAvailable(m) && !$scope.minimalMode() && !$scope.broadcastMode();
+      };
+      $scope.menuIsTab = function (tab) {
+        return $scope.menu.open === 'tab' && $scope.adminTab === tab;
+      };
+      $scope.menuInRaceGroup = function () {
+        var t = $scope.adminTab;
+        return $scope.menu.open === 'tab' && (t === 'race' || t === 'quali' || t === 'grid');
+      };
+      $scope.menuTitle = function () {
+        return $scope.menu.open === 'tab' ? (TAB_TITLES[$scope.adminTab] || '')
+          : (PANEL_TITLES[$scope.menu.open] || '');
+      };
+      $scope.menuToggleGroup = function (g) {
+        $scope.menu.group = $scope.menu.group === g ? null : g;
+      };
+      // An admin tab. Pressing the open one again closes it.
+      $scope.menuTab = function (tab) {
+        $scope.menu.group = null;
+        if ($scope.menuIsTab(tab)) { $scope.menuClose(); return; }
+        var was = $scope.adminTab;
+        $scope.menu.open = 'tab';
+        $scope.selectAdminTab(tab);
+        // Reopening the same tab is not a tab change, but its panel is new: the
+        // preview canvas, the editor flag and the pulls all need doing again.
+        if ($scope.adminTab === was) { afterTabChange(); }
+      };
+      $scope.menuPanel = function (name) {
+        $scope.menu.group = null;
+        if ($scope.menu.open === name) { $scope.menuClose(); return; }
+        $scope.menu.open = name;
+        // Each of these was a collapsed section that asked for its data as it
+        // opened. They open with the panel now, and still ask.
+        if (name === 'records') {
+          $scope.recordsUi.open = true;
+          $scope.recordsUi.menu = false;
+          $scope.recordsRequest($scope.records.layout);
+        } else if (name === 'garage') {
+          $scope.garagePickUi.open = true;
+        } else if (name === 'maps') {
+          $scope.mapsUi.driverOpen = true;
+          $scope.mapsRefresh();
+        }
+        pushEditorOpen();
+      };
+      $scope.menuClose = function () {
+        $scope.menu.open = null;
+        $scope.menu.group = null;
+        $scope.recordsUi.open = false;
+        pushEditorOpen();
+      };
+      // A session going live puts the board back, unless an admin pinned the
+      // panel with Keep open (autoSlim off). A driver's HUD takes over anyway,
+      // so theirs always closes.
+      function menuSessionEdge() {
+        if (!$scope.menu.open || !$scope.sessionLive()) { return; }
+        if ($scope.isAdmin && !$scope.autoSlim) { return; }
+        $scope.menuClose();
+      }
+
       // RUNNING A RACE, OR CONFIGURING ONE.
       //
       // These two replace fourteen copies of "phase === 'countdown' || phase
@@ -607,7 +698,9 @@ angular.module('beamng.apps')
         // mean one thing at a time because the mode disambiguated it; with one
         // row the race editor lives under `track` and the arena editor under
         // `derby`, beside the controls each of them belongs to.
-        var editing = $scope.isAdmin && !$scope.broadcastMode();
+        // ONLY WHILE ITS PANEL IS OPEN. The tab stays selected when the menu
+        // closes, and the authoring furniture must not stay drawn behind it.
+        var editing = $scope.isAdmin && !$scope.broadcastMode() && $scope.menu.open === 'tab';
         var race  = editing && $scope.adminTab === 'track';
         var derby = editing && $scope.adminTab === 'derby';
         bngApi.engineLua('raceManager.setEditorOpen(' + (!!race) + ')');
@@ -1649,7 +1742,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.18.1';
+      var APP_BUILD = '0.18.2';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -2356,7 +2449,13 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           // session it was opened during. Cleared on any phase change, so an
           // admin who opened the settings mid-race to change one thing is not
           // still looking at them through the next one.
-          if (prevPhase !== $scope.phase) { $scope.setupOpen = false; }
+          if (prevPhase !== $scope.phase) {
+            $scope.setupOpen = false;
+            menuSessionEdge();
+          }
+          // Lua keeps no preferences, so it hears the sound setting once a
+          // server is talking to this panel, in case it loaded after the panel.
+          if (!soundSent) { soundSent = true; pushSound(); }
           $scope.flag = (data.flag === 'yellow' || data.flag === 'red') ? data.flag : 'green';
           // READ HERE, on the state broadcast, which is the one that arrives on a
           // clock. It was read only in the ROUTE handler, and that fires on
@@ -3003,7 +3102,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         // The flash, and the color comes from the notice rather than from
         // here: green, yellow, red, white and checkered are all kind 'flag'
         // and each waves in its own color.
-        flag:     { rank: 40, flash: true,  ms: 4500 },
+        // REPLACE, because only the latest flag is true. Queued behind an
+        // equal rank, the green waited out GET READY's 4.5 s and fell unseen.
+        flag:     { rank: 40, flash: true,  ms: 4500, replace: true },
         // Being removed from the session, or having a car refused, is the other
         // class a driver cannot afford to miss.
         spectate: { rank: 30, flash: false, ms: 9000 },
@@ -3079,10 +3180,12 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         }
       }
 
-      function noticePush(kind, msg, sub) {
+      // `color` is the notice's own, which a flag needs: every flag is kind
+      // 'flag', and dropping this painted all of them the same gray.
+      function noticePush(kind, msg, sub, color) {
         var st = noticeStyle(kind);
         var item = { kind: kind, msg: msg, sub: sub || null, rank: st.rank,
-                     flash: st.flash, ms: st.ms, color: st.color };
+                     flash: st.flash, ms: st.ms, color: color || st.color };
         // A kind that replaces: drop anything of its kind still waiting, and if
         // one is up, take its place now rather than after it.
         if (st.replace) {
@@ -3128,7 +3231,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.$on('RaceManagerNotice', function (event, data) {
         if (!data || !data.msg) { return; }
         $scope.$evalAsync(function () {
-          noticePush(data.kind || 'info', data.msg, data.sub);
+          noticePush(data.kind || 'info', data.msg, data.sub, data.color);
         });
       });
 
@@ -3402,7 +3505,9 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.$on('RaceManagerDerby', function (event, data) {
         if (!data) { return; }
         $scope.$evalAsync(function () {
+          var derbyWas = $scope.derby.phase;
           $scope.derby.phase = data.derbyPhase || 'idle';
+          if (derbyWas !== $scope.derby.phase) { menuSessionEdge(); }
           $scope.derby.entrants = data.entrants || 0;
           $scope.derby.time = data.derbyTime || 0;
           $scope.derby.winner = data.winner || null;
@@ -5870,6 +5975,21 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // the ng-if child scope, leaving the slider moving a copy nothing reads.
       $scope.lbUi = { opacity: loadPref('opacity', 0.85) };   // 0 (invisible) .. 1 (solid)
 
+      // START SOUNDS, played by lights.lua: beeps for the countdown, GET READY
+      // and the drag tree, a tone for GO and the green. Remembered here.
+      $scope.soundOn = loadPref('sound', true) !== false;
+      var soundSent = false;
+      function pushSound() {
+        bngApi.engineLua('if raceManager and raceManager.lightsSetSound then '
+          + 'raceManager.lightsSetSound(' + ($scope.soundOn ? 'true' : 'false') + ') end');
+      }
+      $scope.toggleSound = function () {
+        $scope.soundOn = !$scope.soundOn;
+        savePref('sound', $scope.soundOn);
+        pushSound();
+      };
+      pushSound();
+
       // ------------------------------------------------------------------
       // Collapsing the HUD
       // ------------------------------------------------------------------
@@ -6023,7 +6143,19 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         // used to hardcode, scaled by the slider so they fade in step.
         css.setProperty('--rm-accent-bg', 'rgba(255, 102, 0, ' + (o * 0.15) + ')');
         css.setProperty('--rm-accent-line', 'rgba(255, 102, 0, ' + (o * 0.5) + ')');
+        // THE GRAYS LIFT AS THE FILL FADES. Tuned for a dark panel at the 0.85
+        // default; below that they sit on the road and disappear.
+        var t = Math.min(Math.max((0.85 - o) / 0.85, 0), 1);
+        css.setProperty('--rm-muted', mixRgb([154, 160, 166], [232, 234, 237], t));
+        css.setProperty('--rm-soft',  mixRgb([189, 193, 198], [241, 243, 244], t));
+        css.setProperty('--rm-faint', mixRgb([95, 99, 104], [189, 193, 198], t));
+        $element[0].classList.toggle('rm-see-through', o < 0.6);
       });
+      function mixRgb(a, b, t) {
+        return 'rgb(' + Math.round(a[0] + (b[0] - a[0]) * t) + ', '
+          + Math.round(a[1] + (b[1] - a[1]) * t) + ', '
+          + Math.round(a[2] + (b[2] - a[2]) * t) + ')';
+      }
 
       // THE BOARD'S MEASURED WIDTH, for the driver bar to match and wrap inside.
       //

@@ -1041,12 +1041,10 @@ local function drawDriverGate(derbyLive)
   -- never heard of.
   local gated = #track.pitEntry > 0
   if gated and not pit.inLane then
-    -- Racing. One gate at the mouth: poles, a translucent panel, a big P and
-    -- the words PIT IN. The one gate a driver sees that carries text: it is a
-    -- sign read on the approach, not a checkpoint read at the apex, and amber
-    -- alone meant "pits" only to drivers who had been told.
+    -- Racing. One gate at the mouth: poles, a translucent panel and a big P.
+    -- No words: the P says pits on its own, and drivers asked for the text off.
     for _, wp in ipairs(track.pitEntry) do
-      drawPoleGate(wp, p.pit, 'PIT IN', p.pitFill, 'pit')
+      drawPoleGate(wp, p.pit, nil, p.pitFill, 'pit')
     end
   elseif #track.pitRoute > 0 then
     local _, ppos = sampledVehicle()

@@ -46,6 +46,7 @@ for _, m in ipairs(serverModules) do
 end
 local client = readFile('lua/ge/extensions/raceManager.lua')
 local ui     = readFile('ui/modules/apps/RaceManager/app.js')
+  .. readFile('ui/modules/apps/RaceManagerLights/app.js')
 
 -- The client modules, for the export check further down. Read separately from
 -- `client` because what they prove is different: a name reaches the UI either
@@ -53,7 +54,7 @@ local ui     = readFile('ui/modules/apps/RaceManager/app.js')
 -- of these -- and the merge is a quoted string in a list, which on its own
 -- proves nothing about whether the module actually has the function.
 local clientModules = {}
-for _, m in ipairs({ 'derby', 'drag', 'maps', 'records', 'render' }) do
+for _, m in ipairs({ 'derby', 'drag', 'maps', 'records', 'render', 'lights' }) do
   clientModules[#clientModules + 1] = readFile('lua/ge/extensions/raceManager/' .. m .. '.lua')
 end
 
@@ -179,6 +180,9 @@ local stamps = {
   ['lua/ge/extensions/raceManager.lua']    = client:match("RM_BUILD%s*=%s*'([^']+)'"),
   ['ui/modules/apps/RaceManager/app.js']   = appJs:match("APP_BUILD%s*=%s*'([^']+)'"),
   ['ui/modules/apps/RaceManager/app.json'] = appJson:match('"version"%s*:%s*"([^"]+)"'),
+  -- The Lights app ships in the same zip, so it carries the same number.
+  ['ui/modules/apps/RaceManagerLights/app.json'] =
+    readFile('ui/modules/apps/RaceManagerLights/app.json'):match('"version"%s*:%s*"([^"]+)"'),
 }
 
 local reference, referenceFrom = nil, nil

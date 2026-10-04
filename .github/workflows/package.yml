@@ -57,7 +57,7 @@ jobs:
       # That is the failure the note in server/RaceManager/main.lua warns about,
       # reached by the one route nobody was watching.
       #
-      # So the source is the authority. RM_BUILD names the release, all five
+      # So the source is the authority. RM_BUILD names the release, all six
       # stamps must agree before anything is built, and a tag that already
       # exists on another commit is a hard stop rather than a silent overwrite.
       - name: Resolve and verify version
@@ -69,13 +69,14 @@ jobs:
           c=$(read_one "s/^local RM_BUILD = '\([^']*\)'.*/\1/p" lua/ge/extensions/raceManager.lua)
           a=$(read_one "s/.*APP_BUILD = '\([^']*\)';.*/\1/p"    ui/modules/apps/RaceManager/app.js)
           j=$(read_one 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' ui/modules/apps/RaceManager/app.json)
+          l=$(read_one 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' ui/modules/apps/RaceManagerLights/app.json)
           d=$(read_one "s/.*RELEASE_NAME = 'RaceManager-v\([^']*\)\.zip'.*/\1/p" tools/deploy.py)
-          echo "server=$v client=$c app.js=$a app.json=$j deploy.py=$d"
+          echo "server=$v client=$c app.js=$a app.json=$j lights=$l deploy.py=$d"
           [ -n "$v" ] || fail "could not read RM_BUILD from server/RaceManager/main.lua"
 
-          # THE FIVE THAT HAVE TO AGREE. A release whose pieces disagree shows a
+          # THE SIX THAT HAVE TO AGREE. A release whose pieces disagree shows a
           # mismatch banner in the app and behaves like a stale install.
-          for other in "$c" "$a" "$j" "$d"; do
+          for other in "$c" "$a" "$j" "$l" "$d"; do
             [ "$other" = "$v" ] || fail "build stamps disagree: server says '$v', another says '$other'"
           done
 
@@ -147,7 +148,7 @@ jobs:
           unzip -l package/Client/RaceManager.zip
           fail() { echo "::error::$1"; exit 1; }
           test -f package/Client/RaceManager.zip             || fail "Client/RaceManager.zip missing (check the folder case)"
-          for f in lua/ge/extensions/raceManager.lua                    lua/ge/extensions/raceManager/derby.lua                    lua/ge/extensions/raceManager/drag.lua                    lua/ge/extensions/raceManager/maps.lua                    lua/ge/extensions/raceManager/records.lua                    lua/ge/extensions/raceManager/render.lua                    scripts/raceManager/modScript.lua                    ui/modules/apps/RaceManager/app.html                    ui/modules/apps/RaceManager/app.js                    ui/modules/apps/RaceManager/app.json; do
+          for f in lua/ge/extensions/raceManager.lua                    lua/ge/extensions/raceManager/derby.lua                    lua/ge/extensions/raceManager/drag.lua                    lua/ge/extensions/raceManager/maps.lua                    lua/ge/extensions/raceManager/records.lua                    lua/ge/extensions/raceManager/lights.lua                    lua/ge/extensions/raceManager/render.lua                    scripts/raceManager/modScript.lua                    ui/modules/apps/RaceManager/app.html                    ui/modules/apps/RaceManager/app.js                    ui/modules/apps/RaceManager/app.json                    ui/modules/apps/RaceManagerLights/app.html                    ui/modules/apps/RaceManagerLights/app.js                    ui/modules/apps/RaceManagerLights/app.json                    ui/modules/apps/RaceManagerLights/app.png; do
             unzip -l package/Client/RaceManager.zip | grep -q " $f$"               || fail "$f is missing from the client zip: the mod will mount and then fail its require"
           done
           for f in main.lua derby.lua drag.lua maps.lua records.lua; do

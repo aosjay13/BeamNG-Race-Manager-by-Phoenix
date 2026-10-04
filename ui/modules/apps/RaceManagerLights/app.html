@@ -1,0 +1,80 @@
+<div class="rml-root rml-hidden">
+  <!-- NOTHING may sit outside this root div, not even a comment: the directive
+       is `replace: true` and Angular 1.5.8 counts a sibling comment as a second
+       root, so the app never renders. Same rule as the main app.
+
+       One SVG for both modes, so it scales with whatever box the driver draws
+       and the lamps stay round. The controller sets classes on it and nothing
+       else; there are no bindings here on purpose. -->
+  <svg viewBox="0 0 500 170" preserveAspectRatio="xMidYMid meet">
+    <rect class="rml-housing" x="3" y="3" width="494" height="164" rx="20"></rect>
+    <g class="rml-race">
+      <circle class="rml-lamp" cx="66" cy="70" r="40"></circle>
+      <circle class="rml-lamp" cx="158" cy="70" r="40"></circle>
+      <circle class="rml-lamp" cx="250" cy="70" r="40"></circle>
+      <circle class="rml-lamp" cx="342" cy="70" r="40"></circle>
+      <circle class="rml-lamp" cx="434" cy="70" r="40"></circle>
+    </g>
+    <!-- The drag tree laid on its side: three ambers, green, red, with the two
+         staging bulbs above. Unlit bulbs keep a rim of their own color, so
+         the driver knows which one is about to come on. -->
+    <g class="rml-drag">
+      <text class="rml-label" x="178" y="27" text-anchor="end">PRE</text>
+      <circle class="rml-small rml-pre" cx="196" cy="21" r="11"></circle>
+      <circle class="rml-small rml-stage" cx="304" cy="21" r="11"></circle>
+      <text class="rml-label" x="322" y="27" text-anchor="start">STAGE</text>
+      <circle class="rml-lamp rml-hint-a" cx="66" cy="82" r="34"></circle>
+      <circle class="rml-lamp rml-hint-a" cx="158" cy="82" r="34"></circle>
+      <circle class="rml-lamp rml-hint-a" cx="250" cy="82" r="34"></circle>
+      <circle class="rml-lamp rml-hint-g" cx="342" cy="82" r="34"></circle>
+      <circle class="rml-lamp rml-hint-r" cx="434" cy="82" r="34"></circle>
+    </g>
+    <text class="rml-cap" x="250" y="152" text-anchor="middle">RACE LIGHTS</text>
+  </svg>
+<style>
+  .rml-root {
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    transition: opacity 0.25s;
+  }
+  .rml-hidden { opacity: 0; }
+  .rml-root svg { display: block; width: 100%; height: 100%; }
+  .rml-housing { fill: rgba(10, 11, 14, 0.88); stroke: #3a3d42; stroke-width: 3; }
+  .rml-lamp { fill: #24262b; stroke: #3a3d42; stroke-width: 3; }
+  /* AMBER AND YELLOW ARE KEPT FAR APART. Amber is GET READY and the tree,
+     yellow is a caution, and a driver reads them out of the corner of an eye. */
+  .rml-r { fill: #ff2b1c; stroke: #ff9a8f; }
+  .rml-a { fill: #ff8a00; stroke: #ffc680; }
+  .rml-y { fill: #ffd60a; stroke: #fff08a; }
+  .rml-g { fill: #18d24b; stroke: #9cf0b2; }
+  .rml-w { fill: #f5f5f5; stroke: #ffffff; }
+  .rml-b { fill: #2f7dff; stroke: #a9c8ff; }
+  .rml-hint-a { stroke: rgba(255, 138, 0, 0.5); }
+  .rml-hint-g { stroke: rgba(24, 210, 75, 0.5); }
+  .rml-hint-r { stroke: rgba(255, 43, 28, 0.5); }
+  .rml-blink { animation: rml-blink 0.5s steps(1) infinite; }
+  @keyframes rml-blink { 50% { opacity: 0.2; } }
+  /* The checkered flag swaps its squares rather than fading to gray. */
+  .rml-chk-a, .rml-chk-b { animation: rml-chk 0.9s steps(1) infinite; }
+  .rml-chk-b { animation-delay: -0.45s; }
+  @keyframes rml-chk {
+    0%   { fill: #f5f5f5; stroke: #ffffff; }
+    50%  { fill: #141518; stroke: #3a3d42; }
+  }
+  .rml-small { fill: #24262b; stroke: #3a3d42; stroke-width: 3; }
+  .rml-small.rml-on { fill: #fff3b0; stroke: #ffffff; }
+  .rml-label { fill: #bdc1c6; font: 700 16px "Noto Sans", "Segoe UI", sans-serif; letter-spacing: 2px; }
+  .rml-cap {
+    fill: #ffffff;
+    font: 800 30px "Noto Sans", "Segoe UI", sans-serif;
+    letter-spacing: 3px;
+    paint-order: stroke;
+    stroke: #000000;
+    stroke-width: 4px;
+  }
+  .rml-drag { display: none; }
+  .rml-dragmode .rml-race { display: none; }
+  .rml-dragmode .rml-drag { display: inline; }
+</style>
+</div>

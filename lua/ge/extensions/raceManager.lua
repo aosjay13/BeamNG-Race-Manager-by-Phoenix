@@ -244,7 +244,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.18.1'
+local RM_BUILD = '0.18.2'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -2715,8 +2715,10 @@ local function whiteFlagWatch()
     -- latched separately so the two cannot collapse into one.
     flags.checkeredSeen = true
     pushNotice('flag', 'CHECKERED FLAG', { sub = 'Finish line', color = 'checkered' })
+    if M.lightsMoment then M.lightsMoment('checkered') end
   else
     pushNotice('flag', 'WHITE FLAG', { sub = 'Last lap', color = 'white' })
+    if M.lightsMoment then M.lightsMoment('white') end
   end
 end
 
@@ -8409,6 +8411,8 @@ end
 derby.init({
   -- Plain functions.
   palette = render.palette, drawStartPosition = render.drawStartPosition,
+  -- The countdown for the Lights app. Through M: lights.lua installs further down.
+  lightsCountdown = function (n) if M.lightsCountdown then M.lightsCountdown(n, true) end end,
   -- BOTH, and the derby picks deliberately. ownVehicle() is our car;
   -- playerVehicle() is whatever the camera is attached to, which in BeamMP is
   -- regularly a rival. Anything that MOVES, FREEZES, MEASURES or PLACES takes
@@ -8484,6 +8488,8 @@ local drag = require('raceManager/drag')
 drag.init({
   -- Plain functions.
   inMultiplayer = inMultiplayer, fromCurrentServer = fromCurrentServer,
+  -- The tree for the Lights app. Through M: lights.lua installs further down.
+  lightsTree = function (t) if M.lightsTree then M.lightsTree(t) end end,
   localServerId = localServerId,
   sampledVehicle = sampledVehicle, pushNotice = pushNotice,
   ownVehicle = ownVehicle,
@@ -8551,6 +8557,25 @@ do
     'recordsRequest', 'recordsClear', 'recordsRemove', 'onRecords',
   }) do
     M[name] = records[name]
+  end
+end
+
+-- The Lights app's light and the start sounds, the same way. See lights.lua.
+do
+  local lights = require('raceManager/lights')
+  lights.init({
+    session = session,
+    -- Behind the pace car GO is not a green. paceLap is the rule; the server
+    -- arms it for a race only, and never on a point-to-point stage.
+    pacedStart = function ()
+      return session.paceLap and session.sessionKind == 'race' and not track.pointToPoint
+    end,
+  })
+  for _, name in ipairs({
+    'lightsSync', 'lightsCountdown', 'lightsMoment', 'lightsTree',
+    'lightsResend', 'lightsSetSound',
+  }) do
+    M[name] = lights[name]
   end
 end
 
@@ -10515,6 +10540,8 @@ local function onServerUpdate(rawData)
   local wasReady  = session.greenReady
   session.paceLap = data.paceLap == true
   session.pacing  = data.pacing == true
+  -- For the lights: a pace-lap start is a race's alone.
+  if data.sessionKind then session.sessionKind = data.sessionKind end
   -- GET READY: the leader is on the run to the line and the green is coming.
   session.greenReady = data.greenReady == true
   -- The caution, and its own notice on the edge. The yellow flash a line below
@@ -10562,11 +10589,11 @@ local function onServerUpdate(rawData)
     pushNotice('flag', 'PACE LAP',
       { sub = 'Hold position - 40 mph / 64 km/h', color = 'yellow' })
   end
-  -- Pushed here, not by the server, so it can carry a color: a server notice
-  -- has none, and this one has to stand out from the yellow it arrives under.
+  -- AMBER, never green. Drivers could not tell GET READY from the green flag
+  -- that follows it a few seconds later, and green means go.
   if session.greenReady and not wasReady then
     pushNotice('flag', 'GET READY',
-      { sub = 'Green flag coming - hold position until it falls', color = 'green' })
+      { sub = 'Green flag coming - hold position until it falls', color = 'amber' })
   end
   -- THREE EDGES, THREE DIFFERENT INSTRUCTIONS, and the order they are written in
   -- is the order a driver meets them. Collapsing them into one CAUTION notice is
@@ -10583,7 +10610,7 @@ local function onServerUpdate(rawData)
     -- The one warning that matters under a caution: the green is coming, and it
     -- is coming at the line rather than whenever the marshal pressed a button.
     pushNotice('flag', 'RESTART THIS LAP',
-      { sub = 'Hold position - get ready is called 100 m from the line', color = 'green' })
+      { sub = 'Hold position - get ready is called 100 m from the line', color = 'yellow' })
   elseif wasRestart and not session.restartPending and session.caution then
     pushNotice('flag', 'RESTART WAVED OFF',
       { sub = 'Stay under caution, hold your position', color = 'yellow' })
@@ -10710,6 +10737,7 @@ local function onServerUpdate(rawData)
   if session.beingLapped and not wasLapped and sessionRunning() then
     pushNotice('flag', 'BLUE FLAG',
       { sub = 'Faster car a lap up behind you - let them by', color = 'blue' })
+    if M.lightsMoment then M.lightsMoment('blue') end
   end
   -- The other half, and it is not a flag: no series waves anything at the car
   -- doing the lapping. It is a heads-up, so it goes on the strip rather than
@@ -10811,6 +10839,7 @@ local function onServerUpdate(rawData)
   data.myStatus   = session.myStatus
   data.myGridPos  = session.myGridPos
   guihooks.trigger('RaceManagerUpdate', data)
+  if M.lightsSync then M.lightsSync() end
 end
 
 -- Server assigned this client a starting slot (Generate Grid, or an admin
@@ -10955,8 +10984,11 @@ local function onNotice(rawData)
   if not ok or type(data) ~= 'table' then return end
   local msg = data.msg and tostring(data.msg) or ''
   if msg == '' then return end
+  -- The color only from a known set: it becomes a CSS class name.
+  local color = data.color and tostring(data.color) or nil
+  if color and not color:match('^%a+$') then color = nil end
   pushNotice(tostring(data.kind or 'session'), msg,
-    { sub = data.sub and tostring(data.sub) or nil })
+    { sub = data.sub and tostring(data.sub) or nil, color = color })
 end
 
 -- --- Module 1: forced spectator mode (server -> client) --------------------
@@ -11127,6 +11159,7 @@ local function onServerCountdown(rawData)
   local count = tonumber(data.count)
   if count and count <= 0 then releaseGridHold('race') end
   guihooks.trigger('RaceManagerCountdown', data)
+  if M.lightsCountdown then M.lightsCountdown(count) end
 end
 
 -- Map-filtered layout list from the server (includes checkpoint arrays so the

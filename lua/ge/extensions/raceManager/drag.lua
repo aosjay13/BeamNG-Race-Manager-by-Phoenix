@@ -139,10 +139,12 @@ end
 local function pushTree(stage, force)
   if S.stage == stage and not force then return end
   S.stage = stage
-  guihooks.trigger('RaceManagerDragTree', {
+  local t = {
     stage = stage, lane = S.lane, dial = S.dial, delay = S.delay,
     prestaged = S.preStaged, staged = S.inBeams, rollup = S.rollup,
-  })
+  }
+  guihooks.trigger('RaceManagerDragTree', t)
+  if host.lightsTree then host.lightsTree(t) end
 end
 
 -- Wind the whole local run down. Called from every path that can end one: the

@@ -792,8 +792,8 @@ veh.x, veh.y, veh.z = 0, 0, 0
 castRayStatic = nil
 
 -- THE PIT ENTRY IS SIGNED. Reported: amber poles said "pits" only to drivers
--- who had been told. It carries a big P across its face and the words PIT IN,
--- the one gate a driver sees with text on it.
+-- who had been told. It carries a big P across its face, and no words: drivers
+-- asked for the PIT IN text off after the first league night with it.
 handlers['RM_ApplyLayout']({
   name = 'pit entry', width = 20, height = 10,
   checkpoints = {
@@ -807,17 +807,15 @@ serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
 frame()
 local pitText
 for _, t in ipairs(texts) do
-  if t.text == 'PIT IN' then pitText = t end
+  if tostring(t.text):find('PIT', 1, true) then pitText = t end
 end
-check(pitText ~= nil, 'the pit entry gate is labeled PIT IN in the driver view')
+check(pitText == nil, 'the pit entry gate carries no text in the driver view')
 local pStrokes = 0
 for _, c in ipairs(cylinders) do
   local white = c.color and c.color[1] == 1 and c.color[2] == 1 and c.color[3] == 1
   if white and math.abs((c.a.y + c.b.y) * 0.5 - 40) < 0.01 then pStrokes = pStrokes + 1 end
 end
-check(pStrokes == 6, 'and carries a white P across its face (got ' .. pStrokes .. ' strokes)')
-check(pitText and pitText.at.z > 5 + 3,
-  'with the words above the letter rather than across it')
+check(pStrokes == 6, 'but still carries a white P across its face (got ' .. pStrokes .. ' strokes)')
 
 
 -- ===========================================================================

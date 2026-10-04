@@ -199,6 +199,8 @@ expect without touching any of it.
 | **[Lap records](docs/REFERENCE.md#lap-records)** | Each driver's fastest lap on every saved layout, per map, kept across restarts and open to everyone. Scored from qualifying and races. An admin can take a time off or clear a board in game, or edit the JSON on the server. |
 | **[Drag racing](docs/REFERENCE.md#drag-racing-parallel-game-mode)** | A tournament ladder down a drag strip: single or double elimination, or a points shootout. Two to eight cars a pass with any number going through, a christmas tree with real red lights, reaction times, elapsed times and trap speeds, and dial-in bracket racing. Scores into the cup on a table of its own. The strip is an ordinary point-to-point layout, so the track editor already builds one, and a practice pass lets one driver try it before a field turns up. |
 | **[Broadcast board](docs/REFERENCE.md#broadcast-board-spectators)** | A spectator's board for streaming: the whole field, the drivers who are out and why, cup standings, and click a name to put the camera on that car in orbit. |
+| **[Race Manager Lights](docs/REFERENCE.md#race-manager-lights)** | A second app with the start lights, the flags and the drag tree in a box you place anywhere on screen. GET READY flashes amber, never green. Start sounds for the countdown, GET READY, the green and the tree, mutable from the panel. |
+| **[Menu bar](docs/REFERENCE.md#the-menu-bar)** | Practice, records, the garage, the cup and every admin panel open from one row under the title and step out of the way when closed, so the board keeps the room. |
 | **[Driver UI](docs/REFERENCE.md#driver-ui-non-admins)** | Non-admins see just the leaderboard. Resizable, fades so it doesn't block the view, and collapses to a single status line. Alerts still get through. |
 | **[Admin and moderator](docs/REFERENCE.md#two-tiers-admin-and-moderator)** | Two passwords into one login box. A moderator runs the whole night; changing passwords, clearing the server's results or lap records and deleting a layout, arena or garage set stay with the admin, because none of those can be undone. The moderator tier ships off, so nothing changes on a server that never asks for it. |
 | **[Garage sets](docs/REFERENCE.md#garage-sets)** | Save the approved car list under a name and load it back in a click. **+ Add Set** merges instead of replacing, so a multi-class field is built from the per-class sets you already keep rather than whitelisted again car by car. |
@@ -209,7 +211,7 @@ expect without touching any of it.
 
 - Since BeamNG **v0.39** the app list is called **HUD Apps**, not *UI Apps*, and
   is reached from the Pause menu (*System → HUD Apps*). Race Manager is under
-  **Racing** and **Info**.
+  **Racing** and **Info**; Race Manager Lights is under **Racing**.
 - The game only scans mods at startup, so **restart BeamNG** after installing or
   updating. If the list is still stale, clear the cache (Launcher →
   *Manage User Folder* → *Clear Cache*).

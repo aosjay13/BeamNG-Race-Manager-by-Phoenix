@@ -6,6 +6,56 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.18.2 - Lights you can see, a menu, and laps in the results
+
+#### Added
+
+- **Race Manager Lights, a second app.** The start lights, the flags and the
+  drag tree in a box of their own, placed and sized anywhere on screen from HUD
+  Apps (under Racing). Red lamps fill in for the countdown and go green for GO;
+  yellow for the pace lap and the caution; **GET READY flashes amber**; green
+  for the green flag; red for a red flag; and your own white, checkered and blue
+  flags. During a drag pass it becomes the tree on its side, with the staging
+  bulbs, and shows your RT, ET and speed after the run. Invisible until there
+  is something to show; it shows itself for six seconds when it loads. It binds
+  nothing, so it adds no work to the panel's timing updates.
+- **Start sounds**, the game's own race beeps: one for each count, for GET READY
+  and for each amber on the drag tree; the start tone for GO, the green and the
+  drag green; a stop tone for a red flag. They play with or without the Lights
+  app. 🔊 on the menu bar or the driver bar mutes them, remembered.
+- **The menu bar.** One row under the title: Race (Rules, Qualifying, Grid),
+  Track, Garage, Cup, Derby, Drag, Practice, Records, Map, Admin and the sound
+  switch. Each opens its panel under the row and the board steps aside until it
+  is closed. It replaces the admin tab row and the Practice, Lap records, Cup,
+  Garage and map vote sections that stacked down the panel. READY, a map vote
+  in progress and the pit, ghost, spectating and notice banners stay on screen.
+  A session going live closes the open panel unless **Keep open** is on.
+- **Laps in the results file.** A **Laps** column with each driver's racing laps,
+  retirements included, so a DNF shows how far they got. A pace lap is not
+  counted.
+
+#### Changed
+
+- **"Finish" is "Race Time"** in the race and class results tables.
+- **A timed race's results say how far it went**: `10 min + 1 lap, 12 laps run`
+  rather than the lap setting the clock replaced. A lap race adds `laps run` only
+  when it was stopped short. Heat results give the heat's own distance.
+- **GET READY flashes amber**, and the restart call yellow; both were green.
+- **A flag replaces the flag before it** on the panel instead of queuing behind
+  it, so the green no longer waits out GET READY.
+- **No PIT IN text over the pit entry.** The big P stays; the editor still labels
+  the gate.
+- **The track and arena editors draw in the world only while their panel is
+  open**, not whenever their tab was the last one picked.
+- **Gray text stays readable with the panel faded.** The grays lighten as the
+  opacity slider goes down, and below 0.6 every line gets a dark outline.
+
+#### Fixed
+
+- **Every flag flashed gray.** The panel never read the color a flag notice
+  carried, so green, yellow, red, white, blue and checkered all looked the same.
+  Server flag notices now carry a color too.
+
 ## 0.18.1 - Name the cars too
 
 #### Added

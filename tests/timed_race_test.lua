@@ -86,6 +86,25 @@ end
 local function lap(pid)
   RM_onLap(pid, '{"lapTime":60.0}')
 end
+-- The newest results file, and one driver's Laps cell in its race table.
+local function resultsText()
+  local path
+  for _, m in ipairs(chatLog) do
+    path = m:match('(Resources/Server/RaceManager/Data/results/[%w%-_%.]+%.txt)') or path
+  end
+  local f = path and io.open(path, 'r')
+  if not f then return '' end
+  local t = f:read('*a'); f:close()
+  return t
+end
+local function lapsCell(text, name)
+  local raceHalf = text:match('%-%-%- RACE RESULTS %-%-%-(.*)') or ''
+  for line in raceHalf:gmatch('[^\n]+') do
+    -- Best Lap can be two words ("no time"), so skip lazily to Laps Led, Laps.
+    local n = line:match('^%S+%s+%S+%s+' .. name .. '%s.-%s%d+%s+(%d+)%s')
+    if n then return tonumber(n) end
+  end
+end
 
 onInit()
 -- The ready check is off after every admin login here: this suite pins the
@@ -198,6 +217,24 @@ lap(3)
 check(driver(3).status == 'finished',
   'and is classified on its next crossing once the flag is out')
 
+-- THE RESULTS SAY HOW FAR A TIMED RACE WENT. The lap box said 25 and is inert,
+-- so the header names the clock and the laps the winner ran, and every row
+-- carries its own count: the lapped car ran one fewer.
+seconds(6)                            -- past the end-of-race hold
+do
+  local text = resultsText()
+  check(text:find('Race distance: 10 min + 1 lap, 4 laps run', 1, true) ~= nil,
+    'the timed race header names the clock and the laps run')
+  check(text:find('25 laps', 1, true) == nil, 'and not the inert lap setting')
+  check(text:find('Race Time', 1, true) ~= nil and text:find(' Finish', 1, true) == nil,
+    'the result column is Race Time, not Finish')
+  check(lapsCell(text, 'Leader') == 4, 'the winner ran 4 laps (got '
+    .. tostring(lapsCell(text, 'Leader')) .. ')')
+  check(lapsCell(text, 'Second') == 4, 'second place ran the same 4')
+  check(lapsCell(text, 'Lapped') == 3, 'the lapped car ran 3 (got '
+    .. tostring(lapsCell(text, 'Lapped')) .. ')')
+end
+
 -- ---------------------------------------------------------------------------
 -- A lap race is untouched by any of it
 -- ---------------------------------------------------------------------------
@@ -215,6 +252,20 @@ lap(1)
 check(driver(1).status == 'racing', 'one lap of two done')
 lap(1)
 check(driver(1).status == 'finished', 'and the lap count still ends the race')
+
+-- LAPS BEFORE A DNF. Ending the session retires the two cars still out, and
+-- each keeps the laps it completed: one for Second, none for Lapped.
+lap(2)
+RM_onEndRace(0)
+do
+  local text = resultsText()
+  check(text:find('Race distance: 2 laps | Drivers', 1, true) ~= nil,
+    'a lap race run to distance does not repeat it as laps run')
+  check(lapsCell(text, 'Leader') == 2, 'the finisher ran 2 laps')
+  check(lapsCell(text, 'Second') == 1, 'a DNF keeps the lap it completed (got '
+    .. tostring(lapsCell(text, 'Second')) .. ')')
+  check(lapsCell(text, 'Lapped') == 0, 'and one that completed none shows 0')
+end
 
 -- ---------------------------------------------------------------------------
 -- ENDURANCE: both limits live, whichever comes first

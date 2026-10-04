@@ -1,4 +1,4 @@
-<div class="rm-root" ng-class="{'rm-minimal': minimalMode(), 'rm-admin': isAdmin, 'rm-collapsed': hudCollapsed, 'rm-broadcast': broadcastMode()}"
+<div class="rm-root" ng-class="{'rm-minimal': minimalMode(), 'rm-admin': isAdmin, 'rm-collapsed': hudCollapsed, 'rm-broadcast': broadcastMode(), 'rm-menu-open': menuShowing()}"
      ng-style="!minimalMode() && !broadcastMode() && hudStyle()">
   <!-- NOTHING may sit outside this root div - not even a comment. The directive
        is `replace: true`, and the Angular 1.5.8 the game ships counts a sibling
@@ -404,7 +404,10 @@
 
        Only approved tracks are listed, and the list a non-admin holds contains
        nothing else -- the server never sent them the rest. -->
-  <div class="rm-practice" ng-if="!minimalMode() && (canPractice() || practice)">
+  <!-- A PANEL FROM THE MENU, and inline while you are practising with the menu
+       shut: practice has no board, so its laps are the board. -->
+  <div class="rm-practice" ng-class="{'rm-pop': menu.open === 'practice'}"
+       ng-if="!minimalMode() && ((menu.open === 'practice' && menuShowing()) || (practice && !menuShowing()))">
     <div class="rm-practice-head">
       <span class="rm-practice-title">Practice</span>
       <span class="rm-practice-state" ng-if="practice">
@@ -482,15 +485,9 @@
 
   <!-- ================= Lap records (everyone) ============================
        The fastest lap each driver has set on each saved layout of this map,
-       kept by the server across restarts. Collapsed by default, like the
-       garage: up to fifty rows of watched expressions on a driver's screen. -->
-  <div class="rm-records" ng-if="!minimalMode() && !broadcastMode()">
-    <div class="rm-cup-head rm-garage-pickhead" ng-click="recordsToggle()">
-      <span class="rm-cup-title">{{ recordsUi.open ? '▾' : '▸' }} Lap records</span>
-      <span class="rm-cup-state" ng-if="records.laps.length">
-        {{ records.layout }}: {{ formatLap(records.laps[0].time) }} {{ records.laps[0].driver }}
-      </span>
-    </div>
+       kept by the server across restarts. A menu panel, built only while it
+       is open: up to fifty rows of watched expressions on a driver's screen. -->
+  <div class="rm-records rm-pop" ng-if="menu.open === 'records' && menuShowing()">
     <div ng-if="recordsUi.open">
       <div class="rm-mapvote-row">
         <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': recordsUi.menu}">
@@ -553,7 +550,7 @@
     </div>
   </div>
 
-  <div class="rm-cup-driver" ng-if="!isAdmin && cup.enabled && !minimalMode()">
+  <div class="rm-cup-driver rm-pop" ng-if="menu.open === 'cup' && !isAdmin && cup.enabled && menuShowing()">
     <div class="rm-cup-head">
       <span class="rm-cup-title">{{ cup.name || 'Cup' }}: standings</span>
       <span class="rm-cup-state">after {{ cup.round }} round{{ cup.round === 1 ? '' : 's' }}</span>
@@ -577,16 +574,12 @@
        Only entries with a `pc` appear: a car an admin captured after editing it
        in the session has no file to spawn, and offering it would hand somebody
        the model's default while telling them it was the approved car. -->
-  <div class="rm-garage-pick" ng-if="!isAdmin && garageSpawnable.length && !minimalMode()">
-    <!-- COLLAPSED BY DEFAULT, and that is a performance decision rather than a
-         tidiness one. Each car is six watched expressions, the list caps at 60,
-         and this panel is on a DRIVER's screen: expanded it would roughly
-         double the bindings a plain racer's digest walks, for a control they
-         touch once a night. Collapsed it costs four. -->
-    <div class="rm-cup-head rm-garage-pickhead" ng-click="garagePickUi.open = !garagePickUi.open">
-      <span class="rm-cup-title">{{ garagePickUi.open ? '▾' : '▸' }} Garage: cars you may run</span>
-      <span class="rm-cup-state">{{ garageSpawnable.length }}</span>
-    </div>
+  <div class="rm-garage-pick rm-pop" ng-if="menu.open === 'garage' && !isAdmin && garageSpawnable.length && menuShowing()">
+    <!-- A MENU PANEL, and that is a performance decision rather than a tidiness
+         one. Each car is six watched expressions and the list caps at 60: built
+         all the time it would roughly double the bindings a plain racer's
+         digest walks, for a control they touch once a night. Shut, it costs
+         nothing. -->
     <div class="rm-garage-pickrow" ng-if="garagePickUi.open"
          ng-repeat="g in garageSpawnable track by $index">
       <span class="rm-garage-label" title="{{ g.model }}">{{ g.label }}</span>
@@ -615,13 +608,10 @@
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-btn-end': mapsVoted(false)}" ng-click="mapsVote(false)">No</button>
   </div>
 
-  <!-- CALLING A MAP VOTE, from a driver's side. Collapsed by default for the
-       same reason the garage is. Hidden while an admin has voting locked. -->
-  <div class="rm-mapvote" ng-if="!isAdmin && !minimalMode() && !broadcastMode() && maps.voting && !maps.vote">
-    <div class="rm-cup-head rm-garage-pickhead" ng-click="mapsDriverToggle()">
-      <span class="rm-cup-title">{{ mapsUi.driverOpen ? '▾' : '▸' }} Map: call a vote</span>
-      <span class="rm-cup-state">{{ maps.votePercent }}% of the lobby to pass</span>
-    </div>
+  <!-- CALLING A MAP VOTE, from a driver's side. A menu panel for the same
+       reason the garage is. Hidden while an admin has voting locked. -->
+  <div class="rm-mapvote rm-pop" ng-if="menu.open === 'maps' && !isAdmin && menuShowing() && maps.voting && !maps.vote">
+    <div class="rm-cup-hint">{{ maps.votePercent }}% of the lobby has to vote yes for the switch to pass.</div>
     <div class="rm-mapvote-row" ng-if="mapsUi.driverOpen && maps.phase === 'idle'">
       <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': mapsMenuOpen('driver')}">
         <button type="button" class="rm-layout-trigger"
@@ -867,73 +857,85 @@
     </button>
   </div>
 
-  <!-- ================= Tab bar (admin only) ==============================
-       ONE ROW, where there used to be two. The mode row and the sub-tab row
-       were answering the same question -- which panel am I looking at -- so an
-       admin picked twice to reach one place and paid a row of height for each
-       question. `mode` is now a consequence of the tab (see TAB_MODE in app.js)
-       and only the derby is a mode in any real sense: it swaps the session
-       controls and the board underneath.
+  <!-- ================= Menu bar (outside the driver HUD) ==================
+       ONE ROW for everything that is not the race in front of you. An item
+       opens its panel in the space under this row and the board steps aside
+       until it is closed, so neither is squeezed under the other. A closed
+       panel is not built at all, which is fewer watchers than the collapsed
+       sections this replaced.
 
-       Two duplications went with the fold. Cup was listed under Race AND Derby
-       purely because it had to exist in both modes. And "editor" meant the
-       checkpoint editor or the arena editor depending on where you were, which
-       is a name that only works while something else disambiguates it -- the
-       race editor is under Track now and the arena editor under Derby, beside
-       the controls each belongs to.
-
-       LABELS ARE SHORT ON PURPOSE, and the row wraps rather than clipping.
-       Eight tabs no longer hold one line at the app's default 560px; that
-       buys Quali its own tab and the admin one a name, and costs a second row
-       at the narrowest widths. "Quali & Grid" as ONE tab was the widest label
-       the row ever had, which is what splitting them avoids repeating. -->
-  <div class="rm-admin-tabs" ng-if="isAdmin && !setupHidden()">
-    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('race')}"
-            ng-click="selectAdminTab('race')"
-            title="Race distance, reset ruleset, the pace lap and the joker lap">Race</button>
-    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('quali')}"
-            ng-click="selectAdminTab('quali')"
-            title="How qualifying runs: ghosting and the lap or time allowance">Quali</button>
-    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('grid')}"
-            ng-click="selectAdminTab('grid')"
-            title="How the starting grid is filled: heats, transfers and the grid order">Grid</button>
-    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('track')}"
-            ng-click="selectAdminTab('track')"
+       The admin items are the old tab row: picking one selects that tab, so
+       Derby and Drag still put the panel in their mode, and the mode outlives
+       the panel being closed. The underline marks the mode. Stacking is by CSS
+       `order` (see "Stacking" in the stylesheet), not by where things sit here. -->
+  <div class="rm-menubar" ng-if="!minimalMode() && !broadcastMode()">
+    <span class="rm-menu-group" ng-if="isAdmin">
+      <button class="rm-btn rm-btn-mini"
+              ng-class="{'rm-admin-tab-active': menuInRaceGroup(), 'rm-menu-mode': isMode('race')}"
+              ng-click="menuToggleGroup('race')"
+              title="Race distance and rules, qualifying, and how the grid is filled">Race &#9662;</button>
+      <div class="rm-menu-drop" ng-if="menu.group === 'race'">
+        <div class="rm-menu-option" ng-class="{'rm-layout-option-active': menuIsTab('race')}"
+             ng-click="menuTab('race')">Rules: distance, resets, pace lap, joker</div>
+        <div class="rm-menu-option" ng-class="{'rm-layout-option-active': menuIsTab('quali')}"
+             ng-click="menuTab('quali')">Qualifying</div>
+        <div class="rm-menu-option" ng-class="{'rm-layout-option-active': menuIsTab('grid')}"
+             ng-click="menuTab('grid')">Grid and heats</div>
+      </div>
+    </span>
+    <button class="rm-btn rm-btn-mini" ng-if="isAdmin" ng-class="{'rm-admin-tab-active': menuIsTab('track')}"
+            ng-click="menuTab('track')"
             title="Track layouts, the checkpoint editor, the starting grid and free practice">Track <span class="rm-tab-count" ng-if="routeWaypoints.length">{{ routeWaypoints.length }}</span></button>
-    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('garage')}"
-            ng-click="selectAdminTab('garage')"
+    <button class="rm-btn rm-btn-mini" ng-if="isAdmin" ng-class="{'rm-admin-tab-active': menuIsTab('garage')}"
+            ng-click="menuTab('garage')"
             title="Allowed vehicles and setups">Garage <span class="rm-tab-count" ng-if="garage.length">{{ garage.length }}</span></button>
-    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('cup')}"
-            ng-click="selectAdminTab('cup')"
+    <button class="rm-btn rm-btn-mini" ng-if="!isAdmin && garageSpawnable.length" ng-class="{'rm-admin-tab-active': menu.open === 'garage'}"
+            ng-click="menuPanel('garage')"
+            title="The cars you may run, ready to take">Garage <span class="rm-tab-count">{{ garageSpawnable.length }}</span></button>
+    <button class="rm-btn rm-btn-mini" ng-if="isAdmin" ng-class="{'rm-admin-tab-active': menuIsTab('cup')}"
+            ng-click="menuTab('cup')"
             title="Championship points across several races and derbies: scoring, bonuses and standings">Cup <span class="rm-tab-count" ng-if="cup.enabled">R{{ cup.round }}</span></button>
-    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('derby')}"
-            ng-click="selectAdminTab('derby')"
+    <button class="rm-btn rm-btn-mini" ng-if="!isAdmin && cup.enabled" ng-class="{'rm-admin-tab-active': menu.open === 'cup'}"
+            ng-click="menuPanel('cup')"
+            title="The championship standings">Cup <span class="rm-tab-count">R{{ cup.round }}</span></button>
+    <button class="rm-btn rm-btn-mini" ng-if="isAdmin"
+            ng-class="{'rm-admin-tab-active': menuIsTab('derby'), 'rm-menu-mode': isMode('derby')}"
+            ng-click="menuTab('derby')"
             title="Demo Derby: rules, entry, live standings and the arena editor">Derby <span class="rm-tab-count" ng-if="derby.boundaryCount">{{ derby.boundaryCount }}</span></button>
-    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('drag')}"
-            ng-click="selectAdminTab('drag')"
+    <button class="rm-btn rm-btn-mini" ng-if="isAdmin"
+            ng-class="{'rm-admin-tab-active': menuIsTab('drag'), 'rm-menu-mode': isMode('drag')}"
+            ng-click="menuTab('drag')"
             title="Drag racing: the tournament ladder, the tree and the strip. The strip itself is a point-to-point layout built in Track.">Drag <span class="rm-tab-count" ng-if="drag.entrants.length">{{ drag.entrants.length }}</span></button>
-    <!-- A WORD, NOT A GEAR. It was a gear to save the row's margin at 560px,
-         but a gear is where people look for app settings and this tab is the
-         server's: the password, the results, the session. The row wraps rather
-         than clipping, so the cost of the label is a second line at the
-         narrowest widths, not a tab nobody can reach. -->
-    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': isAdminTab('admin')}"
-            ng-click="selectAdminTab('admin')"
+    <button class="rm-btn rm-btn-mini" ng-if="canPractice() || practice" ng-class="{'rm-admin-tab-active': menu.open === 'practice'}"
+            ng-click="menuPanel('practice')"
+            title="Run timed laps on your own on an approved track">Practice</button>
+    <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': menu.open === 'records'}"
+            ng-click="menuPanel('records')"
+            title="Each driver's best lap on every saved layout of this map">Records</button>
+    <button class="rm-btn rm-btn-mini" ng-if="!isAdmin && maps.voting && !maps.vote" ng-class="{'rm-admin-tab-active': menu.open === 'maps'}"
+            ng-click="menuPanel('maps')"
+            title="Call a vote to switch the server to another map">Map</button>
+    <button class="rm-btn rm-btn-mini" ng-if="isAdmin" ng-class="{'rm-admin-tab-active': menuIsTab('admin')}"
+            ng-click="menuTab('admin')"
             title="Master password, results housekeeping and the session">Admin</button>
+    <span class="rm-menu-right">
+      <button class="rm-btn rm-btn-mini" ng-click="toggleSound()"
+              title="{{ soundOn ? 'Start sounds on: beeps for the countdown, GET READY and the drag tree, a tone for GO and the green. Click to mute.' : 'Start sounds muted. Click to turn them on.' }}">{{ soundOn ? '&#x1F50A;' : '&#x1F507;' }}</button>
+    </span>
   </div>
 
-  <!-- The setup body is folded away for the session. One click brings it back
-       for as long as this session lasts (see setupOpen). -->
-  <div class="rm-setup-strip" ng-if="isAdmin && setupHidden()">
-    <span>Setup hidden while the session runs</span>
-    <button class="rm-btn rm-btn-mini" ng-click="toggleSetup()"
-            title="Show the settings and editor panels for this session">Show ▾</button>
-    <button class="rm-btn rm-btn-mini" ng-click="toggleAutoSlim()"
-            title="Stop hiding the setup panels during a session. Remembered.">Keep open</button>
+  <!-- The open panel's title and its close. Keep open stops a session going
+       live from closing it; off, a live session puts the board back. -->
+  <div class="rm-pop-head" ng-if="menuShowing()">
+    <span class="rm-pop-title">{{ menuTitle() }}</span>
+    <button class="rm-btn rm-btn-mini" ng-if="isAdmin" ng-class="{'rm-admin-tab-active': !autoSlim}"
+            ng-click="toggleAutoSlim()"
+            title="Keep this panel open when a session goes live. Off, the board comes back as the session starts. Remembered.">Keep open</button>
+    <button class="rm-btn rm-btn-mini" ng-click="menuClose()" title="Close, back to the board">&#x2715;</button>
   </div>
 
   <!-- ================= Admin tab body (scrolls) ========================== -->
-  <div class="rm-admin-body" ng-if="isAdmin && !broadcastMode() && !setupHidden()">
+  <div class="rm-admin-body" ng-if="isAdmin && !broadcastMode() && menuShowing() && menu.open === 'tab'">
 
   <!-- ================= Race settings ================= -->
   <div class="rm-settings" ng-if="isAdminTab('race')">
@@ -3884,6 +3886,8 @@
     <button class="rm-driverbar-btn" ng-if="spectatorView() && !hudCollapsed"
             ng-click="toggleBroadcast()"
             title="Switch to the broadcast board: the whole field, the drivers who are out, and click a name to put the camera on them">&#x1F4FA;</button>
+    <button class="rm-driverbar-btn" ng-click="toggleSound()" ng-if="!hudCollapsed"
+            title="{{ soundOn ? 'Start sounds on. Click to mute.' : 'Start sounds muted. Click to turn them on.' }}">{{ soundOn ? '&#x1F50A;' : '&#x1F507;' }}</button>
     <button class="rm-driverbar-btn" ng-click="openLogin()" ng-if="!hudCollapsed"
             title="Admin login">🔒</button>
     <label class="rm-driverbar-op" title="Leaderboard background opacity" ng-if="!hudCollapsed">
@@ -4506,6 +4510,15 @@
     border-radius: 4px;
     overflow: hidden;
   }
+  /* SEE-THROUGH, set by the controller below about 0.6 on the opacity slider.
+     The text is on the road by then, and gray on sky or tarmac vanishes. The
+     grays are var(--rm-muted/soft/faint), lifted toward white as the fill
+     fades; the outline keeps every line readable over a bright background. */
+  .rm-see-through { text-shadow: 0 0 2px rgba(0, 0, 0, 0.95), 0 1px 2px rgba(0, 0, 0, 0.9); }
+  .rm-see-through .rm-row-out td,
+  .rm-see-through .rm-row-dnf td,
+  .rm-see-through .rm-row-dsq td,
+  .rm-see-through .rm-derby-row-out td { opacity: 0.8; }
 
   /* Header */
   .rm-header {
@@ -4542,7 +4555,7 @@
     text-transform: uppercase;
     letter-spacing: 0.5px;
     background: rgba(255, 255, 255, 0.1);
-    color: #9aa0a6;
+    color: var(--rm-muted, #9aa0a6);
   }
   .rm-phase-qualifying { background: rgba(171, 71, 188, 0.3);  color: #ce93d8; }
   .rm-phase-grid       { background: rgba(66, 133, 244, 0.25); color: #8ab4f8; }
@@ -4577,7 +4590,7 @@
      time pressure should be able to tell the two starts apart without reading. */
   .rm-btn-pace { border-color: rgba(251, 188, 5, 0.85); color: #fdd663; }
   .rm-btn-end   { border-color: #ea4335; color: #f28b82; }
-  .rm-btn-reset { border-color: #9aa0a6; color: #bdc1c6; }
+  .rm-btn-reset { border-color: #9aa0a6; color: var(--rm-soft, #bdc1c6); }
   .rm-btn-mini  { padding: 2px 7px; font-size: 10px; }
 
   .rm-wp-progress { font-size: 10px; color: #7ee2a8; font-variant-numeric: tabular-nums; }
@@ -4589,7 +4602,7 @@
   .rm-laptime { font-variant-numeric: tabular-nums; letter-spacing: 0.5px; }
   .rm-laptime-live {
     font-size: 11px;
-    color: #bdc1c6;
+    color: var(--rm-soft, #bdc1c6);
   }
   .rm-laptime-hold {
     display: inline-block;
@@ -4612,12 +4625,12 @@
   }
   .rm-practice-head { display: flex; align-items: baseline; gap: 8px; }
   .rm-practice-title { font-weight: 700; font-size: 11px; color: #8ab4f8; }
-  .rm-practice-state { font-size: 11px; color: #bdc1c6; }
-  .rm-practice-off { color: #9aa0a6; }
+  .rm-practice-state { font-size: 11px; color: var(--rm-soft, #bdc1c6); }
+  .rm-practice-off { color: var(--rm-muted, #9aa0a6); }
   .rm-practice-row {
     display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px;
   }
-  .rm-practice-note { font-size: 11px; color: #9aa0a6; }
+  .rm-practice-note { font-size: 11px; color: var(--rm-muted, #9aa0a6); }
   .rm-laptime-hold b { font-weight: 700; }
   /* DELTA COLORS. Green is faster, red is slower -- the way round every timing
      screen in racing does it, which is what makes it readable at a glance and
@@ -4637,7 +4650,7 @@
     border-radius: 3px;
     font-size: 11px;
     font-weight: 700;
-    color: #bdc1c6;
+    color: var(--rm-soft, #bdc1c6);
     background: rgba(154, 160, 166, 0.14);
     border: 1px solid rgba(154, 160, 166, 0.4);
   }
@@ -4722,7 +4735,7 @@
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: #9aa0a6;
+    color: var(--rm-muted, #9aa0a6);
   }
   .rm-login-input {
     background: rgba(255, 255, 255, 0.08);
@@ -4734,26 +4747,59 @@
     min-width: 130px;
   }
   .rm-login-error { font-size: 11px; color: #f28b82; font-weight: 600; }
-  .rm-login-hint { font-size: 10px; color: #9aa0a6; }
+  .rm-login-hint { font-size: 10px; color: var(--rm-muted, #9aa0a6); }
   .rm-pw-msg { font-size: 11px; color: #7ee2a8; font-weight: 600; }
   .rm-maps-current { font-size: 12px; font-weight: 600; color: #e8eaed; }
-  .rm-maps-zip { font-size: 10px; color: #9aa0a6; }
+  .rm-maps-zip { font-size: 10px; color: var(--rm-muted, #9aa0a6); }
   .rm-maps-error { font-size: 11px; color: #ff8a80; font-weight: 600; }
   /* rm-confirm's layout without its red: a rename destroys nothing. */
   .rm-confirm.rm-maps-rename { color: #e8eaed; }
 
-  /* ============ Admin tabs =============================================== */
-  /* One admin panel at a time. Before this, every panel stacked and the app
-     window (overflow:hidden) simply clipped whatever ran past the bottom edge,
-     with no scrollbar anywhere to reach it. */
-  .rm-admin-tabs {
+  /* ============ Menu bar ================================================= */
+  /* One row of items; each opens its panel under the row (see Stacking). */
+  .rm-menubar {
     display: flex;
     align-items: center;
-    gap: 5px;
-    padding: 5px 10px;
+    gap: 4px;
+    padding: 4px 8px;
     flex-wrap: wrap;
     background: rgba(255, 255, 255, 0.03);
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  /* A box, not an inline span: top: 100% of an inline box is not its bottom. */
+  .rm-menu-group { position: relative; display: inline-flex; }
+  /* The mode the panel is in, which outlives its panel being closed. */
+  .rm-menu-mode { box-shadow: inset 0 -2px 0 #ff6600; }
+  .rm-menu-drop {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 8;
+    min-width: 220px;
+    margin-top: 2px;
+    padding: 3px 0;
+    background: #1d2026;
+    border: 1px solid rgba(255, 102, 0, 0.6);
+    border-radius: 4px;
+  }
+  .rm-menu-option { padding: 5px 10px; cursor: pointer; white-space: nowrap; }
+  .rm-menu-option:hover { background: rgba(255, 102, 0, 0.18); }
+  .rm-menu-right { margin-left: auto; display: flex; gap: 4px; }
+  .rm-pop-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: var(--rm-accent-bg, rgba(255, 102, 0, 0.15));
+    border-bottom: 1px solid var(--rm-accent-line, rgba(255, 102, 0, 0.5));
+  }
+  .rm-pop-title {
+    margin-right: auto;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #ffb380;
   }
   .rm-admin-tab-active {
     background: rgba(255, 102, 0, 0.28);
@@ -4795,7 +4841,7 @@
     padding: 0 4px;
     border-radius: 7px;
     background: rgba(255, 255, 255, 0.14);
-    color: #bdc1c6;
+    color: var(--rm-soft, #bdc1c6);
     font-size: 9px;
     font-variant-numeric: tabular-nums;
   }
@@ -4825,38 +4871,49 @@
   .rm-admin .rm-table-wrap { min-height: 84px; }
 
   /* ------------------------------------------------------------------------
-     THE BOARD COMES UP, THE SETUP GOES DOWN -- for admins only.
+     STACKING. Every child of .rm-root is a flex item of one column, so `order`
+     stacks them without moving markup: header, the menu bar, the things that
+     must never be hidden (login, READY, the map vote, the banners), then an
+     open panel, then the rest, then the board.
 
-     The leaderboard was the last child in the DOM, after every admin panel, so
-     it took whatever was left: about a tenth of the panel, with a race running
-     in it. Everything named below is already a direct child of .rm-root, which
-     is a flex column, so `order` re-stacks them without moving a line of
-     markup -- no ng-if, no binding and none of the editor wiring has to know.
-     Moving 180 lines of table to do the same thing is the version of this
-     change that breaks something.
-
-     Reading order becomes: header, entry, controls and the track picker, then
-     the BOARD, then the tabs and whatever panel is open under them. Practice
-     lands last, which is where a between-sessions control belongs -- it used to
-     sit between the entry bar and the controls an admin reaches for.
+     While a panel is open the board and the controls step aside and the panel
+     takes the room, scrolling inside it. The banners and READY stay. The
+     overlays are absolutely placed and ignore all of this.
      ------------------------------------------------------------------------ */
-  .rm-admin > .rm-table-wrap  { order: 1; }
-  .rm-admin > .rm-admin-tabs  { order: 2; }
-  .rm-admin > .rm-setup-strip { order: 2; }
-  .rm-admin > .rm-admin-body  { order: 3; }
-  .rm-admin > .rm-practice    { order: 4; }
-
-  /* The strip that stands in for the setup panels while a session runs. */
-  .rm-setup-strip {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 5px 10px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
-    font-size: 10px;
-    color: #9aa0a6;
+  .rm-root > * { order: 5; }
+  .rm-root > .rm-header { order: 0; }
+  .rm-root > .rm-menubar { order: 1; }
+  .rm-root > .rm-login,
+  .rm-root > .rm-readybar,
+  .rm-root > .rm-mapvote-live,
+  .rm-root > .rm-spectator-bar,
+  .rm-root > .rm-vehicle-error,
+  .rm-root > .rm-notice,
+  .rm-root > .rm-pit,
+  .rm-root > .rm-ghost { order: 2; }
+  .rm-root > .rm-pop-head { order: 3; }
+  /* The admin body is a panel too, styled by its own class: tests pin that
+     class attribute exactly. */
+  .rm-root > .rm-pop,
+  .rm-root > .rm-admin-body {
+    order: 4;
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+    overflow-y: auto;
   }
-  .rm-setup-strip button:first-of-type { margin-left: auto; }
+  .rm-root > .rm-table-wrap,
+  .rm-root > .rm-drag-ladder { order: 6; }
+  .rm-menu-open > .rm-entry,
+  .rm-menu-open > .rm-controls,
+  .rm-menu-open > .rm-table-wrap,
+  .rm-menu-open > .rm-drag-ladder { display: none; }
+  /* The panel scrolls, so the short lists inside it stop scrolling on their own:
+     a scroll box inside a scroll box is two wheels for one list. */
+  .rm-pop .rm-records-list,
+  .rm-pop .rm-cup-standings,
+  .rm-admin-body .rm-cup-standings,
+  .rm-pop .rm-practice-laps { max-height: none; overflow: visible; }
   /* Gate sizing sits inside the editor panel, so it drops the settings row's
      own divider and outer padding. */
   .rm-editor-defaults {
@@ -4868,7 +4925,7 @@
   .rm-adminbar-panel { display: flex; flex-direction: column; }
 
   /* Build stamps */
-  .rm-build { font-size: 10px; color: #9aa0a6; font-variant-numeric: tabular-nums; }
+  .rm-build { font-size: 10px; color: var(--rm-muted, #9aa0a6); font-variant-numeric: tabular-nums; }
   .rm-build-bad { color: #fdd663; font-weight: 700; }
 
   /* Display names (aliases) */
@@ -4893,7 +4950,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #9aa0a6;
+    color: var(--rm-muted, #9aa0a6);
   }
   .rm-practice-laps {
     display: flex;
@@ -4911,9 +4968,9 @@
     color: #d6d8db;
   }
   .rm-practice-lap-best .rm-practice-laptime { color: #fbbc05; font-weight: 600; }
-  .rm-practice-lapno { min-width: 18px; color: #9aa0a6; text-align: right; }
+  .rm-practice-lapno { min-width: 18px; color: var(--rm-muted, #9aa0a6); text-align: right; }
   .rm-practice-laptime { font-variant-numeric: tabular-nums; }
-  .rm-practice-lapdelta { font-size: 10px; color: #9aa0a6; }
+  .rm-practice-lapdelta { font-size: 10px; color: var(--rm-muted, #9aa0a6); }
   .rm-alias-picker { min-width: 140px; }
   .rm-alias-roster {
     margin-top: 7px;
@@ -4958,7 +5015,7 @@
     align-items: center;
   }
   .rm-setting { display: flex; align-items: center; gap: 5px; }
-  .rm-setting label { color: #9aa0a6; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .rm-setting label { color: var(--rm-muted, #9aa0a6); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
   .rm-setting input[type="number"] {
     width: 46px;
     background: rgba(255, 255, 255, 0.08);
@@ -4969,7 +5026,7 @@
     font-size: 11px;
   }
   .rm-setting input[type="range"] { width: 90px; accent-color: #ff6600; }
-  .rm-setting-val { color: #9aa0a6; font-size: 10px; font-variant-numeric: tabular-nums; }
+  .rm-setting-val { color: var(--rm-muted, #9aa0a6); font-size: 10px; font-variant-numeric: tabular-nums; }
   /* A label + input pair that appears inside a setting row rather than being
      the row: the half of a laps/timed choice that is currently in use. Same
      flex rules as the row itself so it lays out as if it were part of it. */
@@ -4983,7 +5040,7 @@
   }
   .rm-editor-controls { display: flex; gap: 5px; flex-wrap: wrap; }
   .rm-editor-msg { margin-top: 5px; font-size: 11px; color: #fdd663; }
-  .rm-editor-hint { margin-top: 5px; font-size: 11px; color: #9aa0a6; }
+  .rm-editor-hint { margin-top: 5px; font-size: 11px; color: var(--rm-muted, #9aa0a6); }
   .rm-editor-list { margin-top: 5px; max-height: 150px; overflow-y: auto; }
   .rm-editor-wp {
     display: flex;
@@ -5007,7 +5064,7 @@
     padding: 0 1px;
     user-select: none;
   }
-  .rm-editor-wp:hover .rm-editor-grip { color: #bdc1c6; }
+  .rm-editor-wp:hover .rm-editor-grip { color: var(--rm-soft, #bdc1c6); }
   .rm-editor-grip:active { cursor: grabbing; }
   /* Where the dragged gate would land. A line above the row rather than a fill:
      the question is "between which two" and a filled row answers a different
@@ -5037,8 +5094,8 @@
   }
   .rm-editor-idx { width: 22px; text-align: right; color: #ff6600; font-weight: 700; }
   .rm-editor-finish { color: #e8eaed; }
-  .rm-editor-coords { color: #bdc1c6; flex: 1; }
-  .rm-editor-dims { color: #9aa0a6; display: flex; gap: 6px; }
+  .rm-editor-coords { color: var(--rm-soft, #bdc1c6); flex: 1; }
+  .rm-editor-dims { color: var(--rm-muted, #9aa0a6); display: flex; gap: 6px; }
   .rm-editor-dims .rm-dim-set { color: #ffb380; font-weight: 700; }
   /* Per-checkpoint override editor */
   .rm-cp-edit {
@@ -5070,7 +5127,7 @@
     color: #ffb380;
     font-weight: 700;
   }
-  .rm-layouts-map { color: #9aa0a6; font-weight: 400; text-transform: none; }
+  .rm-layouts-map { color: var(--rm-muted, #9aa0a6); font-weight: 400; text-transform: none; }
   /* WRAPS RATHER THAN SQUEEZES.
      This column is about 300px wide (the rest goes to the route preview), and
      without wrapping the flex children just compress: the name field collapsed
@@ -5109,7 +5166,7 @@
   .rm-controls-label {
     font-size: 11px;
     font-weight: 600;
-    color: #9aa0a6;
+    color: var(--rm-muted, #9aa0a6);
     white-space: nowrap;
     align-self: center;
   }
@@ -5203,13 +5260,13 @@
     pointer-events: auto;
   }
   .rm-layout-trigger:hover { background: rgba(255, 255, 255, 0.14); }
-  .rm-layout-trigger-empty .rm-layout-trigger-label { color: #9aa0a6; }
+  .rm-layout-trigger-empty .rm-layout-trigger-label { color: var(--rm-muted, #9aa0a6); }
   .rm-layout-trigger-label {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .rm-layout-caret { color: #9aa0a6; font-size: 10px; transition: transform 0.12s; }
+  .rm-layout-caret { color: var(--rm-muted, #9aa0a6); font-size: 10px; transition: transform 0.12s; }
   .rm-layout-dropdown-open .rm-layout-caret { transform: rotate(180deg); }
   .rm-layout-menu {
     position: absolute;
@@ -5243,7 +5300,7 @@
   }
   .rm-layout-option:hover { background: rgba(255, 102, 0, 0.18); }
   .rm-layout-option-active { color: #ffb380; background: rgba(255, 102, 0, 0.12); }
-  .rm-layouts-hint { font-size: 10px; color: #9aa0a6; }
+  .rm-layouts-hint { font-size: 10px; color: var(--rm-muted, #9aa0a6); }
   .rm-btn-nudge-on {
     background: rgba(255, 51, 230, 0.3);
     border-color: rgba(255, 51, 230, 0.85);
@@ -5312,12 +5369,12 @@
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: #9aa0a6;
+    color: var(--rm-muted, #9aa0a6);
     font-weight: 700;
   }
-  .rm-entry-state { font-size: 11px; color: #9aa0a6; }
+  .rm-entry-state { font-size: 11px; color: var(--rm-muted, #9aa0a6); }
   .rm-entry-in { color: #7ee2a8; font-weight: 600; }
-  .rm-entry-count { margin-left: auto; font-size: 10px; color: #bdc1c6; }
+  .rm-entry-count { margin-left: auto; font-size: 10px; color: var(--rm-soft, #bdc1c6); }
   .rm-row-out td { opacity: 0.5; }
 
   /* Header badges for the new session state */
@@ -5409,7 +5466,7 @@
     flex-wrap: wrap;
   }
   .rm-lanes-list { display: flex; gap: 4px; flex-wrap: wrap; }
-  .rm-lane-label { font-size: 10px; color: #9aa0a6; white-space: nowrap; }
+  .rm-lane-label { font-size: 10px; color: var(--rm-muted, #9aa0a6); white-space: nowrap; }
   .rm-lane-num { width: 46px; }
   .rm-grid-slider { width: 110px; }
   .rm-lane-picker { min-width: 96px; }
@@ -5742,7 +5799,7 @@
   .rm-flag-checkered { color: #e8eaed; }
   .rm-waiting {
     font-size: 10px;
-    color: #9aa0a6;
+    color: var(--rm-muted, #9aa0a6);
     white-space: nowrap;
   }
   .rm-waiting b { color: #e8eaed; }
@@ -5751,7 +5808,7 @@
   .rm-driverbar-phase { font-size: 9px; padding: 1px 5px; }
   .rm-driverbar-act { display: inline-flex; gap: 4px; align-items: center; font-size: 10px; }
   .rm-driverbar-retire { border-color: rgba(234, 67, 53, 0.8); color: #ff8a8a; }
-  .rm-entry-out { color: #9aa0a6; font-style: italic; }
+  .rm-entry-out { color: var(--rm-muted, #9aa0a6); font-style: italic; }
   .rm-flagset { display: inline-flex; gap: 4px; }
   .rm-entryset { display: inline-flex; gap: 4px; }
   .rm-btn-redflag { border-color: rgba(255, 82, 82, 0.85); color: #ff8a8a; }
@@ -5807,7 +5864,7 @@
   .rm-table th {
     text-align: left;
     padding: 4px 8px;
-    color: #9aa0a6;
+    color: var(--rm-muted, #9aa0a6);
     font-weight: 600;
     text-transform: uppercase;
     font-size: 10px;
@@ -5833,7 +5890,7 @@
   .rm-col-time   { width: 84px; text-align: right; }
   .rm-row-finished td { background: rgba(52, 168, 83, 0.07); }
   .rm-row-dnf td { opacity: 0.45; }
-  .rm-empty { text-align: center; color: #9aa0a6; padding: 16px 6px !important; white-space: normal !important; }
+  .rm-empty { text-align: center; color: var(--rm-muted, #9aa0a6); padding: 16px 6px !important; white-space: normal !important; }
 
   /* Status lights */
   .rm-light {
@@ -5896,10 +5953,10 @@
   /* Rows shift as places change; a short background transition keeps the
      movement readable instead of abrupt. */
   .rm-table tbody tr { transition: background-color 0.25s linear; }
-  .rm-dist { font-size: 10px; color: #9aa0a6; font-variant-numeric: tabular-nums; }
+  .rm-dist { font-size: 10px; color: var(--rm-muted, #9aa0a6); font-variant-numeric: tabular-nums; }
 
   /* ============ Module 1/2/4: regulation controls + banners ============== */
-  .rm-btn-toggle { border-color: #9aa0a6; color: #bdc1c6; }
+  .rm-btn-toggle { border-color: #9aa0a6; color: var(--rm-soft, #bdc1c6); }
   .rm-btn-toggle-on {
     border-color: #34a853;
     color: #7ee2a8;
@@ -5964,7 +6021,7 @@
   }
   .rm-btn-collapse { min-width: 22px; }
 
-  .rm-route-tab-note { font-size: 10px; color: #9aa0a6; }
+  .rm-route-tab-note { font-size: 10px; color: var(--rm-muted, #9aa0a6); }
   .rm-editor-joker { color: #d1a8ff; }
   .rm-editor-branch { color: #7fe6f7; }
 
@@ -6016,15 +6073,15 @@
   .rm-records .rm-cup-title { color: #ce93d8; }
   .rm-records-list { margin-top: 5px; max-height: 180px; overflow-y: auto; }
   .rm-records-time { width: 64px; text-align: right; color: #e8eaed; font-weight: 700; }
-  .rm-records-gap { width: 50px; text-align: right; color: #9aa0a6; font-size: 10px; }
+  .rm-records-gap { width: 50px; text-align: right; color: var(--rm-muted, #9aa0a6); font-size: 10px; }
   .rm-records-car {
     width: 90px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #9aa0a6;
+    color: var(--rm-muted, #9aa0a6);
   }
-  .rm-records-date { width: 66px; text-align: right; color: #9aa0a6; font-size: 10px; }
+  .rm-records-date { width: 66px; text-align: right; color: var(--rm-muted, #9aa0a6); font-size: 10px; }
   .rm-maps-percent { width: 52px; }
   .rm-garage-pickrow {
     display: flex;
@@ -6048,7 +6105,7 @@
   }
   .rm-cup-state { color: #e8eaed; font-size: 11px; margin-left: auto; }
   .rm-cup-paused { color: #fbbc05; }
-  .rm-cup-off { color: #9aa0a6; }
+  .rm-cup-off { color: var(--rm-muted, #9aa0a6); }
   .rm-cup-controls {
     display: flex;
     align-items: center;
@@ -6065,7 +6122,7 @@
     font-size: 11px;
     padding: 2px 5px;
   }
-  .rm-cup-next { color: #9aa0a6; font-size: 10px; }
+  .rm-cup-next { color: var(--rm-muted, #9aa0a6); font-size: 10px; }
   .rm-cup-pending { color: #fdd663; font-size: 10px; }
   /* The "are you sure" row, shared by every control in the app that destroys
      something with no undo (End Cup, Clear Results Cache). One class, so a
@@ -6077,7 +6134,7 @@
     font-size: 11px;
     color: #f28b82;
   }
-  .rm-cup-hint { font-size: 10px; color: #9aa0a6; }
+  .rm-cup-hint { font-size: 10px; color: var(--rm-muted, #9aa0a6); }
   /* Discipline heading inside the scoring editor. */
   .rm-cup-sep {
     margin: 6px 0 4px;
@@ -6113,13 +6170,13 @@
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.4px;
-    color: #9aa0a6;
+    color: var(--rm-muted, #9aa0a6);
   }
   /* Twenty-four cells wrap onto as many lines as the app is wide enough for,
      rather than forcing a horizontal scrollbar into a narrow HUD app. */
   .rm-cup-table-row { gap: 3px; }
   .rm-cup-cell { display: inline-flex; align-items: center; gap: 2px; }
-  .rm-cup-pos { font-size: 9px; color: #5f6368; width: 20px; text-align: right; }
+  .rm-cup-pos { font-size: 9px; color: var(--rm-faint, #5f6368); width: 20px; text-align: right; }
   /* The typed points line. Wide, monospaced digits, and it grows with the
      row rather than sitting at a fixed width: a 24-deep table is a long line
      and a box that truncated it would defeat the point of showing it. */
@@ -6158,7 +6215,7 @@
   }
   .rm-cup-strow:hover { background: rgba(255, 255, 255, 0.05); }
   .rm-cup-sthead {
-    color: #9aa0a6;
+    color: var(--rm-muted, #9aa0a6);
     font-size: 9px;
     text-transform: uppercase;
     letter-spacing: 0.4px;
@@ -6174,7 +6231,7 @@
     white-space: nowrap;
     color: #e8eaed;
   }
-  .rm-cup-stnum { width: 36px; text-align: right; color: #9aa0a6; }
+  .rm-cup-stnum { width: 36px; text-align: right; color: var(--rm-muted, #9aa0a6); }
   .rm-cup-adj { color: #fdd663; }
   .rm-cup-adjbtn { margin-left: 4px; padding: 0 5px; }
   /* Manual adjustment editor, opened from a standings row. */
@@ -6216,8 +6273,8 @@
     white-space: nowrap;
     color: #e8eaed;
   }
-  .rm-cup-ledby { color: #5f6368; }
-  .rm-cup-racingas { font-size: 10px; color: #9aa0a6; min-width: 90px; }
+  .rm-cup-ledby { color: var(--rm-faint, #5f6368); }
+  .rm-cup-racingas { font-size: 10px; color: var(--rm-muted, #9aa0a6); min-width: 90px; }
   /* The cup pickers reuse the track-layout dropdown, which exists because a
      native <select> popup never renders in BeamNG's CEF UI. Narrower here:
      these sit inline in a settings row rather than filling a control bar. */
@@ -6243,7 +6300,7 @@
     color: #8ab4f8;
     font-weight: 700;
   }
-  .rm-garage-count { color: #9aa0a6; font-size: 10px; margin-left: auto; }
+  .rm-garage-count { color: var(--rm-muted, #9aa0a6); font-size: 10px; margin-left: auto; }
   .rm-garage-controls { display: flex; gap: 5px; flex-wrap: wrap; }
   .rm-garage-list { margin-top: 5px; max-height: 110px; overflow-y: auto; }
   .rm-garage-row {
@@ -6263,8 +6320,8 @@
     white-space: nowrap;
     color: #e8eaed;
   }
-  .rm-garage-model { color: #9aa0a6; font-size: 10px; }
-  .rm-garage-hint { margin-top: 5px; font-size: 11px; color: #9aa0a6; }
+  .rm-garage-model { color: var(--rm-muted, #9aa0a6); font-size: 10px; }
+  .rm-garage-hint { margin-top: 5px; font-size: 11px; color: var(--rm-muted, #9aa0a6); }
   .rm-garage-warn {
     margin-bottom: 5px;
     padding: 3px 6px;
@@ -6283,11 +6340,11 @@
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: #9aa0a6;
+    color: var(--rm-muted, #9aa0a6);
   }
   .rm-garage-mode-note {
     font-size: 10px;
-    color: #9aa0a6;
+    color: var(--rm-muted, #9aa0a6);
     margin-left: auto;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -6307,7 +6364,7 @@
   .rm-garage-setlist { display: flex; gap: 4px; flex-wrap: wrap; }
   .rm-garage-sets-note {
     font-size: 10px;
-    color: #9aa0a6;
+    color: var(--rm-muted, #9aa0a6);
     line-height: 1.4;
   }
   .rm-garage-bad {
@@ -6558,7 +6615,7 @@
     margin-bottom: 3px;
     border-radius: 4px;
     font-size: 10px;
-    color: #bdc1c6;
+    color: var(--rm-soft, #bdc1c6);
   }
   /* ---------------------------------------------------------------------
      THE STATUS BARS ARE TWO ROWS ON PURPOSE
@@ -6652,12 +6709,12 @@
   .rm-driverbar-op { display: flex; align-items: center; gap: 4px; }
   .rm-driverbar-op input[type="range"] { width: 70px; accent-color: #ff6600; }
   /* Header copy: same control, sized to sit among the header badges. */
-  .rm-hud-op { font-size: 10px; color: #bdc1c6; cursor: pointer; }
+  .rm-hud-op { font-size: 10px; color: var(--rm-soft, #bdc1c6); cursor: pointer; }
   .rm-hud-op input[type="range"] { width: 56px; }
   .rm-driverbar-btn {
     background: transparent;
     border: 1px solid rgba(255, 255, 255, 0.25);
-    color: #bdc1c6;
+    color: var(--rm-soft, #bdc1c6);
     border-radius: 3px;
     padding: 0 5px;
     font-size: 10px;
@@ -6725,7 +6782,7 @@
        name under the close button. Measured (the group is 76px wide), plus clearance. */
     padding: 3px 82px 3px 8px;
     font-size: 10px;
-    color: #bdc1c6;
+    color: var(--rm-soft, #bdc1c6);
     border-bottom: 1px solid rgba(255, 255, 255, 0.15);
     /* Follows the opacity slider, like the sticky table header: a fixed fill
        would stay as a solid strip across an otherwise faded-out board. */
@@ -6765,7 +6822,7 @@
   .rm-bc-col-name { max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
   .rm-bc-col-lap  { width: 46px; text-align: center; }
   .rm-bc-col-time { width: 76px; text-align: right; }
-  .rm-bc-col-note { width: 96px; text-align: right; color: #9aa0a6; font-size: 10px; }
+  .rm-bc-col-note { width: 96px; text-align: right; color: var(--rm-muted, #9aa0a6); font-size: 10px; }
   /* A name is a control here, so it has to look like one. Pointer and underline
      on hover only: a permanently underlined column of names reads as a page of
      links rather than a leaderboard. */
@@ -6784,9 +6841,9 @@
      position and the driver are what the eye should land on first. */
   .rm-bc-gap, .rm-bc-int {
     font-variant-numeric: tabular-nums;
-    color: #bdc1c6;
+    color: var(--rm-soft, #bdc1c6);
   }
-  .rm-bc-int { color: #9aa0a6; }
+  .rm-bc-int { color: var(--rm-muted, #9aa0a6); }
   /* A lapped driver's "gap" is a count of laps, not a time. Colored apart so it
      is never read as a very large number of seconds. */
   .rm-bc-lapped { color: #fdd663; font-weight: 600; }
@@ -6812,7 +6869,7 @@
   .rm-bc-foot {
     padding: 3px 8px;
     font-size: 9px;
-    color: #9aa0a6;
+    color: var(--rm-muted, #9aa0a6);
     border-top: 1px solid rgba(255, 255, 255, 0.08);
   }
   .rm-bc-cupname {
@@ -6822,7 +6879,7 @@
     letter-spacing: 0.5px;
     color: #e8eaed;
   }
-  .rm-bc-round { color: #9aa0a6; font-weight: 400; }
+  .rm-bc-round { color: var(--rm-muted, #9aa0a6); font-weight: 400; }
   .rm-bc-points { font-weight: 700; color: #e8eaed; }
 
   /* ===================== DEMO DERBY (isolated module) ===================== */
@@ -6858,11 +6915,11 @@
     padding: 1px 8px;
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.1);
-    color: #9aa0a6;
+    color: var(--rm-muted, #9aa0a6);
   }
   .rm-derby-phase-running  { background: rgba(234, 67, 53, 0.3);  color: #f28b82; }
   .rm-derby-phase-finished { background: rgba(255, 255, 255, 0.2); color: #e8eaed; }
-  .rm-derby-markers { color: #9aa0a6; font-weight: 400; text-transform: none; margin-left: auto; }
+  .rm-derby-markers { color: var(--rm-muted, #9aa0a6); font-weight: 400; text-transform: none; margin-left: auto; }
   .rm-derby-settings {
     display: flex;
     gap: 14px;
@@ -6880,9 +6937,9 @@
      third of a narrow HUD panel moves ~8 m a pixel. */
   .rm-derby-rect { display: flex; flex-direction: column; gap: 4px; }
   .rm-derby-rect .rm-cp-dim label,
-  .rm-derby-editor > .rm-cp-dim label { min-width: 62px; color: #9aa0a6; }
+  .rm-derby-editor > .rm-cp-dim label { min-width: 62px; color: var(--rm-muted, #9aa0a6); }
   .rm-derby-editor > .rm-cp-dim { margin: 2px 0; }
-  .rm-derby-hint { margin-top: 5px; font-size: 11px; color: #9aa0a6; }
+  .rm-derby-hint { margin-top: 5px; font-size: 11px; color: var(--rm-muted, #9aa0a6); }
   /* The same hint used as the leaderboard's empty state. The panels it was
      written for are padded; .rm-table-wrap is not, because a table brings its
      own cell padding, so it needs its own inset here. */

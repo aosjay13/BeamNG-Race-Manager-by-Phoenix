@@ -1322,6 +1322,7 @@ D.onDerbyCountdown = function (rawData)
   local count = tonumber(data.count)
   if count and count <= 0 then host.releaseGridHold('derby') end
   guihooks.trigger('RaceManagerCountdown', data)
+  if host.lightsCountdown then host.lightsCountdown(count) end
 end
 
 -- Map-filtered arena list from the server.

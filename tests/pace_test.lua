@@ -311,8 +311,11 @@ local resultsText = rf and rf:read('*a') or ''
 if rf then rf:close() end
 check(resultsText:find('Race distance: 3 laps + pace lap', 1, true) ~= nil,
   'whose header names the pace lap, so the distance and the Laps column agree')
-check(resultsText:find('Laps column reads one higher', 1, true) ~= nil,
-  'and says which way the discrepancy runs')
+check(resultsText:find('not counted in Laps', 1, true) ~= nil,
+  'and says the Laps column leaves it out')
+-- Four crossings, three laps: the formation lap is not one of them.
+local winnerLaps = resultsText:match('%-%-%- RACE RESULTS %-%-%-.-\nP1%s+%S+%s+%S+%s+%S+%s+%d+%s+(%d+)')
+check(winnerLaps == '3', 'the winner is credited 3 laps, not 4 (got ' .. tostring(winnerLaps) .. ')')
 
 -- ---------------------------------------------------------------------------
 -- A red flag holds the green
