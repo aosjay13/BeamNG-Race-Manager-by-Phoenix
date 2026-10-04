@@ -149,18 +149,55 @@ jobs:
           unzip -l package/Client/RaceManager.zip
           fail() { echo "::error::$1"; exit 1; }
           test -f package/Client/RaceManager.zip             || fail "Client/RaceManager.zip missing (check the folder case)"
-          for f in lua/ge/extensions/raceManager.lua                    lua/ge/extensions/raceManager/derby.lua                    lua/ge/extensions/raceManager/drag.lua                    lua/ge/extensions/raceManager/maps.lua                    lua/ge/extensions/raceManager/records.lua                    lua/ge/extensions/raceManager/lights.lua                    lua/ge/extensions/raceManager/radar.lua                    lua/ge/extensions/raceManager/render.lua                    scripts/raceManager/modScript.lua                    ui/modules/apps/RaceManager/app.html                    ui/modules/apps/RaceManager/app.js                    ui/modules/apps/RaceManager/app.json                    ui/modules/apps/RaceManagerLights/app.html                    ui/modules/apps/RaceManagerLights/app.js                    ui/modules/apps/RaceManagerLights/app.json                    ui/modules/apps/RaceManagerLights/app.png                    ui/modules/apps/RaceManagerRadar/app.html                    ui/modules/apps/RaceManagerRadar/app.js                    ui/modules/apps/RaceManagerRadar/app.json                    ui/modules/apps/RaceManagerRadar/app.png; do
+          for f in lua/ge/extensions/raceManager.lua                    lua/ge/extensions/raceManager/derby.lua                    lua/ge/extensions/raceManager/drag.lua                    lua/ge/extensions/raceManager/maps.lua                    lua/ge/extensions/raceManager/records.lua                    lua/ge/extensions/raceManager/lights.lua                    lua/ge/extensions/raceManager/radar.lua                    lua/ge/extensions/raceManager/render.lua                    scripts/raceManager/modScript.lua                    ui/modules/apps/RaceManager/app.html                    ui/modules/apps/RaceManager/app.js                    ui/modules/apps/RaceManager/app.json                    ui/modules/apps/RaceManager/app.png                    ui/modules/apps/RaceManagerLights/app.html                    ui/modules/apps/RaceManagerLights/app.js                    ui/modules/apps/RaceManagerLights/app.json                    ui/modules/apps/RaceManagerLights/app.png                    ui/modules/apps/RaceManagerRadar/app.html                    ui/modules/apps/RaceManagerRadar/app.js                    ui/modules/apps/RaceManagerRadar/app.json                    ui/modules/apps/RaceManagerRadar/app.png; do
             unzip -l package/Client/RaceManager.zip | grep -q " $f$"               || fail "$f is missing from the client zip: the mod will mount and then fail its require"
           done
           for f in main.lua derby.lua drag.lua maps.lua records.lua; do
             test -f "package/Server/RaceManager/$f"               || fail "Server/RaceManager/$f missing (check the folder case)"
           done
 
+      # --- The release notes are the CHANGELOG since the last release ---
+      #
+      # Releases went out with an empty body, so the download page said nothing
+      # about what changed or that there are now three apps to add. EVERY
+      # version since the previous release tag is included: versions deployed
+      # but never published would otherwise vanish from the notes of the one
+      # that was. A version with no CHANGELOG section stops here.
+      - name: Release notes
+        id: notes
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          tag="${{ steps.version.outputs.new_tag }}"
+          ver="${tag#v}"
+          head=$(grep -m1 "^## $ver " CHANGELOG.md || true)
+          [ -n "$head" ] || fail "CHANGELOG.md has no '## $ver - ...' section"
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_SHA^" 2>/dev/null || true)
+          echo "Notes from $tag back to ${prev:-the start}"
+          awk -v h="$head" -v stop="## ${prev#v} " '
+            $0 == h { on = 1; next }
+            on && stop != "##  " && index($0, stop) == 1 { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || fail "the CHANGELOG section for $ver is empty"
+          {
+            echo
+            echo "#### Install"
+            echo
+            echo "Extract the zip into the server's \`Resources/\` folder and restart the server."
+            echo "Players get the client mod as they join. Each driver adds the apps once from"
+            echo "**HUD Apps**: **Race Manager** (Racing, Info), **Race Manager Lights** and"
+            echo "**Race Manager Radar** (Racing)."
+          } >> notes.md
+          echo "title=$tag - ${head#*- }" >> "$GITHUB_OUTPUT"
+          cat notes.md
+
       # --- Publish as a Release ---
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.new_tag }}
+          name: ${{ steps.notes.outputs.title }}
+          body_path: notes.md
           files: RaceManager-${{ steps.version.outputs.new_tag }}.zip
 
       # --- Also attach to the run as an artifact (optional) ---
