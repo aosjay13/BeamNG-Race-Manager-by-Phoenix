@@ -2612,7 +2612,7 @@ these were collapsed sections.
 | **Cup** | everyone | Admins: scoring, bonuses and standings. Drivers: the standings, while a cup runs |
 | **Derby** | admins | Demo Derby rules, entry and the arena editor |
 | **Drag** | admins | The drag tournament: format, lanes, the tree, dial-ins and the bracket |
-| **Practice** | everyone | Timed laps on your own, on an approved track |
+| **Practice** | everyone | Timed laps on your own, on an approved track (see [Free practice](#free-practice)) |
 | **Records** | everyone | The lap records board for each layout on this map |
 | **Map** | drivers | Call a vote to switch maps, while voting is open |
 | **Admin** | admins | Master passwords, results housekeeping, the map switch, display names |
@@ -2640,6 +2640,27 @@ outlines); closing the panel takes it away.
 A **driver's** leaderboard follows the session, not the menu. Once a derby forms
 up, their board is the derby standings, through the countdown and the derby.
 
+## Free practice
+
+Timed laps on your own, between sessions. Open **Practice** on the menu bar, pick
+a track and press **Start Practice**. Only tracks an admin has opened for
+practice are listed (**Practice: OPEN** in the Track panel). You are put on the
+track's first start position and timed from the line. Nothing is scored,
+reported or saved: your laps are listed in the panel, the best in gold.
+
+- **Laps.** 0 is unlimited. With a target, practice ends at the line on the last
+  lap and the panel keeps your laps up until **Close**.
+- **Ghost: ON**, the default, makes you a ghost to everybody while you practise.
+  You pass through other cars and they pass through you; they see your car
+  faded, you see it solid. **Ghost: off** keeps you solid, for drivers who want
+  to run together. Both have to turn it off: one ghost in a pair is enough to
+  pass through. It can be switched mid-practice and is remembered. A car goes
+  solid again only once nothing is inside it.
+- **A session starting ends practice**: a grid forming or a derby forming up,
+  with a notice. Practice laps are never reported, so laps driven in practice
+  mode would not count.
+- **End Practice** stops timing. The track stays drawn.
+
 ## Race Manager Lights
 
 A second app in the same mod: the start lights, the flags and the drag tree in a
@@ -2648,6 +2669,10 @@ Manager Lights** from the game's HUD Apps list (UI Apps before v0.39), under
 **Racing**, and place and size it like any other app. It is invisible until it
 has something to show, and shows itself for six seconds when it loads so you
 can see where it went.
+
+There is no box behind the lamps. Each lamp has its own dark hood, so it reads
+over sky, tarmac or snow, and a lit lamp is drawn as a bulb: a hot center, a
+highlight on the glass and a glow past the hood.
 
 | Lamps | Caption | When |
 |---|---|---|
@@ -2669,8 +2694,8 @@ up for as long as they are true. A red flag or a caution always wins over a flag
 of your own.
 
 **Drag racing.** During a pass the box becomes the tree, laid on its side: PRE
-and STAGE bulbs, three ambers, green and red. Unlit bulbs keep a rim of their
-own color, so you can see which one is next. After your run it shows your RT,
+and STAGE bulbs, three ambers, green and red. Unlit lenses keep a tint and a rim
+of their own color, so you can see which one is next. After your run it shows your RT,
 ET and speed until the slip expires.
 
 **Sounds** play whether or not the Lights app is on screen: a beep for each

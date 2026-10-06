@@ -685,18 +685,47 @@ appliedLayouts = {}
 RM_onLoadLayout(1, '{"name":"GP Circuit","forPractice":true}')
 check(appliedLayouts[1] ~= nil, 'an admin can practice too')
 
+-- PRACTICE GHOSTS. The server keeps who is practising ghosted and every client
+-- ghosts those cars; a practising car used to be solid to everybody.
+local function practiceGhosts()
+  local set = {}
+  for _, id in ipairs(lastState and lastState.ghostPractice or {}) do set[id] = true end
+  return set
+end
+check(not practiceGhosts()[3] and not practiceGhosts()[1],
+  'practising without asking for the ghost ghosts nobody: an older client never sends it')
+RM_onLoadLayout(3, '{"name":"GP Circuit","forPractice":true,"ghost":true}')
+check(practiceGhosts()[3] == true, 'a driver practising ghosted is on the ghost list')
+RM_onPracticeGhost(3, '{"on":false}')
+check(not practiceGhosts()[3], 'and comes off it when they switch to solid mid-practice')
+RM_onPracticeGhost(3, '{"on":true}')
+check(practiceGhosts()[3] == true, 'and back on when they switch again')
+RM_onPracticeEnd(3)
+check(not practiceGhosts()[3], 'ending practice takes them off the list')
+RM_onPracticeGhost(3, '{"on":true}')
+check(not practiceGhosts()[3], 'and a driver not practising cannot put themselves on it')
+RM_onLoadLayout(3, '{"name":"GP Circuit","forPractice":true,"ghost":true}')
+RM_onPlayerDisconnect(3)
+RM_onPlayerJoin(3)
+check(not practiceGhosts()[3], 'a disconnect ends it: a recycled id never arrives ghosted')
+RM_onLoadLayout(3, '{"name":"GP Circuit","forPractice":true,"ghost":true}')
+check(practiceGhosts()[3] == true, 'practising ghosted again before the next session')
+
 -- NOT ONCE A SESSION HAS STARTED -- and that includes the GRID, which is the
 -- case worth having a test for. sessionUnderWay() is false while the field is
 -- lined up, because an admin may still change the rules there; a practice load
 -- would clear this driver's gates and hand them another track a moment before
 -- the lights.
 RM_onStartQualifying(1)
+check(not practiceGhosts()[3],
+  'forming a grid ends practice: nobody is ghosted into a session as a practiser')
 appliedLayouts = {}
 RM_onLoadLayout(3, '{"name":"GP Circuit","forPractice":true}')
 check(appliedLayouts[3] == nil,
   'practice is for between sessions, not during one')
 RM_onEndRace(1)
 RM_onResetLeaderboard(1)   -- back to 'waiting', so practice is allowed again
+check(not practiceGhosts()[3], 'and the flag does not come back with the waiting phase')
 
 -- Un-approving takes it away again.
 RM_onSetLayoutPractice(1, '{"name":"GP Circuit","practice":false}')

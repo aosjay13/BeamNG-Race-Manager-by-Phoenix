@@ -394,7 +394,9 @@ angular.module('beamng.apps')
           //
           // Client-side and session-local by design. Nothing is sent up and
           // nothing is written down; leaving the mode empties it.
-          if ($scope.practice && !data.outLap && typeof data.lapTime === 'number') {
+          // practiceComplete too: the lap that reaches the target ends the run.
+          if (($scope.practice || $scope.practiceComplete) && !data.outLap
+              && typeof data.lapTime === 'number') {
             if ($scope.practiceBest === null || data.lapTime < $scope.practiceBest) {
               $scope.practiceBest = data.lapTime;
             }
@@ -564,7 +566,7 @@ angular.module('beamng.apps')
       function menuAvailable(name) {
         switch (name) {
           case 'tab':      return $scope.isAdmin;
-          case 'practice': return $scope.canPractice() || !!$scope.practice;
+          case 'practice': return $scope.canPractice() || !!$scope.practice || !!$scope.practiceComplete;
           case 'records':  return true;
           case 'cup':      return !$scope.isAdmin && !!$scope.cup.enabled;
           case 'garage':   return !$scope.isAdmin && $scope.garageSpawnable.length > 0;
@@ -1742,7 +1744,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // hunt. Bump this with main.lua, raceManager.lua and app.json's "version"
       // -- they are the released package version and wiring_test fails if the
       // four disagree.
-      var APP_BUILD = '0.18.4';
+      var APP_BUILD = '0.18.5';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
@@ -2697,11 +2699,16 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           // changing track under it: a time set on one layout says nothing about
           // the next, and a list that survived the switch would read as this
           // session's.
+          // EXCEPT A COMPLETED RUN: the lap target ended it, and those laps are
+          // what the driver ran it for. They stay up until Close or a new start.
           var wasPractice = $scope.practice;
           var wasLayout   = $scope.practiceLayout;
           $scope.practice       = data.practice === true;
           $scope.practiceLayout = data.practiceLayout || null;
-          if ($scope.practice !== wasPractice || $scope.practiceLayout !== wasLayout) {
+          $scope.practiceComplete = data.practiceComplete === true;
+          var freshRun = $scope.practice && (!wasPractice || $scope.practiceLayout !== wasLayout);
+          var leftRun  = !$scope.practice && !$scope.practiceComplete;
+          if ((freshRun || leftRun) && ($scope.practiceLaps.length || $scope.practiceBest !== null)) {
             $scope.practiceLaps = [];
             $scope.practiceBest = null;
           }
@@ -5691,6 +5698,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.practiceLayout = null;
       $scope.practiceDone   = 0;
       $scope.practiceLeft   = null;
+      $scope.practiceComplete = false;
       $scope.practiceUi = { selected: '', laps: 0 };
       // The laps run in THIS practice session, newest first, and the best of
       // them. Cleared whenever practice starts or stops: a time set on one track
@@ -5734,6 +5742,20 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.endPractice = function () {
         bngApi.engineLua('raceManager.endPractice()');
       };
+      // GHOSTED OR SOLID while practising, the driver's choice and remembered.
+      // Ghosted by default: a practice car is somebody else's obstacle. Sent on
+      // load as the sound switch is, so the Lua side holds it before any start.
+      $scope.practiceGhost = loadPref('practiceGhost', true) !== false;
+      function pushPracticeGhost() {
+        bngApi.engineLua('if raceManager and raceManager.setPracticeGhost then '
+          + 'raceManager.setPracticeGhost(' + ($scope.practiceGhost ? 'true' : 'false') + ') end');
+      }
+      $scope.togglePracticeGhost = function () {
+        $scope.practiceGhost = !$scope.practiceGhost;
+        savePref('practiceGhost', $scope.practiceGhost);
+        pushPracticeGhost();
+      };
+      pushPracticeGhost();
 
       // The layout and arena pickers are absolutely positioned menus, and the
       // admin tab body is a scroll container - a menu opened near its bottom

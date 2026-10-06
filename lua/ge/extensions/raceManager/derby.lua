@@ -1072,6 +1072,11 @@ D.onDerbyUpdate = function (rawData)
   if newPhase == 'idle' or newPhase == 'finished' then
     host.releaseGridHold('derby')
   end
+  -- Practice is between sessions, and a derby is one.
+  if (newPhase == 'forming' or newPhase == 'countdown' or newPhase == 'running')
+     and host.practiceStop then
+    host.practiceStop('derby')
+  end
   D.derbyState.phase = newPhase
 
   D.derbyState.oobLimit  = tonumber(data.oobLimit)  or D.derbyState.oobLimit

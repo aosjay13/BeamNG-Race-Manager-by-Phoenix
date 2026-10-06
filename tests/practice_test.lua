@@ -319,6 +319,61 @@ lap()
 check(lastHook('RaceManagerLapDone') == nil, 'ending practice stops the timing')
 check(sentCount('RM_Lap') == 0, 'and still reports nothing')
 
+-- ---------------------------------------------------------------------------
+-- A lap target ends the run
+-- ---------------------------------------------------------------------------
+-- It used to be shown and nothing else: "0 left" and the laps kept coming.
+local function practiseFromGrid()
+  handlers['RM_Practice']({ on = true, layout = 'oval' })
+  veh.x, veh.y, veh.z = 300, 400, 0
+  frame(60)
+end
+RM.setPracticeLaps(2)
+practiseFromGrid()
+sent, hooks = {}, {}
+lap()
+local mid = lastHook('RaceManagerRoute')
+check(mid ~= nil and mid.practice == true and mid.practiceLeft == 1,
+  'one lap of two run: still practising, one left')
+lap()
+local fin = lastHook('RaceManagerRoute')
+check(fin ~= nil and fin.practice ~= true, 'the lap that reaches the target ends practice')
+check(fin ~= nil and fin.practiceComplete == true and fin.practiceDone == 2,
+  'and the panel is told the run is complete, with the laps it ran')
+check(lastHook('RaceManagerLapDone') ~= nil and lastHook('RaceManagerLapDone').lap == 2,
+  'the last lap is still timed and shown')
+check(lastHook('RaceManagerNotice') ~= nil
+  and lastHook('RaceManagerNotice').msg == 'PRACTICE COMPLETE: 2 laps',
+  'and the driver is told')
+check(sentCount('RM_PracticeEnd') == 1 and sentCount('RM_Lap') == 0,
+  'the server hears practice ended, and still no lap')
+sent, hooks = {}, {}
+lap()
+check(lastHook('RaceManagerLapDone') == nil, 'nothing is timed after the target')
+RM.endPractice()
+local closed = lastHook('RaceManagerRoute')
+check(closed ~= nil and closed.practiceComplete ~= true, 'Close puts the finished run away')
+RM.setPracticeLaps(0)
+
+-- ---------------------------------------------------------------------------
+-- A session starting ends practice, and its laps reach the server
+-- ---------------------------------------------------------------------------
+-- THE BUG THIS PINS: practice never ended on its own, and every lap of the race
+-- took the practice branch and returned before RM_Lap. A driver who forgot End
+-- Practice drove a whole race the server never heard about.
+practiseFromGrid()
+sent, hooks = {}, {}
+lap()
+check(sentCount('RM_Lap') == 0, 'practising: no lap reported')
+serverState({ phase = 'grid', totalLaps = 3, maxResets = -1, drivers = {} })
+local gridRoute = lastHook('RaceManagerRoute')
+check(gridRoute ~= nil and gridRoute.practice ~= true, 'the grid forming ends practice')
+startRace(3)
+sent, hooks = {}, {}
+lap()
+check(sentCount('RM_Lap') == 1,
+  'and the first race lap is reported (got ' .. sentCount('RM_Lap') .. ')')
+
 if fails == 0 then
   print(('practice_test: %d checks, 0 failures'):format(checks))
 else

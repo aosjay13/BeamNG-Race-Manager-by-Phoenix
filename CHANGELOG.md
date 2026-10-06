@@ -6,6 +6,37 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.18.5 - Ghosted practice, and lights that glow
+
+#### Fixed
+
+- **Practice ends when a session starts.** A driver still practising when the
+  grid formed had every lap of the session timed as practice and never sent to
+  the server, so their race was never scored. A grid forming or a derby forming
+  up now ends practice, with a notice saying why.
+- **A practice lap target ends practice.** It used to be shown and nothing else.
+  Practice now stops at the line on the last lap, and the panel keeps your laps
+  up until you press Close.
+- **Practising cars are ghosts.** Practice ran only on each driver's PC and no
+  other client knew who was practising, so a practising car was solid to
+  everybody.
+
+#### Added
+
+- **Ghost: ON / off in the Practice panel.** Ghosted by default: you pass through
+  other cars and they pass through you, faded on their screens and solid on
+  yours. Off keeps you solid, for drivers who want to run together; both have
+  to turn it off. It can be switched mid-practice and is remembered.
+
+#### Changed
+
+- **Race Manager Lights has no box behind it.** Each lamp has its own dark hood
+  so it reads over any background, and a lit lamp is drawn as a bulb: a hot
+  center, a highlight on the glass and a glow past the hood. The drag tree's
+  unlit lenses keep a tint of their color.
+- **Practice is refused while a derby or a drag pass is running**, as it already
+  was during a race.
+
 ## 0.18.4 - Radar
 
 #### Added

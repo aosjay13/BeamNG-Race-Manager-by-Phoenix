@@ -406,18 +406,22 @@
        nothing else -- the server never sent them the rest. -->
   <!-- A PANEL FROM THE MENU, and inline while you are practising with the menu
        shut: practice has no board, so its laps are the board. -->
+  <!-- A run the lap target finished stays up too, with its laps, until Close. -->
   <div class="rm-practice" ng-class="{'rm-pop': menu.open === 'practice'}"
-       ng-if="!minimalMode() && ((menu.open === 'practice' && menuShowing()) || (practice && !menuShowing()))">
+       ng-if="!minimalMode() && ((menu.open === 'practice' && menuShowing()) || ((practice || practiceComplete) && !menuShowing()))">
     <div class="rm-practice-head">
       <span class="rm-practice-title">Practice</span>
       <span class="rm-practice-state" ng-if="practice">
         on <b>{{ practiceLayout }}</b> &middot; lap {{ practiceDone + 1 }}<span
           ng-if="practiceLeft !== null">, {{ practiceLeft }} left</span>
       </span>
-      <span class="rm-practice-state rm-practice-off" ng-if="!practice && !practiceLayouts().length">
+      <span class="rm-practice-state" ng-if="practiceComplete">
+        complete on <b>{{ practiceLayout }}</b> &middot; {{ practiceDone }} {{ practiceDone === 1 ? 'lap' : 'laps' }}
+      </span>
+      <span class="rm-practice-state rm-practice-off" ng-if="!practice && !practiceComplete && !practiceLayouts().length">
         No tracks are open for practice
       </span>
-      <span class="rm-practice-state" ng-if="practice && practiceBest !== null">
+      <span class="rm-practice-state" ng-if="(practice || practiceComplete) && practiceBest !== null">
         best <b>{{ formatLap(practiceBest) }}</b>
       </span>
     </div>
@@ -429,7 +433,7 @@
          Session-local and client-side. Nothing is sent up, nothing is written
          down, and it empties when practice stops or the track changes. Capped
          at ten rows because this is a driver's screen and every row is watched. -->
-    <div class="rm-practice-laps" ng-if="practice && practiceLaps.length">
+    <div class="rm-practice-laps" ng-if="(practice || practiceComplete) && practiceLaps.length">
       <div class="rm-practice-lap" ng-repeat="l in practiceLaps track by $index"
            ng-class="{'rm-practice-lap-best': practiceIsBest(l)}">
         <span class="rm-practice-lapno">{{ l.lap }}</span>
@@ -466,6 +470,11 @@
              ng-model-options="{debounce: 600}"
              title="How many laps to run. 0 or blank is unlimited.">
       <span class="rm-setting-val">{{ practiceUi.laps > 0 ? 'laps' : 'unlimited' }}</span>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': practiceGhost}"
+              ng-click="togglePracticeGhost()"
+              title="On: you are a ghost to everybody while you practise. Off: solid, so you can run with other drivers who also turned it off.">
+        Ghost: {{ practiceGhost ? 'ON' : 'off' }}
+      </button>
       <button class="rm-btn rm-btn-start" ng-click="startPractice()"
               ng-disabled="!practiceUi.selected || !canPractice()"
               title="Load this track for yourself and start timing. Nobody else is moved, and nothing you do is scored.">
@@ -476,10 +485,19 @@
       <span class="rm-practice-note">
         Your laps are timed for you alone: nothing here is scored, reported or saved.
       </span>
+      <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': practiceGhost}"
+              ng-click="togglePracticeGhost()"
+              title="On: you are a ghost to everybody while you practise. Off: solid, so you can run with other drivers who also turned it off.">
+        Ghost: {{ practiceGhost ? 'ON' : 'off' }}
+      </button>
       <button class="rm-btn rm-btn-end" ng-click="endPractice()"
               title="Stop timing. The track stays loaded so you can still see where it goes.">
         End Practice
       </button>
+    </div>
+    <div class="rm-practice-row" ng-if="practiceComplete">
+      <span class="rm-practice-note">Lap target reached. Timing has stopped.</span>
+      <button class="rm-btn" ng-click="endPractice()" title="Put these laps away.">Close</button>
     </div>
   </div>
 
@@ -906,7 +924,7 @@
             ng-class="{'rm-admin-tab-active': menuIsTab('drag'), 'rm-menu-mode': isMode('drag')}"
             ng-click="menuTab('drag')"
             title="Drag racing: the tournament ladder, the tree and the strip. The strip itself is a point-to-point layout built in Track.">Drag <span class="rm-tab-count" ng-if="drag.entrants.length">{{ drag.entrants.length }}</span></button>
-    <button class="rm-btn rm-btn-mini" ng-if="canPractice() || practice" ng-class="{'rm-admin-tab-active': menu.open === 'practice'}"
+    <button class="rm-btn rm-btn-mini" ng-if="canPractice() || practice || practiceComplete" ng-class="{'rm-admin-tab-active': menu.open === 'practice'}"
             ng-click="menuPanel('practice')"
             title="Run timed laps on your own on an approved track">Practice</button>
     <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': menu.open === 'records'}"

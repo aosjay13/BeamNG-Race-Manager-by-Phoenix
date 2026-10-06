@@ -244,7 +244,7 @@ local TUNE = {
 
 -- Build stamp, pushed to the UI. Must match the server plugin and app.js -- see
 -- the note in main.lua for why a mismatch is otherwise invisible.
-local RM_BUILD = '0.18.4'
+local RM_BUILD = '0.18.5'
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -698,6 +698,12 @@ local ghost = {
   -- has dropped out of the authoritative list, which is how a disconnect
   -- mid-ghost stops leaving a ghost behind.
   finishedRemote = {},
+  -- Practice ghosts (ghost.practiceSync): our own car while we practise
+  -- ghosted, the server's list of everyone else who is, and
+  -- [tostring(pid)] = gameVehId (false until their car appears).
+  practiceOwn = nil,
+  practiceList = {},
+  practiceRemote = {},
   applied = {},   -- [gameVehId] = true while the ghost is actually applied
   -- Cars whose reasons have all gone but which still had another car inside
   -- them when the moment came. They stay ghosts and are retried until the space
@@ -952,10 +958,12 @@ local localTime    = 0
 
 -- FREE PRACTICE: driving a track on your own, timed, with nothing at stake.
 --
--- Entirely local. The server hands over an approved layout and says "you are
+-- Timed locally. The server hands over an approved layout and says "you are
 -- practising"; everything after that -- arming gates, timing laps, counting
--- them -- happens on this client and is reported to nobody. No RM_Lap, no
--- progress telemetry, no leaderboard row, no cup round.
+-- them -- happens on this client and no lap is reported. No RM_Lap, no
+-- progress telemetry, no leaderboard row, no cup round. The server hears only
+-- that practice ended and whether the driver is ghosted, so every client can
+-- ghost the car (RM_PracticeEnd, RM_PracticeGhost).
 --
 -- It is deliberately NOT a session. sessionRunning() stays false throughout, so
 -- the grid, the hold, the reset allowance, the flags and the spectator lock all
@@ -966,7 +974,14 @@ local localTime    = 0
 --   layout    the track pulled up, for the readout
 --   lapTarget how many laps the driver asked for, 0 = unlimited
 --   lapsDone  laps completed since practice started
-local practice = { on = false, layout = nil, lapTarget = 0, lapsDone = 0 }
+--   ghost     the driver's choice: a ghost to everybody while practising
+--   complete  the lap target was reached; the panel keeps the laps up
+--
+-- NOT a session, but it ENDS when one starts (practice.stop). A practice lap is
+-- never reported, so a driver still practising when the grid formed drove a
+-- race the server never heard about.
+local practice = { on = false, layout = nil, lapTarget = 0, lapsDone = 0,
+                   ghost = true, complete = false }
 
 -- SELF-TIMING: this driver's lap and sector deltas.
 --
@@ -1746,6 +1761,8 @@ local function pushRouteState()
     practiceDone   = practice.lapsDone,
     practiceLeft   = (practice.on and practice.lapTarget > 0)
                      and math.max(0, practice.lapTarget - practice.lapsDone) or nil,
+    practiceGhost    = practice.ghost,
+    practiceComplete = practice.complete,
     -- Starting grid
     startPositions = track.startPositions,
     pointToPoint   = track.pointToPoint,
@@ -2265,6 +2282,11 @@ local function onLapCompleted()
       practice.lapsDone, lapTime))
     session.lapStart = localTime
     timing.sectors = {}
+    -- The target was only ever shown. Reaching it ends the run; the panel
+    -- keeps the laps up until the driver closes them or starts again.
+    if practice.lapTarget > 0 and practice.lapsDone >= practice.lapTarget then
+      practice.stop('complete')
+    end
     return
   end
   if not sessionRunning() then return end
@@ -6287,6 +6309,15 @@ end
 -- BeamNG hook: the local player reset/recovered a vehicle. Registered as an
 -- extension hook, so it fires for every vehicle - filter to our own first.
 function M.onVehicleResetted(vehId)
+  -- A practice ghost lives in the vehicle VM a reset reloads. Put it straight
+  -- back, on our car or anybody's, rather than leave it solid until the sweep.
+  if vehId ~= nil and vehId == ghost.practiceOwn then
+    ghost.practiceCar(vehId, true)
+  else
+    for _, id in pairs(ghost.practiceRemote) do
+      if id == vehId then ghost.practiceCar(vehId, true) break end
+    end
+  end
   -- Ours, or there is nothing here to do. The attached vehicle can be another
   -- player's car - that is precisely the situation a driver who has just been
   -- taken off the track is in - and treating their reset as ours is how a rival
@@ -6582,6 +6613,10 @@ function M.onVehicleDestroyed(vehId)
   for pid, id in pairs(ghost.remoteVeh) do
     if id == vehId then ghost.remoteVeh[pid] = nil end
   end
+  for key, id in pairs(ghost.practiceRemote) do
+    if id == vehId then ghost.practiceRemote[key] = false end
+  end
+  if ghost.practiceOwn == vehId then ghost.practiceOwn = nil end
   -- Our own car going away ends our ghost outright: there is nothing left to
   -- restore collision to, and holding the timer open would leave the next car
   -- this driver spawns waiting on a countdown that belonged to a deleted one.
@@ -7535,6 +7570,8 @@ function ghost.alphaFor(vehId)
   -- our own client -- but collision and alpha are separate calls, and only one
   -- of them is any of the driver's business.
   if vehId ~= nil and vehId == ghost.finishedOwn then return 1 end
+  -- Practising ghosted, the same rule: faded for everybody else.
+  if vehId ~= nil and vehId == ghost.practiceOwn then return 1 end
   local left = ghost.left[vehId]
   local fade = TUNE.GHOST_FADE_OUT_SEC
   if not left or fade <= 0 or left >= fade then return TUNE.GHOST_ALPHA end
@@ -7789,6 +7826,9 @@ local function clearGhostReasons()
   ghost.veh = {}
   ghost.finishedOwn = nil
   ghost.finishedRemote = {}
+  ghost.practiceOwn = nil
+  ghost.practiceList = {}
+  ghost.practiceRemote = {}
   -- Swept over EVERY car in the world, not just the ones this client believes
   -- it ghosted. A session ending has to leave nothing ghosted whatever the
   -- bookkeeping thinks -- an entry lost to a vehicle id being reused, or a ghost
@@ -8037,6 +8077,59 @@ function ghost.applyFinishedRoster(list)
   end
 end
 
+-- PRACTICE GHOSTS. A driver practising with ghosting on is a ghost on every
+-- client, their own included, for ghost.setFinished's reason: our car is
+-- simulated here, so it has to be intangible here as well.
+--
+-- Two halves. Our own car is decided locally (practice.on and practice.ghost);
+-- everyone else's comes off the server's list, `ghostPractice` on the state
+-- broadcast, which names only drivers practising with ghosting on.
+--
+-- RE-ISSUED ON EVERY CALL, not trusted to have stuck. A reset or a placement
+-- reloads the vehicle's Lua VM and setGhostEnabled with it, and practice is
+-- where drivers reset the most. The sweep calls this every two seconds and a
+-- reset calls it at once.
+function ghost.practiceCar(vehId, on, veh)
+  if on then ghost.applied[vehId] = nil end
+  if not veh then
+    local got, found = pcall(getObjectByID, vehId)
+    veh = got and found or nil
+  end
+  ghost.reasonRig(vehId, 'practice', on, veh)
+end
+
+function ghost.practiceSync(list)
+  if type(list) == 'table' then ghost.practiceList = list end
+  local own = (practice.on and practice.ghost) and ownVehicle() or nil
+  local ownId = own and vehicleId(own) or nil
+  if ghost.practiceOwn and ghost.practiceOwn ~= ownId then
+    ghost.practiceCar(ghost.practiceOwn, false)
+  end
+  ghost.practiceOwn = ownId
+  if ownId then ghost.practiceCar(ownId, true, own) end
+  local mine = tostring(localServerId())
+  local seen = {}
+  for _, pid in ipairs(ghost.practiceList) do
+    local key = tostring(pid)
+    if key ~= mine then
+      seen[key] = true
+      local veh, vehId = ghost.vehicleForPid(pid)
+      local was = ghost.practiceRemote[key]
+      if was and was ~= vehId then ghost.practiceCar(was, false) end
+      ghost.practiceRemote[key] = vehId or false
+      if vehId then ghost.practiceCar(vehId, true, veh) end
+    end
+  end
+  -- Walked off what we applied, so a driver who ended practice or left is
+  -- solid again (once nothing is inside them: ghost.reason's weld gate).
+  for key, vehId in pairs(ghost.practiceRemote) do
+    if not seen[key] then
+      ghost.practiceRemote[key] = nil
+      if vehId then ghost.practiceCar(vehId, false) end
+    end
+  end
+end
+
 -- The server's whole ghost roster, off the state broadcast:
 -- { { pid = ..., endsAt = ... }, ... }, end times on the server clock.
 -- Authoritative, so a pid that is NOT in it has no ghost -- which is how a
@@ -8267,6 +8360,7 @@ local function ghostUpdate(dt)
   ghost.refresh = 2.0
   for reason in pairs(ghost.field) do setGhostReason(reason, true) end
   for pid, endsAt in pairs(ghost.remote) do ghost.applyRemote(pid, endsAt) end
+  ghost.practiceSync()
 end
 
 -- ---------------------------------------------------------------------------
@@ -8438,6 +8532,9 @@ derby.init({
   inMultiplayer = inMultiplayer, localServerId = localServerId,
   fromCurrentServer = fromCurrentServer,
   releaseGridHold = releaseGridHold, requestHold = requestHold,
+  -- A derby forming ends practice, as a race does. practice.stop is
+  -- assigned further down this file.
+  practiceStop = function (why) practice.stop(why) end,
   -- Mutable scalars this file owns: getters, never values.
   phase = function () return session.phase end,
   isAdmin = function () return session.isAdmin end,
@@ -10380,7 +10477,11 @@ function M.practiceLayout(name)
     editorMsg('Practice needs a BeamMP server')
     return
   end
-  TriggerServerEvent('RM_LoadLayout', jsonEncode({ name = name, forPractice = true }))
+  -- `ghost` only when true: an older server ignores it, and one that reads it
+  -- ghosts nobody who did not ask.
+  TriggerServerEvent('RM_LoadLayout', jsonEncode({
+    name = name, forPractice = true, ghost = practice.ghost or nil,
+  }))
 end
 
 -- How many laps the driver wants. 0 (or blank) is unlimited, which is the
@@ -10390,14 +10491,61 @@ function M.setPracticeLaps(n)
   pushRouteState()
 end
 
--- Stop practising. The gates stay drawn -- the track is still loaded, and a
--- driver who has stopped timing has not stopped looking at where it goes.
-function M.endPractice()
-  practice.on = false
-  practice.lapsDone = 0
-  timingReset()
-  pushNotice('session', 'Practice ended')
+-- Ghosted or solid while practising: the driver's choice, remembered by the UI.
+-- Solid is for drivers who want to run together; one ghost in a pair is enough
+-- to pass through, so both have to pick solid to touch.
+function M.setPracticeGhost(on)
+  on = on ~= false
+  if practice.ghost == on then return end
+  practice.ghost = on
+  if practice.on then
+    ghost.practiceSync()
+    if inMultiplayer() then
+      TriggerServerEvent('RM_PracticeGhost', jsonEncode({ on = on }))
+    end
+  end
   pushRouteState()
+end
+
+-- Every way practice stops: End Practice, the lap target, a session or a derby
+-- starting, leaving the server. On `practice` rather than a local: this file
+-- is at the 200-local ceiling.
+--
+-- The gates stay drawn -- the track is still loaded, and a driver who has
+-- stopped timing has not stopped looking at where it goes.
+function practice.stop(why)
+  if not practice.on then
+    -- Not practising, but a completed run's laps may still be up: every way
+    -- out closes them, so they never sit over a session.
+    if practice.complete then
+      practice.complete = false
+      practice.lapsDone = 0
+      pushRouteState()
+    end
+    return
+  end
+  local done = practice.lapsDone
+  practice.on = false
+  practice.complete = why == 'complete'
+  if not practice.complete then practice.lapsDone = 0 end
+  timingReset()
+  ghost.practiceSync()
+  if why ~= 'idle' and inMultiplayer() then
+    TriggerServerEvent('RM_PracticeEnd', '')
+  end
+  if why == 'complete' then
+    pushNotice('session', 'PRACTICE COMPLETE: ' .. done .. (done == 1 and ' lap' or ' laps'))
+  elseif why == 'session' or why == 'derby' then
+    pushNotice('session', 'Practice ended: a ' .. why .. ' is starting')
+  elseif why ~= 'idle' then
+    pushNotice('session', 'Practice ended')
+  end
+  pushRouteState()
+end
+
+-- Stop practising, or close a finished run's laps.
+function M.endPractice()
+  practice.stop('driver')
 end
 
 -- The server has put this client on a practice track.
@@ -10417,10 +10565,12 @@ local function onPractice(rawData)
   practice.on     = data.on == true
   practice.layout = data.layout
   practice.lapsDone = 0
+  practice.complete = false
   session.localLap  = 1
   session.lapStart  = localTime
   session.armedWp   = 1
   timingReset()
+  ghost.practiceSync()
   if practice.on then
     -- STAND THE CAR ON THE GRID BEFORE TIMING ANYTHING.
     --
@@ -10719,6 +10869,10 @@ local function onServerUpdate(rawData)
   if type(data.ghostFinished) == 'table' then
     ghost.applyFinishedRoster(data.ghostFinished)
   end
+  -- Drivers practising ghosted. Empty during a session: practice is between them.
+  if type(data.ghostPractice) == 'table' then
+    ghost.practiceSync(data.ghostPractice)
+  end
   -- Whether we turned up in the middle of somebody else's session, read off our
   -- own driver row. ghostUpdate acts on this: a car that is not in the race is a
   -- ghost to the cars that are.
@@ -10817,6 +10971,9 @@ local function onServerUpdate(rawData)
     -- Any session transition re-arms local detection from a clean slate:
     -- lap 1 starts at the line, from the grid, for both kinds of session.
     resetLapTracking()
+    -- Practice ends with the waiting phase. Left on, every lap of the session
+    -- would take the practice branch and never reach the server.
+    if newPhase ~= 'waiting' then practice.stop('session') end
     -- A session that owes an out lap says so at the moment the lights go out.
     -- The lap readout carries it for the whole lap; this is the one push that
     -- arrives while the driver is still stationary and reading.
@@ -12248,6 +12405,7 @@ local function resetToIdle(reason)
   -- this driver -- their car, their camera, their collisions -- is settled now.
   flushFieldPlacement()
   releaseGridHold()
+  practice.stop('idle')
   clearGhostReasons()
   setResetInputsBlocked(false)   -- never leave the reset keys dead after unload
   spectate.setPropulsionBlocked(false)  -- nor the throttle

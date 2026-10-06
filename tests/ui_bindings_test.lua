@@ -2662,6 +2662,30 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+-- PRACTICE: GHOSTED OR SOLID, AND A RUN THAT FINISHES
+-- ---------------------------------------------------------------------------
+do
+  local client = readFile('lua/ge/extensions/raceManager.lua')
+  local _, toggles = html:gsub('ng%-click="togglePracticeGhost%(%)"', '')
+  expect(toggles == 2, 'the ghost switch is offered before a start and while practising (got ' .. toggles .. ')')
+  expect(js:find("loadPref('practiceGhost', true)", 1, true) ~= nil,
+    'the choice is remembered, ghosted by default')
+  expect(js:find('raceManager.setPracticeGhost(', 1, true) ~= nil
+    and client:find('function M.setPracticeGhost(', 1, true) ~= nil,
+    'and handed to a Lua function that exists')
+  for _, f in ipairs({ 'practiceGhost', 'practiceComplete' }) do
+    expect(client:find(f .. '%s*=%s*practice%.') ~= nil, 'the route push carries ' .. f)
+  end
+  expect(js:find('data.practiceComplete', 1, true) ~= nil,
+    'and the panel reads practiceComplete')
+  -- The lap that reaches the target arrives as practice ends: still listed.
+  expect(js:find('($scope.practice || $scope.practiceComplete) && !data.outLap', 1, true) ~= nil,
+    'the last lap of a finished run is still added to the list')
+  expect(html:find('ng-if="practiceComplete"', 1, true) ~= nil,
+    'a finished run has its own row, with a way to close it')
+end
+
+-- ---------------------------------------------------------------------------
 -- THE LIGHTS APP
 -- ---------------------------------------------------------------------------
 -- A second app in the same zip. BeamNG lists an app only with all four files,
@@ -2684,14 +2708,27 @@ do
     'and app.js never starts a digest')
   expect(ljs:find("$scope.$on('RaceManagerLights'", 1, true) ~= nil,
     'it listens for the one event lights.lua pushes')
-  -- Every lamp class app.js writes has a color rule.
+  -- Every lamp class app.js writes lights a bulb: a rule that fills it, and
+  -- the gradients that rule names.
   for c in ljs:gmatch("lamps: '([%-%a]+)'") do
     for ch in c:gmatch('%a') do
       if ch ~= 'c' then
-        expect(lhtml:find('%.rml%-' .. ch .. ' {') ~= nil, 'lamp color rml-' .. ch .. ' has a rule')
+        expect(lhtml:find('%.rml%-' .. ch .. ' %.rml%-bulb { fill: url%(#rml%-bulb%-' .. ch .. '%); }') ~= nil
+          and lhtml:find('%.rml%-' .. ch .. ' %.rml%-lit') ~= nil,
+          'lamp color rml-' .. ch .. ' shows and fills its bulb')
+        expect(lhtml:find('id="rml-bulb-' .. ch .. '"', 1, true) ~= nil
+          and lhtml:find('id="rml-halo-' .. ch .. '"', 1, true) ~= nil,
+          'and its bulb and glow gradients exist')
       end
     end
   end
+  -- Every url(#...) in the template names a gradient it defines.
+  for id in lhtml:gmatch('url%(#([%w%-]+)%)') do
+    expect(lhtml:find('id="' .. id .. '"', 1, true) ~= nil, 'url(#' .. id .. ') is defined')
+  end
+  -- NO BOX BEHIND THE LAMPS: the housing is kept, hidden.
+  expect(lhtml:find('%.rml%-housing { display: none;') ~= nil,
+    'the Lights app draws no background box')
   -- A light Lua can send that the app has no pattern for would draw as idle.
   local lua = readFile('lua/ge/extensions/raceManager/lights.lua')
   for light in lua:gmatch("return '(%a+)'") do

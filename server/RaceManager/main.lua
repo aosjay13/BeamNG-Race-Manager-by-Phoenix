@@ -1826,7 +1826,7 @@ local RM_PROTOCOL = 2
 -- meant nothing to anyone reading a release page. One number now, matching the
 -- git tag the package is published under, so any redeploy needs a version bump
 -- by definition.
-local RM_BUILD = '0.18.4'
+local RM_BUILD = '0.18.5'
 
 -- The live ghost roster as the wire carries it. Absolute END times on race.time
 -- rather than "seconds left", so a client that receives this late works out a
@@ -1897,6 +1897,24 @@ local function finishedRoster()
     if st == 'finished' or st == 'dnf' or st == 'dsq' or st == 'waiting' or st == 'called' then
       list[#list + 1] = rec.id
     end
+  end
+  return list
+end
+
+-- WHO IS PRACTISING GHOSTED: every client ghosts these cars, and each driver's
+-- own client ghosts their own. Practice is client-side, so this is the one
+-- thing the server keeps about it: rec.practicing is set when a practice load
+-- is approved and cleared by RM_PracticeEnd, a disconnect or a grid forming.
+-- rec.practiceGhost is the driver's choice; solid practisers are not listed.
+--
+-- Empty outside the waiting phase whatever the flags say, so a flag that
+-- outlived its practice can never ghost a car in a session. On `race`: no
+-- locals to spare in this chunk.
+race.practiceRoster = function ()
+  local list = {}
+  if race.phase ~= 'waiting' or race.derbyUnderWay() then return list end
+  for _, rec in pairs(players) do
+    if rec.practicing and rec.practiceGhost then list[#list + 1] = rec.id end
   end
   return list
 end
@@ -2062,6 +2080,7 @@ local function broadcastState(targetPid)
     ghostMaxSec  = CFG.ghostMaxSeconds,
     ghosts       = ghostRoster(),
     ghostFinished = finishedRoster(),
+    ghostPractice = race.practiceRoster(),
     -- Qualifying rules and clock.
     ghostQuali     = race.ghostQuali,
     -- Whether this session opens with an out lap, so a client can say so before
@@ -4001,6 +4020,8 @@ formGrid = function (kind, byName)
   -- cleared here rather than carried onto the grid, where the cars are about to
   -- be teleported into position under the placement ghost anyway.
   clearAllGhosts('grid formed')
+  -- Practice ends here too. Each client stops its own off the phase change.
+  for _, rec in pairs(players) do rec.practicing, rec.practiceGhost = nil, nil end
   broadcastState()
   if race.startSlots > 0 and #ordered > race.startSlots then
     MP.SendChatMessage(-1, string.format(
@@ -7254,6 +7275,31 @@ function RM_onSetLayoutPractice(pid, rawData)
   end
 end
 
+-- A driver stopped practising: End Practice, their lap target, or a session
+-- starting under them. Any player, about themselves only.
+function RM_onPracticeEnd(pid)
+  local rec = players[pidKey(pid)]
+  if not rec or not rec.practicing then return end
+  local wasGhost = rec.practiceGhost
+  rec.practicing, rec.practiceGhost = nil, nil
+  print(string.format('[RaceManager] %s stopped practising', rec.name or pid))
+  if wasGhost then broadcastState() end
+end
+
+-- Ghosted or solid, changed mid-practice.
+function RM_onPracticeGhost(pid, rawData)
+  local rec = players[pidKey(pid)]
+  if not rec or not rec.practicing then return end
+  local ok, data = pcall(Util.JsonDecode, rawData or '')
+  if not ok or type(data) ~= 'table' then return end
+  local on = data.on == true
+  if (rec.practiceGhost == true) == on then return end
+  rec.practiceGhost = on
+  print(string.format('[RaceManager] %s is practising %s', rec.name or pid,
+    on and 'ghosted' or 'solid'))
+  broadcastState()
+end
+
 -- Send the loaded track to one client, or to everyone with -1.
 --
 -- Called wherever somebody might not have it: when a player joins, when they ask
@@ -7702,7 +7748,8 @@ function RM_onLoadLayout(pid, rawData)
         --
         -- 'finished' is excluded for the smaller version of the same reason: the
         -- results are up and the field is still on track.
-        if race.phase ~= 'waiting' then
+        -- A derby or a drag pass is a session too: its cars are placed and held.
+        if race.phase ~= 'waiting' or race.derbyUnderWay() or race.dragUnderWay() then
           MP.SendChatMessage(pid,
             '[RaceManager] Practice is for between sessions.')
           return
@@ -7714,11 +7761,20 @@ function RM_onLoadLayout(pid, rawData)
         MP.TriggerClientEvent(pid, 'RM_Practice', Util.JsonEncode({
           on = true, layout = l.name,
         }))
+        -- Recorded for race.practiceRoster. Ghosted only on an explicit true, so
+        -- a client that predates the choice is never ghosted with no way to end it.
+        local rec = ensurePlayer(pid)
+        if rec then
+          rec.practicing    = l.name
+          rec.practiceGhost = data.ghost == true
+        end
         MP.SendChatMessage(pid, string.format(
           '[RaceManager] Practising on "%s". Your laps are timed for you only, '
           .. 'and count for nothing.', l.name))
-        print(string.format('[RaceManager] Practice layout "%s" loaded by %s',
-          l.name, MP.GetPlayerName(pid) or pid))
+        print(string.format('[RaceManager] Practice layout "%s" loaded by %s (%s)',
+          l.name, MP.GetPlayerName(pid) or pid,
+          (rec and rec.practiceGhost) and 'ghosted' or 'solid'))
+        broadcastState()
         return
       end
       if data.forEditing == true then
@@ -11303,6 +11359,8 @@ function RM_onPlayerJoin(pid)
   end
   local rec = ensurePlayer(pid)
   if not rec then return end
+  -- A fresh connection is not practising, whatever a recycled id carried.
+  rec.practicing, rec.practiceGhost = nil, nil
   -- Connecting is not entering: in the default opt-in mode a new arrival is a
   -- spectator until they press Join Race. In 'all' mode they are in the field
   -- straight away, which is what that mode means.
@@ -11360,6 +11418,8 @@ function RM_onPlayerDisconnect(pid)
     if wasAdmin then broadcastState() end
     return
   end
+  -- The record can outlive the connection; the practice cannot.
+  rec.practicing, rec.practiceGhost = nil, nil
   if onTrack(rec) or rec.status == 'gridded' then
     retireAsDnf(rec, 'DNF - Disconnected')
   elseif rec.status == 'waiting' or rec.status == 'called' then
@@ -11461,6 +11521,8 @@ function onInit()
   MP.RegisterEvent('RM_RequestState',     'RM_onRequestState')
   MP.RegisterEvent('RM_RequestLayouts',   'RM_onRequestLayouts')
   MP.RegisterEvent('RM_SetLayoutPractice','RM_onSetLayoutPractice')
+  MP.RegisterEvent('RM_PracticeEnd',      'RM_onPracticeEnd')
+  MP.RegisterEvent('RM_PracticeGhost',    'RM_onPracticeGhost')
   MP.RegisterEvent('RM_SaveLayout',       'RM_onSaveLayout')
   MP.RegisterEvent('RM_LoadLayout',       'RM_onLoadLayout')
   MP.RegisterEvent('RM_DeleteLayout',     'RM_onDeleteLayout')
