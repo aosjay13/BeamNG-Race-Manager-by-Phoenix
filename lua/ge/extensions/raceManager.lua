@@ -1855,7 +1855,7 @@ end
 local HUD_ICON = {
   vehicle = 'directions_car', spectate = 'visibility', resetsout = 'block',
   pit = 'build', finish = 'emoji_events', grid = 'grid_on',
-  session = 'timer', joker = 'alt_route', derby = 'warning',
+  session = 'timer', joker = 'alt_route', derby = 'warning', stage = 'traffic',
 }
 
 -- TEN SECONDS, not six. A driver reads this at racing speed, out of the corner
@@ -8589,6 +8589,8 @@ drag.init({
   lightsTree = function (t) if M.lightsTree then M.lightsTree(t) end end,
   localServerId = localServerId,
   sampledVehicle = sampledVehicle, pushNotice = pushNotice,
+  -- The staging steps, straight to the game's Messages app (drag.lua).
+  hudMessage = hudMessage,
   ownVehicle = ownVehicle,
   queueFieldPlacement = queueFieldPlacement,
   releaseGridHold = releaseGridHold, requestHold = requestHold,

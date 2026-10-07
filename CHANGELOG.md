@@ -6,7 +6,7 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
-## 0.18.5 - Ghosted practice, and lights that glow
+## 0.18.5 - Ghosted practice, glowing lights, a clearer radar
 
 #### Fixed
 
@@ -27,6 +27,12 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   other cars and they pass through you, faded on their screens and solid on
   yours. Off keeps you solid, for drivers who want to run together; both have
   to turn it off. It can be switched mid-practice and is remembered.
+- **Staging, step by step, in the game's Messages app.** Roll up, pre-staged,
+  staged (go on the green), too far, and a red light, each replacing the last,
+  for drivers new to drag racing.
+- **Race Manager Lights stands up in a tall box.** Size it taller than it is
+  wide and the race lights become a column and the drag tree stands upright. It
+  switches as you resize it.
 
 #### Changed
 
@@ -36,6 +42,21 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   unlit lenses keep a tint of their color.
 - **Practice is refused while a derby or a drag pass is running**, as it already
   was during a race.
+- **The main app's lights match the Lights app.** The start lights count down
+  in red, as the Lights app does, then go green; the drag tree, the flag in the
+  header, the status lights on the board and the flag banners use the same
+  colors, and the lamps and the tree are drawn as the same bulbs.
+- **The drag tree's PRE and STAGE bulbs are bigger** in the Lights app and
+  carry a warm tint and rim before they light, in both apps. They were small and
+  close to black, and hard to see. Both apps' staging bulbs are warm white; the
+  main app's were blue.
+- **The radar has no background**, so it can sit in the middle of the screen.
+  Every line has a dark edge so it reads over sky and snow, and your car's
+  center lines cross it with a tick every 5 m.
+- **Every car on the radar is car-shaped**, with mirrors, a windscreen and a
+  rear window, so you can see which way each one faces. Yours is solid white; it
+  was an orange outline, the same color as a car close to you. A car that is
+  not close is gray, not white.
 
 ## 0.18.4 - Radar
 

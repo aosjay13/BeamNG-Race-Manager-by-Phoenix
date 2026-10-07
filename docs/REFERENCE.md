@@ -580,10 +580,10 @@ the stragglers are taken where they stand and the session closes normally.
    interpenetrated and blow itself apart; collisions come back once the car is
    standing still on its slot.
 4. Press **Start Countdown**: everyone gets a synchronized 3‑2‑1‑**GO!**
-   shown as **start lights**. Three lamps go amber one at a time as the count
-   falls, then all three snap green together on GO, which is what a short-track
-   start actually looks like. The number stays under the lamps, because it is
-   the part that reads at a glance on a narrow panel.
+   shown as **start lights**. Three lamps go red one at a time as the count
+   falls, then all three snap green together on GO, in the same colors as the
+   [Lights app](#race-manager-lights). The number stays under the lamps, because
+   it is the part that reads at a glance on a narrow panel.
    overlay, every car is released by that same broadcast, and the race clock
    starts.
 
@@ -2672,7 +2672,8 @@ can see where it went.
 
 There is no box behind the lamps. Each lamp has its own dark hood, so it reads
 over sky, tarmac or snow, and a lit lamp is drawn as a bulb: a hot center, a
-highlight on the glass and a glow past the hood.
+highlight on the glass and a glow past the hood. The main app's start lights,
+drag tree, flag and status lights use the same colors.
 
 | Lamps | Caption | When |
 |---|---|---|
@@ -2693,10 +2694,15 @@ GO, the green and your own flags show for a few seconds and go out; the rest sta
 up for as long as they are true. A red flag or a caution always wins over a flag
 of your own.
 
-**Drag racing.** During a pass the box becomes the tree, laid on its side: PRE
-and STAGE bulbs, three ambers, green and red. Unlit lenses keep a tint and a rim
-of their own color, so you can see which one is next. After your run it shows your RT,
-ET and speed until the slip expires.
+**Drag racing.** During a pass the box becomes the tree: PRE and STAGE bulbs,
+three ambers, green and red. Unlit lenses keep a tint and a rim of their own
+color, so you can see which one is next, the staging bulbs included. After your
+run it shows your RT, ET and speed until the slip expires.
+
+**Wide or tall.** Size the box wider than it is tall (the default) and the lamps
+run across it, the tree laid on its side. Size it taller than it is wide and
+they stand up: the race lights become a column and the tree stands as it does
+at a strip. It switches as you resize it in the HUD editor.
 
 **Sounds** play whether or not the Lights app is on screen: a beep for each
 count, for GET READY and for each amber on the drag tree; the start tone for GO,
@@ -2716,11 +2722,13 @@ and size it like any other app. It fades away when nobody is within range and
 comes back the moment somebody is; it shows itself for six seconds when it loads
 so you can see where it went.
 
-- **Heading up, your car in the middle** (the orange outline). Other cars are
-  drawn at their real size and angle out to **25 m**, and fade in from just
-  beyond that rather than popping up.
+- **Heading up, your car in the middle**: solid white, on a crosshair with a
+  tick every 5 m. There is no background, so it can sit in the middle of the
+  screen; every line has a dark edge so it reads over sky and snow. Other cars
+  are drawn in the same car shape at their real size and angle out to **25 m**,
+  and fade in from just beyond that rather than popping up.
 - **Color is closeness**, measured between the cars' outlines rather than their
-  centers: **red** under 2 m, **amber** under 6 m, white beyond. Cars within 6 m
+  centers: **red** under 2 m, **amber** under 6 m, gray beyond. Cars within 6 m
   carry the gap in meters.
 - **The spotter bars** at the left and right edges light where a car overlaps you
   side by side, red or amber like the car itself. They span your car and 4 m
@@ -3031,11 +3039,16 @@ it needs nothing new: the ladder draws itself off the times.
 | **Roll up** (default) | The car is placed a few metres **short** of the line and left free. The driver creeps forward into the beams themselves. |
 | **Hold** | The car is placed **on** the line and frozen. Staged the moment it lands. |
 
-Roll up is what a drag strip actually does, and it is what makes the two blue
+Roll up is what a drag strip actually does, and it is what makes the two stage
 bulbs mean something: creep forward and the **pre-stage** bulb catches, creep a
 little further and you are **staged**. Roll too far and you drop out of the
 beams again, so overshooting is fixed by backing up rather than by waving the
 pass off.
+
+**Each step is said in the game's Messages app**, for drivers new to it: roll
+up, pre-staged, staged (go on the green), too far, and a red light if you leave
+early. Each message replaces the one before. Add the stock **Messages** app from
+HUD Apps to see them.
 
 Hold is quicker, and it is the right choice for an eight-wide shootout where
 waiting for eight people to creep into the beams is most of the evening.

@@ -45,7 +45,12 @@ angular.module('beamng.apps')
       var LOW = { off: true, grid: true };
       var HINT = ['a', 'a', 'a', 'g', 'r'];
       var PREVIEW_MS = 6000;
-      var CAP_MAX = 470;
+      // Widest a caption may run, per layout, before it is squeezed to fit.
+      var CAP_MAX = { w: 470, t: 160 };
+      // TALL WHEN THE BOX IS. HUD apps have no settings of their own, but the
+      // driver sizes the box: drawn taller than it is wide, the lamps stand up.
+      var TALL_RATIO = 1.25;
+      var vertical = false;
 
       var standing = 'off';
       var tree = null;
@@ -59,15 +64,23 @@ angular.module('beamng.apps')
       var written = {};
       var els = null;
 
+      // BOTH LAYOUTS ARE KEPT CURRENT, the hidden one too, so switching shows
+      // the right light at once. A write per lamp per change, a few times a race.
+      function layout(svg, key) {
+        return {
+          key: key,
+          race: svg ? svg.querySelectorAll('.rml-race .rml-lamp') : [],
+          drag: svg ? svg.querySelectorAll('.rml-drag .rml-lamp') : [],
+          pre: svg ? svg.querySelector('.rml-pre') : null,
+          stage: svg ? svg.querySelector('.rml-stage') : null,
+          cap: svg ? svg.querySelector('.rml-cap') : null
+        };
+      }
+
       function el() {
         if (els) { return els; }
-        els = {
-          race: root.querySelectorAll('.rml-race .rml-lamp'),
-          drag: root.querySelectorAll('.rml-drag .rml-lamp'),
-          pre: root.querySelector('.rml-pre'),
-          stage: root.querySelector('.rml-stage'),
-          cap: root.querySelector('.rml-cap')
-        };
+        els = [layout(root.querySelector('svg.rml-wide'), 'w'),
+               layout(root.querySelector('svg.rml-tall'), 't')];
         return els;
       }
 
@@ -77,36 +90,55 @@ angular.module('beamng.apps')
         node.setAttribute('class', cls);
       }
 
-      function setCaption(text) {
-        var cap = el().cap;
-        if (!cap || written.cap === text) { return; }
-        written.cap = text;
-        cap.textContent = text;
-        // Squeezed to fit only when too long; stretching a short word to the
-        // full width would look like a different font.
+      // Squeezed to fit only when too long; stretching a short word to the full
+      // width would look like a different font. A hidden layout measures zero,
+      // so it is fitted again when it is shown (orient).
+      function fit(L) {
+        var cap = L.cap;
+        if (!cap) { return; }
         cap.removeAttribute('textLength');
         cap.removeAttribute('lengthAdjust');
         try {
-          if (cap.getComputedTextLength() > CAP_MAX) {
-            cap.setAttribute('textLength', String(CAP_MAX));
+          if (cap.getComputedTextLength() > CAP_MAX[L.key]) {
+            cap.setAttribute('textLength', String(CAP_MAX[L.key]));
             cap.setAttribute('lengthAdjust', 'spacingAndGlyphs');
           }
         } catch (e) { /* not laid out yet: the caption is still readable */ }
       }
 
+      function setCaption(text) {
+        el().forEach(function (L) {
+          if (!L.cap || written[L.key + 'cap'] === text) { return; }
+          written[L.key + 'cap'] = text;
+          L.cap.textContent = text;
+          fit(L);
+        });
+      }
+
+      function orient() {
+        var w = root.clientWidth, h = root.clientHeight;
+        if (!w || !h) { return; }
+        var v = h > w * TALL_RATIO;
+        if (v === vertical) { return; }
+        vertical = v;
+        root.classList.toggle('rml-vertical', v);
+        fit(el()[v ? 1 : 0]);
+      }
+
       function drawRace(name) {
         var p = RACE[name] || RACE.idle;
-        var lamps = el().race;
-        for (var i = 0; i < lamps.length; i++) {
-          var c = p.lamps.charAt(i);
-          var cls = 'rml-lamp';
-          if (c === 'c') {
-            cls += (i % 2 === 0) ? ' rml-chk-a' : ' rml-chk-b';
-          } else if (c !== '-') {
-            cls += ' rml-' + c + (p.blink ? ' rml-blink' : '');
+        el().forEach(function (L) {
+          for (var i = 0; i < L.race.length; i++) {
+            var c = p.lamps.charAt(i);
+            var cls = 'rml-lamp';
+            if (c === 'c') {
+              cls += (i % 2 === 0) ? ' rml-chk-a' : ' rml-chk-b';
+            } else if (c !== '-') {
+              cls += ' rml-' + c + (p.blink ? ' rml-blink' : '');
+            }
+            setClass(L.race[i], L.key + 'r' + i, cls);
           }
-          setClass(lamps[i], 'r' + i, cls);
-        }
+        });
         setCaption(p.cap);
       }
 
@@ -115,7 +147,6 @@ angular.module('beamng.apps')
       }
 
       function drawTree() {
-        var e = el();
         var t = tree || {};
         var st = t.stage || 'off';
         var lit = [
@@ -125,12 +156,14 @@ angular.module('beamng.apps')
           st === 'green',
           st === 'red' || (!tree && slip && slip.foul)
         ];
-        for (var i = 0; i < e.drag.length; i++) {
-          setClass(e.drag[i], 'd' + i,
-            'rml-lamp ' + (lit[i] ? 'rml-' + HINT[i] : 'rml-hint-' + HINT[i]));
-        }
-        setClass(e.pre, 'pre', 'rml-small rml-pre' + (t.prestaged ? ' rml-on' : ''));
-        setClass(e.stage, 'stage', 'rml-small rml-stage' + (t.staged ? ' rml-on' : ''));
+        el().forEach(function (L) {
+          for (var i = 0; i < L.drag.length; i++) {
+            setClass(L.drag[i], L.key + 'd' + i,
+              'rml-lamp ' + (lit[i] ? 'rml-' + HINT[i] : 'rml-hint-' + HINT[i]));
+          }
+          setClass(L.pre, L.key + 'pre', 'rml-small rml-pre' + (t.prestaged ? ' rml-on' : ''));
+          setClass(L.stage, L.key + 'stage', 'rml-small rml-stage' + (t.staged ? ' rml-on' : ''));
+        });
         if (!tree && slip) {
           setCaption((slip.foul ? 'RED  ' : '') + 'RT ' + fmt(slip.rt, 3)
             + '  ET ' + fmt(slip.et, 3) + '  ' + fmt(slip.speed, 1) + ' MPH');
@@ -145,6 +178,7 @@ angular.module('beamng.apps')
       }
 
       function render() {
+        orient();
         var show = standing;
         if (moment && Date.now() < momentUntil) {
           if (LOW[show]) { show = moment; }
@@ -194,6 +228,14 @@ angular.module('beamng.apps')
       render();
       var previewTimer = setTimeout(function () { preview = false; render(); }, PREVIEW_MS);
 
+      // Resizing the box in the HUD editor flips the layout as it happens.
+      // Without ResizeObserver it still flips, on the next light.
+      var resizeWatch = null;
+      if (window.ResizeObserver) {
+        resizeWatch = new ResizeObserver(function () { orient(); });
+        resizeWatch.observe(root);
+      }
+
       // The light it missed while it was not loaded.
       if (window.bngApi) {
         bngApi.engineLua('if raceManager and raceManager.lightsResend then raceManager.lightsResend() end');
@@ -202,6 +244,7 @@ angular.module('beamng.apps')
       $scope.$on('$destroy', function () {
         if (momentTimer) { clearTimeout(momentTimer); }
         clearTimeout(previewTimer);
+        if (resizeWatch) { resizeWatch.disconnect(); }
       });
     }]
   };

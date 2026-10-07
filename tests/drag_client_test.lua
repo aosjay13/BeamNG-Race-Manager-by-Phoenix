@@ -23,6 +23,7 @@ local sent = {}        -- server events this client fired: { name, payload }
 local ui = {}          -- guihooks channels: [channel] = last payload
 local placements = {}  -- queueFieldPlacement calls, in order
 local notices = {}     -- pushNotice calls
+local hints = {}       -- hudMessage calls: { kind, text }
 local released = 0     -- releaseGridHold calls
 
 function TriggerServerEvent(name, payload)
@@ -78,6 +79,7 @@ D.init({
     return {}, { x = car.x, y = car.y, z = car.z }
   end,
   pushNotice = function (kind, msg) notices[#notices + 1] = msg end,
+  hudMessage = function (kind, text) hints[#hints + 1] = { kind = kind, text = text } end,
   queueFieldPlacement = function (opts) placements[#placements + 1] = opts end,
   releaseGridHold = function () released = released + 1 end,
   requestHold = function () end,
@@ -106,7 +108,12 @@ local function lastSent(name)
   end
 end
 local function clearCaptures()
-  sent, placements, notices, released = {}, {}, {}, 0
+  sent, placements, notices, released, hints = {}, {}, {}, 0, {}
+end
+-- The last staging step said in the game's Messages app, or nil.
+local function lastHint()
+  local h = hints[#hints]
+  return h and h.kind == 'stage' and h.text or nil
 end
 -- Sixty frames a second, which is what the extension calls this at.
 local function frames(n)
@@ -150,6 +157,8 @@ check(pl and pl.slots and pl.slots[1] ~= nil,
   'against a slot list that is not empty: the getter followed the layout')
 check(pl and pl.slots[1].x == 100, 'and it is the loaded strip, got '
   .. tostring(pl and pl.slots[1] and pl.slots[1].x))
+check(lastHint() and lastHint():find('^STAGED: you are held'),
+  'a held car is told it is staged and to go on the green')
 
 -- ...and again after ANOTHER layout load, which is the half that would catch a
 -- reference re-captured once and then gone stale a second time.
@@ -170,6 +179,8 @@ check(placements[1].hold ~= true, 'a rolled-up car is not frozen')
 check(math.abs(placements[1].slots[1].x - 95) < 1e-9,
   'and is placed five metres short of the line, got '
   .. tostring(placements[1].slots[1].x))
+-- STAGING, SAID STEP BY STEP in the game's Messages app, for a driver new to it.
+check(lastHint() and lastHint():find('^ROLL UP'), 'the Messages app says to roll up')
 
 -- Well short: no bulbs.
 car.x = 95
@@ -184,6 +195,7 @@ local rep = lastSent('RM_DragStaged')
 check(rep ~= nil, 'reaching the pre-stage beam reports')
 check(rep and rep:find('"prestaged":true'), 'pre-staged')
 check(rep and rep:find('"staged":false'), 'but not yet staged')
+check(lastHint() and lastHint():find('^PRE%-STAGED'), 'and says pre-staged, inch forward')
 
 -- ...and into the stage beam.
 clearCaptures()
@@ -191,12 +203,15 @@ car.x = 99.8
 frames(2)
 rep = lastSent('RM_DragStaged')
 check(rep ~= nil and rep:find('"staged":true'), 'creeping further stages it')
+check(lastHint() and lastHint():find('^STAGED') and lastHint():find('GREEN'),
+  'and says staged: wait for the green')
 
 -- NOT EVERY FRAME. Sixty reports a second for a fact that moves twice is the
 -- difference between a quiet channel and a loud one.
 clearCaptures()
 frames(30)
 check(lastSent('RM_DragStaged') == nil, 'and standing still reports nothing more')
+check(#hints == 0, 'or says anything more: one message per step, not per frame')
 
 -- Rolling well past drops out of the beams again, so an overshoot is fixed by
 -- backing up rather than by waving the pass off.
@@ -204,6 +219,7 @@ car.x = 103
 frames(2)
 rep = lastSent('RM_DragStaged')
 check(rep ~= nil and rep:find('"staged":false'), 'rolling through un-stages')
+check(lastHint() and lastHint():find('^TOO FAR'), 'and says to back up')
 car.x = 99.8
 frames(2)
 check(lastSent('RM_DragStaged'):find('"staged":true'), 'and backing up re-stages')
@@ -221,6 +237,7 @@ seconds(0.5)
 car.x = 101.0
 frames(2)
 check(ui['RaceManagerDragTree'].stage == 'red', 'leaving early is a red light')
+check(lastHint() and lastHint():find('^RED LIGHT'), 'and the Messages app says why')
 
 -- It is a FOUL, NOT A CANCELLED PASS: the car goes on down the strip and still
 -- puts a time on the board.

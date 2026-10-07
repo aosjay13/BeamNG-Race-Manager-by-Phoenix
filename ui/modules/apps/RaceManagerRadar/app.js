@@ -30,10 +30,10 @@ angular.module('beamng.apps')
       var PREVIEW_MS = 6000;
 
       var built = false;
-      var cars = [];           // [{ g, body, nose, label, cache }]
+      var cars = [];           // [{ g, body, glass, label, cache }]
       var segs = { left: [], right: [] };
       var meBody = null;
-      var meNose = null;
+      var meGlass = null;
       var meSize = '';
       var caption = null;
       var preview = true;
@@ -53,15 +53,15 @@ angular.module('beamng.apps')
         var labelLayer = root.querySelector('.rmr-labels');
         var segLayer = root.querySelector('.rmr-segs');
         meBody = root.querySelector('.rmr-me-body');
-        meNose = root.querySelector('.rmr-me-nose');
+        meGlass = root.querySelector('.rmr-me-glass');
         caption = root.querySelector('.rmr-caption');
         for (var i = 0; i < POOL; i++) {
           var g = make('g', null, carLayer);
           g.style.display = 'none';
           cars.push({
             g: g,
-            body: make('rect', 'rmr-car', g),
-            nose: make('rect', 'rmr-nose', g),
+            body: make('path', 'rmr-car', g),
+            glass: make('path', 'rmr-glass', g),
             label: make('text', 'rmr-label', labelLayer),
             cache: {}
           });
@@ -137,17 +137,39 @@ angular.module('beamng.apps')
         });
       }
 
+      // A CAR, top down, at its real size: a body with a rounded nose and
+      // mirrors, and the windscreen and rear window, which say which way is
+      // front without an arrow. Built from fractions of the half-width W and
+      // half-length L, so any car keeps the same shape. Ours and every other.
+      function carPaths(w, l) {
+        var W = w / 2, L = l / 2;
+        function p(x, y) { return round(x * W) + ' ' + round(y * L); }
+        return {
+          body: 'M ' + p(-0.72, -1) + ' Q ' + p(0, -1.05) + ' ' + p(0.72, -1)
+            + ' Q ' + p(1, -1) + ' ' + p(1, -0.78)
+            + ' L ' + p(1, 0.84) + ' Q ' + p(1, 1) + ' ' + p(0.76, 1)
+            + ' L ' + p(-0.76, 1) + ' Q ' + p(-1, 1) + ' ' + p(-1, 0.84)
+            + ' L ' + p(-1, -0.78) + ' Q ' + p(-1, -1) + ' ' + p(-0.72, -1) + ' Z'
+            // Mirrors.
+            + ' M ' + p(1, -0.38) + ' L ' + p(1.24, -0.42) + ' L ' + p(1.24, -0.3) + ' L ' + p(1, -0.28) + ' Z'
+            + ' M ' + p(-1, -0.38) + ' L ' + p(-1.24, -0.42) + ' L ' + p(-1.24, -0.3) + ' L ' + p(-1, -0.28) + ' Z',
+          // Windscreen, curved along its lower edge, then the rear window.
+          glass: 'M ' + p(-0.8, -0.4) + ' Q ' + p(0, -0.5) + ' ' + p(0.8, -0.4)
+            + ' L ' + p(0.66, -0.1) + ' L ' + p(-0.66, -0.1) + ' Z'
+            + ' M ' + p(-0.66, 0.46) + ' L ' + p(0.66, 0.46) + ' L ' + p(0.76, 0.7)
+            + ' Q ' + p(0, 0.76) + ' ' + p(-0.76, 0.7) + ' Z'
+        };
+      }
+
+      // Ours: only on a size change.
       function drawMe(me) {
         if (!me || !me.l || !me.w) { return; }
         var key = me.l + 'x' + me.w;
         if (key === meSize) { return; }
         meSize = key;
-        meBody.setAttribute('x', round(-me.w / 2));
-        meBody.setAttribute('y', round(-me.l / 2));
-        meBody.setAttribute('width', me.w);
-        meBody.setAttribute('height', me.l);
-        var tip = -me.l / 2 - 0.65, base = -me.l / 2 + 0.35;
-        meNose.setAttribute('d', 'M 0 ' + round(tip) + ' L -0.6 ' + round(base) + ' L 0.6 ' + round(base) + ' Z');
+        var shape = carPaths(me.w, me.l);
+        meBody.setAttribute('d', shape.body);
+        meGlass.setAttribute('d', shape.glass);
       }
 
       function show(on) {
@@ -185,18 +207,17 @@ angular.module('beamng.apps')
           put(slot, slot.g, 'disp', 'display', '');
           put(slot, slot.g, 'tf', 'transform', 'translate(' + c.x + ' ' + (-c.y) + ') rotate(' + c.a + ')');
           put(slot, slot.g, 'op', 'opacity', round(fade));
-          put(slot, slot.body, 'x', 'x', round(-c.w / 2));
-          put(slot, slot.body, 'y', 'y', round(-c.l / 2));
-          put(slot, slot.body, 'w', 'width', c.w);
-          put(slot, slot.body, 'h', 'height', c.l);
-          put(slot, slot.body, 'rx', 'rx', 0.45);
+          // The shape is rebuilt only when this slot gets a car of another size.
+          var size = c.w + 'x' + c.l;
+          if (slot.cache.size !== size) {
+            slot.cache.size = size;
+            var shape = carPaths(c.w, c.l);
+            slot.body.setAttribute('d', shape.body);
+            slot.glass.setAttribute('d', shape.glass);
+          }
           put(slot, slot.body, 'cls', 'class', colorClass(c));
-          // A dark band across the front, so a car's heading reads at a glance.
-          put(slot, slot.nose, 'nx', 'x', round(-c.w / 2 + 0.2));
-          put(slot, slot.nose, 'ny', 'y', round(-c.l / 2 + 0.25));
-          put(slot, slot.nose, 'nw', 'width', round(Math.max(c.w - 0.4, 0.2)));
-          put(slot, slot.nose, 'nh', 'height', 0.6);
-          put(slot, slot.nose, 'nd', 'display', c.gh ? 'none' : '');
+          // The windows say which way it faces. A ghost is an outline only.
+          put(slot, slot.glass, 'gd', 'display', c.gh ? 'none' : '');
           var parts = [];
           if (c.p) { parts.push('P' + c.p); }
           if (!c.gh && c.g < AMBER) { parts.push(gapText(c.g)); }

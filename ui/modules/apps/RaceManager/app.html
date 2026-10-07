@@ -3440,7 +3440,7 @@
         <label>Staging</label>
         <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': dragUi.stageMode === 'rollup'}"
                 ng-click="dragSetStageMode('rollup')" ng-disabled="dragActive()"
-                title="Placed short of the line and free. Creep forward until both blue bulbs are lit.">Roll up</button>
+                title="Placed short of the line and free. Creep forward until both stage bulbs are lit.">Roll up</button>
         <button class="rm-btn rm-btn-mini" ng-class="{'rm-admin-tab-active': dragUi.stageMode === 'hold'}"
                 ng-click="dragSetStageMode('hold')" ng-disabled="dragActive()"
                 title="Placed on the line and frozen. Staged the moment the car lands.">Hold</button>
@@ -3590,17 +3590,17 @@
 
 
   <!-- ================= Start lights ================= -->
-  <!-- Three lamps going amber one at a time on 3-2-1, then all three snapping
-       green together on GO. That is what a short-track or oval start actually
-       looks like, and a driver who races knows what it means before reading
-       anything. The number stays underneath: it is still the thing you count
+  <!-- Three lamps going red one at a time on 3-2-1, then all three snapping
+       green together on GO: the Lights app's colors, so the two never
+       disagree about what the start looks like. A driver knows what it means
+       before reading anything. The number stays underneath: it is still the thing you count
        along with out loud, and it is the only part that reads at a glance on a
        collapsed panel. -->
   <div class="rm-countdown" ng-if="countdown !== null">
     <div class="rm-lights">
-      <span class="rm-lamp" ng-class="countdown === 0 ? 'rm-lamp-green' : (countdown <= 3 ? 'rm-lamp-amber' : '')"></span>
-      <span class="rm-lamp" ng-class="countdown === 0 ? 'rm-lamp-green' : (countdown <= 2 ? 'rm-lamp-amber' : '')"></span>
-      <span class="rm-lamp" ng-class="countdown === 0 ? 'rm-lamp-green' : (countdown <= 1 ? 'rm-lamp-amber' : '')"></span>
+      <span class="rm-lamp" ng-class="countdown === 0 ? 'rm-lamp-green' : (countdown <= 3 ? 'rm-lamp-red' : '')"></span>
+      <span class="rm-lamp" ng-class="countdown === 0 ? 'rm-lamp-green' : (countdown <= 2 ? 'rm-lamp-red' : '')"></span>
+      <span class="rm-lamp" ng-class="countdown === 0 ? 'rm-lamp-green' : (countdown <= 1 ? 'rm-lamp-red' : '')"></span>
     </div>
     <div class="rm-count-num" ng-class="{'rm-count-go': countdown === 0}">{{ countdown === 0 ? 'GO!' : countdown }}</div>
   </div>
@@ -5630,7 +5630,7 @@
   /* ---------------------------------------------------------------------
      The christmas tree
      ---------------------------------------------------------------------
-     A column, not a gantry. Two blue stage bulbs, three ambers, a green and a
+     A column, not a gantry. Two stage bulbs, three ambers, a green and a
      red, which is the shape every drag strip in the world uses and the one a
      driver reads without being told. */
   /* PINNED TO ONE SIDE, NOT OVER THE PANEL.
@@ -5666,33 +5666,62 @@
     background: rgba(0, 0, 0, 0.5);
     border: 1px solid rgba(255, 255, 255, 0.14);
   }
+  /* Unlit is dark glass rather than nothing, so the tree reads as seven bulbs
+     waiting rather than as however many happen to be on. The lenses keep a
+     tint and a rim of their own color, as in the Lights app. */
   .rm-drag-bulb {
     width: 26px;
     height: 26px;
     border-radius: 50%;
-    /* Unlit is a dark socket rather than nothing, so the tree reads as seven
-       bulbs waiting rather than as however many happen to be on. Same reasoning
-       as the start-lights gantry above. */
-    background: rgba(255, 255, 255, 0.07);
-    border: 2px solid rgba(255, 255, 255, 0.16);
-    transition: background 60ms linear, box-shadow 60ms linear;
+    border: 3px solid #0b0c0f;
+    box-shadow: 0 0 0 1px #34373d;
+    background: radial-gradient(ellipse 30% 18% at 36% 26%, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0) 100%),
+                radial-gradient(circle at 38% 32%, #4a4e57 0%, #1d1f24 60%, #0d0e11 100%);
   }
-  .rm-drag-bulb-stage { width: 18px; height: 18px; align-self: center; }
+  .rm-drag-bulb-stage {
+    width: 20px; height: 20px; align-self: center;
+    box-shadow: 0 0 0 1px rgba(255, 243, 176, 0.6);
+    background: radial-gradient(ellipse 30% 18% at 36% 26%, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0) 100%),
+                radial-gradient(circle at 38% 32%, #77704f 0%, #36321f 60%, #14120b 100%);
+  }
+  .rm-drag-bulb-amber {
+    box-shadow: 0 0 0 1px rgba(255, 138, 0, 0.55);
+    background: radial-gradient(ellipse 30% 18% at 36% 26%, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0) 100%),
+                radial-gradient(circle at 38% 32%, #6b4615 0%, #2e1d08 60%, #130c03 100%);
+  }
+  .rm-drag-bulb-green {
+    box-shadow: 0 0 0 1px rgba(24, 210, 75, 0.55);
+    background: radial-gradient(ellipse 30% 18% at 36% 26%, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0) 100%),
+                radial-gradient(circle at 38% 32%, #1d5a30 0%, #0c2614 60%, #040f07 100%);
+  }
+  .rm-drag-bulb-red {
+    box-shadow: 0 0 0 1px rgba(255, 43, 28, 0.55);
+    background: radial-gradient(ellipse 30% 18% at 36% 26%, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0) 100%),
+                radial-gradient(circle at 38% 32%, #6b1d17 0%, #2e0b08 60%, #130403 100%);
+  }
+  /* LIT: the Lights app's bulbs, in CSS. A highlight on the glass over a hot
+     core, the lamp color and a darker rim, with a glow past the hood. Same
+     colors in both apps, so a lamp means the same thing in either.
+     `.rm-lamp.` on the gantry's: its base rule comes later in this sheet. */
   .rm-drag-lit-stage {
-    background: rgba(80, 160, 255, 0.9);
-    box-shadow: 0 0 10px rgba(80, 160, 255, 0.7);
+    background: radial-gradient(ellipse 30% 18% at 36% 26%, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0) 100%),
+                radial-gradient(circle at 38% 32%, #ffffff 0%, #fffbe0 40%, #fff3b0 80%, #ad9d52 100%);
+    box-shadow: 0 0 0 1px #34373d, 0 0 12px 2px rgba(255, 243, 176, 0.75);
   }
-  .rm-drag-lit-amber {
-    background: rgba(251, 188, 5, 0.95);
-    box-shadow: 0 0 14px rgba(251, 188, 5, 0.75);
+  .rm-drag-lit-amber, .rm-lamp.rm-lamp-amber {
+    background: radial-gradient(ellipse 30% 18% at 36% 26%, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0) 100%),
+                radial-gradient(circle at 38% 32%, #fff6e0 0%, #ffb54d 30%, #ff8a00 75%, #a04c00 100%);
+    box-shadow: 0 0 0 1px #34373d, 0 0 16px 3px rgba(255, 138, 0, 0.7);
   }
-  .rm-drag-lit-green {
-    background: rgba(52, 168, 83, 0.95);
-    box-shadow: 0 0 18px rgba(52, 168, 83, 0.85);
+  .rm-drag-lit-green, .rm-lamp.rm-lamp-green {
+    background: radial-gradient(ellipse 30% 18% at 36% 26%, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0) 100%),
+                radial-gradient(circle at 38% 32%, #effff3 0%, #6dff95 30%, #18d24b 75%, #077028 100%);
+    box-shadow: 0 0 0 1px #34373d, 0 0 18px 3px rgba(24, 210, 75, 0.75);
   }
-  .rm-drag-lit-red {
-    background: rgba(234, 67, 53, 0.95);
-    box-shadow: 0 0 18px rgba(234, 67, 53, 0.85);
+  .rm-drag-lit-red, .rm-lamp.rm-lamp-red {
+    background: radial-gradient(ellipse 30% 18% at 36% 26%, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0) 100%),
+                radial-gradient(circle at 38% 32%, #fff1ec 0%, #ff6a55 30%, #ff2b1c 75%, #9e0d04 100%);
+    box-shadow: 0 0 0 1px #34373d, 0 0 18px 3px rgba(255, 43, 28, 0.75);
   }
   .rm-drag-tree-note {
     font-size: 0.72em;
@@ -5748,34 +5777,27 @@
   }
   .rm-countdown { flex-direction: column; gap: 10px; }
   .rm-lights { display: flex; gap: 12px; }
+  /* Unlit is dark glass rather than nothing, so the gantry reads as three
+     lamps waiting rather than as however many happen to be on. Lit, they are
+     the drag tree's bulbs above, which are the Lights app's. */
   .rm-lamp {
     width: 34px;
     height: 34px;
     border-radius: 50%;
-    /* Unlit is a dark socket rather than nothing, so the gantry reads as three
-       lamps waiting rather than as however many happen to be on. */
-    background: rgba(255, 255, 255, 0.07);
-    border: 2px solid rgba(255, 255, 255, 0.18);
-    transition: background 90ms linear, box-shadow 90ms linear;
+    border: 3px solid #0b0c0f;
+    box-shadow: 0 0 0 1px #34373d;
+    background: radial-gradient(ellipse 30% 18% at 36% 26%, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0) 100%),
+                radial-gradient(circle at 38% 32%, #4a4e57 0%, #1d1f24 60%, #0d0e11 100%);
   }
-  .rm-lamp-amber {
-    background: #fdd663;
-    border-color: #fdd663;
-    box-shadow: 0 0 16px rgba(251, 188, 5, 0.75);
-  }
-  .rm-lamp-green {
-    background: #34a853;
-    border-color: #7ee2a8;
-    box-shadow: 0 0 20px rgba(52, 168, 83, 0.85);
-  }
+  /* RED 3, 2, 1, as the Lights app counts. The number matches its lamps. */
   .rm-count-num {
     font-size: 44px;
     font-weight: 800;
-    color: #fdd663;
-    text-shadow: 0 0 18px rgba(251, 188, 5, 0.6);
+    color: #ff6a55;
+    text-shadow: 0 0 18px rgba(255, 43, 28, 0.65);
     line-height: 1;
   }
-  .rm-count-num.rm-count-go { color: #7ee2a8; text-shadow: 0 0 18px rgba(52, 168, 83, 0.7); }
+  .rm-count-num.rm-count-go { color: #6dff95; text-shadow: 0 0 18px rgba(24, 210, 75, 0.7); }
 
   /* The header lamp. Small on purpose: it shares a strip with the phase, the
      clock and the lap, and none of those may move to make room for it. */
@@ -5804,13 +5826,14 @@
     line-height: 1;
     text-shadow: 0 0 7px currentColor;
   }
-  .rm-flag-green  { color: #34a853; }
-  .rm-flag-yellow { color: #fdd663; }
+  /* The Lights app's lamp colors, so a flag is the same color in both apps. */
+  .rm-flag-green  { color: #18d24b; }
+  .rm-flag-yellow { color: #ffd60a; }
   .rm-flag-white  { color: #ffffff; }
-  /* Blue: you are about to be lapped. Light enough to read against the header
-     at speed -- a true flag blue goes nearly black on a dark panel. */
-  .rm-flag-blue   { color: #6ab0ff; }
-  .rm-flag-red    { color: #ff5252; }
+  /* Blue: you are about to be lapped. An azure, not a flag navy: navy goes
+     nearly black on a dark panel. */
+  .rm-flag-blue   { color: #2f7dff; }
+  .rm-flag-red    { color: #ff2b1c; }
   /* Checkered: the flag glyph is monochrome, so it takes the plain foreground
      rather than a color of its own. It is the one flag that is about THIS
      driver rather than the session, which is why it outranks the rest. */
@@ -5922,8 +5945,8 @@
   }
   .rm-light-waiting    { background: #9aa0a6; }
   .rm-light-qualifying { background: #ab47bc; box-shadow: 0 0 5px rgba(171, 71, 188, 0.8); }
-  .rm-light-gridded    { background: #4285f4; box-shadow: 0 0 5px rgba(66, 133, 244, 0.8); }
-  .rm-light-called     { background: #fbbc05; box-shadow: 0 0 5px rgba(251, 188, 5, 0.8); }
+  .rm-light-gridded    { background: #2f7dff; box-shadow: 0 0 5px rgba(47, 125, 255, 0.8); }
+  .rm-light-called     { background: #ffd60a; box-shadow: 0 0 5px rgba(255, 214, 10, 0.8); }
   /* The call to the grid: the driver's Ready prompt and the admin's count. */
   .rm-ready { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #e8eaed; }
   .rm-btn-ready { font-weight: 700; letter-spacing: 0.5px; padding: 4px 14px; }
@@ -5938,9 +5961,9 @@
     border-bottom-color: rgba(52, 168, 83, 0.45);
     background: rgba(52, 168, 83, 0.08);
   }
-  .rm-light-racing     { background: #34a853; box-shadow: 0 0 6px rgba(52, 168, 83, 0.9); }
-  .rm-light-finished   { background: #e8eaed; }
-  .rm-light-dnf        { background: #ea4335; }
+  .rm-light-racing     { background: #18d24b; box-shadow: 0 0 6px rgba(24, 210, 75, 0.9); }
+  .rm-light-finished   { background: #f5f5f5; }
+  .rm-light-dnf        { background: #ff2b1c; }
   .rm-finished-flag { margin-right: 3px; vertical-align: middle; }
   .rm-status-text { vertical-align: middle; }
 
@@ -6493,7 +6516,7 @@
     letter-spacing: 1px;
   }
   .rm-row-dsq td { opacity: 0.6; background: rgba(234, 67, 53, 0.06); }
-  .rm-light-dsq { background: #fbbc05; box-shadow: 0 0 5px rgba(251, 188, 5, 0.7); }
+  .rm-light-dsq { background: #ffd60a; box-shadow: 0 0 5px rgba(255, 214, 10, 0.7); }
 
   /* ============ Module 3: minimalist driver view ========================= */
   /* Not logged in + a live session: the app is nothing but the leaderboard.
@@ -6564,10 +6587,10 @@
      full size are taller than a minimal panel is. It is not in the
      full-window confinement group above because it is not a full-window
      overlay: it is already inside the panel by construction. */
-  .rm-minimal .rm-drag-bulb { width: 16px; height: 16px; }
-  .rm-minimal .rm-drag-bulb-stage { width: 11px; height: 11px; }
+  .rm-minimal .rm-drag-bulb { width: 16px; height: 16px; border-width: 2px; }
+  .rm-minimal .rm-drag-bulb-stage { width: 13px; height: 13px; }
   .rm-minimal .rm-drag-bulbs { gap: 3px; padding: 5px 7px; }
-  .rm-minimal .rm-lamp { width: 22px; height: 22px; }
+  .rm-minimal .rm-lamp { width: 22px; height: 22px; border-width: 2px; }
   .rm-minimal .rm-lights { gap: 8px; }
   .rm-minimal .rm-count-num { font-size: 30px; }
   .rm-minimal .rm-table-wrap {
@@ -7014,13 +7037,15 @@
      alike, which the 16%-alpha notice strip never was on a driver's panel: the
      root goes transparent in minimal mode, so a wash that faint had nothing
      behind it but the road going past. */
-  .rm-flash-red    { background: rgba(180, 15, 15, 0.55); }
-  .rm-flash-yellow { background: rgba(190, 150, 0, 0.55); }
-  .rm-flash-green  { background: rgba(20, 130, 55, 0.55); }
-  .rm-flash-white  { background: rgba(235, 235, 235, 0.5); }
+  /* Each with a rim in the Lights app's lamp color, so a flag on this panel
+     and the lamp in that one are visibly the same thing. */
+  .rm-flash-red    { background: rgba(180, 15, 15, 0.55); box-shadow: inset 0 0 0 3px #ff2b1c; }
+  .rm-flash-yellow { background: rgba(190, 150, 0, 0.55); box-shadow: inset 0 0 0 3px #ffd60a; }
+  .rm-flash-green  { background: rgba(20, 130, 55, 0.55); box-shadow: inset 0 0 0 3px #18d24b; }
+  .rm-flash-white  { background: rgba(235, 235, 235, 0.5); box-shadow: inset 0 0 0 3px #f5f5f5; }
   .rm-flash-gold   { background: rgba(150, 110, 0, 0.6); }
-  .rm-flash-blue   { background: rgba(20, 70, 165, 0.6); }
-  .rm-flash-amber  { background: rgba(175, 85, 0, 0.6); }
+  .rm-flash-blue   { background: rgba(20, 70, 165, 0.6); box-shadow: inset 0 0 0 3px #2f7dff; }
+  .rm-flash-amber  { background: rgba(175, 85, 0, 0.6); box-shadow: inset 0 0 0 3px #ff8a00; }
   .rm-flash-gray   { background: rgba(40, 44, 52, 0.72); }
   /* An actual checkered flag rather than a word on a gray wash. Two offset
      gradients make the squares; the dark base underneath keeps the text legible

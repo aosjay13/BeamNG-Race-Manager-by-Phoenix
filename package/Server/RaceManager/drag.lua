@@ -110,7 +110,7 @@ local DRAG_MAX_ET      = 999.0 -- anything above this is a client bug, not a pas
 --           is most of the evening.
 --   rollup  placed a few metres BEHIND the line and left free. The driver
 --           rolls forward into the beams themselves, which is what staging
---           actually is -- and it is what makes the two blue bulbs mean
+--           actually is -- and it is what makes the two stage bulbs mean
 --           something rather than being decoration.
 local DRAG_STAGE_MODES = { hold = true, rollup = true }
 -- How far behind the start position a rolled-up car is placed. Far enough to

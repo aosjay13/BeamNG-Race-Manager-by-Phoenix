@@ -8,6 +8,20 @@
        purpose. -->
   <svg viewBox="-31 -31 62 62" preserveAspectRatio="xMidYMid meet">
     <circle class="rmr-disc" cx="0" cy="0" r="30.5"></circle>
+    <!-- NO BACKGROUND: racers put this in the middle of the screen. Every line
+         gets a dark edge drawn under it instead, so it reads over sky and snow
+         as well as tarmac. Same shapes as the lines below. -->
+    <g class="rmr-shade">
+      <path d="M -25 0 L 25 0 M 0 -25 L 0 25"></path>
+      <path d="M -20 -0.7 L -20 0.7 M -15 -0.7 L -15 0.7 M -10 -0.7 L -10 0.7 M -5 -0.7 L -5 0.7 M 5 -0.7 L 5 0.7 M 10 -0.7 L 10 0.7 M 15 -0.7 L 15 0.7 M 20 -0.7 L 20 0.7 M -0.7 -20 L 0.7 -20 M -0.7 -15 L 0.7 -15 M -0.7 -10 L 0.7 -10 M -0.7 -5 L 0.7 -5 M -0.7 5 L 0.7 5 M -0.7 10 L 0.7 10 M -0.7 15 L 0.7 15 M -0.7 20 L 0.7 20"></path>
+      <circle cx="0" cy="0" r="8.33"></circle>
+      <circle cx="0" cy="0" r="16.67"></circle>
+      <circle cx="0" cy="0" r="25"></circle>
+    </g>
+    <!-- THE CROSSHAIR: our car's center lines, with a tick every 5 m. Under the
+         rings and the cars, and through our own car, which covers the middle. -->
+    <path class="rmr-cross" d="M -25 0 L 25 0 M 0 -25 L 0 25"></path>
+    <path class="rmr-tick" d="M -20 -0.7 L -20 0.7 M -15 -0.7 L -15 0.7 M -10 -0.7 L -10 0.7 M -5 -0.7 L -5 0.7 M 5 -0.7 L 5 0.7 M 10 -0.7 L 10 0.7 M 15 -0.7 L 15 0.7 M 20 -0.7 L 20 0.7 M -0.7 -20 L 0.7 -20 M -0.7 -15 L 0.7 -15 M -0.7 -10 L 0.7 -10 M -0.7 -5 L 0.7 -5 M -0.7 5 L 0.7 5 M -0.7 10 L 0.7 10 M -0.7 15 L 0.7 15 M -0.7 20 L 0.7 20"></path>
     <circle class="rmr-ring" cx="0" cy="0" r="8.33"></circle>
     <circle class="rmr-ring" cx="0" cy="0" r="16.67"></circle>
     <circle class="rmr-ring rmr-ring-outer" cx="0" cy="0" r="25"></circle>
@@ -20,9 +34,13 @@
     <rect class="rmr-bar" x="27.4" y="-6.5" width="1.6" height="13" rx="0.8"></rect>
     <g class="rmr-segs"></g>
     <g class="rmr-cars"></g>
+    <!-- OUR CAR, solid and car-shaped: body, mirrors, windscreen and rear
+         window, the shape every other car is drawn in too. app.js redraws both
+         paths at our car's real size. White, not a warning color: amber and red
+         mean a car is close. -->
     <g class="rmr-me">
-      <rect class="rmr-me-body" x="-0.95" y="-2.25" width="1.9" height="4.5" rx="0.45"></rect>
-      <path class="rmr-me-nose" d="M 0 -2.9 L -0.6 -1.9 L 0.6 -1.9 Z"></path>
+      <path class="rmr-me-body" d="M -0.68 -2.25 Q 0 -2.36 0.68 -2.25 Q 0.95 -2.25 0.95 -1.76 L 0.95 1.89 Q 0.95 2.25 0.72 2.25 L -0.72 2.25 Q -0.95 2.25 -0.95 1.89 L -0.95 -1.76 Q -0.95 -2.25 -0.68 -2.25 Z M 0.95 -0.86 L 1.18 -0.94 L 1.18 -0.68 L 0.95 -0.63 Z M -0.95 -0.86 L -1.18 -0.94 L -1.18 -0.68 L -0.95 -0.63 Z"></path>
+      <path class="rmr-me-glass" d="M -0.76 -0.9 Q 0 -1.12 0.76 -0.9 L 0.63 -0.22 L -0.63 -0.22 Z M -0.63 1.04 L 0.63 1.04 L 0.72 1.58 Q 0 1.71 -0.72 1.58 Z"></path>
     </g>
     <g class="rmr-labels"></g>
     <text class="rmr-caption" x="0" y="29" text-anchor="middle">RADAR</text>
@@ -36,24 +54,36 @@
   }
   .rmr-hidden { opacity: 0; }
   .rmr-root svg { display: block; width: 100%; height: 100%; }
-  .rmr-disc { fill: rgba(10, 11, 14, 0.62); stroke: rgba(255, 255, 255, 0.14); stroke-width: 0.25; }
-  .rmr-ring { fill: none; stroke: rgba(255, 255, 255, 0.08); stroke-width: 0.15; }
-  .rmr-ring-outer { stroke: rgba(255, 255, 255, 0.16); }
-  .rmr-ring-label { fill: #9aa0a6; font: 700 1.9px "Noto Sans", "Segoe UI", sans-serif; }
-  .rmr-bar { fill: rgba(255, 255, 255, 0.07); }
-  .rmr-me-body { fill: none; stroke: #ff6600; stroke-width: 0.35; }
-  .rmr-me-nose { fill: #ff6600; }
+  /* No background. A tint is a `fill` here, if one is ever wanted back. */
+  .rmr-disc { fill: none; stroke: none; }
+  .rmr-shade { fill: none; stroke: rgba(0, 0, 0, 0.4); stroke-width: 0.45; }
+  .rmr-cross { fill: none; stroke: rgba(255, 255, 255, 0.4); stroke-width: 0.14; }
+  .rmr-tick { fill: none; stroke: rgba(255, 255, 255, 0.55); stroke-width: 0.16; }
+  .rmr-ring { fill: none; stroke: rgba(255, 255, 255, 0.3); stroke-width: 0.15; }
+  .rmr-ring-outer { stroke: rgba(255, 255, 255, 0.45); }
+  .rmr-ring-label {
+    fill: #e8eaed;
+    font: 700 1.9px "Noto Sans", "Segoe UI", sans-serif;
+    paint-order: stroke;
+    stroke: #000000;
+    stroke-width: 0.35px;
+  }
+  .rmr-bar { fill: rgba(255, 255, 255, 0.12); stroke: rgba(0, 0, 0, 0.4); stroke-width: 0.2; }
+  .rmr-me-body { fill: #f1f3f4; stroke: rgba(0, 0, 0, 0.65); stroke-width: 0.14; }
+  .rmr-me-glass { fill: #1f2933; }
   /* Closeness is the color: red under 2 m, amber under 6 m. Blue is a car a lap
-     or more up or down on you, and wins only when it is not close. */
-  .rmr-car { stroke-width: 0.25; }
-  .rmr-red    { fill: #ff2b1c; stroke: #ff9a8f; }
-  .rmr-amber  { fill: #ff8a00; stroke: #ffc680; }
-  .rmr-far    { fill: rgba(232, 234, 237, 0.6); stroke: none; }
-  .rmr-blue   { fill: rgba(66, 133, 244, 0.75); stroke: #8ab4f8; }
-  .rmr-lapped { stroke: #8ab4f8; stroke-width: 0.45; }
+     or more up or down on you, and wins only when it is not close. A dark
+     outline on all of them, for a bright road. Gray, not white, for a car that
+     is not close: white is ours. */
+  .rmr-car { stroke-width: 0.14; }
+  .rmr-red    { fill: #ff2b1c; stroke: rgba(0, 0, 0, 0.65); }
+  .rmr-amber  { fill: #ff8a00; stroke: rgba(0, 0, 0, 0.65); }
+  .rmr-far    { fill: rgba(176, 182, 190, 0.85); stroke: rgba(0, 0, 0, 0.55); }
+  .rmr-blue   { fill: rgba(47, 125, 255, 0.85); stroke: rgba(0, 0, 0, 0.65); }
+  .rmr-lapped { stroke: #8ab4f8; stroke-width: 0.4; }
   /* A ghost cannot hit you: an outline, whatever its gap. */
-  .rmr-ghost  { fill: none; stroke: #8ab4f8; stroke-dasharray: 0.6 0.5; }
-  .rmr-nose   { fill: rgba(0, 0, 0, 0.55); }
+  .rmr-ghost  { fill: none; stroke: #8ab4f8; stroke-width: 0.25; stroke-dasharray: 0.6 0.5; }
+  .rmr-glass  { fill: rgba(0, 0, 0, 0.55); }
   .rmr-seg-red   { fill: #ff2b1c; }
   .rmr-seg-amber { fill: #ff8a00; }
   .rmr-label {
@@ -63,6 +93,13 @@
     stroke: #000000;
     stroke-width: 0.45px;
   }
-  .rmr-caption { fill: #bdc1c6; font: 700 2.2px "Noto Sans", "Segoe UI", sans-serif; letter-spacing: 0.4px; }
+  .rmr-caption {
+    fill: #e8eaed;
+    font: 700 2.2px "Noto Sans", "Segoe UI", sans-serif;
+    letter-spacing: 0.4px;
+    paint-order: stroke;
+    stroke: #000000;
+    stroke-width: 0.35px;
+  }
 </style>
 </div>

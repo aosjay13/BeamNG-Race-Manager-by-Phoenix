@@ -133,7 +133,14 @@ local function lightsFor(pattern)
   return pattern == 'pro' and DRAG_PRO_LIGHTS or DRAG_SPORT_LIGHTS
 end
 
--- The lights, as the panel draws them. The two blue bulbs are sent separately
+-- STAGING, STEP BY STEP, in the game's own Messages app, for a driver who has
+-- never staged a car. One category, so each step replaces the last instead of
+-- stacking up.
+local function stageHint(text)
+  if host.hudMessage then host.hudMessage('stage', text) end
+end
+
+-- The lights, as the panel draws them. The two stage bulbs are sent separately
 -- from the amber sequence because under roll-up they are a different fact: an
 -- amber is a moment in a countdown, a stage bulb is where the car is standing.
 local function pushTree(stage, force)
@@ -277,6 +284,15 @@ local function stagingUpdate()
   if inb and pos then S.anchor = { x = pos.x, y = pos.y, z = pos.z } end
   if pre == S.preStaged and inb == S.inBeams then return end
   S.preStaged, S.inBeams = pre, inb
+  if inb then
+    stageHint('STAGED: stop and wait. Go when the light turns GREEN; leaving early is a red light.')
+  elseif pre then
+    stageHint('PRE-STAGED: inch forward until the STAGE light comes on too.')
+  elseif d > S.pastAt then
+    stageHint('TOO FAR: back up until the STAGE light comes back on.')
+  else
+    stageHint('ROLL UP: creep forward slowly until the PRE-STAGE light comes on.')
+  end
   -- ON CHANGE ONLY. Two booleans at sixty hertz is sixty times the traffic
   -- for a fact that moves twice a pass.
   if host.inMultiplayer() then
@@ -359,6 +375,7 @@ function D.dragUpdate(dt)
         S.foul = true
         pushTree('red')
         host.pushNotice('drag', 'RED LIGHT - you left before the green.')
+        stageHint('RED LIGHT: you left before the green. Next time, wait for GREEN.')
       end
     end
   end
@@ -506,9 +523,13 @@ D.onDragLane = function (rawData)
       holdSource = 'drag',
       order = tonumber(data.order) or slot, count = count,
     })
-    host.pushNotice('drag', 'Roll up into the beams: creep forward until both '
-      .. 'blue lights are on.')
+    host.pushNotice('drag', 'Roll up into the beams: creep forward until PRE and '
+      .. 'STAGE are both lit.')
+    stageHint('ROLL UP: creep forward slowly until the PRE-STAGE light comes on.')
   else
+    -- Placed on the line and held: already staged, both bulbs lit.
+    stageHint('STAGED: you are held on the line. Go when the light turns GREEN; '
+      .. 'leaving early is a red light.')
     host.queueFieldPlacement({
       slot  = slot,
       slots = slots,

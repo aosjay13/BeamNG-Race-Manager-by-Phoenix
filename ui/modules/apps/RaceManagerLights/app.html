@@ -3,15 +3,19 @@
        is `replace: true` and Angular 1.5.8 counts a sibling comment as a second
        root, so the app never renders. Same rule as the main app.
 
-       One SVG for both modes, so it scales with whatever box the driver draws
-       and the lamps stay round. The controller sets classes on it and nothing
-       else; there are no bindings here on purpose.
+       One SVG per layout, wide and tall, each with both modes, so the lamps
+       scale with whatever box the driver draws and stay round. The controller
+       sets classes on them and nothing else; there are no bindings here on
+       purpose.
 
        NO BOX BEHIND THE LAMPS. Each lamp carries its own dark hood instead, so
        it still reads as a lamp over sky, tarmac or snow. A lamp is a group:
        glow, hood, unlit glass, lit bulb, highlight. The two .rml-lit parts
        show only when app.js sets a color class on the group. -->
-  <svg viewBox="0 0 500 170" preserveAspectRatio="xMidYMid meet">
+  <!-- The gradients, in an SVG of their own that is never hidden: Chrome will
+       not paint a gradient defined inside an SVG that is display: none, and
+       one of the two layouts always is. -->
+  <svg class="rml-defs" width="0" height="0" aria-hidden="true">
     <defs>
       <!-- Lit bulbs: a hot core off-center toward the highlight, the lamp
            color, and a darker rim. Gradients, not blur filters: they cost
@@ -75,11 +79,17 @@
         <stop offset="0" stop-color="#1d5a30"></stop><stop offset="0.6" stop-color="#0c2614"></stop>
         <stop offset="1" stop-color="#040f07"></stop>
       </radialGradient>
+      <radialGradient id="rml-glass-s" fx="38%" fy="32%">
+        <stop offset="0" stop-color="#77704f"></stop><stop offset="0.6" stop-color="#36321f"></stop>
+        <stop offset="1" stop-color="#14120b"></stop>
+      </radialGradient>
       <radialGradient id="rml-glass-r" fx="38%" fy="32%">
         <stop offset="0" stop-color="#6b1d17"></stop><stop offset="0.6" stop-color="#2e0b08"></stop>
         <stop offset="1" stop-color="#130403"></stop>
       </radialGradient>
     </defs>
+  </svg>
+  <svg class="rml-wide" viewBox="0 0 500 170" preserveAspectRatio="xMidYMid meet">
     <!-- KEPT, HIDDEN: the old box behind the lamps. `.rml-housing` in the style
          below puts it back. -->
     <rect class="rml-housing" x="3" y="3" width="494" height="164" rx="20"></rect>
@@ -114,45 +124,117 @@
          staging bulbs above. Unlit lenses keep a tint and a rim of their own
          color, so the driver knows which one is about to come on. -->
     <g class="rml-drag">
-      <text class="rml-label" x="174" y="27" text-anchor="end">PRE</text>
-      <g class="rml-small rml-pre" transform="translate(196 21)">
-        <circle class="rml-lit rml-halo" r="19"></circle><circle class="rml-hood" r="13"></circle><circle class="rml-glass" r="10"></circle>
-        <circle class="rml-lit rml-bulb" r="10"></circle>
-        <ellipse class="rml-shine" cx="-3" cy="-4" rx="3.5" ry="2.2" transform="rotate(-35 -3 -4)"></ellipse>
+      <text class="rml-label" x="171" y="29" text-anchor="end">PRE</text>
+      <g class="rml-small rml-pre" transform="translate(196 23)">
+        <circle class="rml-lit rml-halo" r="25"></circle><circle class="rml-hood" r="17"></circle><circle class="rml-glass" r="13"></circle>
+        <circle class="rml-lit rml-bulb" r="13"></circle>
+        <ellipse class="rml-shine" cx="-4" cy="-5" rx="4.5" ry="2.8" transform="rotate(-35 -4 -5)"></ellipse>
       </g>
-      <g class="rml-small rml-stage" transform="translate(304 21)">
-        <circle class="rml-lit rml-halo" r="19"></circle><circle class="rml-hood" r="13"></circle><circle class="rml-glass" r="10"></circle>
-        <circle class="rml-lit rml-bulb" r="10"></circle>
-        <ellipse class="rml-shine" cx="-3" cy="-4" rx="3.5" ry="2.2" transform="rotate(-35 -3 -4)"></ellipse>
+      <g class="rml-small rml-stage" transform="translate(304 23)">
+        <circle class="rml-lit rml-halo" r="25"></circle><circle class="rml-hood" r="17"></circle><circle class="rml-glass" r="13"></circle>
+        <circle class="rml-lit rml-bulb" r="13"></circle>
+        <ellipse class="rml-shine" cx="-4" cy="-5" rx="4.5" ry="2.8" transform="rotate(-35 -4 -5)"></ellipse>
       </g>
-      <text class="rml-label" x="326" y="27" text-anchor="start">STAGE</text>
-      <g class="rml-lamp rml-hint-a" transform="translate(66 82)">
+      <text class="rml-label" x="329" y="29" text-anchor="start">STAGE</text>
+      <g class="rml-lamp rml-hint-a" transform="translate(66 86)">
         <circle class="rml-lit rml-halo" r="52"></circle><circle class="rml-hood" r="39"></circle><circle class="rml-glass" r="32"></circle>
         <circle class="rml-lit rml-bulb" r="32"></circle>
         <ellipse class="rml-shine" cx="-10" cy="-13" rx="11" ry="7" transform="rotate(-35 -10 -13)"></ellipse>
       </g>
-      <g class="rml-lamp rml-hint-a" transform="translate(158 82)">
+      <g class="rml-lamp rml-hint-a" transform="translate(158 86)">
         <circle class="rml-lit rml-halo" r="52"></circle><circle class="rml-hood" r="39"></circle><circle class="rml-glass" r="32"></circle>
         <circle class="rml-lit rml-bulb" r="32"></circle>
         <ellipse class="rml-shine" cx="-10" cy="-13" rx="11" ry="7" transform="rotate(-35 -10 -13)"></ellipse>
       </g>
-      <g class="rml-lamp rml-hint-a" transform="translate(250 82)">
+      <g class="rml-lamp rml-hint-a" transform="translate(250 86)">
         <circle class="rml-lit rml-halo" r="52"></circle><circle class="rml-hood" r="39"></circle><circle class="rml-glass" r="32"></circle>
         <circle class="rml-lit rml-bulb" r="32"></circle>
         <ellipse class="rml-shine" cx="-10" cy="-13" rx="11" ry="7" transform="rotate(-35 -10 -13)"></ellipse>
       </g>
-      <g class="rml-lamp rml-hint-g" transform="translate(342 82)">
+      <g class="rml-lamp rml-hint-g" transform="translate(342 86)">
         <circle class="rml-lit rml-halo" r="52"></circle><circle class="rml-hood" r="39"></circle><circle class="rml-glass" r="32"></circle>
         <circle class="rml-lit rml-bulb" r="32"></circle>
         <ellipse class="rml-shine" cx="-10" cy="-13" rx="11" ry="7" transform="rotate(-35 -10 -13)"></ellipse>
       </g>
-      <g class="rml-lamp rml-hint-r" transform="translate(434 82)">
+      <g class="rml-lamp rml-hint-r" transform="translate(434 86)">
         <circle class="rml-lit rml-halo" r="52"></circle><circle class="rml-hood" r="39"></circle><circle class="rml-glass" r="32"></circle>
         <circle class="rml-lit rml-bulb" r="32"></circle>
         <ellipse class="rml-shine" cx="-10" cy="-13" rx="11" ry="7" transform="rotate(-35 -10 -13)"></ellipse>
       </g>
     </g>
     <text class="rml-cap" x="250" y="156" text-anchor="middle">RACE LIGHTS</text>
+  </svg>
+  <!-- TALL: the same lamps stood up, for a box the driver has drawn taller
+       than it is wide. The race lights become a column and the drag tree
+       stands as a real one does. app.js picks the layout from the box. -->
+  <svg class="rml-tall" viewBox="0 0 170 520" preserveAspectRatio="xMidYMid meet">
+    <g class="rml-race">
+      <g class="rml-lamp" transform="translate(85 56)">
+        <circle class="rml-lit rml-halo" r="60"></circle><circle class="rml-hood" r="46"></circle><circle class="rml-glass" r="38"></circle>
+        <circle class="rml-lit rml-bulb" r="38"></circle>
+        <ellipse class="rml-shine" cx="-12" cy="-16" rx="13" ry="8" transform="rotate(-35 -12 -16)"></ellipse>
+      </g>
+      <g class="rml-lamp" transform="translate(85 148)">
+        <circle class="rml-lit rml-halo" r="60"></circle><circle class="rml-hood" r="46"></circle><circle class="rml-glass" r="38"></circle>
+        <circle class="rml-lit rml-bulb" r="38"></circle>
+        <ellipse class="rml-shine" cx="-12" cy="-16" rx="13" ry="8" transform="rotate(-35 -12 -16)"></ellipse>
+      </g>
+      <g class="rml-lamp" transform="translate(85 240)">
+        <circle class="rml-lit rml-halo" r="60"></circle><circle class="rml-hood" r="46"></circle><circle class="rml-glass" r="38"></circle>
+        <circle class="rml-lit rml-bulb" r="38"></circle>
+        <ellipse class="rml-shine" cx="-12" cy="-16" rx="13" ry="8" transform="rotate(-35 -12 -16)"></ellipse>
+      </g>
+      <g class="rml-lamp" transform="translate(85 332)">
+        <circle class="rml-lit rml-halo" r="60"></circle><circle class="rml-hood" r="46"></circle><circle class="rml-glass" r="38"></circle>
+        <circle class="rml-lit rml-bulb" r="38"></circle>
+        <ellipse class="rml-shine" cx="-12" cy="-16" rx="13" ry="8" transform="rotate(-35 -12 -16)"></ellipse>
+      </g>
+      <g class="rml-lamp" transform="translate(85 424)">
+        <circle class="rml-lit rml-halo" r="60"></circle><circle class="rml-hood" r="46"></circle><circle class="rml-glass" r="38"></circle>
+        <circle class="rml-lit rml-bulb" r="38"></circle>
+        <ellipse class="rml-shine" cx="-12" cy="-16" rx="13" ry="8" transform="rotate(-35 -12 -16)"></ellipse>
+      </g>
+    </g>
+    <g class="rml-drag">
+      <text class="rml-label" x="60" y="28" text-anchor="end">PRE</text>
+      <g class="rml-small rml-pre" transform="translate(85 22)">
+        <circle class="rml-lit rml-halo" r="25"></circle><circle class="rml-hood" r="17"></circle><circle class="rml-glass" r="13"></circle>
+        <circle class="rml-lit rml-bulb" r="13"></circle>
+        <ellipse class="rml-shine" cx="-4" cy="-5" rx="4.5" ry="2.8" transform="rotate(-35 -4 -5)"></ellipse>
+      </g>
+      <g class="rml-small rml-stage" transform="translate(85 62)">
+        <circle class="rml-lit rml-halo" r="25"></circle><circle class="rml-hood" r="17"></circle><circle class="rml-glass" r="13"></circle>
+        <circle class="rml-lit rml-bulb" r="13"></circle>
+        <ellipse class="rml-shine" cx="-4" cy="-5" rx="4.5" ry="2.8" transform="rotate(-35 -4 -5)"></ellipse>
+      </g>
+      <text class="rml-label" x="108" y="68" text-anchor="start">STAGE</text>
+      <g class="rml-lamp rml-hint-a" transform="translate(85 124)">
+        <circle class="rml-lit rml-halo" r="52"></circle><circle class="rml-hood" r="39"></circle><circle class="rml-glass" r="32"></circle>
+        <circle class="rml-lit rml-bulb" r="32"></circle>
+        <ellipse class="rml-shine" cx="-10" cy="-13" rx="11" ry="7" transform="rotate(-35 -10 -13)"></ellipse>
+      </g>
+      <g class="rml-lamp rml-hint-a" transform="translate(85 204)">
+        <circle class="rml-lit rml-halo" r="52"></circle><circle class="rml-hood" r="39"></circle><circle class="rml-glass" r="32"></circle>
+        <circle class="rml-lit rml-bulb" r="32"></circle>
+        <ellipse class="rml-shine" cx="-10" cy="-13" rx="11" ry="7" transform="rotate(-35 -10 -13)"></ellipse>
+      </g>
+      <g class="rml-lamp rml-hint-a" transform="translate(85 284)">
+        <circle class="rml-lit rml-halo" r="52"></circle><circle class="rml-hood" r="39"></circle><circle class="rml-glass" r="32"></circle>
+        <circle class="rml-lit rml-bulb" r="32"></circle>
+        <ellipse class="rml-shine" cx="-10" cy="-13" rx="11" ry="7" transform="rotate(-35 -10 -13)"></ellipse>
+      </g>
+      <g class="rml-lamp rml-hint-g" transform="translate(85 364)">
+        <circle class="rml-lit rml-halo" r="52"></circle><circle class="rml-hood" r="39"></circle><circle class="rml-glass" r="32"></circle>
+        <circle class="rml-lit rml-bulb" r="32"></circle>
+        <ellipse class="rml-shine" cx="-10" cy="-13" rx="11" ry="7" transform="rotate(-35 -10 -13)"></ellipse>
+      </g>
+      <g class="rml-lamp rml-hint-r" transform="translate(85 444)">
+        <circle class="rml-lit rml-halo" r="52"></circle><circle class="rml-hood" r="39"></circle><circle class="rml-glass" r="32"></circle>
+        <circle class="rml-lit rml-bulb" r="32"></circle>
+        <ellipse class="rml-shine" cx="-10" cy="-13" rx="11" ry="7" transform="rotate(-35 -10 -13)"></ellipse>
+      </g>
+    </g>
+    <text class="rml-cap" x="85" y="508" text-anchor="middle">RACE LIGHTS</text>
   </svg>
 <style>
   .rml-root {
@@ -163,6 +245,11 @@
   }
   .rml-hidden { opacity: 0; }
   .rml-root svg { display: block; width: 100%; height: 100%; overflow: visible; }
+  .rml-root svg.rml-defs { position: absolute; width: 0; height: 0; }
+  .rml-root svg.rml-tall { display: none; }
+  .rml-root.rml-vertical svg.rml-wide { display: none; }
+  .rml-root.rml-vertical svg.rml-tall { display: block; }
+  .rml-tall .rml-cap { font-size: 24px; letter-spacing: 2px; }
   /* display: inline brings the box back. */
   .rml-housing { display: none; fill: rgba(10, 11, 14, 0.88); stroke: #3a3d42; stroke-width: 3; }
   .rml-hood { fill: #0b0c0f; stroke: #34373d; stroke-width: 2.5; }
@@ -191,6 +278,9 @@
   .rml-hint-a .rml-hood { stroke: rgba(255, 138, 0, 0.55); }
   .rml-hint-g .rml-hood { stroke: rgba(24, 210, 75, 0.55); }
   .rml-hint-r .rml-hood { stroke: rgba(255, 43, 28, 0.55); }
+  /* The staging bulbs read before they light: a warm lens and rim. */
+  .rml-small .rml-hood { stroke: rgba(255, 243, 176, 0.6); }
+  .rml-small .rml-glass { fill: url(#rml-glass-s); }
   .rml-hint-a .rml-glass { fill: url(#rml-glass-a); }
   .rml-hint-g .rml-glass { fill: url(#rml-glass-g); }
   .rml-hint-r .rml-glass { fill: url(#rml-glass-r); }

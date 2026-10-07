@@ -2729,6 +2729,30 @@ do
   -- NO BOX BEHIND THE LAMPS: the housing is kept, hidden.
   expect(lhtml:find('%.rml%-housing { display: none;') ~= nil,
     'the Lights app draws no background box')
+  -- THE MAIN APP'S LAMPS ARE THE SAME COLORS. Each lit bulb in the main app
+  -- uses the base color of the Lights app's gradient for that lamp.
+  for _, pair in ipairs({ { 'red', 'r' }, { 'amber', 'a' }, { 'green', 'g' } }) do
+    local base = lhtml:match('id="rml%-bulb%-' .. pair[2] .. '".-offset="0%.75" stop%-color="(#%x+)"')
+    local rule = html:match('%.rm%-drag%-lit%-' .. pair[1] .. ', %.rm%-lamp%.rm%-lamp%-' .. pair[1] .. ' (%b{})')
+    expect(base ~= nil and rule ~= nil and rule:find(base, 1, true) ~= nil,
+      'the main app\'s lit ' .. pair[1] .. ' is the Lights app\'s ' .. tostring(base))
+  end
+  expect(html:find("'rm-lamp-red'", 1, true) ~= nil and not html:find("'rm-lamp-amber'", 1, true),
+    'the main countdown counts in red, as the Lights app does')
+  -- WIDE AND TALL: each layout carries every lamp app.js writes to.
+  for _, name in ipairs({ 'wide', 'tall' }) do
+    local svg = lhtml:match('<svg class="rml%-' .. name .. '".-</svg>') or ''
+    local _, race = (svg:match('<g class="rml%-race">.-\n    </g>') or ''):gsub('class="rml%-lamp"', '')
+    local _, drag = (svg:match('<g class="rml%-drag">.-\n    </g>') or ''):gsub('class="rml%-lamp rml%-hint', '')
+    expect(race == 5 and drag == 5, 'the ' .. name .. ' layout has five race lamps and five on the tree (got '
+      .. race .. ', ' .. drag .. ')')
+    expect(svg:find('rml-pre', 1, true) and svg:find('rml-stage', 1, true) and svg:find('rml-cap', 1, true),
+      'and the staging bulbs and a caption')
+    expect(not svg:find('<defs>', 1, true), 'and no gradients of its own: a hidden SVG paints none')
+  end
+  expect(lhtml:find('<svg class="rml%-defs".-<defs>') ~= nil, 'the gradients sit in an SVG that is never hidden')
+  expect(ljs:find('TALL_RATIO', 1, true) ~= nil and ljs:find("'rml-vertical'", 1, true) ~= nil,
+    'and app.js picks the layout from the shape of the box')
   -- A light Lua can send that the app has no pattern for would draw as idle.
   local lua = readFile('lua/ge/extensions/raceManager/lights.lua')
   for light in lua:gmatch("return '(%a+)'") do
