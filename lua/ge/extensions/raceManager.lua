@@ -140,6 +140,15 @@ local TUNE = {
   -- teleport and undone. A repair in place moves it centimeters; BeamNG's
   -- recover/load-home drops it at a spawn point that is never this close.
   RECOVER_SNAP_RANGE = 25,
+  -- An in-place reset keeps the car's yaw, so a spun car came back spun. Past
+  -- this many degrees off the course it is turned to face it; inside it the
+  -- driver's own heading is kept, since it follows a bend better than a line.
+  RESET_FACE_TOLERANCE = 45,
+  -- Meters from the next gate inside which the gate's own heading is the course
+  -- direction. Closer than this the line to its center swings wildly.
+  RESET_FACE_NEAR = 8,
+  -- Meters off a mapped road's edge that still counts as being on it.
+  RESET_ROAD_MARGIN = 3,
   PROGRESS_EVERY = 0.3,   -- seconds between live-position reports
   -- Meters before the start/finish line that the white flag is shown.
   --
@@ -6288,6 +6297,97 @@ local function relocateToGate(wp)
   return ok
 end
 
+-- The way the course runs at `pos`, as a unit (x, y), or nil with no route.
+--
+-- Signed by the gate this car is armed for, so a head-on layout answers each
+-- direction for itself. Refined by BeamNG's road graph where the car is on a
+-- mapped road: a straight line to a gate cuts across a bend, the road does not.
+-- A table field rather than a local: see the locals ceiling note on `block`.
+function snapshot.courseDir(pos)
+  if #track.route == 0 then return nil end
+  local wp = branch.nearestAt(session.armedWp, pos)
+  if not wp then return nil end
+  local cx, cy = wp.x - pos.x, wp.y - pos.y
+  local d = math.sqrt(cx * cx + cy * cy)
+  if d < TUNE.RESET_FACE_NEAR then
+    -- On top of the gate: its heading, turned to agree with the way in.
+    cx, cy = wp.hx or 0, wp.hy or 1
+    local from = lastGate ~= wp and lastGate or nil
+    if from and cx * (wp.x - from.x) + cy * (wp.y - from.y) < 0 then cx, cy = -cx, -cy end
+    d = math.sqrt(cx * cx + cy * cy)
+  end
+  if d < 1e-6 then return nil end
+  cx, cy = cx / d, cy / d
+
+  if map and type(map.findClosestRoad) == 'function' and type(map.getMap) == 'function' then
+    pcall(function ()
+      local n1, n2, dist = map.findClosestRoad(vec3(pos.x, pos.y, pos.z), 20)
+      if not n1 or not n2 or not dist then return end
+      local nodes = map.getMap().nodes
+      local a, b = nodes[n1], nodes[n2]
+      if not a or not b then return end
+      if dist > math.max(a.radius or 0, b.radius or 0) + TUNE.RESET_ROAD_MARGIN then return end
+      local tx, ty = b.pos.x - a.pos.x, b.pos.y - a.pos.y
+      local tl = math.sqrt(tx * tx + ty * ty)
+      if tl < 1e-6 then return end
+      tx, ty = tx / tl, ty / tl
+      local dot = tx * cx + ty * cy
+      -- A road at right angles to the course is a side street or the far leg
+      -- of a hairpin, not the one being raced on.
+      if math.abs(dot) < 0.5 then return end
+      if dot < 0 then tx, ty = -tx, -ty end
+      cx, cy = tx, ty
+    end)
+  end
+  return cx, cy
+end
+
+-- Turn the car where it stands to face the course, after an in-place reset.
+-- Left alone inside TUNE.RESET_FACE_TOLERANCE. Position is untouched.
+function snapshot.faceCourse(veh)
+  if not veh then return false end
+  local pos, fwd, up
+  pcall(function ()
+    pos = veh:getPosition()
+    fwd = veh:getDirectionVector()
+  end)
+  if not pos or not fwd then return false end
+  local cx, cy = snapshot.courseDir(pos)
+  if not cx then return false end
+  local fl = math.sqrt(fwd.x * fwd.x + fwd.y * fwd.y)
+  if fl > 1e-6
+    and (fwd.x * cx + fwd.y * cy) / fl >= math.cos(math.rad(TUNE.RESET_FACE_TOLERANCE)) then
+    return false
+  end
+  -- Keep the car's own up on a slope or banking: yaw alone would level it and
+  -- dig a bumper into the hill. Same call BeamNG's recovery uses.
+  local rot = nil
+  if type(quatFromDir) == 'function' then
+    pcall(function ()
+      up = veh:getDirectionVectorUp()
+      local k = cx * up.x + cy * up.y
+      local dx, dy, dz = cx - up.x * k, cy - up.y * k, -up.z * k
+      local dl = math.sqrt(dx * dx + dy * dy + dz * dz)
+      if dl > 1e-6 then
+        rot = quatFromDir(vec3(-dx / dl, -dy / dl, -dz / dl), vec3(up.x, up.y, up.z))
+      end
+    end)
+  end
+  rot = rot or headingRot(cx, cy)
+  noteSelfTeleport(pos.x, pos.y, pos.z)
+  local ok = pcall(function ()
+    veh:setPositionRotation(pos.x, pos.y, pos.z, rot.x, rot.y, rot.z, rot.w)
+  end)
+  if ok then
+    snapshot.pos = vec3(pos.x, pos.y, pos.z)
+    snapshot.rot = rot
+    log('I', 'raceManager', 'In-place reset turned to face the course')
+  else
+    block.selfTeleport.left = 0
+  end
+  return ok
+end
+
 -- Undo a reset the driver was not entitled to. BeamNG has already teleported
 -- the car by the time onVehicleResetted fires, so the block is applied after
 -- the fact: put the car back exactly where it was standing a moment ago.
@@ -6440,7 +6540,7 @@ function M.onVehicleResetted(vehId)
   -- limited; before the first gate of a session it falls back to in-place.
   if session.resetMode == 'checkpoint' and session.phase == 'racing' and lastGate and not session.gridFrozen then
     relocateToGate(lastGate)
-  elseif sessionRunning() and not session.gridFrozen and session.prevPos then
+  elseif sessionRunning() and not session.gridFrozen then
     -- BOTH RESET KEYS HAVE TO MEAN THE SAME THING DURING A SESSION.
     --
     -- BeamNG ships two and they are not the same action: one repairs in place,
@@ -6478,6 +6578,10 @@ function M.onVehicleResetted(vehId)
         log('I', 'raceManager', 'Undid a recovery teleport during a session')
       end
     end
+    -- AND FACING THE COURSE. Both keys keep a heading the car had: where it
+    -- stopped, or where the recovery rewound to, or the spawn point's once the
+    -- undo above has run. After a spin every one of those can be backwards.
+    snapshot.faceCourse(veh)
   end
 
   -- EVERY legal reset makes the new position the good one, immediately.

@@ -10,6 +10,11 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 #### Fixed
 
+- **An "In Place" reset faces the right way.** A car that spun and then reset
+  came back still facing back up the track, because the game keeps whatever
+  direction the car was pointing. It is now turned to face the course, the same
+  as "Last Checkpoint" already did. A car already roughly facing the right way
+  is left alone.
 - **Practice ends when a session starts.** A driver still practising when the
   grid formed had every lap of the session timed as practice and never sent to
   the server, so their race was never scored. A grid forming or a derby forming

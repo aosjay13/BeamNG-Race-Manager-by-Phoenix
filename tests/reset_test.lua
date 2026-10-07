@@ -374,7 +374,12 @@ frames(1.2)
 clearLog()
 driverPressedReset(1, 1, 0)
 resetHook()
-check(#teleports == 0, 'checkpoint mode before the first gate stays in place')
+-- The car still faces +X from the grid section, so the in-place path turns it
+-- to the course; what must not happen is a move.
+check(#teleports <= 1 and veh.x == 1 and veh.y == 1,
+  'checkpoint mode before the first gate stays in place')
+check(#teleports == 1 and math.abs(teleports[1].qz - 1) < 1e-3,
+  'and faces the course, as an in-place reset does')
 
 -- Drive through the gate, then reset somewhere else.
 veh.x, veh.y, veh.z = 0, 45, 0
@@ -477,6 +482,62 @@ castRayStatic = nil
 checkpointTrack(0)
 t = crossAndReset(0, 0.5)
 check(t and t.z == 0, 'without castRayStatic the respawn falls back to the gate height')
+
+-- ===========================================================================
+-- "In Place" faces the course, the way "Last Checkpoint" already did
+-- ===========================================================================
+-- Reported: an in-place reset after a spin left the car facing back up the
+-- track. BeamNG's repair keeps whatever yaw the car had when it stopped.
+local function inPlaceTrack()
+  serverState({ phase = 'waiting', maxResets = -1, resetMode = 'inplace',
+    totalLaps = 3, drivers = {} })
+  RM.setFinishLine(0, 500, 0, 0, 1)   -- the only gate, dead ahead up +Y
+  serverState({ phase = 'racing', maxResets = -1, resetMode = 'inplace',
+    totalLaps = 3, drivers = {} })
+  veh.x, veh.y, veh.z = 0, 100, 0
+  frames(0.6)
+  clearLog()
+end
+
+inPlaceTrack()
+veh.hx, veh.hy = 0, -1                 -- spun round, nose back down the track
+driverPressedReset(0, 101, 0)
+resetHook()
+check(#teleports == 1 and teleports[1].x == 0 and teleports[1].y == 101,
+  'a backwards in-place reset stays where it stood')
+check(teleports[1] and math.abs(teleports[1].qz - 1) < 1e-6 and math.abs(teleports[1].qw) < 1e-6,
+  'and is turned to face the course (+Y)')
+resetHook()
+check(#teleports == 1, 'the turn is not heard back as a fresh reset')
+
+-- Roughly the right way already: the driver's heading follows a bend better
+-- than a line to the next gate, so it is kept.
+inPlaceTrack()
+veh.hx, veh.hy = math.sin(math.rad(30)), math.cos(math.rad(30))
+driverPressedReset(0, 101, 0)
+resetHook()
+check(#teleports == 0, 'a car already facing the course is left alone')
+
+-- On a mapped road the road's own direction wins over the line to the gate.
+map = {
+  findClosestRoad = function () return 'a', 'b', 1 end,
+  getMap = function ()
+    return { nodes = {
+      a = { pos = { x = -10, y = 90 },  radius = 5 },
+      b = { pos = { x = 10,  y = 110 }, radius = 5 },
+    } }
+  end,
+}
+inPlaceTrack()
+veh.hx, veh.hy = 0, -1
+driverPressedReset(0, 101, 0)
+resetHook()
+local half = (math.pi / 4 + math.pi) / 2
+check(#teleports == 1 and math.abs(teleports[1].qz - math.sin(half)) < 1e-6
+  and math.abs(teleports[1].qw - math.cos(half)) < 1e-6,
+  'on a mapped road the car faces along the road, signed by the course')
+map = nil
+veh.hx, veh.hy = 0, 1
 
 -- ===========================================================================
 -- No resets at all in a derby (isolated from the race ruleset)
