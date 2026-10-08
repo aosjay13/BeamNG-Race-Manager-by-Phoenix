@@ -56,6 +56,21 @@ NOISE = [
      "wall-clock timing, same reason"),
 ]
 
+# Parts of a line that differ run to run, rewritten rather than dropped so the
+# rest of the line is still compared. race_bench prints timings beside counts.
+NORMALIZE = [
+    (re.compile(r"table: (0x)?[0-9A-Fa-f]{6,}"), "table: <addr>",
+     "a table's address: where the allocator put it"),
+    (re.compile(r"\d+(\.\d+)?s CPU for"), "<t>s CPU for",
+     "race_bench wall-clock timing"),
+    (re.compile(r"\(\d+(\.\d+)?% of one core\)"), "(<%> of one core)",
+     "derived from the timing beside it"),
+    (re.compile(r"\d+(\.\d+)? ms(/frame| of Lua)"), r"<ms> ms\2",
+     "race_bench wall-clock timing"),
+    (re.compile(r"(drift|costs) \d+(\.\d+)?x"), r"\1 <x>x",
+     "a ratio of two timings"),
+]
+
 # Server log chatter is not test output; it is the plugin narrating itself.
 CHATTER = re.compile(r"^\[RaceManager\]")
 
@@ -83,6 +98,11 @@ def capture():
             if noisy:
                 ignored.append((os.path.basename(t), line.strip(), noisy))
                 continue
+            for rx, repl, why in NORMALIZE:
+                fixed = rx.sub(repl, line)
+                if fixed != line:
+                    ignored.append((os.path.basename(t), line.strip()[:90], why + " (normalized)"))
+                    line = fixed
             lines.append(line)
     return lines, ignored
 
@@ -117,6 +137,9 @@ def main():
         return 2
     with open(prev, encoding="utf-8") as f:
         old = f.read().split("\n")
+    # A baseline captured before a NORMALIZE rule existed gets it applied here.
+    for rx, repl, _ in NORMALIZE:
+        old = [rx.sub(repl, line) for line in old]
 
     if old == lines:
         print("PARITY: %d lines, byte-identical. Nothing observable changed."

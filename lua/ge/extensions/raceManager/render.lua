@@ -4,40 +4,19 @@
 -- cache, checkpoint and joker gates, the starting grid, pit stalls, direction
 -- markers, and the per-frame pass that decides which of them a driver sees.
 --
--- Split out of raceManager.lua for the reason the derby was, and after the same
--- groundwork. That file sits at Lua's 200-local ceiling, where the next `local`
--- anybody adds anywhere stops the whole mod compiling; a module gets its own
--- budget of 200 and this one takes fifteen names out of the main chunk.
---
--- WHY THIS WAS NOT POSSIBLE UNTIL NOW, and it is the useful part of the story.
--- Measured against the old code this needed twenty-five names from the host,
--- NINETEEN of them as getters -- because route, phase, armedWp and the rest were
--- separate top-level locals that get REBOUND, so a reference captured at init
--- would go stale. A module reaching back through nineteen accessors is not a
--- module; it is the same coupling with indirection and a per-frame call cost.
---
--- Grouping that state into `track` and `session` first turned every one of them
--- into a field on a table that is never itself rebound. The contract below is
--- eleven plain references and NO getters: `track.route` changes, `track` does
--- not, so this file sees every later change for free.
---
--- THE CONTRACT. Everything arrives once through init(host), and all of it is
--- either a stable table or a plain function:
+-- THE CONTRACT: everything arrives once through init(host), as stable tables
+-- or plain functions, never getters (`track.route` is rebound, `track` is not):
 --
 --   track, session, edit   the models, by reference
 --   marker, nudge, branch, pit   subsystem tables, by reference
 --   TUNE                   tuning constants
 --   gateDims, sampledVehicle, sessionRunning, jokerClosed   plain functions
 --
--- Nothing here writes host state. This file reads and draws, which is what
--- makes it the cheapest thing in the file to move and the right one to move
--- first.
+-- Nothing here writes host state.
 
 local R = {}
 
--- Assigned once by init. Declared here so every function below closes over
--- them: a value captured at file load would be nil, because the host has not
--- called init yet when this chunk runs.
+-- Assigned by init; declared here so every function below closes over them.
 local track, session, edit, TUNE, marker, nudge, branch, pit
 local gateDims, sampledVehicle, sessionRunning, jokerClosed
 
@@ -48,9 +27,7 @@ function R.init(h)
   gateDims       = h.gateDims
   sampledVehicle = h.sampledVehicle
   sessionRunning = h.sessionRunning
-  -- The joker's lap-1 rule, owned by the host so the gate is DRAWN on the same
-  -- terms the crossing test enforces. Drawing it on `localLap` alone showed the
-  -- joker open through racing lap 1 of every race started behind the pace car.
+  -- The host's joker rule, so the gate is drawn on the terms it is enforced on.
   jokerClosed    = h.jokerClosed
 end
 
@@ -58,136 +35,82 @@ local PALETTE = nil
 
 local function palette()
   if PALETTE then return PALETTE end
-  -- Every gate color is at FULL VALUE: the brightest form of its own hue,
-  -- rather than that hue mixed with black. The hues themselves are unchanged --
-  -- green next, orange route, white line, violet joker, amber pit -- because
-  -- what a color means here is learned, and a driver who has learned that
-  -- green is the gate they are heading for should not have to learn it twice.
-  --
-  -- What moved is value and alpha. These are drawn over whatever the map
-  -- happens to be, in whatever light the level has: a gate at 70% alpha in a
-  -- hue two thirds of the way to black is legible against tarmac at noon and
-  -- close to invisible against a bright desert, a snow map, or a low sun. There
-  -- is no cost to being certain here -- the shapes are thin cylinder edges, not
-  -- fills, so a fully opaque gate still shows the track through the middle of
-  -- itself, which is the part that matters.
+  -- Every gate color is at FULL VALUE and near-full alpha: they are drawn over
+  -- any map in any light. The hues are learned (green next, orange route, white
+  -- line, violet joker, amber pit) and must not change. Built once: ColorF does
+  -- not exist while this file loads.
   PALETTE = {
     finish    = ColorF(1, 1, 1, 1),            -- start/finish: white
     armed     = ColorF(0.25, 1, 0.45, 1),      -- next target: green
     route     = ColorF(1, 0.45, 0.05, 0.95),   -- rest of route: orange
-    -- The gate AFTER the armed one, in a driver's view. Same orange, dimmed, so
-    -- the corner after this one reads without competing with the one they are
-    -- actually driving at.
+    -- The gate after the armed one, dimmed so it does not compete.
     routeNext = ColorF(1, 0.45, 0.05, 0.45),
-    -- The gate nudge mode has hold of. Magenta because it is not a state the
-    -- track itself can be in, so it collides with nothing already learned.
+    -- The gate nudge mode holds: magenta, a color the track never uses.
     nudged    = ColorF(1, 0.2, 0.9, 1),
     joker     = ColorF(0.72, 0.35, 1, 1),      -- joker route: violet
-    -- Still visibly duller than the rest, because "already taken" is what it
-    -- has to say at a glance -- but lifted with everything else, so it reads as
-    -- a gate that is spent rather than one that failed to draw.
+    -- Duller, so "already taken" reads at a glance, but still clearly drawn.
     jokerUsed = ColorF(0.62, 0.62, 0.7, 0.6),  -- joker already taken: dimmed
     pit       = ColorF(1, 0.78, 0.15, 1),      -- pit stalls: amber
-    -- Branch gates: cyan. Far enough from the joker's violet to be told apart at
-    -- a glance, and from the route's orange, which is the pair that actually
-    -- matters -- a branch gate substitutes for a main one and must never look
-    -- like an extra checkpoint on the same lap.
+    -- Branch gates: cyan, never confusable with an extra route checkpoint.
     branch      = ColorF(0.2, 0.85, 0.95, 1),
     text      = ColorF(1, 1, 1, 1),
-    -- The editor gate's filled surface. Deliberately faint: it has to show the
-    -- gate's extent without hiding the road it is judged against.
+    -- The editor gate's fill: faint, so the road shows through.
     fill      = ColorF(0.35, 0.65, 1, 0.16),
     textBg    = ColorI(0, 0, 0, 160),
-    -- The joker label's own backing, violet rather than the neutral black every
-    -- other label uses. A driver reads this one at speed to decide whether the
-    -- route beside them is one they still owe, and it has to be tellable from a
-    -- checkpoint label at a glance.
+    -- The joker label's violet backing, tellable from a checkpoint's at speed.
     jokerLabelBg = ColorI(70, 20, 110, 190),
-    -- A driver's fills. Fainter than the editor's: an admin is judging a gate
-    -- against the track and wants to see its extent, a driver is driving through
-    -- it at speed and wants to see the road.
+    -- A driver's fills, fainter than the editor's.
     jokerFill    = ColorF(0.72, 0.35, 1, 0.13),
     jokerUsedFill = ColorF(0.62, 0.62, 0.7, 0.10),
-    -- The FOOTPRINT is the rule, so it is the part that has to read. At 0.11
-    -- over pale ground it was invisible and a stall showed as an outline the
-    -- size of the track with nothing inside it.
+    -- The stall FOOTPRINT is the rule, so it has to read (0.11 vanished).
     pitFill      = ColorF(1, 0.72, 0.1, 0.24),
     pitWall      = ColorF(1, 0.72, 0.1, 0.14),
-    -- The chevron on the floor: which way the stall faces, and therefore which
-    -- way the car is stood when it stops.
+    -- The floor chevron: which way the car is stood when it stops.
     pitArrow     = ColorF(1, 0.88, 0.35, 0.85),
-    -- The stalls that are not the nearest one. Same amber, dimmer, so the whole
-    -- lane is legible at a glance while the one being aimed at still stands out
-    -- without being a different shape.
+    -- Stalls other than the nearest: same amber, dimmer.
     pitFar       = ColorF(1, 0.72, 0.1, 0.45),
-    -- The see-through walls, two bands so they fade upward: solid enough at the
-    -- ground to read down a lane, faint at the top so the car behind shows.
+    -- See-through walls in two bands, fading upward.
     pitWallLow   = ColorF(1, 0.72, 0.1, 0.34),
     pitWallHigh  = ColorF(1, 0.72, 0.1, 0.12),
-    -- The front edge: where the nose stops. White, because amber is the box.
+    -- The front edge, where the nose stops: white, because amber is the box.
     pitStop      = ColorF(1, 1, 1, 0.95),
-    -- The box the car is standing in turns green: you are in, now stop.
+    -- The box the car is in turns green: in, now stop.
     pitIn        = ColorF(0.25, 1, 0.45, 1),
     pitInFill    = ColorF(0.25, 1, 0.45, 0.22),
     pitInLow     = ColorF(0.25, 1, 0.45, 0.34),
     pitInHigh    = ColorF(0.25, 1, 0.45, 0.12),
-    -- Direction markers. Cyan, because every other color on a track already
-    -- means something a driver has learned -- green is the gate they are
-    -- driving at, orange the rest of the route, violet the joker, amber the
-    -- pits -- and a sign that is not any of those must not borrow one of them.
+    -- Direction markers: cyan, borrowing no color with a learned meaning.
     markerLine   = ColorF(0.2, 0.95, 1, 0.95),
     markerFill   = ColorF(0.2, 0.85, 1, 0.13),
     markerSel    = ColorF(1, 1, 1, 1),
-    -- PACKED INTEGERS, NOT ColorF, and that is not a style choice.
-    --
-    -- drawTriSolid takes `packedCol` -- one number built by the engine's global
-    -- color(r,g,b,a) at 0..255 -- where every other call this file makes takes
-    -- a ColorF. Handing it a ColorF is a hard error inside the C++ drawer, once
-    -- per triangle per frame, which is a wall of exceptions and no marker.
-    --
-    -- Guarded, because `color` is a global from BeamNG's utils and a build
-    -- without it should cost the marker faces rather than the whole draw pass.
-    -- nil here means the fill is skipped and the board, posts and outline still
-    -- draw: markers degrade to their previous look instead of vanishing.
+    -- PACKED INTEGERS, NOT ColorF: drawTriSolid takes the global color(r,g,b,a)
+    -- (0..255), and a ColorF throws once per triangle per frame. nil without
+    -- `color`: the faces are skipped and the rest of the marker draws.
     markerFace   = type(color) == 'function' and color(51, 242, 255, 240) or nil,
     markerEdgeP  = type(color) == 'function' and color(5, 15, 23, 235) or nil,
-    -- The state glyph drawn across a joker gate: a cross while it is shut, a
-    -- tick once it is spent. Both semi-transparent, because they are drawn over
-    -- the piece of track the driver is about to aim at.
+    -- The joker state glyph: a cross while shut, a tick once spent.
     glyphShut    = ColorF(1, 0.25, 0.25, 0.5),
     glyphDone    = ColorF(0.3, 1, 0.45, 0.5),
-    -- Fainter than the other two: it sits on a gate the driver is aiming
-    -- THROUGH, where the cross and the tick sit on one they must not take.
+    -- Fainter: it sits on a gate the driver aims THROUGH.
     glyphOpen    = ColorF(0.85, 0.7, 1, 0.28),
-    -- The P on a pit entry gate. White, like a parking sign's P, so it reads
-    -- against the amber fill it sits on.
+    -- The P on a pit entry gate, white like a parking sign's.
     glyphPit     = ColorF(1, 1, 1, 0.9),
-    -- Demo derby arena. Its own entries rather than its own table: the derby
-    -- module keeps its state and its logic separate, but a color is a color,
-    -- and building these per frame is what this exists to stop.
+    -- Demo derby arena.
     derbyLive    = ColorF(0.9, 0.15, 0.15, 0.9),  -- live arena edges: red
     derbySetup   = ColorF(0.9, 0.6, 0.1, 0.8),    -- setup/finished edges: amber
     derbyLabelBg = ColorI(120, 0, 0, 180),
-    -- The arena WALL panels, and the pair of alphas that separate an editor
-    -- arena from a live one. The editor's is a surface you can see is there; the
-    -- live one is a haze you read the edge of. Anything much heavier than this
-    -- while driving turns a demo arena into a room with the lights off -- the
-    -- wall is a boundary marker, not scenery, and there is another car on the
-    -- far side of it that still has to be visible through it.
+    -- Arena walls: a visible surface in the editor, a faint haze live (a car on
+    -- the far side must still show through).
     derbyWallEdit = ColorF(0.95, 0.55, 0.1, 0.30),
     derbyWallLive = ColorF(0.9, 0.2, 0.15, 0.12),
-    -- Editor floor: the same near-transparent blue the authoring gate fill uses,
-    -- for the same reason -- show the extent without hiding the ground.
+    -- Editor floor: shows the extent without hiding the ground.
     derbyFloor   = ColorF(0.35, 0.65, 1, 0.10),
-    -- Start-slot outlines. Built here with everything else rather than per slot
-    -- per frame: three fixed colors selected by a condition is still three
-    -- ColorF a frame when it is done inside the draw loop.
+    -- Start-slot outlines.
     slotMine     = ColorF(0.2, 0.85, 0.35, 0.95),   -- the slot that is yours
     slotPole     = ColorF(1, 0.85, 0.2, 0.85),      -- P1
     slotOther    = ColorF(0.35, 0.65, 1, 0.75),     -- everyone else
   }
-  -- A stall's colors come as a set, picked by state. Built here so choosing
-  -- one per frame is a table lookup, not four ColorF.
+  -- A stall's colors as sets, picked by state with a table lookup.
   local P = PALETTE
   P.pitSets = {
     near  = { line = P.pit,    fill = P.pitFill,   low = P.pitWallLow, high = P.pitWallHigh, arrow = P.pitArrow },
@@ -198,24 +121,13 @@ local function palette()
   return PALETTE
 end
 
--- Per-gate geometry cache.
---
--- A gate's four corners are fixed by its placement and its dimensions, and a
--- placed gate never moves -- yet all four were recomputed, and four vec3
--- allocated, for every gate on every frame. On a twenty-gate circuit that is
--- ~100 tables a frame thrown straight at the collector, which was the single
--- largest source of GC pressure in the mod.
---
--- Keyed on the waypoint table with WEAK keys, so a gate that is deleted or
--- replaced takes its entry with it. Deliberately not stored on the waypoint
--- itself: editorSave serialises those tables verbatim, and a cache of vec3s
--- would end up in the saved route file.
+-- Per-gate geometry cache, so a steady frame allocates no vec3s (it was the
+-- largest source of GC pressure). WEAK keys, so a deleted gate takes its entry;
+-- not stored on the waypoint, which is serialised verbatim.
 local gateCache = setmetatable({}, { __mode = 'k' })
 
--- Rebuilt only when something the geometry depends on has actually moved. The
--- dimensions are re-derived every frame because they are two clamps and a table
--- read, and that is far cheaper than the allocation it guards against -- a
--- global width change has to be picked up without anything telling us about it.
+-- Rebuilt only when placement or dimensions moved. Dimensions are re-derived
+-- each frame (two clamps), so a size change needs no notification.
 local function gateGeometry(wp)
   local w, h, d = gateDims(wp)
   local g = gateCache[wp]
@@ -227,9 +139,7 @@ local function gateGeometry(wp)
 
   local hw = w * 0.5
   local rx, ry = wp.hy, -wp.hx          -- lateral (width) axis
-  -- corner(sr, up): center + lateral*sr*hw, then h ABOVE or d BELOW. The
-  -- vertical is no longer symmetric, so the two ends are named rather than
-  -- signed: `up` true is the top bar, false the bottom.
+  -- corner(sr, up): `up` true is the top bar (h above), false the bottom (d below).
   local function corner(sr, up)
     return vec3(wp.x + rx * sr * hw, wp.y + ry * sr * hw,
                 wp.z + (up and h or -d))
@@ -241,13 +151,9 @@ local function gateGeometry(wp)
     tl = corner(-1, true),  tr = corner(1, true),
   }
   g.mid = (g.tl + g.tr) * 0.5 + vec3(0, 0, 0.8)
-  -- The middle of the gate's own face. `mid` floats above the top edge, which is
-  -- right for an editor label sitting clear of the rectangle and wrong for a
-  -- driver's, where the words want to be ON the gate they describe.
+  -- The middle of the gate's face (`mid` floats above it, for editor labels).
   g.center = (g.bl + g.tr) * 0.5
-  -- The authoring direction arrow, cached with the corners for the same reason
-  -- they are: it is fixed by the gate's placement, and rebuilding four vec3 per
-  -- gate per frame is precisely the garbage this cache exists to stop.
+  -- The authoring direction arrow, cached with the corners.
   local ax, ay = wp.hx or 0, wp.hy or 1
   g.arrowBase = vec3(wp.x, wp.y, wp.z + 0.35)
   g.arrowTip  = vec3(wp.x + ax * 3.5, wp.y + ay * 3.5, wp.z + 0.35)
@@ -258,30 +164,18 @@ local function gateGeometry(wp)
   return g
 end
 
--- A gate, drawn for whoever is looking at it.
---
--- `authoring` is the editor's view of a checkpoint and a driver's view of one
--- are different jobs, not different systems. An admin laying out a circuit needs
--- to see the trigger itself -- how wide it is, how high it reaches, which number
--- it is, which way through it counts -- across the whole track at once. A driver
--- needs to know where the next gate is and nothing else; labels and a filled box
--- across the racing line are clutter at speed, which is what the gate poles
--- replace during a session.
---
--- Both read the same checkpoint. Only the drawing differs.
+-- A gate. `authoring`: the editor's full view (fill, label, direction arrow) of
+-- the same checkpoint a driver sees as poles.
 local function drawGate(wp, color, label, authoring)
   local g = gateGeometry(wp)
 
   if authoring then
-    -- The surface the crossing test actually uses, filled so its extent is
-    -- unmistakable, and translucent so the road underneath stays visible --
-    -- an admin is judging the gate against the track, not instead of it.
+    -- The crossing test's surface, filled and translucent.
     local p = palette()
     debugDrawer:drawQuadSolid(g.bl, g.br, g.tr, g.tl, p.fill)
   end
 
-  -- Verticals a touch thicker than the horizontals so the gate still reads as
-  -- a gate at distance.
+  -- Verticals thicker than the horizontals, so it reads as a gate at distance.
   debugDrawer:drawCylinder(g.bl, g.tl, TUNE.EDGE_RADIUS, color)
   debugDrawer:drawCylinder(g.br, g.tr, TUNE.EDGE_RADIUS, color)
   debugDrawer:drawCylinder(g.bl, g.br, TUNE.EDGE_RADIUS * 0.6, color)
@@ -291,34 +185,15 @@ local function drawGate(wp, color, label, authoring)
   debugDrawer:drawTextAdvanced(g.mid, String(label), p.text, true, false, p.textBg)
 
   if authoring then
-    -- Which way through the gate counts. A rectangle alone is symmetrical and
-    -- says nothing about direction, and a gate placed facing backwards is the
-    -- classic way to build a circuit that cannot be completed. All four points
-    -- come out of the cache above.
+    -- Which way through the gate counts: a rectangle alone is symmetrical.
     debugDrawer:drawCylinder(g.arrowBase, g.arrowTip, 0.10, color)
     debugDrawer:drawCylinder(g.arrowL, g.arrowTip, 0.10, color)
     debugDrawer:drawCylinder(g.arrowR, g.arrowTip, 0.10, color)
   end
 end
 
--- Starting grid markers: a flat slot outline on the ground with a short arrow
--- pointing the way the car will face, numbered from pole. Drawn while the
--- editor is visible and during the grid/countdown phases so drivers can see
--- where they are being placed.
-
--- Gate labels, built once per route rather than per gate per frame.
---
--- Every label was a fresh string every frame, and the joker ones were three
--- concatenations each. The text does not depend on anything that changes between
--- frames -- only on the gate's index and the length of its route -- except for
--- the two joker suffixes, which have exactly three states, so all three are
--- precomputed and selected by lookup.
---
--- SIX KINDS NOW, not two. The route and joker labels were cached and the four
--- authoring ones beside them were not, so an admin with the editor open still
--- paid a fresh string per checkpoint, branch gate, marker and pit stall on every
--- frame -- which is the exact cost this was written to remove, on the path that
--- has the most items on it.
+-- Gate labels, built once per route instead of a fresh string per gate per
+-- frame. Joker labels have three states, all precomputed.
 local labelCache = {
   routeLen = -1, jokerLen = -1,
   route = {}, joker = {}, alt = {}, branch = {}, marker = {}, pit = {}, slot = {},
@@ -344,10 +219,7 @@ local function routeLabel(i, n)
   return l
 end
 
--- A checkpoint that has branch gates, labeled with how many. Cached beside the
--- plain label and invalidated with it, plus the COUNT: adding a branch gate in
--- the editor has to change the label it decorates, and nothing else here would
--- notice.
+-- A checkpoint label with its branch count, invalidated by the count too.
 local function routeAltLabel(i, n, alts)
   local base = routeLabel(i, n)      -- runs first: it clears `alt` when stale
   if alts == 0 then return base end
@@ -359,8 +231,7 @@ local function routeAltLabel(i, n, alts)
   return e.s
 end
 
--- A branch gate names the CHECKPOINT it belongs to, so its label is a pure
--- function of that slot and never goes stale.
+-- A branch gate's label is a pure function of its slot.
 local function branchLabel(slot)
   local l = labelCache.branch[slot]
   if not l then
@@ -370,8 +241,7 @@ local function branchLabel(slot)
   return l
 end
 
--- A marker's label carries its symbol, which an admin can change on a placed
--- marker, so the kind is stored with the string and checked.
+-- A marker's label carries its symbol, which can change, so it is checked.
 local function markerLabel(i, kind)
   local e = labelCache.marker[i]
   if not e or e.kind ~= kind then
@@ -390,8 +260,7 @@ local function pitLabel(i)
   return l
 end
 
--- Two per slot, because which one is YOURS is the only thing that varies and it
--- varies by one suffix.
+-- Two per slot: plain, and yours.
 local function slotLabel(i, mine)
   local e = labelCache.slot[i]
   if not e then
@@ -420,13 +289,8 @@ local function jokerLabel(i, n, state)
   return set[state]
 end
 
--- Start-slot geometry cache, on gateCache's terms and for its reason.
---
--- A slot's outline, arrow and barbs are fixed by its placement, and the whole
--- set was rebuilt for every slot on every frame: nine vec3 and a closure each,
--- which on a twenty-four car grid is the largest allocator in the editor. The
--- slot dimensions are TUNE constants rather than per-item, so unlike a gate
--- there is nothing to re-derive: placement alone decides whether this is stale.
+-- Start-slot geometry cache, on gateCache's terms. Slot sizes are TUNE
+-- constants, so placement alone decides staleness.
 local slotCache = setmetatable({}, { __mode = 'k' })
 
 local function slotGeometry(sp)
@@ -445,9 +309,7 @@ local function slotGeometry(sp)
                 sp.z + 0.05)
   end
   local head = vec3(sp.x + fx * hl * 0.9, sp.y + fy * hl * 0.9, sp.z + 0.06)
-  -- Barbs swept back from the head, across the slot rather than along it, so the
-  -- arrow reads from above (which is where an admin building a grid is looking)
-  -- and from inside a car on the slot.
+  -- Barbs across the slot, readable from above and from the car.
   local barb = hl * 0.42
   g = {
     x = sp.x, y = sp.y, z = sp.z, hx = sp.hx, hy = sp.hy,
@@ -473,14 +335,7 @@ local function drawStartPosition(sp, index, mine)
   for i = 1, 4 do
     debugDrawer:drawCylinder(c[i], c[i % 4 + 1], 0.08, color)
   end
-  -- WHICH WAY THE CAR WILL FACE, and it needs a head to say so.
-  --
-  -- This was a bare cylinder down the middle of the slot, which draws the AXIS
-  -- and not the direction: a line from tail to head looks identical to one from
-  -- head to tail, so an admin laying out a grid could not tell a slot facing
-  -- down the track from one facing back up it until they drove onto it. Two
-  -- barbs off the head fix it, the same shape paint.glyph draws for the joker's
-  -- "take it" arrow. All four points come out of the cache above.
+  -- The arrow needs a head: a bare axis line looks the same both ways round.
   debugDrawer:drawCylinder(g.tail, g.head, 0.06, color)
   debugDrawer:drawCylinder(g.head, g.barbL, 0.06, color)
   debugDrawer:drawCylinder(g.head, g.barbR, 0.06, color)
@@ -491,71 +346,22 @@ end
 
 local function drawStartPositions()
   if #track.startPositions == 0 or not debugDrawer then return end
-  -- Editor-only furniture. These markers exist to lay out and check a grid, so
-  -- they are drawn only while the editor panel is open -- they used to render
-  -- for every racer, including drivers who can't edit anything. This is purely
-  -- a render gate: `startPositions` itself is untouched and still drives grid
-  -- placement (applyGridSlot), the slot count reported to the server, and the
-  -- saved layout, for every client whether the editor is open or not.
+  -- Editor furniture only, drawn while the editor is open. startPositions
+  -- itself still drives placement, the server count and the saved layout.
   if not edit.open then return end
-  -- Inside the editor, the same Hide/Show Gates toggle the checkpoints use.
+  -- Inside the editor, the Hide/Show Gates toggle applies.
   if not edit.visualize then return end
   for i, sp in ipairs(track.startPositions) do
     drawStartPosition(sp, i, session.gridSlot == i)
   end
 end
 
--- Gate visibility (Module 3). The checkpoint boxes are drawn by every client,
--- admin or not: during an active session (countdown / qualifying / race) the
--- drawing is unconditional, because a driver who cannot see the gates cannot
--- race. The Hide/Show Gates toggle only applies outside a session, where it
--- exists to keep the editor view clean.
-
--- The stock BeamNG race markers (scenario/race_marker) are gone.
---
--- They were the driver's view of a gate until drawPoleGate took that over, and
--- they had been dead code since: the only sync call passed editorView = true,
--- so the module resolved nothing, built nothing and ticked an empty table every
--- frame. They could not be made bright or solid enough to see, and could not be
--- widened either, because their spacing IS the gate's width and wider poles
--- would mark a target that does not score. drawPoleGate draws the same two-pole
--- shape out of the editor's own cylinders instead.
-
--- THE DRIVER'S VIEW OF THE GATE THEY ARE AIMING AT.
---
--- Reported live as "racers cannot see the default BeamNG checkpoints". The stock
--- poles cannot just be widened: their spacing IS the gate's width, so poles
--- further apart than the trigger would show a target that does not score.
---
--- Only the gate being aimed at plus the next one dimmed, never the whole
--- circuit. `derbyLive` suppresses it entirely: a checkpoint hanging over a
--- demolition derby is authoring debris.
--- TWO POLES, IN THE EDITOR'S OWN STYLE.
---
--- The stock markers are the right shape but could not be made bright enough, so
--- the shape is redrawn out of the editor's own cylinders: full opacity, this
--- mod's colors, the gate's own height, label floating between them.
---
--- TWO VERTICALS AND NOTHING ELSE. No top bar, because a hoop reads as something
--- to aim through at one height and what is marked is the LINE between the poles
--- at any height. No fill or bottom edge either: a bar at road height is a thing
--- to drive into.
--- Drawing helpers that are not a gate. ONE local, because this file sits at
--- Lua's 200-active-locals ceiling and three bare names did not fit: the failure
--- is not a warning, the file stops compiling and the whole mod is gone.
+-- Drawing helpers that are not a gate, on ONE local for the locals ceiling.
 local paint = {}
 
--- A CROSS or a TICK across a gate's face, for a joker whose state changes what
--- the driver must do.
---
--- Drawn rather than written because the two states are read at speed from a
--- distance, and "JOKER 1/2: closed" is a sentence at the moment a driver has
--- least attention to give a sentence. Sized off the gate but capped, so a
--- twenty-meter gate gets a symbol rather than scaffolding across the road.
--- The glyph's points hang off the GATE's cache rather than one of their own:
--- they are derived from the same corners, they go stale on exactly the same
--- terms, and gateGeometry already rebuilds `g` from scratch when it does. Six
--- points, which is the most any one glyph uses.
+-- The joker state glyph across a gate's face: drawn, not written, because it is
+-- read at speed. Sized off the gate, capped. Its points hang off the gate's own
+-- cache and go stale with it.
 local function glyphPoints(g)
   local gp = g.glyph
   if gp then return gp end
@@ -563,7 +369,7 @@ local function glyphPoints(g)
   if half > 2.2 then half = 2.2 end
   if half < 0.6 then half = 0.6 end
   local c = g.center
-  -- The gate's own axes, so the glyph lies IN the gate's plane at any angle.
+  -- The gate's own axes: the glyph lies in the gate's plane.
   local rx, ry = g.hy, -g.hx
   local function at(sr, su)
     return vec3(c.x + rx * sr * half, c.y + ry * sr * half, c.z + su * half)
@@ -578,7 +384,7 @@ local function glyphPoints(g)
     pBase = at(-0.5, -1), pTop = at(-0.5, 1), pTopR = at(0.2, 1),
     pUpper = at(0.55, 0.7), pLower = at(0.55, 0.35), pMidR = at(0.2, 0.05),
     pMid = at(-0.5, 0.05),
-    -- A label clear of the glyph, so the words do not sit across the letter.
+    -- A label clear of the glyph.
     label = at(0, 1.5),
   }
   g.glyph = gp
@@ -590,10 +396,7 @@ function paint.glyph(g, kind)
   local at = glyphPoints(g)
   local r = TUNE.POLE_RADIUS * 0.8
   if kind == 'open' then
-    -- AN ARROW UP: take it. Faded hard on purpose, because unlike the cross and
-    -- the tick this one is drawn on a gate the driver is about to aim through,
-    -- and the whole point of the joker poles is that you can see the road
-    -- between them.
+    -- An arrow up: take it. Faded hard, on a gate the driver aims through.
     debugDrawer:drawCylinder(at.down, at.up, r * 0.8, p.glyphOpen)
     debugDrawer:drawCylinder(at.up, at.armL, r * 0.8, p.glyphOpen)
     debugDrawer:drawCylinder(at.up, at.armR, r * 0.8, p.glyphOpen)
@@ -605,8 +408,7 @@ function paint.glyph(g, kind)
     debugDrawer:drawCylinder(at.tickA, at.tickB, r, p.glyphDone)
     debugDrawer:drawCylinder(at.tickB, at.tr, r, p.glyphDone)
   elseif kind == 'pit' then
-    -- A P: the pit entry. Yellow alone did not say "pits" to anyone who had not
-    -- been told.
+    -- A P for the pit entry: yellow alone did not say "pits".
     local w = r * 1.2
     debugDrawer:drawCylinder(at.pBase, at.pTop, w, p.glyphPit)
     debugDrawer:drawCylinder(at.pTop, at.pTopR, w, p.glyphPit)
@@ -617,36 +419,11 @@ function paint.glyph(g, kind)
   end
 end
 
--- A DIRECTION MARKER: a translucent panel with its symbol repeated across it.
---
--- REPEATED, because the panel is as wide as the admin drew it and a stage
--- marker gets drawn wide -- one arrow floating in the middle of a forty meter
--- board is a dot, and a single arrow STRETCHED to forty meters is a line with
--- a bend in it. A fixed-size symbol tiled across the span keeps the same shape
--- at every width, which is what a real sign does.
---
--- Built from segments rather than text: debugDrawer text does not shrink with
--- distance the way geometry does, so a glyph sized to read in the editor is a
--- speck at the two hundred meters where a marker actually has to work.
--- MARKER GEOMETRY, BUILT ONCE AND CACHED.
---
--- Every mark is a filled polygon rather than a line, which is the whole
--- difference between a wireframe and a painted road marking -- but it costs
--- four vertices per stroke instead of two, and a board can carry sixty marks.
--- Rebuilding that per frame would be exactly the garbage the gate cache was
--- written to stop, so it is built when the marker CHANGES and walked when it
--- does not.
---
--- Keyed on the marker table itself and invalidated by comparing the fields that
--- can move it, the same way gateGeometry does.
--- Module-local, NOT hung off the shared marker table.
---
--- It lived on that table when this code sat in the extension, where a table was
--- the only namespace going. Here it would be a trap: this file's locals stay nil
--- until init runs, so a write onto `marker` at LOAD time indexes a nil and the
--- module dies on require. Which is the honest signal -- geometry and its cache
--- are things the RENDERER knows, nothing outside this file ever called either,
--- and the contract above promises this module only reads host state.
+-- A DIRECTION MARKER: a translucent board with its symbol TILED across it, so
+-- the shape holds at any width (one arrow on a 40 m board is a dot). Filled
+-- polygons, built when the marker changes and cached (a board can carry sixty
+-- marks). Module-local, not on the shared marker table: this module's locals
+-- are nil until init, so a load-time write onto `marker` would kill require.
 local markerCache = setmetatable({}, { __mode = 'k' })
 
 local function markerGeometry(wp)
@@ -671,18 +448,12 @@ local function markerGeometry(wp)
   g = { w = w, h = h, d = d, kind = kind,
         x = wp.x, y = wp.y, z = wp.z, hx = wp.hx, hy = wp.hy,
         board = { at(-hw, bot), at(hw, bot), at(hw, top), at(-hw, top) },
-        -- Where the editor's numbered label floats. Cached with the rest so the
-        -- authoring pass allocates nothing per marker per frame.
+        -- The editor label's position, cached with the rest.
         label = vec3(wp.x, wp.y, wp.z + 1.2),
         tris = {}, edge = {} }
 
-  -- One stroke as a filled quad, emitted as two triangles.
-  --
-  -- Both ends are EXTENDED by half the thickness before the quad is built. Without
-  -- that, the two arms of a chevron meet at a V with a wedge missing from the
-  -- outside of the joint, which at any distance reads as a broken mark. Extending
-  -- overshoots the corner slightly instead, and an overshoot at a mitre is
-  -- invisible where a notch is not.
+  -- One stroke as a filled quad (two triangles), both ends EXTENDED by half the
+  -- thickness so a chevron's mitre overshoots rather than notches.
   local function stroke(into, x1, y1, x2, y2, halfT)
     local dx, dy = x2 - x1, y2 - y1
     local len = math.sqrt(dx * dx + dy * dy)
@@ -699,24 +470,13 @@ local function markerGeometry(wp)
 
   local glyph = marker.GLYPH[kind] or marker.GLYPH.right
   local function place(cx, cv, size, ratio)
-    -- Thickness scales with the mark, so a big sign gets a bold mark rather
-    -- than a large thin one.
-    --
-    -- The ratio is NOT shared between tiled marks and shapes, and sharing it was
-    -- the bug that made the U turn and the P unreadable. A shape is placed at
-    -- min(w, span) * 0.42, several times the size of a 3 m tiled cell, so one
-    -- ratio gave it a stroke that grew with it: on a 12 m board the dark
-    -- outline came out 3.2 m thick inside a 10 m mark, wider than the gaps the
-    -- glyph is made of, and every shape collapsed into a blob. Shapes get the
-    -- thinner ratio so the outline lands near the chevron's in METERS instead
-    -- of in fractions of itself.
+    -- Thickness scales with the mark. Shapes take their own thinner ratio: a
+    -- shared one gave a 10 m U turn a 3.2 m outline and it collapsed into a blob.
     local t = size * ratio
     for k = 1, #glyph do
       local q = glyph[k]
-      -- The outline goes down FIRST and slightly fatter. Marks are drawn over
-      -- whatever the map happens to be -- pale gravel, dark tarmac, grass at
-      -- noon -- and a single flat color disappears against one of them. A dark
-      -- border means the mark carries its own contrast everywhere.
+      -- The dark outline goes down first, slightly fatter, so the mark carries
+      -- its own contrast on any ground.
       stroke(g.edge, cx + q[1] * size, cv + q[2] * size,
                      cx + q[3] * size, cv + q[4] * size, t * TUNE.MARKER_EDGE)
       stroke(g.tris, cx + q[1] * size, cv + q[2] * size,
@@ -742,8 +502,7 @@ local function markerGeometry(wp)
       end
     end
   else
-    -- A U turn or a fork is a diagram, not a repeating mark: one of them,
-    -- centerd, as large as the board allows.
+    -- A shape is a diagram: one, centered, as large as the board allows.
     place(0, (top + bot) * 0.5, math.min(w, span) * 0.42, TUNE.MARKER_SHAPE_STROKE)
   end
 
@@ -754,23 +513,15 @@ local function markerGeometry(wp)
 end
 
 -- A direction marker: a translucent board carrying filled, outlined marks.
--- `lineCol` rather than `color`: the engine's packed-color builder is a GLOBAL
--- called color(), and a parameter of that name shadows it inside this function.
--- That is how the first version came to hand a ColorF to drawTriSolid.
+-- `lineCol`, not `color`: that would shadow the engine's global color().
 function paint.markerPanel(wp, lineCol, fill)
   local g = markerGeometry(wp)
   local p = palette()
 
-  -- The board. Translucent so the road behind it stays visible: this is
-  -- signage, and a sign a driver cannot see through is an obstacle.
+  -- The board, translucent: a sign a driver cannot see through is an obstacle.
   debugDrawer:drawQuadSolid(g.board[1], g.board[2], g.board[3], g.board[4], fill)
 
-  -- Outline first, mark on top. Both are solid fills; the only difference is
-  -- that the outline was built fatter.
-  --
-  -- Skipped entirely when the packed colors are missing, which is the whole
-  -- fallback: a build with no global color() draws the board, the posts and
-  -- nothing else rather than throwing per triangle per frame.
+  -- Outline first, then the mark. Skipped without packed colors (see palette).
   if p.markerFace and p.markerEdgeP then
     for i = 1, #g.edge do
       local t = g.edge[i]
@@ -782,32 +533,19 @@ function paint.markerPanel(wp, lineCol, fill)
     end
   end
 
-  -- Edge posts, so the extent of the board reads at distance and in flat light
-  -- where a translucent fill alone disappears.
+  -- Edge posts, so the board's extent reads in flat light.
   debugDrawer:drawCylinder(g.postA, g.postB, TUNE.POLE_RADIUS, lineCol)
   debugDrawer:drawCylinder(g.postC, g.postD, TUNE.POLE_RADIUS, lineCol)
 end
 
--- THE PIT STALL IS A BOX ON THE GROUND WITH SEE-THROUGH WALLS.
---
--- Third shape, and each earlier one failed a live test for a different reason.
--- A translucent floor over tarmac read as tarmac. Two poles could be seen but
--- said nothing about where to stop, and the box they stood for inherited a
--- checkpoint's width, 20 to 40 m across the lane. Now: a car-sized box (its own
--- width and length, pit.dims), an opaque outline like a grid slot, walls on
--- both sides and the front that fade upward, the rear left open as the way in,
--- a white stop bar at the front edge, and the whole box green while the car is
--- in it.
---
--- Geometry cached per stall like a gate's, rebuilt only when it moves or is
--- resized: a driver draws stalls every frame and the budget there is zero
--- allocations.
+-- THE PIT STALL: a car-sized box (pit.dims) on the ground, opaque outline,
+-- walls on both sides and the front fading upward, the rear open as the way in,
+-- a white stop bar, and green while the car is in it. (A translucent floor
+-- read as tarmac; poles did not say where to stop.) Geometry cached per stall.
 local pitCache = setmetatable({}, { __mode = 'k' })
 
--- Ground under (x, y), probed from just above the stall, or nil. A stall placed
--- by driving sits at the car's origin, half a meter up, and a box drawn there
--- floats. Short range, so a garage roof overhead is never found. Runs only on a
--- geometry rebuild.
+-- Ground under (x, y), probed from just above (a driven stall floats half a
+-- meter up). Short range, so a roof is never found. Rebuilds only.
 local function stallGround(x, y, z)
   if type(castRayStatic) ~= 'function' then return nil end
   local ok, dist = pcall(castRayStatic, vec3(x, y, z + 1), vec3(0, 0, -1), 3)
@@ -830,8 +568,7 @@ local function pitGeometry(wp)
   local rx, ry = fy, -fx
   local base = stallGround(wp.x, wp.y, wp.z) or wp.z
   local H = TUNE.PIT_WALL_H
-  -- Each corner stands on its own ground, so a box on a sloped lane lies on it.
-  -- Returns the corner at three heights: floor, band split, wall top.
+  -- Each corner on its own ground, at floor, band split and wall top.
   local function corner(sr, sf)
     local x = wp.x + rx * sr * hw + fx * sf * hl
     local y = wp.y + ry * sr * hw + fy * sf * hl
@@ -843,8 +580,7 @@ local function pitGeometry(wp)
   g.br, g.brM, g.brT = corner( 1, -1)
   g.fl, g.flM, g.flT = corner(-1,  1)
   g.fr, g.frM, g.frT = corner( 1,  1)
-  -- The chevron: which way the car faces when it stops. Sized off the box, so
-  -- it stays inside it whatever the stall's shape.
+  -- The chevron, sized off the box.
   local cz = base + 0.06
   local tip  = vec3(wp.x + fx * hl * 0.55, wp.y + fy * hl * 0.55, cz)
   local barb = math.min(hw * 0.6, hl * 0.4)
@@ -852,7 +588,6 @@ local function pitGeometry(wp)
   g.tail  = vec3(wp.x - fx * hl * 0.45, wp.y - fy * hl * 0.45, cz)
   g.barbL = vec3(tip.x - fx * hl * 0.4 + rx * barb, tip.y - fy * hl * 0.4 + ry * barb, cz)
   g.barbR = vec3(tip.x - fx * hl * 0.4 - rx * barb, tip.y - fy * hl * 0.4 - ry * barb, cz)
-  -- The editor's label, over the box.
   g.label = vec3(wp.x, wp.y, base + H + 0.6)
   -- The retired two-pole marker's points, for paint.pitPoles.
   g.ml  = vec3(wp.x + rx * hw, wp.y + ry * hw, wp.z + 0.05)
@@ -863,21 +598,19 @@ local function pitGeometry(wp)
   return g
 end
 
--- The stall's floor alone, one draw. Unused: pitBox draws it. Kept for a lane
--- that ever needs a cheaper far stall.
+-- The floor alone, one draw. Unused (pitBox draws it); kept for a cheaper far
+-- stall.
 function paint.pitFloor(wp)
   local g = pitGeometry(wp)
   debugDrawer:drawQuadSolid(g.bl, g.br, g.fr, g.fl, palette().pitFill)
 end
 
--- One stall. `set` is a palette().pitSets entry. `full` is the stall a driver
--- is aiming at (and every stall in the editor): two-band walls, the white stop
--- bar and the chevron, 14 draws. Otherwise one band and no markings, 8 draws,
--- which still reads as a box down the lane.
+-- One stall. `set` is a palette().pitSets entry. `full` (the aimed stall, and
+-- every editor stall): two-band walls, stop bar, chevron, 14 draws; else 8.
 function paint.pitBox(wp, set, full)
   local g = pitGeometry(wp)
   debugDrawer:drawQuadSolid(g.bl, g.br, g.fr, g.fl, set.fill)
-  -- The outline, on the ground like a grid slot. The rear edge is the way in.
+  -- The outline on the ground; the rear edge is the way in.
   debugDrawer:drawCylinder(g.bl, g.br, 0.08, set.line)
   debugDrawer:drawCylinder(g.bl, g.fl, 0.08, set.line)
   debugDrawer:drawCylinder(g.br, g.fr, 0.08, set.line)
@@ -889,10 +622,9 @@ function paint.pitBox(wp, set, full)
     return
   end
   local p = palette()
-  -- Stop here: the nose goes up to this and no further.
+  -- The stop bar.
   debugDrawer:drawCylinder(g.fl, g.fr, 0.14, p.pitStop)
-  -- Sides and front, dense at the ground and faint at the top. No rear wall:
-  -- a wall across the way in reads as a barrier to drive around.
+  -- Sides and front, fading upward. No rear wall: it would read as a barrier.
   debugDrawer:drawQuadSolid(g.bl,  g.fl,  g.flM, g.blM, set.low)
   debugDrawer:drawQuadSolid(g.blM, g.flM, g.flT, g.blT, set.high)
   debugDrawer:drawQuadSolid(g.br,  g.fr,  g.frM, g.brM, set.low)
@@ -914,9 +646,8 @@ function paint.pitPoles(wp, color)
   debugDrawer:drawCylinder(g.ml, g.mr, r * 0.6, color)
 end
 
--- `fill` and `glyph` are for the joker and nothing else. An ordinary checkpoint
--- stays two bare poles: it is passed at speed, it means one thing, and anything
--- painted across it is one more object between a driver and the corner.
+-- `fill` and `glyph` are for the joker and pit entry. An ordinary checkpoint
+-- is two bare poles: it is passed at speed and means one thing.
 local function drawPoleGate(wp, color, label, fill, glyph)
   local g = gateGeometry(wp)
   local r = TUNE.POLE_RADIUS
@@ -926,89 +657,49 @@ local function drawPoleGate(wp, color, label, fill, glyph)
   if glyph then paint.glyph(g, glyph) end
   if label then
     local p = palette()
-    -- ON the gate, not floating above it. A label at `mid` hangs over the top
-    -- edge, which reads as a sign near the gate rather than a fact about it, and
-    -- from a car it can sit against the sky with nothing behind it.
+    -- On the gate, not above it, where it reads as a nearby sign.
     local at = (glyph == 'pit' and glyphPoints(g).label) or (fill and g.center or g.mid)
     debugDrawer:drawTextAdvanced(at, String(label), p.text, true, false, p.textBg)
   end
 end
 
+-- branch.eachAt's callback, built once rather than every frame.
+local function poles(g, color) drawPoleGate(g, color, nil) end
+
 local function drawDriverGate(derbyLive)
   if not debugDrawer or not edit.visualize then return end
   if derbyLive or session.spectatorLock then return end
   if #track.route == 0 then return end
-  -- EVERY PHASE, not just a running session. A driver who loads a track and
-  -- looks at it wants to see where the gates are as much as one racing through
-  -- them, and the joker LABEL is drawn on those terms already, so gating the
-  -- poles on the phase left a label floating over an invisible gate until the
-  -- lights went out. The stock markers this replaced had no phase gate either.
+  -- Every phase, not only a session: a driver looking over a track wants the
+  -- gates too.
   local p = palette()
   local n = #track.route
 
-  -- NO TEXT ON ANY GATE, INCLUDING THE JOKER. The poles say where a gate is and
-  -- the color says which one is next; a driver reading "CP 3" at speed learns
-  -- nothing they can act on, and it is one more thing painted across the racing
-  -- line.
-  --
-  -- The joker was the last exception, on the grounds that its STATE changes what
-  -- a driver must do -- owed, taken, or forbidden on lap 1 -- and getting it
-  -- wrong is a disqualification. That reasoning still holds; the words were just
-  -- the wrong way to carry it. The glyph says the same thing (a cross for shut, a
-  -- tick for done, an arrow for open) and says it at a glance, where
-  -- "JOKER 1/2 (lap 1: closed)" is a sentence to read at racing speed. The fill
-  -- and the symbol stay, the sentence goes.
-  --
-  -- The editor still numbers and labels everything, joker included: that is where
-  -- the words are worth reading, and where there is time to read them.
-  --
-  -- ALL of a checkpoint's gates are drawn, not one of them. A branch gate is
-  -- another way through the same checkpoint, so a driver has to be able to see
-  -- both and pick; showing one would be choosing for them. On a head-on oval the
-  -- two sit at opposite ends of the circuit and only one is ever in view anyway.
-  local function poles(g, color) drawPoleGate(g, color, nil) end
+  -- NO TEXT ON ANY GATE: the poles say where and the color says which. The
+  -- joker carries its state as a glyph instead (cross, tick, arrow). The editor
+  -- still labels everything. ALL of a checkpoint's gates are drawn: a branch
+  -- gate is the driver's choice.
   local a = session.armedWp
   if a < 1 or a > n then a = 1 end
   branch.eachAt(a, poles, p.armed)
 
-  -- The ones after it, dimmed, so a corner reads before it arrives. Skipped on a
-  -- one-gate route, where "the next one" is the one already drawn.
-  --
-  -- AND SKIPPED ON THE LAST LAP ONCE THE LINE IS THE ARMED GATE. The look-ahead
-  -- wraps -- the gate after the start/finish is CP 1 -- and on the final lap
-  -- that is CP 1 of a lap nobody is going to drive: crossing the line ends this
-  -- driver's race. Drawing it lights a gate on track that means nothing, at the
-  -- exact moment a driver is racing hardest and least wants to be asked to work
-  -- out which of two lit gates is the one that matters.
-  --
-  -- Only the wrap is suppressed. Everywhere else on the last lap the look-ahead
-  -- is as useful as it is on any other, so `a == n` is the whole condition.
+  -- The gate after, dimmed. Skipped on a one-gate route, and on the last lap
+  -- when the line is armed: the wrap would light CP 1 of a lap nobody drives.
   local lastLap = session.phase == 'racing' and not track.pointToPoint
     and session.totalLaps > 0 and session.localLap >= session.totalLaps
   if n > 1 and not (lastLap and a == n) then
     branch.eachAt(a % n + 1, poles, p.routeNext or p.route)
   end
 
-  -- MARKERS, ALL OF THEM, ALWAYS.
-  --
-  -- Unlike a checkpoint there is no "next" marker to highlight and nothing to
-  -- arm: a sign is useful precisely when the driver has not reached it yet, so
-  -- there is no look-ahead window to limit this to. They are cheap -- a quad,
-  -- a few segments and two posts each -- and a stage carries a handful.
-  --
-  -- Drawn for a driver as well as in the editor, which is the whole reason they
-  -- exist: the editor pass above adds numbering and picks up the nudge
-  -- selection, and this one is the sign as a driver sees it.
+  -- Markers, all of them, always: there is no "next" sign. The editor pass
+  -- draws them with numbers instead.
   if not edit.open then
     for _, wp in ipairs(marker.list) do
       paint.markerPanel(wp, p.markerLine, p.markerFill)
     end
   end
 
-  -- The joker and the nearest pit stall, in the same style and the same colors
-  -- they have always had. They used to be the stock markers' job (slots 3 and 4)
-  -- and are drawn here now so a track has ONE checkpoint visual rather than two
-  -- that do not match.
+  -- The joker and the pit lane, in the same style.
   if session.jokerEnabled and #track.jokerRoute > 0 then
     local j = session.jokerArmed
     if j < 1 or j > #track.jokerRoute then j = 1 end
@@ -1016,11 +707,8 @@ local function drawDriverGate(derbyLive)
     if wp then
       local state = session.jokerTaken and 'used'
         or ((sessionRunning() and jokerClosed()) and 'closed' or 'open')
-      -- The joker is the one gate whose STATE changes what a driver must do, so
-      -- it is the one gate that earns a fill and a symbol. NO LABEL: the glyph
-      -- carries the state on its own and carries it faster (see the note above),
-      -- so the text was a sentence competing with the picture that had already
-      -- said it. `jokerLabel` is still what the editor draws.
+      -- The joker's state changes what a driver must do, so it earns a fill
+      -- and a glyph (no label).
       local glyph = (state == 'used' and 'done')
         or (state == 'closed' and 'shut')
         or 'open'
@@ -1028,21 +716,12 @@ local function drawDriverGate(derbyLive)
         session.jokerTaken and p.jokerUsedFill or p.jokerFill, glyph)
     end
   end
-  -- THE LANE'S MOUTH, AND THE LANE ITSELF ONLY ONCE YOU ARE IN IT.
-  --
-  -- A lane of stalls is eight draws each (fourteen for the nearest) and used to
-  -- be on screen for the whole race, off to the side, for something a driver
-  -- uses once. So a track with an ENTRY GATE shows that gate while racing and
-  -- nothing else; the stalls appear behind it. On a twelve-stall lane that is a
-  -- hundred draws a frame down to three until somebody actually pits.
-  --
-  -- A track WITHOUT an entry gate keeps every stall on screen, exactly as
-  -- before. An existing layout must not go blank because of a field it has
-  -- never heard of.
+  -- With an ENTRY GATE only that gate shows while racing; the stalls appear
+  -- once in the lane (a hundred draws down to three). A track without one shows
+  -- every stall, as before.
   local gated = #track.pitEntry > 0
   if gated and not pit.inLane then
-    -- Racing. One gate at the mouth: poles, a translucent panel and a big P.
-    -- No words: the P says pits on its own, and drivers asked for the text off.
+    -- One gate at the mouth: poles, a panel and a big P, no words.
     for _, wp in ipairs(track.pitEntry) do
       drawPoleGate(wp, p.pit, nil, p.pitFill, 'pit')
     end
@@ -1056,9 +735,7 @@ local function drawDriverGate(derbyLive)
         if d < bestD then best, bestD = i, d end
       end
     end
-    -- Every stall as a box; the nearest in full, with its stop bar and chevron,
-    -- and GREEN once the car is inside it or serving its stop there. That is
-    -- the answer to "am I in the box", given before the car has stopped.
+    -- Every stall; the nearest in full, GREEN once the car is in it.
     local sets = p.pitSets
     for i, wp in ipairs(track.pitRoute) do
       if i ~= best then paint.pitBox(wp, sets.far, false) end
@@ -1068,8 +745,7 @@ local function drawDriverGate(derbyLive)
       local inBox = pit.active or (ppos ~= nil and pit.inside(near, ppos))
       paint.pitBox(near, inBox and sets.inbox or sets.near, true)
     end
-    -- The way out, drawn only from inside, so it is never furniture on the
-    -- racing line.
+    -- The way out, drawn only from inside the lane.
     if gated then
       for _, wp in ipairs(track.pitExit) do
         drawPoleGate(wp, p.pitFar, 'PIT OUT', p.pitFill, nil)
@@ -1078,27 +754,22 @@ local function drawDriverGate(derbyLive)
   end
 end
 
--- Is this the gate the mouse has hold of? Only ever true for the list the
--- editor is actually on, so a slot 2 selection on the grid does not light up
--- checkpoint 2 as well.
+-- Is this the gate the mouse holds? Only for the list being edited.
 local function nudgeSelected(list, i)
   return nudge.on and nudge.sel == i and nudge.list == list
 end
 
 local function drawGates(derbyLive)
   if not debugDrawer then return end
-  -- The full circuit of numbered rectangles is the EDITOR's view and only the
-  -- editor's. A driver gets drawDriverGate above: the gate they are aiming at
-  -- and the one after it, which is what they can act on. `visualize` still hides
-  -- both for an admin who wants the unobstructed view while placing gates.
+  -- The full numbered circuit is the EDITOR's view; a driver gets
+  -- drawDriverGate.
   if not (edit.open and session.isAdmin) then
     drawDriverGate(derbyLive)
     return
   end
   if not edit.visualize then return end
   local authoring = true
-  -- Still needed below: which gate is armed, and whether the joker is open,
-  -- only mean anything while a session is under way.
+  -- Which gate is armed, and the joker state, only mean anything in a session.
   local active = sessionRunning() or session.phase == 'countdown' or session.phase == 'grid'
   local p = palette()
 
@@ -1112,21 +783,15 @@ local function drawGates(derbyLive)
     else
       color = p.route
     end
-    -- A checkpoint with branch gates is labeled with how many, so an admin can
-    -- see at a glance which corners are shared and which are taken two ways.
+    -- Labeled with its branch count.
     local alts = branch.bySlot[i]
     local label = routeAltLabel(i, n, alts and #alts or 0)
     if nudgeSelected(track.route, i) then color = p.nudged end
     drawGate(wp, color, label, authoring)
   end
 
-  -- Branch gates: cyan, so they never read as part of the main lap, and labeled
-  -- with the CHECKPOINT they belong to rather than their position in this list --
-  -- a branch gate is not a checkpoint of its own, it is the other way of taking
-  -- one that already exists, and the number has to say so.
-  --
-  -- Armed green on the same terms as its checkpoint, because it genuinely is
-  -- armed: crossing it clears the slot exactly as the main gate would.
+  -- Branch gates: cyan, labeled with the CHECKPOINT they serve, and armed green
+  -- with it (crossing one clears the slot).
   for gi, g in ipairs(branch.list) do
     local slot = tonumber(g.slot) or 0
     local color = p.branch or p.joker
@@ -1135,45 +800,26 @@ local function drawGates(derbyLive)
     drawGate(g, color, branchLabel(slot), authoring)
   end
 
-  -- Pit stalls. Amber, and labeled as stalls rather than numbered gates: they
-  -- are not part of the checkpoint sequence and must not look as though they
-  -- are. Editor only -- a driver gets a pole on the nearest one instead.
-  -- Direction markers. Drawn in the editor with a number, so an admin can tell
-  -- the panel's list from what is on the ground.
+  -- Direction markers, numbered to match the panel's list.
   for i, wp in ipairs(marker.list) do
     local col = nudgeSelected(marker.list, i) and p.nudged or p.markerLine
     paint.markerPanel(wp, col, p.markerFill)
-    -- The height here is a fixed 1.2 above the marker. It used to add
-    -- gateDims(wp) * 0 -- three clamps and several table reads per marker per
-    -- frame, multiplied by zero.
     local g = markerGeometry(wp)
     debugDrawer:drawTextAdvanced(g.label, String(markerLabel(i, wp.kind)),
       p.text, true, false, p.textBg)
   end
 
   for i, wp in ipairs(track.pitRoute) do
-    -- The same box a driver sees, in full, so the size being set is the size
-    -- they get. Magenta outline when Place mode has hold of it.
+    -- Pit stalls: the same box a driver sees, so the size set is the size got.
     local sets = p.pitSets
     paint.pitBox(wp, nudgeSelected(track.pitRoute, i) and sets.sel or sets.near, true)
     debugDrawer:drawTextAdvanced(pitGeometry(wp).label, String(pitLabel(i)),
       p.text, true, false, p.textBg)
   end
 
-  -- THE LANE'S MOUTH AND ITS EXIT, IN THE EDITOR.
-  --
-  -- Drawn here as well as in the driver path, and forgetting this is what made
-  -- the first cut look broken: an admin placed an entry gate, the panel counted
-  -- it, the list showed its coordinates and its size, and absolutely nothing
-  -- appeared on the ground. The driver path hides these behind "am I in the
-  -- lane", which is never true while editing.
-  --
-  -- Full gates rather than the stall's poles, because that is what they are:
-  -- something the car drives THROUGH, not something it stops in.
-  -- The label goes THROUGH drawPoleGate rather than being drawn here.
-  -- gateGeometry returns corners and nothing else: there is no `label` point on
-  -- it, so positioning the text by hand meant handing drawTextAdvanced a nil
-  -- and finding out in game. drawPoleGate already places a gate's label.
+  -- The lane's mouth and exit in the editor too (the driver path hides them
+  -- outside the lane, which while editing is always). Labels go through
+  -- drawPoleGate: gateGeometry has no label point.
   for i, wp in ipairs(track.pitEntry) do
     local col = nudgeSelected(track.pitEntry, i) and p.nudged or p.pit
     drawPoleGate(wp, col, 'PIT IN ' .. i, p.pitFill, 'pit')
@@ -1183,9 +829,7 @@ local function drawGates(derbyLive)
     drawPoleGate(wp, col, 'PIT OUT ' .. i, p.pitFill, nil)
   end
 
-  -- Joker route: violet, so it never reads as part of the main lap. The next
-  -- joker gate lights up green like the main route, and the whole set grays out
-  -- once the joker has been used (or while it is still forbidden on lap 1).
+  -- Joker route: violet; the next gate green; greyed once used or while shut.
   local jn = #track.jokerRoute
   local state = session.jokerTaken and 'used'
     or ((active and jokerClosed()) and 'closed' or 'open')
@@ -1203,34 +847,15 @@ local function drawGates(derbyLive)
   end
 end
 
--- ===========================================================================
--- DEMO DERBY: its own module now
--- ===========================================================================
--- Nine hundred lines of it used to sit here in a `do` block. It moved out
--- because this file reached Lua's 200 active-locals ceiling exactly, where
--- the next `local` anybody added ANYWHERE stopped the whole mod compiling,
--- and the derby was the cleanest seam in the file: its own state, its own
--- server events, its own guihooks channels, its own editor.
---
--- What it needs from here is handed over ONCE, below. Mutable scalars go as
--- getters rather than values: `phase` captured at load is whatever the phase
--- happened to be at load, forever.
-
 -- ---------------------------------------------------------------------------
 -- What the extension calls
 -- ---------------------------------------------------------------------------
--- Five names, where the file previously reached into fifteen. Everything else
--- above is this module's own business.
 R.palette            = palette
 R.drawGates          = drawGates
 R.drawStartPosition  = drawStartPosition
 R.drawStartPositions = drawStartPositions
 
--- Gate labels are built once per route and cached. The extension invalidates
--- them when the route CHANGES SHAPE in a way the label text depends on --
--- switching between circuit and point-to-point, which changes what the last
--- gate is called. Exposed as a function rather than as the cache table: the
--- caller is saying "these are stale", not reaching into a data structure.
+-- Invalidate the cached gate labels (circuit/sprint changes the last gate's).
 function R.invalidateLabels()
   labelCache.route = {}
 end

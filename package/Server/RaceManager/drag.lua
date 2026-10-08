@@ -1,69 +1,34 @@
 -- Race Manager: DRAG RACING, as its own module.
 --
--- A tournament ladder run down a drag strip: its own state tables, its own
--- event names (RM_Drag*), its own broadcast channel (RM_DragUpdate), its own
--- persistence file and its own results export. Nothing here reads or writes the
--- circuit racing state machine, so a ladder can never disturb qualifying or a
--- race and vice versa. Same isolation the demo derby keeps, for the same
--- reasons and by the same means.
+-- A tournament ladder down a drag strip: its own state, events (RM_Drag*),
+-- broadcast channel (RM_DragUpdate), persistence and results, isolated from
+-- the racing state machine as the derby is (and for Lua's 200-locals ceiling).
 --
--- WHY IT IS A MODULE AND NOT A SECTION OF main.lua. That file sits against
--- Lua's hard limit of 200 locals in the main chunk, where the next `local`
--- anybody adds stops the plugin compiling and the server starts without it. A
--- required sibling gets its own budget. BeamMP puts each plugin folder on its
--- own package.path, which is how derby.lua already loads.
+-- THE STRIP IS THE LOADED TRACK LAYOUT: a point-to-point layout is driven once,
+-- its LAST gate is the finish (the client detects crossings) and its START
+-- POSITIONS are the lanes. No strip editor: a two-gate sprint stage with two to
+-- eight start positions is a drag strip. This file owns the tournament; the
+-- timing arrives from the clients that measured it.
 --
--- THE STRIP IS THE LOADED TRACK LAYOUT, and that is the whole reuse:
---
---   * a point-to-point layout is already "driven once, first gate to last",
---     which is what a drag strip is
---   * its LAST gate is the finish line, and the client already knows how to
---     detect a crossing (it has the physics; this file does not)
---   * its START POSITIONS are the lanes, and the client already knows how to
---     teleport a car onto one and freeze it there
---
--- So there is no strip editor here. An admin builds a two-gate sprint stage
--- with two to eight start positions in the track editor, saves it, loads it,
--- and it is a drag strip. Nothing in this file authors geometry.
---
--- WHAT THIS FILE OWNS is the tournament: who is in it, who they race, who
--- advances, who is out, and the ladder that steps through it. Timing arrives
--- from the clients, who measured it; ranking a pass, deciding a round and
--- building the next one happen here.
---
--- THE CONTRACT. Everything arrives once through init(host): stable tables or
--- plain functions, never getters, because the tables main.lua owns are cleared
--- in place rather than replaced -- a reference taken at startup is still the
--- right table after any number of session resets.
---
--- WHAT LEAVES is two names: warm (a boot-time load of the saved ladder) and
--- entryListChanged (a driver joined or left the entry list). The RM_Drag*
--- handlers stay global and cross the file boundary for free, because BeamMP
--- registers events by NAME -- the string is resolved when the event fires.
+-- THE CONTRACT: everything arrives once through init(host), stable tables or
+-- plain functions. Back out go warm (boot-time ladder load) and
+-- entryListChanged; the RM_Drag* handlers are globals, registered by NAME.
 
 local D = {}
 
--- Assigned once by init. Declared up here so every function below closes over
--- them; a value captured at file load would be nil, because the host has not
--- called init when this chunk runs.
+-- Assigned by init: a value captured at file load would be nil.
 local LAYOUTS_DIR, RM_PROTOCOL
 local displayName, ensureLayoutsDir, ensureResultsDir
 local forceSpectate, isEntrant, jsonParse, jsonStringify
 local onlinePlayers, releaseSpectators, requireAuth, uniqueResultsPath
 local players, race
 
--- Set later by setCupHooks, and nil is a legitimate state: no cup, no points.
--- They cannot arrive through init because the cup installs itself at the very
--- end of main.lua, long after this module has loaded and been initialised --
--- they would be captured nil and stay nil forever. The guards around them are
--- load-bearing, not defensive habit. Same arrangement the derby keeps.
+-- Set later by setCupHooks (the cup is assigned at the end of main.lua); nil
+-- means no cup, so the guards are load-bearing.
 local cupOnDragComplete, cupResultsLines
 
--- Built in init from LAYOUTS_DIR. Declared up here and assigned there, never
--- beside the code that reads it: Lua resolves names at compile time, so a
--- `local` declared below its use is not a declaration at all -- the reads
--- compile as nil globals and the file works exactly as badly as it looks like
--- it should not. derby.lua carries the same note for the same bug.
+-- Built in init, declared up here: a local declared below its use compiles the
+-- reads as nil globals.
 local DRAG_FILE
 
 function D.setCupHooks(onDragComplete, resultsLines)
@@ -96,39 +61,24 @@ local DRAG_MAX_ROUNDS  = 32    -- ladder generation is bounded, so a bug is a
 local DRAG_MAX_DIAL    = 99.999
 local DRAG_MAX_ET      = 999.0 -- anything above this is a client bug, not a pass
 
--- The christmas tree, as the two patterns anybody actually runs.
---
--- These are the SHAPE of the tree, not its timing on this machine: the server
--- sends the pattern and the client runs the lights on its own clock, because a
--- reaction time measured across a network measures the network. See
--- broadcastTree.
--- HOW A CAR GETS ONTO THE LINE.
---
---   hold    placed exactly on the start position and frozen there. The
---           original behaviour, and still the right one for an eight-wide
---           shootout where waiting for eight people to creep into the beams
---           is most of the evening.
---   rollup  placed a few metres BEHIND the line and left free. The driver
---           rolls forward into the beams themselves, which is what staging
---           actually is -- and it is what makes the two stage bulbs mean
---           something rather than being decoration.
+-- How a car gets onto the line:
+--   hold    on the start position, frozen (an eight-wide shootout)
+--   rollup  a few metres BEHIND the line and free: the driver rolls into the
+--           beams, which is what makes the stage bulbs mean something
 local DRAG_STAGE_MODES = { hold = true, rollup = true }
 -- How far behind the start position a rolled-up car is placed. Far enough to
 -- creep, short enough that it is not a drive.
 local DRAG_ROLLUP_BACK = 5.0
--- The beams, as a signed distance to the start position along its heading:
--- negative is short of the line. Pre-stage lights first, stage a little
--- further in, and rolling well past the line drops you out of the beams again
--- so a driver who overshoots can simply back up rather than being stuck
--- staged in the wrong place.
+-- The beams, as a signed distance along the start heading (negative is short
+-- of the line). Rolling well past drops out again, so an overshoot can back up.
 local DRAG_PRESTAGE_AT = -1.2
 local DRAG_STAGE_AT    = -0.35
 local DRAG_STAGE_PAST  =  2.0
--- Once every lane is in the beams, the pause before the tree drops. Not zero:
--- the last car to stage has earned the same half-second to settle its hands
--- that everybody else got, and a tree that fires on the same tick as the bulb
--- is a tree nobody was ready for.
+-- The pause before the tree once every lane is staged: the last car gets the
+-- same moment to settle that everybody else had.
 local DRAG_STAGE_SETTLE = 1.2
+-- The tree's SHAPE only: the client runs the lights on its own clock, because a
+-- reaction time measured across a network measures the network.
 local DRAG_TREE_PATTERNS = { pro = true, sportsman = true }
 local DRAG_FORMATS = { single = true, double = true, points = true }
 local DRAG_SEEDS   = { random = true, order = true, quali = true, manual = true }
@@ -136,13 +86,9 @@ local DRAG_SEEDS   = { random = true, order = true, quali = true, manual = true 
 -- ===========================================================================
 -- State
 -- ===========================================================================
--- THREE TABLES, not thirty locals. The same discipline the rest of the plugin
--- keeps, and here it also draws the seam the persistence file is written along:
--- `drag` is the RULES (what an admin set up), `ladder` is the TOURNAMENT (who
--- is in it and what has happened), `pass` is the RUN IN FRONT OF YOU. Only the
--- first two are worth saving -- a pass interrupted by a server restart is a
--- pass that has to be run again, and pretending otherwise would restore a
--- countdown to cars that are no longer staged.
+-- Three tables, not thirty locals: `drag` the RULES, `ladder` the TOURNAMENT,
+-- `pass` the run in front of you. Only the first two are saved: a pass cut by a
+-- restart is run again.
 
 local drag = {
   -- idle      no tournament: the config panel is all there is
@@ -152,78 +98,50 @@ local drag = {
   -- running   the field is on the strip, times are coming in
   -- complete  somebody won it
   phase   = 'idle',
-  -- HOW THE LADDER NARROWS.
+  -- How the ladder narrows:
   --   single   one loss and you are out
-  --   double   two losses and you are out; the losers go to their own bracket
-  --   points   nobody is knocked out by a single pass: every entrant runs every
-  --            round, scores by finishing position, and the CUT (below) takes
-  --            the bottom off the board between rounds
+  --   double   two losses; the losers go to their own bracket
+  --   points   everybody runs every round, scores by position, and the CUT
+  --            takes the bottom off between rounds
   format  = 'single',
-  -- Cars per pass. Two is a drag race; eight is a shootout with everybody on
-  -- the line at once. Clamped against the strip's start positions at build
-  -- time, because a lane with nowhere to line up is not a lane.
+  -- Cars per pass (two is a drag race, eight a shootout), clamped to the strip's
+  -- start positions at build time.
   lanes   = 2,
-  -- How many of those cars come out of the pass still in the tournament. One
-  -- with two lanes is the classic ladder; four with eight lanes is "top half
-  -- of the shootout goes through".
-  --
-  -- IT IS A CEILING, NOT A PROMISE. A pass with three cars in it cannot
-  -- advance four, and the round that decides the tournament advances exactly
-  -- one whatever this says. See passAdvanceCount.
+  -- How many come out of a pass still in. A CEILING: a pass of three cannot
+  -- advance four, and the deciding round advances one (passAdvanceCount).
   advance = 1,
-  -- points format only: how many are cut from the BOTTOM of the standings
-  -- after each round. 0 runs every entrant to the end and ranks them on total
-  -- points, which is a series night rather than a knockout.
+  -- Points format: how many are cut from the bottom after each round. 0 runs
+  -- everyone to the end (a series night).
   cut     = 0,
   -- points format only: how many rounds it runs. Ignored by the ladders, whose
   -- length is decided by the field.
   rounds  = 3,
   tree    = 'sportsman',
   seed    = 'random',
-  -- Roll-up by default, because it is what a drag strip does and it is the
-  -- reason the pre-stage and stage bulbs exist. 'hold' is one press away for
-  -- a shootout that wants the field placed and frozen.
+  -- Roll-up by default: it is what a strip does, and why the stage bulbs exist.
   stageMode = 'rollup',
-  -- rollup only: does the tree drop by itself once every lane is in the
-  -- beams, the way a starter does it, or does an admin press Run?
-  --
-  -- BOTH ARE USEFUL, which is why this is a setting rather than a decision.
-  -- Automatic is the real thing and takes the admin out of the loop for a
-  -- forty-pass evening; manual is what you want the first time you run a new
-  -- strip, or when somebody is still explaining the rules on voice comms.
-  --
-  -- RUN IS ALWAYS AVAILABLE EITHER WAY. Under automatic it is an override for
-  -- the driver who will not stage, which is the same job the courtesy-stage
-  -- rule does at a real strip.
+  -- Rollup: the tree drops by itself once every lane is staged, or an admin
+  -- presses Run (a new strip, or rules still being explained). Run is always
+  -- available, as the override for a driver who will not stage.
   autoStart = true,
-  -- rollup only: how long the pass waits for the field to stage before the
-  -- tree drops on whoever is in the beams. A car still creeping at that point
-  -- is simply late, which is a result rather than a deadlock -- and an
-  -- unattended server must not be able to sit on one pass for ever.
+  -- Rollup: how long a pass waits for the field before the tree drops on whoever
+  -- is staged. A late car is a result, not a deadlock.
   stageWait = 45,
-  -- BRACKET RACING, in the sense the drag strip means it rather than the
-  -- tournament-tree sense. Every entrant declares a DIAL-IN -- the elapsed
-  -- time they expect to run -- and the slower car is given that difference as
-  -- a head start, so a street car and a race car can meet on equal terms. Run
-  -- quicker than your own dial and you BREAK OUT, which loses the pass.
-  --
-  -- Off by default: it needs every entrant to have a dial, and a ladder run
-  -- without it is the heads-up race everyone already expects.
+  -- BRACKET RACING: each entrant declares a DIAL-IN (their expected ET) and the
+  -- slower car gets the difference as a head start. Quicker than your dial is a
+  -- BREAKOUT, which loses. Off by default: everyone needs a dial.
   dialIn   = false,
   breakout = true,   -- dialIn only: does running under your dial lose the pass?
   timeout  = 60,
-  -- Seconds the result stands on screen before the ladder offers the next
-  -- pass. The derby has had one of these since it was built; a pass is over in
-  -- ten seconds and without a hold the board would blink through a whole round.
+  -- Seconds the result stands before the next pass, or the board blinks through
+  -- a round.
   holdResult = 8,
 }
 
 local ladder = {
-  -- Entrants in SEED ORDER, which is the order the bracket is built from and
-  -- never changes once the ladder is built. Each entry:
-  --   id       BeamMP player id, or nil once they have disconnected
-  --   name     the name they entered under, kept so a disconnected entrant is
-  --            still a person on the board rather than a hole in it
+  -- Entrants in SEED ORDER, fixed once the ladder is built. Each entry:
+  --   id       BeamMP player id, nil once disconnected
+  --   name     kept so a disconnected entrant is still on the board
   --   seed     1..n, their place in the draw
   --   wins/losses/passes  their record
   --   status   'in' | 'out' | 'champion' | 'withdrawn'
@@ -232,51 +150,30 @@ local ladder = {
   --   bestET / bestRT / bestSpeed / lastET / lastRT / lastSpeed
   --   points   points format only: running total
   entrants = {},
-  -- Rounds, oldest first. Each is
+  -- Rounds, oldest first:
   --   { n, side = 'w'|'l'|'f', label, passes = { ... }, done }
-  -- and each pass is
-  --   { lanes = { seedIndex, ... }, bye, done, results = { ... }, winner }
-  --
-  -- GENERATED ONE ROUND AT A TIME, never as a whole tree up front. A double
-  -- elimination bracket's losers side depends on who lost, byes depend on how
-  -- many are left, and a driver who disconnects mid-tournament changes both --
-  -- so a tree drawn at the start would be wrong by the second round and would
-  -- have to be redrawn anyway. Building the next round when the current one
-  -- ends is the same answer with none of the redrawing.
+  --   pass = { lanes = { seedIndex, ... }, bye, done, results = { ... }, winner }
+  -- Generated ONE ROUND AT A TIME: losers sides, byes and withdrawals would
+  -- make a tree drawn up front wrong by the second round.
   rounds   = {},
   round    = 0,   -- index into rounds; 0 before the first is built
   pass     = 0,   -- index into that round's passes; 0 before the first is called
   champion = nil, -- display name, once there is one
   started  = nil, -- os.time() the ladder was built
-  -- The tournament is over and this is what it looked like. Held rather than
-  -- recomputed because entrants leave: the finishing order has to be the one
-  -- that was true when the last pass ran.
+  -- The finishing order when the last pass ran, held: entrants leave.
   finishOrder = nil,
 }
 
--- The pass in front of you, or an empty shell between passes. Rebuilt from
--- scratch every time rather than cleared field by field, because a stale field
--- from the last pass is exactly the bug the derby's endsAt note describes.
+-- The pass in front of you. Rebuilt whole each time: a stale field is the bug
+-- the derby's endsAt note describes.
 local pass = { lanes = {}, times = {}, time = 0, greenAt = nil }
 
--- A PRACTICE PASS: one run down the strip that scores nothing.
---
--- It exists for two reasons and both are real. A bracket needs a field, so
--- until one turns up there is no way to try the strip at all -- no staging, no
--- tree, no red light, no elapsed time -- and "does the finish line work" should
--- not be a question you need eight people to answer. And in bracket racing a
--- driver has to declare a dial-in before they run, which on a strip they have
--- never seen is a guess; a practice pass is where the number comes from.
---
--- It runs the REAL pass machinery -- the same staging, the same tree, the same
--- timing, the same ranking -- against a round that is deliberately NOT in
--- ladder.rounds. That is the whole trick: nothing has to know it is practice
--- except the three places that would otherwise write a result down.
+-- A PRACTICE PASS: one run that scores nothing (try the strip without a field,
+-- find a dial-in). The REAL machinery, on a round NOT in ladder.rounds; only the
+-- three places that write a result need to know.
 local practice = { on = false, round = nil }
 
--- The round the pass in front of you belongs to. A practice round is not part
--- of the ladder and never will be, so every reader goes through here rather
--- than reaching into ladder.rounds and finding the wrong one.
+-- The round the current pass belongs to (practice is not in the ladder).
 local function activeRound()
   if practice.on then return practice.round end
   return ladder.rounds[ladder.round]
@@ -306,9 +203,7 @@ local function clampNum(v, lo, hi, fallback)
   return v
 end
 
--- Seconds as a drag strip reads them: three decimals, because the third one is
--- the one that decides passes. A DNF has no time and says so rather than
--- printing a zero somebody will read as a very good run.
+-- Three decimals (the third decides passes). A DNF says so, never a zero.
 local function fmtET(t)
   if not t then return '--' end
   return string.format('%.3f', t)
@@ -319,18 +214,14 @@ local function fmtSpeed(v)
   return string.format('%.1f', v)
 end
 
--- Is there a pass on the strip right now? 'result' counts: the cars are still
--- sitting at the top end while the board holds the times up, and every rule
--- this gates -- config changes, dial changes -- would be changing a pass that
--- has already been run.
+-- A pass on the strip? 'result' counts: config or dial changes would change a
+-- pass already run.
 local function dragActive()
   return drag.phase == 'staging' or drag.phase == 'tree'
       or drag.phase == 'running' or drag.phase == 'result'
 end
 
--- The lazy seed, exactly as main.lua does it for the random grid draw. Two
--- ladders drawn in the same second is not a fairness problem, and nothing else
--- on the server depends on the stream.
+-- The lazy seed, as main.lua's random grid draw.
 local randomSeeded = false
 local function seedOnce()
   if randomSeeded then return end
@@ -375,21 +266,14 @@ local function undefeated()
   return live
 end
 
--- How many lanes the loaded strip actually has. The layout owns this: an admin
--- who saved four start positions built a four-wide strip, and asking for eight
--- does not make four more appear.
---
--- Reads race.startPositions, which is the ONLY thing this module reads from the
--- host's racing state -- and it is a read of the loaded TRACK, not of a
--- session. Nothing here writes it.
+-- Lanes the loaded strip has (its saved start positions). race.startPositions
+-- is the ONLY host racing state this module reads, and never writes.
 local function stripLanes()
   return #(race.startPositions or {})
 end
 
--- The finish line is the last gate of the loaded layout, and the strip needs at
--- least one gate to have one. Returned as a count rather than the gate itself:
--- the server has no physics and never tests a crossing, so all it can usefully
--- do is refuse to start a tournament on a track with no finish.
+-- Gates on the loaded layout (the last is the finish); a count, so a strip with
+-- no finish is refused.
 local function stripGates()
   return race.slotCount or 0
 end
@@ -397,18 +281,9 @@ end
 -- ===========================================================================
 -- THE DRAW
 -- ===========================================================================
--- Splitting a seeded field into passes, the way a bracket sheet does it.
---
--- SERPENTINE, not "first `lanes` in the first pass". Walk the seeds in order,
--- filling the passes left to right, then right to left, then left to right
--- again. With two lanes that produces exactly the classic sheet -- 1 v 8, 2 v
--- 7, 3 v 6, 4 v 5 -- and with eight it spreads the quick cars across the
--- shootouts instead of stacking the top half into one of them.
---
--- It also gets the BYES right for free. Three cars over two passes leaves the
--- first pass holding one seed, and that seed is number one: the strongest
--- entrant is the one the sheet gives the free run to, which is the rule every
--- ladder uses and the one nobody has to be told.
+-- Split a seeded field into passes, SERPENTINE (left to right, then back): two
+-- lanes give the classic 1v8, 2v7, 3v6, 4v5, eight spread the quick cars, and
+-- a bye goes to seed one.
 local function serpentine(list, lanes)
   local n = #list
   if n == 0 then return {} end
@@ -430,13 +305,8 @@ local function serpentine(list, lanes)
   return passes
 end
 
--- How many cars come out of this pass still in the tournament.
---
--- Three rules, and the order matters. A pass that is the whole of what is left
--- decides the tournament and advances exactly one, whatever the admin set. A
--- bye advances its single entrant. Otherwise the admin's number applies, capped
--- so a pass always eliminates somebody -- advancing four from a pass of three
--- is a round that changes nothing, run forever.
+-- How many come out of this pass: the deciding pass advances one, a bye its
+-- entrant, otherwise the admin's number capped so a pass always eliminates.
 local function passAdvanceCount(size, isFinal)
   if isFinal then return 1 end
   if size <= 1 then return 1 end
@@ -449,21 +319,13 @@ end
 -- ===========================================================================
 -- RANKING A PASS
 -- ===========================================================================
--- FOUR TIERS, and no time in a lower tier ever beats one in a higher.
---
+-- FOUR TIERS; no time in a lower tier beats a higher one:
 --   1  a clean run
---   2  a BREAKOUT: quicker than your own dial-in, which is a loss in bracket
---      racing however fast it was. Between two of them the one who broke out by
---      the LESS takes it, which is the actual rule and not a tie-break
---   3  a RED LIGHT: left before the green. Still a run, still gets a time on
---      the board, still loses to anybody who left legally
---   4  no time at all: never finished, or the pass timed out under them
---
--- Inside tiers 1 and 3 the order is WHO GOT THERE FIRST, measured as the head
--- start their dial-in bought them plus their reaction plus their elapsed time.
--- With no dial-ins that is just reaction plus ET, which is the same question.
--- Every number in it was measured by the client that ran it, on one clock, so
--- nothing here is comparing two machines' idea of when the green was.
+--   2  a BREAKOUT (quicker than your dial): the one who broke out by LESS wins
+--   3  a RED LIGHT: still timed, loses to any legal start
+--   4  no time at all
+-- Inside tiers 1 and 3, who got there first: dial head start + reaction + ET,
+-- each measured on one client's clock.
 local function passTier(t)
   if not t.et then return 4 end
   if t.foul then return 3 end
@@ -500,14 +362,8 @@ end
 -- ===========================================================================
 -- The broadcast
 -- ===========================================================================
--- One channel, RM_DragUpdate, carrying the whole tournament. The panel is a
--- board -- entrants, the ladder, the pass in front of you -- and a board that
--- arrives in pieces is a board that can be caught disagreeing with itself.
---
--- The ladder is sent WHOLE rather than as a diff for the same reason the racing
--- driver table is: a client that joined mid-tournament, or reconnected, or
--- missed a packet has no way to ask for the piece it is short of, and a
--- tournament is at most a few dozen small rows.
+-- One channel, RM_DragUpdate, carrying the whole board, sent WHOLE (a client
+-- that joined or missed a packet cannot ask for a piece; a few dozen rows).
 local function entrantRow(e)
   return {
     seed = e.seed, name = e.name, status = e.status,
@@ -515,28 +371,15 @@ local function entrantRow(e)
     dial = e.dial, points = e.points, outRound = e.outRound,
     bestET = e.bestET, bestRT = e.bestRT, bestSpeed = e.bestSpeed,
     lastET = e.lastET, lastRT = e.lastRT, lastSpeed = e.lastSpeed,
-    -- Present on the server right now. A tournament runs for an evening and
-    -- people drop out of it; a board that cannot show who is missing is a board
-    -- an admin has to guess against before calling the next pass.
+    -- Present on the server now, so the board shows who is missing.
     online = e.id ~= nil,
-    -- THE SESSION ID, and it rides along for exactly one reason: this is ONE
-    -- broadcast to everybody, so it cannot say "you". The client compares it
-    -- against its own id and marks its own row before handing the board to the
-    -- panel -- which is where the answer lives, since the server has no way to
-    -- personalise a message it sends once. The racing driver table carries ids
-    -- for the same reason.
+    -- The id, so each client can mark its own row in a broadcast to everyone.
     id = e.id,
   }
 end
 
--- `live` is the times table of a pass that is still running, and it is the
--- whole reason this takes an argument.
---
--- A finished pass keeps its numbers in p.results, which is written when the
--- pass settles. Reading only that meant the board showed nothing at all WHILE
--- the pass was on -- lanes coming home one at a time, and a panel that stayed
--- blank until the last of them did. Watching the times land is most of what a
--- drag board is for.
+-- `live` is a running pass's times: results are only written when it settles,
+-- and the board must show times landing.
 local function passRow(p, live)
   local lanes = {}
   for i, e in ipairs(p.lanes) do
@@ -547,9 +390,7 @@ local function passRow(p, live)
       dial  = e.dial,
       rt = t and t.rt, et = t and t.et, speed = t and t.speed,
       foul = t and t.foul or false, brokeOut = t and t.brokeOut or false,
-      -- A LANE IS ONLY DNF ONCE IT HAS BEEN SETTLED. Mid-pass, a car with no
-      -- time is a car still driving -- calling that a DNF would put the word on
-      -- the board over every driver for the whole of every run.
+      -- DNF only once settled: mid-pass, no time is a car still driving.
       dnf = (p.results ~= nil) and (t == nil or t.et == nil) or false,
       pos = t and t.pos, through = t and t.through or false,
     }
@@ -569,10 +410,8 @@ local function boardRows()
   return out
 end
 
--- The pass in front of you, as the staging lights see it. Separate from the
--- board row above because this one carries the LIVE fields -- who is staged,
--- how long the pass has run -- which mean nothing on a finished pass and would
--- be dead weight on every row of the ladder.
+-- The current pass for the staging lights: the LIVE fields (staged, run time),
+-- dead weight on the ladder rows.
 local function livePass()
   local r = activeRound()
   local idx = practice.on and 1 or ladder.pass
@@ -587,19 +426,14 @@ local function livePass()
   row.time = pass.time
   for i, lane in ipairs(row.lanes) do
     lane.staged = pass.staged and pass.staged[i] == true
-    -- The near bulb, reported separately: a driver creeping up shows
-    -- pre-staged for a second or two before the stage bulb catches, and that
-    -- is the part everybody in the pits is watching.
+    -- Pre-stage separately: a creeping car shows it before the stage bulb.
     lane.prestaged = pass.prestaged and pass.prestaged[i] == true
     lane.home   = pass.times and pass.times[i] ~= nil
     -- The ready check: false is a driver called and not yet on the strip.
     -- The id lets each client find its own lane for the Ready button.
     lane.id     = p.lanes[i] and p.lanes[i].id or nil
     if pass.ready and pass.lanes == p.lanes then lane.ready = pass.ready[i] end
-    -- THE RED LIGHT SHOWS THE MOMENT IT HAPPENS, not when the pass settles. It
-    -- is reported at the launch and the time at the finish, so between the two
-    -- the foul lives only here -- and the seconds where everybody in the pits
-    -- wants to know whether that light was red are exactly those.
+    -- The red light shows at the launch, not when the pass settles.
     if pass.fouled and pass.fouled[i] and not lane.foul then
       lane.foul = true
       lane.rt   = lane.rt or pass.fouled[i]
@@ -608,19 +442,9 @@ local function livePass()
   return row
 end
 
--- THE PASS ONLY, without the ladder underneath it.
---
--- A lane reporting its time changes one row and nothing else, and there are up
--- to eight of them in the fifteen seconds a pass takes. The full board is not
--- small: a sixty-four car single elimination is sixty-three passes and a
--- hundred and twenty-six lane rows, and encoding all of it eight times over
--- while cars are on the strip is the kind of cost this plugin has learned to
--- watch for elsewhere (see the note on the results file and a huge grid).
---
--- So a lane report sends the live pass and the phase, and leaves `board` and
--- `entrants` OUT. The client keeps whatever it last had for those -- they have
--- not changed -- and the full state goes out when the pass settles, which is
--- when they do.
+-- THE PASS ONLY: a lane report changes one row, up to eight times a pass, and a
+-- 64-car ladder is 126 lane rows. `board` and `entrants` are left OUT (the
+-- client keeps its copy); the full state goes when the pass settles.
 local function broadcastDragPass()
   local r = ladder.rounds[ladder.round]
   MP.TriggerClientEvent(-1, 'RM_DragUpdate', Util.JsonEncode({
@@ -653,10 +477,7 @@ local function broadcastDragState()
     roundSide = r and r.side or nil, roundCount = #ladder.rounds,
     passIndex = ladder.pass, passCount = r and #r.passes or 0,
     champion = ladder.champion, finishOrder = ladder.finishOrder,
-    -- Whether what is on the strip is a PRACTICE pass. The panel has to be able
-    -- to say so plainly: the controls look identical, and a warm-up mistaken
-    -- for a round of the tournament is the worst thing to be unsure about while
-    -- sitting on the line.
+    -- A PRACTICE pass, said plainly: the controls look identical.
     practice = practice.on,
     entrants = entrants, board = boardRows(), current = livePass(),
   }))
@@ -665,23 +486,10 @@ end
 -- ===========================================================================
 -- Persistence
 -- ===========================================================================
--- A tournament is an evening, not a session. Sixteen entrants over four rounds
--- is an hour of racing, and losing the ladder to a server restart in the middle
--- of it means running the whole thing again, so it is written to disk on every
--- change, exactly the way the cup is.
---
--- WHAT IS NOT SAVED is the pass in front of you. A pass interrupted by a
--- restart is a pass that has to be run again: the cars are no longer staged,
--- the tree is no longer running, and restoring a countdown to an empty strip
--- would be worse than admitting the pass was lost. The ladder comes back at the
--- pass boundary before it.
---
--- ENTRANTS COME BACK BY NAME, NOT BY PLAYER ID. BeamMP recycles session ids and
--- hands out a fresh guest name on every join, so neither is an identity. The id
--- is guaranteed to be wrong after a restart; the name is at least what the
--- board said. A restored entrant nobody on the server answers to is kept, shown
--- offline, and can be withdrawn or claimed by hand. The alternative is a ladder
--- full of holes an admin has no way to fix.
+-- A tournament is an evening: written on every change, as the cup is. The pass
+-- in front of you is NOT saved (its cars are no longer staged after a restart).
+-- Entrants come back BY NAME (ids are recycled, guest names random); one nobody
+-- answers to stays, offline, to withdraw or claim.
 local function ladderToDisk()
   local entrants = {}
   for _, e in ipairs(ladder.entrants) do
@@ -711,10 +519,7 @@ local function ladderToDisk()
                               results = p.results and results or nil }
     end
     rounds[#rounds + 1] = { n = r.n, side = r.side, label = r.label,
-                            -- WITHOUT THIS a restored final settles as an
-                            -- ordinary round: it would advance `advance`
-                            -- entrants instead of one, and the double
-                            -- elimination reset would never be offered.
+                            -- or a restored final settles as a plain round
                             final = r.final, done = r.done, passes = passes }
   end
   return {
@@ -747,10 +552,8 @@ local function saveLadder()
   return true
 end
 
--- Rehydrate. Rounds hold SEED NUMBERS on disk and entrant tables in memory, so
--- the load has to resolve one into the other, and a seed that does not resolve
--- drops the pass rather than putting a nil in a lane. A nil lane is the sort of
--- thing that only shows up at staging, with the field already waiting.
+-- Rehydrate: seeds on disk become entrant tables; a seed that does not resolve
+-- drops its pass rather than putting a nil in a lane.
 local function loadLadder()
   local f = io.open(DRAG_FILE, 'r')
   if not f then return end
@@ -838,40 +641,25 @@ end
 -- Boot-time load, called from the host once the filesystem helpers exist.
 dragWarm = function ()
   loadLadder()
-  -- ONLINE ENTRANTS ARE RE-BOUND AT BOOT, and this is the only place a restored
-  -- name is matched against a live player. Nobody is connected during onInit on
-  -- a cold start, so in practice this only does anything after a plugin reload
-  -- with the field still on the server, which is exactly when it matters.
+  -- Re-bind online entrants by name (only matters after a plugin reload).
   if #ladder.entrants > 0 then dragEntryListChanged() end
 end
 
 -- ===========================================================================
 -- THE LADDER
 -- ===========================================================================
--- Rounds are built ONE AT A TIME, as the one before them ends. See the note on
--- ladder.rounds for why: a tree drawn up front is wrong by the second round.
---
--- Everything below is pure bookkeeping over the entrant list. Nothing here
--- touches a car, a client or a timer, which is what makes the whole tournament
--- testable headless -- tests/drag_test.lua runs a sixteen-entrant ladder to a
--- champion without a single vehicle existing.
+-- Pure bookkeeping over the entrant list, one round at a time: no car, client
+-- or timer, so tests/drag_test.lua runs a whole ladder headless.
 
--- Is this the round that decides it? The whole remaining field fits in one
--- pass, so there is nothing left to narrow.
---
--- Stated as a question about the FIELD rather than about the round, because
--- that is what makes it true for every format at once: two cars with two lanes
--- is a final for the same reason six cars with eight lanes is.
+-- Does the remaining field fit one pass? Asked of the FIELD, so it holds in
+-- every format.
 local function isFinalField(live)
   return #live <= drag.lanes
 end
 
 local function roundLabel(side, live, final)
-  -- Side 'f' is the round the two brackets MEET IN, which happens at most
-  -- twice: the final, and the reset when the entrant who arrived undefeated
-  -- loses it. Both are side 'f' because both draw from the whole remaining
-  -- field, so the reset is renamed by its caller rather than guessed at here --
-  -- naming every 'f' round a reset labelled the ordinary final as one.
+  -- Side 'f' is where the brackets meet: the final, and the reset (renamed by
+  -- its caller).
   if side == 'f' then return 'Final' end
   local n = #ladder.rounds + 1
   if drag.format == 'points' then
@@ -881,14 +669,11 @@ local function roundLabel(side, live, final)
     return final and 'Losers Final' or ('Losers Round ' .. n)
   end
   if final then return 'Final' end
-  -- ...and in a double, the round that halves the winners bracket is NOT the
-  -- one that produces the finalists: the losers side still has to feed one in.
-  -- Calling it the semifinal would promise a final two rounds early.
+  -- In a double, halving the winners bracket is not a semifinal: the losers
+  -- side still feeds one in.
   if drag.format == 'double' then return 'Winners Round ' .. n end
-  -- SEMIFINAL is a fact about what this round produces, not a name for a round
-  -- number: how many come out of it, and do they fit one pass? A four-lane
-  -- strip reaches its semifinal a round earlier than a two-lane one, and
-  -- calling both of them "Round 3" tells a driver nothing.
+  -- A semifinal is what a round produces (its survivors fit one pass), not a
+  -- round number.
   local groups = serpentine(live, drag.lanes)
   local through = 0
   for _, g in ipairs(groups) do
@@ -905,27 +690,18 @@ local function pushRound(side, groups, final, live)
   for _, g in ipairs(groups) do
     r.passes[#r.passes + 1] = {
       lanes = g,
-      -- A BYE IS A PASS, not a line on a sheet. The entrant still stages, still
-      -- runs, still puts an ET on the board -- they simply cannot lose it. Drag
-      -- racing has always worked this way, because a bye run is where you go
-      -- looking for a number without risking the round.
+      -- A bye is a pass: staged, run and timed, it just cannot be lost.
       bye = #g == 1, done = false, results = nil, delay = nil,
     }
   end
   ladder.rounds[#ladder.rounds + 1] = r
   ladder.round = #ladder.rounds
-  -- POINTED AT THE FIRST PASS, not at nothing. A round that has been drawn but
-  -- not started still has a pass that is up next, and an admin wants to read
-  -- who is in it before pressing Stage -- so a fresh round shows its first pass
-  -- rather than a blank panel that only fills in once the cars are placed.
+  -- At the first pass, so a fresh round shows who is up next.
   ladder.pass  = 1
   return r
 end
 
--- The order a pool is drawn in. Seed order for the ladders, because the seed is
--- the whole point of a seeded draw and re-sorting it on form would undo it.
--- Points runs on the standings instead: everybody races every round, so the
--- draw is the only place the leaderboard can shape the night.
+-- Seed order for the ladders; points draws on the standings.
 local function drawOrder(pool)
   local list = {}
   for i, e in ipairs(pool) do list[i] = e end
@@ -968,25 +744,20 @@ local function buildNextRound()
   end
 
   if drag.format == 'double' then
-    -- The reset. Somebody arrived at the final undefeated and did not win it,
-    -- so they have spent the second life the format promised them and the two
-    -- of them go again on level terms.
+    -- The reset: the undefeated finalist lost, so the two go again.
     if ladder.resetPending then
       ladder.resetPending = false
       pushRound('f', { drawOrder(live) }, true, live).label = 'Final (reset)'
       return true
     end
     local won, lost = undefeated(), inLosers()
-    -- The final needs BOTH brackets down to what fits one pass. With the
-    -- winners side still holding two or more, a pass between them is a winners
-    -- round however few are left overall.
+    -- The final needs both brackets down to one pass.
     if isFinalField(live) and #won <= 1 then
       pushRound('f', { drawOrder(live) }, true, live)
       return true
     end
-    -- Alternate the two sides, which is what keeps the losers bracket from
-    -- piling up into one enormous round at the end. Whichever side cannot run
-    -- (fewer than two entrants) hands the round back to the other.
+    -- Alternate the sides so the losers bracket does not pile up; a side that
+    -- cannot run hands the round over.
     local lastSide = ladder.rounds[#ladder.rounds] and ladder.rounds[#ladder.rounds].side
     local wantLosers = (lastSide == 'w') and #lost >= 2
     if not wantLosers and #won < 2 then wantLosers = #lost >= 2 end
@@ -998,9 +769,7 @@ local function buildNextRound()
       pushRound('w', serpentine(drawOrder(won), drag.lanes), false, won)
       return true
     end
-    -- Neither side can field a pass and the field does not fit one either.
-    -- Reachable only through withdrawals, and it is a finished tournament
-    -- rather than a stuck one.
+    -- Reachable only through withdrawals: finished, not stuck.
     finishTournament('no pass can be drawn')
     return false
   end
@@ -1014,19 +783,9 @@ end
 -- ===========================================================================
 -- Settling a pass
 -- ===========================================================================
--- Every number in `results` was measured by the client that ran the lane. This
--- is where they become a place in a tournament.
--- BEING KNOCKED OUT DOES NOT COST YOU YOUR CAR, and that is the difference
--- between a tournament and a derby.
---
--- A derby is one event and ends within minutes of your elimination, so standing
--- a knocked-out driver down until it does costs them nothing. A ladder runs for
--- an hour: losing in round one and being locked in freecam for the next forty
--- minutes is not a rule, it is a punishment for turning up. Somebody who is out
--- is simply never called for another pass.
---
--- What IS enforced is the strip while a pass is on it -- see stagePass, which
--- stands down everybody who is not in the pass and releases them when it ends.
+-- Knocked out does not cost your car (a ladder runs an hour, unlike a derby):
+-- you are simply not called again. stagePass stands the others down while a
+-- pass is on the strip.
 local function eliminate(e, roundIndex, reason)
   e.status   = 'out'
   e.outRound = roundIndex
@@ -1038,13 +797,8 @@ end
 
 local function applyResult(p, r, isFinal)
   local ranked = rankPass(p.results)
-  -- A PRACTICE PASS IS RANKED AND THEN FORGOTTEN. It is timed exactly the way a
-  -- real one is -- somebody has to be able to see who got there first, and a
-  -- breakout is worth knowing about before it costs a round -- but no win, no
-  -- loss, no elimination and no best-ever number comes out of it. The entrants
-  -- in it are throwaway records anyway (see RM_onDragPractice); writing to them
-  -- would be writing to nothing, and writing to the LADDER's records instead
-  -- would let a warm-up lap improve a tournament stat.
+  -- A practice pass is ranked and then forgotten: no win, loss, elimination or
+  -- best number reaches any record.
   if practice.on then
     p.winner = ranked[1] and ranked[1].entrant.name or nil
     for _, t in ipairs(ranked) do t.through = false end
@@ -1058,17 +812,13 @@ local function applyResult(p, r, isFinal)
     local e = t.entrant
     e.passes  = e.passes + 1
     e.lastET, e.lastRT, e.lastSpeed = t.et, t.rt, t.speed
-    -- BEST is best-EVER, across the whole tournament, and a red light does not
-    -- poison it: the ET was still run, and a driver who left early still went
-    -- down the strip. Only a pass with no time at all has nothing to record.
+    -- Best-EVER; a red light still ran its ET.
     if t.et and (not e.bestET or t.et < e.bestET) then e.bestET = t.et end
     if t.rt and t.rt > 0 and (not e.bestRT or t.rt < e.bestRT) then e.bestRT = t.rt end
     if t.speed and (not e.bestSpeed or t.speed > e.bestSpeed) then e.bestSpeed = t.speed end
     if i == 1 then e.wins = e.wins + 1 end
     if drag.format == 'points' then
-      -- Scored on the CONFIGURED lane count rather than on how many happened to
-      -- be in this pass, so winning a short pass is worth exactly what winning
-      -- a full one is. Nobody should be better off for a thin round.
+      -- On the CONFIGURED lane count, so a thin pass is worth a full one.
       local pts = drag.lanes - i + 1
       if pts < 0 then pts = 0 end
       e.points = e.points + pts
@@ -1079,9 +829,8 @@ local function applyResult(p, r, isFinal)
       t.through = false
       e.losses  = e.losses + 1
       local limit = (drag.format == 'double') and 2 or 1
-      -- A FINAL ELIMINATES EVERYBODY WHO DID NOT WIN IT, with one exception
-      -- that is the whole of what double elimination means: an entrant who
-      -- arrived undefeated has a life left, keeps it, and gets the reset.
+      -- A final eliminates every loser, except (double) one who arrived
+      -- undefeated: they get the reset.
       if isFinal and e.losses < limit then
         ladder.resetPending = true
       elseif isFinal or e.losses >= limit then
@@ -1092,9 +841,7 @@ local function applyResult(p, r, isFinal)
   p.done = true
 end
 
--- The bottom of the board goes home. Points format only: the ladders knock
--- people out a pass at a time, and this is the equivalent for a format where
--- losing a pass costs you points rather than your place in the tournament.
+-- Points format: the bottom of the board goes home.
 local function applyCut(r)
   if drag.cut <= 0 then return end
   local live = stillIn()
@@ -1118,15 +865,8 @@ end
 -- ===========================================================================
 -- The finishing order
 -- ===========================================================================
--- A tournament produces a WHOLE ORDER, not just a winner. Read the ladder
--- backwards: whoever is still in comes first, then the round that knocked you
--- out (later is better), then how many passes you won, then the seed you
--- started from.
---
--- Points is ranked on points and nothing else until the tie-breaks, because
--- that is what the format is.
--- THE FINISHING ORDER, as entrant tables. Both the results file and the cup
--- read this, and they must not disagree: one sort, one answer, two consumers.
+-- The WHOLE finishing order: still in, then the later knockout, passes won,
+-- seed (points: points first). One sort for the results file and the cup.
 local function finishOrderList()
   local list = {}
   for _, e in ipairs(ladder.entrants) do
@@ -1164,15 +904,8 @@ local function buildFinishOrder()
   return out
 end
 
--- What the cup is handed. The entrant records themselves, in finishing order,
--- with the ALIAS re-read live from the racing record rather than used as
--- snapshotted -- a name an admin assigned or cleared during the tournament has
--- to reach the standings, and a stamped value would go sticky. Exactly what the
--- derby's classification does, and for the same reason.
---
--- The last alias we knew is kept for a driver who has since left: nulling it
--- would score their season onto a fresh placeholder they can never be joined
--- back to.
+-- What the cup is handed: entrants in finishing order, the alias re-read live
+-- (as the derby does); a departed driver keeps the last one known.
 local function dragClassification()
   local list = finishOrderList()
   for _, e in ipairs(list) do
@@ -1182,11 +915,7 @@ local function dragClassification()
   return list
 end
 
--- The quickest single pass anybody made all meeting, and who made it.
---
--- A RED LIGHT STILL COUNTS. The car went down the strip and the clocks caught
--- it; leaving early lost that pass and says nothing about the time. Low ET of
--- the meet is a fact about the run, not a reward for a clean one.
+-- The meeting's quickest pass and its driver. A red light still counts.
 local function lowETEntrant()
   local best = nil
   for _, e in ipairs(ladder.entrants) do
@@ -1257,10 +986,7 @@ local function writeResults(cupRound)
       end
     end
   end
-  -- A drag tournament banks a cup round exactly as a race and a derby do, so
-  -- its results file carries the same section in the same layout. A league
-  -- reading three files from one evening should not have to learn three
-  -- formats.
+  -- The cup section, in the same layout as a race's and a derby's.
   for _, l in ipairs((cupResultsLines and cupRound
       and cupResultsLines(cupRound)) or {}) do
     f:write(l .. '\n')
@@ -1293,14 +1019,8 @@ finishTournament = function (reason)
   saveLadder()
   broadcastDragState()
   print('[RaceManager] Drag tournament over: ' .. tostring(reason))
-  -- Score it into the cup, if one is running and it pays for drag racing. The
-  -- classification is handed over rather than the cup coming to fetch it, so
-  -- this module's tables stay private and the cup goes on being a consumer of
-  -- results exactly as it is for a race. Does nothing unless a cup is running.
-  --
-  -- The round it banks is carried into the results file for the reason the
-  -- other two carry theirs: a cup at its round cap scores nothing, and a file
-  -- that asked for "the current round" would print the last event's points.
+  -- Score it into the cup (handed the classification). The banked round goes to
+  -- the results file: at the round cap, "the current round" is the last one.
   local cupRound = nil
   if cupOnDragComplete then
     local low = lowETEntrant()
@@ -1344,25 +1064,13 @@ end
 -- ===========================================================================
 -- RUNNING A PASS
 -- ===========================================================================
--- Three admin presses per pass: Stage puts the cars on their lanes and holds
--- them, Run drops the tree, and the result settles itself. The same shape the
--- derby uses (Form Up, Start) and the races use (Generate Grid, Start
--- Countdown), because an admin should not have to learn a third one.
+-- Stage holds the cars on their lanes, Run drops the tree, the result settles
+-- itself (as Form Up / Start and Generate Grid / Start Countdown).
 
--- How long the lights take, in seconds, from the moment Run is pressed.
---
--- The PRE-ROLL is randomised and is the reason the tree is worth having: a
--- fixed delay is a number a driver learns, and a driver who has learned it is
--- not reacting to anything. It is drawn HERE and sent to every lane, so all of
--- them see the same tree -- a per-client random would hand somebody a shorter
--- one.
--- THE FLOOR IS 1.5s AND IT IS LOAD-BEARING, not a rounded-off taste call. The
--- client stands the field on its lanes with the same staggered placement the
--- racing grid uses -- 0.18s a lane -- so an eight-wide field is still landing
--- 1.26s after Stage was pressed. The hold does not come off and the launch is
--- not measured until this driver's own first amber, so the pre-roll is what
--- that lands inside. Shorten it and a car released mid-flight reads as having
--- launched, which is a red light nobody earned.
+-- How long the lights take from Run. The PRE-ROLL is random (a fixed delay is
+-- learned, not reacted to), drawn HERE so every lane sees the same tree.
+-- THE 1.5s FLOOR IS LOAD-BEARING: the staggered placement lands an eight-wide
+-- field 1.26s after Stage, and a car released mid-flight reads as a red light.
 local DRAG_TREE_PREROLL_MIN = 1.5
 local DRAG_TREE_PREROLL_MAX = 2.5
 local DRAG_TREE_PRO         = 0.4   -- three ambers together, green 0.4s later
@@ -1372,16 +1080,9 @@ local function treeLightsFor(pattern)
   return pattern == 'pro' and DRAG_TREE_PRO or DRAG_TREE_SPORTSMAN
 end
 
--- THE HEAD START EACH LANE IS OWED, in seconds.
---
--- Bracket racing in the drag strip sense: everybody declares the elapsed time
--- they expect to run, and the SLOWER car leaves first by exactly the difference
--- between the two dials. Run your own number and you arrive together, which is
--- the whole idea -- a street car and a race car can meet on equal terms and the
--- pass is decided by who drove better, not by who bought more engine.
---
--- Returned as a delay applied AFTER the green: the biggest dial waits zero, and
--- everybody else waits until their own difference has run off.
+-- The head start each lane is owed: the SLOWER dial leaves first by the
+-- difference, so run your number and you arrive together. A delay after the
+-- green; the biggest dial waits zero.
 local function laneDelays(lanes)
   local delay = {}
   if not drag.dialIn then
@@ -1394,9 +1095,7 @@ local function laneDelays(lanes)
     if d and (not slowest or d > slowest) then slowest = d end
   end
   for i, e in ipairs(lanes) do
-    -- NO DIAL IS NO HEAD START, deliberately. An entrant who never set one is
-    -- treated as the quickest car on the property and leaves last, which is the
-    -- outcome that cannot be gamed by simply not answering.
+    -- No dial, no head start: not answering cannot be gamed.
     delay[i] = (slowest and e.dial) and (slowest - e.dial) or (slowest or 0)
     if delay[i] < 0 then delay[i] = 0 end
   end
@@ -1409,9 +1108,7 @@ local function currentPass()
   return r and r.passes[practice.on and 1 or ladder.pass] or nil, r
 end
 
--- The next pass in this round that has not been run, or nil when the round is
--- done. Scanned rather than incremented, so an aborted pass is offered again
--- instead of being skipped.
+-- The next unrun pass, or nil. Scanned, so an aborted pass is offered again.
 local function nextPassIndex()
   local r = activeRound()
   if not r then return nil end
@@ -1427,10 +1124,8 @@ local settlePass  -- assigned below; the tick and the reports both reach it
 -- lone ready-up is 1 of 1 and lands at once.
 function drag.sendLane(i, e, p, order, count)
   local rollup = drag.stageMode == 'rollup'
-  -- UNDER 'HOLD' THE CAR IS STAGED THE MOMENT IT IS PLACED. There is nothing
-  -- for the driver to do and nothing to wait for, so the bulbs are lit from
-  -- the start and Run is live immediately. Under 'rollup' nobody is staged
-  -- yet: the client reports it when the car reaches the beams.
+  -- Under 'hold' a car is staged when placed; under 'rollup' the client reports
+  -- it reaching the beams.
   pass.staged[i] = not rollup
   pass.prestaged[i] = not rollup
   MP.TriggerClientEvent(e.id, 'RM_DragLane', Util.JsonEncode({
@@ -1460,14 +1155,8 @@ local function stagePass(index)
            armAt = nil }
   drag.phase = 'staging'
   releaseSpectators('drag')   -- a fresh pass: nobody carries a stale lock
-  -- THE STRIP IS CLOSED WHILE A PASS IS ON IT. Everybody who is not in this one
-  -- stands down until it settles -- the drivers already knocked out, the ones
-  -- waiting for a later pass, and anybody who wandered in to watch.
-  --
-  -- Scoped to the pass rather than to the tournament, which is the whole point:
-  -- between passes every one of them has their car back. Scoped to the 'drag'
-  -- source too, so a racing DNF's own spectator lock is neither lifted nor
-  -- imposed by any of this.
+  -- The strip is closed while a pass is on it: everyone else stands down until
+  -- it settles, under the 'drag' source (a racing lock is never touched).
   local inPass = {}
   for _, e in ipairs(p.lanes) do
     if e.id then inPass[e.id] = true end
@@ -1477,9 +1166,8 @@ local function stagePass(index)
       forceSpectate(id, 'A drag pass is on the strip', 'drag')
     end
   end
-  -- THE READY CHECK: with it on, Stage CALLS the pass. Each lane driver's car
-  -- goes onto the strip when they press Ready (drag.sendLane from
-  -- RM_onDragReady); a lane still not ready when the tree drops is a no-show.
+  -- Ready check: Stage CALLS the pass; a car goes on when its driver presses
+  -- Ready (drag.sendLane). Not ready at the tree is a no-show.
   local called = race.readyCheck == true
   pass.ready = {}
   for i, e in ipairs(p.lanes) do
@@ -1491,10 +1179,7 @@ local function stagePass(index)
         drag.sendLane(i, e, p, i, #p.lanes)
       end
     else
-      -- OFFLINE ENTRANTS ARE ALREADY DNF, before the tree has even run. There is
-      -- nobody to stage and nobody to time, and leaving the lane pending would
-      -- hold the whole pass open until the timeout for a car that does not
-      -- exist.
+      -- Offline entrants are DNF already, or the pass waits out its timeout.
       pass.staged[i] = false
       pass.times[i] = { entrant = e, lane = i, rt = nil, et = nil, speed = nil,
                         foul = false, brokeOut = false }
@@ -1521,11 +1206,8 @@ local function stagePass(index)
   return true
 end
 
--- Is every lane that can stage actually staged?
---
--- A lane with nobody in it is not counted: it was written off at staging (see
--- above) and waiting for a car that does not exist would hold the pass to its
--- timeout every time somebody dropped out.
+-- Is every lane that can stage staged? An empty lane (written off at staging)
+-- is not counted.
 local function allStaged()
   local p = currentPass()
   if not p then return false end
@@ -1539,27 +1221,15 @@ local function allStaged()
   return any
 end
 
--- Drop the tree. The lights RUN ON THE CLIENT, not here, and that is a
--- deliberate trade rather than a shortcut.
---
--- A reaction time is the gap between the green coming on and the car leaving,
--- and it is decided in the third decimal place. Timing that from the server
--- would measure the network: whoever was furthest from the box would post the
--- worst light regardless of how they drove. So the server sends the SHAPE of
--- the tree -- the pattern, the pre-roll it drew, and this lane's head start --
--- and each client runs its own lights and measures its own reaction against
--- them, on one clock, the same way it already times its own laps.
---
--- What that costs is that two clients start their trees a few tens of
--- milliseconds apart, so the cars are not exactly level on screen. What it buys
--- is that the numbers the pass is decided on were all measured the same way.
--- For a drag race, where the lanes never interact, that is the right way round.
+-- Drop the tree. The lights RUN ON THE CLIENT: a reaction time from the server
+-- would measure the network. The server sends the pattern, the pre-roll and
+-- the lane's head start; each client times itself on one clock. The lanes start
+-- a few ms apart, which does not matter when they never interact.
 local function runPass()
   local p, r = currentPass()
   if not p then return false end
-  -- NOT READY WHEN THE TREE DROPS IS A NO-SHOW: no car on the strip, no time,
-  -- the bottom of the pass, and stood down like everybody else not in it. With
-  -- nobody ready there is no pass to run, and nothing is changed.
+  -- Not ready at the tree is a no-show (bottom of the pass, stood down). Nobody
+  -- ready: nothing runs.
   local anyReady, noShow = false, {}
   for i, e in ipairs(p.lanes) do
     if e.id then
@@ -1628,20 +1298,13 @@ settlePass = function (reason)
   for i, e in ipairs(p.lanes) do
     local t = pass.times[i] or { entrant = e, lane = i, foul = false, brokeOut = false }
     t.entrant, t.lane = e, i
-    -- A LANE THAT RED-LIGHTED AND THEN NEVER GOT THERE is still a red light.
-    -- The foul is reported at the launch and the result at the finish, so a car
-    -- that fouled and then failed to finish has one and not the other; without
-    -- this the board records it as an ordinary no-show and the reason it lost
-    -- disappears. It changes no outcome -- both are the bottom tier -- and it
-    -- is the difference between a result and an explanation.
+    -- Fouled and never finished is still a red light (same tier as a no-show,
+    -- but the reason it lost is kept).
     if not t.foul and pass.fouled and pass.fouled[i] then
       t.foul = true
       t.rt = t.rt or pass.fouled[i]
     end
-    -- The moment this car got there, measured from the green the whole pass
-    -- shared: the head start its dial bought it, plus how long it sat, plus how
-    -- long the run took. With no dial-ins the first term is zero for everybody
-    -- and this is simply reaction plus ET.
+    -- Arrival from the shared green: dial head start + reaction + ET.
     if t.et then
       t.finishMoment = (p.delay and p.delay[i] or 0) + math.max(t.rt or 0, 0) + t.et
     end
@@ -1654,12 +1317,7 @@ settlePass = function (reason)
   pass.time = 0
   local top = nil
   for _, t in ipairs(results) do if t.pos == 1 then top = t end end
-  -- THE TRAP SPEED GOES IN THE CHAT LINE TOO. It is the third of the three
-  -- numbers a pass produces and the one people call out to each other, and it
-  -- was the only one not making it off the driver's own screen.
-  --
-  -- Labelled rather than slash-separated. "0.137 / 8.446 / 162.4" needs you to
-  -- know the order before it means anything, and two of the three are seconds.
+  -- All three numbers in chat, labelled (two of them are seconds).
   MP.SendChatMessage(-1, string.format(
     '[RaceManager] Drag %s pass %d: %s takes it (RT %s, ET %s, %s mph)%s',
     r.label, ladder.pass, top and top.entrant.name or '?',
@@ -1680,9 +1338,7 @@ local function afterResult()
   -- and their camera back, whether they are still in the tournament or not.
   releaseSpectators('drag')
   pass = { lanes = {}, times = {}, staged = {}, time = 0 }
-  -- A practice pass is one pass and then over. It leaves the ladder exactly
-  -- where it found it, which is the point: an admin can run one between rounds
-  -- to let somebody re-dial without the tournament noticing.
+  -- A practice pass leaves the ladder exactly where it was.
   if practice.on then
     practice.on, practice.round = false, nil
     drag.phase = (#ladder.entrants > 0)
@@ -1711,14 +1367,9 @@ function RM_DragTick()
   -- STAGING, under roll-up. Two things can end it: the field gets into the
   -- beams, or it runs out of patience.
   if drag.phase == 'staging' then
-    -- HOLD MODE HAS NOTHING TO WAIT FOR and must never start itself. Its cars
-    -- are staged the instant they are placed, so an automatic start would fire
-    -- the tree on the same tick as the placement -- a green light for a field
-    -- that is still landing.
-    --
-    -- Checked here rather than relying on stagePass not creating the timer.
-    -- "It is safe because nothing calls it" is not a rule, it is a coincidence
-    -- waiting for the next caller, and this branch already has three.
+    -- Hold mode must never start itself: its cars are staged on placement, so
+    -- the tree would fire on a landing field. Checked here, not left to
+    -- stagePass never creating the timer.
     if drag.stageMode ~= 'rollup' then
       MP.CancelEventTimer('RM_DragTick')
       return
@@ -1735,9 +1386,7 @@ function RM_DragTick()
     if pass.armAt and pass.time >= pass.armAt then
       runPass()
     elseif pass.time >= drag.stageWait then
-      -- THE TREE DROPS ON WHOEVER IS IN THE BEAMS. A car still creeping is
-      -- late, which is a result rather than a deadlock -- and an unattended
-      -- server must not be able to sit on one pass for ever.
+      -- The tree drops on whoever is staged: a late car is a result.
       MP.SendChatMessage(-1, '[RaceManager] Drag: courtesy stage expired, the '
         .. 'tree is coming down.')
       -- Nobody ready at all: nothing to run, so the pass is waved off and
@@ -1767,9 +1416,8 @@ end
 -- ===========================================================================
 -- Building the ladder
 -- ===========================================================================
--- The field is snapshotted ONCE, when the admin builds it, and never re-read.
--- A tournament whose entry list drifted under it would redraw its own bracket
--- every time somebody joined the server to watch.
+-- The field is snapshotted ONCE, at build, or the bracket would redraw itself
+-- every time somebody joined to watch.
 local function shuffle(list)
   seedOnce()
   for i = #list, 2, -1 do
@@ -1778,9 +1426,7 @@ local function shuffle(list)
   end
 end
 
--- Everyone the ladder could be drawn from: connected, and not sitting it out.
--- Same entry rule the races and the derby use, and for the same reason -- a
--- driver who has never pressed anything has not opted out of anything.
+-- Everyone the ladder could be drawn from: connected and entered (isEntrant).
 local function candidates()
   local list = {}
   for id in pairs(onlinePlayers()) do
@@ -1789,17 +1435,10 @@ local function candidates()
       list[#list + 1] = {
         id = id,
         name = rec and displayName(rec) or (MP.GetPlayerName(id) or ('Player ' .. id)),
-        -- THE ALIAS, carried separately from the name the board shows. The cup
-        -- identifies a driver through the roster, and the roster matches on the
-        -- display name an admin typed -- never on the BeamMP guest name, which
-        -- is reissued at random on every join and identifies nobody. Without
-        -- this a tournament would score every round against a fresh
-        -- placeholder.
+        -- The alias, separately: the roster matches on it, never on the guest
+        -- name, or every round scores against a fresh placeholder.
         alias = rec and rec.alias or nil,
-        -- The qualifying time this driver set on the strip, if a session was
-        -- run on it. A point-to-point layout timed once IS a qualifying pass,
-        -- so seeding a ladder off it needs nothing new -- and with dial-ins on
-        -- it is also the honest first guess at somebody's number.
+        -- Their qualifying time on the strip, for seeding (and a first dial).
         best = rec and rec.qualiBest or nil,
       }
     end
@@ -1820,10 +1459,8 @@ local function seedField(list, order)
       return a.id < b.id
     end)
   elseif drag.seed == 'manual' then
-    -- A HAND DRAW WITH NO HAND IN IT IS NOT A RANDOM ONE. The order arrives
-    -- with the build; if none came, fall back to join order rather than to the
-    -- shuffle -- an admin who chose to seed the ladder themselves and then got
-    -- a random draw has been given the one thing they ruled out.
+    -- A manual draw with no order falls back to join order, never the shuffle
+    -- the admin ruled out.
     local rank = {}
     for i, id in ipairs(type(order) == 'table' and order or {}) do
       rank[tonumber(id) or -1] = i
@@ -1876,9 +1513,8 @@ function RM_onDragSetConfig(pid, rawData)
   drag.holdResult = clampInt(data.holdResult, 0, 60, drag.holdResult)
   if type(data.dialIn)   == 'boolean' then drag.dialIn   = data.dialIn end
   if type(data.breakout) == 'boolean' then drag.breakout = data.breakout end
-  -- ADVANCE CANNOT REACH THE LANE COUNT. Advancing everybody out of a pass is a
-  -- round that narrows nothing, and the ladder would run until the round cap
-  -- stopped it. Applied after both assignments so it wins in either order.
+  -- Advance must stay below the lane count, or a pass narrows nothing. After
+  -- both assignments, so it wins in either order.
   if drag.advance > drag.lanes - 1 then drag.advance = drag.lanes - 1 end
   saveLadder()
   broadcastDragState()
@@ -1896,9 +1532,7 @@ function RM_onDragBuild(pid, rawData)
     local ok, data = pcall(Util.JsonDecode, rawData)
     if ok and type(data) == 'table' then order = data.order end
   end
-  -- THE STRIP HAS TO EXIST FIRST. Everything below assumes a finish line to
-  -- cross and a lane to line up in, and neither of them is this module's to
-  -- create -- they arrive with the loaded track layout.
+  -- The strip (a finish and a lane) comes with the loaded track layout.
   if stripGates() < 1 then
     MP.SendChatMessage(pid, '[RaceManager] Load a track layout first: the drag '
       .. 'strip is a point-to-point layout, and its last gate is the finish line.')
@@ -1956,18 +1590,9 @@ function RM_onDragBuild(pid, rawData)
     MP.GetPlayerName(pid) or pid, #ladder.entrants, drag.format, drag.seed))
 end
 
--- ONE PASS DOWN THE STRIP THAT SCORES NOTHING.
---
--- Everybody eligible, up to the lane count, staged and timed exactly as a real
--- pass is. Two presses instead of three -- Practice puts them on the line, Run
--- drops the tree -- because a warm-up should not need the ceremony a round of
--- the tournament does.
---
--- It works with ONE driver, which is most of why it exists: a bracket needs a
--- field, and until one turns up there is otherwise no way to find out whether
--- the finish line is where you think it is. The other reason is the dial-in --
--- declaring the time you expect to run, on a strip you have never seen, is a
--- guess until you have made a pass down it.
+-- One pass that scores nothing: up to the lane count, staged and timed as a
+-- real pass, two presses (Practice, Run). Works with ONE driver: to find the
+-- finish line, or a dial-in.
 function RM_onDragPractice(pid)
   if not requireAuth(pid) then return end
   if dragActive() then return end
@@ -1983,17 +1608,12 @@ function RM_onDragPractice(pid)
     return
   end
   table.sort(list, function (a, b) return a.id < b.id end)
-  -- Capped by the lanes the STRIP has rather than by the configured lane count:
-  -- a practice pass is about the strip, and warming up should not mean editing
-  -- the tournament rules first.
+  -- Capped by the strip's lanes, not the configured count.
   local room = math.min(stripLanes(), DRAG_MAX_LANES)
   local lanes = {}
   for i = 1, math.min(#list, room) do
     local c = list[i]
-    -- THROWAWAY RECORDS, not the ladder's. A practice pass writes nothing down,
-    -- so these live for one run and are dropped. The DIAL is copied off the
-    -- ladder entry when there is one, because running a handicap start is one of
-    -- the things people practise.
+    -- Throwaway records for one run; the dial is copied from the ladder entry.
     local dial = nil
     for _, e in ipairs(ladder.entrants) do
       if e.id == c.id then dial = e.dial; break end
@@ -2104,9 +1724,7 @@ function drag.announceIfAllReady(p)
   end
 end
 
--- Wave a pass off. Nothing is scored, the cars go back, and the same pass is
--- offered again -- which is what nextPassIndex scanning rather than
--- incrementing is for.
+-- Wave a pass off: nothing scored, the cars go back, the pass is offered again.
 function RM_onDragAbort(pid)
   if not requireAuth(pid) then return end
   if drag.phase ~= 'staging' and drag.phase ~= 'tree' and drag.phase ~= 'running' then return end
@@ -2147,9 +1765,8 @@ function RM_onDragClear(pid)
   print('[RaceManager] Drag ladder cleared by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- Pull an entrant out. Their remaining passes are walkovers for whoever else is
--- in them, which is the honest outcome: the alternative is a lane that never
--- reports and a pass that runs to its timeout.
+-- Pull an entrant out: their passes are walkovers, not a lane that never
+-- reports.
 function RM_onDragWithdraw(pid, rawData)
   if not requireAuth(pid) then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
@@ -2201,15 +1818,8 @@ end
 
 -- --- Client -> server: what happened in a lane -----------------------------
 
--- A car reached the beams, or left them.
---
--- ONLY THE CLIENT CAN KNOW THIS. The beams are a distance from the start
--- position measured along its heading, and this server has no physics and no
--- idea where any car is -- the same division of labour the lap timer and the
--- finish line already use.
---
--- Reported on CHANGE rather than every frame: two booleans over a network at
--- sixty hertz would be sixty times the traffic for a fact that moves twice.
+-- A car reached the beams, or left them: only the client can know (no physics
+-- here). Reported on CHANGE, not per frame.
 function RM_onDragStaged(pid, rawData)
   if drag.phase ~= 'staging' then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
@@ -2230,9 +1840,8 @@ function RM_onDragStaged(pid, rawData)
   end
 end
 
--- A red light, reported the moment it happens so the board can light the bulb
--- while the car is still going down the strip. The RUN still counts: a foul is
--- a losing pass, not a cancelled one, and the driver still puts an ET up.
+-- A red light, reported at the launch so the bulb lights during the run. The
+-- run still counts: a foul loses, it does not cancel.
 function RM_onDragFoul(pid, rawData)
   if drag.phase ~= 'tree' and drag.phase ~= 'running' then return end
   local rt = nil
@@ -2240,10 +1849,7 @@ function RM_onDragFoul(pid, rawData)
     local ok, data = pcall(Util.JsonDecode, rawData)
     if ok and type(data) == 'table' then rt = tonumber(data.rt) end
   end
-  -- MATCHED AGAINST THE LANES, not against the entrant list. A practice pass
-  -- has no entrants -- its lanes are throwaway records that were never added to
-  -- the ladder -- so looking the sender up there found nobody and the report
-  -- was dropped on the floor. The lane is what a result belongs to anyway.
+  -- Matched against the LANES: a practice pass has no entrants.
   for i, lane in ipairs(pass.lanes or {}) do
     if lane.id == pid then
       -- Held on the pass rather than written into times: the lane has not
@@ -2286,9 +1892,7 @@ function RM_onDragResult(pid, rawData)
         speed = tonumber(data.speed) and clampNum(data.speed, 0, 999, nil) or nil,
         foul = foul, brokeOut = false,
       }
-      -- BREAKING OUT is only a thing when there is a dial to break out of, and
-      -- only when the rule is switched on. Decided HERE rather than on the
-      -- client, so a client cannot decide it did not happen.
+      -- A breakout needs a dial and the rule on; decided HERE, not by the client.
       if drag.dialIn and drag.breakout and e.dial and t.et and t.et < e.dial then
         t.brokeOut = true
         t.breakBy  = t.et - e.dial
@@ -2318,18 +1922,13 @@ function RM_onDragRequestState(pid)
     roundSide = r and r.side or nil, roundCount = #ladder.rounds,
     passIndex = ladder.pass, passCount = r and #r.passes or 0,
     champion = ladder.champion, finishOrder = ladder.finishOrder,
-    -- Whether what is on the strip is a PRACTICE pass. The panel has to be able
-    -- to say so plainly: the controls look identical, and a warm-up mistaken
-    -- for a round of the tournament is the worst thing to be unsure about while
-    -- sitting on the line.
+    -- A PRACTICE pass, said plainly: the controls look identical.
     practice = practice.on,
     entrants = entrants, board = boardRows(), current = livePass(),
   }))
 end
 
--- Somebody joined, left, or changed their mind about racing. The ladder does
--- NOT redraw itself -- the field was snapshotted when it was built and that is
--- the point of a bracket -- but the ids have to follow the people.
+-- The entry list moved. The ladder does NOT redraw; the ids follow the people.
 dragEntryListChanged = function ()
   if #ladder.entrants == 0 then return end
   local online = onlinePlayers()
@@ -2339,13 +1938,8 @@ dragEntryListChanged = function ()
     if e.id and not online[e.id] then e.id = nil; changed = true end
     if e.id then claimed[e.id] = true end
   end
-  -- A NAME COMING BACK RECLAIMS ITS SEED. This is the one place a name is
-  -- treated as an identity, and it is a deliberate, narrow exception: inside a
-  -- tournament that is already running, the alternative to matching on the name
-  -- is a driver who reconnected and can no longer race the ladder they are in.
-  -- Nothing outside this file is bound by it, and no championship points hang
-  -- on it -- see the roster's note on why automatic recognition is refused
-  -- everywhere else.
+  -- A name coming back reclaims its seed: a deliberate, narrow exception (inside
+  -- a running ladder only, no points hang on it) to refusing name matching.
   for _, e in ipairs(ladder.entrants) do
     if not e.id and e.status ~= 'withdrawn' then
       for id, name in pairs(online) do
@@ -2363,9 +1957,7 @@ dragEntryListChanged = function ()
 end
 
 function RM_Drag_onPlayerDisconnect(pid)
-  -- A LANE THAT HAS GONE HOME CANNOT REPORT, so it is DNF the moment the
-  -- connection goes. Without this the pass sits open until it times out.
-  -- Checked before the ladder, and separately from it, because a practice pass
+  -- A lane whose driver left is DNF at once. Before the ladder: a practice pass
   -- has lanes and no entrants.
   local settled = false
   if dragActive() then

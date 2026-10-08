@@ -1,48 +1,16 @@
 -- Race Manager: DRAG RACING, as its own module.
 --
--- The client half of the tournament ladder in server/RaceManager/drag.lua. The
--- server owns the bracket; this file owns the two things only a client can do,
--- because only a client has the physics:
---
---   * RUN THE CHRISTMAS TREE, locally, on this machine's clock
---   * MEASURE THE PASS: reaction time, elapsed time, trap speed, and whether
---     the car left before the green
---
--- WHY THE TREE RUNS HERE. A reaction time is the gap between a light coming on
--- and a car moving, and it is decided in the third decimal place. Timing that
--- against a server tick would measure the network instead: the driver furthest
--- from the box would post the worst light however well they drove. So the
--- server sends the SHAPE of the tree -- which pattern, the pre-roll it drew,
--- and this lane's handicap -- and every client runs the same lights against its
--- own clock. Same trade the lap timer already makes, for the same reason.
---
--- THE HANDICAP IS THE WHOLE TREE, not a hold after the green. In bracket racing
--- the slower car's tree runs first and the quicker car's starts later by the
--- difference between the two dial-ins, so a driver watches an ordinary tree and
--- launches on their own green. Delaying only the green would show somebody a
--- three-amber sequence and then not let them go, which is the one thing a
--- staged driver cannot be asked to ignore.
---
--- THE CONTRACT is the derby's. Nothing here reaches back into the extension by
--- name: plain functions are called off the host table, mutable scalars come
--- through GETTERS (a value captured at init would be a snapshot of load time),
--- and tables come by reference.
---
--- TWO EXCEPTIONS, AND THEY ARE THE SAME EXCEPTION. The route and the start
--- positions come through GETTERS rather than by reference, because
--- `track.route` and `track.startPositions` are REASSIGNED when a layout loads
--- rather than cleared in place -- so a reference taken here at init goes on
--- pointing at whatever table the mod started with, forever.
---
--- The second of those was learned the expensive way: the lanes were passed by
--- reference under a comment asserting the table was cleared in place, and
--- every staged car was placed against the empty one the mod booted with. It
--- reads as "Start position 1 is not placed on this track" on a strip that
--- plainly has two, which points at the track editor and not at this file.
---
--- Which fields are which is not something anybody can be expected to remember,
--- so tests/wiring_test.lua checks it: a module init may not take a `track`
--- field by reference if the host ever reassigns it.
+-- The client half of the ladder in server/RaceManager/drag.lua: the server owns
+-- the bracket, this file does what only a client can.
+--   * RUN THE CHRISTMAS TREE on this machine's clock: a reaction time timed
+--     against a server tick would measure the network. The server sends the
+--     tree's SHAPE (pattern, pre-roll, this lane's handicap).
+--   * MEASURE THE PASS: reaction time, elapsed time, trap speed, and a foul.
+-- THE HANDICAP IS THE WHOLE TREE: the quicker car's tree starts later by the
+-- dial-in difference, so each driver launches on their own green.
+-- THE CONTRACT is the derby's (functions, getters, tables by reference). The
+-- route and start positions come through GETTERS: they are REASSIGNED when a
+-- layout loads (tests/wiring_test.lua checks this).
 
 local D = {}
 local host
@@ -54,45 +22,27 @@ end
 -- ===========================================================================
 -- Tunables
 -- ===========================================================================
--- How far the car has to move off its staged position before it counts as
--- having launched. Half a meter: far enough that suspension settle, a shunt
--- from the lane alongside and the physics jiggle a frozen car does on release
--- do not read as a start, and short enough that the reaction time it stamps is
--- still the moment the driver went.
+-- Distance off the staged position that counts as a launch: past settle,
+-- shunts and release jiggle, short enough to stamp the real moment.
 local DRAG_LAUNCH_DIST = 0.5
 -- Three ambers together, green four tenths later. The professional tree.
 local DRAG_PRO_LIGHTS  = 0.4
--- Ambers half a second apart, green half a second after the last. The
--- sportsman (or full) tree, which is what most brackets run.
+-- Sportsman tree: ambers half a second apart, green after the last.
 local DRAG_SPORT_STEP  = 0.5
 local DRAG_SPORT_LIGHTS = DRAG_SPORT_STEP * 3
 local MPS_TO_MPH = 2.236936
--- HOW LONG THE TIME SLIP STAYS UP.
---
--- It is a RESULT, not a state, and it was written as though it were a state:
--- pushed once when the pass ended and left on screen for ever. It outlived the
--- pass, the ladder and the tab -- an admin on the Race tab was still being
--- shown somebody's elapsed time from twenty minutes earlier, over a panel that
--- had nothing to do with it.
---
--- Long enough to drive back and read it, short enough that it is gone before
--- it is a lie. Every path that means "there is no run to show" clears it early
--- (see clearSlip); this is the backstop for the ones nobody thought of, which
--- is what the original was missing.
+-- How long the time slip stays up: a RESULT, not a state (it once lingered over
+-- other tabs for twenty minutes). clearSlip handles the known paths; this is
+-- the backstop.
 local DRAG_SLIP_SECONDS = 25
 
--- ONE TABLE, not fifteen file-scope locals. Same discipline as everywhere else
--- in this mod: Lua caps a function at 200 locals, the top level of a file is a
--- function, and going over does not warn -- the file fails to compile and the
--- mod is simply not there.
+-- One table, for the locals ceiling.
 D.dragState = {
   phase   = 'idle',     -- mirrored from the server
   lane    = nil,        -- which lane this driver is in, or nil for a spectator
   dial    = nil,
   delay   = 0,          -- this lane's handicap, in seconds
-  -- THE RUN IN PROGRESS. Everything below is measured locally and reset for
-  -- every pass; a field left over from the last one is the whole class of bug
-  -- the server's note on derby.endsAt describes.
+  -- The run in progress, measured locally and reset for every pass.
   running  = false,
   t        = 0,         -- seconds since the tree was dropped
   treeAt   = nil,       -- t this driver's own lights start
@@ -106,11 +56,8 @@ D.dragState = {
   reported = false,     -- a result has gone to the server
   stage    = 'off',     -- what the tree is showing: off|staged|amber1..3|green|red
   pattern  = 'sportsman',
-  -- ROLLING UP INTO THE BEAMS. Under this mode the car is placed BEHIND the
-  -- line and left free, and the driver creeps forward until the bulbs light.
-  -- `line` is the start position the beams are measured against, and the
-  -- three thresholds arrive with it from the server so both halves agree on
-  -- where the beams are.
+  -- ROLL-UP: the car is placed BEHIND the line, free, and creeps forward until
+  -- the bulbs light. The beam thresholds arrive from the server with `line`.
   rollup    = false,
   line      = nil,      -- { x, y, hx, hy } the beams are measured from
   preAt     = -1.2,
@@ -118,12 +65,10 @@ D.dragState = {
   pastAt    = 2.0,
   preStaged = false,
   inBeams   = false,
-  -- The last pass this driver made, held so the HUD can show it after the
-  -- lights have gone out, and the seconds it has left to live.
+  -- The last pass, for the HUD, and the seconds it has left.
   lastRT = nil, lastET = nil, lastSpeed = nil,
   slipLeft = 0,
-  -- A spectator's copy of the tree, so everybody watching sees the same lights
-  -- come on as the cars on the line.
+  -- A spectator's copy of the tree.
   watching = false,
 }
 
@@ -133,16 +78,14 @@ local function lightsFor(pattern)
   return pattern == 'pro' and DRAG_PRO_LIGHTS or DRAG_SPORT_LIGHTS
 end
 
--- STAGING, STEP BY STEP, in the game's own Messages app, for a driver who has
--- never staged a car. One category, so each step replaces the last instead of
--- stacking up.
+-- Staging steps in the game's Messages app; one category, so each replaces the
+-- last.
 local function stageHint(text)
   if host.hudMessage then host.hudMessage('stage', text) end
 end
 
--- The lights, as the panel draws them. The two stage bulbs are sent separately
--- from the amber sequence because under roll-up they are a different fact: an
--- amber is a moment in a countdown, a stage bulb is where the car is standing.
+-- The lights. The stage bulbs are sent apart from the ambers: under roll-up
+-- they say where the car is, not a moment in a countdown.
 local function pushTree(stage, force)
   if S.stage == stage and not force then return end
   S.stage = stage
@@ -154,9 +97,7 @@ local function pushTree(stage, force)
   if host.lightsTree then host.lightsTree(t) end
 end
 
--- Wind the whole local run down. Called from every path that can end one: the
--- result being reported, an abort, the pass leaving 'running' on the server,
--- and the driver's own timeout.
+-- Wind the local run down, from every path that ends one.
 local function endRun(stage)
   S.running  = false
   S.released = false
@@ -167,32 +108,18 @@ local function endRun(stage)
   pushTree(stage or 'off')
 end
 
--- THE HOLD COMES OFF AT THE FIRST LIGHT OF THIS DRIVER'S OWN TREE, and the
--- anchor the launch is measured from is taken at the same instant.
---
--- Both used to happen when the tree message arrived, which is the moment the
--- admin pressed Run -- and that is too early on two counts. The car may still
--- be LANDING: placement is staggered at 0.18s a lane so an eight-wide field is
--- still arriving 1.26s after Stage, and an anchor taken mid-flight is half a
--- strip away from where the car ends up, which reads as a launch on the next
--- frame and hands the driver a red light they never earned. And releasing a
--- car the placement queue is about to freeze leaves it frozen for the whole
--- pass, because the queue applies its hold after this let it go.
---
--- The pre-roll is what covers both, which is why its floor is 1.5s rather than
--- a rounder number: that is longer than the widest field takes to land. The
--- check below is the belt to that braces -- if a placement really is still
--- running, the release waits a frame, and never past the green.
+-- THE HOLD COMES OFF AT THIS DRIVER'S FIRST LIGHT, and the launch anchor is
+-- taken then, not when Run is pressed: the car may still be landing (placement
+-- is staggered 0.18 s a lane), and a mid-flight anchor reads as a launch. The
+-- 1.5 s pre-roll floor outlasts the widest field; if a placement is still
+-- running the release waits a frame, never past the green.
 local function releaseForLaunch()
   if S.released then return end
   local landing = host.placementActive and host.placementActive()
   if landing and S.t < (S.greenAt or 0) then return end
   local _, pos = host.sampledVehicle()
   S.released = true
-  -- UNDER ROLL-UP THE ANCHOR IS ALREADY SET, at the stage beam, and moving it
-  -- now would be moving the start line under a car that may already be
-  -- leaving. Only take a fresh one when there is none -- a held car, or a
-  -- roll-up car the courtesy stage timed out on before it ever staged.
+  -- Under roll-up the anchor is already the stage beam; only take one if none.
   if not S.anchor then
     S.anchor = pos and { x = pos.x, y = pos.y, z = pos.z } or nil
   end
@@ -200,8 +127,7 @@ local function releaseForLaunch()
   host.releaseGridHold('drag')
 end
 
--- Take the time slip down. Pushed to the panel rather than only cleared here,
--- because the panel is what is showing it.
+-- Take the time slip down, on the panel too.
 local function clearSlip()
   if S.slipLeft <= 0 and S.lastET == nil and S.lastRT == nil then return end
   S.slipLeft = 0
@@ -229,9 +155,7 @@ local function reportResult(et, speed)
     if S.foul then parts[#parts + 1] = '"foul":true' end
     TriggerServerEvent('RM_DragResult', '{' .. table.concat(parts, ',') .. '}')
   end
-  -- The driver's own numbers, on their own screen, the moment they have them.
-  -- The board will agree a beat later; this is the one that is there when they
-  -- look up.
+  -- The driver's own numbers, on their own screen, at once.
   if et then
     host.pushNotice('drag', string.format('%s  RT %.3f  ET %.3f  %.1f mph',
       S.foul and 'RED LIGHT' or 'PASS COMPLETE', rt or 0, et, speed or 0))
@@ -245,22 +169,16 @@ local function reportResult(et, speed)
   endRun(S.foul and 'red' or 'off')
 end
 
--- HOW FAR THIS CAR IS FROM THE BEAMS, in metres along the line's heading.
---
--- Signed, and the sign is the whole of it: negative is short of the line,
--- zero is on it, positive is past. Projected onto the heading rather than
--- measured as a straight-line distance, because a car sitting a metre to one
--- side in its own lane is exactly as staged as one dead centre -- and a plain
--- distance would call it a metre short.
+-- Signed distance from the beams along the line's heading (negative short,
+-- positive past). Projected, so a car to one side of its lane is still staged.
 local function beamDistance(pos)
   if not (S.line and pos) then return nil end
   local dx, dy = pos.x - S.line.x, pos.y - S.line.y
   return dx * (S.line.hx or 0) + dy * (S.line.hy or 1)
 end
 
--- Creeping into the beams. Runs only while the pass is staging under roll-up:
--- once the tree is going the bulbs are frozen at whatever they said, because
--- the car is about to leave them and that is a launch, not an un-stage.
+-- Creeping into the beams, under roll-up, before the tree. Once it runs the
+-- bulbs freeze: leaving them then is a launch.
 local function stagingUpdate()
   if not (S.rollup and S.line) or S.running then return end
   local _, pos = host.sampledVehicle()
@@ -268,19 +186,10 @@ local function stagingUpdate()
   if not d then return end
   local pre = d >= S.preAt and d <= S.pastAt
   local inb = d >= S.stageAt and d <= S.pastAt
-  -- THE LAUNCH IS MEASURED FROM THE STAGE BEAM, so the anchor is taken here
-  -- and not when the lights start.
-  --
-  -- It used to be taken at the first amber, which is correct under 'hold' --
-  -- the car is frozen until then and cannot have moved -- and wrong under
-  -- roll-up, where the car has been free since it was placed. A driver who
-  -- left during the pre-roll had no anchor to be measured against, so the
-  -- foul was never seen AND the anchor was then taken from wherever they had
-  -- got to, timing the run from a rolling start.
-  --
-  -- Kept current while the car sits in the beams, because staging deeper is a
-  -- thing drivers do on purpose, and frozen the instant the tree starts:
-  -- stagingUpdate does not run while the pass is running.
+  -- The launch is measured from the stage beam, so the anchor is taken here and
+  -- kept current while the car sits in the beams (staging deep is deliberate);
+  -- frozen once the tree starts. Taken at the first amber, a roll-up car that
+  -- left during the pre-roll was never fouled.
   if inb and pos then S.anchor = { x = pos.x, y = pos.y, z = pos.z } end
   if pre == S.preStaged and inb == S.inBeams then return end
   S.preStaged, S.inBeams = pre, inb
@@ -293,8 +202,7 @@ local function stagingUpdate()
   else
     stageHint('ROLL UP: creep forward slowly until the PRE-STAGE light comes on.')
   end
-  -- ON CHANGE ONLY. Two booleans at sixty hertz is sixty times the traffic
-  -- for a fact that moves twice a pass.
+  -- On change only.
   if host.inMultiplayer() then
     TriggerServerEvent('RM_DragStaged', string.format(
       '{"prestaged":%s,"staged":%s}',
@@ -306,13 +214,9 @@ end
 -- ===========================================================================
 -- The frame
 -- ===========================================================================
--- Everything a drag pass measures happens here, and it does nothing at all
--- unless this client is in the pass. A driver watching from the fence runs the
--- spectator tree below and nothing else.
+-- Does nothing unless this client is in the pass; a spectator runs the tree.
 function D.dragUpdate(dt)
-  -- BEFORE EVERY EARLY RETURN BELOW, and that is the point: the slip has to
-  -- expire whatever else this client is or is not doing. The frame is the only
-  -- thing that runs unconditionally.
+  -- Before every early return: the slip must expire regardless.
   slipUpdate(dt)
   if S.watching and not S.running then
     -- Spectator tree: the lights, and nothing that touches a car.
@@ -336,13 +240,8 @@ function D.dragUpdate(dt)
   S.t = S.t + dt
   if not S.released and S.t >= (S.treeAt or 0) then releaseForLaunch() end
 
-  -- The lights, on this driver's own tree.
-  --
-  -- NOT ONCE FOULED. The launch below turns the bulb red, and this block runs
-  -- first on every later frame -- so during the pre-roll it put 'staged' back
-  -- over the top and the red light was visible for exactly one frame. A red
-  -- light stays red for the rest of the run, which is what the tree at a strip
-  -- does and what the driver has to be able to see.
+  -- The lights, on this driver's own tree, NOT once fouled: a red light stays
+  -- red for the rest of the run.
   if not S.reported and not S.foul then
     if S.t < (S.treeAt or 0) then
       pushTree('staged')
@@ -360,17 +259,13 @@ function D.dragUpdate(dt)
   local veh, pos = host.sampledVehicle()
   if not veh or not pos then return end
 
-  -- LAUNCH. Measured as distance off the staged position rather than as speed,
-  -- because a car being shunted sideways on the line is not a launch and a car
-  -- creeping forward at walking pace is.
+  -- LAUNCH: distance off the staged position, not speed (a sideways shunt is
+  -- not a launch, a crawl forward is).
   if not S.launchAt and S.anchor then
     local dx, dy = pos.x - S.anchor.x, pos.y - S.anchor.y
     if (dx * dx + dy * dy) >= (DRAG_LAUNCH_DIST * DRAG_LAUNCH_DIST) then
       S.launchAt = S.t
-      -- A RED LIGHT IS A FOUL, NOT A CANCELLED PASS. The driver goes on down
-      -- the strip and still puts an ET on the board; the server decides what a
-      -- foul costs them. Deciding it here would let a client decide it did not
-      -- happen.
+      -- A red light is a FOUL, not a cancelled pass: the server decides its cost.
       if S.t < (S.greenAt or 0) then
         S.foul = true
         pushTree('red')
@@ -380,9 +275,7 @@ function D.dragUpdate(dt)
     end
   end
 
-  -- THE FINISH LINE IS THE LAST GATE OF THE LOADED LAYOUT, which is what makes
-  -- a point-to-point sprint stage a drag strip without a second editor. The
-  -- crossing test is the same one the lap timer uses.
+  -- The finish is the loaded layout's last gate (a sprint stage is a strip).
   if S.launchAt and S.prevPos then
     local gate = host.finishGate()
     if gate and host.segmentCrossesGate(gate, S.prevPos, pos) then
@@ -397,8 +290,7 @@ function D.dragUpdate(dt)
   end
   S.prevPos = pos
 
-  -- Gave up. Reported rather than left to the server's own timeout, so a pass
-  -- settles the moment the last car stops trying instead of a minute later.
+  -- Gave up: report now rather than wait out the server's timeout.
   if S.timeoutAt and S.t >= S.timeoutAt then
     reportResult(nil, nil)
   end
@@ -412,14 +304,10 @@ D.onDragUpdate = function (rawData)
   if not ok or type(data) ~= 'table' then return end
   if not host.fromCurrentServer(data) then return end
   local newPhase = data.dragPhase or 'idle'
-  -- A PASS THAT IS NO LONGER RUNNING RELEASES EVERY CAR IT HELD, whatever order
-  -- the broadcasts arrive in. Without this a client that missed the abort would
-  -- sit frozen on the line for the rest of the evening.
+  -- A pass no longer running releases every car it held, broadcast order aside.
   if newPhase ~= 'staging' and newPhase ~= 'tree' and newPhase ~= 'running' then
-    -- NOT GATED ON S.running, and that is the fix rather than the tidy: a red
-    -- light ends the local run the moment it is reported, so by the time the
-    -- pass settles S.running is already false and a gate here left the red bulb
-    -- burning on screen with nothing left to turn it off.
+    -- Not gated on S.running: a red light ends the run when reported, and the
+    -- bulb has to come off when the pass settles.
     if S.running or S.watching or S.stage ~= 'off' then
       S.watching = false
       endRun('off')
@@ -428,26 +316,18 @@ D.onDragUpdate = function (rawData)
       host.releaseGridHold('drag')
       S.lane, S.delay = nil, 0
     end
-    -- THE LADDER IS GONE, so the slip goes with it. This is the path Clear
-    -- Ladder takes, and it is also the only one available after a practice
-    -- pass: that leaves the phase at 'idle', where the Clear Ladder button is
-    -- disabled and cannot be the thing that tidies up.
+    -- The ladder is gone (Clear Ladder, or after a practice pass): so is the slip.
     if newPhase == 'idle' then clearSlip() end
   end
   S.phase = newPhase
-  -- WHICH ROW IS MINE. The board arrives as one broadcast to the whole server,
-  -- so it cannot be addressed to anybody; the id comparison happens here,
-  -- where this client's own id is actually known. Without it the panel has no
-  -- way to offer a driver their own dial-in box.
+  -- Mark our own row: the board is one broadcast to everybody.
   local me = host.localServerId()
   if me and type(data.entrants) == 'table' then
     for _, row in ipairs(data.entrants) do
       row.you = (row.id ~= nil and row.id == me) or nil
     end
   end
-  -- ...and our lane in the pass on the strip, for the Ready button. The HUD
-  -- says so the first time we are called: not after Not ready, which the
-  -- driver pressed themselves.
+  -- ...and our lane, for the Ready button; the HUD says when we are first called.
   local wasReady = S.myReady
   S.myReady = nil
   if me and type(data.current) == 'table' and type(data.current.lanes) == 'table' then
@@ -465,15 +345,12 @@ D.onDragUpdate = function (rawData)
   guihooks.trigger('RaceManagerDrag', data)
 end
 
--- This driver has a lane in the pass being staged. Placement goes through the
--- same queue the racing grid and the derby form-up use: ghosted, staggered by
--- lane number, collisions back once the field has landed. Eight cars teleported
--- onto adjacent slots on one tick is how a placement gets refused or lands two
--- cars inside each other.
+-- This driver has a lane: placed through the shared queue, ghosted and
+-- staggered by lane number.
 D.onDragLane = function (rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
-  -- Not ready any more: off the strip, and the hold goes with it.
+  -- Not ready any more: off the strip, hold released.
   if data.release == true then
     host.releaseGridHold('drag')
     S.lane, S.delay = nil, 0
@@ -485,9 +362,7 @@ D.onDragLane = function (rawData)
   S.delay = tonumber(data.delay) or 0
   S.reported = false
   S.foul = false
-  -- A NEW PASS ON THE LINE: last time's numbers are done. This used to null
-  -- the three fields and tell nobody, so the panel went on showing them until
-  -- a fresh result happened to replace them.
+  -- A new pass: last time's numbers are done.
   clearSlip()
   S.rollup = data.rollup == true
   S.preStaged, S.inBeams = not S.rollup, not S.rollup
@@ -497,24 +372,19 @@ D.onDragLane = function (rawData)
     if data.hold == true then host.requestHold('drag') end
     return
   end
-  -- CALLED, not read: the host reassigns this table when a layout loads, so a
-  -- value captured at init would be the empty one the mod started with.
+  -- Called, not read: the host reassigns this table.
   local slots = host.startPositions()
   local sp = slots[slot]
   local count = math.max(tonumber(data.count) or slot, slot)
   if S.rollup and sp then
-    -- The beams are measured against the start position itself, and the car
-    -- is put down a few metres SHORT of it so there is something to roll up.
+    -- The beams are at the start position; the car goes down short of it.
     S.line    = { x = sp.x, y = sp.y, hx = sp.hx or 0, hy = sp.hy or 1 }
     S.preAt   = tonumber(data.prestageAt) or S.preAt
     S.stageAt = tonumber(data.stageAt) or S.stageAt
     S.pastAt  = tonumber(data.stagePast) or S.pastAt
     local back = tonumber(data.back) or 5.0
-    -- A ONE-SLOT LIST, so the shared placement queue stands the car where this
-    -- module wants it without the host learning what a drag strip is. The
-    -- stagger still runs on the real lane number, which is what `order` is
-    -- for -- eight cars landing on the same tick is how a placement gets
-    -- refused or two of them end up inside each other.
+    -- A one-slot list, so the shared queue needs no idea of a drag strip; the
+    -- stagger still runs on the real lane number.
     host.queueFieldPlacement({
       slot  = 1,
       slots = { { x = sp.x - (sp.hx or 0) * back, y = sp.y - (sp.hy or 1) * back,
@@ -527,7 +397,7 @@ D.onDragLane = function (rawData)
       .. 'STAGE are both lit.')
     stageHint('ROLL UP: creep forward slowly until the PRE-STAGE light comes on.')
   else
-    -- Placed on the line and held: already staged, both bulbs lit.
+    -- Placed on the line and held: already staged.
     stageHint('STAGED: you are held on the line. Go when the light turns GREEN; '
       .. 'leaving early is a red light.')
     host.queueFieldPlacement({
@@ -542,11 +412,8 @@ D.onDragLane = function (rawData)
   pushTree('staged', true)
 end
 
--- The tree. THE HOLD COMES OFF HERE, at the first light and not at the green,
--- and that is what makes a red light possible at all: a staged driver is free
--- to go whenever they like, and going early is a foul rather than something the
--- game prevents. A car frozen until the green cannot foul, which would quietly
--- delete half of what a drag race is.
+-- The tree. The hold comes off at the first light, not the green, so leaving
+-- early is a foul rather than something the game prevents.
 D.onDragTree = function (rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
@@ -560,22 +427,12 @@ D.onDragTree = function (rawData)
   S.greenAt  = S.treeAt + lightsFor(S.pattern)
   S.timeoutAt = S.greenAt + (tonumber(data.timeout) or 60)
   S.launchAt, S.foul, S.reported = nil, false, false
-  -- UNDER ROLL-UP THERE IS NO HOLD TO COME OFF: the car has been free the
-  -- whole time it was creeping. releaseForLaunch still runs, because the
-  -- other half of its job -- anchoring the launch where the car is standing
-  -- when its own lights start -- is exactly right either way, and under
-  -- roll-up that anchor IS the stage beam.
+  -- Under roll-up there is no hold, but releaseForLaunch still anchors.
   S.released = false
   S.running  = true
   S.watching = false
-  -- NO ANCHOR AND NO RELEASE YET under 'hold': both wait for this driver's own
-  -- first light -- see releaseForLaunch for why taking them here was wrong
-  -- twice over. Until then the car is frozen on its lane, which is where a
-  -- held car belongs.
-  --
-  -- UNDER ROLL-UP THE ANCHOR ALREADY EXISTS and is kept: it is the stage beam
-  -- the driver rolled into, and it is what makes a pre-roll departure a red
-  -- light rather than an untimed one.
+  -- Under 'hold', anchor and release wait for this driver's first light. Under
+  -- roll-up the anchor (the stage beam) is kept.
   if not S.rollup then S.anchor = nil end
   S.prevPos = nil
   pushTree('staged')
@@ -607,9 +464,7 @@ end
 -- ===========================================================================
 -- UI -> server
 -- ===========================================================================
--- Thin relays, all of them. The server is the authority on every one of these
--- and re-checks the admin password on arrival; a disabled button has never
--- stopped anybody who can reach the console.
+-- Thin relays; the server re-checks the admin password on each.
 local function send(event, payload)
   if not host.inMultiplayer() then
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Drag racing needs a BeamMP server' })
@@ -630,11 +485,8 @@ function D.dragRequestState()
   end
 end
 
--- POSITIONAL, not a JSON string, because the UI reaches this through
--- bngApi.engineLua and that is a string of Lua being built by hand. Every other
--- admin control in this mod is spelled the same way for the same reason: a JSON
--- payload assembled inside a Lua expression inside a JavaScript string is three
--- quoting rules deep, and one of them always loses.
+-- Positional, not a JSON string: the UI builds this call as Lua source inside a
+-- JavaScript string.
 function D.dragSetConfig(format, lanes, advance, cut, rounds, tree, seed,
                          dialIn, breakout, timeout)
   send('RM_DragSetConfig', jsonEncode({
@@ -646,10 +498,8 @@ function D.dragSetConfig(format, lanes, advance, cut, rounds, tree, seed,
     timeout = tonumber(timeout),
   }))
 end
--- THE START PROCEDURE, on a call of its own rather than three more arguments
--- on dragSetConfig. That one is already ten positional parameters deep, which
--- is as far as a hand-built engineLua string should be asked to go before a
--- misplaced comma starts silently setting the wrong rule.
+-- The start procedure, on its own call: dragSetConfig is ten positional
+-- arguments deep already.
 function D.dragSetStaging(mode, autoStart, wait)
   send('RM_DragSetConfig', jsonEncode({
     stageMode = mode,
@@ -660,12 +510,10 @@ end
 function D.dragBuild()           send('RM_DragBuild', '') end
 function D.dragClear()           send('RM_DragClear') end
 function D.dragStage()           send('RM_DragStage') end
--- One pass down the strip that scores nothing. Stages and holds in the same
--- press, because a warm-up should not need the ceremony a tournament round does.
+-- One unscored pass, staged and held in one press.
 function D.dragPractice()        send('RM_DragPractice') end
 function D.dragRun()             send('RM_DragRun') end
--- The ready check: put this car on its lane, or take it off again. Refused
--- here with no car, because the server would mark it ready with nothing to move.
+-- Ready check, refused with no car.
 function D.dragReady(on)
   if on ~= false and not host.ownVehicle() then
     host.pushNotice('drag', 'Get in a car first', { sub = 'Then press Ready' })
@@ -684,9 +532,7 @@ function D.dragWithdraw(seed)
   send('RM_DragWithdraw', '{"seed":' .. (tonumber(seed) or 0) .. '}')
 end
 
--- A driver declaring their own dial-in, or an admin setting one for somebody
--- else. One event either way; the server tells them apart by whether a seed
--- came with it, and refuses the seed form from a non-admin.
+-- A driver's own dial-in, or an admin's for a seed (refused from a non-admin).
 function D.dragSetDial(dial, seed)
   local d = tonumber(dial)
   local parts = { '"dial":' .. (d and string.format('%.3f', d) or 'null') }

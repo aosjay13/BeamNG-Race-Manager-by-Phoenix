@@ -25,6 +25,8 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 - **Practising cars are ghosts.** Practice ran only on each driver's PC and no
   other client knew who was practising, so a practising car was solid to
   everybody.
+- **The radar goes quiet while you spectate**, for example while stood down
+  during a drag pass. The check meant to hide it could never be true.
 
 #### Added
 
@@ -62,6 +64,10 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   rear window, so you can see which way each one faces. Yours is solid white; it
   was an orange outline, the same color as a car close to you. A car that is
   not close is gray, not white.
+- **Lighter on the game.** Dragging a gate in the editor updates the panel ten
+  times a second rather than every frame, the radar skips cars out of range
+  before asking the game anything else about them, and the pit lane check no
+  longer creates garbage every frame.
 
 ## 0.18.4 - Radar
 

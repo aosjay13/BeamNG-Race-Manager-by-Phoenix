@@ -37,10 +37,13 @@ local function call(fn)
   if ok then return a, b, c end
 end
 
+local function modelOf(veh)
+  return call(function () return tostring(veh:getJBeamFilename()) end) or ''
+end
+
 -- A car's half length and half width, once per car and model: a car swapped
 -- for another model keeps its id.
-local function halfSize(veh, id)
-  local model = call(function () return tostring(veh:getJBeamFilename()) end) or ''
+local function halfSize(veh, id, model)
   local d = dims[id]
   if d and d.model == model then return d.hl, d.hw end
   local l = call(function () return veh:getInitialLength() end)
@@ -175,7 +178,7 @@ local function scan()
   local fx, fy = heading(me)
   if not (myId and mx and fx) then return cars, nil end
   local rx, ry = fy, -fx
-  local mhl, mhw = halfSize(me, myId)
+  local mhl, mhw = halfSize(me, myId, modelOf(me))
   corners(ca, 0, 0, 0, 1, mhl, mhw)
 
   -- Positions and lap relations mean something only in a race. Qualifying's
@@ -185,19 +188,21 @@ local function scan()
   local mine = racing and slots > 0 and rowFor(tostring(host.myPid() or '')) or nil
   local reach2 = (RANGE + EDGE) * (RANGE + EDGE)
 
+  -- Range first: most cars are out of it, and every engine call costs a closure.
   host.forEachVehicle(myId, function (veh, id)
-    if call(function () return veh:isHidden() end) then return end
-    if call(function () return tostring(veh:getJBeamFilename()) end) == 'unicycle' then return end
-    if host.isTowed(veh) then return end
     local cx, cy = center(veh)
     if not cx then return end
     local dx, dy = cx - mx, cy - my
     if dx * dx + dy * dy > reach2 then return end
+    if call(function () return veh:isHidden() end) then return end
+    local model = modelOf(veh)
+    if model == 'unicycle' then return end
+    if host.isTowed(veh) then return end
     local hx, hy = heading(veh)
     if not hx then hx, hy = fx, fy end
     local x, y = dx * rx + dy * ry, dx * fx + dy * fy
     local sx, sy = hx * rx + hy * ry, hx * fx + hy * fy
-    local hl, hw = halfSize(veh, id)
+    local hl, hw = halfSize(veh, id, model)
     corners(cb, x, y, sx, sy, hl, hw)
     local car = {
       x = round(x, 2), y = round(y, 2),
@@ -234,6 +239,11 @@ function D.radarUpdate(dt)
   if not near and not sentCars then return end
   sentCars = near
   guihooks.trigger('RaceManagerRadar', { range = RANGE, edge = EDGE, me = me, cars = cars })
+end
+
+-- A removed car's size, dropped (onVehicleDestroyed).
+function D.forget(id)
+  dims[id] = nil
 end
 
 -- For tests: the gap between two rectangles given in one frame.

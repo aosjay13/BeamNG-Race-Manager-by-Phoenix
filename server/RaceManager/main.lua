@@ -1,54 +1,24 @@
 -- Race Manager - BeamMP server plugin (Lua 5.3)
 --
--- Authoritative session state machine for circuit racing:
+-- Authoritative session state machine:
 --
 --   waiting -> qualifying -> grid -> countdown -> racing -> finished
---                 (quali)   (grid locked)          (race)
 --
--- Qualifying: clients time their own laps (the server has no physics access)
--- and report each completed lap; the server keeps the Best Lap per driver.
--- Generate Grid sorts drivers fastest-to-slowest by quali Best Lap and locks
--- in starting positions. Race mode shows the grid, then the countdown starts
--- the race. During the race clients report every completed lap; the server
--- tracks Current Lap, race Best Lap, Laps Led (first driver to complete each
--- lap), and flags the finish when a driver completes the configured lap count.
--- All timing that must be fair across drivers (finish order, laps led) is
--- decided by arrival order / the server clock.
---
+-- Clients time their own laps (the server has no physics) and report each one;
+-- everything that must be fair across drivers (finish order, laps led) is
+-- decided by arrival order and the server clock.
 -- Author: Phoenix
 
 -- ---------------------------------------------------------------------------
--- Tunables
--- ---------------------------------------------------------------------------
--- ---------------------------------------------------------------------------
 -- SERVER CONFIGURATION
 -- ---------------------------------------------------------------------------
--- Every number an admin might reasonably want to change, in one table, with
--- the file that overrides it sitting beside layouts.json.
+-- Every number an admin might change, seeded here and overridden from
+-- config.json beside layouts.json at boot (written out on first run). SEEDED,
+-- NOT LIVE: the panel changes race.totalLaps, never this. saveConfigToDisk is
+-- declared here because the password handlers sit far above the writer.
 --
--- These were sixteen separate top-level constants scattered down the file, and
--- changing any of them meant editing Lua and redeploying -- which on a live
--- league means a server restart to alter the lap count. They are one object
--- now, seeded here and overridden from config.json at boot.
---
--- SEEDED, NOT LIVE. This is what a session STARTS as. An admin changing laps
--- from the panel mid-evening changes race.totalLaps, not this -- so the file
--- stays what the server comes up as, and the panel stays the way to change the
--- race in front of you.
---
--- The file is written out with these values the first time the plugin runs, so
--- there is always something on disk to edit rather than a format to guess at.
--- Assigned further down, once the JSON codec and the directory helper it needs
--- exist. Declared HERE because changing the admin password has to write the
--- file, and that handler sits two thousand lines above the writer.
--- Make this plugin's folder importable before anything requires a sibling.
---
--- BeamMP already puts it on package.path when it loads a plugin. The headless
--- test harness does not: it dofile()s this file from the repo root, so
--- require('derby') would fail there and nowhere else -- the worst place for a
--- difference between how the tests run and how the server runs.
---
--- Derived from this file's own path, so it is correct under both.
+-- Make this plugin's folder importable: BeamMP does it, the test harness (which
+-- dofile()s this from the repo root) does not. Derived from this file's path.
 do
   -- Long-bracket string so the Windows separator needs no escaping.
   local src = debug.getinfo(1, 'S').source:sub(2):gsub([[\]], '/')
@@ -58,24 +28,13 @@ end
 local saveConfigToDisk
 
 local CFG = {
-  -- The admin password. It lives here so that CHANGING it survives a restart:
-  -- until now the change was in memory only, so every restart quietly put the
-  -- password back to 'phoenix' and nobody found out until a login failed.
-  --
-  -- THIS ONE IS THE FULL TIER, and it stays the full tier on a server that is
-  -- being upgraded. A league whose config.json already says adminPassword keeps
-  -- every right it had; nobody is locked out of their own password field by an
-  -- update. The narrower tier is the new key below, and it starts off.
+  -- The admin password, persisted so a change survives a restart. The FULL
+  -- tier: an upgraded server's adminPassword keeps every right it had.
   adminPassword = 'phoenix',
 
-  -- THE RACE DIRECTOR'S PASSWORD. Everything an admin can do except the three
-  -- that cannot be undone: changing either password, clearing the server's
-  -- results, and deleting a saved layout. See requireAdmin.
-  --
-  -- EMPTY MEANS OFF, and empty is what it ships as. A tier nobody asked for
-  -- must not appear on a server as a second way in, so the moderator login
-  -- does not exist until an admin sets this -- and an empty password can never
-  -- match, however the login field is filled in.
+  -- The race director's password: everything except changing passwords,
+  -- clearing results and deleting a layout (see requireAdmin). EMPTY MEANS OFF,
+  -- as shipped, and an empty password never matches.
   moderatorPassword = '',
 
   -- What a race starts as.
@@ -87,51 +46,31 @@ local CFG = {
   countdownFrom = 3,         -- 3, 2, 1, GO!
   endDelay      = 5,         -- seconds the results are held after the last car home
 
-  -- THE PACE LAP. A race started behind a pace car instead of from the lights:
-  -- the field is released under yellow, forms up, and the green falls as the
-  -- leader comes back to the line. See paceLapArmed and RM_onStartRace.
+  -- THE PACE LAP: released under yellow, green as the leader returns to the line
+  -- (paceLapArmed, RM_onStartRace).
   paceLap       = false,
-  -- Meters from the leader to the start/finish line when the green flag falls.
-  -- The flag is waved as the leader ARRIVES, not once they are past: a green
-  -- thrown at the line is a green nobody at the front can react to.
-  -- Now only the fallback: the green point on a track the server holds no route
-  -- for, where the random point below cannot be placed.
+  -- The fallback green point (meters before the line, as the leader ARRIVES) on
+  -- a track the server holds no route for.
   paceGreenAt   = 10.0,
-  -- THE RUN TO THE GREEN, on a track the server knows. GET READY as the car
-  -- that started P1 comes within paceReadyAt of the line on the final sector,
-  -- then the green at a random point between paceGreenNear and paceGreenFar,
-  -- drawn fresh for each pace lap and restart so the field cannot learn it. Set
-  -- the two equal for a fixed point. All three are config.json settings.
+  -- With a route: GET READY within paceReadyAt of the line on the final sector,
+  -- the green at a random point between paceGreenNear and paceGreenFar, drawn
+  -- per pace lap and restart so the field cannot learn it.
   paceReadyAt   = 50.0,
   paceGreenNear = 5.0,
   paceGreenFar  = 15.0,
-  -- ...and how far the leader must first get AWAY from the line before that
-  -- means anything. The field starts the pace lap standing at the line, so
-  -- distance-to-line is near zero at the release as well as at the end of the
-  -- lap, and without this the green would fall on the tick the field was let go.
+  -- How far the leader must first get AWAY from the line: the field starts the
+  -- pace lap standing on it.
   paceArmAt     = 50.0,
 
-  -- THE FREE PASS. The highest-placed lapped car gets its lap back before the
-  -- restart, which is what every oval series means by "lucky dog".
-  --
-  -- OFF BY DEFAULT, like every other rule that changes how a race is scored. A
-  -- league that has never asked for a free pass must not find its server handing
-  -- laps out the first time somebody calls a yellow.
+  -- THE FREE PASS ("lucky dog"): the highest-placed lapped car gets its lap back
+  -- before the restart. Off by default, like every scoring rule.
   luckyDog      = false,
-  -- Laps a HEAT runs, when the night is split into them. 0 means "the same as
-  -- the race", which is what a server that never runs heats wants and is what
-  -- this was before the number existed.
+  -- Laps a heat runs; 0 is the race's distance.
   heatLaps      = 0,
 
-  -- THE BLUE FLAG. Seconds a lapping car may be behind a backmarker before the
-  -- backmarker is shown blue and the lapping car is told there is one ahead.
-  --
-  -- TWO NUMBERS, AND THE SECOND IS NOT A DUPLICATE. A single threshold makes a
-  -- flag that strobes: a car hovering either side of it turns the flag on and
-  -- off several times a second, and a flag that blinks is one a driver learns
-  -- to ignore. It comes out inside `blueFlagWithin` and does not go away again
-  -- until the gap opens past `blueFlagClear`, so the band it lives in is wider
-  -- than the band it appears in.
+  -- THE BLUE FLAG: shown within blueFlagWithin seconds, cleared past
+  -- blueFlagClear. Two numbers, so a car hovering at one threshold does not make
+  -- the flag strobe.
   blueFlagWithin = 2.0,
   blueFlagClear  = 4.0,
 
@@ -149,8 +88,7 @@ local CFG = {
   holdTolerance    = 0.5,    -- meters a held car may drift off its slot
   holdCorrectEvery = 0.5,    -- seconds between corrections for one driver
 
-  -- ADVANCED. Changing these changes how the plugin behaves rather than how a
-  -- race is run, and the limits exist to keep a typo from becoming a hang.
+  -- ADVANCED: plugin behaviour, with limits that keep a typo from becoming a hang.
   tickMs          = 100,     -- server clock resolution
   pushEveryTicks  = 3,       -- broadcasts are one in this many ticks
   maxTotalLaps    = 500,
@@ -161,9 +99,8 @@ local CFG = {
   maxRaceTime     = 21600,   -- seconds (6 h), so an endurance race is expressible
   unlimitedResets = -1,      -- the sentinel, not a preference: do not change
 
-  -- Forming a grid, a derby form-up and a drag pass call the drivers, and
-  -- each presses Ready to be placed.
-  -- false places everyone at once, the way it worked before 0.17.2.
+  -- Forming a grid, a derby form-up and a drag pass call the drivers, and each
+  -- presses Ready to be placed. false places everyone at once (pre-0.17.2).
   readyCheck      = true,
 
   -- Map switching and voting. See maps.lua.
@@ -172,30 +109,8 @@ local CFG = {
   mapVoting       = true,    -- drivers may call a map vote; admins always can
   mapVotePercent  = 60,      -- share of everyone connected who must vote yes
 }
--- Broadcast cadence while racing. This is also the live-position refresh rate:
--- every push re-sorts the running order and re-stamps each driver's position,
--- so 3 ticks (~300 ms) keeps the leaderboard lively without flooding clients.
--- League regulations. Resets: -1 means unlimited (the historical behavior and
--- the default), 0 forbids resets outright, N allows N per session.
--- Reset ghosting. A driver who resets mid-session is intangible to other cars
--- for a moment, so the car they materialise on top of is not hit by them and
--- they are not hit by anyone.
---
--- Server-side because it is a LEAGUE rule: a client running a five-second ghost
--- against a field running eight is a field where two cars disagree about whether
--- they can touch.
---
--- The maximum caps the BASE TIMER only, not the ghost. A car still sitting
--- inside another when the timer runs out stays ghosted for as long as that is
--- true, with no limit. See the occupancy check on the client, the only place
--- that can see where cars are.
--- Grid hold. The server has no physics and cannot freeze a car, but it owns the
--- hold: it judges whether each held car is where it was put and pulls back the
--- ones that are not. The tolerance absorbs a car settling onto its suspension
--- and still catches a creep off the line.
--- Forward declaration: the validator lives with the layout store far below, but
--- the grid-hold code above needs the same validation on client-reported
--- coordinates, and a second near-identical sanitizer would drift from the first.
+-- Forward declarations: the layout store's validators are needed by the grid
+-- hold code above them.
 local sanitizeCheckpoints
 local sanitizeBranches
 
@@ -204,17 +119,10 @@ local sanitizeBranches
 -- ---------------------------------------------------------------------------
 local race = {
   phase        = 'waiting',  -- waiting | grid | countdown | qualifying | racing | finished
-  -- Which session the lifecycle is currently running. There is ONE lifecycle --
-  -- form the grid, hold, GO, remove finished cars, respawn everybody -- and this
-  -- is the only thing that differs between a race and a qualifying session:
-  -- which lap count they run to and how a completed lap is scored. Qualifying
-  -- used to sit outside the state machine with lap detection of its own, which
-  -- is why a 3-lap qualifying session took five or six laps to finish.
+  -- Which session the ONE lifecycle is running: only the lap target and how a
+  -- lap is scored differ.
   sessionKind  = 'race',     -- race | quali
-  -- Put a driver's display name on their BeamMP nametag as well as on the
-  -- board. Off by default: it is cosmetic, it only reaches clients running
-  -- this mod, and a league that has not assigned any names gains nothing
-  -- from it. See RM_onSetNametags.
+  -- Display names on BeamMP nametags too. Off by default (RM_onSetNametags).
   nametags     = false,
   time         = 0.0,        -- seconds since GO (advanced by RM_Tick while a session runs)
   totalLaps    = CFG.totalLaps,
@@ -224,322 +132,148 @@ local race = {
   -- ---------------------------------------------------------------------
   -- THE PACE LAP
   -- ---------------------------------------------------------------------
-  -- `paceLap` is the RULE -- an admin's switch, set before the grid forms and
-  -- locked once the field is released, like every other regulation.
-  --
-  -- `pacing` is the CONDITION: the field is on the pace lap right now. It is a
-  -- field and not a phase for the same reason `flag` is one (see the note
-  -- there): the phase underneath is a perfectly ordinary 'racing', because
-  -- everything the running phase gives a driver -- released cars, armed gates,
-  -- live telemetry, a reported crossing -- is exactly what a pace lap needs.
-  -- Fifty-odd `phase ==` tests would each have had to learn a new answer;
-  -- reading `pacing` in the four places that care costs nothing anywhere else.
-  --
-  -- WHAT THE PACE LAP ACTUALLY IS, mechanically: an out lap. Every driver gives
-  -- their first crossing away and starts lap 1 from the line, which is what a
-  -- formation lap means and is a rule this plugin already has (outLapOwed).
-  -- Because the out lap is PER DRIVER it also settles the awkward part on its
-  -- own: the green falls once, for everybody, while the field is strung out, and
-  -- each driver's own crossing is still the one that starts their race.
+  -- `paceLap` is the RULE (locked once the field is released); `pacing` is the
+  -- CONDITION, a field over an ordinary 'racing' phase, read in the four places
+  -- that care. Mechanically a pace lap is an OUT LAP (outLapOwed): per driver,
+  -- so the green falls once for everyone and each driver's own crossing starts
+  -- their race.
   paceLap      = CFG.paceLap,
   pacing       = false,
-  -- Has the leader got away from the line yet? The arming latch described on
-  -- CFG.paceArmAt: until this is set, being near the line means the field has
-  -- not left it rather than that it has come back to it.
+  -- Has the leader got away from the line yet (CFG.paceArmAt)?
   paceArmed    = false,
-  -- Meters before the line the green falls at, drawn per pace lap and per
-  -- restart (race.drawGreenZone). Never broadcast: a number a driver can read is
-  -- a spot a driver can learn.
+  -- Meters before the line the green falls at, drawn per pace lap and restart
+  -- (race.drawGreenZone). Never broadcast: a readable spot is a learnable one.
   greenZone    = nil,
   -- GET READY has been called for this pace lap or restart.
   greenReady   = false,
   -- ---------------------------------------------------------------------
   -- THE CAUTION
   -- ---------------------------------------------------------------------
-  -- A full-course yellow called mid-race, and what makes it a caution rather
-  -- than the advisory yellow beside it (see race.flag) is ONE thing: it FREEZES
-  -- THE RUNNING ORDER.
-  --
-  -- That is the only half of a real caution this plugin can enforce. The server
-  -- has no physics: it cannot slow a car, cannot close a gap and cannot line a
-  -- field up behind the leader. What it CAN do is decide that positions stop
-  -- changing the moment the yellow comes out -- which is exactly what a real
-  -- caution does to the timing sheet, and is a scoring rule rather than a
-  -- movement one. The instruction to close up and hold station goes out in chat
-  -- and on screen; the order that instruction protects is enforced here.
-  --
-  -- The flag note above says an automatic ruling on overtakes under yellow
-  -- needs "a second running order that survives the caution and reconciles on
-  -- green". This IS that order. It is not a ruling on any individual overtake --
-  -- no incident is judged, nobody is penalised -- it simply stops the board
-  -- from re-sorting until the green.
-  --
-  -- IT IS RACED BACK TO, AND THAT IS THE WHOLE SHAPE OF IT. Calling the yellow
-  -- does NOT freeze anything: it sets `cautionPending`, and the field races back
-  -- to the line. THE LEADER DICTATES THE LAP -- when they take the line the
-  -- caution is on, that lap is `cautionLap`, and every other driver locks their
-  -- own place as they complete that same lap. A snapshot taken at the button
-  -- instead would score the field where it happened to be at a moment nobody on
-  -- track could see, and hand a place to whoever was mid-overtake.
+  -- A full-course yellow that FREEZES THE RUNNING ORDER: the one half of a real
+  -- caution a server without physics can enforce (a scoring rule, not a movement
+  -- one). IT IS RACED BACK TO: calling it sets `cautionPending`; when the LEADER
+  -- takes the line it goes official on `cautionLap`, and every driver locks their
+  -- place as they complete that lap. A snapshot at the button would hand a place
+  -- to whoever was mid-overtake.
   caution      = false,
-  -- Called, and waiting on the leader. The yellow is already flying and the
-  -- board is still live: nothing is frozen until the lap turns over.
+  -- Called, and waiting on the leader; the board is still live.
   cautionPending = false,
-  -- The lap the leader was on when the yellow came out, and how many laps the
-  -- field has run under it. Caution laps COUNT, as they do in most oval racing:
-  -- the distance does not pause because the racing has.
+  -- The leader's lap at the yellow, and laps run under it (caution laps COUNT).
   cautionLap   = nil,
   cautionLaps  = 0,
-  -- How many cautions this race has seen, for the results file. A race with
-  -- four yellows in it read exactly like a clean one once it was over.
+  -- Cautions this race has seen, for the results file.
   cautionCount = 0,
-  -- The order cars have taken the line in since the caution went official. Handed
-  -- out one at a time as they cross, and it IS the frozen order within a lap:
-  -- first back to the line is first, which is what "race back to the line" pays.
+  -- Order cars have taken the line since the caution went official: the frozen
+  -- order within a lap.
   cautionSeq   = 0,
-  -- THE FREE PASS: the rule, and who has had it this caution.
-  --
-  -- `luckyDog` is the admin's switch. `cautionLucky` is the driver id awarded a
-  -- lap back under the caution being run right now -- ONE per caution, which is
-  -- what the field being locked is checked for rather than a timer.
+  -- The free pass: the admin's switch, and the driver awarded it this caution
+  -- (ONE per caution).
   luckyDog     = CFG.luckyDog,
   cautionLucky = nil,
-  -- THE RESTART, CALLED AND NOT YET TAKEN. Same shape as the caution above it
-  -- and for the same reason: an admin decides there is going to be one, and the
-  -- LEADER decides when. The green falls as they come back to the line, so the
-  -- field is packed up and looking at it rather than strung out round a corner.
-  -- Cancellable for as long as it has not fallen.
+  -- A restart called and not yet taken: the LEADER decides when, as they come
+  -- back to the line. Cancellable until the green falls.
   restartPending = false,
   -- ---------------------------------------------------------------------
   -- THE HEAT PROGRAM
   -- ---------------------------------------------------------------------
-  -- A night run as several short heats and then a feature, with the heat
-  -- results setting the feature grid. The whole of it is four numbers and one
-  -- field per driver, because the session machinery underneath does not change:
-  -- a heat IS an ordinary race, run by a subset of the field.
-  --
-  --   heatCount     how many heats the night is split into. 0 = no heat
-  --                 program at all, and every rule below is inert -- which is
-  --                 what keeps a server that never runs heats untouched.
-  --   heatTransfer  how many drivers transfer out of each heat. They start the
-  --                 feature ahead of everyone who did not.
-  --   heatCurrent   which heat is being set up or run right now. 0 means the
-  --                 FEATURE (or an ordinary race), 1..heatCount a heat.
-  --   heatsDrawn    whether the field has been split yet.
-  --   heatLaps      laps a HEAT runs. 0 means "the same as the race", which is
-  --                 the setting's own way of being absent -- and heats are
-  --                 short where a feature is long, so a night that shares one
-  --                 lap box means retyping it between every session.
-  --   heatDraw      what the draw is SEEDED on. The serpentine below never
-  --                 changes; this decides the order it walks.
-  --
-  --                   'quali'   qualifying best lap, fastest first. The default
-  --                             and the right answer whenever qualifying was
-  --                             run: the draw exists to spread the quick
-  --                             drivers evenly, and it needs to know who they
-  --                             are.
-  --                   'random'  a shuffle, for a night with no qualifying
-  --                             behind it.
-  --                   'points'  championship standings, leader first, for a
-  --                             league whose season decides the seeding.
+  -- Several short heats then a feature; a heat IS an ordinary race run by a
+  -- subset of the field.
+  --   heatCount     heats in the night; 0 = no program and every rule inert
+  --   heatTransfer  drivers who transfer from each heat, ahead of the rest
+  --   heatCurrent   heat being set up or run; 0 = the feature (or a race)
+  --   heatsDrawn    whether the field has been split
+  --   heatLaps      laps a heat runs; 0 = the race's distance
+  --   heatDraw      what the serpentine draw is seeded on: 'quali' (default,
+  --                 spreads the quick drivers), 'random', or 'points'
   heatCount    = 0,
   heatTransfer = 0,
   heatCurrent  = 0,
   heatsDrawn   = false,
   heatLaps     = CFG.heatLaps,
   heatDraw     = 'quali',
-  -- The race.time the green flag fell at, and the reason it is kept rather than
-  -- zeroing the clock there. race.time is the session clock -- ghost end times
-  -- are expressed on it and it is re-anchored on every client from the
-  -- broadcast, so winding it back mid-session would leave a car ghosted with a
-  -- countdown that never reaches zero. The pace lap is simply subtracted where
-  -- it must not count: the TIMED race's limit. 0 whenever no pace lap ran.
+  -- race.time at the green. The session clock is never wound back (ghost end
+  -- times are on it); the pace lap is subtracted where it must not count.
   greenAt      = 0.0,
-  -- Joker gates the loaded track actually has. The joker lap cannot be armed
-  -- without them: the rule disqualifies anyone who did not complete the route,
-  -- and with no route that is the whole field.
+  -- Joker gates the loaded track has: the rule cannot be armed without them.
   jokerGates   = 0,
-  -- THE FLAG THE FIELD IS RACING UNDER: green, yellow or red.
-  --
-  -- RED IS A CONDITION, NOT A STATE CHANGE. It means stop, something is being
-  -- cleaned up, and the session then goes yellow and back to green. Nothing is
-  -- ended, nobody is frozen and no phase moves: the race is still running the
-  -- whole time. That is the entire reason this is a field and not a phase.
-  --
-  -- Advisory: it is shown, announced and
-  -- written into the results, and it polices nothing. Deciding automatically
-  -- that an overtake under yellow was illegal means holding a second running
-  -- order that survives the caution and reconciles on green, and a marshal who
-  -- can see the incident is better at that than a distance comparison.
-  --
-  -- Deliberately NOT a phase. There are fifty-odd `phase ==` tests across the
-  -- two Lua halves and most would be wrong by default for a new one; a separate
-  -- field is read only where it is wanted.
+  -- THE FLAG: green, yellow or red. A CONDITION, NOT A PHASE: red means stop and
+  -- the session goes yellow and back to green with nothing ended. Advisory: it
+  -- is shown, announced and recorded, and polices nothing.
   flag         = 'green',
-  -- Race entry. 'all' (default): every connected session is a participant, so a
-  -- server that never touches this setting grids everybody who is there. 'join':
-  -- drivers opt in with the UI's Join Race button and only they are gridded.
-  --
-  -- The default is 'all' because it is the answer that fails safe. Getting it
-  -- wrong under 'join' means an admin presses Generate Grid and forms a grid of
-  -- nobody -- every driver on the server is left standing while the one person
-  -- who could fix it works out that a button they have never needed was the
-  -- problem. Getting it wrong under 'all' means somebody who wanted to watch is
-  -- put on the grid, which they undo with one press of Leave. The demo derby
-  -- has defaulted to 'all' since it was written; this is the racing side
-  -- agreeing with it.
-  -- Starting grid. gridMode decides how the slots are filled:
-  --   quali   -- fastest qualifying lap first (the classic behavior)
-  --   reverse -- slowest qualifying lap first, so the fastest starts last
-  --   random  -- a random draw, for when no qualifying was run
-  --   custom  -- the order the admin set by hand (RM_SetDriverGrid)
+  -- Race entry: 'all' (default) grids everyone connected, 'join' only those who
+  -- pressed Join Race. 'all' fails safe: a wrong 'join' grids nobody, a wrong
+  -- 'all' is undone with Leave.
+  -- How the grid is filled: quali, reverse, random, custom (RM_SetDriverGrid),
+  -- heats, points, pointsrev.
   gridMode     = 'quali',
   startSlots   = 0,          -- start positions the loaded track layout has
-  -- Ready check: forming the grid gives each driver a slot but only places the
-  -- car when they press Ready. gridSize is the last slot handed out, so a late
-  -- arrival can be called to the back.
+  -- Ready check: forming the grid gives each driver a slot, placed when they
+  -- press Ready. gridSize is the last slot handed out (a late arrival goes last).
   readyCheck   = CFG.readyCheck,
   gridSize     = 0,
-  -- Is the loaded track a sprint stage rather than a circuit? A point-to-point
-  -- run is driven ONCE, first gate to last, and the last gate is a finish
-  -- rather than a line crossed again. Setting a circuit to one lap times the
-  -- same thing, which is why that was the workaround -- but it reads as a
-  -- one-lap circuit everywhere, and this is the difference being made explicit.
-  -- It belongs to the track, so it arrives with the layout.
+  -- A point-to-point sprint stage: driven once, the last gate a finish.
   pointToPoint = false,
-  -- BRANCH GATES. Another way through a checkpoint that already exists: slot i is
-  -- cleared by crossing the main gate OR any branch gate authored against slot i.
-  -- A branch gate never adds a slot, which is the whole reason the running order
-  -- below needs no changes at all -- cpCleared means the same thing whichever
-  -- gates a driver took, and nothing here has to know which.
-  --
-  -- Held here only to be validated, persisted and handed back out: the server has
-  -- no physics and never tests a crossing. Shape:
+  -- BRANCH GATES: another way through an existing slot, so cpCleared means the
+  -- same whichever gates were taken. Held only to validate, persist and send:
   --   { { slot = 1, x, y, z, hx, hy, width?, height?, oneWay? }, ... }
   branches     = {},
-  -- THE LOADED LAYOUT ITSELF, kept so it can be sent again.
-  --
-  -- It used to be broadcast once, at the moment an admin pressed Load, and never
-  -- again -- so it reached exactly the people who were already connected. Anyone
-  -- who joined afterwards had no gates at all, and the workaround was for the
-  -- admin to wait until the whole field had spawned before loading. A track is
+  -- The loaded layout itself, so a late joiner is sent it too: a track is
   -- state, not an announcement.
   layout       = nil,
-  -- Slots in a lap on the loaded track, or 0 when no layout came through this
-  -- server. Used only to clamp reported progress (see RM_onProgress).
+  -- Slots in a lap (0 with no layout), to clamp reported progress.
   slotCount    = 0,
-  -- Does this track grid its cars somewhere other than the start/finish line? A
-  -- head-on layout has to -- two directions cannot share one row of slots -- and
-  -- then the run from the grid to the first crossing is a part lap that must not
-  -- be timed. See outLapOwed.
+  -- Does this track grid away from the S/F line? Then the run to the first
+  -- crossing is an untimed part lap (outLapOwed).
   gridOffLine  = false,
-  -- THE HOLD AT THE FLAG. `endsAt` is the race.time the session actually closes
-  -- at, or nil when nothing has armed it; `endDelay` is how long that hold is.
-  --
-  -- The derby has had one of these since it was built (derby.endDelay). A race
-  -- ended on the spot, which meant the tick the last car crossed the line was
-  -- the tick every ghost lifted and every finished driver got their collisions
-  -- back, with nobody given a moment to see any of it.
-  --
-  -- ON THE TABLE RATHER THAN AS A CONSTANT, and that is not a style choice: the
-  -- top level of this file is a function and Lua allows it 200 locals, which
-  -- this chunk is close enough to that adding two named ones pushed it over and
-  -- the file silently failed to compile. Same reason the derby keeps its own
-  -- here. Set endDelay to 0 to close the session the instant the field is home.
+  -- THE HOLD AT THE FLAG: `endsAt` is the race.time the session closes at (nil
+  -- until armed), so ghosts and finished cars do not all lift on the tick the
+  -- last car crosses. On the table for the locals ceiling. endDelay 0 closes at
+  -- once.
   endsAt       = nil,
   endReason    = nil,
   endDelay     = 5,
-  -- WHERE those start positions are: { x, y, z, hx, hy } per slot, slot 1 first.
-  -- Reported by a client when a track is loaded or edited, and set directly when
-  -- a saved layout is loaded. The count above is enough to warn that a field is
-  -- bigger than its grid; policing the hold needs the coordinates. The heading is
-  -- what splits a head-on field, and it is the client that reads it.
+  -- Where the start positions are, { x, y, z, hx, hy } per slot: reported by a
+  -- client or set from a loaded layout. Policing the hold needs coordinates.
   startPositions = {},
   -- Qualifying session rules.
   ghostQuali     = false,    -- rivals are ghosts during qualifying
-  -- qualiLapLimit counts TIMED laps, which is not the same as crossings: every
-  -- driver owes an OUT LAP first (see qualiOutLap below), so a 3 lap session is
-  -- four trips past the line and three times that can go on the board.
+  -- qualiLapLimit counts TIMED laps: the out lap is extra.
   qualiLapLimit  = 0,        -- timed laps allowed per driver (0 = unlimited)
   qualiTimeLimit = 0,        -- seconds the session runs for (0 = unlimited)
   qualiTime      = 0.0,      -- seconds elapsed in the current quali session
-  -- Did the qualifying session that produced the times on the board give an out
-  -- lap away? A RECORD of what was run, not the rule: the results file is
-  -- written at the end of the RACE, by which point the live rule reads 'race'
-  -- and the track underneath may even have been swapped. The file has to
-  -- describe the session the times came from.
+  -- Did the qualifying behind the board give an out lap away? A RECORD for the
+  -- results file, written after the live rule has moved on.
   qualiOutLapRun = false,
-  -- The same record for a race that gave one away (see race.gridOffLine).
+  -- The same record for a race (see race.gridOffLine).
   raceOutLapRun  = false,
-  -- ...and whether that lap was a PACE LAP, which is a different fact from the
-  -- one above and cannot be derived from it. A head-on grid's out lap comes OUT
-  -- of the distance -- ten laps is ten crossings, the first of them untimed --
-  -- while a formation lap goes ON TOP of it, so ten laps is eleven crossings.
-  -- The results file has to be able to tell a reader which, or the Laps column
-  -- disagrees with the stated distance and nothing on the page settles it.
+  -- ...and whether it was a PACE LAP: a head-on out lap comes OUT of the
+  -- distance, a formation lap goes ON TOP, and the Laps column must say which.
   racePaceLapRun = false,
-  -- Post-expiry state for a TIMED session, and the one piece of the lifecycle a
-  -- lap-limited session has no equivalent of.
-  --
-  -- A lap-limited session has a per-driver terminal event built in: the
-  -- crossing that completes their allowance is the moment they are done, and the
-  -- session ends when the last of them is. A timed session has no such thing --
-  -- the clock expires for everybody at once, while they are spread around the
-  -- circuit -- so expiry cannot simply end it. Standing everyone down where they
-  -- are would throw away the lap they are on, which in qualifying is the one
-  -- that matters most.
-  --
-  -- So expiry does not end the session, it changes what a crossing MEANS: while
-  -- this is set, the next start/finish line a driver crosses is terminal for
-  -- them rather than the start of another lap. That reuses the removal and the
-  -- respawn-all the lap-limited path already goes through, and it is why this is
-  -- a sub-state of the running phase rather than a phase of its own -- drivers
-  -- must stay controllable and on track, which is exactly what the running phase
-  -- already gives them.
-  -- Fastest lap of the session so far, and who set it. Kept incrementally as
-  -- laps are scored rather than derived by scanning the field on every
-  -- broadcast: a lap arrives a handful of times a minute, a broadcast goes out
-  -- three times a second.
+  -- TIMED session expiry: the clock ends for everybody at once while they are
+  -- spread round the circuit, so it changes what a crossing MEANS instead of
+  -- ending the session: the next S/F crossing is terminal (finalLap), reusing
+  -- the lap-limited path's removal.
+  -- Fastest lap so far and its holder, kept incrementally (laps are rare,
+  -- broadcasts three a second).
   bestLapTime    = nil,
   bestLapPid     = nil,
   finalLap       = false,
-  finalLapLeft   = 0,        -- seconds of grace left before the stragglers are
-                             -- taken where they stand (see FINAL_LAP_GRACE)
+  finalLapLeft   = 0,        -- grace left before stragglers are taken where they stand
 
   -- ---------------------------------------------------------------------
   -- TIMED RACES: "10 minutes + 1 lap"
   -- ---------------------------------------------------------------------
-  -- A race runs to a lap count OR to a clock, never both (raceTimeLimit > 0
-  -- makes totalLaps inert - see sessionLapTarget). The clock does not end the
-  -- race when it expires, which is the whole point of the format: the race ends
-  -- one lap after the LEADER next takes the line.
-  --
-  -- Three states, in order, and each needs its own flag because the answer to
-  -- "is this crossing your last" is different in each:
-  --
-  --   raceExpired  the clock is out. Nothing changes for anybody yet: whoever
-  --                is leading has to reach the line first. A driver reading
-  --                "laps to go" sees TWO at this point - finish this one, then
-  --                run the last.
-  --   lastLapNum   the leader has crossed, and that crossing set the number of
-  --                the final lap. Completing THAT lap is what ends a driver's
-  --                race, so a car two seconds behind the leader still gets a
-  --                full lap rather than being flagged off at the line.
-  --   finalLap     the leader has finished. From here the checkered flag is
-  --                out and the NEXT crossing is terminal for everyone still
-  --                running, which is how lapped cars are classified. This is
-  --                the flag qualifying has always used and it means exactly the
-  --                same thing here.
-  -- WHICH LIMITS ARE LIVE, named rather than inferred from which numbers are
-  -- non-zero. Endurance needs both of them at once, so "raceTimeLimit > 0 means
-  -- the laps are inert" stopped being a safe reading the moment it existed.
-  --
-  --   'laps'       a fixed distance. raceTimeLimit is held at 0.
-  --   'timed'      a clock plus one lap. totalLaps is remembered but inert.
-  --   'endurance'  BOTH, whichever comes first: the distance, or the clock
-  --                plus one lap. This is the only mode where reaching the lap
-  --                target ends the race for everybody rather than only for the
-  --                driver who reached it - see RM_onLap.
+  -- The clock does not end the race: it ends one lap after the LEADER next
+  -- takes the line.
+  --   raceExpired  the clock is out; the leader has to reach the line first
+  --   lastLapNum   the leader crossed; completing THIS lap ends a driver's race,
+  --                so a car just behind still gets a full lap
+  --   finalLap     the leader finished; the NEXT crossing is terminal for all
+  -- raceMode names which limits are live (endurance has both):
+  --   'laps'       a fixed distance; raceTimeLimit is 0
+  --   'timed'      a clock plus one lap; totalLaps is inert
+  --   'endurance'  whichever comes first; reaching the distance ends the race
+  --                for everybody (see RM_onLap)
   raceMode       = 'laps',
   raceTimeLimit  = CFG.raceTimeLimit,
   raceExpired    = false,    -- clock out, waiting on the leader
@@ -548,97 +282,34 @@ local race = {
 }
 local players = {}          -- [playerID] = per-player record
 
--- Release a frozen caution order. Declared HERE, immediately below the table it
--- walks, because three callers want it and the earliest of them (finishSession)
--- sits two thousand lines above the caution code it belongs to. A local
--- declared after its caller resolves as a GLOBAL instead -- which compiles
--- perfectly and is nil at the moment it is called.
+-- Release a frozen caution order. Declared beside `players`: finishSession,
+-- far above the caution code, calls it, and a later local would be a nil global.
 local function thawOrder()
   for _, rec in pairs(players) do rec.cautionPos, rec.cautionDown = nil, nil end
 end
--- Authoritative reset-ghost state: [playerID] = { startedAt, duration }, both on
--- race.time. Held here and not only on the clients that happened to be listening
--- so that a driver joining or reconnecting DURING a ghost is told about it --
--- otherwise their client shows a solid car that everyone else is passing
--- through, and they are the one person who can drive into it.
---
--- A table keyed by player and not a flag: simultaneous ghosts are independent,
--- and one ending must never end another.
+-- Authoritative reset ghosts, [playerID] = { startedAt, duration } on
+-- race.time, so a driver joining mid-ghost is told. Per player: independent.
 local ghosts = {}
 local tickCounter = 0
 local countdownValue = nil  -- current countdown number while phase == 'countdown'
 local lapFirsts = {}        -- [lapNumber] = pid of the first driver to complete that lap
 
--- Empty a table WITHOUT replacing it.
---
--- `players = {}` reads as "start again" and mostly behaves that way, but it
--- swaps the table for a new one and leaves every existing reference pointing at
--- the old contents. Nothing was holding one when this was written, which is why
--- it was fine; a module that captures host state once at init IS such a holder,
--- and a session reset would quietly leave it reading a table nobody else
--- updates any more.
---
--- Clearing in place keeps one identity for the life of the process, so a
--- reference taken at startup is still the right table after any number of
--- resets. Same visible behavior, one fewer way to go wrong later.
+-- Empty a table WITHOUT replacing it, so a reference a module took at init
+-- stays the live table.
 local function wipe(t)
   for k in pairs(t) do t[k] = nil end
   return t
 end
--- How long a timed session waits, after the clock expires, for drivers still out
--- there to come round and take the flag. A driver sitting in the pits, parked,
--- or who never left the grid has no crossing to give, and without a bound the
--- session would wait for them forever. Sized to comfortably clear one lap of a
--- long circuit; when it runs out the stragglers are taken where they stand and
--- the session closes normally.
-
--- Does the session now running open with an OUT LAP -- one trip past the line
--- that is neither timed nor scored nor counted against the lap allowance?
---
--- Qualifying starts from a standing grid, so the first crossing measures a
--- launch rather than a lap, and on a track with a slow first corner it is a time
--- nobody can beat later for reasons that have nothing to do with pace. It is
--- counted SEPARATELY from the allowance, so three qualifying laps still means
--- three timed laps.
---
--- A sprint stage is the exception and has to be: a point-to-point run is driven
--- once, so a lap given away is the session given away, and there is no line to
--- come back past.
---
--- A RACE owes one whenever the track says its grid is not on the line. Same
--- problem, not a qualifying rule in disguise: a lap is only a lap if it starts
--- where it ends. Grid the field around the circuit, which a head-on layout must,
--- and the run to the first crossing is a fraction of a lap that would take
--- fastest lap off every honest one.
---
--- It belongs to the TRACK, so it travels with the layout (race.gridOffLine)
--- rather than being a switch an admin has to remember on the night.
--- IS THIS SESSION RUNNING BEHIND A PACE CAR?
---
--- The admin's switch, narrowed to the sessions it can mean anything in. A
--- QUALIFYING session has no field to form up -- drivers go out when they choose
--- and the lap that matters is a solo one -- and a SPRINT STAGE is driven once
--- from first gate to last, so there is no lap to form up ON.
---
--- Asked rather than stored, so it stays true of the session in front of it: an
--- admin who arms the pace lap and then runs qualifying gets the qualifying they
--- asked for, and the race after it still starts behind the pace car.
+-- Is this session driven behind a pace car? Qualifying has no field to form up
+-- and a sprint stage no lap to form up on. Asked, not stored, so it stays true
+-- of the session in front of it.
 local function paceLapArmed()
   if race.pointToPoint then return false end
   return race.paceLap == true and race.sessionKind == 'race'
 end
 
--- HOW MANY LAPS THIS RACE RUNS, before the pace lap is added on top.
---
--- A HEAT IS SHORT AND A FEATURE IS LONG, which is the whole reason this is not
--- just race.totalLaps. Eight-lap heats into a thirty-lap feature is the ordinary
--- shape of a heat night, and one shared lap box meant retyping the number
--- between every session of the evening -- a thing to forget once and run the
--- feature over eight laps.
---
--- 0 means "the same as the race", which is how the setting says it is absent:
--- a server that never fills it in behaves exactly as it did before the number
--- existed, and so does the feature, which is heatCurrent 0.
+-- Laps this race runs, before the pace lap: a heat's own distance when one is
+-- set (heatLaps 0 is the race's), else race.totalLaps.
 local function raceDistance()
   if race.heatCount > 0 and race.heatCurrent > 0 and race.heatLaps > 0
       and race.sessionKind == 'race' then
@@ -647,104 +318,54 @@ local function raceDistance()
   return race.totalLaps
 end
 
--- HOW LONG THE RACE HAS BEEN RUNNING, which is not how long the session has.
---
--- race.time is the session clock and starts at the release, because it has to:
--- ghost end times are expressed on it and every client re-anchors its own copy
--- from the broadcast, so winding it back mid-session would leave a car ghosted
--- with a countdown that never reaches zero.
---
--- A TIMED RACE is run to this instead. The formation lap is not race time -- ten
--- minutes behind the pace car and then ten minutes of racing is a twenty minute
--- race -- so the pace lap reads zero and everything after it is measured from
--- the green. Identical to race.time for every race that never paces, which is
--- what keeps this free at the two places that ask.
+-- How long the RACE has run, which a timed race is measured on: zero during
+-- the pace lap, then from the green. race.time itself is never wound back.
 local function raceElapsed()
   if race.pacing then return 0.0 end
   return race.time - race.greenAt
 end
 
+-- Does this session open with an OUT LAP (untimed, unscored, outside the
+-- allowance)? Qualifying from a standing grid, a race gridded away from the
+-- line (race.gridOffLine, from the layout), and a pace lap. Never a sprint.
 local function outLapOwed()
-  -- A sprint stage never owes one: it is driven once, first gate to last, so a
-  -- lap given away is the whole session given away.
   if race.pointToPoint then return false end
-  -- THE PACE LAP IS AN OUT LAP, and reusing this is the whole of how it works.
-  -- A formation lap is a lap that is driven and not scored, ending at the line
-  -- for each driver in turn -- which is this rule exactly, already written,
-  -- already honored by the crossing code on both sides of the wire.
+  -- A pace lap IS an out lap: driven, not scored, ending at the line per driver.
   return race.sessionKind == 'quali' or race.gridOffLine == true or paceLapArmed()
 end
 
 
--- NOTHING HERE KNOWS WHICH WAY ROUND A DRIVER IS GOING, and nothing needs to.
---
--- A branch gate is another way through a checkpoint rather than a line a driver
--- is on, so clearing CP 3 means the same thing for the whole field however they
--- reached it. The server counts checkpoints cleared, which is exactly what it
--- counted before branch gates existed. There is no lane to assign at the grid,
--- none to carry on a record, and none to name in the results.
 
 -- ---------------------------------------------------------------------------
 -- Admin authentication
 -- ---------------------------------------------------------------------------
--- BeamMP guest account IDs rotate constantly, so admin rights are gated by a
--- shared password rather than a name/ID whitelist. A player sends RM_Login with
--- a master password; on a match their session ID is recorded in
--- authenticatedPlayers and every admin-level event checks that table before
--- acting. The defaults are meant to be rotated on the fly (RM_ChangePassword)
--- once an admin is logged in -- change them before the first public session.
---
--- TWO PASSWORDS, TWO TIERS, and the reason is that running a race night and
--- owning the server are not the same job. A league hands its race directors a
--- password so they can run the evening; that password should not also let them
--- rotate the master password, wipe the server's results or delete a layout the
--- league spent an evening building. Those three are the ones with no undo.
---
---   admin      everything, including the three above
+-- Guest ids rotate, so admin rights are a shared password. TWO TIERS:
+--   admin      everything, including the three with no undo (changing either
+--              password, clearing results, deleting a layout)
 --   moderator  everything else: sessions, grids, flags, settings, the editor,
 --              the cup, the derby, the drag ladder
---
--- The table holds the ROLE rather than `true`, so the tier travels with the
--- session instead of being looked up again from a password nobody kept.
---
--- ONE TABLE, NOT SEVEN NAMES, and that is a hard constraint rather than tidiness.
--- This file compiles within a handful of slots of Lua's 200-local ceiling, and
--- the one past it does not warn: the plugin simply fails to load. Seven separate
--- top-level locals for the two passwords, the two role names and the three
--- predicates would have spent most of what is left. `authenticatedPlayers`,
--- `isAuthenticated` and `requireAuth` keep their own names because a hundred
--- and twenty call sites and two modules already say them.
+-- authenticatedPlayers holds the ROLE. One `auth` table for the locals ceiling.
 local auth = {
   ADMIN = 'admin',
   MOD   = 'moderator',
-  -- Seeded here and re-seeded from config.json by applyConfigToRace, which runs
-  -- after the file has been read.
+  -- Re-seeded from config.json by applyConfigToRace.
   adminPw = CFG.adminPassword,
   modPw   = CFG.moderatorPassword,
 }
 local authenticatedPlayers = {}   -- [playerID] = 'admin' | 'moderator'
 
--- MAY THIS SESSION RUN THE NIGHT? True for either tier, and this is what the
--- hundred-odd admin handlers ask. It was `== true` when the table held
--- booleans; a role string is truthy but is not `true`, and leaving that
--- comparison alone would have refused every command from everybody.
+-- Either tier: what the admin handlers ask. (A role string is truthy, not true.)
 local function isAuthenticated(pid)
   return authenticatedPlayers[pid] ~= nil
 end
 
--- ...and the narrow question, asked by the three handlers that cannot be undone.
+-- The full tier, for the three commands with no undo.
 function auth.isFull(pid)
   return authenticatedPlayers[pid] == auth.ADMIN
 end
 
--- Which password was typed, and therefore which tier this login is worth.
--- Returns nil for a miss.
---
--- ADMIN IS TESTED FIRST so that two passwords set to the same string grant the
--- higher tier rather than the lower one. An empty moderator password is the
--- OFF switch for that tier and must never match, including when the login
--- field was left blank -- which is exactly what `pass == auth.modPw` would
--- have said, on every server that never set one.
+-- Which tier a password is worth, or nil. Admin is tested first (equal strings
+-- grant the higher tier); an empty moderator password never matches.
 function auth.roleOf(pass)
   if type(pass) ~= 'string' or pass == '' then return nil end
   if pass == auth.adminPw then return auth.ADMIN end
@@ -752,19 +373,9 @@ function auth.roleOf(pass)
   return nil
 end
 
--- Guard placed at the top of every admin-level event handler. Any command from
--- a session that has not logged in is dropped (and logged so it's diagnosable).
--- A REFUSAL HAS TO REACH THE CLIENT, not just the log.
---
--- The client caches its own admin flag on purpose, so it survives the pause
--- menu, and `youAreAdmin` only rides targeted replies. Nothing else tells it the
--- server dropped that flag. Session ids are REUSED, so a reconnect clears the
--- auth here while the panel goes on showing admin controls that silently do
--- nothing: every button dead, no error anywhere, and logging out and back in
--- the only cure anybody could stumble onto.
---
--- So the refusal is answered. The client corrects its flag, the panel offers the
--- login again, and a dead button becomes a sentence.
+-- Guard on every admin handler. The refusal is ANSWERED (RM_LoginResult
+-- lapsed): session ids are reused, so a reconnect drops auth here while the
+-- client's cached flag shows dead admin controls.
 local function requireAuth(pid)
   if authenticatedPlayers[pid] then return true end
   print('[RaceManager] Ignored admin command from unauthenticated player ' .. tostring(pid))
@@ -774,19 +385,8 @@ local function requireAuth(pid)
   return false
 end
 
--- The same guard, one tier up: for the three commands that destroy something a
--- league cannot get back. Changing a password, clearing the server's results,
--- deleting a saved layout.
---
--- IT DOES NOT ANSWER WITH RM_LoginResult, and that is the whole difference.
--- That event carries the client's admin flag, so replying to a moderator with
--- `success = false` would log them out of a session they are legitimately in --
--- mid-race-night, from pressing a button they were never allowed to press. A
--- refusal on the tier is not a refusal on the login.
---
--- So it goes down its own channel, says which tier the command wanted, and
--- leaves the session exactly where it was. The panel hides these controls from
--- a moderator anyway; this is the server refusing to take that on trust.
+-- The full-tier guard. Answered on RM_Denied, NOT RM_LoginResult, which would
+-- log a moderator out of a session they are legitimately in.
 function auth.requireFull(pid)
   if not requireAuth(pid) then return false end
   if auth.isFull(pid) then return true end
@@ -803,24 +403,19 @@ local function newRecord(pid)
   return {
     id         = pid,
     name       = MP.GetPlayerName(pid) or ('Player ' .. pid),
-    -- Admin-assigned readable name. Display only, cleared when the connection
-    -- is inherited by someone else. nil = show the real name.
+    -- Admin-assigned display name; nil shows the real one.
     alias      = nil,
     -- waiting | qualifying | gridded | racing | finished | dsq | dnf
     status     = 'waiting',
-    -- SELF-DECLARED SPECTATOR, and the only thing that takes a driver out of the
-    -- field. Everyone connected races unless this is set. Durable: it is mirrored
-    -- into the identity registry so it survives the online purge.
+    -- Self-declared spectator: the only way out of the field. Mirrored into the
+    -- identity registry, so it survives the online purge.
     spectating = false,
     gridPos    = nil,        -- locked-in starting position (Generate Grid)
     customGrid = nil,        -- slot the admin pinned this driver to (custom mode)
     qualiBest  = nil,        -- best qualifying lap (seconds)
     qualiLaps  = 0,          -- timed qualifying laps completed this session
-    -- This driver still owes the out lap: their next crossing is the one that
-    -- starts their timing rather than one that records anything. Per driver and
-    -- not a session-wide flag, because the field is spread around the circuit --
-    -- one driver can be two flying laps in while another is still on their out
-    -- lap, and each of them has to be told the truth about their own lap.
+    -- Still owes the out lap: the next crossing starts timing. Per driver: the
+    -- field is spread round the circuit.
     outLap     = false,
     raceBest   = nil,        -- best race lap (seconds)
     currentLap = 0,          -- lap the driver is currently on (1-based once racing)
@@ -834,92 +429,54 @@ local function newRecord(pid)
     holdCorrectedAt = nil,   -- race.time of the last correction (rate limiting)
     jokerTaken = 0,          -- completed runs of the joker route this race
     jokerLap   = nil,        -- lap the joker route was taken on
-    -- WHERE THIS DRIVER LOCKED UNDER THE CAUTION, in two numbers, and BOTH are
-    -- stamped at their own crossing of the line rather than at the button.
-    --
-    --   cautionDown  laps down on the leader at the caution lap. 0 is the lead
-    --                lap. This is compared FIRST, which is what puts the lapped
-    --                cars at the bottom of the board in their own order instead
-    --                of scattered through a field they are not racing.
-    --   cautionPos   the order they came back to the line in, within that. First
-    --                back is first, which is what racing back to the line means.
-    --
-    -- Both nil for a driver still racing back and for one who joined after the
-    -- caution; the comparator sorts them live behind the cars already home.
+    -- Where this driver locked under the caution, stamped at their own crossing:
+    --   cautionDown  laps down on the leader (0 = lead lap), compared FIRST
+    --   cautionPos   order back to the line within that
+    -- nil while racing back, or for a later joiner (sorted live behind).
     cautionPos = nil,
     cautionDown = nil,
-    -- THE BLUE FLAG, from both ends. Recomputed on every broadcast and held on
-    -- the record between them, which is what gives the hysteresis above
-    -- something to read: `blue` being already set is what widens the band.
-    --
-    --   blue     a car a lap or more up is close behind: let them by.
-    --   lapping  the car close ahead is a lap or more down: they are being
-    --            shown blue, and you are about to come past them.
-    --
-    -- Both are nil for everyone the moment the race is neutralised. Nobody is
-    -- letting anybody by under a yellow.
+    -- The blue flag, recomputed per broadcast (nil for all under a caution):
+    --   blue     a car a lap or more up is close behind: let them by
+    --   lapping  the car close ahead is a lap or more down
     blue       = nil,
     lapping    = nil,
-    -- What `blue` was on the previous broadcast, and the only reader is the
-    -- hysteresis. Not on the wire: no client has any use for last tick's answer.
+    -- Last broadcast's `blue`, for the hysteresis. Not sent.
     blueWas    = nil,
-    -- THE HEAT PROGRAM, per driver. Held on the record rather than in a table of
-    -- its own so it travels with the driver through every path that already
-    -- knows how to move a record -- and mirrored into the identity registry, so
-    -- a driver who drops out between two heats does not come back having lost
-    -- the transfer they earned in the first one.
+    -- The heat program per driver, mirrored into the identity registry so a
+    -- dropout between heats keeps a transfer earned.
     heat        = nil,       -- which heat this driver was drawn into
     heatPos     = nil,       -- where they finished it
     transferred = nil,       -- true once they took a transfer spot out of it
-    -- Connected while a session was already running: not a participant, and
-    -- ghosted for everyone until the next grid forms. See RM_onPlayerJoin.
+    -- Joined mid-session: not a participant, ghosted until the next grid.
     bystander  = nil,
     outReason  = nil,        -- why this driver is dnf/dsq (results + UI text)
-    -- The place this driver was running in at the moment they retired.
-    --
-    -- Kept because the live order does NOT keep it: a driver who stops is sorted
-    -- to the bottom of the table on the very next broadcast, and `position` is
-    -- overwritten with where they ended up rather than where they were. That is
-    -- right for a leaderboard of who is still racing and wrong for a record of
-    -- what happened -- a driver who was second when their engine let go was
-    -- second, whatever the reason they stopped.
+    -- Where a retirement classifies, and where it was running when it stopped
+    -- (the live order drops a stopped car to the bottom at once).
     dnfPos     = nil,      -- where a retirement CLASSIFIES: behind the field
     heldPos    = nil,      -- the place it was running in when it stopped
     -- Live position tracking (see the "Running order" section below).
     position   = nil,        -- current place in the running order (1 = leader)
     cpCleared  = 0,          -- checkpoints passed on the current lap
     distNext   = nil,        -- meters from the car to the next checkpoint center
-    -- Split timing: [lap][checkpoint] = race.time when this driver reached it,
-    -- and the last point stamped. What the gap and interval are subtracted from.
+    -- Split timing: [lap][checkpoint] = race.time reached, and the last stamp.
     splits     = nil,        -- built lazily by progress.record
     splitLap   = nil,
     splitCp    = nil,
-    -- Seconds behind the leader, and behind the car directly ahead, both
-    -- measured at THIS driver's last checkpoint. Recomputed per broadcast in
-    -- assignPositions; nil whenever there is nothing honest to say.
+    -- Gap to the leader and interval to the car ahead, at THIS driver's last
+    -- checkpoint (assignPositions). nil when there is nothing honest to say.
     gap        = nil,
     intv       = nil,
-    -- Module 4: the last vehicle configuration this client declared, and the
-    -- ruling on it. Recorded whether or not the Garage List is being enforced,
-    -- so switching enforcement on can audit the grid straight away instead of
-    -- waiting for every client's next poll.
-    --
-    -- carOk is deliberately THREE-VALUED: true approved, false not on the list,
-    -- nil nothing to say (not enforcing, or no declaration seen yet). A driver
-    -- who has not reported must not read as an offender.
+    -- Module 4: the last declared configuration and the ruling, recorded even
+    -- when not enforcing. carOk is THREE-VALUED: true approved, false not on
+    -- the list, nil nothing to say (never an offender).
     carOk       = nil,
     carSig      = nil,   -- model + parts + tuning
     carPartsSig = nil,   -- model + parts, the half 'parts' mode matches on
     carLabel    = nil,   -- what to call it in the audit
     carGame     = nil,   -- BeamNG build, for the version-skew message
-    -- WHICH CLASS THIS DRIVER IS IN, derived from the Garage List entry their
-    -- car matches -- a class is a property of the car, so it is read off the car
-    -- rather than assigned per driver per event. nil is unclassified, which is
-    -- every driver on a server that has not tagged a single entry.
+    -- Class, from the Garage List entry the car matches; nil is unclassified.
     class       = nil,
-    -- Their place WITHIN their class, stamped beside `position` on every
-    -- broadcast. nil whenever no class is in use, so a single-class night has
-    -- exactly the board it always had.
+    -- Place within the class, nil when no class is in use.
     classPos    = nil,
   }
 end
@@ -927,24 +484,11 @@ end
 -- ---------------------------------------------------------------------------
 -- Live progress: the checkpoint telemetry, and the splits built out of it
 -- ---------------------------------------------------------------------------
--- ONE TABLE HOLDING TWO FUNCTIONS, and that is not stylistic. This chunk sits on
--- Lua's 200-active-locals ceiling -- see the note in ARCHITECTURE.md about why
--- the roster and the cup live inside an installer function -- and going over it
--- does not warn: the file simply stops compiling and the whole plugin is gone.
--- Adding the split recorder below as a local of its own was the name that went
--- over. One table replacing the one local that was already here costs no new
--- slot at all, and the two functions belong together anyway: both are about
--- where a driver has got to.
+-- One table for both, for the locals ceiling.
 local progress = {}
 
--- Telemetry reported by a client is only meaningful while that driver is
--- circulating; wipe it whenever their lap state restarts so a stale distance
--- can never decide a position.
---
--- THE SPLITS ARE NOT WIPED HERE. This runs on every lap crossing, and a split
--- table emptied once a lap is a gap column that blanks itself every time
--- anybody crosses the line. Splits belong to the SESSION and are cleared where
--- the session is: the grid, and GO.
+-- Wipe a driver's telemetry when their lap state restarts. NOT the splits: this
+-- runs every lap, and the splits belong to the session (cleared at grid and GO).
 function progress.clear(rec)
   rec.cpCleared = 0
   rec.distNext  = nil
@@ -953,48 +497,21 @@ end
 -- ---------------------------------------------------------------------------
 -- Split timing: when each driver reached each checkpoint
 -- ---------------------------------------------------------------------------
--- What a gap to the leader is made of, and the only honest way to build one
--- here. The running order is ranked on laps, then checkpoints cleared, then
--- meters to the next gate, and not one of those converts into seconds behind --
--- but "you reached checkpoint 7 of lap 3 at 214.6s, the leader reached it at
--- 212.1s" is a subtraction with nothing estimated in it.
---
--- ONE CLOCK MAKES IT WORK. race.time is the server's and everybody is scored on
--- it already, so two drivers' stamps are directly comparable without any clock
--- sync between clients.
---
--- IT IS ALSO IMMUNE TO BRANCH GATES, which a distance-based gap would not be. A
--- branch gate is another way through a checkpoint that already exists, so two
--- cars at opposite ends of a head-on oval have cleared the same checkpoints and
--- their splits compare exactly. Nothing here knows or cares which gate anybody
--- took -- the same property that lets the leaderboard rank them at all.
---
--- Nested per lap rather than flattened into one key, so the structure needs no
--- knowledge of how many checkpoints a lap has. The server does not always have
--- that: race.slotCount is 0 for a route built in the editor and never saved as
--- a layout, and a stride guessed from a scalar would silently collide.
---
--- BACKFILLED ON A JUMP, which is the part that is not obvious. The arithmetic
--- looks the LEADER up at the FOLLOWER's last checkpoint, so a single hole in the
--- leader's table blanks the gap column for everyone behind them. Reports do go
--- missing: the client fires one on the frame after every crossing (checkGates
--- sets progressLeft = 0 for exactly that reason), but a dropped packet leaves a
--- gap in the sequence. A driver reporting checkpoint 4 when we last saw 2
--- provably passed 3 no later than now, so 3 is stamped with the same time
--- instead of being left as a hole.
+-- A gap to the leader is a subtraction of race.time stamps at the same
+-- checkpoint: one server clock, nothing estimated, and immune to branch gates.
+-- Nested per lap (slotCount can be 0 for an unsaved route). BACKFILLED ON A
+-- JUMP: the leader's stamp at the follower's checkpoint is looked up, so one
+-- hole blanks the whole gap column; a driver reporting CP 4 after CP 2 passed 3
+-- no later than now.
 function progress.record(rec, lap, cp)
   if not rec.splits then rec.splits = {} end
   local onLap = rec.splits[lap]
   if not onLap then onLap = {}; rec.splits[lap] = onLap end
   onLap[cp] = race.time
-  -- Where this driver has got to, kept explicitly rather than read back off
-  -- currentLap/cpCleared. Those two disagree with it exactly once, and it is the
-  -- case that matters most: a finisher's currentLap is left where it was while
-  -- their last split is the flag.
+  -- Kept explicitly: a finisher's currentLap stays put while their last split
+  -- is the flag.
   rec.splitLap, rec.splitCp = lap, cp
-  -- Backwards from here and no further than the start of this lap. An earlier
-  -- lap is complete by definition, and a hole in one is not this crossing's
-  -- business to invent a time for.
+  -- Back to the start of this lap only.
   for k = cp - 1, 0, -1 do
     if onLap[k] then break end
     onLap[k] = race.time
@@ -1004,33 +521,19 @@ end
 -- ---------------------------------------------------------------------------
 -- Display aliases (presentation only -- NEVER a key)
 -- ---------------------------------------------------------------------------
--- Everyone on this server is a BeamMP guest, so there is no stable per-player
--- identity to bind a readable name to: the session id is recycled between
--- players (see RM_onPlayerDisconnect) and the guest name is regenerated on every
--- join. An alias is therefore scoped to the connection and lives ON THE PLAYER
--- RECORD, not in a side table keyed by session id -- a side table would hand a
--- departed player's alias to whoever inherits that id next.
---
--- Nothing here is ever used as a lookup key. Race logic keys on the BeamMP
--- player id throughout (players[pid], rec.id, the client's own-row match); the
--- alias is read only by displayName below, which feeds the results file, the
--- chat announcements and the leaderboard payload.
+-- No stable identity exists (session ids are recycled, guest names regenerate),
+-- so an alias lives ON THE PLAYER RECORD, never in a side table keyed by id.
+-- Never a lookup key: only displayName reads it.
 local MIN_ALIAS_LEN = 3
 local MAX_ALIAS_LEN = 20    -- results file pads the Driver column to 22
--- Names nobody may take, so a player cannot pose as staff or as an unnamed
--- player. Compared case-insensitively.
+-- Names nobody may take (posing as staff). Case-insensitive.
 local RESERVED_ALIASES = {
   ['admin'] = true, ['server'] = true, ['host'] = true, ['console'] = true,
   ['system'] = true, ['racemanager'] = true, ['race manager'] = true,
 }
 
--- Alias for any record that carries a player id, or nil.
---
--- The derby keeps its OWN player table with its own copy of the name, and an
--- alias is only ever set on the racing record -- that is the one place an admin
--- can reach. Rather than keeping a second copy that can drift, a record with no
--- alias of its own resolves through the racing record by id. That also means
--- setting or clearing a name mid-derby is picked up immediately.
+-- Alias for any record with a player id. The derby's own records resolve
+-- through the racing record, so a mid-derby rename shows at once.
 local function aliasOf(rec)
   if not rec then return nil end
   if rec.alias then return rec.alias end
@@ -1038,21 +541,14 @@ local function aliasOf(rec)
   return owner and owner.alias or nil
 end
 
--- The single resolution point on this side: alias if set, real name otherwise.
--- rec.name always exists (newRecord falls back to 'Player <id>'), so this can
--- never return nil or an empty string.
+-- Alias if set, else the real name; never nil or empty.
 local function displayName(rec)
   if not rec then return '?' end
   return aliasOf(rec) or rec.name
 end
 
--- Cleaned alias, or nil plus a reason to show the admin.
---
--- ASCII only, and that is deliberate rather than lazy: the results file formats
--- fixed-width columns with %-22s, and Lua pads by BYTES, not codepoints, so a
--- single multi-byte character silently breaks the alignment of every row after
--- it. The character class also excludes control characters and anything that
--- could read as markup.
+-- Cleaned alias, or nil and a reason. ASCII only: the results file pads columns
+-- with %-22s, which counts bytes, so a multi-byte character misaligns rows.
 local function sanitizeAlias(raw)
   if type(raw) ~= 'string' then return nil, 'not a string' end
   local s = raw:gsub('%s+', ' '):gsub('^%s', ''):gsub('%s$', '')
@@ -1068,8 +564,7 @@ local function sanitizeAlias(raw)
   return s
 end
 
--- Rejects a name already held by somebody else, as an alias OR as their real
--- guest name, so an alias can never shadow another driver on the timing screen.
+-- Taken as somebody's alias OR real name?
 local function aliasInUse(candidate, exceptPid)
   local lower = candidate:lower()
   for pid, rec in pairs(players) do
@@ -1084,31 +579,14 @@ end
 -- ---------------------------------------------------------------------------
 -- Player identity registry
 -- ---------------------------------------------------------------------------
--- `players` is a PER-SESSION table. Start Qualifying and Reset Session rebuild
--- it from scratch on purpose -- lap times, grid slots and reset tallies are all
--- meant to be thrown away with the session. Two things on that record are not:
--- the admin-assigned display name, and the driver's decision to enter. Wiping
--- the table took both with it every time, which is exactly why names vanished
--- between qualifying and the race, and again between one race and the next.
---
--- They live here instead. Keyed by BeamMP player id, because that is the key
--- everything else in this file already uses -- and NOT by anything derived from
--- a vehicle: a vehicle id changes on every respawn, so a name bound to one
--- survives nothing. The id on its own is not an identity either (BeamMP
--- recycles session ids between players), so an entry is only handed back when
--- the CONNECTION still matches: same id AND same guest name. A different player
--- inheriting the id starts clean, which is what stops an accidental
--- impersonation.
+-- `players` is rebuilt per session; the display name, the sit-out decision,
+-- heat and class live here so they survive it. Keyed by player id, handed back
+-- only when the guest NAME still matches (ids are recycled), so a stranger
+-- inheriting the id starts clean.
 local identities = {}   -- [pid] = { name = <guest name>, alias = ..., spectating = bool }
 
--- Every player id that reaches this file goes through here first.
---
--- Event handlers are called with a number, but MP.GetPlayers() keys its map on
--- the server's own terms, and a key that does not compare equal to the one a
--- record was stored under reads as "that player is not on this server". That is
--- how a full grid of drivers who had every one of them opted in came out as an
--- empty entry list: the online check purged every record, and with it every
--- `joined` flag, a moment before the grid was built from them.
+-- Every player id goes through here: MP.GetPlayers() keys may not compare equal
+-- to ours, which once purged a whole opted-in grid as "not online".
 local function pidKey(id)
   local n = tonumber(id)
   if not n then return nil end
@@ -1129,8 +607,8 @@ local function onlinePlayers()
   return out
 end
 
--- The stored identity for this connection, or nil. Clears itself when the name
--- no longer matches: that means somebody else now holds the session id.
+-- The stored identity for this connection, cleared when the name no longer
+-- matches (somebody else holds the id).
 local function identityFor(pid, name)
   local ident = identities[pid]
   if not ident then return nil end
@@ -1145,43 +623,27 @@ local function identityFor(pid, name)
   return ident
 end
 
--- Write the durable half of a record back to the registry. Called from every
--- place that can change a display name or an entry decision, so the registry is
--- never behind the record it mirrors.
+-- Write the durable half of a record back, from everywhere it can change.
 local function rememberIdentity(rec)
   if not rec or not rec.id then return end
   identities[rec.id] = {
     name   = rec.name,
     alias  = rec.alias,
     spectating = rec.spectating == true,
-    -- THE HEAT PROGRAM RIDES HERE TOO, and it has to. Generate Grid purges every
-    -- record that is not a connected player, so a driver who drops out between
-    -- heat two and the feature would come back having lost the heat they were
-    -- drawn into and the transfer they earned in it -- and would be gridded at
-    -- the back of a feature they had qualified for the front of.
+    -- Heat and class ride here too: Generate Grid purges offline records, and a
+    -- driver reconnecting between sessions must keep their heat, transfer and
+    -- class.
     heat        = rec.heat,
     heatPos     = rec.heatPos,
-    -- THE CLASS RIDES HERE TOO, for the reason the heat does: Generate Grid
-    -- purges every record that is not a connected player, and a driver who
-    -- reconnects between two races would come back unclassified and be scored
-    -- against the wrong field. It is re-derived on their next declaration
-    -- anyway, but "anyway" is up to a couple of seconds after the grid forms.
     class       = rec.class,
     transferred = rec.transferred,
-    -- The car's name, for the lap records. A client declares its car only when
-    -- it changes, so a record rebuilt after the purge would never hear it again.
+    -- The car's name, for lap records: a client only declares it on a change.
     car         = rec.carLabel,
   }
 end
 
--- Put the whole field back in. Reset Session is the "start the evening again"
--- button, and the evening starts with everyone racing, so it clears every
--- sit-out decision. The display names do NOT go with it: an admin who spent
--- five minutes naming a grid should not have to do it twice because they
--- cleared a leaderboard.
---
--- Both halves, because they can disagree: the record is what the next grid
--- reads and the registry is what survives the online purge.
+-- Put the whole field back in (Reset Session): clears every sit-out, on both the
+-- record and the registry. Display names stay.
 local function clearEntries()
   for _, ident in pairs(identities) do
     ident.spectating = false
@@ -1196,9 +658,7 @@ local function ensurePlayer(pid)
   if not pid then return nil end
   if not players[pid] then
     local rec = newRecord(pid)
-    -- A fresh record for a connection we already know inherits its display name
-    -- and its entry decision. This is the whole point of the registry: the
-    -- record is disposable, the identity is not.
+    -- A known connection inherits its identity: the record is disposable.
     local ident = identityFor(pid, rec.name)
     if ident then
       rec.alias  = ident.alias
@@ -1215,130 +675,45 @@ local function ensurePlayer(pid)
   return players[pid]
 end
 
--- Forward declaration: the derby module lives further down the file, but its
--- entrant count is DERIVED from the racing entry list below (a driver who is
--- spectating sits out both modes). So anything that changes who is entered has to
--- refresh the derby panel too, or an admin watching it reads a stale field size
--- and presses Start Derby expecting a different set of drivers. Same pattern
--- the garage store uses to be reachable from the state broadcast above it.
+-- Forward declaration: entry changes refresh the derby panel's field size.
 local derbyEntryListChanged
--- "Is a derby running right now?", asked by the RACING side.
---
--- One boolean, assigned inside the derby block, so the racing code can refuse to
--- enter somebody into a session that is already under way without reaching into
--- derby state to find out. The isolation the two modules keep from each other is
--- the reason this is a named function rather than a peek at derby.phase.
---
--- Hung off `race` rather than given a local of its own, for the register budget
--- documented in ARCHITECTURE.md.
+-- "Is a derby running?", for the racing side, without reaching into derby
+-- state. On `race`, like the hooks below (the locals ceiling).
 race.derbyUnderWay = function () return false end
--- THE DRAG LADDER HANGS THREE NAMES HERE, and not one of them is a local.
---
--- `race` is the register-budget escape hatch this file already uses for
--- derbyUnderWay, and the drag module needs three crossings rather than one --
--- which is two locals this chunk does not have. It has FIVE free, measured by
--- padding the file with dummies until it stopped compiling, and a file that
--- stops compiling takes the whole plugin off the server with no error.
---
--- All three are inert by default, so a drag.lua that fails to load costs the
--- drag tab and nothing else:
---   dragUnderWay    is there a pass on the strip? Cars placed and frozen on the
---                   start positions is not a thing to drop a racing grid onto
---   dragEntryChanged the entry list moved, so the ids on the ladder have to
---                   follow the people
---   dragWarm        boot-time load of a ladder left half-run
+-- The drag ladder's hooks on `race`, all inert by default, so a drag.lua that
+-- fails to load costs the drag tab only:
+--   dragUnderWay     a pass is on the strip (no racing grid onto it)
+--   dragEntryChanged the entry list moved
+--   dragWarm         boot-time load of a half-run ladder
 race.dragUnderWay    = function () return false end
 race.dragEntryChanged = function () end
 race.dragWarm        = function () end
 race.dragSetCupHooks = function () end
 
--- Forward declarations for the two modules at the bottom of this file. Both
--- need the JSON codec and the layout directory, which are defined far below the
--- code that has to reach them -- the same reason garageSnapshot and formGrid are
--- declared up here and assigned further down.
---
---   rosterRemember(rec)   a driver was given a display name: bind them to their
---                         roster entry, creating it if this is a new name
---   rosterUnbind(pid)     their display name was cleared, or they left
---   rosterEntryFor(rec)   the roster entry a driver is bound to, or nil
---
--- There is deliberately NO "recognize this driver automatically" here. BeamMP
--- issues a fresh random guest name on every join, so a name proves nothing
--- about who is behind it: matching on one would usually fail to spot a
--- returning driver, and would occasionally hand a stranger somebody else's
--- identity and the championship points attached to it. Binding a connection to
--- a roster entry is an admin's decision, and only an admin's.
---   cupOnSessionComplete  a session finished: score it into the cup, if one is
---                         running. Called from finishSession and nowhere else.
---   cupOnDragComplete     the same for a drag tournament, called from the end
---                         of a ladder. Takes the finishing order and the
---                         meeting's low ET, for the same reason the derby
---                         hands over a classification: the cup never reaches
---                         into another module's tables.
---   cupOnDerbyComplete    the same for a demo derby, called from finishDerby.
---                         Takes the finished classification as an argument
---                         rather than reading derbyPlayers, so the cup never
---                         reaches into the derby module's tables and the derby
---                         module hands over a result instead of exposing state.
---   cupResultsLines       the round just banked, as text lines for the results
---                         file. The traffic goes the other way here -- results
---                         asking the cup, rather than the cup being told -- and
---                         it is still a read of a finished round, after the
---                         cars have stopped. It returns nil when no cup is
---                         running, which is what keeps a plain race night's
---                         results file byte-for-byte what it always was.
+-- Forward declarations for the roster and cup at the bottom of the file (they
+-- need the JSON codec and layout directory defined below):
+--   rosterRemember / rosterUnbind / rosterEntryFor   bind, unbind, look up
+-- There is NO automatic recognition: guest names prove nothing, so binding a
+-- connection to a roster entry is an admin's decision only.
+--   cupOnSessionComplete / cupOnDragComplete / cupOnDerbyComplete   score a
+--     finished session; each hands over a classification, never module state
+--   cupResultsLines   the banked round as results-file lines (nil with no cup)
 local rosterRemember, rosterUnbind, rosterEntryFor
 local rosterBindTo, rosterList, rosterForget
---   cupSeasonPoints(rec)  this driver's championship total, or nil if they have
---                         no entry in the cup. Read by the heat draw, which can
---                         seed itself off the standings -- and declared here for
---                         the same reason the three above it are: the cup lives
---                         at the bottom of this file and the draw does not.
+--   cupSeasonPoints(rec)  championship total, for the heat draw
 local cupOnSessionComplete, cupOnDerbyComplete, cupResultsLines, cupSeasonPoints
 local cupOnDragComplete
--- Boot-time cache warm for the two, called from onInit. They exist because both
--- modules are wrapped in a `do ... end` block: Lua allows 200 locals per
--- function and this chunk was already close to it, so everything those modules
--- need internally is scoped to the block and released at its end. Only the
--- handful of names declared here cross the boundary -- which is the isolation
--- those sections claim, made structural rather than promised.
+-- Boot-time cache warm. Both modules live in do-blocks, so only these names
+-- cross out.
 local rosterWarm, cupWarm
 
 -- ---------------------------------------------------------------------------
 -- Race entry list
 -- ---------------------------------------------------------------------------
--- Nothing below assumes "connected == racing". A driver is a participant when
--- they opted in, or when the admin put the server in 'all' mode (which is what
--- the plugin used to do implicitly for everyone).
--- EVERYONE RACES UNLESS THEY SAY OTHERWISE, and that is the whole rule.
---
--- There used to be two overlapping ones: an admin picked "everyone races" or
--- "opt-in", and under opt-in each driver pressed Join Race. Then spectating
--- arrived and made a third answer to the same question, so a player could be
--- joined AND spectating and the panel had to explain which won.
---
--- Spectating is the only switch now. It covers what opt-in was for -- a one on
--- one where two people race and the rest watch is two entrants and everybody
--- else pressing Spectate -- without an admin having to set a mode first.
--- IS THIS DRIVER IN THE SESSION ABOUT TO BE RUN?
---
--- A HEAT IS AN ORDINARY RACE RUN BY A SUBSET OF THE FIELD, and this function is
--- the whole of what makes that true. Everything downstream -- forming the grid,
--- the online purge, the respawn, the garage audit, the entrant count -- already
--- asks this question and needs no idea that heats exist.
---
--- Three conditions, and all three matter:
---
---   heatCount > 0    there is a heat program at all. A server that never runs
---                    heats is untouched by every line below, which is what
---                    makes this safe to put in the one function the whole
---                    plugin routes through.
---   heatCurrent > 0  a HEAT is being run rather than the feature. The feature
---                    (0) is the whole field, which is the point of it.
---   sessionKind      QUALIFYING IS NEVER SPLIT. The draw is made from
---                    qualifying times, so a qualifying session that only let
---                    one heat's drivers out would be drawing heats from times
---                    set by the drivers it had already drawn.
+-- EVERYONE RACES UNLESS THEY SPECTATE. A heat is an ordinary race run by a
+-- subset of the field, and this is the whole of what makes that true: during a
+-- heat (heatCount > 0, heatCurrent > 0) only that heat's drivers are entrants.
+-- QUALIFYING IS NEVER SPLIT: the draw is made from its times.
 local function isEntrant(rec)
   if not rec then return false end
   if rec.spectating then return false end
@@ -1376,9 +751,8 @@ end
 -- ---------------------------------------------------------------------------
 -- Running order (live positions)
 -- ---------------------------------------------------------------------------
--- Classification bucket shared by the live table and the results export:
--- classified finishers first, then drivers still out on track, then drivers
--- excluded by the regulations (joker ruling), then DNFs.
+-- Classification bucket for the live table and results: finishers, running,
+-- excluded (joker), DNF.
 local function classRank(rec)
   if rec.status == 'dnf' then return 3 end
   if rec.status == 'dsq' then return 2 end
@@ -1386,32 +760,13 @@ local function classRank(rec)
   return 1
 end
 
--- The live running order between two drivers who are still circulating is
--- decided by three metrics, in this exact order:
---
---   1. Laps completed        -- more laps is ahead. Taken from the SERVER's own
---                               lap counter (RM_onLap), never from the client
---                               telemetry, so a client cannot invent a lap.
---   2. Checkpoints cleared   -- on the current lap; more gates passed is ahead.
---   3. Distance to the next  -- meters from the car to the next checkpoint's
---      checkpoint               center, measured client-side (the server has no
---                               physics access). Shorter is ahead.
---
--- Drivers who have not reported yet share the same defaults (0 checkpoints, no
--- distance), so the pre-existing laps-led / grid-position tie-breaks still
--- decide those cases exactly as they did before.
--- HOW MANY LAPS DOWN THIS DRIVER IS ON THE CAUTION LAP, or nil when no caution
--- has gone official yet.
---
--- One formula for two states, which is the point of it. Once a driver has locked
--- the answer is the stamp taken at their own crossing; until then it is the same
--- arithmetic against the lap they are currently running -- and the two agree,
--- because a driver ON lap L completes lap L at their next crossing. So nobody
--- moves between groups by locking, and the board does not jump as the field
--- comes back to the line one car at a time.
---
--- Clamped at zero: a driver cannot be ahead of the lead lap, and a car that
--- takes its lap back (the free pass) is stamped rather than recomputed.
+-- The live running order between two circulating drivers:
+--   1. Laps completed (the SERVER's counter, so no client can invent a lap)
+--   2. Checkpoints cleared on the current lap
+--   3. Distance to the next checkpoint (client-measured), shorter ahead
+-- Laps down on the caution lap, or nil before the caution is official: the stamp
+-- once locked, else the same arithmetic live (they agree, so the board does not
+-- jump as cars lock). Clamped at zero.
 local function cautionDownOf(rec)
   if rec.cautionDown then return rec.cautionDown end
   if not race.cautionLap then return nil end
@@ -1427,32 +782,13 @@ local function raceOrderLess(a, b)
   if (ra == 0 or ra == 2) and a.finishTime and b.finishTime and a.finishTime ~= b.finishTime then
     return a.finishTime < b.finishTime
   end
-  -- THE CAUTION ORDER, and it is deliberately the first thing compared for two
-  -- cars still circulating. Under a full-course yellow the field holds station,
-  -- so the board must stop re-sorting -- otherwise a driver who closes up under
-  -- the caution (which they have been TOLD to do) is shown gaining places for
-  -- obeying the instruction, and the restart order is whatever the pack happened
-  -- to look like on the last broadcast.
-  --
-  -- TWO KEYS, IN THIS ORDER, and the first of them is the one a lapped driver
-  -- cares about:
-  --
-  --   1. LAPS DOWN at the caution lap. A car a lap down is behind the whole
-  --      lead lap, wherever it happens to be on the road -- which is how a
-  --      caution board reads everywhere and is what stops a lapped car
-  --      appearing to run third because it is physically third in the queue.
-  --   2. THE ORDER THEY CAME BACK TO THE LINE IN, within that. First back is
-  --      first. A car that has not reached the line yet has no place yet, so it
-  --      sorts behind the cars that have and is ranked live against the others
-  --      still racing back -- which is exactly what is happening on the road.
-  --
-  -- Laps down is ASKED, not only read, so a driver still racing back is grouped
-  -- with the cars they are going to lock beside rather than jumping up the board
-  -- for one lap and then dropping.
-  --
-  -- Placed after the finisher rules above on purpose: a driver who took the flag
-  -- before the yellow came out is classified by their finish and not by where
-  -- they were running.
+  -- THE CAUTION ORDER, first for cars still circulating, so closing up under
+  -- yellow (as told) gains no places:
+  --   1. LAPS DOWN at the caution lap: lapped cars behind the whole lead lap.
+  --   2. Order back to the line within that; a car not back yet sorts behind,
+  --      ranked live against the others still racing back.
+  -- After the finisher rules: a driver home before the yellow is classified by
+  -- their finish.
   if race.caution then
     local da, db = cautionDownOf(a), cautionDownOf(b)
     if da and db and da ~= db then return da < db end
@@ -1468,8 +804,7 @@ local function raceOrderLess(a, b)
   -- 2. Checkpoints cleared on the current lap.
   local ca, cb = a.cpCleared or 0, b.cpCleared or 0
   if ca ~= cb then return ca > cb end
-  -- 3. Distance to the next checkpoint (a driver who has not reported one is
-  --    treated as infinitely far away, i.e. behind anyone who has).
+  -- 3. Distance to the next checkpoint (none reported sorts behind).
   local da, db = a.distNext or math.huge, b.distNext or math.huge
   if da ~= db then return da < db end
   -- Stable fallbacks: laps led, then the starting grid.
@@ -1477,75 +812,32 @@ local function raceOrderLess(a, b)
   return (a.gridPos or math.huge) < (b.gridPos or math.huge)
 end
 
--- Stamp each driver with their place in the order the list is already in.
--- Called on every broadcast, so `position` is always in sync with the array
--- the clients receive.
--- Positions, and the two time deltas that hang off them.
---
--- GAP is seconds behind the leader; INTERVAL is seconds behind the car directly
--- ahead. Both are measured at THIS driver's own last checkpoint -- the last
--- point on track that they and the car they are being compared against have
--- both actually reached -- which is what makes them a subtraction of two
--- readings off one clock rather than an estimate.
---
--- IT COSTS THE WALK IT WAS ALREADY MAKING. Two table lookups and two
--- subtractions per driver, inside the loop that stamps `position`, on an array
--- that has just been sorted anyway. Nothing scans the field, nothing allocates,
--- and the wire grows by two numbers per row.
---
--- NOT IN QUALIFYING. There the classification is the best LAP, not time on
--- track, so a delta off the session clock says nothing about who is quicker --
--- two drivers who set identical laps ten minutes apart are level. The panel
--- computes the qualifying gap from the best laps it is already sent.
--- On the `progress` table for the reason everything else here is: a local of
--- its own is a slot this chunk does not have.
+-- GAP (behind the leader) and INTERVAL (behind the car ahead), each measured at
+-- THIS driver's last checkpoint: a subtraction off one clock, computed in the
+-- position walk at no extra cost. Not in qualifying, where the order is the best
+-- lap and the panel computes the gap from those.
 function progress.delta(other, lap, cp, mine)
   if not other or other.splits == nil then return nil end
   local theirs = other.splits[lap]
   theirs = theirs and theirs[cp]
   if not theirs then return nil end
   local d = mine - theirs
-  -- NEGATIVE IS CLAMPED, not sent. It means the order has changed since this
-  -- driver's last checkpoint: they were ahead when they passed it and have been
-  -- overtaken between there and here. Real timing has the same artefact between
-  -- splits, and "0.0" reads as too close to call, which is exactly what it is.
-  -- A minus sign in a column headed "behind" reads as a bug.
+  -- Negative is clamped to 0: the order changed since that checkpoint, and a
+  -- minus sign under "behind" reads as a bug.
   if d < 0 then d = 0 end
-  -- Three decimals is past what this method can resolve (the stamp carries the
-  -- reporting client's ping), and it keeps a full field's worth of floats out of
-  -- a payload that goes out three times a second.
+  -- Three decimals: the stamp already carries the reporting client's ping.
   return math.floor(d * 1000 + 0.5) / 1000
 end
 
--- WHO IS ABOUT TO BE LAPPED, AND BY WHOM.
---
--- The board has always shown "+1 LAP" and neither driver was ever told anything
--- about it: the backmarker got no blue flag, and the car catching them got no
--- warning that the car it was closing on was not racing it.
---
--- THE CLASSIFICATION IS THE WRONG LIST TO READ THIS OFF, and that is the whole
--- reason this is a second walk. A lapped car sorts BELOW the entire lead lap, so
--- the car directly above it on the board is another backmarker -- while the car
--- physically behind it on the road, the one actually about to come past, is
--- somewhere near the top. Adjacency on the timing screen and adjacency on the
--- track are different questions once anybody has been lapped.
---
--- So this sorts by HOW FAR ROUND THE LAP a car is and ignores which lap that is:
--- checkpoints cleared, then meters to the next one. That IS track order, and two
--- cars next to each other in it are next to each other on the road. Where the
--- one behind is on a higher lap, it is lapping the one in front.
---
--- THE GAP IS THE SAME SUBTRACTION THE GAP COLUMN USES, with one difference that
--- matters: each driver's stamp is taken on THEIR OWN lap. progress.delta already
--- does exactly that -- it is handed the lap to look up -- so a pair a lap apart
--- compares at the checkpoint they have both physically passed, which is the only
--- honest way to say how far apart two cars on different laps are.
+-- Who is about to be lapped, and by whom. NOT read off the classification: a
+-- lapped car sorts below the whole lead lap, while the car about to pass it is
+-- near the top. Sorted by how far round the lap (checkpoints, then distance) is
+-- TRACK order; where the car behind is on a higher lap, it is lapping. The gap
+-- compares each driver's stamp on their OWN lap at the same checkpoint.
 local function markBlueFlags(list)
   local track = {}
   for _, rec in ipairs(list) do
-    -- Circulating cars only, and only ones that have reported a position. A
-    -- finisher, a retirement and a driver who has not sent telemetry yet have no
-    -- place in a track order.
+    -- Circulating cars that have reported a position.
     if (rec.status == 'racing') and rec.splitLap and rec.cpCleared then
       track[#track + 1] = rec
     end
@@ -1560,36 +852,21 @@ local function markBlueFlags(list)
 
   for i = 1, #track - 1 do
     local ahead, behind = track[i], track[i + 1]
-    -- A lap or more between them, with the car BEHIND on the higher lap: that is
-    -- one car lapping another rather than two cars racing.
+    -- The car BEHIND on a higher lap: lapping, not racing.
     if (behind.currentLap or 0) > (ahead.currentLap or 0) then
       local cp    = behind.splitCp
       local onLap = behind.splits and behind.splits[behind.splitLap]
       local mine  = onLap and onLap[cp]
-      -- The backmarker's stamp for that same point on THEIR lap. They are
-      -- physically in front, so they have already passed it on the lap they are
-      -- running now.
+      -- The backmarker's stamp at that point on THEIR lap.
       local theirs = ahead.splits and ahead.splits[ahead.currentLap]
       theirs = theirs and theirs[cp]
-      --
-      -- SUBTRACTED HERE RATHER THAN THROUGH progress.delta, and the difference is
-      -- the sign. That function CLAMPS a negative to zero, which is right for the
-      -- gap column -- a minus sign in a column headed "behind" reads as a bug --
-      -- and exactly wrong here. A negative means the car on the higher lap
-      -- reached this point BEFORE the backmarker did, which is to say it is not
-      -- behind them at all and is not closing on anything. Clamped to zero that
-      -- reads as nose to tail, and the flag comes out for a pair that has been
-      -- drawing apart since they crossed.
+      -- Subtracted here, not through progress.delta: negative means the lapping
+      -- car is not behind at all, and clamping it to 0 would flag a pair drawing
+      -- apart.
       local gap = (mine and theirs) and (mine - theirs) or nil
       if gap and gap >= 0 then
-        -- Wider to stay lit than to light, so a car sitting on the threshold
-        -- does not strobe the flag.
-        --
-        -- OFF `blueWas`, NOT `blue`. assignPositions clears `blue` on every car
-        -- before this runs -- it has to, or a flag would outlive the moment that
-        -- earned it -- so by the time we get here `blue` is always nil and a
-        -- hysteresis reading it would be reading a constant. `blueWas` is what
-        -- the last broadcast concluded, moved aside rather than overwritten.
+        -- Wider to stay lit than to light. Off `blueWas`: assignPositions has
+        -- already cleared `blue` for this pass.
         local band = ahead.blueWas and CFG.blueFlagClear or CFG.blueFlagWithin
         if gap <= band then
           ahead.blue    = true
@@ -1603,14 +880,8 @@ end
 local function assignPositions(list)
   local leader = list[1]
   local quali  = race.sessionKind == 'quali'
-  -- PER-CLASS POSITIONS COST ONE TABLE AND NOTHING ELSE. The list handed in is
-  -- already in classification order, and a class is a subset of it -- so walking
-  -- it once and counting per class gives each driver their place in their own
-  -- class without a second sort or a second comparator. Two classes on one board
-  -- are two boards that happen to be interleaved.
-  --
-  -- Built only when a class is actually in use. `nil` here is what makes every
-  -- line below it free on a server that never tagged an entry.
+  -- Per-class positions: one walk of the already-sorted list, counting per
+  -- class. Only when a class is in use.
   local seen = nil
   for _, rec in ipairs(list) do
     if rec.class then seen = {}; break end
@@ -1619,24 +890,16 @@ local function assignPositions(list)
     rec.position = i
     rec.classPos = nil
     if seen and rec.class then
-      -- DNFs and disqualifications keep a class place for the same reason they
-      -- keep an overall one: "was 2nd in class" and "was 9th in class" are
-      -- different afternoons, and the results file prints both.
+      -- DNFs and DSQs keep a class place, like an overall one.
       seen[rec.class] = (seen[rec.class] or 0) + 1
       rec.classPos = seen[rec.class]
     end
     rec.gap, rec.intv = nil, nil
-    -- CLEARED EVERY PASS and set again below, so a flag can never outlive the
-    -- moment that earned it: a driver who is let by, or who pits, or whose
-    -- lapping car retires, must stop being shown blue on the next broadcast.
-    --
-    -- The old answer is moved aside rather than dropped, because the hysteresis
-    -- in markBlueFlags is the one thing that needs it: "is this flag already
-    -- out" cannot be asked of a field that has just been cleared.
+    -- Cleared every pass so a flag never outlives what earned it; the old value
+    -- is kept for the hysteresis.
     rec.blueWas = rec.blue
     rec.blue, rec.lapping = nil, nil
-    -- A retirement or a disqualification has no meaningful distance to anybody:
-    -- they are classified by ruling rather than by where they got to.
+    -- A DNF or DSQ has no meaningful distance to anybody.
     if not quali and rec.status ~= 'dnf' and rec.status ~= 'dsq' and rec.splitLap then
       local lap, cp = rec.splitLap, rec.splitCp
       local onLap = rec.splits and rec.splits[lap]
@@ -1647,65 +910,38 @@ local function assignPositions(list)
       end
     end
   end
-  -- NOT IN QUALIFYING, and not while the race is neutralised. Qualifying has no
-  -- lapping in it -- drivers are on their own laps and a car a lap "down" is
-  -- just a car that went out later. Under a caution or on the pace lap nobody is
-  -- letting anybody by, and a blue flag next to a yellow is two instructions
-  -- that contradict each other.
+  -- No blue flags in qualifying (no lapping) or while neutralised.
   if not quali and not race.caution and not race.cautionPending and not race.pacing then
     markBlueFlags(list)
   end
   return list
 end
 
--- The driver fields that actually go over the wire.
---
--- A player record carries a good deal that only this file ever reads: pit and
--- grid-hold audit counters, the hold rate-limiter's timestamp, and distNext,
--- which exists so the comparator above can order two cars on the same lap.
--- None of it is rendered anywhere, and all of it was
--- being serialised for twenty drivers, three times a second, for the length of
--- a race -- then parsed again by every client that received it.
---
--- Sending what is read instead of everything that exists cuts roughly a fifth
--- off the busiest message this plugin produces. That is bandwidth on a
--- home-hosted server and JSON parsing on whatever machine a driver is running,
--- which is where it matters most.
---
--- ANY field the UI reads off a driver row must be listed here or it silently
--- becomes nil in the app; tests/ui_bindings_test.lua checks the template
--- against this list so that cannot happen quietly.
+-- The driver fields that go over the wire (a fifth off the busiest message).
+-- ANY field the UI reads off a driver row must be listed here, or it is nil in
+-- the app; tests/ui_bindings_test.lua checks the template against this list.
 local DRIVER_WIRE_FIELDS = {
   'id', 'name', 'alias', 'status', 'spectating',
   'gridPos', 'customGrid', 'position',
   'qualiBest', 'qualiLaps', 'outLap', 'raceBest', 'currentLap', 'lapsLed', 'cpCleared',
   'finishTime', 'resets', 'resetsBlocked',
   'jokerTaken', 'jokerLap', 'outReason', 'dnfPos', 'heldPos', 'bystander',
-  -- Laps down at the caution. The board paints a lapped car's row differently
-  -- under yellow, and a driver wants to know whether they are the free pass.
+  -- Laps down at the caution.
   'cautionDown',
-  -- The blue flag, from both ends. Each client reads its OWN row for these and
-  -- shows the flag or the warning off it -- the same way it reads `bystander`.
+  -- The blue flag, from both ends; each client reads its own row.
   'blue', 'lapping',
-  -- The heat program, per driver: which heat they were drawn into, where they
-  -- finished it, and whether that was a transfer spot. All three are columns on
-  -- the board during a heat program and mean nothing outside one.
+  -- The heat program per driver.
   'heat', 'heatPos', 'transferred',
-  -- The class and the place within it. Both nil unless the Garage List has a
-  -- class on it, which is what keeps a one-class night's board unchanged.
+  -- Class and class place, nil unless a class is in use.
   'class', 'classPos',
-  -- Seconds behind the leader and behind the car ahead. Two numbers, and the
-  -- panel does no arithmetic on them beyond formatting.
+  -- Gap and interval.
   'gap', 'intv',
-  -- Garage List verdict. Three-valued (see newRecord): the panel paints a mark
-  -- for true and false and nothing at all for nil.
+  -- Garage List verdict, three-valued (see newRecord).
   'carOk',
 }
 
--- Projection buffers are kept ON the record and reused, so a broadcast costs no
--- allocations at all: the whole point of trimming the payload is to do less
--- work, and churning twenty short-lived tables three times a second to save
--- bandwidth would be trading one cost for another.
+-- The projection buffer lives ON the record and is reused: no allocation per
+-- broadcast.
 local function driverForWire(rec)
   local wire = rec.wire
   if not wire then
@@ -1736,74 +972,38 @@ local function buildDrivers()
       return a.id < b.id
     end)
   else
-    -- Race order: finished first (by finish time), then the live running order
-    -- (laps > checkpoints > distance to the next checkpoint), then excluded
-    -- (joker ruling) drivers, DNFs last.
+    -- Race order (raceOrderLess).
     table.sort(list, raceOrderLess)
   end
-  -- Positions are stamped on the REAL records, not on the projections: the rest
-  -- of this file reads rec.position (retireAsDnf snapshots it, among others),
-  -- and a number written only onto a copy that is thrown away after encoding
-  -- would leave every one of those readers looking at a stale value.
+  -- Positions are stamped on the REAL records, which the rest of the file reads.
   assignPositions(list)
-  -- The array clients receive is already sorted leader-first, and every driver
-  -- carries the matching position integer.
   local wire = {}
   for i = 1, #list do wire[i] = driverForWire(list[i]) end
   return wire
 end
 
--- Forward declaration: the garage store lives further down the file (its own
--- module), but the state broadcast has to advertise the approved car list.
+-- Forward declarations for code defined far below its callers (a later local
+-- would be a nil global here): the garage snapshot, audit, rejudge and removal.
 local garageSnapshot
--- Same arrangement, for the other direction: the countdown (far above the
--- garage code) has to be able to ask who is starting a race in a car that is
--- not on the list, and saveGarageToDisk (above the matcher) has to be able to
--- re-judge the field when the list underneath it moves.
 local garageAudit
 local garageRejudge
--- And the removal itself. garageRejudge decides a verdict and now has to be able
--- to ACT on it, but rejectVehicle is defined a hundred lines further down: named
--- there, the closure above would capture nothing and read a nil GLOBAL at call
--- time, which compiles perfectly and throws the first time an admin swaps a set.
 local rejectVehicle
 
--- Where this server keeps its results, as an absolute path. Declared up here
--- because broadcastState asks for it and the resolver lives with the other
--- results helpers, hundreds of lines below: named there, this would have been a
--- nil GLOBAL read at every broadcast. tests/scope_test.lua caught exactly that.
+-- Results folder resolver, used by broadcastState (tests/scope_test.lua).
 local resultsFolderPath
 
--- Assigned far below, with the cup module. Declared HERE because the roster is
--- published on the cup broadcast and is written from much further up this file:
--- setting or clearing a display name moves a roster entry, and the panel has to
--- see that at once.
---
--- IT HAS TO BE THIS EARLY. Declared beside the cup at line 8400, every call
--- site above that point read a nil GLOBAL instead, and the `if broadcastCupState
--- then` guard those sites use turned that into silence rather than an error:
--- the roster view simply never refreshed and nothing anywhere said why.
+-- Assigned with the cup module far below; declared here because display-name
+-- changes up here must refresh the roster view (a later local was a silent nil).
 local broadcastCupState
 
--- Stamped into every state broadcast. The client bridge drops broadcasts
--- without the current stamp: they come from an OUTDATED copy of this plugin
--- still installed alongside (two copies alternating broadcasts made every UI
--- element flicker between two states on each tick).
+-- Stamped into every state broadcast; clients drop unstamped ones (an outdated
+-- copy of this plugin installed alongside).
 local RM_PROTOCOL = 2
 
--- Build stamp, reported to the UI so the three halves of this mod can be
--- compared at a glance. They are deployed separately -- the server plugin is
--- copied to Resources/Server, the client zip is pushed by BeamMP, and BeamNG
--- caches UI files -- so any one of them can be older than the others. That is
--- invisible today and fails in the worst possible way: Angular silently ignores
--- a call to a scope function a stale app.js does not have, so a button does
--- nothing at all, with no error in any console.
---
--- Bump this in ALL SEVEN places on EVERY change that needs redeploying -- not
--- just ones that change the client/server contract. That narrower rule is what
--- let two client-side fixes ship under one stamp: the build line read as
--- matching while a client was a fix behind, which is precisely the situation
--- this was added to make visible. The seven are:
+-- Build stamp, so the separately deployed halves can be compared at a glance (a
+-- stale app.js silently ignores a missing scope function). It IS the released
+-- package version. Bump it in ALL SEVEN places on every change that needs
+-- redeploying:
 --
 --   server/RaceManager/main.lua          RM_BUILD   (here)
 --   lua/ge/extensions/raceManager.lua    RM_BUILD
@@ -1813,25 +1013,11 @@ local RM_PROTOCOL = 2
 --   ui/modules/apps/RaceManagerRadar/app.json version
 --   tools/deploy.py                      RELEASE_NAME
 --
--- The fifth was outside the check until 0.9.1 and duly went stale: the build
--- was produced as RaceManager-v0.9.0.zip from a 0.9.1 tree, which is precisely
--- the disagreement the stamp exists to prevent.
---
--- tests/wiring_test.lua fails if they disagree, so this is checked rather than
--- remembered.
---
--- The stamp IS the released package version, and deliberately so: it used to run
--- on a scheme of its own (3.x.y) while releases were tagged v0.x.y, and app.json
--- carried a third number that tracked neither. A driver reporting "I'm on 3.5.5"
--- meant nothing to anyone reading a release page. One number now, matching the
--- git tag the package is published under, so any redeploy needs a version bump
--- by definition.
+-- tests/wiring_test.lua fails if they disagree.
 local RM_BUILD = '0.18.5'
 
--- The live ghost roster as the wire carries it. Absolute END times on race.time
--- rather than "seconds left", so a client that receives this late works out a
--- SHORTER remainder instead of a longer one, and two clients on different pings
--- still agree on the instant the fade completes.
+-- The ghost roster on the wire: absolute END times on race.time, so a late
+-- client works out a shorter remainder, never a longer one.
 local function ghostRoster()
   local list = {}
   for pid, g in pairs(ghosts) do
@@ -1840,54 +1026,15 @@ local function ghostRoster()
   return list
 end
 
--- WHO IS OUT OF THIS RACE BUT STILL ON THE MAP: the finished-driver ghost list.
---
--- Taking the flag no longer deletes the car. It stays where it is with its
--- collisions off, so a driver can go on driving it and watch the rest of the
--- race without being able to touch anyone still in it. This is the list every
--- client ghosts, and it carries player ids for the same reason the reset roster
--- does: a vehicle id is a local scene-object id and means nothing anywhere else.
---
--- AUTHORITATIVE, not an event. A pid absent from this list has no finished
--- ghost, which is what makes a missed packet, a late join and a disconnect all
--- self-correct: the client walks what it applied and drops anything no longer
--- named here.
---
--- DNF and DSQ are in it too. They are as out of the race as a finisher is, and
--- leaving a retired car solid on the racing line would put back the obstacle
--- this whole change removes.
---
--- Only while a session is actually running. Once it is over the list empties and
--- every client hands the collisions back, which is the un-ghost at the flag.
---
--- QUALIFYING COUNTS, and leaving it out was a hole rather than a decision. A
--- driver who has used their lap allowance is retired exactly the way a finisher
--- is -- status 'finished', spectator lock, car kept -- but this list was empty
--- outside a race, so their car stayed SOLID while everybody else was still on a
--- hot lap. A parked or cruising car on the racing line is worse in qualifying
--- than in a race: there is no pack to hide in and the whole session is single
--- laps that a single contact ruins.
---
--- 'countdown' is in the list for the race's sake and does no harm here;
--- qualifying reaches 'qualifying' directly from the grid.
---
--- 'waiting' IS IN IT, AND IT IS THE HALF THAT WAS MISSING. A driver who never
--- started this session is exactly as dangerous to it as one who has finished --
--- more so, because they have a whole race to fill and no reason to stay off the
--- road. Three kinds of driver carry that status while a session runs, and every
--- one of them was solid to the field:
---
---   * a driver drawn into a heat that is not the one being run;
---   * a driver who pressed Sit Out;
---   * a driver who connected mid-session.
---
--- The last two had `bystander` set, which ghosts the FIELD on their own client
--- and does nothing on anybody else's -- so they could not be hit, and could
--- still hit. Naming them here is what makes it mutual.
---
--- 'grid' IS IN THE PHASE LIST for the same reason. The grid hold can stand for
--- minutes while an admin waits, and a car that is not in the session must not
--- be able to shove the front row off its slots before the lights go out.
+-- WHO IS OUT OF THIS RACE BUT STILL ON THE MAP: player ids every client ghosts.
+-- A finisher keeps their car, collision off. AUTHORITATIVE: a pid absent has no
+-- finished ghost, so missed packets, late joins and disconnects self-correct.
+-- Includes DNF and DSQ, and, while a session runs, every driver with status
+-- 'waiting' (another heat's driver, a sit-out, a mid-session arrival), who are
+-- as dangerous to it as a finisher. Qualifying counts too. Empty once the
+-- session is over, which is the un-ghost at the flag.
+-- (`bystander` alone only ghosts the field on that driver's own client; naming
+-- them here makes it mutual.) 'grid' counts: a hold can stand for minutes.
 local function finishedRoster()
   local list = {}
   if race.phase ~= 'racing' and race.phase ~= 'countdown'
@@ -1901,15 +1048,10 @@ local function finishedRoster()
   return list
 end
 
--- WHO IS PRACTISING GHOSTED: every client ghosts these cars, and each driver's
--- own client ghosts their own. Practice is client-side, so this is the one
--- thing the server keeps about it: rec.practicing is set when a practice load
--- is approved and cleared by RM_PracticeEnd, a disconnect or a grid forming.
--- rec.practiceGhost is the driver's choice; solid practisers are not listed.
---
--- Empty outside the waiting phase whatever the flags say, so a flag that
--- outlived its practice can never ghost a car in a session. On `race`: no
--- locals to spare in this chunk.
+-- Drivers practising ghosted: rec.practicing (set on an approved practice load,
+-- cleared by RM_PracticeEnd, a disconnect or a grid forming) and their own
+-- rec.practiceGhost choice. Empty outside 'waiting', so a stale flag never
+-- ghosts a session car. On `race`: no locals to spare.
 race.practiceRoster = function ()
   local list = {}
   if race.phase ~= 'waiting' or race.derbyUnderWay() then return list end
@@ -1919,14 +1061,9 @@ race.practiceRoster = function ()
   return list
 end
 
--- The client applies its own ghost the instant the reset fires and tells the
--- server afterwards. That order is deliberate and is not negotiable: the frame
--- the car lands on somebody is the frame it must already be intangible, and a
--- round trip here takes longer than that. So none of this is permission -- it is
--- the record, and the relay that gets every OTHER client ghosting the same car.
---
--- What the server adds is the part no client can do: one clock, one copy of the
--- truth for late joiners, and a log of every ghost.
+-- The client ghosts itself the instant the reset fires and tells the server
+-- after: this is the record and the relay to every OTHER client, plus one clock
+-- and one copy for late joiners. Never permission.
 local function broadcastGhost(pid, g)
   MP.TriggerClientEvent(-1, 'RM_Ghost', Util.JsonEncode({
     pid       = pid,
@@ -1936,9 +1073,7 @@ local function broadcastGhost(pid, g)
   }))
 end
 
--- Drop one player's ghost and tell everyone. Safe to call for a player who has
--- none, which is what makes it usable from every teardown path without each of
--- them having to check first.
+-- Drop one player's ghost and tell everyone; safe when there is none.
 local function clearGhost(pid, reason)
   if not ghosts[pid] then return false end
   local held = race.time - ghosts[pid].startedAt
@@ -1950,9 +1085,7 @@ local function clearGhost(pid, reason)
   return true
 end
 
--- Every ghost dropped at once: a session ending, a grid forming, a leaderboard
--- reset. Nothing stays ghosted across a session boundary -- the next session
--- starts with everybody solid.
+-- Every ghost dropped at once: nothing stays ghosted across a session boundary.
 local function clearAllGhosts(reason)
   local any = false
   for pid in pairs(ghosts) do
@@ -1967,15 +1100,11 @@ local function clearAllGhosts(reason)
 end
 
 local function broadcastState(targetPid)
-  -- The Garage List goes out on RM_Garage now, when it changes: see
-  -- garage.changed. KEPT, OFF: race.garageOnUpdate = true puts it back on
-  -- every push, for a client that predates RM_Garage.
+  -- The Garage List goes out on RM_Garage when it changes. KEPT, OFF:
+  -- race.garageOnUpdate = true puts it on every push for a pre-RM_Garage client.
   local garageInfo = race.garageOnUpdate and garageSnapshot and garageSnapshot() or {}
-  -- Per-player admin status. Only meaningful on a TARGETED send -- the global
-  -- broadcast is one payload for everybody, so this key is left off there and
-  -- clients ignore it when absent. This is what makes RM_RequestState (which
-  -- the UI app sends every time it mounts) an authoritative answer to "am I
-  -- still logged in", instead of the client having to remember on its own.
+  -- Per-player admin status, on TARGETED sends only (RM_RequestState answers
+  -- "am I still logged in").
   local selfAdmin = nil
   local selfRole = nil
   local selfSpectating = nil
@@ -1983,98 +1112,65 @@ local function broadcastState(targetPid)
     selfAdmin = isAuthenticated(targetPid)
     selfRole  = authenticatedPlayers[targetPid]
     local selfRec = players[pidKey(targetPid)]
-    -- NOT `selfRec and selfRec.spectating == true or nil`. That idiom cannot
-    -- return false: the `or` swallows it and yields nil, the field drops out of
-    -- the JSON, and the panel's "is it a boolean" guard keeps the last value it
-    -- saw. Spectating ON could be sent and spectating OFF could not, so a driver
-    -- rejoined the field and the panel went on telling them they had not.
+    -- Not `x and y == true or nil`: that idiom can never yield false, so
+    -- "spectating off" dropped out of the JSON and the panel kept the old value.
     if selfRec then selfSpectating = selfRec.spectating == true end
   end
   local payload = Util.JsonEncode({
     rmProtocol   = RM_PROTOCOL,
     serverBuild  = RM_BUILD,
     phase        = race.phase,
-    -- Which session the shared lifecycle is running. The phase says where in
-    -- the lifecycle we are; this says what it is a lifecycle OF.
+    -- Which session the shared lifecycle is running.
     sessionKind  = race.sessionKind,
     sessionLaps  = (race.sessionKind == 'quali')
       and (race.qualiLapLimit > 0 and race.qualiLapLimit or 0) or raceDistance(),
     raceTime     = race.time,
     totalLaps    = race.totalLaps,
-    -- League regulations (Module 1 + 2): clients enforce these locally, the
-    -- server re-checks and is authoritative for the final classification.
+    -- Regulations: clients enforce locally, the server is authoritative.
     maxResets    = race.maxResets,
     resetMode    = race.resetMode,
     jokerEnabled = race.jokerEnabled,
-    -- Race entry + starting grid.
-    -- "Are YOU sitting this one out" (targeted sends only, like youAreAdmin).
+    -- Race entry and the grid. youSpectating: targeted sends only.
     youSpectating = selfSpectating,
     entrants     = entrantCount(),
     gridMode     = race.gridMode,
     startSlots   = race.startSlots,
     readyCheck   = race.readyCheck,
     pointToPoint = race.pointToPoint,
-    -- Branch gates: whether this track has any, and whether its grid gives an out
-    -- lap away. The gates themselves ride with the layout (RM_ApplyLayout) exactly
-    -- as the joker route's do -- this is the part the UI needs on every tick, to
-    -- label a track that has other ways through its checkpoints.
+    -- Whether this track has branch gates (the gates ride RM_ApplyLayout).
     hasBranches  = #race.branches > 0,
     gridOffLine  = race.gridOffLine,
-    -- So the panel can gray the joker toggle out and say why, rather than
-    -- offering a switch the server is going to refuse.
+    -- So the panel can grey the joker toggle and say why.
     jokerGates   = race.jokerGates,
     flag         = race.flag,
-    -- THE PACE LAP, in its two halves. `paceLap` is the rule -- the panel grays
-    -- its own switch off it and swaps Start Countdown for Start Race -- and the
-    -- CLIENT needs it too: the lap that ends the race is one crossing further
-    -- out than the lap box says, and the white and checkered flags are waved
-    -- client-side off that number (see effectiveLapTarget there).
-    --
-    -- `pacing` is the condition, and it says what no flag can: yellow is shown
-    -- for a caution as well, and "form up behind the leader" and "there has been
-    -- an incident" are not the same instruction to a driver.
+    -- The pace lap: the rule (the client's lap target is one crossing further
+    -- out, see effectiveLapTarget) and the condition (yellow alone cannot say
+    -- "form up" rather than "incident").
     paceLap      = race.paceLap,
     pacing       = race.pacing,
-    -- THE CAUTION, and its lap count. `caution` is what tells a driver that the
-    -- yellow on their screen is a neutralised race rather than a local hazard,
-    -- and what tells the panel to say POSITIONS FROZEN over the board it is
-    -- showing -- a frozen board that does not say so reads as a broken one.
+    -- The caution: a neutralised race, so the panel says POSITIONS FROZEN.
     caution      = race.caution,
     cautionLaps  = race.caution and race.cautionLaps or nil,
-    -- CALLED AND NOT YET OFFICIAL. The yellow is flying, the board is still live
-    -- and the field is racing back to the line -- which is a different sentence
-    -- on a driver's screen from "positions are frozen", and saying the frozen one
-    -- while the order is still moving is how a driver learns not to trust it.
+    -- Called and not yet official: the board is still live.
     cautionPending = race.cautionPending,
-    -- A restart is called and the green is coming as the leader reaches the
-    -- line. The panel offers Cancel instead of Restart off this, and a driver
-    -- gets the one warning that matters: get ready.
+    -- A restart is called; the panel offers Cancel.
     restartPending = race.restartPending,
-    -- The free pass: the rule, and who has taken it under this caution.
+    -- The free pass rule, and who has it this caution.
     luckyDog     = race.luckyDog,
     cautionLucky = race.cautionLucky,
-    -- The heat program. Every client needs it: the panel builds its heat picker
-    -- from the count, and a driver wants to know which heat they are in and
-    -- whether they transferred out of it.
-    --
-    -- heatLaps rides along because the WHITE AND CHECKERED FLAGS ARE WAVED
-    -- CLIENT-SIDE: effectiveLapTarget there has to reach the same number this
-    -- server's sessionLapTarget does, and a heat that runs a distance of its own
-    -- is a second way for those two to disagree.
+    -- The heat program; heatLaps because the flags are waved client-side and
+    -- must reach the same distance as sessionLapTarget.
     heatCount    = race.heatCount,
     heatTransfer = race.heatTransfer,
     heatCurrent  = race.heatCurrent,
     heatsDrawn   = race.heatsDrawn,
     heatLaps     = race.heatLaps,
     heatDraw     = race.heatDraw,
-    -- Fastest lap of the session: whose row the leaderboard paints gold, and
-    -- how quick it was. One driver id on a payload that already goes out.
+    -- Fastest lap of the session, painted gold.
     bestLapPid   = race.bestLapPid,
     bestLapTime  = race.bestLapTime,
-    -- Reset ghosting: the rules every client must run, and who is a ghost right
-    -- now. The roster rides on the state broadcast for the same reason finalLap
-    -- does -- it is what a client that joined mid-ghost needs, and a one-shot
-    -- event it was not connected for can never give it.
+    -- Ghost rules every client runs, and the authoritative rosters (a client
+    -- that joined mid-ghost needs them).
     ghostOnReset = CFG.ghostOnReset,
     ghostMinSec  = CFG.ghostMinSeconds,
     ghostMaxSec  = CFG.ghostMaxSeconds,
@@ -2083,101 +1179,61 @@ local function broadcastState(targetPid)
     ghostPractice = race.practiceRoster(),
     -- Qualifying rules and clock.
     ghostQuali     = race.ghostQuali,
-    -- Whether this session opens with an out lap, so a client can say so before
-    -- the driver has crossed anything -- and can stop saying it on the sprint
-    -- stage that has none. The per-driver half of this rides on the driver rows
-    -- (`outLap`), because who is still owing one is a per-driver question.
-    --
-    -- The name is historical: this used to be a qualifying-only rule, and a RACE
-    -- on a track that grids its cars away from the start/finish line owes one for
-    -- exactly the same reason (see outLapOwed). Kept as it is so every client and
-    -- every binding that already reads it starts honoring the race case without
-    -- being changed to do it.
+    -- Does this session open with an out lap (outLapOwed, races included; the
+    -- name is historical). Per-driver owing rides on the rows (`outLap`).
     qualiOutLap    = outLapOwed(),
     qualiLapLimit  = race.qualiLapLimit,
     qualiTimeLimit = race.qualiTimeLimit,
     qualiTime      = race.qualiTime,
     qualiLeft      = race.qualiTimeLimit > 0
       and math.max(race.qualiTimeLimit - race.qualiTime, 0) or nil,
-    -- The clock has expired and everyone still out is on their last lap. Carried
-    -- on the state broadcast rather than a one-shot event so a client that joins
-    -- (or reconnects) mid-final-lap learns about it too, instead of driving a lap
-    -- it does not know is its last.
+    -- Final lap, on the broadcast so a reconnecting client learns it too.
     finalLap       = race.finalLap,
     finalLapLeft   = race.finalLap and math.max(race.finalLapLeft, 0) or nil,
-    -- Timed races. raceLeft is the clock the header counts down; raceExpired
-    -- says it has run out and the field is waiting on the leader; lastLapNum is
-    -- the lap everyone still running finishes on once the leader has been past.
+    -- Timed races: raceLeft counts down, raceExpired waits on the leader,
+    -- lastLapNum is the lap everyone finishes on.
     raceMode       = race.raceMode,
     raceTimeLimit  = race.raceTimeLimit,
-    -- Measured from the GREEN, not from the release. A ten minute race that
-    -- spent ninety seconds forming up is still a ten minute race; the clock the
-    -- header counts down and the limit RM_Tick enforces are the same number and
-    -- have to be subtracted the same way.
+    -- From the GREEN, as RM_Tick enforces it.
     raceLeft       = race.raceTimeLimit > 0
       and math.max(race.raceTimeLimit - raceElapsed(), 0) or nil,
-    -- The race clock the header counts UP: from the green, zero through the pace
-    -- lap, held under red. NOT raceTime, which is the session clock every client
-    -- anchors its ghost timers to and so has to run from the release.
+    -- The race clock counting UP from the green (raceTime is the session clock
+    -- ghost timers anchor to).
     raceClock      = raceElapsed(),
-    -- GET READY is out: the green is coming on this run to the line.
+    -- GET READY is out.
     greenReady     = (race.pacing or race.restartPending) and race.greenReady or nil,
-    -- The phase test inline: sessionRunning is declared further down this file.
+    -- Inline phase test: sessionRunning is declared further down.
     clockStopped   = race.flag == 'red'
       and (race.phase == 'racing' or race.phase == 'qualifying') or nil,
     raceExpired    = race.raceExpired,
     lastLapNum     = race.lastLapNum,
-    -- Approved vehicle/setup list (Module 4).
+    -- Approved vehicle list (Module 4), mode ('parts' | 'strict') and set names.
     garage        = garageInfo.list,
     garageEnforce = garageInfo.enforce,
-    -- 'parts' or 'strict'. Which half of a setup the list is matched on, so the
-    -- panel can label the switch and the capture button truthfully.
     garageMode    = garageInfo.mode,
-    -- Names of the saved garage sets, so the panel can offer them without a
-    -- request of its own. Names only: a set's cars are read when it is loaded.
     garageSets    = garageInfo.sets,
-    -- Whether clients should hang display names off BeamMP's nametags.
-    -- Purely a client-side presentation rule; the server neither renders
-    -- nor enforces anything about it, it just holds the switch so every
-    -- client agrees.
+    -- Nametag aliases: the server only holds the switch.
     nametags      = race.nametags,
-    -- True when at least one session is currently logged in as an admin. Lets
-    -- non-admin clients auto-spectate (skip the login prompt) when someone is
-    -- already running the session, while still exposing a way back to login.
+    -- Someone is logged in to run the night.
     adminPresent = next(authenticatedPlayers) ~= nil,
-    -- "Are YOU an admin" (targeted sends only; nil drops out of the JSON).
-    --
-    -- TRUE FOR EITHER TIER, on purpose. Every control in the panel except three
-    -- means "may this session run the night", and that is what both tiers are
-    -- for. The three that mean more read youRole instead.
+    -- Targeted sends only: either tier (youRole narrows it). A client that
+    -- never sees youRole (old server, offline) is a full admin.
     youAreAdmin  = selfAdmin,
-    -- 'admin' | 'moderator'. Targeted sends only, like the flag above, and nil
-    -- for a session that is neither. A client that never sees this key (an old
-    -- server, or offline single-player) treats itself as a full admin, which is
-    -- what it was before the tiers existed.
     youRole      = selfRole,
-    -- Where this server keeps its results, for the admin panel's Open Results.
-    -- Admin sends only, and nil on a server that could not resolve it, which
-    -- the panel handles by showing the relative path instead.
+    -- The results folder, for admin sends only; nil if unresolved.
     resultsPath  = selfAdmin and resultsFolderPath() or nil,
     drivers      = buildDrivers(),
   })
   MP.TriggerClientEvent(targetPid or -1, 'RM_Update', payload)
 end
 
--- Forced spectator mode (Module 1). A driver who is out of the session (reset
--- allowance spent, or eliminated in a derby) gets their vehicle removed and
--- their camera pinned to freecam until the session ends. `source` scopes the
--- lock so the racing state machine and the isolated derby module can never
--- release each other's spectators.
+-- Out of the session (finished, DNF, derby eliminated). `source` scopes the lock
+-- so race and derby never release each other's spectators.
 local function forceSpectate(pid, reason, source, place)
   MP.TriggerClientEvent(pid, 'RM_ForceSpectate', Util.JsonEncode({
     reason = reason or 'You are out of this session',
     source = source or 'race',
-    -- Where they finished, for the driver's own "you placed Nth". Sent only on
-    -- the finish path and LOCKED HERE, at the crossing: it is the count of
-    -- drivers already home, so it cannot be revised by anything that happens to
-    -- the field afterwards.
+    -- Their finishing place, locked at the crossing (drivers already home).
     place  = place,
   }))
 end
@@ -2187,15 +1243,8 @@ local function releaseSpectators(source, targetPid)
     Util.JsonEncode({ source = source or 'race' }))
 end
 
--- Starting grid. The server decides WHICH slot a driver gets; only the client
--- can put the car there (no physics access here), so the slot number is all
--- that goes over the wire. A nil slot clears any placement.
---
--- `order` and `count` describe this driver's place in the field. They exist for
--- one reason: a whole grid teleporting into position on the same tick is how a
--- placement gets refused for an occupied location, or lands two cars inside each
--- other and throws them apart. The client uses them to stagger its own
--- placement and to ghost itself while the field is landing.
+-- The server picks the slot; the client places the car (nil clears).
+-- `order`/`count` stagger the field's placement.
 local function assignGridSlot(pid, slot, order, count)
   MP.TriggerClientEvent(pid, 'RM_GridAssign', Util.JsonEncode({
     slot = slot, order = order, count = count,
@@ -2205,14 +1254,9 @@ end
 -- ---------------------------------------------------------------------------
 -- Ready check
 -- ---------------------------------------------------------------------------
--- With race.readyCheck on, forming the grid CALLS each driver to it: they get
--- a slot and status 'called', and their car is only put on the slot when they
--- press Ready. Anyone still 'called' when the lights start sits that session
--- out. Hung off `race`: this chunk has no locals to spare.
---
--- A called driver is a ghost (bystander, and in finishedRoster). They are
--- still driving about while the field parks, and a solid car loose on a grid
--- of held ones is a car into the grid.
+-- With race.readyCheck, forming the grid CALLS each driver: a slot, status
+-- 'called', and a ghost (bystander, finishedRoster) until they press Ready.
+-- Anyone still called at the lights sits out. On `race` for the ceiling.
 race.callToGrid = function (rec, gridPos)
   rec.gridPos   = gridPos
   rec.status    = 'called'
@@ -2220,17 +1264,15 @@ race.callToGrid = function (rec, gridPos)
   assignGridSlot(rec.id, nil)
 end
 
--- Onto the slot and held. A lone ready-up lands at once (order 1 of 1); only a
--- batch needs the stagger that keeps a whole grid from landing in one tick.
+-- Onto the slot and held. A lone ready-up lands at once (order 1 of 1).
 race.readyUp = function (rec, order, count)
   rec.status    = 'gridded'
   rec.bystander = nil
   assignGridSlot(rec.id, rec.gridPos, order or 1, count or 1)
 end
 
--- A driver who arrives, or rejoins from Spectate, while the grid is being
--- called goes to the back of it. Not past the last placed start position:
--- a slot with nowhere to stand is a Ready button that does nothing.
+-- A late arrival (or a rejoin from Spectate) goes to the back of the grid, not
+-- past the last placed start position.
 race.callLate = function (rec)
   if race.phase ~= 'grid' or not race.readyCheck or not isEntrant(rec) then return false end
   if rec.status == 'called' or rec.status == 'gridded' then return false end
@@ -2255,26 +1297,22 @@ race.readyCounts = function ()
   return ready, ready + called
 end
 
--- Chat to whoever is logged in to run the night. The derby and drag modules
--- reach it through `race` for their own ready checks.
+-- Chat to the logged-in admins (the derby and drag modules use it too).
 race.tellAdmins = function (msg)
   for adminPid in pairs(authenticatedPlayers) do
     MP.SendChatMessage(adminPid, '[RaceManager] ' .. msg)
   end
 end
 
--- Told once, when the last driver readies: the admin is at a desk and the
--- count is on the panel, but nobody watches a number for the moment it fills.
+-- Told once, when the last driver readies.
 race.announceIfAllReady = function ()
   local ready, total = race.readyCounts()
   if total == 0 or ready < total then return end
   race.tellAdmins(string.format('Everyone is ready (%d/%d). Start when you like.', ready, total))
 end
 
--- At the start of a session: whoever is still 'called' sits it out, ghosted
--- for the whole of it like a driver who joined mid-race. Returns false, and
--- changes nothing, when drivers were called and nobody is ready: that start
--- would be a race with nobody in it.
+-- At the start: anyone still 'called' sits out, ghosted. Returns false (and
+-- changes nothing) when drivers were called and nobody is ready.
 race.dropUnready = function ()
   local ready, out = 0, {}
   for _, rec in pairs(players) do
@@ -2300,26 +1338,10 @@ race.dropUnready = function ()
   return true
 end
 
--- TELL THE FIELD SOMETHING, on the channel they can actually read.
---
--- A regular client has no multiplayer chat app. Every SendChatMessage(-1, ...)
--- in this file was therefore an announcement to the admins and to nobody else --
--- which is fine for a results path or an audit line, and useless for "your first
--- lap is not timed", which is an instruction to the person driving.
---
--- So the two audiences get two channels, and the choice is made per message:
---
---   notifyField()  the drivers. Lands in BeamNG's own HUD, over the road, where
---                  a driver is already looking.
---   SendChatMessage(pid, ...)  the admin who pressed something. They have chat,
---                  they are at a desk, and a refusal is a conversation with one
---                  person rather than an announcement to the grid.
---
--- SendChatMessage(-1, ...) survives only where the message is genuinely for
--- everyone AND is a record rather than an instruction -- the results file path
--- being the clearest case.
--- `color` picks the flash for a flag notice. Without one it flashes gray, which
--- is how GREEN FLAG - GO! once looked like nothing in particular.
+-- Tell the FIELD something, in BeamNG's own HUD: a regular client has no chat
+-- app, so SendChatMessage(-1) reaches only admins. Chat stays for a reply to
+-- the admin who pressed something and for records (the results path). `color`
+-- picks the flash for a flag notice.
 local function notifyField(kind, msg, sub, color)
   MP.TriggerClientEvent(-1, 'RM_Notice', Util.JsonEncode({
     kind = tostring(kind or 'session'), msg = tostring(msg or ''), sub = sub,
@@ -2334,13 +1356,8 @@ end
 -- ---------------------------------------------------------------------------
 -- Admin authentication events
 -- ---------------------------------------------------------------------------
--- A client submits a master password. ONE FIELD, EITHER TIER: the server tries
--- the admin password and then the moderator one and grants whichever matched,
--- so a race director types their password into the same box the owner uses and
--- neither has to be told which kind of login they are performing.
---
--- On a match the session is marked and told to reveal its controls; on a miss
--- any prior flag for that session is cleared and a failure is reported.
+-- A login: ONE FIELD, EITHER TIER (admin tried first). A miss clears any prior
+-- flag for the session.
 function RM_onLogin(pid, rawData)
   local pass = decodeString(rawData, 'password')
   local role = auth.roleOf(pass)
@@ -2349,34 +1366,16 @@ function RM_onLogin(pid, rawData)
     MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({
       success = true, role = role,
     }))
-    -- THE LAYOUT LIST IS PRIVILEGE-DEPENDENT NOW, so logging in has to resend it.
-    --
-    -- A driver is only shown the layouts approved for practice. This client
-    -- asked for the list when it joined and got that shorter one; nothing else
-    -- ever sends it again, so an admin logged in and went on looking at a panel
-    -- saying "no saved layouts" with thirteen of them on disk.
-    --
-    -- Sent HERE rather than fixed on the client, because the privilege changes
-    -- here. A client asking again would be guessing at when it had become
-    -- allowed to see more.
-    --
-    -- Through the GLOBAL handler, not sendLayoutList directly: that local is
-    -- declared two and a half thousand lines below this one, so naming it here
-    -- compiles to a nil global read and throws the moment somebody logs in.
-    -- scope_test caught exactly that.
+    -- The layout list is privilege-dependent (drivers see only practice-approved
+    -- ones), so a login resends it: nothing else would.
+    -- Through the global handler: sendLayoutList is declared far below and would
+    -- be a nil global here (scope_test).
     RM_onRequestLayouts(pid)
-    -- Tell every client an admin is now present (updates their adminPresent).
+    -- Every client's adminPresent...
     broadcastState()
-    -- AND THIS ONE PERSONALLY, because the per-player fields only ride a
-    -- TARGETED send: youAreAdmin, youSpectating and the results path are all
-    -- left off the global payload. The app asks for a targeted state when it
-    -- mounts, which is BEFORE anybody logs in, so without this an admin never
-    -- received one at all while authenticated. Open Results was hidden for
-    -- exactly that reason, on a server that had the path all along.
-    --
-    -- Order does not matter between the two: the global payload omits those
-    -- keys entirely rather than sending them empty, and the client leaves a
-    -- value alone when its key is absent.
+    -- ...and this client personally: youAreAdmin, youSpectating and the results
+    -- path only ride a targeted send, and the app's own request came before the
+    -- login.
     broadcastState(pid)
     print('[RaceManager] ' .. role .. ' login OK: ' .. (MP.GetPlayerName(pid) or pid))
   else
@@ -2386,8 +1385,7 @@ function RM_onLogin(pid, rawData)
   end
 end
 
--- An admin voluntarily drops their admin rights (the UI "Log out"/back-to-login
--- action). Broadcasts state so every client's adminPresent flag stays accurate.
+-- An admin logs out; the broadcast keeps adminPresent accurate.
 function RM_onLogout(pid)
   if authenticatedPlayers[pid] == nil then return end
   authenticatedPlayers[pid] = nil
@@ -2395,36 +1393,23 @@ function RM_onLogout(pid)
   print('[RaceManager] Admin logged out: ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- An admin rotates one of the two master passwords. The new password takes
--- effect immediately for future logins; sessions already logged in stay logged
--- in at the tier they logged in at. The password itself is never broadcast --
--- only a notice that it changed (and by whom) goes out, so every open UI can
--- reflect it.
---
--- ADMIN ONLY, BOTH OF THEM. A moderator who could set the moderator password
--- could hand out their own tier, and one who could set the ADMIN password could
--- simply promote themselves -- which would make the whole split decorative.
---
--- `role` picks which password is being set and defaults to the admin one, so a
--- client from before the split still changes the password it means to.
+-- Rotate a master password: future logins only; sessions stay at their tier.
+-- Never broadcast, only who changed it. ADMIN ONLY for both (a moderator could
+-- otherwise promote themselves). `role` defaults to admin for old clients.
 function RM_onChangePassword(pid, rawData)
   if not auth.requireFull(pid) then return end
   local newPass = decodeString(rawData, 'password')
   if not newPass then return end
   local which = decodeString(rawData, 'role') == auth.MOD and auth.MOD or auth.ADMIN
-  -- EMPTY IS ALLOWED FOR THE MODERATOR AND ONLY THE MODERATOR: it is how the
-  -- tier is turned off again, and auth.roleOf refuses to match it. An empty
-  -- admin password would lock the server's owner out of their own controls with
-  -- no way back short of editing config.json by hand.
+  -- Empty only for the moderator (it turns the tier off); an empty admin
+  -- password would lock the owner out.
   if newPass == '' and which ~= auth.MOD then return end
   if which == auth.MOD then
     auth.modPw, CFG.moderatorPassword = newPass, newPass
   else
     auth.adminPw, CFG.adminPassword = newPass, newPass
   end
-  -- AND IT SURVIVES A RESTART NOW. This used to change the password in memory
-  -- only, so every restart quietly put it back to the shipped default and the
-  -- first anybody knew was a login that should have worked and did not.
+  -- Persisted, so a restart does not revert it.
   local label = which == auth.MOD
     and (newPass == '' and 'Moderator login turned off' or 'Moderator password changed')
     or 'Admin password changed'
@@ -2440,17 +1425,8 @@ function RM_onChangePassword(pid, rawData)
     cleared   = newPass == '',
   }))
   print('[RaceManager] ' .. label .. ' by ' .. (MP.GetPlayerName(pid) or pid))
-  -- TURNING THE TIER OFF ENDS THE SESSIONS THAT ARE AT IT, and only that case.
-  --
-  -- Rotating a password leaves everyone logged in, which is deliberate and is
-  -- what it has always done: an admin changing the password mid-evening must
-  -- not boot the race director out of the session they are running. But an
-  -- EMPTY moderator password is not a rotation, it is "this tier should not
-  -- exist", and leaving somebody signed in at a tier that no longer exists is
-  -- the one reading of that instruction nobody meant.
-  --
-  -- They are told their login has lapsed, which is the message that brings the
-  -- login box back rather than leaving them pressing dead buttons.
+  -- Turning the tier OFF signs out its sessions (a rotation never does): they
+  -- are told their login lapsed, which brings the login box back.
   if which == auth.MOD and newPass == '' then
     local dropped = 0
     for other, role in pairs(authenticatedPlayers) do
@@ -2473,11 +1449,8 @@ end
 -- ---------------------------------------------------------------------------
 -- Filesystem helpers
 -- ---------------------------------------------------------------------------
--- BeamMP ships an FS API, but it is not present in every build (and not in the
--- headless tests), so everything below falls back to a shell command. Those
--- commands are NOT the same on both platforms and plenty of BeamMP servers are
--- hosted on Windows: cmd has no "mkdir -p" (it takes "-p" as another directory
--- to create) and no "ls", so the POSIX spelling silently did nothing there.
+-- BeamMP's FS API is not in every build (nor the tests), so the fallback is a
+-- shell command, which differs on Windows: cmd has no "mkdir -p" and no "ls".
 local IS_WINDOWS = package.config:sub(1, 1) == '\\'
 
 local function nativePath(path)
@@ -2489,8 +1462,7 @@ local function makeDirectory(dir)
   if FS and FS.CreateDirectory then
     FS.CreateDirectory(dir)
   elseif IS_WINDOWS then
-    -- cmd's mkdir already creates intermediate directories; it complains when
-    -- the directory exists, which is the normal case here, so stderr is muted.
+    -- cmd's mkdir creates intermediates; "exists" is the normal case, so muted.
     os.execute('mkdir "' .. nativePath(dir) .. '" 2>nul')
   else
     os.execute('mkdir -p "' .. dir .. '"')
@@ -2529,21 +1501,10 @@ end
 -- ---------------------------------------------------------------------------
 -- Results logging
 -- ---------------------------------------------------------------------------
--- Written automatically when a race session ends; one .txt per session so
--- league standings / broadcast scripts can pick them up.
--- CODE AND DATA, IN TWO PLACES THAT CANNOT BE CONFUSED.
---
--- The plugin's .lua files sit in SERVER_DIR and are REPLACED by every deploy.
--- Everything the server owns -- the tracks an admin built, the championship, the
--- roster, the garage, the settings, the results -- sits under DATA_DIR and is
--- never written by a release.
---
--- They used to be the same folder, with layouts.json and cup.json sitting beside
--- main.lua, and the only thing keeping a deploy off a league's season was a
--- deploy script that knew which filenames to avoid. That is a rule living in the
--- wrong place: it has to be re-remembered by anything that ever writes here, and
--- a season is not the thing to protect with a list of exceptions. A folder says
--- it once, to everything, for good.
+-- Results: one .txt per session, written when it ends.
+-- CODE AND DATA IN TWO FOLDERS: the .lua files in SERVER_DIR are replaced by
+-- every deploy; everything the server owns (tracks, cup, roster, garage,
+-- settings, results) lives under DATA_DIR and is never written by a release.
 local SERVER_DIR  = 'Resources/Server/RaceManager'
 local DATA_DIR    = SERVER_DIR .. '/Data'
 local RESULTS_DIR = DATA_DIR .. '/results'
@@ -2558,14 +1519,8 @@ local function ensureResultsDir()
   makeDirectory(RESULTS_DIR)
 end
 
--- WHERE THE RESULTS ACTUALLY ARE, as a path somebody could paste into a file
--- manager. RESULTS_DIR is relative to the server's working directory, which is
--- enough for the server's own io.open and useless to anyone else.
---
--- Resolved ONCE and cached: this shells out, and it is asked for on every state
--- broadcast to an admin. A server that cannot answer reports nil rather than a
--- guess, and the panel then shows the relative path instead of a wrong absolute
--- one.
+-- The results folder as an absolute path, resolved ONCE (it shells out, and is
+-- asked on every admin broadcast). nil rather than a guess.
 local resultsAbsPath = nil
 local resultsAbsAsked = false
 resultsFolderPath = function ()
@@ -2577,10 +1532,8 @@ resultsFolderPath = function ()
     pipe:close()
     if type(cwd) == 'string' and cwd ~= '' then
       cwd = cwd:gsub('%s+$', '')
-      -- FORWARD SLASHES THROUGHOUT, and the backslash written as a char code.
-      -- Windows `cd` answers with backslashes; a file manager takes either, and
-      -- a literal backslash in Lua source is one escape away from a string that
-      -- does not compile.
+      -- Forward slashes; the backslash as a char code (one escape from a
+      -- string that does not compile).
       resultsAbsPath = cwd:gsub(string.char(92), '/'):gsub('/$', '')
         .. '/' .. RESULTS_DIR
     end
@@ -2589,8 +1542,7 @@ resultsFolderPath = function ()
   return resultsAbsPath
 end
 
--- Timestamped result path that never overwrites: sessions ending within the
--- same second get a _2, _3, ... suffix instead of clobbering the previous file.
+-- A timestamped path that never overwrites (_2, _3 within one second).
 local function uniqueResultsPath(prefix)
   local base = RESULTS_DIR .. '/' .. os.date(prefix .. '_%Y-%m-%d_%H-%M-%S')
   local path = base .. '.txt'
@@ -2620,19 +1572,15 @@ local function clearResultsCache()
   return removed
 end
 
--- Qualifying classification: the locked grid if one exists, otherwise best
--- quali lap. This is deliberately independent of the race outcome so the
--- pole sitter and the race winner stay distinct in the output.
--- Results are a SNAPSHOT, not a live view: the file records the name the driver
--- raced under. There is no player id in the exported format to resolve against
--- later, so a rename can never rewrite history -- but it also means the real
--- guest name has to be carried alongside an alias, or the file loses the only
--- thread back to the session that set the lap times.
+-- Results are a SNAPSHOT under the name raced, so an alias also carries the
+-- real guest name: the only thread back to the session.
 local function aliasNote(rec)
   if not aliasOf(rec) then return '' end
   return '  [' .. rec.name .. ']'
 end
 
+-- Qualifying classification: the locked grid if any, else best lap. Kept
+-- independent of the race, so pole and winner stay distinct.
 local function qualiClassification()
   local list = {}
   for _, rec in pairs(players) do list[#list + 1] = rec end
@@ -2650,19 +1598,9 @@ local function qualiClassification()
   return list
 end
 
--- DID THIS DRIVER TAKE PART IN THE SESSION THAT HAS JUST BEEN RUN?
---
--- `players` is everybody CONNECTED, which is not the same list and stopped being
--- the same list the day heats arrived: a four-car heat on a twelve-car server
--- leaves eight records that were never gridded, never turned a wheel and are
--- still sitting in the table when the results are written.
---
--- FOUR TESTS, NOT ONE, and the extra three are the guard rather than the rule.
--- A grid slot is what taking part actually means, and every session goes through
--- formGrid to hand them out. The other three catch anybody who somehow has a
--- result without one, because the cost of the two mistakes is not symmetric:
--- listing a driver who did nothing is untidy, and dropping a driver who raced
--- loses a result somebody earned.
+-- Did this driver take part? `players` is everyone CONNECTED (a heat leaves
+-- most of the server out). A grid slot is the rule; the other tests guard it,
+-- because dropping a driver who raced is worse than listing one who did not.
 local function tookPart(rec)
   if rec == nil then return false end
   return rec.gridPos ~= nil
@@ -2671,20 +1609,10 @@ local function tookPart(rec)
     or rec.status == 'dnf' or rec.status == 'dsq'
 end
 
--- Race classification: finishers by finish time, then unclassified by laps
--- completed, excluded drivers, DNFs last (same ordering the live table uses).
---
--- PARTICIPANTS ONLY, and this is the single filter that keeps a heat's paperwork
--- honest. Everything that decides what a session PRODUCED reads this list --
--- the results file, the session awards, the cup round, the heat transfer -- so
--- a driver waiting for their own heat was being written into every one of them:
--- a DNF row in heat 1's results, and a cup entry with a round banked against it.
--- Under a `dnfScoring` of 'classified' or 'held' that round was worth real
--- championship points for a race they watched.
---
--- NOT the live timing board, which is buildDrivers and still shows everybody.
--- A driver waiting for heat 3 belongs on the screen, marked Waiting; they do not
--- belong in the file.
+-- Race classification (raceOrderLess), PARTICIPANTS ONLY: the results file,
+-- awards, cup round and heat transfer all read this, and a driver waiting for
+-- their heat was being banked cup points. The live board (buildDrivers) still
+-- shows everybody.
 local function raceClassification()
   local list = {}
   for _, rec in pairs(players) do
@@ -2694,49 +1622,23 @@ local function raceClassification()
   return list
 end
 
--- The three things a race decides beyond the finishing order: who set the
--- fastest lap, who led at half distance, and who gained the most places.
---
--- These used to be worked out inside the results writer and thrown away with
--- the string it built. They are pulled out here because there is now a SECOND
--- consumer -- the cup scorer awards bonus points for exactly these three -- and
--- two implementations of "who is the hard charger" is two rules that can drift
--- apart. One function, one answer, and the results file keeps reading it the
--- way it always did.
---
--- Pure: every value is a player id (or nil) plus the numbers needed to describe
--- it, and nothing here writes to a record. `final` is the race classification,
--- taken as an argument so the caller that has already built one does not pay
--- for a second sort.
+-- Fastest lap, half-distance leader, and the hard charger, for the results file
+-- and the cup's bonuses alike (one rule). Pure; `final` saves a second sort.
 local function sessionAwards(final)
   final = final or raceClassification()
   local awards = {
-    -- Tracked incrementally as laps are scored (see RM_onLap), so this is a
-    -- read rather than a scan of the field.
+    -- Tracked incrementally (RM_onLap).
     fastestLapPid = race.bestLapPid,
     fastestLapTime = race.bestLapTime,
   }
 
-  -- Half-distance leader: whoever completed the half-way lap first.
-  --
-  -- Half of an odd distance is not a lap, so it rounds UP -- a 5-lap race is
-  -- decided at lap 3, the same as a 6-lap one. That is the lap on which a driver
-  -- has more of the race behind them than in front, which is what "half way"
-  -- means when laps are the only unit available.
-  --
-  -- lapFirsts already records the first driver to complete each lap (it is what
-  -- Laps Led is counted from), so this is a lookup rather than a second pass.
-  -- A one-lap race has no half way: lap 1 is the flag.
+  -- Half-distance leader: first to complete lap ceil(n/2) (lapFirsts). None in
+  -- a one-lap race.
   awards.halfWayLap = math.ceil(race.totalLaps / 2)
   awards.halfWayPid = (race.totalLaps >= 2) and lapFirsts[awards.halfWayLap] or nil
 
-  -- Hard Charger: most places gained from the grid slot to the finish.
-  --
-  -- Only a classified finisher can have gained places: a driver who did not
-  -- finish has no finishing position to have gained them to. A gain of zero or
-  -- less is not a charge, so nobody is awarded it rather than it going to
-  -- whoever went backwards least. Ties go to the higher finisher, which is `i`
-  -- ascending -- a later driver has to beat the gain outright to take it.
+  -- Hard charger: most places gained from grid to finish, classified finishers
+  -- only, gain above zero; ties to the higher finisher.
   for i, rec in ipairs(final) do
     local classified = rec.finishTime ~= nil and rec.status ~= 'dsq'
     local start = rec.gridPos
@@ -2753,9 +1655,7 @@ local function sessionAwards(final)
   return awards
 end
 
--- How long this race is, in words. One phrasing, so the console line, the
--- results header and anything added later cannot drift apart. `laps` defaults
--- to the race setting; the results pass the distance the session actually ran.
+-- How long this race is, in words, from one place.
 local function raceLengthLabel(laps)
   laps = laps or race.totalLaps
   if race.pointToPoint then return 'point to point, driven once' end
@@ -2775,9 +1675,8 @@ local function buildResultsText(cupRound)
   local lines = {}
   local function add(s) lines[#lines + 1] = s end
 
-  -- LAPS RUN, per driver, finishers and retirements alike. currentLap counts
-  -- crossings: a finisher's stops on the lap they finished, everyone else's is
-  -- one past the laps they completed. A pace lap is a crossing but not a lap.
+  -- Laps run per driver: currentLap counts crossings (a finisher's stops on the
+  -- finishing lap; a pace lap is a crossing, not a lap).
   local pace = race.racePaceLapRun and 1 or 0
   local function lapsRun(rec)
     local n = (rec.currentLap or 0) - (rec.finishTime and 0 or 1) - pace
@@ -2789,8 +1688,7 @@ local function buildResultsText(cupRound)
     if n > leaderLaps then leaderLaps = n end
   end
   local distance = raceDistance()
-  -- A timed race has no distance until it is driven, so the laps it ran are
-  -- its distance. A lap race says so only when it was stopped short.
+  -- A timed race's distance is the laps it ran; a lap race says so if cut short.
   local ran = not race.pointToPoint and (race.raceMode ~= 'laps' or leaderLaps < distance)
 
   add('==================================================')
@@ -2801,10 +1699,7 @@ local function buildResultsText(cupRound)
     race.racePaceLapRun and ' + pace lap (not counted in Laps)' or '',
     ran and string.format(', %d lap%s run', leaderLaps, leaderLaps == 1 and '' or 's') or '',
     #final))
-  -- HOW NEUTRALISED THE RACE WAS. A race with four yellows in it read exactly
-  -- like a clean one once it was over, which makes a lap chart impossible to
-  -- explain afterwards -- and a caution is the single most common reason a
-  -- finishing order looks wrong to somebody reading it cold.
+  -- Cautions, which explain a finishing order that looks wrong.
   if race.cautionCount > 0 then
     add(string.format(' Cautions: %d, over %d lap%s',
       race.cautionCount, race.cautionLaps, race.cautionLaps == 1 and '' or 's'))
@@ -2816,10 +1711,7 @@ local function buildResultsText(cupRound)
   add('==================================================')
   add('')
   add('--- QUALIFYING RESULTS ---')
-  -- The lap limit is a limit on TIMED laps, and the out lap is not one of them.
-  -- Spelled out because a results file is read months later by somebody who was
-  -- not there: "3 lap limit" beside a driver who crossed the line four times is
-  -- a discrepancy nobody can settle after the fact.
+  -- The lap limit counts TIMED laps; the out lap is said separately.
   add(string.format(' Format: %s%s%s%s',
     race.ghostQuali and 'ghost mode' or 'standard',
     race.qualiOutLapRun and ', out lap not timed' or '',
@@ -2834,32 +1726,21 @@ local function buildResultsText(cupRound)
   if #quali == 0 then add('(no drivers)') end
   add('')
   add('--- RACE RESULTS ---')
-  -- Optional regulation columns: only present when that regulation is armed,
-  -- so a plain race exports exactly the same table it always did.
+  -- Regulation columns only when armed, so a plain race exports as always.
   local jokerCol  = race.jokerEnabled and string.format(' %-7s', 'Joker') or ''
   local resetCol  = race.maxResets >= 0 and string.format(' %-6s', 'Resets') or ''
-  -- THE CLASS COLUMN, on the same terms as the two above it: present only when
-  -- there is one, so a single-class race exports byte-for-byte the table it
-  -- always did. Read off the classification rather than off the garage, because
-  -- what the file records is what was RUN -- an entry retagged after the flag
-  -- must not rewrite the race that has already happened.
+  -- The class column, only when one was run, read off the classification (what
+  -- was RUN; a retag after the flag must not rewrite it).
   local classed = false
   for _, rec in ipairs(final) do
     if rec.class then classed = true break end
   end
   local classCol = classed and string.format(' %-12s', 'Class') or ''
-  -- NO "Line" COLUMN. A branch gate is another way through a checkpoint rather
-  -- than a route a driver is on, so there is no lane to name -- and a track with
-  -- branch gates now exports exactly the table an ordinary race does.
-  -- 'Race Time' IS PADDED ONLY WHEN SOMETHING FOLLOWS IT. The data rows write it
-  -- through '%-10s', so a bare header shifts every optional column after it;
-  -- padding it always leaves trailing spaces on a plain race's header.
+  -- 'Race Time' is padded only when a column follows it.
   local tail = classCol .. jokerCol .. resetCol
   add(string.format('%-5s %-6s %-22s %-10s %-9s %-5s %s%s',
     'Pos', 'Start', 'Driver', 'Best Lap', 'Laps Led', 'Laps',
     tail ~= '' and string.format('%-10s', 'Race Time') or 'Race Time', tail))
-  -- Fastest lap, half-way leader and Hard Charger, decided once for this
-  -- session (see sessionAwards) rather than worked out again here.
   local awards = sessionAwards(final)
   for i, rec in ipairs(final) do
     local excluded   = rec.status == 'dsq'
@@ -2870,15 +1751,8 @@ local function buildResultsText(cupRound)
     elseif classified then
       pos, finish = 'P' .. i, fmtLap(rec.finishTime)
     else
-      -- A DNF keeps the place it was running in when it stopped, so the file
-      -- records what happened rather than only that it happened: "was P2" and
-      -- "was P11" are very different afternoons. Finishers are still listed
-      -- above every retirement -- a driver who stopped on lap two did not beat
-      -- one who took the flag.
-      --
-      -- It goes with the reason rather than in the Pos column because that
-      -- column is padded to a fixed width and every row after a wider one would
-      -- shear. The reason text is already the variable-width field on this row.
+      -- A DNF keeps the place it was running in, in the reason text (the Pos
+      -- column is fixed width). Finishers stay above every retirement.
       pos = 'DNF'
       finish = (rec.outReason or 'DNF')
         .. (rec.heldPos and (' (was P' .. rec.heldPos .. ')') or '')
@@ -2887,16 +1761,11 @@ local function buildResultsText(cupRound)
     local jokerVal = race.jokerEnabled
       and string.format(' %-7s', (rec.jokerTaken or 0) == 0 and 'missed'
         or ('lap ' .. tostring(rec.jokerLap or '?'))) or ''
-    -- Blocked attempts are appended so a driver who kept pressing R after
-    -- running out shows up as e.g. "3/3+2" rather than looking identical to
-    -- someone who simply used their allowance.
+    -- Blocked attempts appended ("3/3+2").
     local resetVal = race.maxResets >= 0
       and string.format(' %-6s', string.format('%d/%d%s', rec.resets or 0, race.maxResets,
         (rec.resetsBlocked or 0) > 0 and ('+' .. rec.resetsBlocked) or '')) or ''
-    -- "GT3 P2" in one cell: the class and the place in it are one fact and a
-    -- reader scanning the column wants them together. A classified race with an
-    -- unclassified driver in it prints a dash rather than a blank, so the column
-    -- never reads as a formatting fault.
+    -- "GT3 P2" in one cell; an unclassified driver in a classed race gets "-".
     local classVal = classed and string.format(' %-12s',
       rec.class and (rec.class .. (rec.classPos and (' P' .. rec.classPos) or ''))
         or '-') or ''
@@ -2906,18 +1775,9 @@ local function buildResultsText(cupRound)
       classVal, jokerVal, resetVal, aliasNote(rec), tag))
   end
   if #final == 0 then add('(no drivers)') end
-  -- The two award lines. Both are omitted rather than guessed at when there is
-  -- no answer -- a race stopped before half distance has no half-way leader,
-  -- and a race where nobody gained a place has no hard charger.
-  -- ---------------------------------------------------------------------
-  -- PER-CLASS RESULTS, and the reason they are a section rather than only a
-  -- column: a league running two classes publishes two results. The overall
-  -- order above is still the truth about who was on the road first -- a GT4
-  -- winner did not beat the GT3 field -- but the sheet a GT4 driver reads is the
-  -- one with GT4 cars on it and P1 at the top of it.
-  --
-  -- Built out of the SAME classification, walked once per class in the order it
-  -- is already in, so no second sort exists to disagree with the first.
+  -- PER-CLASS RESULTS: a league running two classes publishes two results. The
+  -- overall order above stays the truth on the road. Same classification, walked
+  -- once per class.
   if classed then
     local order, seen = {}, {}
     for _, rec in ipairs(final) do
@@ -2926,9 +1786,7 @@ local function buildResultsText(cupRound)
         order[#order + 1] = rec.class
       end
     end
-    -- Classes in the order their leading car finished, which puts the quickest
-    -- class first without anybody having to rank them. Alphabetical would put
-    -- GT4 above GT3.
+    -- Classes in the order their leading car finished.
     for _, cls in ipairs(order) do
       add('')
       add('--- CLASS: ' .. cls .. ' ---')
@@ -2958,6 +1816,7 @@ local function buildResultsText(cupRound)
     end
     add('')
   end
+  -- The award lines, omitted when there is no answer.
   local halfRec = awards.halfWayPid and players[awards.halfWayPid] or nil
   local hcRec   = awards.hardChargerPid and players[awards.hardChargerPid] or nil
   if halfRec or hcRec then add('') end
@@ -2970,28 +1829,16 @@ local function buildResultsText(cupRound)
       displayName(hcRec), awards.hardChargerFrom, awards.hardChargerTo,
       awards.hardChargerGain, awards.hardChargerGain == 1 and '' or 's'))
   end
-  -- The championship this race just fed, if there is one. Asked for rather than
-  -- assembled here: the points, the order and the ledger all belong to the cup
-  -- module, and a second copy of its arithmetic living in the results writer is
-  -- how two totals for the same driver come to disagree.
+  -- The championship round, from the cup module (one copy of its arithmetic).
   local cupLines = cupResultsLines and cupResultsLines(cupRound) or nil
   for _, l in ipairs(cupLines or {}) do add(l) end
   add('')
   return table.concat(lines, '\n') .. '\n'
 end
 
--- A COPY TO EVERY ADMIN, as well as the server's own file.
---
--- The server's copy is the record, and it stays. But a league's race admins are
--- often not the people with the box: no console, no filesystem, no way to read
--- the one file the night produced. So the text goes to whoever is logged in as
--- an admin, and their client writes it into BeamNG's own folder where they can
--- actually reach it.
---
--- Capped, and the cap is the point rather than caution. This crosses BeamMP as
--- one event, and a results file grows with the field: a huge grid must not turn
--- the end of a race into a payload nothing will carry. Over the cap the admin
--- is told to use the server's copy, which is the one that is always complete.
+-- A copy to every logged-in admin, written into their own BeamNG folder (race
+-- admins often have no access to the box). Capped: one BeamMP event must carry
+-- it; over the cap they are told to use the server's copy.
 local MAX_RESULTS_PUSH = 60000
 
 local function sendResultsToAdmins(name, text)
@@ -3024,10 +1871,7 @@ local function writeResults(cupRound)
   if not f then return false, tostring(err) end
   f:write(text)
   f:close()
-  -- The admins' copies go out whether or not they were watching the console.
-  -- Basename only, and the separator class is built rather than written: a
-  -- literal backslash in a Lua pattern is one escape away from a file that
-  -- does not compile, which is how this first landed.
+  -- Basename only; the separator built from a char code.
   local base = path:gsub(string.char(92), '/'):match('([^/]+)$') or 'results.txt'
   sendResultsToAdmins(base, text)
   return true, path
@@ -3036,19 +1880,13 @@ end
 -- ---------------------------------------------------------------------------
 -- Joker lap ruling (Module 2)
 -- ---------------------------------------------------------------------------
--- Clients police the joker route live (one run per race, never on lap 1) and
--- report each valid completion with RM_JokerLap. The server is authoritative
--- at the flag: every driver who completed the race must have taken the joker
--- route exactly once, or their final result becomes a disqualification that is
--- written straight into the results .txt.
+-- Clients police the joker live (once per race, never on lap 1) and report each
+-- completion. At the flag every finisher must have taken it exactly once, or the
+-- result becomes a disqualification in the results file.
 local function applyJokerRuling()
   if not race.jokerEnabled then return 0 end
-  -- And never on a track with no joker route. Arming it is refused up front
-  -- (RM_onSetJokerEnabled) and dropped when a layout without one loads, so this
-  -- is the last line rather than the first -- but it is the line that matters,
-  -- because everything it guards against happens HERE: a rule with nothing to
-  -- complete disqualifies every driver who finishes, and the only place that is
-  -- ever explained is a results file written after they have all gone.
+  -- Never on a track with no joker gates (it would disqualify every finisher);
+  -- arming is refused up front too, but this is the line that matters.
   if race.jokerGates == 0 then
     print('[RaceManager] Joker ruling skipped: the track has no joker gates')
     return 0
@@ -3071,58 +1909,30 @@ end
 -- ---------------------------------------------------------------------------
 -- Session lifecycle (shared by racing and qualifying)
 -- ---------------------------------------------------------------------------
--- One lifecycle, two sets of rules. Everything below asks the session what it
--- is running rather than branching on the phase name, so a fix to the grid, the
--- hold, the finish or the respawn lands on both sessions at once.
+-- One lifecycle, two sets of rules: ask the session, not the phase name.
 
 local function isQualiSession()
   return race.sessionKind == 'quali'
 end
 
--- The lap count the CURRENT session runs to, or nil when it has no lap target
--- (an unlimited qualifying session, closed by its clock or by the admin).
+-- The crossing count the current session runs to, or nil (no lap target).
 local function sessionLapTarget()
-  -- A sprint stage is one traversal, whatever the lap field says. Enforced here
-  -- rather than by clamping race.totalLaps, so an admin's lap setting survives
-  -- switching a circuit layout back in.
+  -- A sprint is one traversal; race.totalLaps is left alone for the next circuit.
   if race.pointToPoint then return 1 end
   if isQualiSession() then
     if race.qualiLapLimit <= 0 then return nil end
-    -- Crossings, not timed laps. The allowance is expressed in laps that COUNT,
-    -- and the out lap is one every driver has to make and none of them is
-    -- scored for, so it is added on top rather than taken out of the allowance:
-    -- a 3 lap session is three flying laps, and the fourth crossing is the one
-    -- that ends it.
+    -- Crossings, not timed laps: the out lap goes on top of the allowance.
     return race.qualiLapLimit + (outLapOwed() and 1 or 0)
   end
-  -- A RACE's first lap counts, and that is the difference between the two.
-  --
-  -- Qualifying's out lap is a lap given AWAY: it is not timed and it is not one
-  -- of the three you were promised, so it is added on top. A race's first lap is
-  -- a racing lap -- it is just not eligible for a lap TIME, because a field
-  -- launching from a standing grid, or from slots spread round the circuit, would
-  -- otherwise hand fastest lap to whoever started nearest the line. Ten laps
-  -- means ten crossings; the first of them sets no time.
-  --
-  -- UNLESS THE RACE IS RUN TO A CLOCK, in which case there is no lap target at
-  -- all and totalLaps is inert. A timed race ends one lap after the leader next
-  -- takes the line, which is a rule about crossings and elapsed time and cannot
-  -- be expressed as a number of laps in advance: nobody knows how many laps ten
-  -- minutes is until it has been driven.
-  -- ENDURANCE KEEPS ITS LAP TARGET. It is the other half of "whichever comes
-  -- first", and dropping it here is how a 50-lap-or-60-minute race quietly
-  -- becomes a 60-minute one.
+  -- A race's first lap counts (it just sets no lap TIME), so a head-on out lap
+  -- comes out of the distance. A timed race has no lap target; endurance keeps
+  -- one.
   if race.raceMode == 'timed' then return nil end
-  -- A PACE LAP IS GIVEN AWAY, and this is the one place it differs from the out
-  -- lap a head-on grid owes. That one is a RACING lap that merely sets no time,
-  -- so it comes out of the ten; a formation lap is not a racing lap at all, so
-  -- it goes on top. Five laps behind the pace car is six crossings.
+  -- A PACE LAP is not a racing lap, so it goes on top.
   return raceDistance() + (paceLapArmed() and 1 or 0)
 end
 
--- The status a driver carries while they are circulating. Presentation only --
--- every check in this file goes through onTrack() -- but it keeps the timing
--- screen reading "Qualifying" during qualifying and "Racing" during a race.
+-- The status while circulating; presentation only (checks use onTrack).
 local function runningStatus()
   return isQualiSession() and 'qualifying' or 'racing'
 end
@@ -3131,38 +1941,19 @@ local function onTrack(rec)
   return rec ~= nil and (rec.status == 'racing' or rec.status == 'qualifying')
 end
 
--- The lights have gone out and cars are circulating: laps count, telemetry
--- counts, the clock runs.
+-- Lights out, cars circulating: laps, telemetry and the clock count.
 local function sessionRunning()
   return race.phase == 'racing' or race.phase == 'qualifying'
 end
 
--- The session is under way: the lights have gone out (or are about to) and
--- nothing about the rules may move under the drivers. Qualifying is included
--- now that it is a real session rather than an open pit lane.
+-- Under way (countdown included): no rule may move under the drivers.
 local function sessionUnderWay()
   return race.phase == 'countdown' or race.phase == 'racing' or race.phase == 'qualifying'
 end
 
--- THE OPENING OF AN ADMIN COMMAND THAT CARRIES A PAYLOAD.
---
--- Seventeen handlers began with the same four or five lines: authenticate,
--- optionally refuse while a session is under way, check the payload is a
--- non-empty string, decode it, check the result is a table. About a hundred and
--- twenty lines of guard across the file, and every one of them a chance to
--- write the next handler with one missing.
---
--- The missing guard is the point, not the line count. A new command without
--- requireAuth is an open door; one without sessionUnderWay lets an admin change
--- the rules under cars already at racing speed. Neither fails visibly in
--- testing -- they fail on a race night, to somebody else.
---
--- `idle` is the only thing that varied, so it is the only argument: pass true
--- for a command that must not run mid-session.
---
--- Returns the decoded table, or nil meaning the handler should return. Callers
--- read as `local data = adminPayload(pid, rawData); if not data then return end`
--- which states both halves at the point of use.
+-- The opening of an admin command with a payload: authenticate, optionally
+-- refuse mid-session (`idle`), decode. One function so no handler forgets a
+-- guard; nil means return.
 local function adminPayload(pid, rawData, idle)
   if not requireAuth(pid) then return nil end
   if idle and sessionUnderWay() then return nil end
@@ -3172,8 +1963,7 @@ local function adminPayload(pid, rawData, idle)
   return data
 end
 
--- How many drivers are still circulating. Every "is this session over?" test in
--- the file asks this, so there is one answer to it.
+-- How many drivers are still circulating.
 local function driversOnTrack()
   local n = 0
   for _, rec in pairs(players) do
@@ -3182,28 +1972,17 @@ local function driversOnTrack()
   return n
 end
 
--- Take one driver off the track: they are done, their car is removed, and they
--- watch until the session ends. THE single removal path -- the lap target, the
--- expired-clock final lap and the grace timeout all come through here, so a
--- driver's session ends the same way whichever of the three finished it.
+-- Take one driver off the track as finished: THE single path (lap target,
+-- expired-clock final lap, grace timeout).
 local function retireDriver(rec, reason)
   if not onTrack(rec) then return false end
   rec.status = 'finished'
-  -- RACE time, from the green and without red-flag stoppages: the pace lap is
-  -- not part of anyone's race. Only ever compared with other finish times, so
-  -- the shift changes the results file and nothing else.
+  -- RACE time, from the green: the pace lap is nobody's race.
   rec.finishTime = race.time - race.greenAt
-  -- The RESET ghost ends here, and only that one. It is a timed thing that
-  -- exists to cover a car materialising in the pack, and a driver who has just
-  -- taken the flag is not doing that.
-  --
-  -- What replaces it is the FINISHED ghost, which this does not touch: that one
-  -- is not a per-driver event at all, it is derived from `status` by
-  -- finishedRoster() and applied by every client off the state broadcast. Firing
-  -- an event here as well would be two sources of truth for one fact.
+  -- The RESET ghost ends here. The finished ghost is derived from status by
+  -- finishedRoster, not an event.
   clearGhost(rec.id, 'driver finished')
-  -- Their place, counted at the crossing. rec.status is already 'finished'
-  -- above, so this driver is included and the count IS their position.
+  -- Their place, counted at the crossing (they are already 'finished').
   local place = 0
   for _, r in pairs(players) do
     if r.status == 'finished' then place = place + 1 end
@@ -3212,38 +1991,14 @@ local function retireDriver(rec, reason)
   return true
 end
 
--- Retire a driver from the session without a finish: THE one way a record
--- becomes a DNF, whatever ended it -- the admin closing the session, a
--- disconnection, or anything added later.
---
--- It exists to make the position snapshot unconditional. Setting `status` by
--- hand in each of those places is how one of them ends up forgetting, and a
--- driver's classified position quietly depending on which way their race
--- happened to end is exactly the bug this prevents.
---
--- `position` is stamped on every state broadcast (three times a second while a
--- session runs), so it is at most a fraction of a second old here. Before the
--- lights there is no running order yet, so the grid slot is the honest answer.
--- BEHIND THE LAST CAR THAT CAN STILL FINISH.
---
--- Not the place they were running in. A driver retiring from P3 of six does not
--- keep third: the five cars still going will all finish ahead of them, so they
--- are sixth. Retire later and fewer cars are left to pass you, so you classify
--- higher, which is how motorsport has always ordered retirements and is what
--- "behind the last running car" means in practice.
---
--- It also stops two drivers scoring the same position, which the held-position
--- rule could do whenever two cars stopped from the same place.
---
--- Finishers count as ahead too: they already have their positions.
+-- Retire without a finish: THE one way a record becomes a DNF. Classified
+-- BEHIND THE LAST CAR THAT CAN STILL FINISH (finishers and running cars ahead),
+-- so two retirements never share a place.
 local function retireAsDnf(rec, reason)
   if not rec then return false end
   rec.status = 'dnf'
   rec.outReason = rec.outReason or reason
-  -- WHERE THEY WERE, kept separately from where they CLASSIFY. The cup can pay
-  -- a retirement at the position it held when it stopped, and the results file
-  -- says "was P3"; neither of those is the same fact as finishing sixth of six.
-  -- One field could not be both, and it used to try.
+  -- Where they were running, kept apart from where they classify.
   if rec.heldPos == nil then
     rec.heldPos = rec.position or rec.gridPos
   end
@@ -3259,31 +2014,13 @@ local function retireAsDnf(rec, reason)
   return true
 end
 
--- Forward declaration: the grid is formed by one function used by BOTH entry
--- points (Generate Grid and Start Qualifying), and it needs the ordering rules
--- that are defined further down the file.
+-- Forward declaration: one grid-forming function for both entry points.
 local formGrid
 
--- Give a field of drivers their cars back.
---
--- THE mass-respawn mechanism, and the only one. It takes the field as two
--- ready-made arrays rather than going and finding it, for two reasons:
---
---   * both lists must be SNAPSHOTS. The release is what makes a client delete
---     its freecam and spawn a vehicle, and building a list while that is under
---     way is how a mass respawn ends up reaching only the last name in it.
---   * the demo derby keeps its own participant table and never reads racing
---     state. Handing the field in is what lets it share this without either
---     module learning about the other's players.
---
--- `participants` are the drivers whose cars were removed, in the order they
--- should come back; each is told its place. Five cars materialising in the same
--- instant is how a respawn gets refused for an occupied location, or lands two
--- cars inside each other and blows them apart; the clients use the order to
--- stagger their spawns and to ghost themselves while it happens.
---
--- `bystanders` (optional) still get the lock lifted -- they simply have no place
--- in the order, because they have no car to put back.
+-- Give a field their cars back: THE mass-respawn path. Takes SNAPSHOT arrays
+-- (building a list mid-release once reached only the last name), which also
+-- lets the derby share it. Each participant is told its place for the stagger;
+-- bystanders only get the lock lifted.
 local function respawnField(source, participants, bystanders)
   source = source or 'race'
   for i, rec in ipairs(participants) do
@@ -3320,25 +2057,16 @@ local function respawnAll(source)
   respawnField(source or 'race', participants, bystanders)
 end
 
--- Single exit point for every way a session ends (everyone finished, the clock
--- ran out, the admin ended it, the last driver disconnected). Both kinds go
--- through here, so both get the same close-down: stop the clock, put every
--- removed car back, then apply whichever rules belong to that session.
+-- The single exit for every way a session ends: stop the clock, put every car
+-- back, then that session's own rules.
 local function finishSession(reason)
   MP.CancelEventTimer('RM_CountdownTick')
-  -- A session ended DURING its pace lap -- an admin standing the field down
-  -- after a start that fell apart -- must not leave `pacing` set. The next
-  -- release reads it (releaseField sets it from its own argument) but the
-  -- broadcast between now and then does not, and a finished session showing the
-  -- field a pace lap is a panel that has to be argued with.
+  -- A session ended during its pace lap must not leave `pacing` set.
   race.pacing    = false
   race.paceArmed = false
-  -- The caution goes with the session, but cautionCount does NOT: the results
-  -- file is written further down this function and it is the one place a race
-  -- with four yellows in it can be told apart from a clean one afterwards.
+  -- The caution goes with the session; cautionCount stays for the results file.
   race.caution   = false
-  -- ...and neither of the two CALLS outlives it. A pending yellow or a pending
-  -- restart is an instruction waiting on a leader who is no longer running.
+  -- ...and neither pending call outlives it.
   race.cautionPending = false
   race.restartPending = false
   race.cautionLucky   = nil
@@ -3348,22 +2076,16 @@ local function finishSession(reason)
   race.raceExpired  = false
   race.raceExpiredAt = nil
   race.lastLapNum   = nil
-  -- Before either branch below, and before the respawn either of them runs: the
-  -- session is over, so no reset ghost outlives it. The mass respawn that
-  -- follows has a ghost of its own (the clients' 'placement' reason), which is
-  -- what keeps a field landing through each other safe -- this one has no more
-  -- work to do.
+  -- No reset ghost outlives the session; the respawn has its own placement ghost.
   clearAllGhosts('session ended: ' .. tostring(reason))
   if isQualiSession() then
-    -- Qualifying drops back to waiting rather than 'finished': the next thing
-    -- an admin does is Generate Grid, and the times just set are what orders it.
+    -- Qualifying drops back to waiting: Generate Grid comes next, ordered by these
+    -- times.
     race.phase = 'waiting'
     for _, rec in pairs(players) do
       if onTrack(rec) then rec.status = 'waiting' end
     end
-    -- Qualifying points are held, not banked: they belong to the round the race
-    -- that follows will be. Scored here rather than at the grid because this is
-    -- where the times are final. Does nothing at all unless a cup is running.
+    -- Qualifying points are held for the race's round (no-op without a cup).
     if cupOnSessionComplete then cupOnSessionComplete('quali') end
     if race.recordsSession then race.recordsSession('quali') end
     respawnAll('race')
@@ -3375,36 +2097,19 @@ local function finishSession(reason)
 
   local excluded = applyJokerRuling()
   race.phase = 'finished'
-  -- THE HEAT RESULT, RECORDED THE MOMENT IT IS FINAL.
-  --
-  -- Here, and not at the grid the feature is built from, because THIS is where
-  -- the classification exists: applyJokerRuling has just run, so a driver
-  -- excluded from the heat is excluded from the transfer too rather than taking
-  -- a front-row start out of a race they were disqualified from.
-  --
-  -- Written onto the record and into the identity registry together, so it
-  -- survives both the next Generate Grid purge and a driver dropping out
-  -- between two of the night's races.
+  -- THE HEAT RESULT, recorded once final (after the joker ruling, so an excluded
+  -- driver never transfers), onto the record and the identity registry.
   if race.heatCount > 0 and race.heatCurrent > 0 then
     local order = raceClassification()
     local pos, transferred = 0, 0
     for _, rec in ipairs(order) do
-      -- Only the drivers who were IN this heat. The classification is built from
-      -- every record the server holds, and the rest of the field -- waiting for
-      -- their own heat -- must not be given a position in somebody else's.
+      -- Only the drivers in THIS heat.
       if rec.heat == race.heatCurrent then
-        -- COUNTED WITHIN THE HEAT, not taken from the index in that list. The
-        -- classification is the whole night's field, so by heat 2 the drivers
-        -- who already raced heat 1 sort above it and the index is somewhere in
-        -- the middle of the list -- which makes every position wrong and, worse,
-        -- silently transfers nobody, because that index is then compared against
-        -- "top 2". Heat 1 alone would pass either way: its drivers are the only
-        -- ones with laps, so they sort to the top and the two counts agree.
+        -- Counted within the heat, not from the list index: by heat 2 earlier
+        -- heats' drivers sort above, and the index transferred nobody.
         pos = pos + 1
         rec.heatPos = pos
-        -- A DISQUALIFICATION NEVER TRANSFERS, whatever place the sort left it
-        -- in. classRank puts dsq below the finishers already, so this only has
-        -- to refuse the spot rather than re-sort anything.
+        -- A disqualification never transfers.
         rec.transferred = (rec.status ~= 'dsq') and (pos <= race.heatTransfer) or false
         if rec.transferred then transferred = transferred + 1 end
         rememberIdentity(rec)
@@ -3416,18 +2121,12 @@ local function finishSession(reason)
       '[RaceManager] HEAT %d COMPLETE: %d driver%s transferred to the feature.',
       race.heatCurrent, transferred, transferred == 1 and '' or 's'))
   end
-  -- Score the cup AFTER the joker ruling and not before: that ruling is what
-  -- turns a finisher into a disqualification, and a driver scored ahead of it
-  -- would bank winner's points for a race they were excluded from. Does nothing
-  -- at all unless a cup is running.
-  --
-  -- The round it banks is carried to the results file below rather than looked
-  -- up there: a cup at its round cap scores nothing, and a file that asked the
-  -- cup for "the current round" would then print the previous race's points.
+  -- The cup is scored AFTER the joker ruling, and the round it banks is carried
+  -- to the results file (a cup at its cap scores nothing, and "the current
+  -- round" would then print the previous race's points).
   local cupRound = cupOnSessionComplete and cupOnSessionComplete('race') or nil
-  -- After the joker ruling, for the same reason: a disqualified lap sets no record.
+  -- After the joker ruling too: a disqualified lap sets no record.
   if race.recordsSession then race.recordsSession('race') end
-  -- The session is over: every car taken off the track comes back.
   respawnAll('race')
   broadcastState()
   if excluded > 0 then
@@ -3450,19 +2149,8 @@ end
 -- ---------------------------------------------------------------------------
 
 -- Start Qualifying: wipe the previous session's times and form the qualifying
--- grid. Allowed any time a session is not already under way.
---
--- This is the SAME grid path Generate Grid takes -- form up, stand every
--- entrant on a slot, hold them there for the countdown. Qualifying used to skip
--- all of it and simply flip the phase, which left every driver starting from
--- wherever they happened to be parked: the first crossing of the line was an
--- out-lap nobody asked for, a driver sitting mid-route had to complete a lap
--- before their first one even began to count, and a "3 lap" session took five
--- or six laps to get through. Starting from the grid is what makes three laps
--- mean three laps.
---
--- Display names and entry decisions are NOT wiped: they live in the identity
--- registry and are restored by ensurePlayer inside formGrid.
+-- grid through the SAME path as Generate Grid, so three laps mean three laps
+-- from a standing start. Names and entry decisions survive (identity registry).
 function RM_onStartQualifying(pid)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
@@ -3471,7 +2159,6 @@ function RM_onStartQualifying(pid)
   wipe(lapFirsts)
   race.bestLapTime, race.bestLapPid = nil, nil
   race.time = 0.0
-  -- The hold goes with the clock it was measured against.
   race.endsAt, race.endReason = nil, nil
   race.qualiTime = 0.0
   if not formGrid('quali', MP.GetPlayerName(pid) or pid) then return end
@@ -3488,22 +2175,8 @@ function RM_onStartQualifying(pid)
 end
 
 
--- Admin switches between opt-in entry and "everyone on the server races".
--- A player putting themselves in or out of the field.
---
--- No admin needed: it is their own participation. Allowed mid-session in one
--- direction only -- you can always drop out, but you cannot join a race that is
--- already running.
--- A driver pulling out of a running session.
---
--- Their own race to end, so no admin rights, and the result is a CLASSIFIED
--- retirement rather than a disappearance: they hold a position, they are in the
--- results file, and they score cup points like any other DNF. Somebody who
--- stops is still somebody who took part.
---
--- Treated exactly like taking the flag from there on: the car comes off the
--- track and the driver goes to spectate, which is the path finishers already
--- use and the only one that handles a car being removed cleanly.
+-- A driver retires from a running session: their own call, no admin needed. A
+-- CLASSIFIED retirement (results, cup), then spectating like a finisher.
 function RM_onRetire(pid)
   local rec = players[pidKey(pid)]
   if not rec then return end
@@ -3532,20 +2205,14 @@ function RM_onSetSpectating(pid, rawData)
       want = data.spectating == true or data.spectating == 1
     end
   end
-  -- ALREADY IN THAT STATE, so nothing changes -- but SAY SO ANYWAY. Returning
-  -- silently is what strands a panel that has drifted: the client thinks it is
-  -- racing, presses Spectate, the server agrees it is already spectating and
-  -- says nothing, and the panel goes on showing the wrong answer with no way to
-  -- correct itself. A targeted broadcast here makes every press a resync, so a
-  -- disagreement can only ever survive until the driver next touches the button.
+  -- Already in that state: answer anyway, so every press resyncs a panel that
+  -- has drifted.
   if rec.spectating == want then
     broadcastState(pid)
     return
   end
-  -- NEITHER DIRECTION MID-SESSION. Sitting out is a decision about whether you
-  -- are in the field, and the field is decided when the grid forms. Dropping out
-  -- of a race you are already in is RETIRING, which is a different thing with a
-  -- different result: a classified retirement rather than never having entered.
+  -- Neither direction mid-session: the field is decided at the grid, and leaving
+  -- a running race is Retire.
   if sessionUnderWay() then
     MP.SendChatMessage(pid, want
       and '[RaceManager] A session is running. Use Retire to pull out of it; you '
@@ -3554,46 +2221,30 @@ function RM_onSetSpectating(pid, rawData)
     return
   end
   rec.spectating = want
-  -- STRAIGHT INTO THE REGISTRY. The record is disposable: the online purge drops
-  -- and rebuilds it, and ensurePlayer restores the entry decision from here. Set
-  -- the record alone and the next purge silently puts the driver back in the
-  -- field, which is how sitting out came undone by itself.
+  -- Into the registry, or the next online purge silently undoes it.
   rememberIdentity(rec)
   if want then
-    -- Their car stays exactly where it is and becomes a ghost, the same way a
-    -- mid-session joiner's does. Nothing is deleted: in BeamMP a delete is a
-    -- delete for everyone, and respawning a field is what caused cars to weld.
+    -- The car stays where it is, as a ghost (a BeamMP delete is for everyone).
     rec.bystander = true
-    -- HAND THE SLOT BACK. Spectating between the grid forming and the lights is
-    -- the one window where a driver holds a start position they are giving up;
-    -- leave it assigned and their client stays parked on the grid all race.
+    -- Hand the slot back, or their client stays parked on the grid all race.
     rec.gridPos = nil
     rec.status  = 'waiting'
     assignGridSlot(rec.id, nil)
     MP.SendChatMessage(-1, '[RaceManager] ' .. rec.name .. ' is spectating.')
-    -- The one driver still not ready may have been the one who just left.
+    -- The last unready driver may have been this one.
     if race.phase == 'grid' then race.announceIfAllReady() end
   else
     rec.bystander = nil
     MP.SendChatMessage(-1, '[RaceManager] ' .. rec.name .. ' rejoined the field.')
-    -- While the grid is being called, rejoining is a slot at the back of it.
+    -- While the grid is being called, rejoining means the back of it.
     race.callLate(rec)
   end
   print(string.format('[RaceManager] %s set spectating=%s', rec.name, tostring(want)))
-  -- The derby DERIVES its field from this list, so its panel goes stale the
-  -- moment somebody sits out and nothing tells it. An admin reading an entrant
-  -- count that is one race behind presses Start Derby expecting a different set
-  -- of cars than the one that turns up.
+  -- The derby and drag panels derive their fields from this list.
   if derbyEntryListChanged then derbyEntryListChanged() end
   race.dragEntryChanged()
-  -- TWICE, AND BOTH ARE NEEDED.
-  --
-  -- Everyone gets the entrant count, which just changed. But `youSpectating` is
-  -- a targeted-only field, like youAreAdmin: the global payload is one message
-  -- for the whole server and cannot say "you" to anybody. Without the second
-  -- send the player who just opted out is the only person not told: their count
-  -- drops to zero while their panel still reads "you are entered", and the
-  -- button still offers to do the thing they have already done.
+  -- Twice: everyone gets the entrant count, and this player gets youSpectating
+  -- (targeted sends only).
   broadcastState()
   broadcastState(pid)
 end
@@ -3602,16 +2253,8 @@ end
 -- ---------------------------------------------------------------------------
 -- Qualifying session rules
 -- ---------------------------------------------------------------------------
--- Ghost mode is enforced client-side (only the client owns collisions); the
--- server just holds the switch and ships it with every broadcast.
--- Display names on the BeamMP nametag.
---
--- The server owns the SWITCH and nothing else. It cannot rename anybody: BeamMP
--- has no server-side setter for a player name, and the guest identity comes from
--- their auth rather than from anything this plugin can reach. What the clients do
--- with the switch is add a suffix to the nametag through BeamMP's own
--- setPlayerNickSuffix, which is text and nothing else -- see the note on
--- nametag.apply in the client bridge for why that is the only acceptable way in.
+-- Nametag aliases: the server holds the SWITCH only (it cannot rename anyone).
+-- Clients add a suffix through setPlayerNickSuffix (see nametag.apply).
 function RM_onSetNametags(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -3622,6 +2265,7 @@ function RM_onSetNametags(pid, rawData)
     .. ' by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
+-- Ghost qualifying: enforced client-side; the server holds the switch.
 function RM_onSetGhostQuali(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -3631,9 +2275,8 @@ function RM_onSetGhostQuali(pid, rawData)
     .. ' by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- Session length: a per-driver lap allowance, a wall-clock limit, or neither.
--- 0 means unlimited for both. Locked while qualifying is actually running so a
--- driver can't have the rug pulled mid-lap.
+-- Qualifying length: a lap allowance, a time limit, or neither (0). Locked
+-- while a session runs.
 function RM_onSetQualiLimits(pid, rawData)
   local data = adminPayload(pid, rawData, true)
   if not data then return end
@@ -3656,31 +2299,19 @@ function RM_onSetQualiLimits(pid, rawData)
     race.qualiTimeLimit == 0 and 'no time limit' or (race.qualiTimeLimit .. 's')))
 end
 
--- Close qualifying. Everyone keeps their Best Lap and every car comes back;
--- both of those are finishSession's job now, shared with the race, so this is
--- only the guard that says a qualifying session is what is running.
+-- Close qualifying (finishSession does the work).
 local function endQualifying(reason)
   if race.phase ~= 'qualifying' or not isQualiSession() then return end
   finishSession(reason)
 end
 
--- The qualifying clock has run out.
---
--- This does NOT end the session, and that is the whole point. It arms the final
--- lap: everybody stays controllable and out on track, and the next start/finish
--- line each of them crosses ends their session instead of starting another lap.
--- The session closes when the last of them has taken the flag -- through exactly
--- the same removal and respawn-all a lap-limited session uses.
---
--- Ending it outright, which is what used to happen here, locked the leaderboard
--- and left every car loose on an over circuit: nothing was removed, so the
--- respawn had nothing to put back and no driver was ever told the session was
--- done.
+-- The qualifying clock ran out. This does NOT end the session: it arms the final
+-- lap, and each driver's next S/F crossing ends their session (the same removal
+-- and respawn as a lap limit). Ending it outright left cars loose on a dead
+-- circuit, never told.
 local function beginFinalLap()
   if race.finalLap then return end
-  -- Nobody left out there (everyone already used a lap allowance, or the field
-  -- emptied): there is no final lap to run, so close cleanly rather than arming
-  -- a state that nothing can ever leave.
+  -- Nobody out there: close cleanly instead of arming a state nothing leaves.
   if driversOnTrack() == 0 then
     endQualifying('the time limit expired')
     return
@@ -3694,19 +2325,10 @@ local function beginFinalLap()
     driversOnTrack()))
 end
 
--- TIMED RACE: the leader has taken the line with the clock already out, so the
--- lap they have just started is the last one.
---
--- `fromLap` is the lap number that ends the race. Everyone still running
--- finishes by completing it - NOT by their next crossing, which is the rule
--- qualifying uses and would be wrong here. A car two seconds behind the leader
--- has not crossed the line yet when this fires; flagging it off at its next
--- crossing would end its race a lap early, while the leader ran a full one.
---
--- The checkered flag (race.finalLap) is a LATER event, set when the first car
--- actually completes `fromLap`. Only from that point is a crossing terminal for
--- everybody, which is how lapped cars are classified: they get the flag as they
--- come past, wherever they had got to.
+-- TIMED RACE: the leader took the line after the clock expired, so `fromLap` is
+-- the last lap. Everyone finishes by COMPLETING it, not at their next crossing
+-- (that would end a car just behind the leader a lap early). The checkered flag
+-- (race.finalLap) comes later, when the first car completes it.
 local function armRaceFinalLap(fromLap, why)
   if race.lastLapNum then return end
   if driversOnTrack() == 0 then
@@ -3721,9 +2343,7 @@ local function armRaceFinalLap(fromLap, why)
     fromLap, why or 'leader crossed after the clock expired', driversOnTrack()))
 end
 
--- Deterministic shuffle for the random grid draw. os.time seeding is fine
--- here: two grids drawn in the same second is not a fairness problem, and
--- nothing else on the server depends on the RNG stream.
+-- Shuffle for the random grid draw, seeded from os.time once.
 local randomSeeded = false
 local function shuffle(list)
   if not randomSeeded then
@@ -3737,27 +2357,18 @@ local function shuffle(list)
   return list
 end
 
--- Fill the grid in the order race.gridMode asks for:
---   quali   -- fastest qualifying Best Lap first, no-time last (join order breaks ties)
---   reverse -- SLOWEST Best Lap first, so the fastest qualifier starts last;
---              no-time drivers still line up at the back (see below)
---   random  -- a random draw, for a race with no qualifying behind it
---   custom  -- slots the admin pinned by hand come first, in slot order; anyone
---              unpinned falls in behind them, still by quali time
+-- Fill the grid in race.gridMode's order:
+--   quali     fastest best lap first, no time last
+--   reverse   slowest first; no time still last (see below)
+--   random    a draw
+--   custom    pinned slots first, the rest by quali time
+--   points    championship order; pointsrev reversed
 local function orderForGrid(ordered)
   if race.gridMode == 'random' then
     return shuffle(ordered)
   end
-  -- CHAMPIONSHIP ORDER, and its reverse. The same two rules as the quali grid
-  -- below, applied to the season instead of the session: the leader takes pole
-  -- in `points`, and starts last of the drivers who have scored in `pointsrev`.
-  --
-  -- A DRIVER WITH NO CUP ENTRY GOES TO THE BACK IN BOTH, exactly as a driver
-  -- with no qualifying time does, and for the same reason spelled out below:
-  -- reversing them onto pole would make "score nothing all season" the quickest
-  -- route to the front row. nil here is "has not raced a round", which is a
-  -- different thing from having raced and scored zero -- and the driver on zero
-  -- still sorts ahead of the one who was never there.
+  -- Championship order. A driver with NO cup entry goes to the back in both, or
+  -- scoring nothing would be a route to pole; zero points still beats absent.
   if race.gridMode == 'points' or race.gridMode == 'pointsrev' then
     local rev = race.gridMode == 'pointsrev'
     local pts = {}
@@ -3778,19 +2389,8 @@ local function orderForGrid(ordered)
     end)
     return ordered
   end
-  -- Reverse grids invert ONE of the two rules below, and which one is the whole
-  -- design of the mode.
-  --
-  -- Inverted: the times. Slowest qualifier on pole, fastest at the back, which
-  -- is the format -- the quick drivers have to come through the field.
-  --
-  -- NOT inverted: where a driver with no time at all goes. They stay at the
-  -- back, behind everyone who set one, exactly as they do in a normal grid. A
-  -- literal reversal would put them on pole, and then the fastest way to start
-  -- first is to sit in the pits and set nothing -- a reverse grid is meant to
-  -- reward the slow, not the absent. It also means the fastest qualifier is last
-  -- of the drivers who ran, rather than last on the road, which is the honest
-  -- reading of "fastest starts last".
+  -- Reverse inverts the TIMES only. No time still goes to the back, or sitting
+  -- in the pits would be the fastest way to pole.
   local reverse = race.gridMode == 'reverse'
   local function byQuali(a, b)
     local ta, tb = a.qualiBest, b.qualiBest
@@ -3804,21 +2404,9 @@ local function orderForGrid(ordered)
     end
     return a.id < b.id
   end
-  -- THE FEATURE GRID, BUILT FROM THE HEATS. The transfer order, which in every
-  -- form of heat racing means: the heat winners on the front row, then all the
-  -- seconds, then all the thirds, with heat number breaking the tie inside each
-  -- row. So a four-heat night lines up 1st-of-heat-1, 1st-of-heat-2,
-  -- 1st-of-heat-3, 1st-of-heat-4, 2nd-of-heat-1... which is what makes a heat
-  -- win worth having and keeps one strong heat from filling the whole front.
-  --
-  -- Drivers who did NOT transfer still race, and they line up behind everyone
-  -- who did, in their own heat order. Excluding them outright is the other
-  -- reading of a transfer and it is the wrong default for a league night: it
-  -- sends half the server to the spectator seats for the main event. An admin
-  -- who wants a strict transfer has Sit Out for exactly that.
-  --
-  -- A driver with no heat at all -- joined after the draw, or the draw was never
-  -- made -- falls in behind on qualifying time, which is what byQuali is for.
+  -- THE FEATURE GRID FROM THE HEATS, in transfer order: all heat winners (by
+  -- heat number), then all seconds, and so on. Non-transferring drivers still
+  -- race, behind (Sit Out makes it strict); no heat at all falls back to quali.
   if race.gridMode == 'heats' then
     table.sort(ordered, function (a, b)
       local ta, tb = a.transferred == true, b.transferred == true
@@ -3850,25 +2438,13 @@ local function orderForGrid(ordered)
   return ordered
 end
 
--- Form the grid for a session. THE one implementation, filling the forward
--- declaration made up beside finishSession.
---
--- Both entry points come through here -- Generate Grid for a race, Start
--- Qualifying for a qualifying session -- because there used to be two routes to
--- the grid and only one of them worked. With every driver opted in individually
--- the field came out empty and no car was ever teleported, while "Everyone
--- races" put the same five drivers on the grid without complaint; the
--- difference was never in the placement code, it was in what survived the
--- online purge below.
---
--- Returns true when a grid was actually formed.
+-- Form the grid for a session: THE one path, for Generate Grid and Start
+-- Qualifying alike. Returns true when a grid was formed.
 formGrid = function (kind, byName)
-  -- Forming it again over a grid already called keeps whoever pressed Ready:
-  -- they go straight onto their new slot instead of being asked twice.
+  -- Re-forming a called grid keeps whoever already pressed Ready.
   local reform = race.phase == 'grid'
   race.sessionKind = (kind == 'quali') and 'quali' or 'race'
   race.time = 0.0
-  -- The hold goes with the clock it was measured against.
   race.endsAt, race.endReason = nil, nil
   race.finalLap     = false
   race.finalLapLeft = 0
@@ -3878,26 +2454,14 @@ formGrid = function (kind, byName)
   wipe(lapFirsts)
   race.bestLapTime, race.bestLapPid = nil, nil
 
-  -- Purge ghost records first: drivers kept after disconnecting (DNF/finished,
-  -- so the previous results file could list them) must not be re-gridded - a
-  -- ghost would be flipped to running at GO, never report a lap, and block the
-  -- "all drivers finished" auto-finish forever.
-  --
-  -- onlinePlayers() is what makes this safe. The purge compares the key a record
-  -- is stored under against the keys the server reports as connected, and if
-  -- those two do not compare equal EVERY record is purged -- taking every
-  -- `joined` flag with it, one line before the entry list is read. That reads
-  -- as "nobody has joined" no matter how many drivers pressed the button, and
-  -- it is invisible in "everyone races" mode because isEntrant never looks at
-  -- the flag there.
+  -- Purge records no longer connected (kept for the last results file), or one
+  -- would be gridded, never report a lap, and block the auto-finish. Through
+  -- onlinePlayers(): mismatched keys once purged a whole grid.
   local online = onlinePlayers()
   for id in pairs(players) do
     if online[id] == nil then players[id] = nil end
   end
-  -- Make sure every connected player has a record so the entry list is complete.
-  -- ensurePlayer restores the display name and the entry decision from the
-  -- identity registry, so a driver who opted in before the last session wipe is
-  -- still an entrant here.
+  -- Every connected player gets a record, identity restored by ensurePlayer.
   for id in pairs(online) do ensurePlayer(id) end
 
   local ordered, skipped = {}, {}
@@ -3905,34 +2469,26 @@ formGrid = function (kind, byName)
     if isEntrant(rec) then
       ordered[#ordered + 1] = rec
     else
-      -- Not entered: explicitly off the grid, and holding no stale slot.
+      -- Not entered: off the grid, no stale slot...
       skipped[#skipped + 1] = rec.name
       rec.gridPos = nil
       rec.status  = 'waiting'
-      -- AND A GHOST, BOTH WAYS. finishedRoster names every 'waiting' driver, so
-      -- the field cannot hit them; this is the other direction, and it is the
-      -- one a driver waiting out a heat notices -- they keep their car, their
-      -- controls and the run of the map, and drive through the race rather than
-      -- into it. Set here rather than only in Sit Out because a heat draw puts
-      -- drivers in this state without anybody pressing anything.
+      -- ...and a ghost both ways (finishedRoster covers the other way). A heat
+      -- draw puts drivers here without anybody pressing anything.
       rec.bystander = true
       assignGridSlot(rec.id, nil)
     end
   end
 
   if #ordered == 0 then
-    -- Never a bare "nobody joined". An empty field with players connected is
-    -- the exact shape the opt-in bug took, and the one thing that would have
-    -- identified it is a line saying who was considered and why they were not
-    -- entered.
+    -- Never a bare "nobody joined": log who was considered and why.
     local connected = 0
     for _ in pairs(online) do connected = connected + 1 end
     print(string.format(
       '[RaceManager] Grid not formed: no entrants (%d connected, %d record(s): %s)',
       connected, #skipped,
       #skipped > 0 and table.concat(skipped, ', ') or 'none'))
-    -- Everyone races by default, so an empty field means one of exactly two
-    -- things now: nobody is here, or everybody here has pressed Spectate.
+    -- Empty means nobody is here, or everybody pressed Spectate.
     MP.SendChatMessage(-1, connected > 0
       and string.format('[RaceManager] Everyone on the server is spectating '
         .. '(%d connected). Press Race in the Race Manager panel to take part.', connected)
@@ -3941,11 +2497,8 @@ formGrid = function (kind, byName)
   end
 
   orderForGrid(ordered)
-  -- Locks come off BEFORE the slots go out. A driver still serving a spectator
-  -- penalty from the last session has no car at all, and a start position sent
-  -- to a client with nothing to place is a slot silently dropped on the floor.
-  -- The client coalesces the two: it puts its car back and stands it on the
-  -- slot as one ghosted, staggered operation.
+  -- Locks come off BEFORE the slots go out (a client with no car would drop
+  -- the slot); the client coalesces the two into one ghosted operation.
   releaseSpectators('race')
   race.gridSize = #ordered
   for gridPos, rec in ipairs(ordered) do
@@ -3956,7 +2509,7 @@ formGrid = function (kind, byName)
     rec.currentLap = 0
     rec.lapsLed    = 0
     rec.finishTime = nil
-    -- New session: reset allowance and joker credit start over for everyone.
+    -- A new session: allowances and joker credit start over.
     rec.resets     = 0
     rec.resetsBlocked = 0
     rec.jokerTaken = 0
@@ -3964,63 +2517,43 @@ formGrid = function (kind, byName)
     rec.outReason  = nil
     rec.dnfPos     = nil
     rec.heldPos    = nil
-    -- THE RACE CLOCK GOES BACK TO ZERO HERE, so anything holding a stamp from
-    -- the old one has to go with it. holdCorrectedAt is the one that bites: the
-    -- grid-hold rate limiter asks `race.time - holdCorrectedAt`, and a stamp
-    -- from the last race makes that NEGATIVE, which reads as "corrected a moment
-    -- ago" and suppresses corrections for the first minute of the new race --
-    -- exactly when the field is standing on the grid and the hold is the only
-    -- thing keeping it there. Only ever seen by an admin running races back to
-    -- back, because Reset Session drops the records entirely.
+    -- The clock goes back to zero, so every stamp off the old one goes too: a
+    -- stale holdCorrectedAt reads as "just corrected" and suppressed the grid
+    -- hold for a minute; old splits would read minutes behind.
     rec.holdCorrectedAt = nil
     rec.holdCorrections = 0
-    -- ...and the splits, for the same reason: they are stamps off a clock that
-    -- is about to go back to zero, so keeping them would have the new session's
-    -- first checkpoint reading as several minutes behind the old one's.
     rec.splits   = nil
     rec.splitLap = nil
     rec.splitCp  = nil
     rec.gap, rec.intv = nil, nil
-    -- Counters the record describes as "this session", so they have to mean it.
+    -- "This session" counters.
     rec.pitStops   = 0
     rec.ghosts     = 0
-    -- A qualifying grid also clears the times it is about to replace.
+    -- A qualifying grid clears the times it replaces.
     if isQualiSession() then
       rec.qualiBest = nil
       rec.qualiLaps = 0
     end
-    -- Everyone stood on the grid owes the out lap, when the session or the track
-    -- says one is owed. Set here as well as at GO so the timing screen can say so
-    -- while the field is still being held, rather than only once the lights have
-    -- gone out.
+    -- Set here as well as at GO, so the board says so during the hold.
     rec.outLap = outLapOwed()
-    -- Gridded: no longer a bystander. A grid is where entry is decided, so this
-    -- is exactly where a mid-session arrival stops being one.
+    -- Gridded: no longer a bystander.
     rec.bystander = nil
     progress.clear(rec)
     if race.readyCheck and not wasReady then
-      -- Called, not placed: the slot is theirs and the car goes onto it when
-      -- they press Ready. The client tells them so when its status turns.
+      -- Called: placed when they press Ready.
       race.callToGrid(rec, gridPos)
     else
-      -- Put the car on its start position and hold it there until GO. The order
-      -- and the field size travel with the slot so the client can stagger its
-      -- placement instead of every car being teleported in the same instant.
+      -- Placed and held until GO, staggered by order.
       assignGridSlot(rec.id, gridPos, gridPos, #ordered)
     end
   end
 
   race.phase = 'grid'
-  -- Every driver about to be gridded gets the track, whether or not they were
-  -- here when it was loaded. A grid is the last moment this can be put right
-  -- before it matters, and re-sending to a client that already has it is a
-  -- no-op: applying a layout is idempotent.
+  -- Every client gets the track again (idempotent), late joiners included.
   race.sendLayoutTo(-1)
-  -- A new grid is a new session. Any ghost still standing from the last one is
-  -- cleared here rather than carried onto the grid, where the cars are about to
-  -- be teleported into position under the placement ghost anyway.
+  -- No ghost carries onto a new grid.
   clearAllGhosts('grid formed')
-  -- Practice ends here too. Each client stops its own off the phase change.
+  -- Practice ends here too (each client stops its own off the phase change).
   for _, rec in pairs(players) do rec.practicing, rec.practiceGhost = nil, nil end
   broadcastState()
   if race.startSlots > 0 and #ordered > race.startSlots then
@@ -4040,29 +2573,10 @@ formGrid = function (kind, byName)
   return true
 end
 
--- Generate Grid: form the race grid. Drivers who join afterwards go to the back
--- on the next Generate Grid. Also usable from waiting/finished: with no quali
--- times everyone ties and the grid falls back to join order.
--- GENERATE GRID ALWAYS MEANS "FORM THE RACE GRID". It never starts qualifying,
--- and it is never a no-op.
---
--- It used to return here the moment sessionUnderWay() was true, which is every
--- qualifying session -- silently, with no chat line and no log. From the host's
--- seat that is indistinguishable from the button being broken: they are still in
--- qualifying, pressing the control that is supposed to take them to the race,
--- and nothing happens. "Generate Grid forces qualifying" is what that looks like
--- from outside, and the way out (End Session first) is not written anywhere.
---
--- So a running QUALIFYING session is ended and superseded. The times survive --
--- finishSession is the same path End Session uses, and the grid formed
--- immediately after reads them -- so the common race-night order (run quali,
--- press Generate Grid) now just works.
---
--- A running RACE is still refused, and that is a deliberate exception to
--- "no exceptions": superseding a live race would throw away a result twenty
--- drivers are in the middle of earning, on one misclick, with no undo. It is
--- refused OUT LOUD instead -- the silence is the actual bug here, not the
--- refusal.
+-- Generate Grid ALWAYS forms the race grid. A running QUALIFYING session is
+-- ended (times scored and kept) and superseded, so "run quali, press Generate
+-- Grid" works. A running RACE is refused, OUT LOUD: superseding it would throw
+-- away a live result on one misclick.
 function RM_onGenerateGrid(pid)
   if not requireAuth(pid) then return end
   local who = MP.GetPlayerName(pid) or pid
@@ -4073,7 +2587,7 @@ function RM_onGenerateGrid(pid)
     return
   end
   if race.phase == 'qualifying' then
-    -- End it the way End Session does, so the times are scored and kept.
+    -- Ended as End Session does, so the times are kept.
     MP.CancelEventTimer('RM_CountdownTick')
     broadcastCountdown(-1)
     finishSession('qualifying closed by ' .. who .. ' to form the race grid')
@@ -4082,12 +2596,8 @@ function RM_onGenerateGrid(pid)
   formGrid('race', who)
 end
 
--- READY, or not ready any more. A driver's own call, so no admin needed; an
--- admin may make it for somebody else by naming them (`pid`), for the driver
--- whose panel is closed or broken. Only while the grid is being called.
---
--- Not ready takes a placed car back off the slot and ghosts it, so the driver
--- can go and fix whatever they found without driving into the held field.
+-- Ready, or not: the driver's own call; an admin may make it for someone (`pid`).
+-- Not ready takes the car off the slot and ghosts it.
 function RM_onSetReady(pid, rawData)
   local data = {}
   if type(rawData) == 'string' and rawData ~= '' then
@@ -4118,8 +2628,7 @@ function RM_onSetReady(pid, rawData)
   broadcastState()
 end
 
--- Everyone called goes onto their slot now: the old way of forming a grid, for
--- a night when the admin just wants to go. Staggered, as a whole grid is.
+-- Ready All: everyone called is placed now, staggered.
 function RM_onReadyAll(pid)
   if not requireAuth(pid) then return end
   if race.phase ~= 'grid' then return end
@@ -4134,8 +2643,7 @@ function RM_onReadyAll(pid)
   broadcastState()
 end
 
--- The switch between calling the grid and placing it. Takes effect on the next
--- grid; the one already called is finished with Ready All.
+-- Calling the grid vs placing it, from the next grid on.
 function RM_onSetReadyCheck(pid, rawData)
   local data = adminPayload(pid, rawData, true)
   if not data or type(data.on) ~= 'boolean' then return end
@@ -4145,7 +2653,7 @@ function RM_onSetReadyCheck(pid, rawData)
   broadcastState()
 end
 
--- How the grid gets filled. Locked once the countdown/race starts.
+-- How the grid is filled; locked once a session is under way.
 function RM_onSetGridMode(pid, rawData)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
@@ -4155,10 +2663,7 @@ function RM_onSetGridMode(pid, rawData)
      and mode ~= 'points' and mode ~= 'pointsrev' then
     return
   end
-  -- HEATS ORDER IS ONLY AN ANSWER WHEN HEATS HAVE BEEN RUN. Accepting it with no
-  -- program behind it would build a feature grid where nobody has a heat
-  -- position, every driver falls through to the qualifying tie-break, and the
-  -- mode reads as doing nothing at all.
+  -- Heats order needs a heat program, or it silently falls back to quali.
   if mode == 'heats' and race.heatCount == 0 then
     MP.SendChatMessage(pid, '[RaceManager] Heats order needs a heat program: set the '
       .. 'number of heats and draw the field first.')
@@ -4170,10 +2675,7 @@ function RM_onSetGridMode(pid, rawData)
   print('[RaceManager] Grid mode set to "' .. mode .. '" by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- Custom grid: pin one driver to one slot. Whoever already held that slot is
--- unpinned, so two drivers can never be pinned to the same place. Takes effect
--- on the next Generate Grid; when the grid is already formed it re-forms the
--- order immediately so the admin sees the result.
+-- Custom grid: pin one driver to one slot, unpinning whoever held it.
 function RM_onSetDriverGrid(pid, rawData)
   local data = adminPayload(pid, rawData, true)
   if not data then return end
@@ -4193,14 +2695,9 @@ function RM_onSetDriverGrid(pid, rawData)
     rec.name, slot, MP.GetPlayerName(pid) or pid))
 end
 
--- A client reported the start positions of the loaded track layout: how many
--- there are (so the server can warn when the field is bigger than the grid) and
--- where they are (so it can police the hold).
---
--- The coordinates are only accepted while nothing is under way. A grid the
--- server is actively judging cars against must not be redefinable by a client
--- mid-countdown -- that would be a way to move everybody else's idea of where
--- the slots are, which is precisely the check being defeated.
+-- A client reports the loaded track's start positions (count, for the field-size
+-- warning; coordinates, to police the hold). Coordinates only while nothing is
+-- under way: a client must not move the slots the hold is judged against.
 function RM_onStartPositionCount(pid, rawData)
   local n = decodeNumber(rawData, 'count')
   if not n then return end
@@ -4213,42 +2710,13 @@ function RM_onStartPositionCount(pid, rawData)
     if ok and type(data) == 'table' then
       if type(data.positions) == 'table' then
         race.startPositions = sanitizeCheckpoints(data.positions) or {}
-        -- Whether the grid sits off the line rides along with the same report, so
-        -- a track built in the editor and raced without ever being saved as a
-        -- named layout still gives its out lap away. A saved layout sets it again
-        -- as it loads; this is the unsaved path.
-        --
-        -- The branch GATES deliberately do not come this way. The server never
-        -- tests a crossing, and a branch gate clears the same checkpoint the main
-        -- gate does, so there is nothing about one it could act on. Sending a gate
-        -- list it would have to validate against a route length it does not hold
-        -- would be validation theatre.
-        -- ...but ONLY when no layout came through this server.
-        --
-        -- This report is sent by pushRouteState, which fires constantly and from
-        -- EVERY client, not just an admin -- so one player with start positions
-        -- sitting in their local editor could flip the whole server's grid rule
-        -- and hand a race an out lap nobody asked for, which is exactly what was
-        -- happening: the race ran fine, and told everybody about a lap that was
-        -- not timed. A loaded layout is authored, saved and shared, and it is
-        -- the authority on its own grid.
+        -- gridOffLine and the joker gate count ride along, but ONLY when no
+        -- layout came through this server: every client sends this, and a
+        -- loaded layout is the authority on its own grid and joker route.
+        -- (A spectator's empty editor once zeroed the joker count.)
         if race.layout == nil then
           race.gridOffLine = data.gridOffLine == true
         end
-        -- How many joker gates this client has placed, so the joker lap can be
-        -- refused on a track that has none even when it was never saved as a
-        -- named layout (see RM_onSetJokerEnabled).
-        --
-        -- SAME GUARD AS gridOffLine ABOVE, and it was missing here. This report
-        -- fires constantly from EVERY client, so right after a layout loads a
-        -- client that has not applied it yet -- or a spectator with an empty
-        -- editor -- reported zero and wiped the count the layout had just set.
-        -- The joker toggle stayed locked on a track with joker gates, and
-        -- loading the layout a SECOND time fixed it, because by then everyone
-        -- was reporting the route they had. Exactly what was described.
-        --
-        -- A loaded layout is authored, saved and shared. It is the authority on
-        -- its own joker route, and no client's editor overrules it.
         local jg = race.layout == nil and tonumber(data.jokerGates) or nil
         if jg then
           race.jokerGates = math.max(math.floor(jg), 0)
@@ -4257,21 +2725,14 @@ function RM_onStartPositionCount(pid, rawData)
             MP.SendChatMessage(-1, '[RaceManager] Joker lap switched off: '
               .. 'the Joker Route was cleared.')
             print('[RaceManager] Joker lap auto-disabled: the joker route was cleared')
-            -- Broadcast HERE rather than leaving it to the tail of this handler,
-            -- which returns early when the slot count has not changed -- and
-            -- clearing a joker route usually does not touch the grid at all. The
-            -- toggle has to flip on the admin's panel as it happens, not next
-            -- time something unrelated moves.
+            -- Broadcast here: the tail below returns early when the slot count
+            -- did not change.
             broadcastState()
           end
         end
       elseif n ~= #race.startPositions then
-        -- A count that no longer matches the coordinates we hold, from a report
-        -- that carried none -- an older client, or a build predating the
-        -- coordinate report. The grid has changed and what we have is stale, so
-        -- it is dropped. Policing the hold against a grid whose slots have moved
-        -- would drag cars to the wrong places, which is worse than not policing
-        -- at all; the client-side guard still holds them.
+        -- A count that no longer matches the coordinates we hold, with none
+        -- sent (an older client): drop them rather than police a moved grid.
         race.startPositions = {}
       end
     end
@@ -4282,13 +2743,8 @@ function RM_onStartPositionCount(pid, rawData)
   broadcastState()
 end
 
--- A driver pitted. The stop itself is entirely the client's -- only it can
--- freeze and repair a car -- so this is the record, for the same reason ghosts
--- and resets are recorded: an admin reading the results should be able to see
--- who stopped, when, and how often, without having been watching.
---
--- Nothing here penalises or rewards a stop. A pit stall is a repair, not a
--- regulation.
+-- A driver pitted. The stop is the client's; this is the record, for the
+-- results. A stall is a repair, not a regulation.
 function RM_onPitStop(pid, rawData)
   pid = pidKey(pid)
   if not pid then return end
@@ -4307,17 +2763,13 @@ function RM_onPitStop(pid, rawData)
   broadcastState()
 end
 
--- Admin toggled the loaded track between a circuit and a point-to-point sprint.
--- Locked once a session is under way, like every other regulation: the shape of
--- the race must not change under the drivers running it.
+-- Circuit or point-to-point sprint; locked once a session is under way.
 function RM_onSetPointToPoint(pid, rawData)
   local data = adminPayload(pid, rawData, true)
   if not data then return end
   race.pointToPoint = data.enabled == true or data.enabled == 1
-  -- SWITCHING TO A SPRINT STAGE TURNS THE PACE LAP OFF, and says so. The rule is
-  -- inert on a point-to-point run either way (paceLapArmed refuses it), so the
-  -- damage is not to the race -- it is a switch left reading ENABLED on a panel,
-  -- above a Start Race button that has quietly gone back to Start Countdown.
+  -- A sprint turns the pace lap off, and says so (it would otherwise read
+  -- ENABLED while doing nothing).
   if race.pointToPoint and race.paceLap then
     race.paceLap = false
     MP.SendChatMessage(-1, '[RaceManager] Pace lap switched off: a sprint stage '
@@ -4332,29 +2784,16 @@ end
 -- ---------------------------------------------------------------------------
 -- Grid hold enforcement
 -- ---------------------------------------------------------------------------
--- The server owns the hold. It cannot APPLY one -- it has no physics -- so the
--- clients freeze their own cars, and this is the half that makes that
--- trustworthy: every held car reports where it is, and a car that is not where
--- it was put gets pulled back and the correction gets logged.
---
--- This exists because the client-side freeze turned out to have four ways of
--- being silently lost (a late teleport echo, a driver reset on the grid, a
--- vehicle reloaded on the grid, and no re-assert of any kind afterwards), and
--- nothing anywhere noticed. A local guard fixes each of those; this makes the
--- guarantee hold even when the local guard does not run at all.
---
--- Where a slot IS, for a driver who has been assigned one. nil when the track's
--- grid was never reported -- an admin who built start positions live and never
--- saved a layout, on a build predating the coordinate report -- in which case
--- the server keeps out of it and the client-side guard is what enforces the
--- hold. Better to police nothing than to police against a grid we do not have.
+-- The server owns the hold but cannot apply one: clients freeze their own cars,
+-- and every held car reports where it is so one off its slot is pulled back,
+-- even when the client guard does not run.
+-- Where a slot IS, or nil when the grid's coordinates were never reported (the
+-- client guard then enforces alone: police nothing rather than the wrong grid).
 local function slotPosition(rec)
   if not rec or not rec.gridPos then return nil end
   local list = race.startPositions
   if type(list) ~= 'table' then return nil end
-  -- Only judge against a grid that matches the one the field was gridded on. If
-  -- the slot count and the coordinate count disagree, what we hold describes a
-  -- different track and slot N is not where we think it is.
+  -- Only against the grid the field was gridded on (counts must match).
   if #list ~= race.startSlots then return nil end
   return list[rec.gridPos]
 end
@@ -4364,8 +2803,7 @@ local function holdInForce()
   return race.phase == 'grid' or race.phase == 'countdown'
 end
 
--- A held client reported where its car is. If it is off its slot by more than
--- the tolerance, pull it back.
+-- A held client reported its position: pull it back if off the slot.
 function RM_onHoldPos(pid, rawData)
   pid = pidKey(pid)
   if not pid then return end
@@ -4381,12 +2819,8 @@ function RM_onHoldPos(pid, rawData)
   local slot = slotPosition(rec)
   if not slot then return end
 
-  -- HORIZONTAL distance. The slot's stored height is where a car is DROPPED,
-  -- and it then falls onto its suspension -- often most of the tolerance on its
-  -- own. Judged in three dimensions, a car standing perfectly still on its slot
-  -- reads as having moved, and the correction that follows drops it again, and
-  -- it settles again: a loop that pins the car in the air being reset. Creeping
-  -- off the line is a move across the ground, so that is what is measured.
+  -- HORIZONTAL distance: the slot height is the drop point, and a 3D test pinned
+  -- a settling car in the air being reset.
   local dx, dy = x - slot.x, y - slot.y
   local drift = math.sqrt(dx * dx + dy * dy)
   if drift <= CFG.holdTolerance then
@@ -4394,9 +2828,7 @@ function RM_onHoldPos(pid, rawData)
     return
   end
 
-  -- Corrections are rate-limited per driver on the server clock as well as on
-  -- the client: a car being physically pushed by someone else could otherwise
-  -- generate a correction on every report for as long as the shoving lasts.
+  -- Rate-limited per driver on the server clock too (a car being shoved).
   local now = race.time
   if rec.holdCorrectedAt and (now - rec.holdCorrectedAt) < CFG.holdCorrectEvery then
     return
@@ -4414,18 +2846,9 @@ function RM_onHoldPos(pid, rawData)
     rec.name, drift, rec.gridPos, race.phase, CFG.holdTolerance, rec.holdCorrections))
 end
 
--- Admin sets or clears a driver's display alias. Admin-only on purpose: with
--- guest-only identities there is nothing to enforce a ban against, so a
--- self-service name could be re-set the moment it was cleared.
---
--- The target is addressed by BeamMP player id -- the same key race logic uses --
--- and only rec.alias is written. No timing, checkpoint or scoring field is
--- touched, and the alias is never read back as a key.
---
--- EVERY exit path reports back. An admin pressing Set and getting nothing at
--- all -- no name, no reason -- cannot tell a rejected name from a plugin that
--- never received the event, which is exactly the dead end this handler used to
--- leave them in.
+-- Display aliases: admin-only (nothing could stop a self-service name being
+-- reset). Only rec.alias is written, never used as a key, and EVERY exit
+-- path reports back.
 local function aliasResult(pid, ok, msg)
   MP.TriggerClientEvent(pid, 'RM_AliasResult', Util.JsonEncode({
     success = ok and true or false,
@@ -4434,12 +2857,8 @@ local function aliasResult(pid, ok, msg)
   print('[RaceManager] Alias: ' .. msg)
 end
 
--- Apply a display name to one driver, or clear it when `raw` is blank.
---
--- THE single place a display name changes, and factored out of the event
--- handler for that reason: the cup roster has to be told whenever one does, or
--- a name an admin set would not be the name that survives a restart. Returns
--- `ok, message` -- the caller decides who hears about it.
+-- Apply or clear (blank) a display name: THE single place, so the cup roster
+-- is always told. Returns ok, message.
 local function applyAlias(rec, raw)
   raw = tostring(raw or '')
   if raw:gsub('%s', '') == '' then
@@ -4449,9 +2868,7 @@ local function applyAlias(rec, raw)
     local was = rec.alias
     rec.alias = nil
     rememberIdentity(rec)
-    -- The roster entry is NOT deleted here. Clearing a name says "stop showing
-    -- this on the leaderboard", not "throw away the cup points earned under
-    -- it"; the binding is dropped and the entry waits to be bound again.
+    -- The roster entry is not deleted: its points wait to be bound again.
     if rosterUnbind then rosterUnbind(rec.id) end
     return true, 'Display name cleared for ' .. rec.name .. ' (was "' .. was .. '").'
   end
@@ -4463,22 +2880,16 @@ local function applyAlias(rec, raw)
   end
 
   rec.alias = clean
-  -- Into the registry, not just onto the record: the record is rebuilt by the
-  -- next Start Qualifying and the name has to outlive that.
+  -- Into the registry: the record is rebuilt next session.
   rememberIdentity(rec)
-  -- And into the roster, which outlives the server process. This is also what
-  -- reattaches a reconnected driver to the cup points they already have: the
-  -- roster matches on the name, so typing it again binds them back to the same
-  -- entry rather than starting them a new one.
+  -- And the roster, which outlives the process and rebinds a returning driver's
+  -- points by name.
   if rosterRemember then rosterRemember(rec) end
   return true, 'Display name "' .. clean .. '" set for ' .. rec.name .. '.'
 end
 
 function RM_onSetAlias(pid, rawData)
-  -- Not "return quietly": a client can believe it is an admin while the server
-  -- disagrees (a restart empties authenticatedPlayers while the client bridge
-  -- still holds its own flag), and silence there looks exactly like a broken
-  -- button. Say so, and the client drops its stale admin state.
+  -- Not silently: the client may believe it is admin after a server restart.
   if not isAuthenticated(pid) then
     print('[RaceManager] Ignored alias command from unauthenticated player ' .. tostring(pid))
     MP.TriggerClientEvent(pid, 'RM_LoginResult', Util.JsonEncode({ success = false }))
@@ -4497,29 +2908,17 @@ function RM_onSetAlias(pid, rawData)
     return
   end
 
-  -- A blank alias clears it and falls back to the real guest name.
   local ok, msg = applyAlias(rec, decodeString(rawData, 'alias') or '')
   if ok then
     broadcastState()
-    -- AND THE ROSTER VIEW, because applyAlias moved it: a name creates or
-    -- rebinds an entry, and clearing one unbinds it. Only the cup broadcast
-    -- carries the roster, so without this the panel went on showing a driver
-    -- assigned to a name they no longer had, and the Cup's own driver list said
-    -- the same. Reported as "the leaderboard does not show the set name": the
-    -- board was right and the panel beside it was stale.
+    -- And the roster view, which only the cup broadcast carries.
     if broadcastCupState then broadcastCupState() end
   end
   aliasResult(pid, ok, msg)
 end
 
--- Host sets the race distance. Locked once the countdown/race is under way.
-
--- A race runs to a LAP COUNT or to a CLOCK, never both, and this is the one
--- handler that sets either. Sending 0 seconds is what puts a race back on laps;
--- the panel's mode toggle does exactly that, so the two can never both be armed.
---
--- Refused while a session is under way (adminPayload's `idle`): changing the
--- distance of a race that is being driven is not a setting, it is a result.
+-- Race length: laps, a clock, or both (endurance); 0 seconds puts a race on
+-- laps. Refused mid-session: that would be changing a result.
 function RM_onSetRaceLimits(pid, rawData)
   local data = adminPayload(pid, rawData, true)
   if not data then return end
@@ -4529,10 +2928,7 @@ function RM_onSetRaceLimits(pid, rawData)
   if mode == 'laps' or mode == 'timed' or mode == 'endurance' then
     race.raceMode = mode
   elseif secs then
-    -- NO MODE ON THE PAYLOAD: a client from before endurance existed, which
-    -- said everything by the numbers alone. Read it the way that client meant
-    -- it, so an older panel goes on setting the two lengths it knows about
-    -- rather than silently turning every timed race back into a lap race.
+    -- No mode: a pre-endurance client, read by its numbers.
     race.raceMode = (tonumber(secs) or 0) > 0 and 'timed' or 'laps'
   end
   if laps then
@@ -4545,15 +2941,11 @@ function RM_onSetRaceLimits(pid, rawData)
     if secs < 0 then secs = 0 elseif secs > CFG.maxRaceTime then secs = CFG.maxRaceTime end
     race.raceTimeLimit = secs
   end
-  -- THE INVARIANT, enforced here rather than trusted to the panel. A lap race
-  -- with a clock still set is a race that ends when neither the admin nor the
-  -- drivers expect it to, and the mode is the only thing that says which the
-  -- admin meant.
+  -- The invariant, enforced here: a lap race carries no clock.
   if race.raceMode == 'laps' then
     race.raceTimeLimit = 0
   elseif race.raceTimeLimit <= 0 then
-    -- Asked for a clock and gave none. Nothing to run to, so it is a lap race
-    -- whatever the button said.
+    -- A clock mode with no clock is a lap race.
     race.raceMode = 'laps'
   end
   broadcastState()
@@ -4576,12 +2968,8 @@ end
 -- ---------------------------------------------------------------------------
 -- Module 1: vehicle reset ruleset
 -- ---------------------------------------------------------------------------
--- Host sets how many vehicle resets/repairs each driver gets per session.
---   -1 (or any negative value)  unlimited (default)
---    0                          no resets at all - the first one ends your race
---    N                          N resets, the N+1st ends your race
--- Locked once the countdown/race is under way so the rule can't change under a
--- driver who has already spent their allowance.
+-- Resets per driver per session: negative unlimited, 0 none, N allowed.
+-- Locked once under way.
 function RM_onSetMaxResets(pid, rawData)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
@@ -4595,10 +2983,8 @@ function RM_onSetMaxResets(pid, rawData)
     .. (n < 0 and 'unlimited' or tostring(n)) .. ' by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- What a LEGAL reset does while racing: repair in place (the default), or
--- respawn the driver at the last checkpoint they crossed. Enforced client-side
--- (only the client can move a car); the server holds the switch. Locked once
--- the countdown/race is under way, like every other regulation.
+-- What a legal reset does: repair in place, or respawn at the last checkpoint
+-- (client-side; the server holds the switch).
 function RM_onSetResetMode(pid, rawData)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
@@ -4609,19 +2995,14 @@ function RM_onSetResetMode(pid, rawData)
   print('[RaceManager] Reset mode set to "' .. mode .. '" by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- Client consumed one of its allowed resets. The client counts locally (it is
--- the only side that sees the reset happen); the server keeps the tally that
--- the live table and the results file report.
+-- A client spent a reset; the server keeps the tally for the table and results.
 function RM_onVehicleReset(pid)
   local rec = players[pid]
   if not rec then return end
   if not sessionUnderWay() then return end
-  -- Only drivers still in the session spend allowance; a DNF'd/finished driver's
-  -- resets are meaningless and must not keep growing in the results file.
+  -- Only drivers still in the session spend allowance.
   if not onTrack(rec) and rec.status ~= 'gridded' then return end
-  -- The tally can never pass the limit, no matter what a client reports: an
-  -- over-allowance report is recorded as a blocked attempt instead, so the
-  -- counter never renders as "3/2".
+  -- Never past the limit: an over-allowance report counts as blocked.
   if race.maxResets >= 0 and (rec.resets or 0) >= race.maxResets then
     RM_onResetDenied(pid)
     return
@@ -4632,10 +3013,7 @@ function RM_onVehicleReset(pid)
   broadcastState()
 end
 
--- Client pressed a reset it was not entitled to. The client BLOCKS the reset -
--- it puts the car straight back where it was - so this is not a penalty and
--- never ends anyone's race: the attempt is only counted, so the live table and
--- the results file show who kept reaching for a reset they no longer had.
+-- A refused reset: the client blocked it; this only counts the attempt.
 function RM_onResetDenied(pid)
   local rec = players[pid]
   if not rec then return end
@@ -4651,10 +3029,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Reset ghosting
 -- ---------------------------------------------------------------------------
--- A client reset and ghosted itself. The duration it asks for is CLAMPED here,
--- not trusted: the client computes the same number from the same broadcast
--- rules, but it is the client, and a modified one asking for a five-minute ghost
--- would otherwise get one.
+-- A client ghosted itself after a reset. The duration is CLAMPED, never trusted.
 function RM_onGhostStart(pid, rawData)
   pid = pidKey(pid)
   if not pid then return end
@@ -4679,11 +3054,8 @@ function RM_onGhostStart(pid, rawData)
   ghosts[pid] = { startedAt = race.time, duration = requested }
   broadcastGhost(pid, ghosts[pid])
   rec.ghosts = (rec.ghosts or 0) + 1
-  -- The audit line, and the reason "reset to phase through the pack" is
-  -- answerable from a log rather than from an argument in the chat. Where the
-  -- car was comes from the live telemetry the client already reports, so this
-  -- costs no extra traffic: running order, lap, and how far it was from its next
-  -- checkpoint at the moment it went intangible.
+  -- The audit line: position, lap and distance at the moment it went intangible,
+  -- from telemetry already reported.
   print(string.format(
     '[RaceManager] %s GHOSTED %.1fs at race time %.1fs: P%s, lap %s, %s to next gate%s (ghost #%d this session)',
     rec.name, requested, race.time,
@@ -4693,20 +3065,15 @@ function RM_onGhostStart(pid, rawData)
   broadcastState()
 end
 
--- The owning client reports the space around its car clear and its collision
--- restored. Only that client can know this -- it is the one running the
--- occupancy check -- so the server takes it at its word and relays it.
+-- The owning client reports its space clear: only it can know, so it is relayed.
 function RM_onGhostEnd(pid)
   pid = pidKey(pid)
   if not pid then return end
   if clearGhost(pid, 'client reported clear') then broadcastState() end
 end
 
--- The client has been waiting on an occupied space for longer than it thinks is
--- reasonable. A WARNING ONLY: nothing here shortens the ghost or forces it off,
--- because forcing it off is the one thing that welds two cars together. It is
--- logged so an admin watching a driver sit inside another car has something to
--- point at.
+-- A ghost blocked by an occupied space for a long time. A WARNING ONLY: forcing
+-- it off is what welds two cars.
 function RM_onGhostBlocked(pid, rawData)
   pid = pidKey(pid)
   if not pid then return end
@@ -4726,24 +3093,13 @@ end
 -- ---------------------------------------------------------------------------
 -- Module 2: rallycross joker lap
 -- ---------------------------------------------------------------------------
--- Host arms/disarms the joker requirement. The joker route itself is a second
--- checkpoint set built in the client editor and shipped with the track layout;
--- the server only needs to know whether the rule is in force. Locked during a
--- countdown/race so drivers can't be judged against a rule that appeared
--- mid-race.
+-- Arm the joker requirement (the route ships with the layout). Locked mid-race.
 function RM_onSetJokerEnabled(pid, rawData)
   local data = adminPayload(pid, rawData, true)
   if not data then return end
   local want = data.enabled == true or data.enabled == 1
-  -- A JOKER LAP WITH NO JOKER ROUTE DISQUALIFIES THE ENTIRE FIELD.
-  --
-  -- The rule is "complete the joker exactly once, or you are reclassified at the
-  -- flag" (applyJokerRuling). With no gates placed there is nothing to complete,
-  -- so every driver who finishes is disqualified for missing a route that does
-  -- not exist -- and nothing says why until the results file is written.
-  --
-  -- Refused rather than accepted-and-ignored: an admin who armed this meant to
-  -- arm something, and silently having it off would be its own surprise.
+  -- A joker lap with no joker route disqualifies the whole field at the flag:
+  -- refused out loud.
   if want and race.jokerGates == 0 then
     MP.SendChatMessage(pid, '[RaceManager] This track has no Joker Route. '
       .. 'Place joker gates in the editor first: arming the joker lap without '
@@ -4758,17 +3114,8 @@ function RM_onSetJokerEnabled(pid, rawData)
     .. ' by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- Module 5: the pace lap. Arm/disarm the formation start for the next race.
---
--- Idle-locked like every other regulation: an admin may set it on the grid, and
--- it stops moving the moment the field is released. Changing it mid-race would
--- change sessionLapTarget under cars already running to a distance -- a five lap
--- race would silently become four or six laps depending on which way it moved.
---
--- REFUSED ON A SPRINT STAGE, and said out loud rather than accepted and quietly
--- ignored. A point-to-point run is driven once from the first gate to the last;
--- there is no lap to form up on, and paceLapArmed() would go on returning false
--- with the panel showing the switch as on.
+-- The pace lap for the next race. Idle-locked (it changes sessionLapTarget).
+-- Refused out loud on a sprint stage, where there is no lap to form up on.
 function RM_onSetPaceLap(pid, rawData)
   local data = adminPayload(pid, rawData, true)
   if not data then return end
@@ -4787,15 +3134,8 @@ function RM_onSetPaceLap(pid, rawData)
     .. ' by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- THE FREE PASS RULE. Whether the first car a lap down takes its lap back under
--- a caution.
---
--- NOT idle-locked, unlike the pace lap beside it, and the difference is what
--- each one changes. A pace lap changes the DISTANCE (sessionLapTarget adds a
--- crossing), so moving it mid-race would silently make a five lap race four or
--- six. The free pass changes nothing until a yellow is called, and a marshal who
--- decides mid-race that this incident deserves one -- or that it does not -- is
--- making exactly the call this switch is for.
+-- The free pass rule. NOT idle-locked: it changes nothing until a yellow, and a
+-- marshal deciding mid-race is exactly what the switch is for.
 function RM_onSetLuckyDog(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -4805,21 +3145,17 @@ function RM_onSetLuckyDog(pid, rawData)
     .. ' by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- Client completed the joker route. It already enforced "not on lap 1" and
--- "only once" locally; the server records the count (and the lap it happened
--- on) and rules on it when the race ends.
+-- A client completed the joker route (it enforced lap 1 and once); the server
+-- records it and rules at the flag.
 function RM_onJokerLap(pid, rawData)
-  -- Race regulation only: a joker route has no meaning in qualifying.
+  -- Race only: no joker in qualifying.
   if race.phase ~= 'racing' or isQualiSession() then return end
   local rec = players[pidKey(pid) or -1]
   if not rec or rec.status ~= 'racing' then return end
   rec.jokerTaken = (rec.jokerTaken or 0) + 1
   local lap = decodeNumber(rawData, 'lap')
-  -- THE FALLBACK HAS TO AGREE WITH WHAT THE CLIENT SENDS. The client reports the
-  -- RACING lap; rec.currentLap counts crossings, and behind the pace car those
-  -- differ by one. A payload that arrives without a lap in it (an older client)
-  -- would otherwise record the joker a lap later than the driver was told it
-  -- happened, in the same file that prints both.
+  -- The fallback must agree with the client, which reports the RACING lap
+  -- (currentLap counts crossings, one more behind the pace car).
   if rec.jokerLap == nil then
     rec.jokerLap = lap and math.floor(lap)
       or math.max(1, (rec.currentLap or 1) - (paceLapArmed() and 1 or 0))
@@ -4829,16 +3165,9 @@ function RM_onJokerLap(pid, rawData)
   broadcastState()
 end
 
--- Grid audit (Module 4). REPORTS, and deliberately does nothing else: the
--- live check has already taken the car off any non-admin who declared an
--- illegal setup, so anyone still listed here is either an admin (exempt by
--- design) or a case the live check could not act on. Deleting a car in the
--- last seconds before GO would do more damage to the race than starting with
--- one wrong setup in it, and it is the admin's call either way.
---
--- Its own function because there are TWO ways to start a session now, and an
--- audit that ran on only one of them would be an audit that silently stopped
--- happening for every race started behind the pace car.
+-- Grid audit (Module 4): REPORTS ONLY. The live check already removed illegal
+-- cars from non-admins; deleting a car seconds before GO does more harm than
+-- one wrong setup. Shared by both start procedures.
 local function reportGridAudit(pid)
   local bad = garageAudit and garageAudit() or {}
   if #bad == 0 then return end
@@ -4871,35 +3200,20 @@ function RM_onStartCountdown(pid)
   print('[RaceManager] Countdown started by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- GO. THE ONE PLACE THE FIELD IS RELEASED, whichever start procedure got here.
---
--- There are two: the lights (RM_CountdownTick, at the end of the countdown) and
--- the pace car (RM_onStartRace, immediately). Everything below is the same for
--- both -- one release, one clock reset, one wipe of every per-driver counter --
--- and it is shared rather than copied because a second release path that
--- forgot one line of this would be a race with last week's lap counts in it.
---
--- `pacing` is the only thing that differs, and it changes exactly two things
--- here: the flag the field is released under, and whether the green has already
--- fallen. The pace lap itself is an out lap, and outLapOwed() has already been
--- taught that, so every rule about a lap that is driven and not scored applies
--- to it without another branch anywhere.
+-- GO: THE ONE PLACE THE FIELD IS RELEASED, for the lights (RM_CountdownTick) and
+-- the pace car (RM_onStartRace) alike, so no second path forgets a reset.
+-- `pacing` changes only the flag and whether the green has fallen; the pace lap
+-- is an out lap (outLapOwed).
 local function releaseField(pacing)
   race.phase = runningStatus()   -- 'qualifying' or 'racing'
-  -- A pace lap is run under yellow BY DEFINITION: that is what "hold position,
-  -- no overtaking" is. Every other session starts green -- a caution belongs to
-  -- the session it was called in, and carrying one into the next race is the
-  -- kind of state nobody thinks to check.
+  -- A pace lap runs under yellow; every other session starts green.
   race.pacing = pacing == true
   race.flag   = race.pacing and 'yellow' or 'green'
-  -- The latch on CFG.paceArmAt starts closed: the field is standing at the line.
+  -- The paceArmAt latch starts closed: the field is at the line.
   race.paceArmed = false
   race.greenZone = nil
   if race.pacing then race.drawGreenZone() end
-  -- NOTHING CARRIES A CAUTION INTO A NEW SESSION. A yellow belongs to the race
-  -- it was called in, and a frozen order that outlived it would silently decide
-  -- the running order of the next one -- the same class of state the flag reset
-  -- above exists to prevent.
+  -- Nothing carries a caution into a new session.
   race.caution      = false
   race.cautionPending = false
   race.restartPending = false
@@ -4910,12 +3224,8 @@ local function releaseField(pacing)
   race.cautionCount = 0
   thawOrder()
   race.time = 0.0
-  -- The green is now, unless a pace lap is about to be run -- in which case it
-  -- is stamped when the flag actually falls, and until then a timed race's
-  -- clock has not started. 0 either way for a race that never paces, which is
-  -- what makes the subtraction free everywhere else.
+  -- The green is now, or stamped when it falls after a pace lap.
   race.greenAt = 0.0
-  -- The hold goes with the clock it was measured against.
   race.endsAt, race.endReason = nil, nil
   race.qualiTime = 0.0
   race.finalLap     = false
@@ -4943,7 +3253,6 @@ local function releaseField(pacing)
         rec.qualiLaps = 0
       end
       rec.outLap     = outLapOwed()
-      -- GO: the clock is zero and nobody has reached anything yet.
       rec.splits   = nil
       rec.splitLap = nil
       rec.splitCp  = nil
@@ -4951,27 +3260,15 @@ local function releaseField(pacing)
       progress.clear(rec)
     end
   end
-  -- What this session is about to run under, kept for the results file that is
-  -- written long after the rule has moved on (see race.qualiOutLapRun).
+  -- Recorded for the results file, written after the rule has moved on.
   if isQualiSession() then race.qualiOutLapRun = outLapOwed() end
-  -- The same record for the race half of the file. A ten lap race that ran
-  -- eleven crossings should say which one it gave away, or the lap column and
-  -- the setting an admin typed disagree with nothing to explain it.
   if not isQualiSession() then
     race.raceOutLapRun  = outLapOwed()
     race.racePaceLapRun = race.pacing
   end
   broadcastState()
-  -- The out lap is the first thing that happens in a qualifying session, so it
-  -- is announced at GO rather than left for drivers to work out from a clock
-  -- that never started. Chat, because it reaches a driver who has not opened the
-  -- app; the app itself says it again on the driver's own timing readout.
-  --
-  -- THE PACE LAP GETS THE FIRST WORD, because it is an instruction rather than a
-  -- notice: a driver who reads "your first lap is not timed" and nothing else
-  -- will race it. The speed is stated in both units on purpose -- this is a
-  -- league with drivers either side of the Atlantic, and a number that means
-  -- nothing to half the grid is a number half the grid ignores.
+  -- The pace lap gets the first word: it is an instruction (both speed units:
+  -- drivers on both sides of the Atlantic).
   if race.pacing then
     notifyField('flag', 'PACE LAP', 'Maintain position and limit '
       .. 'your speed to 50 MPH or 80 KMH. No overtaking. The GREEN FLAG can fall '
@@ -4980,21 +3277,14 @@ local function releaseField(pacing)
     notifyField('flag', 'GO! Your first lap is an OUT LAP', 'It is '
       .. 'not timed and does not count. Timing starts as you cross the line.', 'green')
   elseif outLapOwed() then
-    -- NO FIELD NOTICE FOR A RACE. "Your first lap counts but is not timed" is a
-    -- distinction about the results table, put in front of a driver at the exact
-    -- moment their only question is when to go. Qualifying keeps its notice
-    -- above, where the lap really does not count and pushing on it wastes one.
-    -- Restore this notifyField to put it back; the client's matching arm in the
-    -- phase handler came out with it.
-    -- WHY, in the console, because "my race keeps giving a lap away and I do not
-    -- know what is asking for it" is otherwise unanswerable from the outside.
+    -- No field notice for a race's out lap (it describes the results table, not
+    -- when to go). Restore this notifyField and the client's matching arm
+    -- together to bring it back. Logged, so an owed lap can be traced.
     print('[RaceManager] Out lap owed: sessionKind=' .. tostring(race.sessionKind)
       .. ', gridOffLine=' .. tostring(race.gridOffLine))
   end
   local target = sessionLapTarget()
-  -- The target is a count of CROSSINGS, so a qualifying session logs the two
-  -- halves it is made of rather than a number that matches neither the setting
-  -- an admin typed nor the laps that will appear on the board.
+  -- The target counts crossings, so qualifying logs its two halves.
   local lapNote
   if isQualiSession() then
     lapNote = (race.qualiLapLimit > 0 and (race.qualiLapLimit .. ' timed lap'
@@ -5011,15 +3301,8 @@ local function releaseField(pacing)
     .. (race.maxResets >= 0 and (': resets limited to ' .. race.maxResets) or ''))
 end
 
--- THE GREEN FLAG, at the end of a pace lap. One way in and one way out, so the
--- manual green an admin can always call (RM_onSetFlag) and the automatic one
--- below end the pace lap identically rather than leaving `pacing` set on one of
--- the two paths.
---
--- Nothing about the field changes here beyond the flag: the cars are already
--- released, the gates are already armed and every driver still owes the crossing
--- that starts their lap 1. What the green does is start the RACE -- the clock a
--- timed race is run to begins at this moment and not at the release.
+-- THE GREEN FLAG ending a pace lap, one path for the manual green (RM_onSetFlag)
+-- and the automatic one. It starts the RACE clock a timed race runs to.
 local function dropGreenFlag(why)
   if not race.pacing then return false end
   race.pacing  = false
@@ -5033,9 +3316,8 @@ local function dropGreenFlag(why)
   return true
 end
 
--- The final sector's length, straight line: the last checkpoint before the
--- line (or its nearest branch gate) to the line. nil when the server does not
--- hold the route, which is a track built in the editor and never loaded.
+-- The final sector's straight-line length (last checkpoint, or its nearest
+-- branch gate, to the line). nil when the server holds no route.
 function race.finalSectorLength()
   local cps = type(race.layout) == 'table' and race.layout.checkpoints
   if type(cps) ~= 'table' or #cps < 2 then return nil end
@@ -5051,13 +3333,8 @@ function race.finalSectorLength()
   return best
 end
 
--- WHERE THE GREEN FALLS: a fresh random distance before the line for every pace
--- lap and every restart, between CFG.paceGreenNear and CFG.paceGreenFar, so the
--- field cannot learn the spot and jump it.
---
--- Capped inside the final sector. The zone only opens once the leader has
--- cleared the last checkpoint, and a distance longer than that sector would put
--- the green at that checkpoint every single time.
+-- Where the green falls: a fresh random distance before the line per pace lap
+-- and restart, so it cannot be learned. Capped inside the final sector.
 function race.drawGreenZone()
   race.greenReady = false
   local lo, hi = CFG.paceGreenNear, CFG.paceGreenFar
@@ -5066,8 +3343,7 @@ function race.drawGreenZone()
   if not sector or hi <= lo then
     race.greenZone = lo
   else
-    -- Lua 5.3 starts every boot on the same sequence, which would make the first
-    -- green of every night land on the same spot.
+      -- Seeded: Lua 5.3 starts every boot on the same sequence.
     if not randomSeeded then
       math.randomseed(os.time() + os.clock() * 1000)
       randomSeeded = true
@@ -5079,13 +3355,10 @@ function race.drawGreenZone()
   return race.greenZone
 end
 
--- THE RUN TO THE GREEN, for the pace lap and the restart alike. The caller has
--- already put the leader on the final sector. GET READY once, as they come
--- within paceReadyAt of the line; true once they reach the drawn green point.
---
--- On a final sector shorter than paceReadyAt the call comes as the leader
--- clears the last checkpoint: distance alone cannot be trusted before that,
--- because a back straight can pass close to the line mid-lap.
+-- The run to the green (pace lap and restart), the leader already on the final
+-- sector: GET READY once within paceReadyAt, true at the drawn green point. On a
+-- short final sector the call comes at its start (a back straight can pass near
+-- the line mid-lap).
 function race.greenApproach(leader)
   if not race.greenReady and leader.distNext <= CFG.paceReadyAt then
     race.greenReady = true
@@ -5096,34 +3369,14 @@ function race.greenApproach(leader)
   return leader.distNext <= (race.greenZone or CFG.paceGreenNear)
 end
 
--- WHO IS LEADING THE PACE LAP, and how far they still are from the line.
---
--- "The leader" is the same question raceOrderLess already answers, asked over
--- the drivers who are still ON the pace lap -- the ones who still owe the
--- crossing that starts their lap 1. Restricting it to those matters on a track
--- that grids its cars away from the start/finish line: there a car gridded
--- short of the line ends its out lap almost at once (see the out-lap branch in
--- checkGates on the client), and it would otherwise rank first on lap count
--- while its reported distance had quietly become a distance to checkpoint 1.
---
--- Returns nil when nobody is left on the pace lap, which is a real state (the
--- whole field has crossed) and is handled by the caller rather than here.
---
--- THE CAR THAT STARTED P1 RUNS THE START, whatever the order says. A car that
--- got ahead of the pole-sitter on the formation lap was calling GET READY and
--- the green for the field. Anyone else only once P1 is off the pace lap
--- (retired, sat out, or already across), so the green still falls.
+-- Who leads the pace lap: raceOrderLess over the drivers still ON it (owing
+-- the crossing that starts lap 1). THE CAR THAT STARTED P1 runs the start
+-- while it is on the pace lap. nil when nobody is left on it.
 local function paceLeader()
   local best, pole = nil, nil
   for _, rec in pairs(players) do
-    -- NOT gated on having reported a distance yet, and that is the difference
-    -- between a pace lap and no pace lap at all. The field is released before
-    -- any client's first telemetry arrives, so for the first fraction of a
-    -- second nobody has a distNext -- and a leader search that skipped them
-    -- would find nothing, which the caller reads as "the field has all crossed"
-    -- and answers with an immediate green. raceOrderLess already treats a driver
-    -- with no distance as infinitely far away, so they sort last and cost
-    -- nothing; the caller waits for a distance rather than for a driver.
+    -- Not gated on a reported distance: before the first telemetry nobody has
+    -- one, and "nobody found" would drop an immediate green.
     if onTrack(rec) and rec.outLap then
       if rec.gridPos == 1 then pole = rec end
       if not best or raceOrderLess(rec, best) then best = rec end
@@ -5132,49 +3385,23 @@ local function paceLeader()
   return pole or best
 end
 
--- The pace lap, one tick at a time.
---
--- Two thresholds and a latch, and the latch is the part that is not obvious.
--- The field STARTS the pace lap standing at the start/finish line, so "the
--- leader is within ten meters of the line" is true at the release as well as at
--- the end of the lap -- the green would fall on the tick the cars were let go.
--- So the trigger is armed only once the leader has genuinely got away from the
--- line, and it is being away and coming back that means the lap is run.
---
--- That also makes it right on a grid placed anywhere: a head-on layout that
--- grids its field half a lap out arms on the first tick and still waits for the
--- leader to come round, and a grid five meters short of the line arms as soon as
--- the field has driven fifty.
---
--- BOTH THRESHOLDS READ leader.distNext AS METRES TO THE LINE, which is true for
--- the whole of an out lap and only then -- the client points that field at the
--- start/finish while one is running, and a pace lap is an out lap. Changing it
--- to the armed gate dropped the green at checkpoint 1. See reportProgress on the
--- client before touching either side of this.
+-- The pace lap, one tick at a time. The field STARTS at the line, so the green
+-- needs a latch: armed once the leader is genuinely away, then fired on the way
+-- back. leader.distNext is METERS TO THE LINE on an out lap only (see
+-- reportProgress on the client before changing either side).
 local function paceLapWatch()
-  -- A RED FLAG HOLDS EVERYTHING. Red means stop where you are and wait, so a
-  -- leader who coasts the last few meters to the line under one must not start
-  -- the race by arriving -- and an empty track under a red is a field that has
-  -- been told to stop, not one that has finished forming up. The admin who threw
-  -- it lifts it, and their manual green ends the pace lap through the same
-  -- function the automatic one does, so nothing here can get stuck.
+  -- A red flag holds everything; the admin's manual green ends the pace lap.
   if race.flag == 'red' then return end
   local leader = paceLeader()
   if not leader then
-    -- NOBODY IS ON THE PACE LAP. Either the whole field has already crossed the
-    -- line or there is nobody circulating at all; in both cases there is no
-    -- longer anything to hold the green up, and holding it anyway would leave a
-    -- race running under a yellow that could never be lifted.
+    -- Nobody on the pace lap: nothing can hold the green up any more.
     dropGreenFlag('no driver left on the pace lap')
     return
   end
-  -- Released, but this driver's first telemetry has not landed yet. Nothing can
-  -- be judged from a distance we do not have, so the pace lap simply waits.
+  -- No telemetry yet: wait.
   if not leader.distNext then return end
   if race.slotCount >= 2 then
-    -- THE FINAL SECTOR OPENS THE RUN IN, the restart's rule. GET READY can be
-    -- as far out as the arming distance below, so "got away and came back" by
-    -- distance alone could call it seconds after the release.
+    -- The final sector opens the run in, as for a restart.
     if (leader.cpCleared or 0) < race.slotCount - 1 then return end
     if not race.paceArmed then
       race.paceArmed = true
@@ -5186,9 +3413,7 @@ local function paceLapWatch()
     end
     return
   else
-    -- No route on the server, so no checkpoint count to trust: the distance
-    -- latch and the fixed green point, as before the zone existed. No GET
-    -- READY either: without the final sector it cannot be placed.
+    -- No route on the server: the distance latch and the fixed green point.
     if not race.paceArmed then
       if leader.distNext > CFG.paceArmAt then
         race.paceArmed = true
@@ -5213,65 +3438,36 @@ function RM_CountdownTick()
     broadcastCountdown(countdownValue)
     return
   end
-  -- GO! One release for both kinds of session: every held car is let go by the
-  -- same broadcast, and lap 1 starts at the line for everybody.
+  -- GO: one release for both kinds of session.
   MP.CancelEventTimer('RM_CountdownTick')
   broadcastCountdown(0)
   releaseField(false)
 end
 
--- START THE RACE BEHIND THE PACE CAR, with no countdown at all.
---
--- The other half of the pace lap rule: with it armed the panel offers this
--- INSTEAD of Start Countdown, because a formation lap and a standing start are
--- alternatives rather than a sequence. Counting a field down to GO and then
--- telling it to hold position at 50 mph is two instructions for one moment, and
--- a driver obeys whichever of them they read.
---
--- Guarded exactly as Start Countdown is -- admin, on the grid, garage audited --
--- and refused outright when the rule is NOT armed. Releasing the field with no
--- countdown, no yellow and no green to come is nobody's idea of a start, and
--- refusing it here is what makes the two buttons a genuine either/or rather than
--- a second way to start whatever is on the grid.
 -- ---------------------------------------------------------------------------
 -- Module 6: heats and transfers
 -- ---------------------------------------------------------------------------
--- How many heats the night runs, and how many drivers transfer out of each.
--- Idle-locked like every other regulation: the shape of the night must not
--- change while one of its races is being run.
---
--- Setting the count to 0 ends the program and forgets every draw with it. That
--- is deliberate and it is the way out: a half-configured heat night that cannot
--- be cleared would leave Generate Grid quietly forming a grid of one heat.
+-- Heat count and transfers; idle-locked. 0 ends the program and forgets the
+-- draw (the way out of a half-configured night).
 function RM_onSetHeats(pid, rawData)
   local data = adminPayload(pid, rawData, true)
   if not data then return end
   local count    = math.floor(tonumber(data.count) or 0)
   local transfer = math.floor(tonumber(data.transfer) or 0)
-  -- Absent rather than zero when the panel does not send it, so a client that
-  -- predates the field cannot silently reset a heat distance somebody set.
+  -- Absent, not zero, from an older client.
   local laps     = data.laps ~= nil and math.floor(tonumber(data.laps) or 0) or race.heatLaps
   if count < 0 then count = 0 elseif count > CFG.maxHeats then count = CFG.maxHeats end
   if transfer < 0 then transfer = 0 end
-  -- 0 is the way to say "the same as the race", so it is a value and not a
-  -- floor to be clamped away. The ceiling is the race's own.
+  -- 0 means the race's distance, so it is not clamped away.
   if laps < 0 then laps = 0 elseif laps > CFG.maxTotalLaps then laps = CFG.maxTotalLaps end
   race.heatLaps = laps
-  -- A heat that transfers its whole field has transferred nobody: the feature
-  -- grid it builds is the heat order with no cut in it. Left as the admin typed
-  -- it rather than clamped to the heat size, because the field size is not known
-  -- until the draw and an admin who types 4 into a night that turns out to have
-  -- 3-car heats has still said something meaningful about what they want.
+  -- Not clamped to the heat size: the field is unknown until the draw.
   race.heatCount    = count
   race.heatTransfer = transfer
   if count == 0 then
-    -- The program is off, so nothing may still be pointing into it: a stale
-    -- heatCurrent would keep isEntrant filtering to a heat that no longer
-    -- exists, and Generate Grid would form a grid of nobody.
+    -- Off: a stale heatCurrent would grid nobody.
     race.heatCurrent = 0
     race.heatsDrawn  = false
-    -- The heat distance goes with the program. Left set, it would sit in the
-    -- panel describing a night that is no longer being run.
     race.heatLaps    = 0
     for _, rec in pairs(players) do
       rec.heat, rec.heatPos, rec.transferred = nil, nil, nil
@@ -5286,19 +3482,9 @@ function RM_onSetHeats(pid, rawData)
     MP.GetPlayerName(pid) or pid))
 end
 
--- SPLIT THE FIELD INTO HEATS.
---
--- Serpentine off qualifying time, which is how every form of heat racing draws
--- them: 1st to heat 1, 2nd to heat 2, ... Nth to heat N, and then BACK along the
--- row -- (N+1)th to heat N, (N+2)th to heat N-1. A straight round-robin would
--- put the four fastest drivers on four different poles and the four slowest all
--- at the back of their own heats; the serpentine gives every heat one quick
--- driver and one slow one, which is what makes the heats comparable and the
--- transfer worth the same out of each.
---
--- Drivers with no qualifying time are drawn last, in join order, exactly as
--- they are gridded last. A field that never qualified draws in join order
--- throughout, which is a fair-enough draw and is at least a repeatable one.
+-- Split the field into heats by SERPENTINE (1..N, then back N..1), so every heat
+-- gets a quick driver and a slow one and the transfers are comparable. Unseeded
+-- drivers go last, in join order.
 function RM_onDrawHeats(pid)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then
@@ -5309,9 +3495,7 @@ function RM_onDrawHeats(pid)
     MP.SendChatMessage(pid, '[RaceManager] Set the number of heats to 2 or more first.')
     return
   end
-  -- The whole field, not the current heat's: the draw is what CREATES the
-  -- heats, so it has to look at everybody who is racing tonight. isEntrant
-  -- would filter to a heat that has not been drawn yet.
+  -- The whole field: the draw creates the heats (isEntrant would filter).
   local field = {}
   for _, rec in pairs(players) do
     if not rec.spectating then field[#field + 1] = rec end
@@ -5320,19 +3504,14 @@ function RM_onDrawHeats(pid)
     MP.SendChatMessage(pid, '[RaceManager] Nobody to draw: every connected driver is sitting out.')
     return
   end
-  -- WHAT THE DRAW IS SEEDED ON. The serpentine below is the same either way;
-  -- all that changes is the order it walks, which is the order of merit the
-  -- night is being spread by.
+  -- What the draw is seeded on; the serpentine is the same either way.
   local mode = race.heatDraw or 'quali'
   local seeded = 0          -- how many drivers the seed actually knows about
   if mode == 'random' then
     shuffle(field)
     seeded = #field
   elseif mode == 'points' then
-    -- CHAMPIONSHIP ORDER, leader first. Read without creating anything:
-    -- cupSeasonPoints returns nil for a driver with no entry rather than
-    -- opening one, because drawing heats is not the moment to enrol somebody in
-    -- a season.
+    -- Championship order, leader first, read without enrolling anybody.
     local pts = {}
     for _, rec in ipairs(field) do
       local p = cupSeasonPoints and cupSeasonPoints(rec) or nil
@@ -5340,9 +3519,7 @@ function RM_onDrawHeats(pid)
       if p then seeded = seeded + 1 end
     end
     if seeded == 0 then
-      -- REFUSED RATHER THAN QUIETLY DRAWN ANOTHER WAY. A points draw with no
-      -- points behind it would fall through to join order, which looks like a
-      -- deliberate seeding and is the order people happened to connect in.
+      -- Refused: with no points it would quietly become join order.
       MP.SendChatMessage(pid, '[RaceManager] Nobody in the field has any '
         .. 'championship points, so there is no order to seed from. Run a cup '
         .. 'round first, or draw on qualifying times or at random.')
@@ -5368,12 +3545,7 @@ function RM_onDrawHeats(pid)
       end
       return a.id < b.id
     end)
-    -- SAID OUT LOUD when the seed is empty, rather than drawn silently. With no
-    -- qualifying times at all this is a serpentine over JOIN ORDER -- the order
-    -- people happened to connect in, which is not a draw and does not look like
-    -- one from the outside. The behaviour is left alone (a league that has
-    -- always drawn this way keeps what it had); the admin is simply told, and
-    -- the other two modes are there to take instead.
+    -- Said out loud when no qualifying times exist: the draw is join order.
     if seeded == 0 then
       MP.SendChatMessage(pid, '[RaceManager] Nobody set a qualifying time, so '
         .. 'this draw is in join order. Draw at random or on championship '
@@ -5382,10 +3554,7 @@ function RM_onDrawHeats(pid)
   end
   local n = race.heatCount
   for i, rec in ipairs(field) do
-    -- The serpentine, as arithmetic rather than a direction flag: every pass of
-    -- 2n drivers goes out along the row and back again, so the position within
-    -- one such pass decides the heat and nothing has to remember which way it
-    -- was going last.
+    -- The serpentine as arithmetic over each pass of 2n drivers.
     local k = (i - 1) % (2 * n)
     rec.heat = (k < n) and (k + 1) or (2 * n - k)
     rec.heatPos     = nil
@@ -5394,8 +3563,7 @@ function RM_onDrawHeats(pid)
   end
   race.heatsDrawn  = true
   race.heatCurrent = 1
-  -- Say what was drawn, per heat, because "the heats are drawn" is not something
-  -- a driver can check any other way until a grid forms.
+  -- Say what was drawn, per heat.
   local sizes = {}
   for h = 1, n do
     local c = 0
@@ -5416,10 +3584,7 @@ function RM_onDrawHeats(pid)
   broadcastState()
 end
 
--- WHAT THE HEAT DRAW IS SEEDED ON. Idle-locked like the rest of the heat
--- program: the shape of the night must not move while one of its races is being
--- run. Changing it does NOT redraw -- the draw is its own button, and an admin
--- who changes the seed and does not press it has changed nothing.
+-- What the heat draw is seeded on; idle-locked. Changing it does not redraw.
 function RM_onSetHeatDraw(pid, rawData)
   local data = adminPayload(pid, rawData, true)
   if not data then return end
@@ -5431,8 +3596,7 @@ function RM_onSetHeatDraw(pid, rawData)
     mode, MP.GetPlayerName(pid) or pid))
 end
 
--- Which heat is being set up next -- or 0 for the feature. The one control that
--- decides who Generate Grid puts on the track, through isEntrant.
+-- Which heat is set up next (0: the feature): what isEntrant grids.
 function RM_onSetHeatCurrent(pid, rawData)
   local data = adminPayload(pid, rawData, true)
   if not data then return end
@@ -5447,14 +3611,8 @@ end
 -- ---------------------------------------------------------------------------
 -- The caution and the restart
 -- ---------------------------------------------------------------------------
--- WHO LEADS THE FIELD UNDER CAUTION, and it is the same question raceOrderLess
--- answers -- asked over the cars still circulating, because a winner already
--- parked leads nothing.
---
--- Under a caution raceOrderLess is comparing the frozen keys, so this returns
--- the driver at the top of the FROZEN board rather than whoever is physically
--- in front. That is the car the restart is waiting on: the one who will be
--- leading when the green falls.
+-- Who leads under caution: the top of the FROZEN board among cars still
+-- circulating, the car the restart waits on.
 local function cautionLeader()
   local best = nil
   for _, rec in pairs(players) do
@@ -5465,22 +3623,10 @@ local function cautionLeader()
   return best
 end
 
--- THE FREE PASS. One car gets its lap back before the green.
---
--- WHO: the highest-placed car that is a lap or more down -- the first car a lap
--- down, which is what every series that runs this rule means by it. NOT the car
--- furthest back: handing the pass to whoever is deepest in the field would give
--- it to the same slowest car every single yellow, and it would never be the car
--- that was actually racing the leader when the caution fell.
---
--- WHAT IT IS WORTH: one lap, and a place at the TAIL of the lap they join. They
--- do not inherit a position from the group they left -- they take the last slot
--- on the lead lap, which is the whole bargain.
---
--- THE CLIENT IS TOLD, and that is not decoration. RM_onProgress drops any
--- telemetry whose lap number disagrees with the server's, so a lap credited on
--- one side and not the other would silently kill this driver's live position and
--- gap for the rest of the race.
+-- THE FREE PASS: the highest-placed car a lap or more down (not the furthest
+-- back, which would always be the same slowest car) gets one lap and the TAIL of
+-- the lead lap. The client is told (RM_LapCredit): RM_onProgress drops telemetry
+-- whose lap disagrees with the server's.
 local function awardLuckyDog(why)
   if not race.luckyDog or race.cautionLucky or not race.caution then return nil end
   local order = raceClassification()
@@ -5491,8 +3637,7 @@ local function awardLuckyDog(why)
       rec.cautionDown  = rec.cautionDown - 1
       rec.currentLap   = (rec.currentLap or 0) + 1
       race.cautionLucky = rec.id
-      -- The lap has moved, so the checkpoint telemetry from the old one must not
-      -- linger and rank this driver against a lap they are no longer on.
+      -- The lap moved: old checkpoint telemetry must not rank them.
       progress.clear(rec)
       MP.TriggerClientEvent(rec.id, 'RM_LapCredit', Util.JsonEncode({
         lap = rec.currentLap, reason = 'luckydog',
@@ -5508,20 +3653,9 @@ local function awardLuckyDog(why)
   return nil
 end
 
--- LOCK ONE DRIVER'S CAUTION PLACE, at their own crossing of the line.
---
--- `completed` is the lap they have just finished, so the arithmetic is the same
--- one cautionDownOf does for a car still on its way: the leader completed
--- race.cautionLap, and anybody completing a lower number is that many down.
---
--- ONCE ONLY. The field goes on circulating under the yellow and goes on crossing
--- the line; a second stamp would hand a car a fresh sequence number and send it
--- to the back of its own group for obeying the caution.
---
--- Awards the free pass as soon as the last car is home, which is what "before
--- the restart" means when the restart is the marshal's to call: the board has to
--- show the pass before it shows the green, or the driver finds out by being a
--- lap better off than the screen said.
+-- Lock one driver's caution place at their own crossing, ONCE (the field keeps
+-- crossing under yellow). `completed` is the lap just finished. The free pass is
+-- awarded when the last car locks, so the board shows it before the green.
 local function lockCaution(rec, completed)
   if not race.caution or rec.cautionPos then return end
   local down = (race.cautionLap or completed) - completed
@@ -5535,15 +3669,11 @@ local function lockCaution(rec, completed)
   awardLuckyDog('field locked')
 end
 
--- END THE CAUTION AND GO RACING AGAIN. One way out, like dropGreenFlag, so the
--- admin's Green flag button and the Restart button leave identical state.
+-- End the caution: one path for the Green button and Restart.
 local function restartRace(why)
   if not race.caution then return false end
-  -- THE FALLBACK AWARD, and it is not dead code. lockCaution hands the pass out
-  -- when the last car is home, and a car that spun out of the race, or whose
-  -- final crossing never arrived, means that moment never comes. A marshal who
-  -- has seen enough and calls the green anyway must not take the free pass away
-  -- with it.
+  -- The fallback award: a car that never crossed again means the field never
+  -- fully locked, and the green must not cancel the pass.
   awardLuckyDog('restart called before the field was fully locked')
   race.caution        = false
   race.cautionPending = false
@@ -5559,25 +3689,11 @@ local function restartRace(why)
   return true
 end
 
--- THE RESTART, WAITING ON THE LEADER. Run on the tick while one is called, and
--- it is the pace lap's watch with one difference: there is no arming latch,
--- because the gate that opens it is the leader being on the LAST leg of the lap.
---
--- A restart called the instant after the leader took the line would otherwise
--- fire on the same tick -- they are ten meters past it -- and the field would
--- get a green with the pack still strung out behind an incident nobody has
--- cleared. Requiring the last checkpoint to be behind them makes "approaching
--- the line" mean the end of a lap rather than the start of one, and it needs no
--- extra state to say so.
---
--- race.slotCount is 0 for a route built in the editor and never saved, so the
--- distance gate cannot be trusted there. That case is not left to hang: the
--- leader's CROSSING triggers the green instead, in RM_onLap. One tick later than
--- ideal and always correct.
+-- The restart waiting on the leader, gated on them being on the LAST leg (a
+-- restart called just past the line would fire at once). With slotCount 0 (an
+-- unsaved route) the leader's crossing triggers it instead, in RM_onLap.
 local function restartWatch()
-  -- A RED FLAG HOLDS EVERYTHING, for the reason the pace lap's watch says: red
-  -- means stop where you are, and a leader who rolls the last few meters to the
-  -- line under one must not restart the race by arriving.
+  -- A red flag holds everything.
   if race.flag == 'red' then return end
   if race.slotCount <= 0 then return end
   local leader = cautionLeader()
@@ -5588,29 +3704,21 @@ local function restartWatch()
   end
 end
 
--- Throw a full-course yellow. Admin only, and only while a race is actually
--- being run: there is nothing to freeze in qualifying (drivers are on solo laps
--- and the classification is a best time, not a running order) and nothing to
--- freeze before the lights.
+-- A full-course yellow, during a race only.
 function RM_onCaution(pid)
   if not requireAuth(pid) then return end
   if not sessionRunning() then
     MP.SendChatMessage(pid, '[RaceManager] No race is running, so there is nothing to neutralise.')
     return
   end
-  -- ...and qualifying is a running session that still cannot take one, for a
-  -- different reason, which is why this is a second test and not a tighter
-  -- first one. Written as `phase ~= 'racing'` it was unreachable: qualifying
-  -- failed the phase test above and got told no session was running.
+  -- Qualifying runs but has no order to freeze (a separate test, or it was
+  -- told no session was running).
   if isQualiSession() then
     MP.SendChatMessage(pid, '[RaceManager] Qualifying has no running order to freeze: '
       .. 'drivers are on their own laps and the board is a list of best times.')
     return
   end
-  -- ALREADY UNDER YELLOW FORMING UP. The pace lap is a neutralised field with a
-  -- green still to come, which is what a caution would be asking for -- so this
-  -- would freeze an order nobody is racing for and add a second thing for the
-  -- admin to cancel before the race could start.
+  -- Already under yellow on the pace lap: the green ends it.
   if race.pacing then
     MP.SendChatMessage(pid, '[RaceManager] The field is already under yellow on the '
       .. 'pace lap. The green flag is what ends it.')
@@ -5621,9 +3729,7 @@ function RM_onCaution(pid)
       .. 'Restart when the track is clear.')
     return
   end
-  -- CALLED, NOT FROZEN. The yellow flies now and the board stays live: the
-  -- caution goes official when the LEADER takes the line, and each driver's
-  -- place is settled by their own crossing of that same lap. See RM_onLap.
+  -- CALLED, NOT FROZEN: official when the LEADER takes the line (RM_onLap).
   race.cautionPending = true
   race.restartPending = false
   race.cautionLucky   = nil
@@ -5642,13 +3748,8 @@ function RM_onCaution(pid)
   broadcastState()
 end
 
--- The restart, as its own control, and it is CALLED rather than taken: the
--- admin's judgement decides there is going to be one, the leader decides when.
---
--- "The lap we are on is the restart" -- the green falls as the leader comes back
--- to the line at the end of it, so the field is packed up and looking at it
--- rather than being waved off round the back of the circuit at whatever moment
--- the marshal happened to press the button.
+-- The restart is CALLED: the admin decides there is one, the leader decides
+-- when (the green on the run to the line, with the field packed up).
 function RM_onRestart(pid)
   if not requireAuth(pid) then return end
   if not race.caution then
@@ -5672,19 +3773,13 @@ function RM_onRestart(pid)
   print(string.format('[RaceManager] Restart called by %s at %.1fs, waiting on the leader',
     tostring(who), race.time))
   broadcastState()
-  -- Judged immediately as well as on the tick, for the leader who is ALREADY on
-  -- the last leg when the button is pressed. Waiting a tick is harmless; waiting
-  -- a whole extra lap because the call landed 90 meters from the line is not.
+  -- Judged now too, for a leader already on the last leg.
   restartWatch()
 end
 
--- WAVE THE RESTART OFF. A marshal who calls one and then sees the track is not
--- clear after all needs the call back, and the alternative -- pressing Caution
--- again -- would count a second yellow and re-freeze an order that never thawed.
---
--- Only the CALL is cancelled. The race stays neutralised, the board stays
--- frozen and the caution laps go on counting, which is what "hold the caution"
--- means. Nothing to cancel once the green has actually fallen.
+-- Wave a called restart off. Only the call goes: the race stays neutralised and
+-- the caution laps keep counting (pressing Caution again would count a second
+-- yellow).
 function RM_onCancelRestart(pid)
   if not requireAuth(pid) then return end
   if not race.restartPending then
@@ -5702,6 +3797,8 @@ function RM_onCancelRestart(pid)
   broadcastState()
 end
 
+-- Start the race BEHIND THE PACE CAR, with no countdown: the alternative to
+-- Start Countdown, not a step before it. Refused unless the pace lap is armed.
 function RM_onStartRace(pid)
   if not requireAuth(pid) then return end
   if race.phase ~= 'grid' then return end
@@ -5717,21 +3814,19 @@ function RM_onStartRace(pid)
     return
   end
   reportGridAudit(pid)
-  -- No countdown overlay to hide, but one may be up from an aborted start.
+  -- Hide a countdown left up by an aborted start.
   broadcastCountdown(-1)
   releaseField(true)
   print('[RaceManager] Race started behind the pace car by '
     .. (MP.GetPlayerName(pid) or pid))
 end
 
--- End Session: during a race anyone still on track becomes DNF; during
--- qualifying the session closes but Best Laps are kept so the grid can
--- still be generated. Either way every car comes back (finishSession).
+-- End Session: in a race anyone still on track is a DNF; qualifying keeps its
+-- best laps. Every car comes back either way.
 function RM_onEndRace(pid)
   if not requireAuth(pid) then return end
   if race.phase == 'grid' then
-    -- Aborting before the lights: no result to record, just stand the field
-    -- down and let the held cars go.
+    -- Before the lights: no result, just stand the field down.
     broadcastCountdown(-1)
     race.phase = 'waiting'
     for _, rec in pairs(players) do
@@ -5763,13 +3858,8 @@ function RM_onResetLeaderboard(pid)
   if not requireAuth(pid) then return end
   MP.CancelEventTimer('RM_CountdownTick')
   broadcastCountdown(-1)
-  -- Reset Session is the "start the evening again" button, so nothing stays
-  -- ghosted through it. A ghost is ended by the client that owns it reporting
-  -- the space around its car is clear, and a client that has been through a
-  -- session reset -- or a driver who has quit and come back -- has no such
-  -- report left to give. Without this the roster could hold a ghost nobody was
-  -- ever going to clear, and every other client would go on seeing that car as
-  -- intangible for the rest of the night.
+  -- Nothing stays ghosted through a session reset: no client is left to report
+  -- the space clear.
   clearAllGhosts('session reset')
   wipe(players)
   wipe(lapFirsts)
@@ -5777,16 +3867,11 @@ function RM_onResetLeaderboard(pid)
   race.phase = 'waiting'
   race.sessionKind = 'race'
   race.time = 0.0
-  -- The hold goes with the clock it was measured against.
   race.endsAt, race.endReason = nil, nil
   race.qualiTime = 0.0
   race.qualiOutLapRun = false
   race.racePaceLapRun = false
-  -- The pace lap's CONDITION goes; the RULE stays. Reset Session starts the
-  -- evening again, and an admin who set the league up to run formation starts
-  -- has not changed their mind by pressing it -- but a session left mid-pace-lap
-  -- must not come back as one, or the next race would be released under a yellow
-  -- with its arming latch already tripped.
+  -- The pace lap's CONDITION goes, the RULE stays.
   race.pacing    = false
   race.paceArmed = false
   race.greenAt   = 0.0
@@ -5799,10 +3884,8 @@ function RM_onResetLeaderboard(pid)
   race.cautionSeq   = 0
   race.cautionCount = 0
   thawOrder()
-  -- The heat program goes with the evening. Reset Session is "start the night
-  -- again", and a night starts with an undrawn field -- the records that held
-  -- the draw are wiped a few lines above, so leaving the count set would leave
-  -- Generate Grid filtering to a heat nobody is in any more.
+  -- The heat program goes with the evening (the records holding the draw are
+  -- gone).
   race.heatCount    = 0
   race.heatTransfer = 0
   race.heatCurrent  = 0
@@ -5815,9 +3898,7 @@ function RM_onResetLeaderboard(pid)
   race.raceExpired  = false
   race.raceExpiredAt = nil
   race.lastLapNum   = nil
-  -- The records are gone and so is the entry list, but the display names are
-  -- not: they live in the identity registry and ensurePlayer hands them straight
-  -- back, which is what makes a name survive from one race into the next.
+  -- Display names survive in the identity registry.
   clearEntries()
   for id in pairs(onlinePlayers()) do
     ensurePlayer(id)
@@ -5830,15 +3911,11 @@ end
 -- ---------------------------------------------------------------------------
 -- Live position telemetry from clients
 -- ---------------------------------------------------------------------------
--- Every racing client reports its progress a few times a second:
---   lap  -- the lap it believes it is on (sanity check only; the server's own
---           counter stays authoritative for metric 1)
+-- Every racing client reports a few times a second:
+--   lap  -- the lap it believes it is on (a sanity check only)
 --   cp   -- checkpoints cleared on the current lap (metric 2)
---   dist -- meters to the center of the next checkpoint (metric 3)
---
--- This deliberately does NOT broadcast: with a full grid reporting at 3 Hz that
--- would be dozens of broadcasts a second. The values are just stored, and the
--- race tick loop re-sorts and pushes the running order on its own cadence.
+--   dist -- meters to the next checkpoint's center (metric 3)
+-- Stored, never broadcast here: the tick pushes the order on its own cadence.
 local MAX_CHECKPOINTS = 500      -- sanity clamp on a reported checkpoint count
 local MAX_REPORT_DIST = 1e6      -- meters; anything beyond this is nonsense
 
@@ -5850,33 +3927,20 @@ function RM_onProgress(pid, rawData)
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
 
-  -- A report from a lap the server has not credited yet (or has already moved
-  -- past) is dropped rather than applied: mixing a stale checkpoint count into
-  -- the comparator would make positions flicker around every lap crossing.
+  -- A report from another lap than the server's is dropped (positions would
+  -- flicker at every crossing).
   local lap = tonumber(data.lap)
   if lap and math.floor(lap) ~= rec.currentLap then return end
 
-  -- CHECKPOINTS cleared on this lap, not gates crossed: a branch gate is another
-  -- way through a checkpoint that already exists rather than an extra one, so
-  -- this number means the same thing whichever gates a driver took. That is the
-  -- whole reason the running order needs no changes for branching -- and the
-  -- reason the clamp below is a checkpoint count too.
+  -- CHECKPOINTS cleared, not gates crossed: a branch gate clears the same one.
   local cp = tonumber(data.cp)
   if cp then
     cp = math.floor(cp)
-    -- Clamped to the loaded track's own length when the server knows it, which
-    -- is tighter than the flat ceiling and free: a layout that came through
-    -- RM_LoadLayout told us exactly how many slots a lap has. The scalar stays
-    -- as the fallback for a route placed in the editor that the server never saw.
+    -- Clamped to the loaded track's length, or a flat ceiling without one.
     local ceiling = race.slotCount > 0 and race.slotCount or MAX_CHECKPOINTS
     if cp < 0 then cp = 0 elseif cp > ceiling then cp = ceiling end
-    -- A count that went UP is a crossing, not a routine sample. The client
-    -- forces a report on the frame after every crossing (checkGates sets
-    -- progressLeft = 0 so a position can change hands promptly), so this is
-    -- within a frame of the car actually clearing the gate rather than up to a
-    -- throttle window late -- which is what makes the split worth stamping at
-    -- all. A count that went DOWN is a stale or reordered packet and is left to
-    -- the assignment below, exactly as before.
+    -- A count that went UP is a crossing (the client reports on the next frame),
+    -- so the split is stamped; one that went down is a stale packet.
     if cp > (rec.cpCleared or 0) then progress.record(rec, rec.currentLap, cp) end
     rec.cpCleared = cp
   end
@@ -5887,70 +3951,32 @@ function RM_onProgress(pid, rawData)
   end
 end
 
--- A client crossed the start/finish line after clearing all checkpoints. ONE
--- handler for both kinds of session, which is the point: qualifying used to
--- report its laps on a channel of its own with its own counting rules, and that
--- second implementation is what drifted. The server decides Laps Led (first
--- report per lap number wins - one arrival order for everyone) and the finish
--- (the session's lap target reached).
+-- A client crossed the S/F line after every checkpoint. ONE handler for both
+-- sessions. The server decides Laps Led (first report per lap number) and the
+-- finish (the lap target).
 function RM_onLap(pid, rawData)
   if not sessionRunning() then return end
   local rec = ensurePlayer(pid)
   if not rec or not onTrack(rec) then return end
   local quali = isQualiSession()
 
-  -- THE OUT LAP, and every rule about it in one place.
-  --
-  -- A driver's first crossing ends the lap they spent getting off the grid, in
-  -- any session that owes one. QUALIFYING throws it away entirely (no best lap,
-  -- no session fastest, nothing against the allowance) and returns here. A RACE
-  -- keeps the lap and drops only its TIME, falling through to the scoring below
-  -- with lapTime suppressed.
-  --
-  -- Returning before the terminal check matters most once the clock has expired:
-  -- race.finalLap makes the next crossing terminal for everyone still out, and a
-  -- driver on their out lap would otherwise be stood down with no time at all,
-  -- eliminated by the one lap the session promised not to score. The crossing
-  -- still counts as a crossing: lap counter advances, telemetry cleared.
-  --
-  -- A RACE'S FIRST LAP SETS NO TIME. It is a lap off a STANDING START, and a lap
-  -- that begins at a standstill is not the same measurement as a flying one: it
-  -- carries the launch, the run to the first corner and whatever the field did
-  -- to each other on the way there. Leaving it in the fastest-lap contest scores
-  -- a driver against a lap nobody else was driving either.
-  --
-  -- This used to be gated on rec.outLap, which is only set when the grid sits
-  -- AWAY from the start/finish line -- so on an ordinary circuit the standing
-  -- lap went on the board like any other.
-  --
-  -- The crossing still COUNTS. It is one of the laps the race promised: the
-  -- counter advances, laps led is credited, telemetry clears. Only the time goes.
-  --
-  -- NOT ON A ONE-LAP RACE, because there the standing lap is the only lap there
-  -- is and dropping its time leaves the results with no times in them at all.
-  -- THE LINE IS CHECKPOINT 0 OF THE LAP THAT IS STARTING, and it is stamped
-  -- here -- above every early return below, so a qualifying out lap leaves a
-  -- split like any other crossing rather than a hole the backfill has to guess
-  -- at. On the terminal crossing this is the flag itself: currentLap is left
-  -- where it was for a finisher, so the stamp is the one thing that says where
-  -- they got to, and it carries exactly the value finishTime does.
+  -- THE LINE IS CHECKPOINT 0 OF THE LAP STARTING, stamped above every early
+  -- return (a qualifying out lap leaves a split; on the terminal crossing it is
+  -- the flag itself).
   progress.record(rec, (rec.currentLap or 0) + 1, 0)
 
-  --
-  -- A PACE LAP IS ALWAYS THE UNTIMED ONE, whatever the distance. The one-lap
-  -- exemption above exists so a single-lap race is not left with no times in it
-  -- at all -- and behind the pace car a one-lap race has TWO crossings, the
-  -- formation lap and the racing lap, so the time it needs is still there.
+  -- THE FIRST LAP: qualifying's out lap is thrown away entirely (returned below,
+  -- before the terminal check, so finalLap cannot stand a driver down on it). A
+  -- RACE's first lap COUNTS but sets no TIME (a standing start is a different
+  -- measurement), except in a one-lap race; behind the pace car there are two
+  -- crossings, so the formation lap is always the untimed one.
   local paced = paceLapArmed()
   local untimedFirstLap = false
   if not quali and (rec.currentLap or 0) <= 1
       and ((race.totalLaps or 0) > 1 or paced) then
     rec.outLap = false
     untimedFirstLap = true
-    -- Said differently for a formation lap, because it is a different fact. "It
-    -- counts but set no lap time" describes a standing start; a driver who has
-    -- just followed the field round under yellow needs to hear that the lap they
-    -- are STARTING is lap 1 of the race.
+    -- A formation lap is a different fact: lap 1 of the race is starting.
     MP.SendChatMessage(rec.id, paced
       and '[RaceManager] Pace lap complete: you are racing. This is lap 1.'
       or  '[RaceManager] First lap done: it counts, but it set no lap time.')
@@ -5960,11 +3986,7 @@ function RM_onLap(pid, rawData)
     progress.clear(rec)
     rec.currentLap = rec.currentLap + 1
     broadcastState()
-    -- Told to that driver alone. The out lap is a per-driver event twenty
-    -- drivers reach at twenty different moments, and announcing each of them to
-    -- the whole server would bury the messages that are everybody's business.
-    -- Qualifying only: in a race the lap was scored either way, so this told a
-    -- driver mid-first-corner about a distinction that did not affect them.
+    -- Told to that driver alone, qualifying only.
     if isQualiSession() then
       MP.SendChatMessage(rec.id,
         '[RaceManager] Out lap complete: your next lap is TIMED.')
@@ -5974,25 +3996,21 @@ function RM_onLap(pid, rawData)
   end
 
   local lapTime = decodeNumber(rawData, 'lapTime')
-  -- The launch is not a lap time. Dropped here rather than at the client so the
-  -- crossing is still reported, still counted and still ends the lap -- the only
-  -- thing that changes is that nothing goes on the board for it.
+  -- The launch is not a lap time; the crossing still counts.
   if untimedFirstLap then lapTime = nil end
   if lapTime and lapTime > 0 then
     if not rec.raceBest or lapTime < rec.raceBest then
       rec.raceBest = lapTime
-      -- The car it was set in, for the lap records: a driver can change cars.
+      -- The car it was set in, for the lap records.
       rec.bestCar = rec.carLabel
     end
-    -- Fastest lap of the SESSION, across everyone. One comparison per scored
-    -- lap; nothing walks the field for this.
+    -- Fastest lap of the session, one comparison per lap.
     if not race.bestLapTime or lapTime < race.bestLapTime then
       race.bestLapTime = lapTime
       race.bestLapPid  = rec.id
       print(string.format('[RaceManager] FASTEST LAP: %s %.3fs', rec.name, lapTime))
     end
-    -- Qualifying scores on the best lap; that is the whole difference between
-    -- the two sessions once the lifecycle is shared.
+    -- Qualifying scores on the best lap.
     if quali and (not rec.qualiBest or lapTime < rec.qualiBest) then
       rec.qualiBest = lapTime
       print(string.format('[RaceManager] %s quali best: %.3fs (lap %d)',
@@ -6001,11 +4019,8 @@ function RM_onLap(pid, rawData)
   end
 
   local completed = rec.currentLap
-  -- DID THIS CROSSING LEAD THE LAP. lapFirsts already answers "who reached this
-  -- lap number first", which is precisely what "the leader crossing the line"
-  -- means - and it is immune to the case that makes a naive "first crossing
-  -- after the clock expired" rule wrong, namely a lapped car coming past. Its
-  -- lap number was claimed by the leader a lap ago, so it does not set this.
+  -- Did this crossing lead the lap? First to reach this lap number, which a
+  -- lapped car coming past cannot claim.
   local ledThisLap = false
   if quali then
     rec.qualiLaps = (rec.qualiLaps or 0) + 1
@@ -6013,24 +4028,16 @@ function RM_onLap(pid, rawData)
     lapFirsts[completed] = pid
     rec.lapsLed = rec.lapsLed + 1
     ledThisLap = true
-    -- A LAP UNDER CAUTION IS STILL A LAP. The distance does not pause because
-    -- the racing has -- that is how most oval racing scores a yellow, and a
-    -- caution that stopped the count would let a long one run the race out of
-    -- daylight without ever reaching the flag. Counted off the LEADER's crossing
-    -- so it is one number for the whole field, not one per driver.
-    --
-    -- Counted BEFORE the promotion below, deliberately: the crossing that starts
-    -- a caution is not a lap run under it. Caution lap 1 is the leader's NEXT
-    -- one, which is what a marshal counting laps under yellow means.
+    -- A lap under caution counts toward the distance, counted off the LEADER's
+    -- crossing, BEFORE the promotion below (the crossing that makes a caution
+    -- official is not a lap under it).
     if race.caution then
       race.cautionLaps = race.cautionLaps + 1
       print(string.format('[RaceManager] Caution lap %d (leader %s on lap %d)',
         race.cautionLaps, rec.name, completed))
     end
-    -- THE LEADER MAKES THE CAUTION OFFICIAL, and this crossing is the lap it is
-    -- called on. Everyone else locks their own place as they complete the SAME
-    -- lap number, which is what racing back to the line pays out: first back is
-    -- first, and a car a lap down is a lap down however close behind it sits.
+    -- The leader makes the caution official on this lap; everyone else locks as
+    -- they complete the same lap.
     if race.cautionPending then
       race.cautionPending = false
       race.caution        = true
@@ -6044,89 +4051,44 @@ function RM_onLap(pid, rawData)
         completed, rec.name))
     end
   end
-  -- THIS DRIVER'S CAUTION PLACE, settled by their own arrival at the line. Once
-  -- only: the field goes on circulating under the yellow, and a second stamp
-  -- would send a car to the back of its group for obeying the caution.
+  -- This driver's caution place, once.
   lockCaution(rec, completed)
-  -- THE RESTART THE DISTANCE WATCH MISSED. restartWatch normally drops the green
-  -- about ten meters before the line, but it needs race.slotCount (0 for a route
-  -- built in the editor and never saved) and it needs telemetry to have landed
-  -- near the line. Neither is guaranteed, and a restart that was called and then
-  -- never fell would leave the field circulating under a yellow forever. The
-  -- leader's crossing is the backstop: a tick late, and always there.
-  --
-  -- THE FROZEN LEADER, not ledThisLap. Under a caution the two are different
-  -- questions: ledThisLap asks who reached a lap NUMBER first, and a car that
-  -- was a lap down when the yellow fell goes on circulating and claiming lap
-  -- numbers nobody at the front has reached yet. cautionLeader asks who is top
-  -- of the board, which is the car the restart is actually waiting on -- and it
-  -- answers correctly when that car retires under the yellow, which a stored
-  -- position would not.
-  --
-  -- A RED FLAG HOLDS IT, the same way it holds the distance watch and the pace
-  -- lap's. Red means stop where you are, and a leader who rolls the last few
-  -- meters to the line under one must not restart the race by arriving.
+  -- The restart the distance watch missed (no slotCount, or no telemetry near
+  -- the line): the leader's crossing is the backstop. cautionLeader, not
+  -- ledThisLap (a lapped car claims lap numbers the front has not reached). Not
+  -- under red.
   if race.restartPending and race.flag ~= 'red' and rec == cautionLeader() then
     restartRace(string.format('%s took the line (distance watch did not fire)', rec.name))
   end
 
-  -- New lap (or the flag): the checkpoint/distance telemetry from the lap just
-  -- completed must not linger and rank this driver against the next one.
+  -- New lap: the old lap's telemetry must not rank this driver.
   progress.clear(rec)
 
-  -- Two ways a crossing can be a driver's last, and they are checked together so
-  -- the removal below is reached by one route rather than two.
-  --
-  --   * the session's lap target, if it has one; or
-  --   * the expired clock. Once the final lap is armed, ANY crossing that
-  --     arrives is terminal.
-  --
-  -- That second rule is what settles the "crossed the line at almost exactly the
-  -- moment the clock expired" case, and it settles it the way this file settles
-  -- every other question of who was first: by arrival order at the server. A
-  -- crossing the server sees before expiry starts another lap; one it sees after
-  -- ends that driver's session. There is no clock skew to argue about, no
-  -- client-reported timestamp to trust, and the same input always produces the
-  -- same outcome.
-  --
-  -- Note this lap still COUNTS: the time set on it goes into Best Lap above, and
-  -- can improve a driver's position. That is deliberate and it is what makes a
-  -- final lap worth running -- the order is not frozen at expiry, it settles when
-  -- the last driver has taken the flag.
+  -- Is this crossing the driver's last? The lap target; the expired clock (once
+  -- finalLap is armed, ANY crossing, settled by arrival order at the server); or
+  -- a timed race's final lap NUMBER (everyone gets that whole lap). The lap still
+  -- COUNTS: its time can improve a position.
   local target = sessionLapTarget()
-  --   * completing the final lap of a timed race. Held separately from
-  --     race.finalLap because it is a LAP NUMBER, not "your next crossing":
-  --     everyone still running gets that whole lap, however far round they were
-  --     when the leader started it.
   local lastLap = (target and completed >= target) or race.finalLap
     or (race.lastLapNum ~= nil and completed >= race.lastLapNum)
 
-  -- The leader's crossing after the clock has run out is what starts the final
-  -- lap. Read AFTER lastLap is settled, deliberately: the driver who raises the
-  -- flag must run the lap they have just begun, not be retired by it.
+  -- The leader's crossing after the clock ran out starts the final lap, decided
+  -- after lastLap so they run the lap they just began.
   if not lastLap and ledThisLap and race.raceExpired and not race.lastLapNum then
     armRaceFinalLap(completed + 1)
   end
 
   if lastLap then
-    -- FIRST CAR HOME ON THE FINAL LAP OF A TIMED RACE: the checkered flag is
-    -- out. From here every crossing is terminal, which is what classifies the
-    -- cars behind - including any that are a lap or more down and would
-    -- otherwise still be owed a lap number they will never reach.
+    -- First car home on a timed race's final lap: the checkered flag is out and
+    -- every crossing is terminal (which classifies lapped cars).
     if race.lastLapNum and completed >= race.lastLapNum and not race.finalLap then
       race.finalLap     = true
       race.finalLapLeft = CFG.finalLapGrace
       MP.SendChatMessage(-1, '[RaceManager] CHECKERED FLAG: '
         .. displayName(rec) .. ' wins. Everyone still out is classified as they cross.')
     end
-    -- ENDURANCE, reaching the DISTANCE rather than the clock. The flag falls on
-    -- the first car home and everyone else is classified as they come past,
-    -- which is what a race with a time limit on it means by "over".
-    --
-    -- Deliberately not done for a plain Laps race, where every driver runs the
-    -- full distance and a lapped car goes on circulating until it has. That is
-    -- long-standing behavior a league's results are built on; changing it is a
-    -- decision about how races are scored, not a detail of this mode.
+    -- Endurance reaching the DISTANCE: the flag falls on the first car home. Not
+    -- for a Laps race, where everyone runs the full distance.
     if race.raceMode == 'endurance' and target and completed >= target
         and not race.finalLap then
       race.finalLap     = true
@@ -6142,17 +4104,12 @@ function RM_onLap(pid, rawData)
     else
       why = 'You finished the race: spectating until the flag'
     end
-    -- A car that is done is taken off the track: it has nothing left to gain and
-    -- a parked (or cruising) driver is an obstacle for everyone still running.
-    -- Every one of them comes back at the flag (respawnAll in finishSession), so
-    -- nobody is left stranded.
+    -- A finished car leaves the race (ghosted; back at the flag).
     retireDriver(rec, why)
     print(string.format('[RaceManager] %s completed %d lap(s) at %.3fs (led %d)%s',
       rec.name, completed, race.time, rec.lapsLed, race.finalLap and ' [final lap]' or ''))
     if quali and target and completed >= target then
-      -- The ALLOWANCE, not the crossing target it was turned into: a driver told
-      -- they have used all four laps of a session an admin set to three would be
-      -- right to ask which one they were given.
+      -- The allowance, not the crossing count it became.
       local used = race.qualiLapLimit
       MP.SendChatMessage(-1, string.format('[RaceManager] %s has used all %d qualifying lap%s.',
         displayName(rec), used, used == 1 and '' or 's'))
@@ -6165,21 +4122,12 @@ function RM_onLap(pid, rawData)
       broadcastState()
       return
     end
-    -- ARM THE HOLD rather than closing on the spot. Idempotent, for the same
-    -- reason the derby's is: two drivers taking the flag in the same tick must
-    -- not push the end further away, or a bunched finish extends the session.
-    --
-    -- Only the AUTOMATIC ending is held. An admin pressing End Session means
-    -- now and gets now, which is why this is here rather than in finishSession.
-    --
-    -- What the hold buys happens because the phase is still 'racing' underneath
-    -- it: finished drivers stay ghosted, the checkered flag stays out, and the
-    -- field gets a moment to look at the finish.
+    -- ARM THE HOLD rather than close at once (idempotent: a bunched finish must
+    -- not push it further away). Only the automatic ending is held; the phase
+    -- stays 'racing' underneath, so ghosts and the flag stay up.
     local why = race.finalLap and 'every driver took the flag'
       or (quali and 'every driver used their lap allowance' or 'all drivers finished')
-    -- RACES ONLY. A qualifying session ending is not a finish anybody watches:
-    -- there is no flag, no placement and nothing ghosted to look at, and holding
-    -- it just delays the grid the admin is waiting to generate.
+    -- Races only: nobody watches a qualifying finish.
     if quali then
       finishSession(why)
       return
@@ -6205,12 +4153,9 @@ function RM_onLap(pid, rawData)
   broadcastState()
 end
 
--- Clear Results Cache: delete every saved .txt in the results folder.
---
--- ADMIN ONLY. These files are the only record a league has of a race night once
--- the session is over, and there is no undo. A race director clearing their own
--- copies is a different button and stays open to them: see RM_ClearLocal on the
--- client, which never touches anything on the server.
+-- Clear Results Cache: delete every saved results file. ADMIN ONLY (the
+-- league's only record, no undo); a race director's local copies are cleared on
+-- the client.
 function RM_onClearResults(pid)
   if not auth.requireFull(pid) then return end
   local ok, removed = pcall(clearResultsCache)
@@ -6224,58 +4169,33 @@ function RM_onClearResults(pid)
   print(msg)
 end
 
--- Client asks for current state (UI app just opened).
+-- A client asks for state (the app opened, or it just joined).
 function RM_onRequestState(pid)
   broadcastState(pid)
-  -- ...and the TRACK with it. This is the request a client fires on joining a
-  -- server, so it is the moment a late arrival gets the gates everyone else
-  -- already has. Without it the layout only ever reached whoever happened to be
-  -- connected when the admin pressed Load, and the workaround was waiting for the
-  -- whole field to spawn before loading anything.
+  -- ...and the track, so a late arrival gets the gates...
   race.sendLayoutTo(pid)
-  -- ...and the Garage List, which no longer rides the state push.
+  -- ...and the Garage List (not on the state push).
   if race.garagePush then race.garagePush(pid) end
 end
 
 -- ---------------------------------------------------------------------------
 -- Track layouts: persistent, per-map checkpoint configurations
 -- ---------------------------------------------------------------------------
--- Admins build a gate route with the in-game editor, then save it here under a
--- name. Layouts persist in layouts.json across server restarts and are keyed
--- by the BeamNG level name; the UI only ever sees layouts for the map this
--- server is currently hosting. Loading a layout broadcasts the checkpoints to
--- every connected client at once so the whole grid races the same track.
--- Everything with a path hangs off this, on both sides of the plugin: the derby
--- module is handed it too. Pointing it at Data moved the whole store in one
--- line, which is the reason it was worth one constant in the first place.
+-- Named gate routes, per BeamNG level; the UI only sees this map's. Loading
+-- one broadcasts it to every client. Every path hangs off DATA_DIR.
 local LAYOUTS_DIR  = DATA_DIR
 local LAYOUTS_FILE = LAYOUTS_DIR .. '/layouts.json'
--- ONE FILE PER MAP, in a folder, and it is what layouts.json used to be.
---
--- The flat file grew to every track ever built on the server in one blob: to
--- see which maps had races you parsed it, to hand-edit one gate you scrolled
--- past three hundred KB of others, and every save rewrote the lot so a diff of
--- one track moved the whole file. A folder answers all three -- `ls` is the
--- track list, one file opens one map, and a save touches only the map it
--- changed.
---
--- layouts.json IS STILL READ, exactly once: when this folder does not exist
--- yet, the flat file is loaded and written out per map. After that the folder
--- is the truth and the old file is never read again -- kept on disk as the
--- backup a migration ought to leave, but ignored, because a legacy file that
--- went on being merged would resurrect every layout anybody deleted.
---
--- NAMED FOR WHAT IT HOLDS, spaces and all: an admin poking around the server's
--- files should find "Race Layout" and "Derby Arena" next to each other, not
--- `layouts` beside `derbyArenas.json`. Every path this file builds is quoted at
--- the point it reaches a shell (see listDirectory), so the space costs nothing.
+-- ONE FILE PER MAP in a folder ("Race Layout", spaces and all, beside "Derby
+-- Arena"; every path is quoted where it reaches a shell). The old flat
+-- layouts.json is read ONCE, to migrate, when the folder does not exist; after
+-- that it is kept as a backup and never read (merging it would resurrect
+-- deleted layouts).
 local LAYOUTS_TRACKS = LAYOUTS_DIR .. '/Race Layout'
 local MAX_LAYOUT_NAME = 40
 local layouts = nil  -- lazy-loaded array of { name, map, width, checkpoints }
 
--- Self-contained JSON encode/decode for the layouts file. Util.JsonEncode is
--- still used for network payloads, but persistence gets its own (strict,
--- mock-independent) codec so the headless tests exercise the real file format.
+-- Self-contained JSON for the files on disk (Util.JsonEncode is for the
+-- network), so the headless tests exercise the real file format.
 local function jsonStringify(v, indent)
   local t = type(v)
   if v == nil then return 'null' end
@@ -6293,36 +4213,11 @@ local function jsonStringify(v, indent)
   end
   if t ~= 'table' then return 'null' end
 
-  -- LAID OUT FOR SOMEBODY TO OPEN. Every file this writes is one an admin is now
-  -- expected to hand-edit -- a map's tracks, the garage, the roster -- and a
-  -- single line three hundred kilobytes long is not a file, it is a blob with a
-  -- .json on it.
-  --
-  -- COMPACT LEAVES, and that is the part that makes this readable rather than
-  -- merely long. A NESTED object or array whose values are all scalars prints on
-  -- one line, so a checkpoint is one line and not six:
-  --
-  --     "checkpoints": [
-  --       {"hx": 0, "hy": 1, "width": 20, "x": 10, "y": 0, "z": 0},
-  --       {"hx": 0, "hy": 1, "width": 20, "x": 20, "y": 0, "z": 0}
-  --     ]
-  --
-  -- Fully expanded, a twelve-gate track would be a hundred lines of one number
-  -- each and nobody could see the track for the coordinates.
-  --
-  -- NESTED, though, and never the root. config.json is a flat object of scalars,
-  -- so the leaf rule collapsed the entire file onto one line -- and that is the
-  -- file an admin opens most, because it is the one they are meant to edit. The
-  -- root of a file is a thing you read down; a value inside a list is a thing you
-  -- read across.
-  --
-  -- KEYS ARE SORTED, which is not cosmetic. Lua's `pairs` gives no order, so the
-  -- old writer emitted the same data in a different key order on every save --
-  -- and a file that rewrites itself differently each time cannot be diffed, which
-  -- is most of the point of laying it out at all.
-  --
-  -- The parser skips whitespace between tokens, so everything this writes still
-  -- reads back, and so does a file somebody has reformatted by hand.
+  -- LAID OUT FOR SOMEBODY TO OPEN (admins hand-edit these):
+  --   * a NESTED object or array of scalars is one line (a checkpoint is a
+  --     line, not six); the root never is (config.json is a flat object),
+  --   * keys are SORTED, so a save does not reorder the file and diffs work.
+  -- The parser skips whitespace, so hand-reformatted files still read.
   local pad   = indent or ''
   local inner = pad .. '  '
   local parts, leaf = {}, true
@@ -6435,9 +4330,7 @@ local function jsonParse(text)
   return v
 end
 
--- The BeamMP server config names the hosted level as "/levels/<name>/info.json";
--- everything is normalized down to the bare level name ("gridmap_v2") so saved
--- layouts compare cleanly no matter which form the API returns.
+-- The hosted level, normalised from "/levels/<name>/info.json" to "<name>".
 local function normalizeMapName(raw)
   if type(raw) ~= 'string' then return nil end
   local name = raw:match('/?[Ll]evels/([^/]+)') or raw
@@ -6472,9 +4365,7 @@ local function ensureLayoutsDir()
   makeDirectory(LAYOUTS_DIR)
 end
 
--- Copy one file, bytes for bytes. Used only by the migration below, which is why
--- it is allowed to be this blunt: the files are JSON and results text, none of
--- them large enough for reading one whole into memory to matter.
+-- Copy one small file whole (the migration only).
 local function copyFile(from, to)
   local src = io.open(from, 'rb')
   if not src then return false end
@@ -6487,20 +4378,9 @@ local function copyFile(from, to)
   return true
 end
 
--- MOVE THE SERVER'S OWN DATA UNDER Data/, once.
---
--- Runs before anything is read -- see onInit -- because every path in this file
--- now points into Data and the files are not there yet on the first start after
--- the upgrade.
---
--- COPIES, AND LEAVES THE ORIGINALS. The same rule the layout store's own
--- migration follows and for the same reason: a migration that deletes the only
--- copy of what it is migrating is not a migration. Nothing reads the old paths
--- afterwards, so the leftovers are inert -- and if somebody deletes Data/ they
--- get their last known-good season back rather than an empty server.
---
--- Keyed on Data/ being ABSENT, not on it being empty. A server that has been
--- migrated and then had everything deleted must stay deleted.
+-- MOVE THE SERVER'S OWN DATA UNDER Data/, once, before anything is read
+-- (onInit). COPIES and leaves the originals as a backup (never read again).
+-- Keyed on Data/ being ABSENT, so a deliberately emptied Data/ stays empty.
 local function migrateToDataFolder()
   local probe = io.open(DATA_DIR .. '/.rm', 'a')
   if probe then
@@ -6516,9 +4396,7 @@ local function migrateToDataFolder()
       moved = moved + 1
     end
   end
-  -- The folders: per-map tracks and arenas from an earlier upgrade, and the
-  -- results history. Copied file by file, because there is no recursive copy
-  -- here and these are flat folders of small text files.
+  -- The flat folders (tracks, arenas, results), file by file.
   for _, sub in ipairs({ 'Race Layout', 'Derby Arena', 'results' }) do
     local from = SERVER_DIR .. '/' .. sub
     local names = listDirectory(from)
@@ -6542,16 +4420,10 @@ end
 -- ---------------------------------------------------------------------------
 -- config.json: the settings file, beside layouts.json
 -- ---------------------------------------------------------------------------
--- Read once at boot, written out with the built-in values the first time so
--- there is always a file to edit rather than a format to guess at.
---
--- A KEY THE FILE DOES NOT MENTION KEEPS ITS BUILT-IN VALUE, and an unknown key
--- is ignored. That makes the file safe to trim to the two lines somebody
--- actually cares about, and safe to carry across an upgrade that adds settings.
---
--- Every value is validated against the same limits the live commands use. A
--- hand-typed file is exactly where a lap count of "ten" or a negative countdown
--- comes from, and one bad line must cost that line rather than the boot.
+-- Read once at boot (written with the built-ins on first run). A key the file
+-- omits keeps its built-in value and an unknown key is ignored, so a trimmed
+-- file and an upgrade are both safe. Every value is validated: one bad line
+-- costs that line, not the boot.
 local CONFIG_FILE = LAYOUTS_DIR .. '/config.json'
 
 local function applyConfigTable(data)
@@ -6582,11 +4454,7 @@ local function applyConfigTable(data)
   end
 
   str('adminPassword')
-  -- NOT str(), and the difference is the whole point of this key. str() reads
-  -- an empty string as "not set" and keeps the built-in value, which is right
-  -- for every other setting and wrong for this one: empty is how the moderator
-  -- tier is turned OFF, so a file that says "" has to be obeyed rather than
-  -- ignored back to whatever was there before.
+  -- Not str(): empty is how the moderator tier is turned OFF and must be obeyed.
   if type(data.moderatorPassword) == 'string' then
     CFG.moderatorPassword = data.moderatorPassword; applied = applied + 1
   end
@@ -6597,16 +4465,14 @@ local function applyConfigTable(data)
   num('countdownFrom', 1, 60)
   num('endDelay', 0, 120)
   bool('paceLap')
-  -- The green distance is bounded well below the arming distance on purpose:
-  -- with the two crossed over, the latch could never trip before the trigger
-  -- did and the green would fall on the tick the field was released.
+  -- paceGreenAt is bounded below paceArmAt (see the ordering checks below).
   num('paceGreenAt', 1, 100)
   num('paceReadyAt', 1, 2000)
   num('paceGreenNear', 0.5, 1000)
   num('paceGreenFar', 0.5, 1000)
   num('paceArmAt', 20, 1000)
   bool('luckyDog')
-  -- 0 is a value here and not a floor: it means "a heat runs the race distance".
+  -- 0 means a heat runs the race distance.
   num('heatLaps', 0, CFG.maxTotalLaps)
   num('blueFlagWithin', 0.2, 60)
   num('blueFlagClear', 0.2, 120)
@@ -6623,26 +4489,20 @@ local function applyConfigTable(data)
   num('mapRestartGrace', 10, 3600)
   bool('mapVoting')
   num('mapVotePercent', 1, 100)
-  -- The ghost window has to be a window. A file with min above max would ghost
-  -- nobody, silently, for the whole season.
+  -- min above max would ghost nobody: swapped.
   if CFG.ghostMinSeconds > CFG.ghostMaxSeconds then
     print('[RaceManager] config.json: ghostMinSeconds is above ghostMaxSeconds; swapping them')
     CFG.ghostMinSeconds, CFG.ghostMaxSeconds = CFG.ghostMaxSeconds, CFG.ghostMinSeconds
   end
-  -- The pace lap's two distances have to stay in order for the same kind of
-  -- reason: a green threshold at or above the arming one means the leader is
-  -- inside the trigger before the latch can ever trip, so the flag falls at the
-  -- release and the field never runs the lap. Not swapped -- the two numbers
-  -- mean different things and swapping would produce a working pace lap the
-  -- admin did not ask for -- so the arming distance is pushed clear instead.
+  -- The green threshold at or above the arming one fires at the release, so
+  -- paceArmAt is pushed clear (not swapped: the numbers mean different things).
   if CFG.paceArmAt <= CFG.paceGreenAt then
     CFG.paceArmAt = CFG.paceGreenAt * 2
     print(string.format('[RaceManager] config.json: paceArmAt must be above '
       .. 'paceGreenAt or the green falls at the release; raised it to %.0fm',
       CFG.paceArmAt))
   end
-  -- GET READY has to come before the green can: a warning inside the green zone
-  -- can arrive after the flag it warns about.
+  -- GET READY must come before the green can.
   if CFG.paceGreenFar < CFG.paceGreenNear then
     CFG.paceGreenNear, CFG.paceGreenFar = CFG.paceGreenFar, CFG.paceGreenNear
   end
@@ -6651,11 +4511,8 @@ local function applyConfigTable(data)
     print(string.format('[RaceManager] config.json: paceReadyAt is inside the green '
       .. 'zone, so GET READY could come after the green; raised it to %.0fm', CFG.paceReadyAt))
   end
-  -- The blue flag's two thresholds, and the same treatment for the same reason.
-  -- A clear distance at or below the show distance is no hysteresis at all: the
-  -- flag lights and clears within one broadcast of itself and strobes, which is
-  -- exactly the thing the second number exists to prevent. Pushed clear rather
-  -- than swapped, because swapping would silently invert what the admin typed.
+  -- blueFlagClear at or below blueFlagWithin has no hysteresis and strobes:
+  -- pushed clear.
   if CFG.blueFlagClear <= CFG.blueFlagWithin then
     CFG.blueFlagClear = CFG.blueFlagWithin * 2
     print(string.format('[RaceManager] config.json: blueFlagClear must be above '
@@ -6665,17 +4522,12 @@ local function applyConfigTable(data)
   return applied
 end
 
--- Write the current settings out. Called when the file is missing, and again
--- whenever something durable changes (the admin password).
--- WHAT config.json SHOULD SAY, as text. One definition, so the writer below and
--- the "is the file already this" test in loadConfigFromDisk can never drift into
--- disagreeing -- which would rewrite the file on every single boot.
+-- What config.json should say, defined once for the writer and the "already
+-- this?" test in loadConfigFromDisk (a mismatch would rewrite it every boot).
 local function configFileText()
   return jsonStringify({
     adminPassword  = CFG.adminPassword,
-    -- Written even when empty, so an admin reading the file can see the tier
-    -- exists and how to switch it on. A key that only appears once it is in use
-    -- is one nobody finds.
+    -- Written even when empty, so the tier can be found.
     moderatorPassword = CFG.moderatorPassword,
     totalLaps      = CFG.totalLaps,
     maxResets      = CFG.maxResets,
@@ -6721,10 +4573,8 @@ saveConfigToDisk = function ()
   return true
 end
 
--- The race table is built at load time from CFG's built-in values, which is
--- before config.json has been read -- so the file's values have to be pushed
--- into it afterwards. Anything an admin can also change from the panel starts
--- here and is theirs to move from then on.
+-- Push config.json's values into `race`, which was built before the file was
+-- read.
 local function applyConfigToRace()
   race.totalLaps      = CFG.totalLaps
   race.maxResets      = CFG.maxResets
@@ -6744,8 +4594,7 @@ end
 local function loadConfigFromDisk()
   local f = io.open(CONFIG_FILE, 'r')
   if not f then
-    -- First run on this server. Write what the plugin ships with, so the admin
-    -- has a complete, valid file in front of them instead of a blank page.
+    -- First run: write the shipped settings as a complete file to edit.
     if saveConfigToDisk() then
       print('[RaceManager] Wrote default settings to ' .. CONFIG_FILE)
     end
@@ -6755,36 +4604,16 @@ local function loadConfigFromDisk()
   f:close()
   local ok, data = pcall(jsonParse, text)
   if not ok or type(data) ~= 'table' then
-    -- A broken file is NOT a reason to refuse to start. A league whose server
-    -- will not boot because of a stray comma has a worse evening than one
-    -- running last week's lap count.
+    -- A broken file never stops the boot.
     print('[RaceManager] ' .. CONFIG_FILE .. ' could not be read ('
       .. tostring(data) .. '); using built-in defaults')
     return
   end
   local n = applyConfigTable(data)
-  -- REWRITTEN IF IT IS NOT ALREADY WHAT WE WOULD WRITE, and this is the one file
-  -- that genuinely needs it. Every other store is rewritten by ordinary use --
-  -- save a track, bank a cup round, set a name -- so it reaches the readable
-  -- layout on its own within an evening. config.json is written on exactly two
-  -- occasions: the first boot on a fresh server, and an admin changing the
-  -- password. A server that has done neither since the layout changed keeps a
-  -- one-line file forever, and it is the file most likely to be opened by hand.
-  --
-  -- Two things come out of the rewrite, and the second matters more than the
-  -- formatting: the file gains every setting added since it was written. A
-  -- config listing eight of the twenty-two knobs is one an admin cannot use to
-  -- find out what is tunable -- the missing ones are silently on their defaults
-  -- and there is nothing on the page to say they exist.
-  --
-  -- ONLY WHEN THE BYTES DIFFER, so this happens once and then never again rather
-  -- than on every boot. The values written are the ones just loaded, so nothing
-  -- an admin set is changed by it.
-  --
-  -- A KEY THIS PLUGIN DOES NOT KNOW IS DROPPED, and is named in the log rather
-  -- than vanishing quietly. It was already being ignored -- applyConfigTable
-  -- reads a fixed set -- so the rewrite only makes that visible, which is the
-  -- kindest moment to find out a hand-typed setting was a typo.
+  -- Rewritten ONCE if not already what we would write: config.json is otherwise
+  -- only written on first boot and a password change, so this is how an old file
+  -- gains the readable layout and every setting added since. Values are the ones
+  -- just loaded. Unknown keys are dropped, and named in the log.
   local unknown = {}
   for k in pairs(data) do
     if CFG[k] == nil then unknown[#unknown + 1] = tostring(k) end
@@ -6810,34 +4639,20 @@ local function loadConfigFromDisk()
 end
 
 
--- The file a map's tracks live in. Sanitised because a map name comes out of a
--- level PATH -- `normalizeMapName` takes whatever sits between /levels/ and the
--- next slash -- and a name with a slash or a colon in it would either escape the
--- folder or refuse to open, silently, on one platform and not the other.
+-- The file a map's tracks live in, sanitised (a map name comes from a path).
 local function layoutFileFor(map)
   local safe = tostring(map or 'unknown'):gsub('[^%w%-_%.]', '_')
   if safe == '' then safe = 'unknown' end
   return LAYOUTS_TRACKS .. '/' .. safe .. '.json'
 end
 
--- THE FILES THIS PROCESS READ AND PARSED, by file name.
---
--- The cleanup at the end of a save deletes any track file that no longer has
--- layouts in memory, which is how a map whose last layout was deleted loses its
--- file. Absent this set that rule also fires on a file that failed to PARSE:
--- unreadable means absent from memory, absent from memory means not live, and
--- not live meant deleted. One corrupt file plus one save on an unrelated map
--- destroyed a track for good, and the save that did it was not even on that map.
---
--- So deletion is limited to files this process read and understood. A corrupt
--- one is left exactly where it is, for somebody to look at.
+-- Files this process read and PARSED. A save deletes a map file with no layouts
+-- in memory, but only one of these: a corrupt file is absent from memory too,
+-- and deleting it destroyed a track for good.
 local layoutFileParsed = {}
 
--- Read one map's file. `fallbackMap` is the map its FILENAME claims, and it is
--- used only for an entry that carries no map of its own -- which is what a
--- hand-written file looks like when somebody sensibly declines to repeat the
--- map on every entry in a file named after it. An entry that DOES carry one
--- keeps it, so moving a file does not silently re-home the tracks in it.
+-- Read one map's file. `fallbackMap` (from the filename) only fills an entry
+-- with no map of its own.
 local function readLayoutFile(path, fallbackMap)
   local f = io.open(path, 'r')
   if not f then return {}, false end
@@ -6861,15 +4676,12 @@ local function readLayoutFile(path, fallbackMap)
   return out, true
 end
 
--- Every track file in the folder. Returns nil -- not an empty list -- when the
--- folder does not exist at all, because those are different answers: "no folder"
--- means migrate, and "a folder with nothing in it" means somebody deleted their
--- last layout and must not have it handed back.
+-- Every track file in the folder; nil when the folder is MISSING (migrate),
+-- {} when empty (the last layout was deleted).
 local function readLayoutFolder()
   local names = listDirectory(LAYOUTS_TRACKS)
   if #names == 0 then
-    -- listDirectory cannot tell an empty folder from a missing one, so ask the
-    -- filesystem the only way that works on both: try to open a file in it.
+    -- Empty or missing? Try to open a file in it.
     local probe = io.open(LAYOUTS_TRACKS .. '/.rm', 'a')
     if not probe then return nil end
     probe:close()
@@ -6898,46 +4710,20 @@ local function readLegacyLayouts()
   return readLayoutFile(LAYOUTS_FILE, nil)
 end
 
--- FORWARD DECLARED, because these two now call each other: a save reads the
--- live list through getLayouts, and the first getLayouts writes the migrated
--- folder out through a save. Declared here rather than reordered because there
--- is no order that satisfies both -- and a local resolved before its `local`
--- line is a nil GLOBAL that compiles perfectly and throws when pressed.
+-- Forward declared: a save reads getLayouts, and the first getLayouts saves.
 local getLayouts
 
--- One map's file, written only if it is not already what it should be.
---
--- THE WRITE IS NOT DONE IN PLACE. The old version opened the live file with 'w',
--- which truncates it to nothing before there is a single byte to put back: a
--- crash or a full disk in that window left a truncated file, and a truncated
--- file does not parse, and a file that does not parse used to get deleted on the
--- next save. The whole loss began with a mode character.
---
--- New text goes to a .tmp, is READ BACK to prove it landed whole -- a short
--- write from a full disk does not raise, it just produces a shorter file -- and
--- only then replaces the file it is replacing. A .tmp left behind is a write
--- that failed, and is worth keeping for whoever comes looking.
---
--- TEXT MODE ON BOTH SIDES, deliberately, and not binary. These files are meant
--- to be opened and hand edited, so on Windows they should keep the CRLF line
--- endings every other Windows file has. Text mode is self consistent: writing
--- turns each line feed into CRLF, reading turns it back, so the comparison
--- below is still exact while the file on disk stays a normal Windows text file.
---
--- Binary would have been the obvious choice and is the wrong one twice over. It
--- would rewrite all 29 files once, on the first save after an upgrade, purely to
--- strip their line endings -- and mixing the two, reading 'rb' against text
--- written 'w', makes the read back comparison fail every time on Windows and
--- every write look like a short write.
---
--- Returns 'same', 'wrote', or nil plus a message.
+-- One map's file, written only if it changed, and never in place: to a .tmp,
+-- READ BACK (a full disk writes short without raising), then swapped in. A
+-- leftover .tmp is a failed write worth keeping. Text mode on both sides: the
+-- files keep Windows line endings and the comparison stays exact (mixing 'rb'
+-- with 'w' fails it on Windows). Returns 'same', 'wrote', or nil and a message.
 local function writeLayoutFile(path, text)
   local cur = io.open(path, 'r')
   if cur then
     local have = cur:read('*a')
     cur:close()
-    -- jsonStringify sorts its keys, so equal contents really do produce equal
-    -- bytes and this comparison is not just usually right.
+    -- Sorted keys make equal contents equal bytes.
     if have == text then return 'same' end
   end
 
@@ -6955,10 +4741,8 @@ local function writeLayoutFile(path, text)
     return nil, 'short write to ' .. tmp .. ' (disk full?); ' .. path .. ' left as it was'
   end
 
-  -- os.rename will not replace an existing file on Windows, so the old one goes
-  -- first. That leaves a gap between two syscalls rather than around a whole
-  -- write, and if the rename still fails the .tmp is deliberately KEPT: it holds
-  -- the only good copy at that point and deleting it is the actual data loss.
+  -- os.rename will not replace a file on Windows, so the old one goes first. If
+  -- the rename fails the .tmp is KEPT: it is the only good copy.
   removeFile(path)
   local ok, rerr = os.rename(tmp, path)
   if not ok then
@@ -6971,8 +4755,7 @@ end
 local function saveLayoutsToDisk()
   ensureLayoutsDir()
   makeDirectory(LAYOUTS_TRACKS)
-  -- Grouped first, so a map with no layouts left is visible as an absence and
-  -- can have its file removed below.
+  -- Grouped first, so a map with no layouts left shows as an absence.
   local byMap = {}
   for _, l in ipairs(getLayouts()) do
     local m = l.map or 'unknown'
@@ -6982,30 +4765,18 @@ local function saveLayoutsToDisk()
   local failed = nil
   for map, list in pairs(byMap) do
     local path = layoutFileFor(map)
-    -- EVERY MAP IS SERIALISED, but only the ones that changed are written.
-    -- Saving one track used to rewrite the whole folder: 29 files and 700 KB on
-    -- a real server, every save, all with the same timestamp so nothing showed
-    -- which track had actually been touched. Worse, it put every OTHER map
-    -- through the truncate-and-rewrite window above for a change that had
-    -- nothing to do with them.
+    -- Every map is serialised; only changed ones are written.
     local status, err = writeLayoutFile(path, jsonStringify({
       version = 1, map = map, layouts = list }))
     if not status then
       failed = failed or err
     else
-      -- Ours now, so deleting its last layout later still removes the file.
+      -- Ours now, so deleting its last layout later removes the file.
       layoutFileParsed[path:match('[^/]+$')] = true
     end
   end
-  -- A MAP WHOSE LAST LAYOUT WAS DELETED loses its file. Left behind, it would be
-  -- read again on the next boot and hand back the track that was just deleted --
-  -- which is the one bug a per-map store can have that a single file cannot.
-  --
-  -- ONLY files this process read and parsed, or wrote itself. A file that failed
-  -- to parse is missing from memory for that reason alone, and a file somebody
-  -- dropped in since boot has never been read at all; neither is evidence that a
-  -- track was deleted, and deleting them here is how a corrupt file used to take
-  -- a track with it.
+  -- A map whose last layout was deleted loses its file (or the next boot hands
+  -- it back), but ONLY files this process parsed or wrote.
   for _, name in ipairs(listDirectory(LAYOUTS_TRACKS)) do
     local base = name:match('^(.*)%.json$')
     if base and layoutFileParsed[name] then
@@ -7031,9 +4802,7 @@ getLayouts = function ()
       print(string.format('[RaceManager] Loaded %d saved layout(s) from %s/',
         #layouts, LAYOUTS_TRACKS))
     else
-      -- FIRST BOOT AFTER THE UPGRADE. The flat file is read, split per map and
-      -- written out; from here the folder is the store and this branch is never
-      -- taken again.
+      -- First boot after the upgrade: split the flat file per map, once.
       layouts = readLegacyLayouts()
       print(string.format('[RaceManager] Migrating %d layout(s) from %s into %s/',
         #layouts, LAYOUTS_FILE, LAYOUTS_TRACKS))
@@ -7050,23 +4819,13 @@ getLayouts = function ()
   return layouts
 end
 
--- Checkpoints as the client editor stores them: position + normalized travel
--- heading (the gate's rotation) + the shared gate dimensions saved per layout.
--- Per-checkpoint width/height overrides are optional and only kept when
--- present, so a gate with no override inherits the layout-wide defaults.
--- The same shape describes a start position (a placement + a facing), so the
--- starting grid goes through this too.
+-- Checkpoints as the editor stores them: position, heading, optional size; the
+-- same shape serves start positions.
 sanitizeCheckpoints = function (raw)
   if type(raw) ~= 'table' then return nil end
-  -- The symbols a marker may carry. Mirrors marker.KINDS in the client
-  -- extension and is kept in step by hand; a symbol missing from here is
-  -- dropped rather than stored, so the failure mode is a marker that reverts to
-  -- the default rather than a layout that will not load.
-  --
-  -- INSIDE the function, not beside it. This file is at Lua's 200-local ceiling
-  -- too -- the same one the client extension documents -- and one more up there
-  -- stops the whole plugin compiling. Rebuilt per call, which costs nothing:
-  -- this runs on save and load, not per frame.
+  -- Marker symbols, mirroring marker.KINDS on the client (kept in step by hand;
+  -- an unknown one reverts to the default). Built inside the function for the
+  -- locals ceiling: this runs on save and load only.
   local MARKER_KINDS = {
     right = true, left = true, up = true, down = true,
     uturn = true, splitRight = true, splitLeft = true,
@@ -7079,32 +4838,15 @@ sanitizeCheckpoints = function (raw)
     out[i] = { x = x, y = y, z = z, hx = tonumber(cp.hx) or 0, hy = tonumber(cp.hy) or 1 }
     if tonumber(cp.width)  then out[i].width  = tonumber(cp.width)  end
     if tonumber(cp.height) then out[i].height = tonumber(cp.height) end
-    -- DEPTH IS BACK, and it means something new.
-    --
-    -- The old one was a third box dimension and was dropped when a gate became a
-    -- flat rectangle. This one is the other half of the vertical: height is how
-    -- far the gate rises above the point it was placed at, depth how far it
-    -- drops below. A gate used to be centerd, so making it tall enough to see
-    -- buried an equal amount of it under the road.
-    --
-    -- Carried, not validated against height: they are independent, and a gate
-    -- with no depth is a legal gate that simply does not reach below the surface.
+    -- Depth: how far the gate drops below its placement point (height rises
+    -- above). Independent of height.
     if tonumber(cp.depth) then out[i].depth = tonumber(cp.depth) end
-    -- A pit stall's box length. Dropped here, the client would treat every
-    -- stall as an old one and reset its size on each load.
+    -- A pit stall's length, or the client resets its size on every load.
     if tonumber(cp.length) then out[i].length = tonumber(cp.length) end
-    -- Gates score in either direction; oneWay puts one back for the geometry
-    -- where direction is the only thing separating two legs of a track. Carried
-    -- only when set, like the size overrides above.
+    -- oneWay, only when set.
     if cp.oneWay == true then out[i].oneWay = true end
-    -- A DIRECTION MARKER'S SYMBOL, carried but never interpreted. The server
-    -- has no idea what these mean and does not need one: markers are signage,
-    -- they arm nothing and score nothing, and the only thing this side owes
-    -- them is storing what an admin placed and handing it back unchanged.
-    --
-    -- Whitelisted rather than passed through, because this is the one field on
-    -- a checkpoint that reaches the client as a LOOKUP KEY. Anything else in it
-    -- draws nothing at all, silently, on every client at once.
+    -- A marker's symbol: stored, never interpreted, but whitelisted because the
+    -- client uses it as a lookup key (an unknown one draws nothing).
     if type(cp.kind) == 'string' and MARKER_KINDS[cp.kind] then
       out[i].kind = cp.kind
     end
@@ -7113,19 +4855,9 @@ sanitizeCheckpoints = function (raw)
   return out
 end
 
--- Branch gates: a flat list, each carrying the checkpoint it is another way
--- through. Rejects rather than repairs, like every other sanitizer here -- a
--- layout that half-loaded would put drivers on a track that is not the one that
--- was saved.
---
--- `slotCount` is the main route's length, and every slot number is checked
--- against it: a branch gate for a checkpoint that does not exist is a gate no
--- driver can ever be asked for, and clamping it into range would arm it at a
--- different corner of the track instead.
---
--- SEVERAL GATES MAY SHARE A CHECKPOINT and that is the feature, so unlike the
--- version this replaced there is no duplicate-slot rejection. Three ways through
--- one corner is three branch gates on the same slot.
+-- Branch gates. Rejected, not repaired (a half-loaded layout is not the track
+-- that was saved). Every slot is checked against the route length: clamping
+-- would arm a gate at another corner. Several may share a slot.
 sanitizeBranches = function (raw, slotCount)
   if raw == nil then return nil end
   if type(raw) ~= 'table' then return nil end
@@ -7151,8 +4883,7 @@ sanitizeBranches = function (raw, slotCount)
   return out
 end
 
--- Strict map filter: the UI only ever sees layouts saved for the map this
--- server is hosting right now.
+-- Only layouts for the map this server is hosting now.
 local function layoutsForCurrentMap()
   local map = getCurrentMap()
   local list = {}
@@ -7163,22 +4894,11 @@ local function layoutsForCurrentMap()
   return list, map
 end
 
--- WHAT THIS PLAYER IS ALLOWED TO SEE.
---
--- An admin gets every layout on the map. Everybody else gets the ones approved
--- for practice, and this is the authoritative half of that rule: hiding rows in
--- the UI is presentation, and a client that stopped hiding them would be asking
--- for a list the server had already sent. The unapproved ones never leave the
--- server for a non-admin at all.
---
--- A broadcast reaches admins and drivers on one wire and cannot be tailored, so
--- it carries what the least privileged recipient may have -- and every admin is
--- then sent the full list addressed to them, which lands second.
+-- What this player may see: an admin, every layout; anyone else, only those
+-- approved for practice. Authoritative: the others never leave the server.
 local function layoutsVisibleTo(pid, list)
-  -- isAuthenticated, NOT requireAuth. This is a visibility question, not a
-  -- refused command: requireAuth tells the client its login has lapsed, which
-  -- for a driver who never had one would log them out of nothing, repeatedly,
-  -- every time a layout list went out.
+  -- isAuthenticated, not requireAuth (which would tell a driver their login
+  -- lapsed).
   if pid and isAuthenticated(pid) then return list end
   local out = {}
   for _, l in ipairs(list) do
@@ -7190,10 +4910,7 @@ end
 local function sendLayoutList(targetPid)
   local all, map = layoutsForCurrentMap()
 
-  -- BROADCAST IS -1, NOT nil. Every call site in this file spells it out, so a
-  -- `if targetPid then` here reads as "one player" for the broadcasts too --
-  -- which quietly sent every admin the driver-visible list and emptied the
-  -- layout panel of whoever had just pressed Save.
+  -- Broadcast is -1, not nil.
   if targetPid and targetPid ~= -1 then
     local list = layoutsVisibleTo(targetPid, all)
     print(string.format('[RaceManager] Sending layout list to %s: %d of %d layout(s), map %s',
@@ -7203,23 +4920,9 @@ local function sendLayoutList(targetPid)
     return
   end
 
-  -- ONE ADDRESSED LIST PER PLAYER. Never a broadcast plus a correction.
-  --
-  -- A broadcast and a targeted send are NOT ordered against each other.
-  -- Measured in a live client log, microseconds apart, on three saves:
-  --
-  --   478.66203: 0 layout(s)   478.66206: 26     ends full
-  --   607.78806: 26            607.78808: 0      ends EMPTY
-  --   810.94613: 26            810.94616: 0      ends EMPTY
-  --
-  -- Two in three delivered the admin's full list first and the driver-visible
-  -- one after it, so the admin who had just pressed Save was left reading "no
-  -- layouts saved for this map" with their selection cleared. Logging out and
-  -- back in fixed it because that path sends exactly one message.
-  --
-  -- So nobody is told twice. Each player is sent the one list they should see.
-  -- A save is rare and a field is tens of players, which is nothing against a
-  -- bug that loses an admin's place in the middle of building a track.
+  -- ONE ADDRESSED LIST PER PLAYER, never a broadcast plus a correction: the two
+  -- are not ordered, and an admin was left with the driver-visible (empty) list
+  -- two saves in three.
   local sent, withheld = 0, 0
   for pid in pairs(onlinePlayers()) do
     local list = layoutsVisibleTo(pid, all)
@@ -7230,9 +4933,8 @@ local function sendLayoutList(targetPid)
   print(string.format('[RaceManager] Sent the layout list to %d player(s): %d layout(s), '
     .. '%d given the practice-only view, map %s', sent, #all, withheld, map))
 
-  -- KEPT, GUARDED: the old broadcast, for a build where MP.GetPlayers() comes
-  -- back empty with players actually connected. Silence would be worse than the
-  -- race this replaced, because nobody would get a list at all.
+  -- KEPT, GUARDED: the old broadcast, for a build where MP.GetPlayers() is empty
+  -- with players connected.
   if sent == 0 then
     local safe = layoutsVisibleTo(nil, all)
     print('[RaceManager] No players enumerated; falling back to a broadcast of '
@@ -7245,13 +4947,8 @@ function RM_onRequestLayouts(pid)
   sendLayoutList(pid)
 end
 
--- Approve (or un-approve) a layout for practice.
---
--- Allowed WHILE A SESSION IS UNDER WAY, unlike the rest of the layout commands.
--- It changes nothing about the running race: no gates move, no rule changes,
--- nothing is sent to anybody in the session. It only decides what a driver may
--- pull up on their own afterwards, and refusing it for twenty minutes because a
--- race is on would be a rule with no reason behind it.
+-- Approve or withdraw a layout for practice. Allowed mid-session: it changes
+-- nothing about the running race.
 function RM_onSetLayoutPractice(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data or type(data.name) ~= 'string' then return end
@@ -7275,8 +4972,7 @@ function RM_onSetLayoutPractice(pid, rawData)
   end
 end
 
--- A driver stopped practising: End Practice, their lap target, or a session
--- starting under them. Any player, about themselves only.
+-- A driver stopped practising (End Practice, their lap target, a session).
 function RM_onPracticeEnd(pid)
   local rec = players[pidKey(pid)]
   if not rec or not rec.practicing then return end
@@ -7300,69 +4996,40 @@ function RM_onPracticeGhost(pid, rawData)
   broadcastState()
 end
 
--- Send the loaded track to one client, or to everyone with -1.
---
--- Called wherever somebody might not have it: when a player joins, when they ask
--- for state, and when a grid forms. Sending it again to a client that already has
--- it is harmless -- applying a layout is idempotent, and it is the same payload
--- they applied the first time.
+-- Send the loaded track to one client, or everyone (-1): on join, on a state
+-- request and when a grid forms. Idempotent.
 function race.sendLayoutTo(target)
   if type(race.layout) ~= 'table' then return false end
   MP.TriggerClientEvent(target or -1, 'RM_ApplyLayout', Util.JsonEncode(race.layout))
   return true
 end
 
--- Strict track-state purge. Drops the in-memory layout cache (the next access
--- re-reads layouts.json from disk, so nothing stale survives in a global) and
--- orders every client to delete its checkpoint arrays and 3D gate visuals.
--- Broadcast on server boot and immediately before a new layout is applied, so
--- ghost checkpoints from an earlier session can never leak into a new one.
+-- Track purge: drop the layout cache and order every client to clear its gates,
+-- on boot and before a new layout is applied.
 local function clearTrackState(reason)
   layouts = nil
   race.layout = nil
-  -- The track's RULES go with the track. A purge that left gridOffLine standing
-  -- carried the old layout's out lap onto whatever was loaded next -- including
-  -- onto no track at all, where nothing could explain where it came from.
+  -- The track's rules go with it, or the old out lap rides onto the next track.
   race.gridOffLine = false
   race.slotCount   = 0
   race.branches    = {}
   race.jokerGates  = 0
   MP.TriggerClientEvent(-1, 'RM_ClearTrack', Util.JsonEncode({ reason = reason or 'clear' }))
-  -- The panel has to hear about all of that. Same gap the layout LOAD had: the
-  -- fields above are session state the UI displays, RM_Tick does not run while
-  -- no session is going, and RM_ClearTrack only carries the gates. Clearing a
-  -- track left the joker toggle and the grid count reading the old layout's.
+  -- And the panel: RM_ClearTrack only carries the gates.
   broadcastState()
   print('[RaceManager] Track state cleared: ' .. (reason or 'clear'))
 end
 
--- Client/UI asked for an explicit full clear (also refreshes everyone's list).
+-- An explicit full clear (also refreshes everyone's layout list).
 function RM_onClearTrackState(pid)
   if not requireAuth(pid) then return end
   clearTrackState('requested by ' .. (MP.GetPlayerName(pid) or pid))
   sendLayoutList(-1)
 end
 
--- NOTHING LOADED: no race track, no derby arena, one press.
---
--- The two live in separate modules with separate state, separate broadcasts and
--- separate clears, so "put the server back to nothing" was two commands on two
--- different tabs and the second was easy to forget. What that leaves behind is
--- not obvious either: an arena with no race track still draws its walls, and a
--- track with no arena still arms its gates.
---
--- Forwarded through the derby's OWN handlers rather than reaching into its
--- state. Two reasons, and the second is the one that would have bitten:
---
--- The derby is a module with its own state and its own broadcast, and going
--- through its public entry points is the boundary the file was split along.
--- It also has to be done this way round: `derby` is a local declared some six
--- hundred lines BELOW this, so naming it here would compile fine and resolve to
--- a nil global the first time an admin pressed the button. The RM_* handlers
--- are globals and resolve at call time, which is exactly what is needed.
---
--- Refused mid-session for the same reason a load is: this pulls the track out
--- from under whoever is driving on it.
+-- Nothing loaded: no race track and no derby arena, one press. The derby is
+-- cleared through its own global RM_* handlers (the `derby` local is declared
+-- far below and would be a nil global here). Refused mid-session.
 function RM_onClearEverything(pid)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then
@@ -7372,13 +5039,8 @@ function RM_onClearEverything(pid)
   local who = MP.GetPlayerName(pid) or pid
   clearTrackState('cleared by ' .. who)
   sendLayoutList(-1)
-  -- "No arena loaded" is an empty boundary and an empty start grid. The rules
-  -- (wall height, the out-of-bounds and demolished timers, the reset allowance)
-  -- are settings rather than an arena and are deliberately left alone: an admin
-  -- clearing the map is not asking for their timers to be reset too.
-  --
-  -- Each of these refuses on its own while a derby is running, so a running
-  -- derby is safe without a check here.
+  -- An empty boundary and start grid; the derby's settings are left alone, and
+  -- each handler refuses on its own during a running derby.
   RM_onDerbyClearBoundary(pid)
   RM_onDerbyClearStarts(pid)
   local msg = '[RaceManager] Everything cleared by ' .. who
@@ -7387,10 +5049,8 @@ function RM_onClearEverything(pid)
   print(msg)
 end
 
--- Save the checkpoints the client bundled up as a named layout for the current
--- map. Same name on the same map overwrites (that's the edit workflow); the
--- refreshed list goes to every client so all open UIs stay in sync.
--- Every rejection branch logs its reason so a dropped save is diagnosable.
+-- Save the client's bundle as a named layout for this map; the same name
+-- overwrites. Every rejection is logged.
 function RM_onSaveLayout(pid, rawData)
   if not requireAuth(pid) then return end
   print(string.format('[RaceManager] RM_SaveLayout from %s: %s byte(s)',
@@ -7419,9 +5079,7 @@ function RM_onSaveLayout(pid, rawData)
 
   local map = getCurrentMap()
   local starts = sanitizeCheckpoints(data.startPositions)
-  -- What is already stored under this name, if anything. Held before the new
-  -- entry is built, because the whole point of the check below is to compare the
-  -- two -- see the silent-drop guard after it.
+  -- What is stored under this name already, for the silent-drop guard below.
   local existing = nil
   for _, l in ipairs(getLayouts()) do
     if l.map == map and l.name:lower() == name:lower() then existing = l; break end
@@ -7433,68 +5091,35 @@ function RM_onSaveLayout(pid, rawData)
     height      = tonumber(data.height) or 8,
     depth       = tonumber(data.depth)  or 2,
     checkpoints = checkpoints,
-    -- Optional rallycross joker route (Module 2): a second, independent gate
-    -- set stored with the layout. Absent on plain circuits.
+    -- Optional joker route.
     joker       = sanitizeCheckpoints(data.joker),
-    -- Optional starting grid: where the cars line up for this track.
     startPositions = starts,
-    -- Optional pit lane: stalls a driver may pull into for a repair. Kept out
-    -- of the checkpoint list on purpose -- they are an area, not a gate to be
-    -- passed in order, and lap validation must never see them.
+    -- Optional pit stalls: an area, never in lap validation.
     pits         = sanitizeCheckpoints(data.pits),
-    -- THE PIT LANE'S MOUTH AND ITS EXIT. Arrays, not single gates, because a
-    -- lane can have more than one way in and a layout that could only hold one
-    -- would need this format changing again the first time somebody built a
-    -- track that did.
-    --
-    -- Optional, and the client falls back to showing every stall all the time
-    -- when there is no entry gate: an existing layout must not go blank because
-    -- a new field it has never heard of is absent.
+    -- The pit lane's entry and exit gates (arrays: a lane may have several ways
+    -- in). Optional: without an entry gate the client shows every stall.
     pitEntry     = sanitizeCheckpoints(data.pitEntry),
     pitExit      = sanitizeCheckpoints(data.pitExit),
-    -- Signage travels with the track it points around: a stage without its
-    -- markers is a stage nobody can follow.
     markers      = sanitizeCheckpoints(data.markers),
-    -- Sprint stage or circuit. A property of the track, not of the session.
     pointToPoint = data.pointToPoint == true,
-    -- APPROVED FOR PRACTICE: may a non-admin load this on their own, with no
-    -- session running, to drive it and be timed locally?
-    --
-    -- Opt-in, and it defaults to FALSE for every layout including ones saved
-    -- before this existed. A track an admin is midway through building, or one
-    -- kept back for an event, should not become public the moment the server
-    -- learns the word "practice". Turning it on is one click; turning it back
-    -- off after somebody has already been driving it is not.
-    --
-    -- Carried through a re-save so editing a layout never silently revokes its
-    -- approval, which would look like the toggle not working.
+    -- Approved for practice? Opt-in, default false (a track mid-build must not go
+    -- public), and carried through a re-save so editing never revokes it.
     practice     = (data.practice == true) or (existing ~= nil and existing.practice == true),
-    -- Optional branching routes: the other ways round this track. Validated
-    -- against the main route's length, so a slot number can never point past the
-    -- end of the lap it is overriding.
+    -- Optional branch gates, validated against the route length.
     branches     = sanitizeBranches(data.branches, #checkpoints),
-    -- Does the grid sit somewhere other than the start/finish line? Decides
-    -- whether a race gives its first lap away (see outLapOwed) -- and a head-on
-    -- layout, whose two directions cannot share a row of slots, always does.
+    -- Grid off the S/F line (see outLapOwed).
     gridOffLine  = data.gridOffLine == true,
   }
-  -- A branch array that was sent but did not survive validation is a rejected
-  -- save, not a track quietly saved without its other way round: half the field
-  -- would be driving at a gate that is not there.
+  -- A branch array sent but invalid rejects the save.
   if data.branches ~= nil and not entry.branches then
     print('[RaceManager] Save rejected: branch gates malformed '
       .. '(bad or out-of-range checkpoint number, or bad coordinates)')
     return
   end
-  -- ---------------------------------------------------------------------
-  -- The silent-drop guard. A save writes whatever the sending client is holding,
-  -- so any client path that empties one collection and leaves the route alone
-  -- turns the next same-name save into unannounced data loss. Reported live as a
-  -- track that came back with no joker route, no pit stall and no grid.
-  --
-  -- A save that would empty a section the stored layout HAS is refused and
-  -- reported back; the UI asks and re-sends confirmDrop. Only whole sections
-  -- count: deleting one of six start positions is ordinary editing.
+  -- THE SILENT-DROP GUARD: a save writes what the client holds, so a client path
+  -- that empties one section turns a same-name save into data loss. Emptying a
+  -- WHOLE section the stored layout has is held for the admin to confirm
+  -- (RM_SaveHeld, then confirmDrop).
   if existing and data.confirmDrop ~= true then
     local function had(t) return type(t) == 'table' and #t or 0 end
     local lost = {}
@@ -7518,8 +5143,7 @@ function RM_onSaveLayout(pid, rawData)
     end
   end
 
-  -- Saving is also the moment the server learns this track's grid size, so the
-  -- "more drivers than start positions" warning is accurate straight away.
+  -- Saving tells the server this track's grid size.
   race.startSlots = starts and #starts or 0
   broadcastState()
   local all = getLayouts()
@@ -7548,11 +5172,7 @@ function RM_onSaveLayout(pid, rawData)
   sendLayoutList(-1)
 end
 
--- Show the field a flag. Green or yellow, admin only, and only while something
--- is actually running: a caution with nobody on track is noise.
---
--- Announced in chat as well as broadcast, because the panel is not where a
--- driver's eyes are when a caution is called.
+-- Show the field a flag, while a session runs; announced in chat too.
 function RM_onSetFlag(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -7562,23 +5182,10 @@ function RM_onSetFlag(pid, rawData)
     MP.SendChatMessage(pid, '[RaceManager] No session is running, so there is nothing to flag.')
     return
   end
-  -- THE MANUAL GREEN IS THE PACE LAP'S OVERRIDE, and it is the reason no timeout
-  -- is needed here. A field that has crashed, spun or simply stopped will never
-  -- bring its leader back to the line, and rather than guess at how long a
-  -- formation lap is allowed to take, the marshal who can see the track calls it
-  -- -- with the same button they would use for any other green. Routed through
-  -- dropGreenFlag so the automatic and the manual green leave identical state.
-  --
-  -- LIFTING A RED IS NOT A GREEN. Checked FIRST, above both the pace lap and the
-  -- caution below it, because red is a condition laid over the session rather
-  -- than a state change: whatever the field was under before the stoppage, it is
-  -- still under it after. A formation lap goes back to forming up and a
-  -- neutralised race goes back to its caution -- rather than the wreck being
-  -- moved and the field being waved off in the same keystroke.
-  --
-  -- Neither the pace lap nor the caution can be ended THROUGH a red, and that is
-  -- the point: lift it, then call the green (or the restart) when the track is
-  -- actually clear.
+  -- LIFTING A RED IS NOT A GREEN: checked first, the field goes back to the pace
+  -- lap or caution it was under; the green or restart is called separately.
+  -- A manual green otherwise ends a pace lap (no timeout needed: the marshal can
+  -- see the track) through dropGreenFlag.
   if want == 'green' and race.flag == 'red' and (race.pacing or race.caution) then
     race.flag = 'yellow'
     MP.SendChatMessage(-1, string.format(
@@ -7596,19 +5203,9 @@ function RM_onSetFlag(pid, rawData)
     dropGreenFlag('green called by ' .. tostring(MP.GetPlayerName(pid) or pid))
     return
   end
-  -- ...and the same for a caution. A green called by hand IS the restart, so it
-  -- goes through the one function that ends one -- otherwise the flag would turn
-  -- green with the order still frozen, and the board would sit on a stale
-  -- classification for the rest of the race with nothing left to unfreeze it.
-  --
-  -- The red case is handled above, so what is left here is a plain green called
-  -- on a neutralised race, and that IS the restart.
-  --
-  -- The panel no longer offers a plain green during a race at all (Restart is
-  -- its own button), so this path now serves a chat command and any older client
-  -- still sending one. Guarded rather than removed: this is the keystroke a
-  -- marshal has been using, and a green that only changed the flag would go
-  -- racing with the order still frozen and nothing left to unfreeze it.
+  -- A green on a neutralised race IS the restart, through restartRace, or the
+  -- order would stay frozen. Kept for chat commands and older clients (the
+  -- panel offers Restart instead).
   if want == 'green' and race.caution then
     restartRace('green flag called by ' .. tostring(MP.GetPlayerName(pid) or pid))
     return
@@ -7632,14 +5229,8 @@ function RM_onSetFlag(pid, rawData)
   broadcastState()
 end
 
--- Delete a saved layout by name, under the current map only. Refused mid-session
--- like loading is. A deleted layout that is currently loaded is forgotten too:
--- race.layout pointing at a removed entry would keep serving joining players a
--- track nobody could load again.
---
--- ADMIN ONLY. A layout is an evening's work driving the course gate by gate,
--- and deleting one is the only thing in the editor a moderator could do that
--- nobody can put back.
+-- Delete a saved layout (this map only); refused mid-session. A loaded one is
+-- forgotten too. ADMIN ONLY: an evening's work with no undo.
 function RM_onDeleteLayout(pid, rawData)
   if not auth.requireFull(pid) then return end
   if sessionUnderWay() then
@@ -7676,33 +5267,18 @@ function RM_onDeleteLayout(pid, rawData)
   print(string.format('[RaceManager] Delete failed: no layout "%s" for map %s', data.name, map))
 end
 
--- Load a saved layout, in one of TWO senses, and the difference is the whole
--- point of this handler.
---
---   forEditing = true   Private. The layout goes to the ONE admin who asked and
---                       nowhere else, and no server state moves. This is an
---                       admin opening a track to work on it.
---
---   forEditing = false  Public. The layout becomes the track the server is
---                       racing: broadcast to everybody, race.* updated, chat
---                       told. This is what Load Layout has always done.
---
--- Both were the second one, which is why two admins could not build anything at
--- the same time. Opening a track to edit it moved the whole server onto it and
--- overwrote whatever the other admin had in progress. The client-side buffer
--- guard stops the damage; this is what stops the collision happening at all.
---
--- Locked once a countdown/race is under way in both senses - nobody swaps the
--- track mid-race, and nobody edits during one either.
+-- Load a saved layout, in one of three senses:
+--   forPractice   any player, approved layouts, no session: targeted
+--   forEditing    PRIVATE to the admin who asked; no server state moves, so two
+--                 admins can build on one map at once
+--   neither       PUBLIC: the server's raced track, broadcast to everybody
+-- Locked during a session (practice has its own, stricter rule).
 function RM_onLoadLayout(pid, rawData)
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
   if not ok or type(data) ~= 'table' or type(data.name) ~= 'string' then return end
-  -- A PRACTICE LOAD IS THE ONE FORM OF THIS ANY PLAYER MAY SEND, so the admin
-  -- guard runs after the payload is known rather than before it. Everything the
-  -- practice branch is then allowed to do is targeted at the sender and touches
-  -- no race state; its own rules (approved layout, no session running) are
-  -- enforced inside it.
+  -- A practice load is the one any player may send: the admin guard runs after
+  -- the payload is known.
   if data.forPractice ~= true then
     if not requireAuth(pid) then return end
     if sessionUnderWay() then return end
@@ -7711,44 +5287,17 @@ function RM_onLoadLayout(pid, rawData)
   local list, map = layoutsForCurrentMap()
   for _, l in ipairs(list) do
     if l.name:lower() == data.name:lower() then
-      -- PRIVATE LOAD: this admin's editor, and nothing else.
-      --
-      -- Targeted rather than broadcast, and it returns before a single race.*
-      -- field is touched. That is what makes two admins on one map independent:
-      -- neither the gates nor the grid nor the joker count leave this client, so
-      -- there is nothing for the other admin's session to notice.
-      --
-      -- The purge is targeted for the same reason, and it has to be sent: the
-      -- client drops its old gates on RM_ClearTrack, and an apply without one
-      -- would leave the previous track's checkpoints standing underneath.
-      -- PRACTICE LOAD: any player, no session running, approved layouts only.
-      --
-      -- The same targeted shape as the editor load below and for the same
-      -- reason -- it returns before a single race.* field is touched, so a
-      -- driver pulling up a track to practice on cannot disturb anybody else's
-      -- session, or each other's.
-      --
-      -- The approval is re-checked HERE rather than trusted from the list that
-      -- was sent. A client can ask for any name it likes; the list is what it
-      -- was shown, not what it may have.
+      -- PRACTICE: targeted, returns before any race.* field is touched. The
+      -- approval is re-checked here; a client can ask for any name.
       if data.forPractice == true then
         if l.practice ~= true then
           MP.SendChatMessage(pid, string.format(
             '[RaceManager] "%s" is not open for practice.', l.name))
           return
         end
-        -- WAITING, NOT merely "not under way".
-        --
-        -- sessionUnderWay() is false during the GRID phase on purpose: an admin
-        -- may still set laps and rules while the field is lined up. Practice is
-        -- a different question. Loading a practice track clears this client's
-        -- gates and applies another set -- doing that to a driver standing on
-        -- the grid for a real session would take the race away from them a
-        -- moment before the lights.
-        --
-        -- 'finished' is excluded for the smaller version of the same reason: the
-        -- results are up and the field is still on track.
-        -- A derby or a drag pass is a session too: its cars are placed and held.
+        -- WAITING only: the grid phase is not "under way", and reloading a
+        -- driver's gates on the grid would take the race from them. A derby or
+        -- drag pass counts as a session too.
         if race.phase ~= 'waiting' or race.derbyUnderWay() or race.dragUnderWay() then
           MP.SendChatMessage(pid,
             '[RaceManager] Practice is for between sessions.')
@@ -7761,8 +5310,7 @@ function RM_onLoadLayout(pid, rawData)
         MP.TriggerClientEvent(pid, 'RM_Practice', Util.JsonEncode({
           on = true, layout = l.name,
         }))
-        -- Recorded for race.practiceRoster. Ghosted only on an explicit true, so
-        -- a client that predates the choice is never ghosted with no way to end it.
+        -- For race.practiceRoster; ghosted only on an explicit true.
         local rec = ensurePlayer(pid)
         if rec then
           rec.practicing    = l.name
@@ -7777,6 +5325,8 @@ function RM_onLoadLayout(pid, rawData)
         broadcastState()
         return
       end
+      -- PRIVATE LOAD: targeted purge and apply, returning before any race.* field
+      -- moves, so another admin's session notices nothing.
       if data.forEditing == true then
         MP.TriggerClientEvent(pid, 'RM_ClearTrack', Util.JsonEncode({
           reason = 'opening "' .. l.name .. '" in the editor',
@@ -7791,24 +5341,17 @@ function RM_onLoadLayout(pid, rawData)
         return
       end
 
-      -- Purge first: every client must drop its existing gates before the new
-      -- set arrives, so no checkpoint from a previous layout can survive.
+      -- PUBLIC LOAD. Purge first, so no gate of the previous layout survives.
       clearTrackState('loading layout "' .. l.name .. '"')
-      -- The grid this track was saved with is now the grid the session uses.
+      -- The saved grid is the session's grid, and the hold is judged against it.
       race.startSlots = (type(l.startPositions) == 'table') and #l.startPositions or 0
-      -- The grid the hold is judged against comes from the layout being loaded,
-      -- not from whichever client happens to report next.
       race.startPositions = (type(l.startPositions) == 'table') and l.startPositions or {}
       race.pointToPoint = l.pointToPoint == true
-      -- The lanes and the grid's relationship to the line arrive with the track,
-      -- so an admin who built a head-on oval gets one back rather than a circuit
-      -- that has forgotten half of what makes it work.
+      -- Branch gates and the grid's relation to the line arrive with the track.
       race.branches    = (type(l.branches) == 'table') and l.branches or {}
       race.gridOffLine = l.gridOffLine == true
       race.slotCount   = #l.checkpoints
-      -- The joker arms against the track that is loaded, not the one that was.
-      -- Loading a circuit with no joker route while the joker lap is switched on
-      -- would otherwise disqualify the whole field at the flag.
+      -- The joker follows the loaded track (no route would disqualify the field).
       race.jokerGates  = (type(l.joker) == 'table') and #l.joker or 0
       if race.jokerGates == 0 and race.jokerEnabled then
         race.jokerEnabled = false
@@ -7816,10 +5359,7 @@ function RM_onLoadLayout(pid, rawData)
           .. '" has no Joker Route.')
         print('[RaceManager] Joker lap auto-disabled: the loaded track has no joker gates')
       end
-      -- ...and the same for the pace lap on a sprint stage, for the same reason
-      -- as in RM_onSetPointToPoint: the rule is inert there, so what is left
-      -- behind is a switch that reads ENABLED and a Start button that has
-      -- changed back underneath it.
+      -- ...and the pace lap on a sprint stage (as RM_onSetPointToPoint).
       if race.pointToPoint and race.paceLap then
         race.paceLap = false
         MP.SendChatMessage(-1, '[RaceManager] Pace lap switched off: "' .. l.name
@@ -7830,19 +5370,8 @@ function RM_onLoadLayout(pid, rawData)
       print(string.format('[RaceManager] Broadcasting RM_ApplyLayout: "%s", %d checkpoint(s), %d start position(s), width %s',
         l.name, #l.checkpoints, race.startSlots, tostring(l.width)))
       MP.TriggerClientEvent(-1, 'RM_ApplyLayout', Util.JsonEncode(l))
-      -- TELL EVERYONE, and not just about the gates.
-      --
-      -- Loading a layout sets the joker gate count, the grid size, whether the
-      -- grid is off the line, the branch gates and point-to-point. All of that is
-      -- session state the panel displays, and none of it went anywhere: this
-      -- handler broadcast the LAYOUT and nothing else.
-      --
-      -- Nothing covered for it either, because RM_Tick returns immediately when
-      -- no session is running, so there is no periodic broadcast while waiting
-      -- for one. The joker toggle stayed locked on a track that has joker gates
-      -- until some unrelated thing pushed state, and loading the layout a second
-      -- time was the reliable way to find one. That is the "click Load Layout
-      -- twice" report, and it survived a first fix aimed at the wrong half.
+      -- And the panel: all of the above is session state, and RM_Tick does not
+      -- push while waiting (the "click Load Layout twice" bug).
       broadcastState()
       local msg = string.format('[RaceManager] Layout "%s" loaded on %s by %s (%d gates, %d start positions)',
         l.name, map, MP.GetPlayerName(pid) or pid, #l.checkpoints, race.startSlots)
@@ -7857,45 +5386,23 @@ end
 -- ---------------------------------------------------------------------------
 -- Module 4: vehicle & setup locking (the Garage List)
 -- ---------------------------------------------------------------------------
--- An admin drives the car they want to allow, presses "Whitelist Current
--- Vehicle", and the client captures that vehicle's exact configuration (model
--- + full part config + tuning variables) as a signature string. Repeat to build
--- a Garage List of allowed cars.
---
--- Enforcement has two layers, because the server has no physics/vehicle
--- introspection of its own:
---   1. BeamMP's onVehicleSpawn / onVehicleEdited hooks: the raw payload carries
---      the jbeam model name ("jbm"), so a car whose *model* is not on the list
---      is canceled outright before it ever exists for other players.
---   2. RM_VehicleConfig: the client reports the exact signature of every
---      vehicle it spawns or re-tunes. A signature that is not on the list gets
---      the vehicle removed and an error pushed to that player's UI.
--- NOBODY IS EXEMPT, admins included. Building the list is done with Enforcing
--- switched off, and an empty list never enforces anything, so the two cases
--- that used to need the exemption are both covered without one.
+-- An admin drives a car and presses Whitelist; the client captures its exact
+-- configuration (model, parts, tuning) as a signature. Enforcement, since the
+-- server cannot inspect vehicles:
+--   1. onVehicleSpawn / onVehicleEdited: a MODEL not on the list ("jbm") is
+--      cancelled before it exists for anyone.
+--   2. RM_VehicleConfig: a signature not on the list has its car removed.
+-- NOBODY IS EXEMPT: lists are built with Enforcing off, and an empty list never
+-- enforces.
 local GARAGE_FILE        = LAYOUTS_DIR .. '/garage.json'
 local MAX_GARAGE_ENTRIES = 60
 local MAX_SIG_LENGTH     = 4000
--- THE STORED CAR: the parts and tuning of an approved entry, held so a driver
--- on any machine can spawn it. Never inspected here beyond having a `parts`
--- table -- the server has no rule that depends on what is in it.
---
--- The limit is on its ENCODED size, measured once at capture. A hundred and
--- twenty slots plus the tuning comes out around six kilobytes, so this is
--- generous rather than tight; the point of it is that a client cannot fill the
--- server's disk with one press of a button.
+-- The stored car (parts and tuning) so any machine can spawn an entry, capped
+-- on its encoded size (about 6 KB is typical) so a client cannot fill the disk.
 local MAX_CFG_LENGTH     = 32000
 
--- A capture's configuration, if it is one, and nil if it is not. Returns the
--- encoded length alongside, because that is the thing being limited and
--- encoding it twice to find out would be the only cost in this path.
---
--- VALIDITY AND LENGTH ARE TWO QUESTIONS. Whether this is a car is answered off
--- the table itself; how big it is can only be answered by encoding it, and an
--- encoder that cannot answer is not evidence that the car is bad. A length of
--- zero therefore means "not measured" and passes the cap, which is the right
--- way round: the cap exists to stop a client filling the disk, and a
--- configuration that will not encode never reaches the disk anyway.
+-- A capture's configuration and its encoded length, or nil. Length 0 means
+-- "not measured" and passes: a config that will not encode never reaches disk.
 local function garageConfigOf(raw)
   if type(raw) ~= 'table' or type(raw.parts) ~= 'table' then return nil, 0 end
   if next(raw.parts) == nil then return nil, 0 end
@@ -7906,51 +5413,27 @@ end
 
 local garage = {
   enforce = false,   -- master switch for the whole rule
-  -- WHICH HALF OF THE SIGNATURE IS MATCHED, and the reason this is a setting
-  -- rather than a constant: a league does not run one rule all season.
-  --
-  --   'parts'  model + parts. Tuning and paint are the driver's business.
-  --            The default, and the common case: a spec series locks what the
-  --            car IS and lets people set it up.
-  --   'strict' model + parts + tuning. Nothing moves at all.
-  --
-  -- Several allowed builds of the same car (a choice of engine, say) is not a
-  -- third mode - it is several entries under 'parts', one per build.
+  -- Which half of the signature is matched:
+  --   'parts'  model + parts; tuning and paint free (the default)
+  --   'strict' model + parts + tuning
+  -- Several allowed builds of one car are several entries, not a third mode.
   mode    = 'parts',
-  -- { { model = 'etk800', label = 'ETK 800 - Race', sig = '...', game = '0.39',
-  --     class = 'GT3' } }
-  --
-  -- `class` IS THE MULTI-CLASS FEATURE, and it lives here rather than on the
-  -- driver because a class is a property of the CAR. GT3 cars are GT3 whoever is
-  -- driving them, so a league sets it once per entry and never again -- against
-  -- a per-driver assignment, which is bookkeeping every driver, every event.
-  --
-  -- Empty or absent means unclassified, which is what every existing entry is
-  -- and what keeps a server that never runs two classes untouched: with no entry
-  -- carrying one, classesInUse() is false and every rule below it is inert.
-  -- `game` is the BeamNG build the entry was captured on. A game update can
-  -- rename vehicle parts without the car changing (BeamNG v0.39 did exactly
-  -- that), and a renamed part changes the signature, so every entry captured on
-  -- an earlier build stops matching. Storing the build is what lets a rejection
-  -- say "this list was captured on an older game version, re-capture it"
-  -- instead of leaving a driver rejected with no explanation. Entries written
-  -- before this field existed simply have no `game`, and are never treated as a
-  -- mismatch on that basis.
+  -- { { model, label, sig, partsSig, game, class, name, pc, cfg } }
+  -- `class` lives on the CAR (GT3 is GT3 whoever drives it); none anywhere
+  -- keeps every class rule inert. `game` is the BeamNG build captured on, so a
+  -- rejection can blame an update that renamed parts.
   list    = {},
 }
 local garageLoaded = false
 
--- A DISPLAY NAME, beside the label captured with the car. Matching reads
--- neither: both are for people. `name` is set from the Garage tab, and clearing
--- it shows the captured label again.
+-- A display name beside the captured label; matching reads neither.
 garage.MAX_NAME = 40
 function garage.nameOf(e)
   return e.name or e.label
 end
 
--- Control characters out, spaces collapsed, capped. nil for nothing left.
--- VALID UTF-8 ONLY, cut on a character: the list rides every state broadcast,
--- and Util.JsonEncode throws on a broken byte, which would stop them all.
+-- Control characters out, spaces collapsed, capped; nil for nothing left.
+-- VALID UTF-8 ONLY: Util.JsonEncode throws on a broken byte.
 function garage.cleanName(raw)
   if type(raw) ~= 'string' then return nil end
   local s = raw:gsub('%c', ' ')
@@ -7974,20 +5457,14 @@ local function loadGarageFromDisk()
     return
   end
   garage.enforce = data.enforce == true
-  -- Anything that is not the word 'strict' is 'parts'. A file written before
-  -- modes existed has no key at all and lands on the default, which is the
-  -- looser of the two: an upgrade must not silently start rejecting the tuning
-  -- changes a league was already allowing.
+  -- Anything but 'strict' is 'parts' (the looser default for an old file).
   garage.mode = (data.mode == 'strict') and 'strict' or 'parts'
   garage.list = {}
   local derived = 0
   for _, e in ipairs(type(data.list) == 'table' and data.list or {}) do
     if type(e) == 'table' and type(e.sig) == 'string' and e.sig ~= '' then
-      -- Entries captured before the split carry only the full signature. The
-      -- parts half is a literal PREFIX of it ('model=X|parts=Y|vars=Z'), so it
-      -- is recovered here rather than demanded back off the admin as a
-      -- re-capture. Greedy '.*' so a part name that somehow contained the
-      -- marker still splits at the LAST one, which is the real boundary.
+      -- An entry from before the split has only the full signature; its parts
+      -- half is the PREFIX before the LAST '|vars=' (greedy).
       local partsSig = e.partsSig
       if type(partsSig) ~= 'string' or partsSig == '' then
         partsSig = e.sig:match('^(.*)|vars=')
@@ -7997,18 +5474,15 @@ local function loadGarageFromDisk()
         model    = tostring(e.model or '?'),
         label    = tostring(e.label or e.model or 'Vehicle'),
         name     = garage.cleanName(e.name),
-        -- nil rather than '' for an entry that has none, so "unclassified" is
-        -- one value everywhere instead of two that have to both be tested for.
+        -- nil, not '', for unclassified.
         class    = (type(e.class) == 'string' and e.class ~= '') and e.class or nil,
         sig      = e.sig,
-        -- nil only if the signature had no vars marker at all, which no
-        -- release has ever written. Such an entry still matches in strict
-        -- mode; garageAllows skips it in parts mode rather than guessing.
+        -- nil only for a signature with no vars marker (none written by any
+        -- release): it matches in strict mode only.
         partsSig = partsSig,
         game     = (type(e.game) == 'string' and e.game ~= '') and e.game or nil,
         pc       = (type(e.pc) == 'string' and e.pc ~= '') and e.pc or nil,
-        -- THE CAR ITSELF. Absent on every entry written before this existed,
-        -- which is what the `pc` fallback above is still here for.
+        -- The car itself; absent on old entries (the `pc` fallback).
         cfg      = (garageConfigOf(e.cfg)),
       }
     end
@@ -8030,23 +5504,12 @@ local function getGarage()
   return garage
 end
 
--- The compact view every state broadcast carries, held until the garage
--- actually changes. nil means "rebuild on the next broadcast".
---
--- Rebuilding it per broadcast meant a table per approved car, three times a
--- second, for the lifetime of the server -- describing a list an admin touches
--- perhaps twice in a session.
+-- The compact view, cached until the garage changes (nil rebuilds).
 local garageView = nil
 
--- THE LIST GOES OUT ON ITS OWN EVENT, when it changes and to each client that
--- asks for state. It rode every RM_Update, three times a second to everyone
--- while a session ran: half of every push at 60 cars, for a list that changes
--- a couple of times a night.
---
--- `seq` orders the pushes. A broadcast and a targeted send are not ordered
--- against each other (the layout list lost an admin's list that way), so the
--- client drops a list older than the one it has. `boot` tells a restarted
--- server's seq from the last one's.
+-- The list goes out on its own event (RM_Garage), on a change and on request:
+-- on every RM_Update it was half of each push at 60 cars. `seq` orders pushes
+-- (a client drops an older one); `boot` tells a restarted server's seq apart.
 garage.seq, garage.boot = 0, os.time()
 
 function race.garagePush(target)
@@ -8065,31 +5528,16 @@ function garage.changed()
 end
 
 local function saveGarageToDisk()
-  -- Persisting the garage and announcing it are the same event: every path that
-  -- alters the list or the enforcement flag has to come through here or the
-  -- change would not survive a restart either, so there is no second rule to
-  -- remember somewhere else. Only the set NAMES change elsewhere.
+  -- Persisting and announcing are one event.
   garage.changed()
-  -- And the same argument for the drivers' verdicts. A ruling reached against
-  -- the OLD list is not evidence about the new one, and clients only re-declare
-  -- when their own car changes -- so an admin who adds the entry that legalises
-  -- somebody would have left them marked as an offender until they next
-  -- happened to touch their setup. Re-judged from the signatures already on
-  -- record instead of cleared, so the panel is correct immediately rather than
-  -- blank until everyone reports again.
+  -- And the drivers are re-judged against the new list at once (clients only
+  -- re-declare on their own change).
   if garageRejudge then garageRejudge() end
   ensureLayoutsDir()
   local f, ferr = io.open(GARAGE_FILE, 'w')
   if not f then return false, tostring(ferr) end
   f:write(jsonStringify({
-    -- version 2 added `mode` and the per-entry `partsSig`; version 3 added the
-    -- per-entry `class`; version 4 added the per-entry `cfg`, the car's own
-    -- parts and tuning, which is what lets a driver on another machine spawn
-    -- the entry at all; version 5 added the per-entry display `name`. Every
-    -- older file still loads: loadGarageFromDisk defaults the mode, derives the
-    -- missing signature half, treats a missing class as unclassified and falls
-    -- back to the saved config's path when there is no `cfg` -- so downgrading
-    -- the plugin is the only thing this breaks.
+    -- v2 mode and partsSig, v3 class, v4 cfg, v5 name. Every older file loads.
     version = 5, enforce = getGarage().enforce, mode = getGarage().mode,
     list = getGarage().list,
   }))
@@ -8100,50 +5548,31 @@ end
 -- ---------------------------------------------------------------------------
 -- NAMED GARAGE SETS: a series in a file
 -- ---------------------------------------------------------------------------
--- A race night runs more than one series, and re-whitelisting every car between
--- them is the evening. So the approved list can be SAVED under a name and
--- loaded back: "GT3", "Trucks", "Legends".
---
--- ONE FILE PER SET, in a folder, exactly as a map's tracks are stored. Each set
--- is independent, hand-editable, and copyable to another server; garage.json
--- stays the small live list that boots.
---
--- NOT KEYED BY MAP, and that is the one place this differs from the layout
--- store it copies. A track belongs to a map; a GT3 field is GT3 wherever it
--- races, which is the whole point when two series share a circuit in one night.
---
--- A SET CARRIES THE LOCK MODE AND NEVER THE ENFORCEMENT SWITCH. Parts or Strict
--- is a property of the series, so it travels with it. Whether the grid is being
--- policed at all is a race-night decision, and a load that silently started or
--- stopped enforcing would be a much bigger action than the button says.
---
--- ONE TABLE, not four locals: this chunk lives against Lua's 200-local ceiling
--- and a field costs nothing against it.
+-- The approved list saved under a name ("GT3", "Trucks") and loaded back. One
+-- file per set, hand-editable and copyable. NOT keyed by map: a GT3 field races
+-- anywhere. A set carries the lock MODE, never the enforcement switch (a load
+-- must not start or stop policing). One table for the locals ceiling.
 local gset = {
   DIR = LAYOUTS_DIR .. '/Garage',
   MAX = 30,
   MAX_NAME = 40,
 }
 
--- Same sanitising rule as layoutFileFor, for the same reason: this reaches a
--- filesystem and a shell.
+-- Sanitised like layoutFileFor: this reaches a filesystem and a shell.
 function gset.fileFor(name)
   local safe = tostring(name or ''):gsub('[^%w%-_%. ]', '_')
   if safe == '' then safe = 'unnamed' end
   return gset.DIR .. '/' .. safe .. '.json'
 end
 
--- Trimmed, capped, and stripped of anything that cannot be a filename. Returns
--- '' for a name that is nothing once cleaned, which every caller refuses.
+-- Trimmed, capped, filename-safe; '' means nothing usable.
 function gset.cleanName(raw)
   local s = tostring(raw or ''):gsub('^%s+', ''):gsub('%s+$', '')
   s = s:gsub('[^%w%-_%. ]', ''):sub(1, gset.MAX_NAME)
   return (s:gsub('%s+$', ''))
 end
 
--- The set names on disk, sorted. Read from the folder rather than cached in
--- memory: a set an admin dropped in by hand should appear without a restart,
--- which is the reason the store is files in the first place.
+-- Set names on disk, read from the folder so a hand-dropped set appears.
 function gset.names()
   local out = {}
   for _, file in ipairs(listDirectory(gset.DIR)) do
@@ -8160,16 +5589,14 @@ function gset.save(name)
   local g = getGarage()
   local f, ferr = io.open(gset.fileFor(name), 'w')
   if not f then return false, tostring(ferr) end
-  -- No `enforce` key, deliberately: see the note above. A set that carried it
-  -- would turn policing on or off as a side effect of being loaded.
+  -- No `enforce` key (see above).
   f:write(jsonStringify({ version = 1, name = name, mode = g.mode, list = g.list }))
   f:close()
   return true
 end
 
--- Returns the stored list and mode, or nil plus a reason. Does NOT install
--- them: the caller does that, so the one path that mutates the live garage
--- stays the one that persists and re-judges it.
+-- The stored set, or nil and a reason. Does not install it: the caller does,
+-- through the one path that persists and re-judges.
 function gset.read(name)
   local f = io.open(gset.fileFor(name), 'r')
   if not f then return nil, 'no set called "' .. tostring(name) .. '"' end
@@ -8182,43 +5609,21 @@ function gset.read(name)
   return data
 end
 
--- Assigned to the forward-declared local near broadcastState so every state
--- broadcast can carry the current Garage List without the racing code knowing
--- how it is stored.
---
--- The table handed back is SHARED between broadcasts, which is the whole point
--- of caching it. Nothing may write to it: broadcastState only reads two fields
--- off it, and the encoder does not touch its argument.
+-- The cached compact view. SHARED between broadcasts: nothing may write to it.
 garageSnapshot = function ()
   if garageView then return garageView end
-  -- getGarage() first: the lazy load from disk has to have happened before the
-  -- view is built off it, and that is what makes the initial load need no
-  -- invalidation of its own.
+  -- getGarage() first, so the lazy load has happened.
   local g = getGarage()
-  -- Signatures can be long; the UI only ever displays model/label, so ship a
-  -- compact view (the signature stays server-side).
   local list = {}
   for i, e in ipairs(g.list) do
-    -- NEITHER THE SIGNATURE NOR THE CAR RIDES ALONG, and for the same reason:
-    -- this table is encoded into every state broadcast, three times a second,
-    -- for the life of the server. The signature is what the server compares
-    -- against and is nobody else's business; the stored configuration is
-    -- kilobytes per entry and is wanted only at the instant somebody presses
-    -- Take, which RM_onTakeGarageCar answers one entry at a time.
-    --
-    -- So the broadcast carries a FLAG instead. `spawn` is the whole of what the
-    -- panel needs to decide whether to offer the button, and the index of the
-    -- row is how the press names the entry it wants.
-    -- `label` is what to SHOW; `default` is the captured label, sent only for a
-    -- renamed entry so the panel can offer it back.
+    -- Neither the signature nor the stored car rides along (the car is kilobytes,
+    -- fetched one entry at a time by RM_onTakeGarageCar): a `spawn` flag instead.
+    -- `label` is what to show; `default` the captured label of a renamed entry.
     list[i] = { model = e.model, label = garage.nameOf(e), class = e.class,
                 default = e.name and e.label or nil,
                 spawn = (e.cfg ~= nil or e.pc ~= nil) or nil }
   end
-  -- The saved set NAMES ride along. They are read off the folder, so a set
-  -- dropped in by hand appears without a restart; the cache below is what stops
-  -- that being a directory listing three times a second, and every path that
-  -- writes a set drops the cache.
+  -- The saved set names, cached here; writing a set drops the cache.
   garageView = { list = list, enforce = g.enforce, mode = g.mode, sets = gset.names() }
   return garageView
 end
@@ -8230,29 +5635,9 @@ local function garageEnforcing()
   return g.enforce and #g.list > 0
 end
 
--- EXACT-duplicate test, and deliberately always on the full signature whatever
--- the mode is. A capture that differs only in tuning adds nothing under 'parts'
--- but is a distinct, meaningful entry under 'strict' - and an admin building a
--- list on a Tuesday for a strict race on a Friday would be blocked from adding
--- it if this followed the mode. Only a byte-identical capture is a duplicate.
-local function garageHasSig(sig)
-  for _, e in ipairs(getGarage().list) do
-    if e.sig == sig then return true end
-  end
-  return false
-end
-
--- Does this setup match anything on the list, under the mode currently in
--- force? The ONE place the mode is interpreted, so 'parts' cannot mean one
--- thing to the live check and another to the grid audit.
---
--- An entry with no partsSig is skipped rather than guessed at in parts mode.
--- That only happens to a signature with no vars marker in it, which no release
--- has ever written; loadGarageFromDisk derives the rest.
--- WHICH ENTRY THIS CAR IS, or nil. The matcher garageAllows has always been,
--- returning the row rather than a yes -- because the row is where the class
--- lives and "is this car allowed" and "what class is this car" are the same
--- lookup asked twice.
+-- WHICH ENTRY THIS CAR IS under the mode in force, or nil: the ONE place the
+-- mode is interpreted, and where the class lives. An entry with no partsSig is
+-- skipped in parts mode.
 local function garageMatch(partsSig, fullSig)
   local strict = getGarage().mode == 'strict'
   for _, e in ipairs(getGarage().list) do
@@ -8265,33 +5650,15 @@ local function garageMatch(partsSig, fullSig)
   return nil
 end
 
--- The boolean every existing caller wants, kept as its own name rather than
--- having a dozen call sites learn to compare against nil. `carOk` is
--- three-valued and an entry table in it would read as true from Lua and as
--- something else entirely from the wire.
-local function garageAllows(partsSig, fullSig)
-  return garageMatch(partsSig, fullSig) ~= nil
-end
-
--- Re-rule every driver against the list as it stands now. Called from
--- saveGarageToDisk, so a capture, a removal, Clear Garage, the enforcement
--- switch and the mode switch all get this for free.
---
--- Reads only what RM_onVehicleConfig already recorded. A driver who has never
--- declared has no signature and stays at nil, which is "no answer yet" and not
--- "offender" -- the distinction the panel and the audit both depend on.
+-- Re-rule every driver against the list as it stands (from saveGarageToDisk:
+-- capture, removal, clear, enforcement and mode). Reads recorded declarations
+-- only; no declaration stays nil, "no answer yet", never an offender.
 garageRejudge = function ()
   local enforcing = garageEnforcing()
-  -- The KEY is bound now, not discarded. It is the player id rejectVehicle
-  -- needs, and reading it off a `_` loop would have been a nil global: it
-  -- compiles, and throws the first time a swap actually refuses somebody.
+  -- The key is the player id rejectVehicle needs.
   for pid, rec in pairs(players) do
-    -- ONE LOOKUP, TWO ANSWERS. The class is re-derived whether or not the rule
-    -- is being enforced, because an admin who tags an entry "GT3" has to see the
-    -- drivers in that car become GT3 immediately -- not when they next happen to
-    -- touch their setup. This function already runs on every capture, removal,
-    -- mode switch and enforcement toggle, which is exactly the set of moments a
-    -- class can change.
+    -- One lookup, two answers: the class is re-derived even when not enforcing,
+    -- so a newly tagged entry regroups its drivers at once.
     local entry = rec.carSig and garageMatch(rec.carPartsSig, rec.carSig) or nil
     local was, wasCar = rec.class, rec.carLabel
     rec.class = entry and entry.class or nil
@@ -8304,44 +5671,19 @@ garageRejudge = function ()
     else
       rec.carOk = entry ~= nil
     end
-    -- AND ACT ON IT. Recording the verdict is not enforcing it, and for the life
-    -- of this feature that is all this did: swap to a list that does not cover
-    -- somebody and their car sat there, legal to drive, marked an offender in an
-    -- audit nobody had open. Every rejectVehicle call lived in the declaration
-    -- and spawn handlers, and a client only re-declares when its OWN car changes
-    -- -- so a driver sitting still was never re-checked by anyone. Reported as
-    -- "it didnt remove the wendover when I was on the Off Road list", against a
-    -- panel that promises "unapproved cars are deleted for everyone".
-    --
-    -- ON THE TRANSITION ONLY. This runs on every capture, removal, mode switch
-    -- and enforcement toggle, and a driver already refused has already had their
-    -- car deleted and been told why; repeating it on each of those is a message
-    -- storm for one offence.
-    --
-    -- NOT MID-SESSION. Loading a set is already refused while a session runs,
-    -- but a capture or an enforcement toggle is not, and pulling cars out from
-    -- under a running field is worse than the offence: garageAudit already names
-    -- offenders at the countdown, which is the moment it matters.
+    -- And act on it: a driver sitting still never re-declares, so a list swap
+    -- that stops covering them must remove their car here. On the TRANSITION only
+    -- (no message storm), and NOT mid-session (garageAudit names offenders at
+    -- the countdown).
     if rec.carOk == false and wasOk ~= false and not sessionUnderWay() then
       rejectVehicle(pid, nil, 'the Garage List changed and no longer covers this car')
     end
   end
 end
 
--- Who is about to start a race in a car the Garage List does not cover.
---
--- Assigned to the forward declaration near broadcastState so the countdown can
--- reach it. Reads the verdicts RM_onVehicleConfig and garageRejudge already
--- recorded rather than re-deriving anything: the server has no vehicle
--- introspection of its own, so the last declaration IS the evidence.
---
--- Admins appear in this list. They are never removed from their car, which is
--- precisely why they have to be visible here - an admin exempt from the check
--- AND absent from the audit is an unapproved car nobody can see.
---
--- A driver with no verdict at all (carOk nil) is not an offender. That is
--- "hasn't declared yet", not "illegal", and treating the two the same would
--- flag every driver for the first seconds after enforcement is switched on.
+-- Who is about to start in a car the list does not cover, from recorded
+-- verdicts. Admins are listed too (never invisible); carOk nil is "not declared
+-- yet", not an offender.
 garageAudit = function ()
   local bad = {}
   if not garageEnforcing() then return bad end
@@ -8358,13 +5700,8 @@ garageAudit = function ()
   return bad
 end
 
--- The bare jbeam name, however the two sides happen to spell it.
---
--- The list stores whatever veh:getJBeamFilename() returned and the spawn packet
--- carries "jbm", and there is no promise anywhere that those agree on case, on
--- a leading path, or on the .jbeam extension. A mismatch there refuses a car
--- that is plainly on the list, with a message blaming the model, so the
--- comparison is made on the part both forms always share.
+-- The bare jbeam name: case, a leading path and .jbeam may differ between the
+-- list (getJBeamFilename) and the spawn packet ("jbm").
 local function garageModelKey(model)
   if type(model) ~= 'string' or model == '' then return nil end
   model = model:match('([^/]+)$') or model
@@ -8383,15 +5720,9 @@ local function garageHasModel(model)
   return false
 end
 
--- A signature mismatch on a car whose MODEL is approved is the shape a stale
--- Garage List takes after a BeamNG update that renamed vehicle parts: the
--- driver is in an allowed car, but the stored signature was built from part
--- names the game no longer uses. When the entry was captured on a different
--- build than the driver is running, say so - the admin has to re-capture, and
--- nothing on the server can work that out for them. Returns nil when the
--- versions match, are unknown, or the model was never approved in the first
--- place, so an ordinary "you tuned a car that isn't allowed" rejection keeps
--- its plain wording.
+-- An approved MODEL with a mismatched signature, captured on a different game
+-- build: a game update renamed parts and the admin must re-capture. nil keeps an
+-- ordinary rejection's wording.
 local function garageVersionSkew(model, clientGame)
   if type(clientGame) ~= 'string' or clientGame == '' then return nil end
   local wanted = garageModelKey(model)
@@ -8405,33 +5736,12 @@ local function garageVersionSkew(model, clientGame)
   return nil
 end
 
--- Tell a driver their car is not allowed, and (unless `advisory`) have it
--- deleted.
---
--- THE DELETION HAPPENS ON THE CLIENT, which is not where it looks like it
--- should. MP.RemoveVehicle wants BeamMP's own per-player vehicle id - the one
--- handed to onVehicleSpawn below - and the id arriving on RM_VehicleConfig is
--- the client's veh:getID(), a BeamNG game object id from an unrelated numbering
--- space. So the call matched nothing and failed silently inside its pcall, and
--- every refused setup produced a message and no consequence. The client knows
--- which car is its own without any id, so it is sent the order instead.
---
--- The MP.RemoveVehicle call is KEPT, guarded on a vid that came from a source
--- that actually uses BeamMP ids (the spawn hook passes one; the config report
--- does not, and passes nil). Where the id is right it removes the car server-
--- side too, which is a second belt on the one path that has one.
---
--- `advisory` told a driver without taking the car away. NOTHING PASSES IT NOW:
--- admins are refused on the same terms as everyone else, which is a deliberate
--- reversal of how this shipped. Building the list is done with Enforcing OFF -
--- an admin who needs an unapproved car in order to capture it turns the switch
--- off first, and an empty list never enforces anything, so the first capture of
--- a session needs no special case either.
---
--- The branch is KEPT rather than deleted. Which way this rule should point is a
--- league decision that has already changed once, and putting it back is passing
--- `true` from the two call sites again rather than rebuilding the path under
--- time pressure on a race night.
+-- Tell a driver their car is not allowed and have it deleted. THE DELETION IS
+-- THE CLIENT'S: MP.RemoveVehicle wants BeamMP's own vehicle id, and the config
+-- report carries veh:getID(), so it matched nothing. The MP.RemoveVehicle call
+-- is kept for the spawn hook, which has the right id. `advisory` (tell, do not
+-- remove) is passed by nobody now that admins are not exempt; KEPT so the rule
+-- can be flipped back from the two call sites.
 rejectVehicle = function (pid, vid, why, advisory)
   if MP.RemoveVehicle and vid and not advisory then
     pcall(MP.RemoveVehicle, pid, vid)
@@ -8441,7 +5751,7 @@ rejectVehicle = function (pid, vid, why, advisory)
       and 'Vehicle/Setup not on the Garage List (admin: not removed).'
       or  'Vehicle/Setup not allowed in this session.',
     detail  = why or '',
-    -- The client deletes its own car on this flag and on nothing else.
+    -- The client deletes its own car on this flag alone.
     remove  = not advisory,
   }))
   print(string.format('[RaceManager] %s vehicle from %s (%s)',
@@ -8460,10 +5770,7 @@ function RM_onWhitelistVehicle(pid, rawData)
   end
   local sig = data.sig and tostring(data.sig) or ''
   if sig == '' or #sig > MAX_SIG_LENGTH then
-    -- ANSWERED TO THE ADMIN, not just the console. This used to print and
-    -- return, so the button did nothing visible and the car was believed to be
-    -- on a list it had never reached - which then reads as "the Garage List
-    -- refuses a car I whitelisted", the hardest kind of bug to see.
+    -- Answered to the admin, or the car is believed listed when it is not.
     print('[RaceManager] Whitelist rejected: missing or oversized configuration signature ('
       .. #sig .. ' bytes, limit ' .. MAX_SIG_LENGTH .. ')')
     MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
@@ -8481,20 +5788,10 @@ function RM_onWhitelistVehicle(pid, rawData)
     if e.sig == sig then dupe = e; break end
   end
   if dupe then
-    -- A RE-CAPTURE BACKFILLS THE SAVED CONFIG PATH, and without this there is
-    -- no way to get one onto an entry that predates the field. Every list
-    -- captured before drivers could take a car has no `pc`, the Take button is
-    -- hidden for exactly that reason, and re-capturing the same car was refused
-    -- as a duplicate: the only fix left was Clear Garage and start again.
-    --
-    -- Only ever fills in or corrects the path. Nothing else about a stored
-    -- entry moves, because the signature matched, so there is nothing else that
-    -- could have changed.
+    -- A re-capture of a listed car backfills what an older entry lacks: the
+    -- stored parts first, else the config path. Nothing else moves (the
+    -- signature matched).
     local incoming = (type(data.pc) == 'string' and data.pc ~= '') and data.pc:sub(1, 200) or nil
-    -- AND THE CAR, which is the half that matters now. Every entry captured
-    -- before the parts were stored can only be spawned by the admin who has the
-    -- file; re-capturing the same car is how it gains a configuration the rest
-    -- of the field can use, and that was refused as a duplicate.
     local incomingCfg, cfgLen = garageConfigOf(data.cfg)
     if incomingCfg and cfgLen > MAX_CFG_LENGTH then incomingCfg = nil end
     if incomingCfg and dupe.cfg == nil then
@@ -8518,10 +5815,7 @@ function RM_onWhitelistVehicle(pid, rawData)
       broadcastState()
       MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
         added = true,
-        -- NOT "so drivers can take this car" any more, which is what this
-        -- said and is no longer true of a path on its own: a path resolves
-        -- only where the file is. The parts are what make an entry takeable,
-        -- and this capture had none to offer.
+        -- A path alone only works where the file is: say so.
         message = (had and 'Updated' or 'Added') .. ' the saved config path for "'
           .. garage.nameOf(dupe) .. '". This car still has no stored parts, so only '
           .. 'someone who already has that file can take it.',
@@ -8542,9 +5836,7 @@ function RM_onWhitelistVehicle(pid, rawData)
     }))
     return
   end
-  -- Clients since the parts/tuning split send both halves. One that does not is
-  -- an older build, and its full signature still carries the parts half as a
-  -- prefix, so it is recovered here on exactly the rule loadGarageFromDisk uses.
+  -- An older client sends no partsSig: recovered from the prefix, as on load.
   local partsSig = data.partsSig and tostring(data.partsSig) or ''
   if partsSig == '' or #partsSig > MAX_SIG_LENGTH then
     partsSig = sig:match('^(.*)|vars=')
@@ -8556,16 +5848,10 @@ function RM_onWhitelistVehicle(pid, rawData)
     sig      = sig,
     partsSig = partsSig,
     game     = (type(data.game) == 'string' and data.game ~= '') and data.game or nil,
-    -- THE SAVED CONFIG'S PATH, and the only field on an entry a driver can act
-    -- on. BeamNG spawns straight from it, so this is what lets somebody take a
-    -- car off the list instead of building it by hand. Absent for a car edited
-    -- in the session rather than loaded from a file; an entry without one is
-    -- simply not offered.
+    -- The saved config's path (absent for a car edited in the session).
     pc       = (type(data.pc) == 'string' and data.pc ~= '') and data.pc:sub(1, 200) or nil,
-    -- THE CAR, and the only field that makes an entry spawnable on a machine
-    -- other than the one it was captured on. Over the limit it is DROPPED
-    -- rather than truncated: half a parts list is not a car, and an entry
-    -- without one at least falls back to the path honestly.
+    -- The car: what makes an entry spawnable elsewhere. Over the limit it is
+    -- dropped, never truncated.
     cfg      = (newCfgLen <= MAX_CFG_LENGTH) and newCfg or nil,
   }
   if newCfg and newCfgLen > MAX_CFG_LENGTH then
@@ -8589,17 +5875,9 @@ function RM_onWhitelistVehicle(pid, rawData)
   broadcastState()
 end
 
--- A DRIVER PRESSED TAKE. Deliberately NOT behind requireAuth.
---
--- Taking an approved car is the driver's half of the Garage List and always has
--- been: the entry is already whitelisted, the spawn happens entirely on the
--- client, and the new car re-declares itself and is ruled on like any other. An
--- unapproved car gains nothing by being spawned this way, so there is nothing
--- here for an admin gate to protect.
---
--- One entry, answered to one player. The stored configuration is kilobytes and
--- the state broadcast goes to everybody three times a second, which is why it
--- is not on there: this is the request that fetches it, once, on a press.
+-- A driver pressed Take: NOT admin-gated (the entry is approved, and the new car
+-- is ruled on like any other). One entry to one player: the stored car is
+-- kilobytes, fetched once on a press.
 function RM_onTakeGarageCar(pid, rawData)
   local idx = decodeNumber(rawData, 'index')
   if not idx then return end
@@ -8607,10 +5885,7 @@ function RM_onTakeGarageCar(pid, rawData)
   local g = getGarage()
   local e = g.list[idx]
   if not e then
-    -- The list moved under them: an admin removed an entry, or loaded a
-    -- different set, between the broadcast that drew the button and the press.
-    -- Answered rather than dropped, because a button that does nothing is the
-    -- hardest kind of failure to report.
+    -- The list moved under them: answered, never dropped.
     MP.TriggerClientEvent(pid, 'RM_GarageCar', Util.JsonEncode({
       rmProtocol = RM_PROTOCOL,
       message = 'That garage entry is gone: the list changed while you were looking at it',
@@ -8628,9 +5903,7 @@ function RM_onTakeGarageCar(pid, rawData)
   MP.TriggerClientEvent(pid, 'RM_GarageCar', Util.JsonEncode({
     rmProtocol = RM_PROTOCOL,
     model = e.model, label = garage.nameOf(e),
-    -- BOTH, and the client prefers the parts. The path is worth sending even
-    -- when the parts are there: nothing else would ever repair an entry whose
-    -- stored configuration turns out to be undecodable on the far side.
+    -- Both; the client prefers the parts, the path is the fallback.
     cfg = e.cfg, pc = e.pc,
   }))
 end
@@ -8661,15 +5934,8 @@ function RM_onRemoveGarageEntry(pid, rawData)
     .. (MP.GetPlayerName(pid) or pid))
 end
 
--- TAG A GARAGE ENTRY WITH A CLASS, or clear it with an empty string.
---
--- NOT IDLE-LOCKED, and that is a deliberate difference from the regulations that
--- are. Changing the lap count mid-race changes the distance under cars already
--- running; changing a class changes how the board is GROUPED, which is a
--- presentation of the same race and is exactly the correction an admin needs to
--- be able to make when they notice mid-session that an entry was tagged wrong.
--- saveGarageToDisk re-judges every driver, so the board regroups on the next
--- broadcast rather than at the next declaration.
+-- Tag an entry with a class (empty clears). NOT idle-locked: it regroups the
+-- board, it does not change the race.
 function RM_onSetGarageClass(pid, rawData)
   if not requireAuth(pid) then return end
   if type(rawData) ~= 'string' or rawData == '' then return end
@@ -8679,12 +5945,9 @@ function RM_onSetGarageClass(pid, rawData)
   local g = getGarage()
   if idx < 1 or idx > #g.list then return end
   local class = tostring(data.class or '')
-  -- Trimmed and capped. The results file pads this column to twelve, and a class
-  -- name longer than that would shear every row after it -- the same reason the
-  -- alias has a length limit.
+  -- Trimmed to the results file's 12-column class field, ASCII only (bytes,
   class = class:gsub('^%s+', ''):gsub('%s+$', ''):sub(1, 12)
-  -- ASCII only, for the reason displayName is: the results file is a fixed-width
-  -- text table and a multi-byte character counts as more than one column.
+  -- not characters, are padded).
   class = class:gsub('[^%w%-%. ]', '')
   g.list[idx].class = (class ~= '') and class or nil
   saveGarageToDisk()
@@ -8695,11 +5958,8 @@ function RM_onSetGarageClass(pid, rawData)
     MP.GetPlayerName(pid) or pid))
 end
 
--- GIVE A GARAGE ENTRY A NAME TO SHOW, or clear it with an empty string.
---
--- Display only, so either tier and any time, like the class. `was` is the name
--- the admin was looking at: the list is addressed by index and an entry removed
--- in between would otherwise rename its neighbour.
+-- Give an entry a display name (empty clears). `was` guards against the list
+-- moving: it is addressed by index.
 function RM_onSetGarageName(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -8721,7 +5981,7 @@ function RM_onSetGarageName(pid, rawData)
     e.label, garage.nameOf(e), MP.GetPlayerName(pid) or pid))
 end
 
--- Save the approved list under a name, so a series can be put back in one click.
+-- Save the approved list as a named set.
 function RM_onSaveGarageSet(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -8737,9 +5997,7 @@ function RM_onSaveGarageSet(pid, rawData)
       added = false, message = 'Nothing to save: the Garage List is empty' }))
     return
   end
-  -- The cap counts sets that do NOT already exist under this name, so
-  -- overwriting one at the limit is allowed. Refusing that would mean an admin
-  -- at 30 sets could no longer correct any of them.
+  -- Overwriting an existing set is allowed at the cap.
   local existing = false
   for _, n in ipairs(gset.names()) do if n == name then existing = true break end end
   if not existing and #gset.names() >= gset.MAX then
@@ -8764,21 +6022,9 @@ function RM_onSaveGarageSet(pid, rawData)
   print(msg)
 end
 
--- Install a saved set: REPLACING the approved list, or ADDING to it.
---
--- IDLE-LOCKED, unlike tagging a class. Swapping the list mid-race changes who
--- is legal under cars already running, and the audit would start removing them.
---
--- ADDING IS WHAT A MULTI-CLASS NIGHT NEEDS. A league with a set per class had
--- to whitelist a combined field car by car to run them together, and then keep
--- that combination as a fourth set that goes stale the moment either of the
--- real three is corrected. Loading GT3 and then adding Touring builds the same
--- field out of the sets that are already maintained.
---
--- ONE HANDLER FOR BOTH, because everything except the last step is identical:
--- the same idle lock, the same read, the same rebuild of a stored entry into a
--- live one. A second handler would be a near-copy of this, and the half that
--- matters to get right is the rebuild.
+-- Install a saved set, REPLACING the list or ADDING to it (how a multi-class
+-- night is built from per-class sets). Idle-locked: a swap mid-race changes who
+-- is legal under running cars. One handler: only the last step differs.
 function RM_onLoadGarageSet(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -8799,14 +6045,10 @@ function RM_onLoadGarageSet(pid, rawData)
     return
   end
   local g = getGarage()
-  -- ADDING TO AN EMPTY LIST IS A LOAD, and has to be, because the mode comes
-  -- off the set. Nothing to disagree with and nothing to merge into: the first
-  -- Add of an evening behaves exactly like Load Set, which is also what an
-  -- admin pressing it expects.
+  -- Adding to an empty list is a load (the mode comes off the set).
   if append and #g.list == 0 then append = false end
-  -- Rebuilt through the same shape loadGarageFromDisk produces, so a set written
-  -- by an older build, or edited by hand, cannot put a half-formed entry on the
-  -- live list.
+  -- Rebuilt as loadGarageFromDisk does, so an old or hand-edited set cannot put
+  -- a half-formed entry on the live list.
   local list = {}
   for _, e in ipairs(stored.list) do
     if type(e) == 'table' and type(e.sig) == 'string' and e.sig ~= '' then
@@ -8817,17 +6059,13 @@ function RM_onLoadGarageSet(pid, rawData)
       list[#list + 1] = {
         model    = tostring(e.model or '?'),
         label    = tostring(e.label or e.model or 'Vehicle'),
-        -- The display name travels with the set too, for the same reason.
         name     = garage.cleanName(e.name),
         class    = (type(e.class) == 'string' and e.class ~= '') and e.class or nil,
         sig      = e.sig,
         partsSig = partsSig,
         game     = (type(e.game) == 'string' and e.game ~= '') and e.game or nil,
         pc       = (type(e.pc) == 'string' and e.pc ~= '') and e.pc or nil,
-        -- THE CAR TRAVELS WITH THE SET. Dropped here, a series saved on Tuesday
-        -- comes back on Friday as a list of names nobody can spawn -- which is
-        -- the whole bug this field exists to fix, reintroduced by the one path
-        -- that rebuilds entries from scratch.
+        -- The stored car travels with the set, or it comes back unspawnable.
         cfg      = (garageConfigOf(e.cfg)),
       }
     end
@@ -8837,12 +6075,8 @@ function RM_onLoadGarageSet(pid, rawData)
 
   local added, skipped = #list, 0
   if append then
-    -- THE MODES HAVE TO AGREE, and this is the one thing a merge can refuse on.
-    -- Parts and Strict disagree about who is legal, not about who is on the
-    -- list: adopting one set's mode would silently re-rule every car already
-    -- approved under the other, and dropping the incoming set's mode would
-    -- silently re-rule the cars arriving. Neither is a thing to do quietly, so
-    -- neither is done.
+    -- The modes must agree: merging Parts and Strict would silently re-rule one
+    -- side's cars.
     if mode ~= g.mode then
       MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
         added = false,
@@ -8852,11 +6086,8 @@ function RM_onLoadGarageSet(pid, rawData)
           .. 'on its own, or re-save one of them in the other mode.' }))
       return
     end
-    -- DEDUPED ON THE FULL SIGNATURE, and on nothing looser. Two sets sharing a
-    -- car should not list it twice; two TUNES of the same parts should still be
-    -- two entries, because the list is also the menu a driver spawns from and
-    -- collapsing them takes a car away from them. So the test is "is this the
-    -- same entry", not "is this the same rule".
+    -- Deduped on the FULL signature only: two tunes of the same parts are two
+    -- entries a driver can spawn.
     local have = {}
     for _, e in ipairs(g.list) do have[e.sig] = true end
     local fresh = {}
@@ -8868,9 +6099,8 @@ function RM_onLoadGarageSet(pid, rawData)
         fresh[#fresh + 1] = e
       end
     end
-    -- REFUSED WHOLE RATHER THAN PART-LOADED. Adding the eleven that fit out of
-    -- fifteen leaves a field that looks loaded and is four cars short, and the
-    -- four are found by a driver being deleted on a race night.
+    -- Refused whole, never part-loaded (the missing cars would be found by a
+    -- driver being deleted).
     if #g.list + #fresh > MAX_GARAGE_ENTRIES then
       MP.TriggerClientEvent(pid, 'RM_GarageResult', Util.JsonEncode({
         added = false,
@@ -8885,9 +6115,7 @@ function RM_onLoadGarageSet(pid, rawData)
     g.list = list
     g.mode = mode
   end
-  -- saveGarageToDisk persists the live list AND re-judges every driver against
-  -- it, so the grid is re-ruled by the swap rather than at each driver's next
-  -- declaration.
+  -- Persists and re-judges every driver.
   saveGarageToDisk()
   broadcastState()
   local dupNote = skipped > 0
@@ -8908,15 +6136,8 @@ function RM_onLoadGarageSet(pid, rawData)
   print(msg)
 end
 
--- ADMIN ONLY, alongside deleting a layout and for the same reason. A garage set
--- is a whole field captured car by car, and nothing puts a deleted one back.
---
--- Clear Garage is NOT admin-only and is not an inconsistency: it empties the
--- live list, which any saved set puts straight back. This deletes the set.
---
--- The guard is its own line rather than a flag on adminPayload. Two booleans
--- positionally is exactly how the wrong one gets passed, and this reads the same
--- way RM_onDeleteLayout and RM_onClearResults do.
+-- Delete a garage set: ADMIN ONLY (nothing puts it back). Clear Garage is not,
+-- because any saved set refills the live list.
 function RM_onDeleteGarageSet(pid, rawData)
   if not auth.requireFull(pid) then return end
   local data = adminPayload(pid, rawData)
@@ -8940,11 +6161,7 @@ function RM_onSetGarageEnforce(pid, rawData)
     .. ' by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- Switch between locking the parts only and locking parts plus tuning.
---
--- The two modes disagree about who is legal, so every driver's verdict is
--- re-judged against the new one. That happens inside saveGarageToDisk, which is
--- where every other change to the list already goes.
+-- Parts or Strict; saveGarageToDisk re-judges every driver.
 function RM_onSetGarageMode(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -8958,18 +6175,9 @@ function RM_onSetGarageMode(pid, rawData)
   print('[RaceManager] Garage mode set to ' .. mode .. ' by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- Client reported the configuration of a vehicle it just spawned or re-tuned.
--- Which half of it has to match is the enforcement mode's business, not this
--- function's: it asks garageAllows and does as it is told.
---
--- WHAT IS RECORDED HAPPENS WHETHER OR NOT ENFORCEMENT IS ON, and that is the
--- point of recording it. An admin who builds the list and then flips Enforcing
--- can audit the grid immediately, instead of waiting up to two seconds per
--- client for everyone to re-declare a setup the server was already told about.
---
--- ADMINS ARE REFUSED TOO, on the same terms as everybody else. They still
--- appear in the grid audit; there is simply no longer a class of driver the
--- rule does not reach. See rejectVehicle for how to put the exemption back.
+-- A client declared its car's configuration. Recorded whether or not enforcing,
+-- so switching it on can audit at once. Admins are refused like everyone (see
+-- rejectVehicle to restore the exemption).
 function RM_onVehicleConfig(pid, rawData)
   if type(rawData) ~= 'string' or rawData == '' then return end
   local ok, data = pcall(Util.JsonDecode, rawData)
@@ -8977,22 +6185,12 @@ function RM_onVehicleConfig(pid, rawData)
   local sig = data.sig and tostring(data.sig) or ''
   if #sig > MAX_SIG_LENGTH then return end
   local partsSig = data.partsSig and tostring(data.partsSig) or ''
-  -- Older client, one signature only. Its parts half is the prefix, same rule
-  -- as everywhere else this recovery happens.
+  -- An older client sends one signature: its parts half is the prefix.
   if partsSig == '' and sig ~= '' then partsSig = sig:match('^(.*)|vars=') or '' end
   local model = data.model and tostring(data.model) or ''
 
-  -- A SIGNATURE WITH NO PARTS IN IT IS NOT AN ANSWER, and must never be ruled
-  -- on. A client that reports one frame too early (BeamNG has not finished
-  -- loading the vehicle's parts yet) sends 'model=X|parts=', which matches no
-  -- entry on any list - so the server refuses the very car it was just given,
-  -- and the client deletes it. That is the bug that made the Garage List reject
-  -- the car it had been built from. The client guards it too; the server
-  -- refuses to judge it because an old or patched client cannot be relied on to.
-  --
-  -- Returned WITHOUT touching rec.carOk. "Ask again in a moment" has to leave
-  -- the standing verdict alone: overwriting it with nil would blank the panel
-  -- every time anybody respawned.
+  -- A signature with no parts ('model=X|parts=', reported a frame too early) is
+  -- never ruled on, and the standing verdict is left alone.
   if partsSig == '' or partsSig:match('|parts=$') then return end
 
   local rec = ensurePlayer(pid)
@@ -9000,24 +6198,18 @@ function RM_onVehicleConfig(pid, rawData)
   if rec then
     rec.carSig      = sig
     rec.carPartsSig = partsSig
-    -- The list's name for it when it is on the list, so the lap records say
-    -- what the Garage tab says.
+    -- The list's name for it, so lap records match the Garage tab.
     rec.carLabel    = entry and garage.nameOf(entry)
       or (data.label and tostring(data.label) or model)
     rec.carGame     = data.game and tostring(data.game) or nil
-    -- THE CLASS, AND IT DOES NOT WAIT FOR ENFORCEMENT. Which class a car runs in
-    -- and whether that car is legal are different questions, and a league that
-    -- wants two classes scored separately without policing anybody's setup is an
-    -- ordinary thing to want. The verdict below is gated on enforcement; the
-    -- class is not.
+    -- The class does not wait for enforcement: scoring classes without policing
+    -- setups is a fair thing to want.
     rec.class = entry and entry.class or nil
     rememberIdentity(rec)
   end
 
   if not garageEnforcing() then
-    -- Nothing to be non-compliant with. Clearing rather than leaving the last
-    -- verdict standing: a stale red mark on a driver the server is no longer
-    -- policing is worse than no mark at all.
+    -- Not enforcing: clear the verdict rather than leave a stale red mark.
     if rec then rec.carOk = nil end
     return
   end
@@ -9026,11 +6218,7 @@ function RM_onVehicleConfig(pid, rawData)
   if rec then rec.carOk = allowed end
   if allowed then return end
 
-  -- WHAT ACTUALLY DIFFERED, in the server console. A refused driver is told the
-  -- rule they broke, which is all a driver can act on; an admin staring at a car
-  -- that ought to be on the list needs the two signatures side by side, and
-  -- there is nowhere else to get them. Truncated because a full part config is
-  -- long and the head of it is where a difference shows.
+  -- Both signatures side by side in the console, for the admin (truncated).
   local shown = (getGarage().mode == 'strict') and sig or partsSig
   print(string.format('[RaceManager] Garage mismatch (%s mode) for %s',
     getGarage().mode, MP.GetPlayerName(pid) or pid))
@@ -9050,19 +6238,15 @@ function RM_onVehicleConfig(pid, rawData)
       .. 'admin needs to re-capture the Garage List')
     return
   end
-  -- Naming the mode in the refusal is what makes it actionable. "Not on the
-  -- list" tells a driver nothing about whether the fix is undoing a part swap
-  -- or undoing a tune, and those are different evenings.
+  -- Naming the mode tells the driver whether to undo a part swap or a tune.
   rejectVehicle(pid, nil, getGarage().mode == 'strict'
     and 'this exact setup is not on the Garage List (Strict: parts AND tuning are locked)'
     or  'these parts are not on the Garage List (Parts: tuning and paint are free, '
         .. 'parts are locked)')
 end
 
--- BeamMP spawn/edit hooks. The payload is the raw vehicle packet; the jbeam
--- model name is enough to cancel an obviously-disallowed car immediately
--- (returning 1 tells BeamMP to drop the spawn). Returning nothing allows it,
--- and the RM_VehicleConfig check above still has the final word on the setup.
+-- BeamMP spawn/edit hooks: a model not on the list is cancelled at once
+-- (return 1); the setup is ruled on by RM_VehicleConfig.
 local function garageModelFromPacket(data)
   if type(data) ~= 'string' then return nil end
   return data:match('"jbm"%s*:%s*"([^"]*)"')
@@ -9087,20 +6271,10 @@ function RM_onVehicleEdited(pid, vid, data)
 end
 
 -- ===========================================================================
--- DEMO DERBY: its own module now
+-- DEMO DERBY: its own module
 -- ===========================================================================
--- Twelve hundred lines of arena rules used to sit here. They accounted for 47
--- of this chunk's 200 local slots -- measured by deleting the region and
--- compiling, not by counting declarations -- and taking them out moves this
--- file from NINE free slots to fifty-six.
---
--- Everything the derby needs is handed over ONCE below. Every entry is a stable
--- table or a plain function, so there are no getters: `players` and the rest
--- are cleared in place rather than replaced, which is what makes a reference
--- captured at startup still correct after a session reset.
---
--- The twenty-seven RM_Derby* handlers it defines stay global and are reached by
--- name, so MP.RegisterEvent below needs no change at all.
+-- Handed stable tables and plain functions once (`players` is cleared in place,
+-- never replaced). Its RM_Derby* handlers are globals, reached by name.
 local derbyMod = require('derby')
 
 derbyMod.init({
@@ -9108,49 +6282,31 @@ derbyMod.init({
   RM_PROTOCOL = RM_PROTOCOL,
   aliasNote = aliasNote, decodeString = decodeString, displayName = displayName,
   ensureLayoutsDir = ensureLayoutsDir, ensureResultsDir = ensureResultsDir,
-  -- The filesystem three, for the derby module's own per-map arena store. It
-  -- runs the same migration this file does and there is no reason for a second
-  -- copy of "list a folder on either platform".
+  -- The filesystem helpers, for the derby's own per-map arena store.
   listDirectory = listDirectory, makeDirectory = makeDirectory,
   removeFile = removeFile,
   forceSpectate = forceSpectate, getCurrentMap = getCurrentMap,
   isEntrant = isEntrant, jsonParse = jsonParse, jsonStringify = jsonStringify,
   onlinePlayers = onlinePlayers, releaseSpectators = releaseSpectators,
   requireAuth = requireAuth, respawnField = respawnField,
-  -- The arena store has a delete in it too, and deleting an arena is the same
-  -- irreversible thing as deleting a track layout. It gets the same guard.
+  -- Deleting an arena is as irreversible as deleting a layout.
   requireAdmin = auth.requireFull,
   uniqueResultsPath = uniqueResultsPath,
   players = players, race = race, sanitizeCheckpoints = sanitizeCheckpoints,
 })
 
--- The host installs these into its own state; the module does not reach over
--- and write them. Both fill forward declarations made much earlier -- the
--- inert `return false` default on race.derbyUnderWay stays exactly where it
--- was, and still applies if this module ever fails to load.
+-- Installed by the host; the inert defaults apply if the module fails to load.
 race.derbyUnderWay    = derbyMod.underWay
 derbyEntryListChanged = derbyMod.entryListChanged
 
 
--- ===========================================================================
--- End of DEMO DERBY module
--- ===========================================================================
 
 -- ===========================================================================
 -- DRAG RACING: its own module, on the derby's pattern
 -- ===========================================================================
--- A tournament ladder run down a drag strip. It reads TWO things from this
--- file's racing state and writes neither: race.startPositions, which is where
--- the lanes are, and race.slotCount, which is how it knows the loaded layout
--- has a finish line to cross. The strip IS the loaded point-to-point layout --
--- see the note at the top of drag.lua -- so there is no second track editor
--- and no second layout store.
---
--- Every RM_Drag* handler it defines is global and reached by name, so the
--- registrations further down need nothing from this block.
--- IN A BLOCK, so the handle costs this chunk no permanent local at all: Lua's
--- 200 is a cap on locals ALIVE AT ONCE, and this one dies at the `end`. The
--- roster and the cup are wrapped the same way for the same reason.
+-- Reads race.startPositions (the lanes) and race.slotCount (a finish to cross)
+-- and writes neither: the strip IS the loaded point-to-point layout. In a block,
+-- so the handle costs no permanent local.
 do
   local mod = require('drag')
   mod.init({
@@ -9168,35 +6324,27 @@ do
   race.dragSetCupHooks  = mod.setCupHooks
 end
 
--- ===========================================================================
--- End of DRAG RACING module
--- ===========================================================================
 
 -- ===========================================================================
 -- MAP SWITCHING: its own module
 -- ===========================================================================
--- A function called in place, not a do-block: its locals come out of its own
--- budget of 200. A do-block's count against this chunk while it runs, and two
--- here sat one above the file's peak.
---
--- pcall'd: a maps.lua that fails to load costs the Map row and nothing else.
--- Its RM_Map* handlers are installed by init, not at file scope; maps.lua
--- says why.
+-- A function called in place, not a do-block: its locals come from its own 200
+-- (a do-block's count against this chunk while it runs). pcall'd: a failed
+-- maps.lua costs the Map row only.
 ;(function ()
   local ok, mod = pcall(require, 'maps')
   if ok and type(mod) == 'table' then
     mod.paths.data = DATA_DIR
     mod.init({
       CFG = CFG, saveConfig = saveConfigToDisk,
-      -- Either tier: a switch is undone by switching back, and running the
-      -- night is the moderator's job.
+      -- Either tier: a switch is undone by switching back.
       requireAuth = requireAuth, isAdmin = isAuthenticated,
       notifyField = notifyField,
       getCurrentMap = getCurrentMap,
       jsonParse = jsonParse, jsonStringify = jsonStringify,
       listDirectory = listDirectory, makeDirectory = makeDirectory,
       removeFile = removeFile, writeFile = writeLayoutFile,
-      -- Why a switch has to wait, or nil. A restart ends whatever is running.
+      -- Why a switch must wait, or nil.
       busy = function ()
         if sessionUnderWay() then return 'a session is running' end
         if race.derbyUnderWay() then return 'a derby is running' end
@@ -9227,7 +6375,7 @@ end)()
     mapLabel = function (map) return race.mapLabel and race.mapLabel(map) or map end,
     jsonParse = jsonParse, jsonStringify = jsonStringify, writeFile = writeLayoutFile,
     makeDirectory = makeDirectory, removeFile = removeFile,
-    -- Clearing cannot be undone, so it is the admin tier's, like deleting a layout.
+    -- Clearing cannot be undone: the admin tier's.
     requireFull = auth.requireFull,
   })
   -- A records fault must never stop a session closing.
@@ -9240,59 +6388,29 @@ end)()
 -- ===========================================================================
 -- DRIVER ROSTER (persistent display names)
 -- ===========================================================================
--- Display names used to last exactly as long as a connection did. That was not
--- a choice so much as a consequence: everyone on this server is a guest, BeamMP
--- recycles session ids, and a guest name is regenerated on every join, so there
--- was nothing stable to bind a lasting name to (see the identity registry near
--- the top of this file, which is the in-memory half of the same problem).
---
--- A cup changes what that costs. Points have to follow a driver across races
--- and across a restart, and a name that evaporates takes the points with it.
--- So the anchor becomes the thing that IS stable: an admin's decision, written
--- down. A roster entry is a name an admin gave somebody, kept on disk with the
--- guest name they were using at the time.
---
--- Two ways a driver gets reattached to their entry:
---
---   * automatically, when the guest name still matches -- the same evidence
---     identityFor uses, so a recycled session id can no more inherit a name
---     here than it can there;
---   * by an admin typing the name in again. That is the ordinary case after a
---     reconnect, and it needs no new control: the existing Set box already
---     goes through applyAlias, which lands here. Matching an existing entry by
---     name is what binds the driver back to the points already under it.
---
--- Nothing in this section touches race state. It is read by the cup module and
--- written by applyAlias, and that is the whole of its contact with the rest of
--- the file.
---
--- Everything from here to the end of the CUP module lives inside one installer
--- function, called immediately below it. That is not decoration: Lua allows 200
--- locals per function and this chunk was already near the ceiling, so a module
--- written at file level would not compile. A function body gets its own budget,
--- and the only names that escape are the ones forward-declared far above --
--- which makes the isolation these two sections claim structural rather than
--- merely promised.
+-- A cup needs points to follow a driver across races and restarts, but guests
+-- have no stable identity. The anchor is an admin's decision written down: a
+-- roster entry is a name an admin gave somebody (with the guest name they had).
+-- A driver is reattached automatically when the guest name still matches, or
+-- by an admin typing the name again (applyAlias lands here). Touches no race
+-- state. Roster and cup live in one installer function, called below, so their
+-- locals do not count against this chunk; only forward-declared names escape.
 local function installRosterAndCup()
 
--- Assigned by the CUP section below. When an admin binds a connection to a real
--- driver, any provisional entry that connection had been scoring into has to
--- hand its rounds over -- otherwise naming somebody halfway through an evening
--- strands everything they scored before you got to them.
+-- Assigned by the cup: binding a connection to a real driver hands over the
+-- rounds its provisional entry had scored.
 local cupAbsorbEntry
 
 local ROSTER_FILE = LAYOUTS_DIR .. '/roster.json'
 local MAX_ROSTER_ENTRIES = 200
 
--- Declared ahead of rosterRemember, which uses it: naming a driver who has been
--- scoring under a placeholder is one of the two ways a merge happens.
+-- Declared ahead of rosterRemember, which merges through it.
 local rosterAbsorb
 
 local roster       = nil   -- lazy-loaded array of { id, name, guest, provisional }
 local rosterNextId = 1     -- persisted, so an id is never reused after a restart
--- [pid] = entry id. Runtime only and deliberately not persisted: a binding is a
--- claim about a LIVE connection, and a stale one restored from disk would hand
--- a name to whoever happened to inherit that session id.
+-- [pid] = entry id. Runtime only: a binding is about a LIVE connection, and a
+-- restored one would hand a name to whoever inherited the id.
 local rosterBound  = {}
 
 local function loadRosterFromDisk()
@@ -9314,10 +6432,7 @@ local function loadRosterFromDisk()
         id    = math.floor(id),
         name  = e.name,
         guest = (type(e.guest) == 'string' and e.guest ~= '') and e.guest or nil,
-        -- Reloaded, not dropped. A placeholder that comes back as a real driver
-        -- is one rosterAbsorb will refuse to merge, so the points it is holding
-        -- for somebody are stranded on it the moment an admin identifies them --
-        -- and the panel stops marking it, so nothing says why.
+        -- Kept: rosterAbsorb only merges a provisional entry.
         provisional = e.provisional == true,
       }
       if id > highest then highest = math.floor(id) end
@@ -9355,8 +6470,7 @@ local function rosterById(id)
   return nil
 end
 
--- Case-insensitively, because an admin retyping a name after a reconnect should
--- not have to reproduce the capitalisation to get the points back.
+-- Case-insensitive: a retyped name need not match the capitalisation.
 local function rosterByName(name)
   if type(name) ~= 'string' then return nil end
   local lower = name:lower()
@@ -9384,15 +6498,11 @@ rosterUnbind = function (pid)
   rosterBound[pid] = nil
 end
 
--- A driver was given a display name. Three cases, and the order matters:
---
---   1. the name is already in the roster -- bind to THAT entry. This is the
---      reconnect, and binding rather than renaming is what returns a driver to
---      the points they have already scored.
---   2. this connection is bound to an entry under a different name -- rename
---      it. This is an admin naming somebody who was auto-entered under their
---      guest name, and the points move with them because the entry is the same.
---   3. neither -- a new driver, so a new entry.
+-- A driver was given a display name:
+--   1. the name is in the roster: bind to THAT entry (a reconnect gets its
+--      points back);
+--   2. this connection is bound under another name: rename it (points stay);
+--   3. neither: a new entry.
 rosterRemember = function (rec)
   if not rec or not rec.alias then return nil end
   local list  = getRoster()
@@ -9403,14 +6513,10 @@ rosterRemember = function (rec)
     if bound and bound.id ~= named.id then
       print(string.format('[RaceManager] Roster: %s re-bound from "%s" to the existing entry "%s"',
         rec.name, bound.name, named.name))
-      -- Naming a driver who has already been scoring under a provisional entry
-      -- is the admin saying "this is who that was". Their points move with them.
+      -- Their provisional points move with them.
       rosterAbsorb(bound, named)
     end
-    -- Matching is case-insensitive but the spelling just typed is the one that
-    -- sticks, so the entry and the leaderboard can never end up showing the
-    -- same driver under two different capitalisations -- which would also mean
-    -- the next restart handed back a name the admin had not typed.
+    -- The spelling just typed is the one kept.
     named.name = rec.alias
     entry = named
   elseif bound then
@@ -9428,23 +6534,16 @@ rosterRemember = function (rec)
     list[#list + 1] = entry
     print(string.format('[RaceManager] Roster: new entry #%d "%s"', entry.id, entry.name))
   end
-  -- An admin has put a name to this entry, so it is no longer a guess.
   entry.provisional = nil
-  -- Recorded for the ADMIN's benefit, never matched on: it is what the panel
-  -- shows beside a driver so a human can tell who is who. See rosterEnsure for
-  -- why a guest name is not evidence of identity.
+  -- For the admin's eyes only, never matched on (see rosterEnsure).
   entry.guest = rec.name
   rosterBound[rec.id] = entry.id
   saveRosterToDisk()
   return entry
 end
 
--- Move everything a provisional entry accumulated onto the entry it turned out
--- to belong to, then retire it. Points follow the driver; the placeholder goes.
---
--- Only ever applied to a PROVISIONAL entry. Two entries an admin has named are
--- two drivers, and quietly merging them because a connection moved between them
--- would destroy exactly the record this roster exists to keep.
+-- Move a PROVISIONAL entry's points onto the entry it turned out to be, then
+-- retire it. Never two named entries: they are two drivers.
 rosterAbsorb = function (from, into)
   if not from or not into or from.id == into.id then return false end
   if not from.provisional then return false end
@@ -9461,13 +6560,8 @@ rosterAbsorb = function (from, into)
   return true
 end
 
--- Bind a connected driver to a roster entry outright. THE admin control for
--- "this player is that driver", and the answer to a reconnect: BeamMP issues a
--- new random guest name every join, so nothing but a person can make this call.
---
--- Refuses rather than guesses. Handing an entry to the wrong connection hands
--- over a season of points with it, so every way that could happen is a refusal
--- with a reason attached.
+-- Bind a connected driver to a roster entry: THE "this player is that driver"
+-- control. Refuses with a reason rather than guess (a season of points moves).
 rosterBindTo = function (rec, entryId)
   if not rec then return false, 'That driver is no longer on the server.' end
   local entry = rosterById(entryId)
@@ -9495,9 +6589,7 @@ rosterBindTo = function (rec, entryId)
   return true, rec.name .. ' is now racing as "' .. entry.name .. '".'
 end
 
--- Delete an entry. Used for placeholders left behind by drivers who never came
--- back, and for pruning a roster that has filled up. The cup removes its own
--- side separately -- this owns names, not points.
+-- Delete an entry (names only; the cup removes its own side).
 rosterForget = function (entryId)
   local list = getRoster()
   for i = #list, 1, -1 do
@@ -9518,8 +6610,7 @@ rosterForget = function (entryId)
   return false
 end
 
--- The roster as the admin panel sees it: who exists, who is connected right now
--- and under which guest name, and which entries are still guesses.
+-- The roster for the admin panel: entries, who is bound, which are provisional.
 rosterList = function ()
   local out = {}
   for i, e in ipairs(getRoster()) do
@@ -9536,42 +6627,23 @@ rosterList = function ()
   return out
 end
 
--- The entry a driver should be scored against, creating one if they have no
--- display name at all.
---
--- Auto-creating is deliberate. The alternative is dropping the points of any
--- driver an admin forgot to name, silently, and discovering it at the end of a
--- cup -- far worse than a roster line reading "Guest_4471", which an admin can
--- rename later with the points following it (case 2 in rosterRemember).
---
--- It does NOT set an alias: the leaderboard and the results file go on showing
--- the guest name exactly as they do today.
+-- The entry a driver is scored against, created PROVISIONAL if none (dropping an
+-- unnamed driver's points would be worse than a "Guest_4471" line to rename).
+-- Sets no alias.
 local function rosterEnsure(rec)
   if not rec then return nil end
   local entry = rosterEntryFor(rec)
   if entry then return entry end
   local list = getRoster()
 
-  -- Only the DISPLAY NAME may find an existing entry, because a display name is
-  -- something an admin typed. A driver who disconnects mid-race has their live
-  -- binding dropped -- it is a claim about a connection, and that connection is
-  -- gone -- but their record survives to be classified, so at the moment the cup
-  -- scores them they are named and unbound. Matching the name they raced under
-  -- puts them back on their own entry.
-  --
-  -- The GUEST name is never matched against anything. BeamMP issues a fresh
-  -- random one on every join, so it identifies nobody: it would miss a returning
-  -- driver almost every time, and on the occasion two people were ever issued
-  -- the same one it would quietly merge two strangers' seasons.
+  -- Only the DISPLAY NAME may find an existing entry (a disconnected driver is
+  -- unbound but still named when scored). The GUEST name is never matched: it is
+  -- random per join and would merge strangers' seasons.
   entry = rec.alias and rosterByName(rec.alias) or nil
   if entry and rosterClaimedBy(entry.id, rec.id) then entry = nil end
 
   if not entry then
-    -- Nobody this driver can safely be identified as, so they get an entry of
-    -- their own. PROVISIONAL: it is a place to keep points that would otherwise
-    -- be dropped on the floor, not a claim about who this is. An admin can bind
-    -- the driver to their real entry later and the points follow (see
-    -- rosterBindTo), which is why losing them here would be the worse failure.
+    -- A provisional entry of their own: a place to keep points, not a claim.
     if #list >= MAX_ROSTER_ENTRIES then
       print('[RaceManager] Roster full (' .. MAX_ROSTER_ENTRIES
         .. ' entries): ' .. rec.name .. ' could not be entered')
@@ -9592,33 +6664,13 @@ local function rosterEnsure(rec)
 end
 
 -- ===========================================================================
--- End of DRIVER ROSTER module
--- ===========================================================================
-
--- ===========================================================================
 -- CUP / SERIES POINTS (isolated module)
 -- ===========================================================================
--- A cup is a championship run across several races: points accumulate per
--- driver and only an admin ending the cup clears them.
---
--- This module is a CONSUMER of race results and nothing else. It is entered
--- from exactly one place -- cupOnSessionComplete, called at the end of
--- finishSession -- and it reads the classification the results file is built
--- from rather than recomputing anything. That is what keeps scoring separate
--- from the logic that decides a race, and it is why a bad scoring rule can
--- never affect who won.
---
--- What it does NOT do, deliberately:
---
---   * touch `race`, `players` or `lapFirsts`. It reads them; it writes only its
---     own tables and the roster.
---   * run anything on a tick. Everything here happens once per session end or
---     once per admin action, so a race with a cup running costs exactly what a
---     race without one costs, plus one boolean test.
---   * survive on session state. Cup points live in this module's own table and
---     on disk, so Start Qualifying, Generate Grid, a countdown, Reset Session
---     and a server restart all pass straight through them. Only RM_CupReset
---     clears a cup.
+-- A championship across races; only an admin ending it clears it. A CONSUMER
+-- of results only: entered from finishSession (and the derby and drag ends),
+-- reading the finished classification, so scoring can never affect who won. It
+-- writes only its own tables and the roster, runs nothing per tick, and lives
+-- on disk, so sessions, resets and restarts pass through it.
 
 local CUP_FILE = LAYOUTS_DIR .. '/cup.json'
 local MAX_CUP_POSITIONS = 60     -- how deep a points table may go
@@ -9626,12 +6678,8 @@ local MAX_CUP_POINTS    = 9999   -- per position, and per bonus
 local MAX_CUP_NAME      = 40
 local MAX_CUP_ROUNDS    = 200
 
--- Pre-configured scoring systems, so an admin does not have to type 24 numbers
--- to run a normal championship. Selecting one FILLS the table rather than
--- locking it: the point of a preset is somewhere to start.
---
--- A position past the end of an array scores nothing, which is why the shorter
--- tables simply stop rather than carrying a tail of zeroes.
+-- Built-in scoring systems. Selecting one FILLS the table (a starting point). A
+-- position past the end scores 0, so no trailing zeroes.
 local CUP_PRESETS = {
   { key = '30p-aggressive', label = '30P Aggressive',
     race = { 30, 27, 25, 23, 20, 19, 18, 17, 16, 15, 14, 13,
@@ -9646,30 +6694,14 @@ local CUP_PRESETS = {
   { key = '35p-folk',       label = '35P Folk Race',
     race = { 35, 30, 25, 20, 18, 16, 15, 14, 13, 12, 11,
              10,  9,  8,  7,  6,  5,  4,  3,  2,  1 } },
-  -- Podium only. Three deep and nothing behind it, which is a whole different
-  -- kind of championship: there is no points to be had for turning up and
-  -- circulating, so a driver either races the front three or scores nothing.
-  --
-  -- The table stops at three rather than carrying twenty-one zeroes, because
-  -- cupPointsFor returns 0 for any position past the end. "3,2,1" and the same
-  -- followed by zeroes are the same scoring system, and this is the short form.
+  -- Podium only: score in the front three or not at all.
   { key = 'collision-course', label = 'Collision Course',
     race = { 3, 2, 1 } },
 }
 
--- Bonus achievements, as DATA. Each entry names a configurable pot of points,
--- says which DISCIPLINE it belongs to, and says which driver wins it given the
--- awards that session produced.
---
--- `kind` is what keeps a mixed cup honest: a race bonus is not offered to a
--- derby and a derby bonus is not offered to a race, so "fastest lap" can never
--- be quietly paid out on a session that has no laps. The scorer only ever walks
--- the entries matching the session it is scoring.
---
--- Adding another one later -- pole position, most laps led, a clean race -- is
--- one row here plus nothing else. This module never names a bonus outside this
--- table, and the UI builds a control per row, so no new code is written per
--- bonus at either end.
+-- Bonuses as DATA: a pot, a discipline (`kind`, so fastest lap is never paid on
+-- a derby), and who wins it. A new bonus is one row; the UI builds a control
+-- per row.
 local CUP_BONUSES = {
   { key = 'fastestLap',  kind = 'race',  label = 'Fastest Lap',
     award = function (ctx) return ctx.awards.fastestLapPid end },
@@ -9677,17 +6709,11 @@ local CUP_BONUSES = {
     award = function (ctx) return ctx.awards.halfWayPid end },
   { key = 'hardCharger', kind = 'race',  label = 'Hard Charger',
     award = function (ctx) return ctx.awards.hardChargerPid end },
-  -- Derby. Deliberately NOT the same thing as finishing first: a derby can end
-  -- with no survivors at all (everybody demolished), and the driver who lasted
-  -- longest then tops the classification without having won it. This pays only
-  -- when somebody actually survived, which is what "last man standing" means.
+  -- Derby: only a real survivor ("last man standing"), not the top of a
+  -- classification where everybody was demolished.
   { key = 'derbyWin',    kind = 'derby', label = 'Last Man Standing',
     award = function (ctx) return ctx.winnerPid end },
-  -- Drag. TWO of them, because a drag meeting has two things worth paying for
-  -- and they are routinely won by different people: the ladder, and the
-  -- quickest single run anybody made all night. Low ET is the strip's answer to
-  -- Fastest Lap, and like Fastest Lap it is what a quick car that went out
-  -- early can still take home.
+  -- Drag: the ladder, and the night's quickest single run.
   { key = 'dragWin',     kind = 'drag',  label = 'Event Win',
     award = function (ctx) return ctx.winnerPid end },
   { key = 'dragLowET',   kind = 'drag',  label = 'Low ET',
@@ -9708,9 +6734,8 @@ local function cupDefaultBonus()
   return t
 end
 
--- BUILT-INS ONLY, and it has to stay that way: the cup table below is seeded by
--- calling this, so this runs before `cup` exists and cannot look inside it.
--- Saved systems are found by cupAnyPresetByKey, further down.
+-- Built-ins only: this seeds the cup table, so `cup` does not exist yet. Saved
+-- systems: cupAnyPresetByKey.
 local function cupPresetByKey(key)
   for _, p in ipairs(CUP_PRESETS) do
     if p.key == key then return p end
@@ -9731,77 +6756,41 @@ local cup = {
   scoring = {
     preset = '30p-aggressive',
     race   = cupCopyTable(cupPresetByKey('30p-aggressive').race),
-    -- Derbies score on a table of their OWN, because a cup may be all races,
-    -- all derbies, or a mixture, and the two are not the same event: a derby
-    -- field is usually a different size and lasting eight minutes in a banger
-    -- is not worth what winning a ten-lap race is worth. It defaults to the
-    -- same preset so an all-derby cup works the moment it is started, and an
-    -- admin who wants derbies to count for less (or nothing) edits or empties
-    -- it without touching the race table.
+    -- Derbies score on their own table (a derby is not a ten-lap race), with
+    -- the same default so an all-derby cup scores at once.
     derbyPreset = '30p-aggressive',
     derby  = cupCopyTable(cupPresetByKey('30p-aggressive').race),
-    -- ...and drag gets a third, for the reason the derby got a second. A drag
-    -- ladder is a MEETING rather than a race: the field is whoever turned up,
-    -- the winner made four passes and the driver knocked out first made one.
-    -- What that is worth beside a ten-lap race is a league decision, and this
-    -- is where they make it. Defaults to the same preset so an all-drag cup
-    -- scores the moment it is started.
+    -- ...and drag a third: a ladder is a meeting. Same default.
     dragPreset = '30p-aggressive',
     drag   = cupCopyTable(cupPresetByKey('30p-aggressive').race),
-    -- Empty means qualifying scores nothing, which is the default: a cup that
-    -- has not been told to pay for qualifying does not pay for it.
+    -- Empty: qualifying pays nothing unless told to.
     quali  = {},
     bonus  = cupDefaultBonus(),
-    -- The usual league qualification on a fastest-lap bonus: set the fastest
-    -- lap and then park it, and you have not really earned anything.
+    -- League rule: the fastest lap pays only with a finish.
     fastestLapRequiresFinish = true,
-    -- What a DNF is worth. A retirement is not always a nil score -- plenty of
-    -- series pay a driver for the place they were running when they stopped,
-    -- because being taken out of second place is not the same as never turning
-    -- up -- and which of these a league wants is a league decision, not
-    -- something this plugin should assume:
-    --
-    --   'none'       a DNF scores nothing. The default, and what every cup
-    --                scored before this was configurable.
-    --   'classified' a DNF scores for its place in the final classification,
-    --                which is below every driver who finished.
-    --   'held'       a DNF scores for the place it was RUNNING in when it
-    --                stopped. This is the one that can pay two drivers for the
-    --                same position -- a retirement from second and a finish in
-    --                second both score second -- and that is exactly what a
-    --                series choosing it is asking for.
+    -- What a DNF is worth (a league decision):
+    --   'none'       nothing (the default)
+    --   'classified' its place in the final classification, below every finisher
+    --   'held'       the place it was RUNNING in when it stopped, so a retirement
+    --                from second and a finish in second both score second
     dnfScoring = 'none',
   },
-  -- An ARRAY, not a map keyed by id: the persistence codec only emits string
-  -- keys for a table, so an integer-keyed map would serialise to {} and every
-  -- point in the cup would vanish on the next restart.
+  -- An ARRAY: the codec emits only string keys, so an integer-keyed map would
+  -- save as {} and lose every point.
   entries = {},       -- { { entryId, name, rounds = {}, adjustments = {} } }
-  -- Qualifying is scored when it ends, but it belongs to the round the race
-  -- that follows will be -- so it is held here until that race banks it.
+  -- Qualifying, held until the race of its round banks it.
   pendingQuali = {},  -- { { entryId, pos, pts } }
-  -- SCORING SYSTEMS AN ADMIN HAS SAVED, alongside the built-in presets.
-  --
-  -- Kept here rather than in a file of their own because a saved system is not
-  -- a championship: End Cup clears the standings and deliberately leaves
-  -- cup.scoring alone, so anything filed beside it outlives the cup it was
-  -- written during. A league that spends an evening agreeing a points table
-  -- should not lose it by ending the season.
-  --
-  -- Same shape as a built-in preset ({ key, label, race }), so the picker, the
-  -- lookup and the load path all take one without knowing which kind it is.
+  -- Scoring systems an admin saved, shaped like a built-in ({ key, label, race }).
+  -- End Cup leaves these alone: a points table outlives the season.
   savedPresets = {},
 }
 local cupLoaded = false
--- broadcastCupState is forward-declared with the garage ones near the top of
--- this file. It used to be declared here, which put it out of scope for every
--- caller above this line: see the note there.
+-- broadcastCupState is forward-declared near the top, for callers above here.
 
 -- ---------------------------------------------------------------------------
 -- Persistence
 -- ---------------------------------------------------------------------------
--- Kept beside layouts.json and NOT under the results directory: Clear Results
--- Cache deletes every .txt it finds there, and a cup that could be destroyed by
--- routine housekeeping is not persistent in any sense that matters.
+-- Beside layouts.json, not under results/, which Clear Results Cache empties.
 local function cupSanitizeTable(raw, cap)
   local out = {}
   for i, v in ipairs(type(raw) == 'table' and raw or {}) do
@@ -9810,8 +6799,7 @@ local function cupSanitizeTable(raw, cap)
     if n < 0 then n = 0 elseif n > MAX_CUP_POINTS then n = MAX_CUP_POINTS end
     out[i] = n
   end
-  -- Trailing zeroes carry no information (past the end scores nothing anyway)
-  -- and would otherwise grow the file a little on every save.
+  -- Trailing zeroes carry nothing (past the end scores 0).
   while #out > 0 and out[#out] == 0 do out[#out] = nil end
   return out
 end
@@ -9830,10 +6818,7 @@ local function loadCupFromDisk()
   cup.name    = type(data.name) == 'string' and data.name:sub(1, MAX_CUP_NAME) or ''
   cup.round   = math.max(math.floor(tonumber(data.round) or 0), 0)
 
-  -- Saved scoring systems. Sanitised the same way a live table is, so a
-  -- hand-edited file cannot put a string or a negative into a points table, and
-  -- an entry missing its name or its numbers is dropped rather than loaded as a
-  -- blank row in the picker.
+  -- Saved systems, sanitised like a live table; a nameless or empty one is dropped.
   cup.savedPresets = {}
   if type(data.savedPresets) == 'table' then
     for _, p in ipairs(data.savedPresets) do
@@ -9849,20 +6834,14 @@ local function loadCupFromDisk()
     end
   end
 
-  -- Only replaced when the file actually carries a scoring block. A cup.json
-  -- written by something else, or truncated, must not silently leave the cup
-  -- with an empty points table -- that reads as "a race was run and nobody
-  -- scored", which is a great deal harder to notice than a parse error.
+  -- Only when the file carries a scoring block: a truncated file must not leave
+  -- an empty points table (which reads as "nobody scored").
   if type(data.scoring) == 'table' then
     local s = data.scoring
     cup.scoring.preset = type(s.preset) == 'string' and s.preset or 'custom'
     cup.scoring.race   = cupSanitizeTable(s.race)
     cup.scoring.quali  = cupSanitizeTable(s.quali)
-    -- A cup saved before derbies could be scored carries no derby table. Fall
-    -- back to the race table rather than to nothing: a file written by an
-    -- earlier build describes a cup whose derbies were never scored at all, and
-    -- silently loading "derbies are worth zero" would be a scoring change
-    -- nobody asked for the next time one was run.
+    -- An older cup has no derby table: fall back to the race table, not to zero.
     if s.derby ~= nil then
       cup.scoring.derby = cupSanitizeTable(s.derby)
       cup.scoring.derbyPreset = type(s.derbyPreset) == 'string' and s.derbyPreset or 'custom'
@@ -9870,10 +6849,7 @@ local function loadCupFromDisk()
       cup.scoring.derby = cupCopyTable(cup.scoring.race)
       cup.scoring.derbyPreset = cup.scoring.preset
     end
-    -- Same fallback, same reasoning: a cup written before drag racing existed
-    -- carries no drag table, and loading that as "drag is worth nothing" would
-    -- decide something the admin never said. The race table is the safe answer
-    -- because it is the one they DID say.
+    -- Same for drag.
     if s.drag ~= nil then
       cup.scoring.drag = cupSanitizeTable(s.drag)
       cup.scoring.dragPreset = type(s.dragPreset) == 'string' and s.dragPreset or 'custom'
@@ -9939,10 +6915,7 @@ local function getCup()
   return cup
 end
 
--- Persisting the cup and publishing it are ONE event, deliberately: every path
--- that changes a cup has to come through here or the change would not survive a
--- restart either, so there is no second rule to remember about telling the
--- clients. Same reasoning the garage uses for invalidating its cached view.
+-- Saving IS publishing: every change comes through here, so clients always hear.
 local function saveCupToDisk()
   if broadcastCupState then broadcastCupState() end
   ensureLayoutsDir()
@@ -9968,20 +6941,9 @@ end
 -- ---------------------------------------------------------------------------
 -- Standings
 -- ---------------------------------------------------------------------------
--- Totals are DERIVED, never stored. A cup entry keeps the per-round breakdown
--- and the list of manual adjustments, and the total is the sum of both every
--- time it is asked for -- a few dozen integer additions over a field of
--- drivers. Keeping a running total instead would make the breakdown and the
--- number disagree the first time anything was corrected, and the breakdown is
--- the whole point: an admin has to be able to see where a total came from.
--- Race and derby are totalled SEPARATELY and then combined, rather than being
--- summed into one number and split for display afterwards. A mixed cup has two
--- championships inside it and an admin has to be able to read either on its
--- own, so the per-discipline figures are the primary ones and the grand total
--- is derived from them.
---
--- A round records which kind it was; rounds written before derbies could be
--- scored carry no kind and are races, which is what they were.
+-- Totals are DERIVED, never stored: a stored total would disagree with the
+-- breakdown the first time anything was corrected. Each discipline is totalled
+-- on its own and the grand total derived from them.
 local function cupEntryTotals(e)
   local t = {
     race  = { rounds = 0, wins = 0, points = 0, quali = 0, bonus = 0, total = 0 },
@@ -9990,24 +6952,14 @@ local function cupEntryTotals(e)
     adjust = 0, rounds = #e.rounds, total = 0,
   }
   for _, r in ipairs(e.rounds) do
-    -- A round records which kind it was. Anything unrecognised is a RACE, which
-    -- is what every round written before the other two existed was.
+    -- No recognised kind is a race (written before the others existed).
     local kind = (r.kind == 'derby' or r.kind == 'drag') and r.kind or 'race'
     local side = t[kind]
     side.rounds = side.rounds + 1
     side.points = side.points + (tonumber(r.racePts) or 0)
-    -- What counts as a win differs by discipline, and deliberately so. A race
-    -- is won by finishing first. A derby is won by being the last one running --
-    -- which is NOT the same as topping the classification, because a derby an
-    -- admin ends early is topped by somebody who was merely still going. That
-    -- driver has not won anything, and a wins column that said otherwise would
-    -- disagree with the last-man-standing bonus sitting next to it.
-    -- A RACE is won by finishing first. A derby is won by being the last one
-    -- running, and a drag meeting by taking the ladder -- and neither of those
-    -- is the same as topping the classification. A derby an admin ends early is
-    -- topped by somebody who was merely still going; a ladder abandoned halfway
-    -- is topped by whoever had won most passes. Neither has won anything, and a
-    -- wins column saying they had would disagree with the bonus beside it.
+    -- A race is won by finishing first, a derby by being last running and a drag
+    -- meeting by taking the ladder. Topping an ended-early classification wins
+    -- nothing, or the wins column would disagree with the bonus.
     if kind == 'race' then
       if tonumber(r.racePos) == 1 then side.wins = side.wins + 1 end
     elseif r.status == 'winner' then
@@ -10026,20 +6978,13 @@ local function cupEntryTotals(e)
   for _, a in ipairs(e.adjustments) do
     t.adjust = t.adjust + (tonumber(a.delta) or 0)
   end
-  -- Manual adjustments sit outside both disciplines. They are a correction to a
-  -- driver's standing in the CUP, not to one of its halves, and pretending to
-  -- know which half a penalty belonged to would be inventing information.
+  -- Adjustments correct the CUP standing, outside every discipline.
   t.total = t.race.total + t.derby.total + t.drag.total + t.adjust
   return t
 end
 
--- Cup standings, best first. Ties break on wins, then on the earlier entry --
--- deterministic either way, so the same cup always renders in the same order.
---
--- Each row carries THREE positions: the combined one, and one for each
--- discipline. A mixed cup contains a race championship and a derby
--- championship as well as an overall one, and all three ranking rules stay
--- here rather than being re-derived by whatever is displaying them.
+-- Cup standings, best first; ties on wins, then the earlier entry. Each row has
+-- a combined position and one per discipline.
 local function cupStandings()
   local list = {}
   for _, e in ipairs(getCup().entries) do
@@ -10065,8 +7010,7 @@ local function cupStandings()
       bonusPts  = t.race.bonus + t.derby.bonus + t.drag.bonus,
       adjustPts = t.adjust,
       total     = t.total,
-      -- The ledger itself, so an admin can see what each adjustment was for
-      -- and remove the wrong one rather than guessing from a net figure.
+      -- The ledger, so the right adjustment can be removed.
       adjustments = e.adjustments,
     }
   end
@@ -10089,18 +7033,11 @@ end
 -- ---------------------------------------------------------------------------
 -- Broadcast
 -- ---------------------------------------------------------------------------
--- The cup has a channel of its own (RM_CupUpdate), pushed only when something
--- changes, and it is deliberately NOT folded into the main state broadcast.
--- That one goes out three times a second to every client for the whole of a
--- race; hanging a standings table off it would be the one genuinely expensive
--- thing this feature could do. A cup changes a handful of times an evening.
---
--- The preset and bonus lists ride along so the panel renders itself from what
--- the server actually supports, rather than from a copy of the list kept in the
--- UI that has to be edited in step. Adding a bonus later is then a row in
--- CUP_BONUSES and nothing else.
--- Built-ins, then whatever the admin has saved. Everything that LOADS a preset
--- goes through this rather than cupPresetByKey, which cannot see saved ones.
+-- The cup has its own channel (RM_CupUpdate), pushed on change, never folded
+-- into the 3 Hz state broadcast. Presets and bonuses ride along so the panel
+-- renders what the server supports.
+
+-- Built-ins, then saved systems. Every preset LOAD goes through this.
 local function cupAnyPresetByKey(key)
   local builtin = cupPresetByKey(key)
   if builtin then return builtin end
@@ -10110,9 +7047,7 @@ local function cupAnyPresetByKey(key)
   return nil
 end
 
--- The picker's list: built-ins first, saved systems after, each flagged so the
--- panel can offer Delete on the ones an admin made and not on the ones it
--- ships with.
+-- The picker's list: built-ins, then saved systems (flagged: only those Delete).
 local function cupPresetList()
   local out = {}
   for _, p in ipairs(CUP_PRESETS) do
@@ -10124,10 +7059,7 @@ local function cupPresetList()
   return out
 end
 
--- The bonus registry as the panel sees it: key, label, the discipline it
--- belongs to, and what it is currently worth. The `kind` is what lets the panel
--- group race bonuses under the race table and derby bonuses under the derby
--- one, without knowing what any individual bonus means.
+-- The bonus registry for the panel; `kind` groups each under its table.
 local function cupBonusList()
   local out = {}
   for i, b in ipairs(CUP_BONUSES) do
@@ -10145,12 +7077,8 @@ broadcastCupState = function (targetPid)
   MP.TriggerClientEvent(targetPid or -1, 'RM_CupUpdate', Util.JsonEncode({
     rmProtocol   = RM_PROTOCOL,
     cupEnabled   = getCup().enabled,
-    -- DOES A CUP EXIST, which is a different question from whether it is
-    -- scoring. Pausing only clears `enabled`, and with the panel gated on that
-    -- alone a paused cup was indistinguishable from no cup at all: the
-    -- standings vanished, the header read "No cup running", and the one action
-    -- left on screen was Start New Cup, which would have destroyed the season
-    -- the admin had just paused.
+    -- Does a cup EXIST, not is it scoring: a paused cup must not read as "No cup
+    -- running" beside Start New Cup.
     cupExists    = (cup.name ~= '' or cup.round > 0 or #cup.entries > 0),
     cupName      = cup.name,
     round        = cup.round,
@@ -10165,13 +7093,10 @@ broadcastCupState = function (targetPid)
     presets      = cupPresetList(),
     fastestLapRequiresFinish = cup.scoring.fastestLapRequiresFinish,
     dnfScoring   = cup.scoring.dnfScoring,
-    -- How many drivers have qualifying points waiting to be banked by the next
-    -- race. The admin needs to see that a quali "counted" before the race runs.
+    -- Qualifying entries waiting for the next race to bank them.
     pendingQuali = #cup.pendingQuali,
     standings    = cupStandings(),
-    -- The roster, and who is connected right now. The admin panel pairs the two
-    -- up: a driver on the server has to be told which roster entry they are,
-    -- because nothing on the wire can work that out for itself.
+    -- The roster and who is connected, for the admin to pair up.
     roster       = rosterList and rosterList() or {},
     connected    = (function ()
       local out = {}
@@ -10201,16 +7126,14 @@ local function cupFindEntry(entryId)
   return nil
 end
 
--- The cup entry for a driver, created on first sight. Its identity comes from
--- the roster, which is what makes points survive a reconnect: bind the same
--- driver back to the same roster entry and they land on the same cup entry.
+-- The cup entry for a driver, created on first sight. Keyed by roster entry, so
+-- points survive a reconnect.
 local function cupEntryFor(rec)
   local rosterEntry = rosterEnsure(rec)
   if not rosterEntry then return nil end
   local e = cupFindEntry(rosterEntry.id)
   if e then
-    -- The roster is the authority on the name, so a rename shows up in the
-    -- standings without the cup having to be told separately.
+    -- The roster owns the name.
     e.name = rosterEntry.name
     return e
   end
@@ -10219,17 +7142,9 @@ local function cupEntryFor(rec)
   return e
 end
 
--- THIS DRIVER'S CHAMPIONSHIP TOTAL, or nil if they have no entry.
---
--- READ-ONLY, and that is the whole reason it is not cupEntryFor. That function
--- CREATES an entry for a driver who has none, which is right when a round is
--- being banked and wrong here: drawing heats would quietly enrol every
--- connected driver in the season, and a standings table would fill up with
--- people who have never scored.
---
--- nil rather than 0 for "not in the cup", because the draw sorts those two
--- differently: a driver on zero points has raced and scored nothing, and one
--- with no entry has not raced at all.
+-- This driver's championship total, or nil with no entry. READ-ONLY: cupEntryFor
+-- would enrol everyone a heat draw looks at. nil, not 0: the draw sorts "not
+-- raced" apart from "scored nothing".
 cupSeasonPoints = function (rec)
   local rosterEntry = rosterEntryFor and rosterEntryFor(rec) or nil
   if not rosterEntry then return nil end
@@ -10243,16 +7158,9 @@ local function cupPointsFor(tableRef, pos)
   return tonumber(tableRef[pos]) or 0
 end
 
--- The qualifying ORDER, by best lap.
---
--- Deliberately not qualiClassification(): that one sorts by grid slot first,
--- which is right for the results file (by the time it is written the grid is
--- the locked race grid) and wrong here. Qualifying is scored the moment the
--- session ends, and at that moment a driver's grid slot is where they STARTED
--- qualifying -- so scoring off it would pay out the order the session began in.
---
--- Drivers with no lap are left out entirely rather than sorted to the back:
--- they did not qualify, and there is no position to pay them for.
+-- The qualifying ORDER, by best lap. Not qualiClassification(), which sorts by
+-- grid slot: when qualifying ends that is where a driver STARTED it. No lap, no
+-- position: left out.
 local function cupQualiOrder()
   local list = {}
   for _, rec in pairs(players) do
@@ -10265,8 +7173,7 @@ local function cupQualiOrder()
   return list
 end
 
--- Qualifying just ended. Work out the qualifying points and HOLD them: they are
--- banked by the race that follows, as part of that round.
+-- Qualifying ended: work out its points and HOLD them for the race's round.
 local function cupScoreQuali()
   if #cup.scoring.quali == 0 then return end   -- qualifying points are off
   cup.pendingQuali = {}
@@ -10292,17 +7199,9 @@ local function cupPendingFor(entryId)
   return nil
 end
 
--- Pay out every bonus belonging to one discipline.
---
--- Shared by both scorers, and it walks only the registry entries whose `kind`
--- matches -- so a derby can never be handed a fastest-lap bonus and a race can
--- never be handed a last-man-standing one. A bonus set to zero costs a table
--- lookup and pays nothing, which is how the whole set stays inert until an
--- admin turns one on.
---
--- `byPid` maps a player id to the round row being written for them, so an
--- award naming a driver who was not scored (already gone, never entered) simply
--- finds nothing and is dropped.
+-- Pay out one discipline's bonuses (only its `kind`, so a derby never gets a
+-- fastest lap); a zero bonus pays nothing. `byPid` maps a player id to the row
+-- being written; a winner nobody scored is dropped.
 local function cupAwardBonuses(kind, ctx, byPid)
   for _, b in ipairs(cupBonusesFor(kind)) do
     local worth = tonumber(cup.scoring.bonus[b.key]) or 0
@@ -10335,12 +7234,8 @@ local function cupScoreRace()
   local round  = cup.round + 1
   local ctx    = { awards = awards, final = final }
 
-  -- Position points.
-  --
-  -- A classified finisher scores for where they finished. A disqualification
-  -- scores nothing, always -- that is what the penalty is. A DNF depends on the
-  -- league's dnfScoring rule (see the scoring table): nothing, its place in the
-  -- classification, or the place it was running in when it stopped.
+  -- Position points: a finisher scores their place, a DSQ nothing (always), a
+  -- DNF by dnfScoring.
   local scored, byPid = 0, {}
   for i, rec in ipairs(final) do
     local classified = rec.finishTime ~= nil and rec.status ~= 'dsq'
@@ -10351,10 +7246,8 @@ local function cupScoreRace()
       if cup.scoring.dnfScoring == 'classified' then
         scorePos = i
       elseif cup.scoring.dnfScoring == 'held' then
-        -- The place they were RUNNING IN, which is what "held" means and is a
-        -- different fact from where they classify. Falls back to the
-        -- classification when the driver stopped before a running order existed:
-        -- there is no held position to honor then.
+        -- The place they were RUNNING in; the classification if they stopped
+        -- before a running order existed.
         scorePos = rec.heldPos or rec.dnfPos or i
       end
     end
@@ -10364,8 +7257,7 @@ local function cupScoreRace()
       local row = {
         kind     = 'race',
         round    = round,
-        -- Only a real finish counts as a finishing position (and so as a win).
-        -- A DNF paid under 'held' is scored at a position; it did not take it.
+        -- Only a real finish is a finishing position (and a win).
         racePos  = classified and i or nil,
         dnfPos   = dnf and scorePos or nil,
         racePts  = scorePos and cupPointsFor(cup.scoring.race, scorePos) or 0,
@@ -10399,21 +7291,10 @@ local function cupScoreRace()
   return round
 end
 
--- A derby ended. Banks one round, on the derby side of the cup.
---
--- `classification` is the finished order the derby module handed over: the
--- winner first, then anyone still running, then the eliminated in reverse order
--- of elimination -- surviving longer is finishing higher. That IS the result of
--- a derby, which is the one place derby scoring genuinely differs from a race:
---
---   * in a race, a driver who did not finish scores nothing, because not
---     finishing is a failure to produce a result;
---   * in a derby, being eliminated is the normal way to end and the position it
---     produces is the result. Everybody in the classification scores.
---
--- The winner is distinct from finishing first: a derby can end with nobody left
--- alive, and then the driver who lasted longest tops the table without having
--- won it. Only a real survivor carries `status == 'winner'`.
+-- A derby ended: one round on the derby side. `classification` is the winner,
+-- anyone still running, then the eliminated, last out first. Unlike a race,
+-- EVERYBODY in it scores (elimination is how a derby ends). Only a real
+-- survivor is 'winner': a derby can end with nobody alive.
 local function cupScoreDerby(classification, info)
   if cup.round >= MAX_CUP_ROUNDS then
     print('[RaceManager] Cup: round limit reached (' .. MAX_CUP_ROUNDS .. '), not scoring')
@@ -10439,8 +7320,7 @@ local function cupScoreDerby(classification, info)
           or (rec.status == 'alive' and 'survived' or 'eliminated'),
       }
       entry.rounds[#entry.rounds + 1] = row
-      -- `classified` is what the fastest-lap rule reads, and it is a race
-      -- concept; every derby row is a real result, so it is simply true here.
+      -- `classified` is the fastest-lap rule's (a race concept): true here.
       byPid[rec.id] = { entry = entry, row = row, classified = true }
       scored = scored + 1
     end
@@ -10449,8 +7329,7 @@ local function cupScoreDerby(classification, info)
   cupAwardBonuses('derby', { winnerPid = winnerPid, duration = info and info.duration }, byPid)
 
   cup.round = round
-  -- A derby does not consume held qualifying points: those belong to a RACE
-  -- round, and a derby run between qualifying and its race must not eat them.
+  -- Held qualifying points belong to a RACE round: a derby leaves them.
   saveCupToDisk()
 
   local standings = cupStandings()
@@ -10466,24 +7345,15 @@ local function cupScoreDerby(classification, info)
   return round
 end
 
--- A DRAG TOURNAMENT ENDED. This is the only place a drag round is banked.
---
--- It takes the finishing order the ladder produced rather than reaching into
--- the drag module for it, exactly as the derby hands over a classification --
--- the cup stays a consumer of results and neither module can see the other's
--- state. Every entrant in the tournament is scored, not just the ones who made
--- the final: a drag meeting is a full field and going out in round one is a
--- result like any other.
+-- A drag tournament ended: the only place a drag round is banked. Every entrant
+-- scores, as with a derby, from the order the ladder handed over.
 local function cupScoreDrag(classification, info)
   if cup.round >= MAX_CUP_ROUNDS then
     print('[RaceManager] Cup: round limit reached (' .. MAX_CUP_ROUNDS .. '), not scoring')
     return
   end
   local round = cup.round + 1
-  -- THE LADDER CALLS ITS WINNER A CHAMPION, and the word matters here: the drag
-  -- module marks the entrant who took the tournament `champion`, while a derby
-  -- marks its survivor `winner`. Both are accepted rather than one of the two
-  -- modules being made to rename a status its own board reads.
+  -- The ladder calls its winner `champion`, a derby `winner`: both accepted.
   local winnerPid = nil
   for _, rec in ipairs(classification) do
     if rec.status == 'champion' or rec.status == 'winner' then
@@ -10502,16 +7372,12 @@ local function cupScoreDrag(classification, info)
         racePos = i,
         racePts = cupPointsFor(cup.scoring.drag, i),
         bonus   = {},
-        -- 'winner' is the ladder taken, and it is deliberately not the same as
-        -- topping the order: a tournament an admin clears halfway is topped by
-        -- whoever had won most passes, and they have not won it.
-        -- The ROW says 'winner' either way: cupEntryTotals counts a win on
-        -- that one word, across all three disciplines.
+        -- 'winner' is the ladder taken, not the top of a half-run order. The ROW
+        -- says 'winner' either way: cupEntryTotals counts on that word.
         status  = rec.id == winnerPid and winnerPid ~= nil and 'winner' or 'out',
       }
       entry.rounds[#entry.rounds + 1] = row
-      -- `classified` is what the fastest-lap rule reads and it is a race
-      -- concept; every drag row is a real result, so it is simply true here.
+      -- `classified` is the fastest-lap rule's (a race concept): true here.
       byPid[rec.id] = { entry = entry, row = row, classified = true }
       scored = scored + 1
     end
@@ -10519,16 +7385,12 @@ local function cupScoreDrag(classification, info)
 
   cupAwardBonuses('drag', {
     winnerPid = winnerPid,
-    -- The quickest single pass anybody made all meeting, worked out by the
-    -- module that timed them. Frequently not the winner, which is the whole
-    -- reason it is worth a bonus of its own.
+    -- The meeting's quickest single pass, often not the winner's.
     lowETPid  = info and info.lowETPid,
   }, byPid)
 
   cup.round = round
-  -- A drag tournament does not consume held qualifying points: those belong to
-  -- a RACE round. A ladder seeded off a qualifying session is a different use
-  -- of the same times and must not eat the points that session banked.
+  -- Held qualifying points belong to a RACE round: a ladder leaves them.
   saveCupToDisk()
 
   local standings = cupStandings()
@@ -10543,15 +7405,9 @@ local function cupScoreDrag(classification, info)
   return round
 end
 
--- THE entry points, filling the forward declarations beside the entry list.
--- One call at the end of finishSession for each kind of session, one at the end
--- of finishDerby, and one boolean test when no cup is running.
---
--- Returns the round number a RACE banked, so the results file written moments
--- later can report that round specifically (see cupResultsLines). Qualifying
--- banks no round -- its points are held for the race that follows -- and
--- returns nothing, which is also what a cup that is switched off or at its
--- round cap returns.
+-- THE entry points, filling the forward declarations. Returns the round a RACE
+-- banked, for the results file; qualifying (held, not banked), a cup that is
+-- off and one at its round cap return nil.
 cupOnSessionComplete = function (kind)
   if not getCup().enabled then return nil end
   if kind == 'quali' then
@@ -10561,29 +7417,14 @@ cupOnSessionComplete = function (kind)
   return cupScoreRace()
 end
 
--- The round just banked, as lines for the results file.
---
--- This is the cup being READ rather than told, and it is the only call that
--- goes that way. It stays inside the module's rules all the same: it is called
--- from the two results writers, after the classification is final and the round
--- is scored, so nothing cup-shaped runs while cars are on track. It computes
--- nothing new -- the numbers are the ones already banked and the order is
--- cupStandings' own.
---
--- `round` is the round the finished session actually banked, handed down from
--- finishSession (or finishDerby) rather than read from cup.round here. Those
--- differ in exactly the case that matters: a cup at the round cap scores
--- nothing, and asking for "the current round" would then print the PREVIOUS
--- event's points onto this one's results file.
---
--- Returns nil when there is nothing to say, which is the normal case: no cup
--- running, nothing banked, or a round nobody scored in. A race night without a
--- championship gets exactly the results file it always got.
+-- The round just banked, as results-file lines; the one call that READS the
+-- cup, after the classification is final. `round` is handed down rather than
+-- read from cup.round: at the round cap they differ, and this would print the
+-- PREVIOUS event's points. nil when there is nothing to say.
 cupResultsLines = function (round)
   if not getCup().enabled or not round then return nil end
 
-  -- What each driver took out of THIS round, keyed by entry. Read off the round
-  -- rows the scoring wrote; a driver with no row simply did not score here.
+  -- What each driver scored THIS round, keyed by entry.
   local roundBy, anyRow = {}, false
   for _, e in ipairs(cup.entries) do
     for _, r in ipairs(e.rounds) do
@@ -10612,10 +7453,7 @@ cupResultsLines = function (round)
     preset and preset.label or 'custom', #cup.scoring.race,
     #cup.scoring.quali > 0 and (', qualifying to P' .. #cup.scoring.quali) or '',
     cup.scoring.dnfScoring))
-  -- One table, ordered by championship position after this round. It answers
-  -- both questions a league asks of a results file -- what did each driver score
-  -- today, and where does that leave them -- without printing the same field
-  -- twice in two orders.
+  -- One table, in championship order: today's points and where they leave you.
   add(string.format('%-5s %-22s %-6s %-6s %-6s %-7s %s',
     'Pos', 'Driver', 'Race', 'Quali', 'Bonus', 'Round', 'Total'))
   for _, s in ipairs(cupStandings()) do
@@ -10624,9 +7462,7 @@ cupResultsLines = function (round)
     local qualiPts = r and (tonumber(r.qualiPts) or 0) or 0
     local bonusPts = r and bonusOf(r) or 0
     local roundPts = racePts + qualiPts + bonusPts
-    -- A driver who was not in this round is shown with dashes rather than
-    -- zeroes: not scoring and not being there are different facts, and a column
-    -- of noughts against a name that never appeared reads as the first.
+    -- Dashes for a driver not in this round: absent is not zero.
     add(string.format('P%-4d %-22s %-6s %-6s %-6s %-7s %d',
       s.pos, s.name,
       r and tostring(racePts)  or '-',
@@ -10635,9 +7471,7 @@ cupResultsLines = function (round)
       r and tostring(roundPts) or '-',
       s.total))
   end
-  -- Which bonuses were paid, and to whom. The table above can only show a total,
-  -- and "+2" against a name does not say what it was for -- the one question
-  -- somebody checking a championship a month later will actually have.
+  -- Which bonuses were paid, and to whom (a "+2" does not say what for).
   local paid = {}
   for _, b in ipairs(CUP_BONUSES) do
     for _, e in ipairs(cup.entries) do
@@ -10653,8 +7487,7 @@ cupResultsLines = function (round)
     add(' BONUSES THIS ROUND')
     for _, l in ipairs(paid) do add(l) end
   end
-  -- Adjustments are part of a total and are invisible in it. A standings table
-  -- nobody can take apart is a standings table nobody can check.
+  -- Adjustments are listed, or the totals cannot be checked.
   local adjusted = {}
   for _, s in ipairs(cupStandings()) do
     if (s.adjustPts or 0) ~= 0 then
@@ -10670,31 +7503,18 @@ cupResultsLines = function (round)
   return lines
 end
 
--- Returns the round a derby banked, on the same contract cupOnSessionComplete
--- follows: nil when nothing was scored, which includes a cup that does not pay
--- for derbies at all.
+-- The round a derby banked, as cupOnSessionComplete; nil when nothing scored.
 cupOnDerbyComplete = function (classification, info)
   if not getCup().enabled then return nil end
-  -- An empty derby points table means derbies are not part of THIS cup, and it
-  -- means it completely: no round is banked and no derby bonus is paid.
-  --
-  -- The alternative -- an empty position table with the bonuses left live -- is
-  -- the shape of trap that gets noticed three rounds later. An admin who presses
-  -- "Turn derby points off" has said derbies do not count here, and a survivor
-  -- quietly collecting a last-man-standing bonus afterwards would contradict
-  -- them. Same rule qualifying already follows.
+  -- An empty derby table means derbies do not count in THIS cup: no round and
+  -- no derby bonus either (as qualifying).
   if #cup.scoring.derby == 0 then return nil end
   if type(classification) ~= 'table' or #classification == 0 then return nil end
   return cupScoreDerby(classification, info)
 end
 
--- The same contract again for a drag tournament: nil when nothing was scored,
--- which includes a cup that does not pay for drag racing at all.
---
--- An empty drag points table means drag is not part of THIS cup, and it means
--- it completely -- no round banked and no drag bonus paid. Same trap the derby
--- note describes: leaving the bonuses live over an empty table would pay a Low
--- ET to somebody in a championship an admin has said drag does not count in.
+-- The same for a drag tournament: an empty drag table pays no round and no
+-- drag bonus.
 cupOnDragComplete = function (classification, info)
   if not getCup().enabled then return nil end
   if #cup.scoring.drag == 0 then return nil end
@@ -10705,10 +7525,6 @@ end
 -- ---------------------------------------------------------------------------
 -- Admin events
 -- ---------------------------------------------------------------------------
--- No UI reaches these yet: the controls arrive with the cup panel, and until
--- then the server console is the feedback. They are registered and complete so
--- the whole module is exercisable exactly the way every other handler in this
--- file is tested -- by calling it.
 function RM_onCupSetEnabled(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -10718,9 +7534,7 @@ function RM_onCupSetEnabled(pid, rawData)
     .. ' by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- Start a NEW cup: everything a previous one accumulated goes, which is why
--- this is separate from enabling scoring. Continuing an existing cup is simply
--- not pressing it.
+-- Start a NEW cup, clearing the old one (hence separate from enabling it).
 function RM_onCupStart(pid, rawData)
   if not requireAuth(pid) then return end
   local name = decodeString(rawData, 'name') or ''
@@ -10741,11 +7555,8 @@ function RM_onCupStart(pid, rawData)
   print('[RaceManager] Cup "' .. name .. '" started by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- End the cup and clear its points. THE only thing that clears them -- a race
--- reset, a phase change and a restart all leave a cup exactly where it was.
---
--- The roster is untouched: display names are not cup property, and an admin who
--- ends a championship has not asked to re-name their whole grid.
+-- End the cup and clear its points: THE only thing that does. The roster stays
+-- (names are not cup property).
 function RM_onCupReset(pid)
   if not requireAuth(pid) then return end
   getCup()
@@ -10761,9 +7572,7 @@ function RM_onCupReset(pid)
     was ~= '' and was or 'unnamed', rounds, MP.GetPlayerName(pid) or pid))
 end
 
--- Load a preset into one of the two points tables. `target` picks which; it
--- defaults to the race table, so a client that does not send one behaves the
--- way it did before derbies could be scored.
+-- Load a preset into a points table; `target` defaults to the race table.
 function RM_onCupSetPreset(pid, rawData)
   if not requireAuth(pid) then return end
   local key = decodeString(rawData, 'preset')
@@ -10790,14 +7599,8 @@ function RM_onCupSetPreset(pid, rawData)
     .. '" applied by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
--- Save the race table as a named system, so an evening spent agreeing a points
--- structure survives the cup it was agreed during.
---
--- The RACE table specifically, and only that one. A "system" here is one table:
--- quali and derby have Same as race for the case where a league wants them
--- alike, and their own line for when it does not. Saving all three as a bundle
--- would need a bundle format, a merge rule, and an answer for what happens when
--- you load one over a cup that only uses two of them.
+-- Save the RACE table as a named system, outliving the cup. One table only: a
+-- bundle would need a format and a merge rule.
 local MAX_SAVED_PRESETS = 30
 local MAX_PRESET_NAME   = 28
 
@@ -10816,8 +7619,7 @@ function RM_onCupSavePreset(pid, rawData)
     MP.SendChatMessage(pid, '[RaceManager] There is nothing to save: the race points table is empty.')
     return
   end
-  -- Namespaced, so a saved system can never collide with a built-in key and an
-  -- admin cannot shadow "25P Moderate" with something that is not it.
+  -- Namespaced: a saved system cannot shadow a built-in key.
   local key = 'saved:' .. name:lower()
   local entry = { key = key, label = name, race = cupCopyTable(cup.scoring.race) }
   local replaced = false
@@ -10839,8 +7641,7 @@ function RM_onCupSavePreset(pid, rawData)
   print(msg)
 end
 
--- Delete a saved system. Built-ins are not deletable and saying so beats
--- silently doing nothing.
+-- Delete a saved system; a built-in says so rather than doing nothing.
 function RM_onCupDeletePreset(pid, rawData)
   if not requireAuth(pid) then return end
   local key = decodeString(rawData, 'preset')
@@ -10858,8 +7659,7 @@ function RM_onCupDeletePreset(pid, rawData)
   MP.SendChatMessage(pid, '[RaceManager] That scoring system is built in and cannot be deleted.')
 end
 
--- Custom scoring. Every field is optional, so the UI can send just the part the
--- admin edited; anything present replaces that part outright.
+-- Custom scoring: every field optional, a present one replaced outright.
 function RM_onCupSetScoring(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -10867,8 +7667,7 @@ function RM_onCupSetScoring(pid, rawData)
   local touched = false
   if type(data.race) == 'table' then
     cup.scoring.race = cupSanitizeTable(data.race)
-    -- Hand-edited: it is no longer any of the presets, and saying so is what
-    -- stops the UI showing "30P Aggressive" over a table that is not it.
+    -- Hand-edited: no longer a preset, so the UI does not name one over it.
     cup.scoring.preset = 'custom'
     touched = true
   end
@@ -10920,19 +7719,10 @@ function RM_onCupSetScoring(pid, rawData)
     .. (#cup.scoring.quali > 0 and (#cup.scoring.quali .. ' deep') or 'off') .. ')')
 end
 
--- Fold one cup entry into another, filling the forward declaration the roster
--- makes. Called when a provisional entry turns out to have been a driver the
--- admin can name: the rounds and adjustments move, the placeholder goes.
---
--- Rounds are appended rather than merged by round number. A driver can only
--- have raced one of them, so there is nothing to reconcile -- and if a cup ever
--- does end up with two rows for one round, an admin can see both and drop one,
--- which is a better outcome than this silently picking a winner.
--- Qualifying points are HELD between the session that scored them and the race
--- that banks them, keyed on the entry they were scored against. A driver
--- identified in that window changes entry, so the held row has to come with
--- them -- it is looked up by entry id, and a stale one is simply never found
--- again, which reads as the driver having qualified for nothing.
+-- Fold one cup entry into another (the roster's forward declaration): a
+-- provisional entry turned out to be a named driver. Rounds are appended, not
+-- merged; an admin can see and drop a duplicate. Held qualifying points are
+-- keyed by entry, so they are repointed too, or the driver qualified for nothing.
 local function cupRepointPending(fromId, toId)
   for _, q in ipairs(cup.pendingQuali) do
     if q.entryId == fromId then q.entryId = toId end
@@ -10945,8 +7735,7 @@ cupAbsorbEntry = function (fromId, toId)
   if not from then return false end
   local into = cupFindEntry(toId)
   if not into then
-    -- Nothing to merge into yet: the entry simply changes hands. Its points
-    -- were earned by this driver either way.
+    -- Nothing to merge into: the entry just changes hands.
     from.entryId = toId
     cupRepointPending(fromId, toId)
     saveCupToDisk()
@@ -10967,10 +7756,8 @@ end
 -- ---------------------------------------------------------------------------
 -- Driver identity (admin-controlled)
 -- ---------------------------------------------------------------------------
--- Assign a connected player to a roster entry. This is how a driver gets their
--- name -- and their points -- back after a reconnect, and it is an admin action
--- because nothing else can know: BeamMP hands out a fresh random guest name
--- every join, so the server cannot tell a returning regular from a stranger.
+-- Assign a connected player to a roster entry: how a driver gets their name and
+-- points back. An admin action, because BeamMP's guest names are random.
 function RM_onCupBindDriver(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -10984,8 +7771,7 @@ function RM_onCupBindDriver(pid, rawData)
     return
   end
 
-  -- entryId 0 (or absent) means "unassign": drop the binding and the name, and
-  -- leave the entry -- and everything on it -- where it is.
+  -- entryId 0 or absent unassigns: the entry and its points stay.
   if not entryId or entryId <= 0 then
     rosterUnbind(rec.id)
     rec.alias = nil
@@ -11008,8 +7794,7 @@ function RM_onCupBindDriver(pid, rawData)
     success = bound, message = msg }))
 end
 
--- Delete a roster entry outright, and everything the cup holds against it.
--- The way to clear out placeholders left by drivers who never came back.
+-- Delete a roster entry and the cup's record of it (stale placeholders).
 function RM_onCupForgetDriver(pid, rawData)
   if not requireAuth(pid) then return end
   local entryId = decodeNumber(rawData, 'entryId')
@@ -11027,17 +7812,9 @@ function RM_onCupForgetDriver(pid, rawData)
   end
 end
 
--- ADD A DRIVER WHO IS NOT HERE. The roster used to be fillable only by naming
--- somebody who was connected, which is the wrong way round for a league: the
--- entry list is known days before the race and the point of typing it in
--- advance is that on the night an admin picks a name rather than spelling it.
---
--- Creates an UNBOUND entry. It belongs to nobody until a connection is assigned
--- to it, which is exactly what makes it available in both the Cup panel and
--- Display Names.
---
--- Not provisional: provisional means "the server guessed this", and a name an
--- admin typed is the opposite of a guess.
+-- Add a driver who is not here: a league knows its entry list in advance. An
+-- UNBOUND entry, offered in the Cup panel and Display Names. Not provisional:
+-- an admin typed it.
 function RM_onRosterAdd(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -11076,32 +7853,20 @@ end
 -- ---------------------------------------------------------------------------
 -- Manual adjustments
 -- ---------------------------------------------------------------------------
--- An admin has to be able to correct a cup by hand. Drivers disconnect, a race
--- gets administered badly, a penalty is agreed after the fact -- and a scoring
--- system with no way to say "minus five, track limits" is one an admin has to
--- work around by rescoring an entire round.
---
--- Adjustments are kept as a LEDGER, separate from the points a driver earned,
--- and never folded into them. A total that cannot be taken apart is a total
--- nobody can check: the standings show what was earned and what was adjusted as
--- two numbers, and every adjustment keeps its reason, its author and its time.
---
--- Removing an adjustment deletes the entry rather than posting an opposite one,
--- because a mistake in the ledger is not an event that happened.
+-- Corrections by hand ("minus five, track limits"), kept as a LEDGER beside the
+-- earned points, never folded in, each with its reason, author and time.
+-- Removing one deletes it: a mistake is not an event.
 local MAX_ADJUST      = 9999
 local MAX_ADJUST_NOTE = 60
 
 local function cupCleanNote(raw)
   local s = tostring(raw or ''):gsub('%s+', ' '):gsub('^%s', ''):gsub('%s$', '')
-  -- Same character class the display names use, and for the same reason: this
-  -- text reaches a fixed-width results export and the server console.
+  -- The display names' character class: this reaches the results export.
   s = s:gsub('[^%w %-%_%.%,%:%(%)/]', '')
   return s:sub(1, MAX_ADJUST_NOTE)
 end
 
--- Adjust one driver's total. A positive delta adds points, a negative one takes
--- them away. Identified by cup entry id -- the roster entry -- so an adjustment
--- lands on the driver and not on whoever happens to hold a session id.
+-- Adjust one driver's total by cup entry id (the driver, not a session id).
 function RM_onCupAdjust(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -11151,13 +7916,8 @@ function RM_onCupRemoveAdjust(pid, rawData)
     removed.delta or 0, entry.name, MP.GetPlayerName(pid) or pid))
 end
 
--- Drop a whole round from a driver's record.
---
--- The honest way to fix a race that was scored wrongly: remove the round and
--- run it again, rather than posting a compensating adjustment that leaves the
--- breakdown describing something that never happened. The cup's round COUNT is
--- deliberately left alone -- the event did take place, and renumbering every
--- later round to close the gap would rewrite history to hide a correction.
+-- Drop a whole round from a driver's record, to rerun a wrongly scored race.
+-- The round COUNT stays: the event took place.
 function RM_onCupDropRound(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -11178,27 +7938,16 @@ function RM_onCupDropRound(pid, rawData)
     round, entry.name, MP.GetPlayerName(pid) or pid))
 end
 
--- The last thing the installer does: hand the two lazy loaders out to onInit,
--- which warms them at boot the way it warms the layouts, the garage and the
--- saved arenas.
+-- Hand the lazy loaders to onInit, which warms them at boot.
 rosterWarm, cupWarm = getRoster, getCup
 
 end
 installRosterAndCup()
 
--- The derby scores into the cup, and the cup does not exist until the line
--- above has RUN -- both of these are nil until then, which is why they cannot
--- go through derbyMod.init.
---
--- It has to be here, after the call, not after the definition. The first
--- version of this line landed inside installRosterAndCup's body by matching
--- its `local function` line, so it handed the derby two nils and the cup
--- stopped scoring derbies. cup_test caught it.
+-- Here, after the CALL: these are nil until installRosterAndCup has run, so
+-- they cannot go through derbyMod.init (cup_test guards it).
 derbyMod.setCupHooks(cupOnDerbyComplete, cupResultsLines)
--- ...and the drag ladder's, through `race` for the register budget documented
--- where the module is required. The cup is assigned at the very end of this
--- file, long after that module loaded, so these cannot travel through its init
--- for the same reason the derby's cannot.
+-- ...and the drag ladder's, through `race` for the same reason.
 race.dragSetCupHooks(cupOnDragComplete, cupResultsLines)
 
 -- ===========================================================================
@@ -11208,29 +7957,22 @@ race.dragSetCupHooks(cupOnDragComplete, cupResultsLines)
 -- ---------------------------------------------------------------------------
 -- Clock + lifecycle
 -- ---------------------------------------------------------------------------
--- Race clock + the live-position broadcast loop. Clients feed telemetry in
--- continuously (RM_Progress) but never trigger a broadcast themselves; this is
--- the single throttled place where the running order is re-sorted, re-numbered
--- (buildDrivers -> assignPositions) and pushed to everyone.
+-- The race clock and the throttled broadcast: the one place the running order
+-- is re-sorted, re-numbered and pushed. Clients never trigger it.
 function RM_Tick()
   if not sessionRunning() then return end
-  -- One clock for both sessions. race.time is the session clock every finish
-  -- time is stamped from; qualifying additionally runs its own wall clock,
-  -- which is what closes the session when the admin set a time limit.
+  -- One clock: race.time stamps every finish; qualifying adds a wall clock.
   local dt = CFG.tickMs / 1000.0
   race.time = race.time + dt
-  -- The hold at the flag. Checked before anything else in the tick: once it
-  -- expires there is no session left for the rest of this function to run.
+  -- The hold at the flag, first: once it expires there is no session.
   if race.endsAt and race.time >= race.endsAt then
     local reason = race.endReason or 'race over'
     race.endsAt, race.endReason = nil, nil
     finishSession(reason)
     return
   end
-  -- A RED FLAG STOPS THE RACE CLOCK. race.time cannot stop (ghost end times are
-  -- on it), so the anchors the race clocks are measured from move with it
-  -- instead: the green, the time-up mark, and the two countdowns simply do not
-  -- run. Lifting the red lets them all go again from where they stood.
+  -- A red flag stops the race clocks. race.time cannot stop (ghost end times are
+  -- on it), so the anchors move with it instead.
   if race.flag == 'red' then
     race.greenAt = race.greenAt + dt
     if race.raceExpiredAt then race.raceExpiredAt = race.raceExpiredAt + dt end
@@ -11241,11 +7983,8 @@ function RM_Tick()
     end
     return
   end
-  -- THE GRACE, and it is one rule for both session kinds now. Once the flag is
-  -- out, a driver with no crossing left to give -- parked in the pits, stuck in
-  -- a barrier, never left the grid -- must not hold the session open forever.
-  -- Qualifying has always done this; a timed race reaches the same state by a
-  -- different route and needs the same valve on it.
+  -- THE GRACE, for both session kinds: once the flag is out, a driver with no
+  -- crossing left to give must not hold the session open forever.
   if race.finalLap then
     race.finalLapLeft = race.finalLapLeft - CFG.tickMs / 1000.0
     if race.finalLapLeft <= 0 then
@@ -11253,9 +7992,7 @@ function RM_Tick()
       for _, rec in pairs(players) do
         if onTrack(rec) then stranded[#stranded + 1] = rec end
       end
-      -- Snapshot first: retireDriver sends a client event per driver, and
-      -- building the list while that is going on is the shape of bug that
-      -- reached only the last name in it.
+      -- Snapshot first: retireDriver sends a client event per driver.
       for _, rec in ipairs(stranded) do
         retireDriver(rec, isQualiSession()
           and 'Qualifying over: the session closed before you reached the line'
@@ -11273,18 +8010,12 @@ function RM_Tick()
     race.qualiTime = race.qualiTime + CFG.tickMs / 1000.0
     if race.qualiTimeLimit > 0 and race.qualiTime >= race.qualiTimeLimit then
       beginFinalLap()
-      -- Not a return: the session is still running, and the broadcast below
-      -- is what carries the final-lap flag to every client.
+      -- No return: the broadcast below carries the final-lap flag.
     end
   elseif race.phase == 'racing' and race.raceTimeLimit > 0 and not race.pacing then
     if not race.raceExpired then
-      -- THE CLOCK RUNNING OUT CHANGES NOTHING YET. It arms the wait; the
-      -- leader's next crossing is what starts the final lap. A driver reading
-      -- laps-to-go sees two at this point: finish this one, then run the last.
-      --
-      -- Measured from the GREEN. A pace lap is not race time, and a ten minute
-      -- race that spent ninety seconds forming up would otherwise be an eight
-      -- and a half minute one.
+      -- Time up only arms the wait: the leader's next crossing starts the final
+      -- lap. Measured from the GREEN (a pace lap is not race time).
       if raceElapsed() >= race.raceTimeLimit then
         race.raceExpired   = true
         race.raceExpiredAt = race.time
@@ -11296,11 +8027,8 @@ function RM_Tick()
       end
     elseif not race.lastLapNum
         and race.time - (race.raceExpiredAt or 0) >= CFG.finalLapGrace then
-      -- NO LEAD-LAP CROSSING SINCE THE CLOCK EXPIRED, for longer than a lap has
-      -- any business taking. The leader retired, or the field is stopped, and
-      -- the crossing this format waits on is never going to arrive. The flag
-      -- goes out directly: everyone still running is classified as they come
-      -- past, which is the same ending a lapped car always gets.
+      -- No lead-lap crossing for longer than a lap should take (the leader
+      -- retired, the field stopped): the flag goes out directly.
       race.finalLap     = true
       race.finalLapLeft = CFG.finalLapGrace
       broadcastState()
@@ -11309,20 +8037,10 @@ function RM_Tick()
       print('[RaceManager] Timed race: no lead-lap crossing within the grace, flag out')
     end
   end
-  -- THE PACE LAP'S ONE JOB: watch the leader home and drop the green.
-  --
-  -- Every tick rather than every broadcast, because this is a distance the field
-  -- closes at pace speed -- ten meters is under half a second at 80 km/h, and
-  -- resolving that on a three-tick cadence would wave the flag anywhere in the
-  -- ten meters after the line as easily as before it.
-  --
-  -- A scan, not a sort. The full running order is built three times a second by
-  -- buildDrivers; asking for it ten times a second to read one row off the top
-  -- would cost a sort of the whole field for a comparison of one number.
+  -- The pace lap: watch the leader home and drop the green. Every tick (ten
+  -- metres is under half a second at pace), and a scan, not a sort.
   if race.pacing then paceLapWatch() end
-  -- The called restart, waiting on its leader. Same shape as the pace lap's
-  -- watch above and gated the same way: it costs one loop over the field, and
-  -- only while an admin has actually called one.
+  -- The called restart, the same way, only while one is called.
   if race.restartPending then restartWatch() end
   tickCounter = tickCounter + 1
   if tickCounter >= CFG.pushEveryTicks then
@@ -11332,18 +8050,14 @@ function RM_Tick()
 end
 
 function RM_onPlayerJoin(pid)
-  -- Session ids are recycled. If a record already exists under this id but the
-  -- connected player's name has changed, a DIFFERENT person now holds it, so the
-  -- display identity must not carry over -- inheriting the previous player's
-  -- alias would be impersonation by accident. Only the display fields are
-  -- refreshed here; the record itself (and its lap data) is left alone, which is
-  -- the pre-existing behavior Generate Grid purges.
+  -- Session ids are recycled: a changed name on an existing record is a
+  -- DIFFERENT person, so the display identity must not carry over. Only display
+  -- fields are refreshed; Generate Grid purges the rest.
   pid = pidKey(pid)
   if not pid then return end
   local current = MP.GetPlayerName(pid)
-  -- The registry is scoped to the connection, so a name that no longer matches
-  -- retires the stored identity (and its entry decision) in one place. Do this
-  -- BEFORE ensurePlayer, or the new record would inherit what is being dropped.
+  -- A name that no longer matches retires the stored identity. BEFORE
+  -- ensurePlayer, or the new record would inherit it.
   identityFor(pid, current)
   local existing = players[pid]
   if existing then
@@ -11351,8 +8065,7 @@ function RM_onPlayerJoin(pid)
       existing.name  = current
       existing.alias = nil
       existing.spectating = false
-      -- A different person now holds this id, so whatever the departed player
-      -- was bound to in the roster is emphatically not theirs.
+      -- A different person: the old roster binding is not theirs.
       if rosterUnbind then rosterUnbind(pid) end
       rememberIdentity(existing)
     end
@@ -11361,22 +8074,9 @@ function RM_onPlayerJoin(pid)
   if not rec then return end
   -- A fresh connection is not practising, whatever a recycled id carried.
   rec.practicing, rec.practiceGhost = nil, nil
-  -- Connecting is not entering: in the default opt-in mode a new arrival is a
-  -- spectator until they press Join Race. In 'all' mode they are in the field
-  -- straight away, which is what that mode means.
-  --
-  -- BUT NOT INTO A SESSION THAT IS ALREADY RUNNING. Somebody who connects
-  -- mid-race has no grid slot, no laps and no out lap behind them; putting them
-  -- on the timing screen as a participant makes a nonsense of the classification
-  -- and, in 'all' mode, did exactly that. They are a bystander until the next
-  -- grid forms, which is where every entry decision is read.
-  --
-  -- rec.bystander is what the CLIENTS act on: it ghosts that car for everyone,
-  -- so a driver arriving in the middle of a race cannot put anyone into a wall
-  -- before they have worked out what is going on.
-  -- ...and a DRAG PASS counts, for the same reason a derby does: cars are
-  -- placed and frozen on the start positions with a tree about to drop, and
-  -- somebody arriving solid in the middle of that is standing on a lane.
+  -- Connecting is not entering: opt-in makes a new arrival a spectator, 'all'
+  -- puts them in the field. NOT INTO A RUNNING SESSION (derby and drag pass
+  -- included): no slot, no laps, so a ghosted bystander until the next grid.
   if sessionUnderWay() or race.derbyUnderWay() or race.dragUnderWay() then
     rec.status    = 'waiting'
     rec.bystander = true
@@ -11388,8 +8088,7 @@ function RM_onPlayerJoin(pid)
   elseif race.phase == 'qualifying' and isEntrant(rec) then
     rec.status = 'qualifying'
   else
-    -- Arriving while the grid is being called: a slot at the back and a Ready
-    -- button, instead of watching a race they turned up in time for.
+    -- Arriving while the grid is called: a slot at the back and a Ready button.
     race.callLate(rec)
   end
   broadcastState()
@@ -11398,19 +8097,13 @@ end
 function RM_onPlayerDisconnect(pid)
   pid = pidKey(pid)
   if not pid then return end
-  -- Session IDs are reused, so a disconnecting admin must drop its auth flag;
-  -- the next player to inherit this ID starts with no admin rights.
+  -- Session ids are reused: the next holder must not inherit admin rights.
   local wasAdmin = authenticatedPlayers[pid] ~= nil
   authenticatedPlayers[pid] = nil
-  -- Their car is going with them, so the ghost on it has to go too. Unclearing
-  -- this matters more than it looks: session ids are REUSED, so a ghost left
-  -- against a departed player is inherited by the next person to be handed that
-  -- id, who would arrive already intangible and with no way to end it -- the
-  -- client that could run the occupancy check for it has gone.
+  -- Ids are reused, so a ghost left here would be inherited by the next holder,
+  -- with nobody left to clear it.
   clearGhost(pid, 'player disconnected')
-  -- The binding is a live association between a connection and a roster entry,
-  -- so it goes with the connection. The ENTRY stays, with every point it has
-  -- earned -- that is the whole reason it lives on disk.
+  -- The binding goes with the connection; the ENTRY and its points stay.
   if rosterUnbind then rosterUnbind(pid) end
   local rec = players[pid]
   if not rec then
@@ -11443,13 +8136,10 @@ function RM_onPlayerDisconnect(pid)
 end
 
 function onInit()
-  -- THE DATA FOLDER BEFORE THE SETTINGS, because the settings are in it. Every
-  -- path in this file points into Data/, and on the first start after the
-  -- upgrade nothing is there yet.
+  -- The data folder first: the settings are in it.
   migrateToDataFolder()
-  -- SETTINGS FIRST, before any of it is read. The race table below was seeded
-  -- from CFG when the file loaded, so anything config.json overrides has to be
-  -- pushed into the live state as well -- see applyConfigToRace.
+  -- Then the settings, pushed into the race table seeded at load
+  -- (applyConfigToRace).
   loadConfigFromDisk()
   applyConfigToRace()
   MP.RegisterEvent('RM_Login',            'RM_onLogin')
@@ -11559,14 +8249,11 @@ function onInit()
   MP.RegisterEvent('RM_DerbyLoadLayout',    'RM_onDerbyLoadLayout')
   MP.RegisterEvent('RM_DerbyDeleteLayout',  'RM_onDerbyDeleteLayout')
   MP.RegisterEvent('RM_DerbyTick',          'RM_DerbyTick')
-  -- Timer events only fire if they are registered like any other event. Missing
-  -- this one left the derby countdown frozen on 3 forever: the timer was
-  -- created and ticked, and nothing was listening.
+  -- A timer event only fires if registered (the derby countdown froze on 3).
   MP.RegisterEvent('RM_DerbyCountdownTick', 'RM_DerbyCountdownTick')
   MP.RegisterEvent('onPlayerJoin',          'RM_Derby_onPlayerJoin')
   MP.RegisterEvent('onPlayerDisconnect',    'RM_Derby_onPlayerDisconnect')
-  -- Drag racing (isolated module; see drag.lua). The ladder, the strip and the
-  -- tree, on their own event namespace and their own broadcast channel.
+  -- Drag racing (isolated module; see drag.lua).
   MP.RegisterEvent('RM_DragSetConfig',    'RM_onDragSetConfig')
   MP.RegisterEvent('RM_DragBuild',        'RM_onDragBuild')
   MP.RegisterEvent('RM_DragClear',        'RM_onDragClear')
@@ -11582,8 +8269,6 @@ function onInit()
   MP.RegisterEvent('RM_DragFoul',         'RM_onDragFoul')
   MP.RegisterEvent('RM_DragResult',       'RM_onDragResult')
   MP.RegisterEvent('RM_DragRequestState', 'RM_onDragRequestState')
-  -- A timer event only fires if it is registered like any other event. The
-  -- derby countdown froze on 3 forever for want of exactly this line.
   MP.RegisterEvent('RM_DragTick',         'RM_DragTick')
   MP.RegisterEvent('onPlayerDisconnect',  'RM_Drag_onPlayerDisconnect')
   -- Map switching (isolated module; see maps.lua). RM_MapTick is its timer.
@@ -11602,9 +8287,7 @@ function onInit()
   MP.RegisterEvent('RM_RecordsRequest',   'RM_onRecordsRequest')
   MP.RegisterEvent('RM_RecordsClear',     'RM_onRecordsClear')
   MP.RegisterEvent('RM_RecordsRemove',    'RM_onRecordsRemove')
-  -- Cup / series points (isolated module; see the CUP section). No client sends
-  -- these yet -- the admin panel comes with the UI work -- but the handlers are
-  -- registered so the module is complete and reachable the moment it does.
+  -- Cup / series points (see the CUP section).
   MP.RegisterEvent('RM_CupSetEnabled',    'RM_onCupSetEnabled')
   MP.RegisterEvent('RM_CupStart',         'RM_onCupStart')
   MP.RegisterEvent('RM_CupReset',         'RM_onCupReset')
@@ -11624,8 +8307,7 @@ function onInit()
   MP.RegisterEvent('RM_Tick',             'RM_Tick')
   MP.RegisterEvent('RM_CountdownTick',    'RM_CountdownTick')
   MP.CreateEventTimer('RM_Tick', CFG.tickMs)
-  -- Boot from a clean slate: any client still connected across a plugin
-  -- reload drops its stale gates, then the layout cache is re-warmed from disk.
+  -- Boot clean: a client connected across a reload drops its stale gates.
   clearTrackState('server startup')
   getLayouts()       -- warm the layout cache so saved tracks survive the restart visibly
   getGarage()        -- and the approved vehicle list (Module 4)

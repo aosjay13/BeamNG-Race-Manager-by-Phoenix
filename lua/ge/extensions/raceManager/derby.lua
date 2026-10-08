@@ -1,130 +1,71 @@
 -- Race Manager: DEMO DERBY, as its own module.
 --
--- Split out of raceManager.lua because that file sat at exactly Lua's 200
--- active-locals ceiling, where the next `local` anybody added anywhere stopped
--- the whole mod compiling. A module gets its own budget, and this one was
--- already the cleanest seam in the file: separate state, its own server events
--- (RM_Derby*), its own guihooks channels, its own editor.
+-- Its own module (the extension's locals ceiling): separate state, its own
+-- server events (RM_Derby*), guihooks channels and editor.
 --
--- THE CONTRACT. Nothing here reaches back into the extension by name. Everything
--- it needs arrives once through `init(host)`:
---
---   * plain functions (ownVehicle, pushNotice, releaseGridHold, ...) are
---     called straight off the host table
---   * mutable scalars the extension owns (phase, isAdmin, visualize, ...) come
---     through GETTERS, because a value captured at init would be a snapshot of
---     whatever it happened to be when the file loaded
---   * tables come by reference (spectate, and the shared derby reset
---     allowance), so both halves see the same object rather than copies that
---     drift -- but ONLY where the extension clears that table in place. A
---     field it REASSIGNS, such as track.startPositions, has to come through a
---     getter too, or the reference here is the table the mod booted with and
---     stays that way. tests/wiring_test.lua checks which is which
---
--- The reset allowance is genuinely shared and stays that way: the reset code in
--- the extension polices race and derby resets through one path, so this module
--- writes `host.resets.used` and that code reads it.
+-- THE CONTRACT: everything arrives once through init(host):
+--   * plain functions (ownVehicle, pushNotice, releaseGridHold, ...)
+--   * mutable scalars the extension owns (phase, isAdmin, ...) as GETTERS
+--   * tables by reference (spectate, the shared derby reset allowance), but
+--     ONLY where the extension clears them in place; a REASSIGNED field (such
+--     as track.startPositions) needs a getter. tests/wiring_test.lua checks it.
+-- The reset allowance is shared: this module writes host.resets.used and the
+-- extension's reset code reads it.
 
 local D = {}
 local host
 
--- Called once by the extension, before anything else here runs.
---
--- The two callbacks below are INSTALLED here rather than at load time, and that
--- ordering is the whole reason this function exists: at load `host` is still
--- nil, so a top-level `host.x = ...` is an index of nil and the module never
--- finishes loading. Both are the extension asking the derby a question it
--- cannot answer for itself.
+-- Called once by the extension. The two callbacks are installed here, not at
+-- load, where `host` is still nil.
 function D.init(h)
   host = h
-  -- The reset code asks this before policing the derby allowance: only a live
-  -- derby with this driver still in it spends or blocks derby resets.
+  -- Only a live derby with this driver still in it spends or blocks resets.
   host.resets.active = function ()
     return D.derbyState.phase == 'running' and not D.derbyState.out
   end
-  -- Spectator input asks this: a driver stood down at the end of a derby keeps
-  -- their steering but loses the reset, which would reload the vehicle out from
-  -- under the freeze and hand them a driveable car in a settled result.
+  -- A stood-down driver keeps steering but loses the reset, which would reload
+  -- the car out from under the freeze.
   host.spectate.derbyStoodDown = function () return D.derbyState.stoodDown == true end
 end
 
 -- ===========================================================================
 -- DEMO DERBY (isolated module)
 -- ===========================================================================
--- Fully independent of the circuit racing logic above: separate state, its
--- own server events (RM_Derby*), its own guihooks channels and its own
--- update/draw functions. It never touches `route`, `host.phase()`, `armedWp` or any
--- other racing variable, so a derby can never disturb qualifying/racing.
---
--- Client responsibilities (only the client has physics access):
---   * Place boundary markers at the local vehicle's position (admin action;
---     the server owns the ordered marker list and broadcasts it to everyone).
---   * Ray-casting point-in-polygon test of the local vehicle against the
---     arena polygon every frame; leaving it starts the out-of-bounds
---     countdown and a flashing full-screen warning. Re-entering clears it;
---     reaching zero reports RM_DerbyDisqualified.
---   * Track the local vehicle's speed; sitting below the jiggle threshold
---     starts the demolished countdown ("keep moving or you're out");
---     reaching zero reports RM_DerbyDemolished.
---   * Draw the boundary poles + perimeter rope in the 3D world.
+-- Never touches the racing state. Client side (only the client has physics):
+--   * place boundary markers (the server owns the list),
+--   * point-in-polygon of our car against the arena every frame; outside
+--     starts the out-of-bounds countdown, zero reports RM_DerbyDisqualified,
+--   * below the stop speed starts the stopped countdown, zero reports
+--     RM_DerbyDemolished,
+--   * draw the arena.
 
-local DERBY_STOP_SPEED    = 0.7   -- m/s; below this the car counts as stopped
-                                  -- (generous enough to swallow physics jiggle)
--- Seconds after GO before the stopped-vehicle check arms. This used to exist
--- because there was no start procedure at all: cars sat parked waiting for
--- someone to say go, and would have been on the demolished clock immediately.
--- Form-up and the countdown removed that reason, but the timer is kept for the
--- one that is left -- a car released at GO takes a moment to actually move, and
--- nobody should be eliminated for reaction time. Deliberately unchanged rather
--- than retuned: it is a gameplay value, and shortening it is a balance call for
--- an admin to ask for, not a side effect of adding a countdown.
+local DERBY_STOP_SPEED    = 0.7   -- m/s counted as stopped (above physics jiggle)
+-- Seconds after GO before the stopped check arms: a released car takes a moment
+-- to move. A gameplay value; retuning it is an admin's call.
 local DERBY_START_GRACE   = 5
--- HOW LONG A CAR MAY SIT STILL BEFORE THE STOPPED TIMER EVEN STARTS.
---
--- Separate from the countdown, and it is what makes the countdown mean
--- something. Stopping is a normal part of driving a derby: you back off a wall,
--- pause to pick a target, stop dead to turn around. Starting the clock the
--- instant the wheels stop turning put a flashing elimination warning on screen
--- for every one of those, which is noise -- and noise on a warning is how a
--- real one gets ignored.
---
--- So the total time from stopping to being counted out is this PLUS the
--- configured timer. Deliberately: the grace is for driving, the timer is for
--- being wrecked, and they are answering different questions.
---
--- Ten after a race night at five: five was enough to stop the warning flashing
--- on every pause, and still short enough to catch a driver lining a run up.
+-- Seconds a car may sit still before the stopped TIMER starts, so a pause to
+-- turn around or pick a target does not flash an elimination warning. Total
+-- time to elimination is this plus the configured timer.
 local DERBY_STOP_GRACE    = 10
 local DERBY_POLE_HEIGHT   = 6     -- fallback wall height, until the server says
--- Fallback skirt, likewise. This used to BE the answer: a hardcoded drop with no
--- way to change it, so on uneven ground the wall floated above every dip and
--- there was nothing an admin could do about it. Declared HERE rather than beside
--- the wall builder that uses it, because D.derbyState reads it hundreds of lines
--- earlier and a local used before its declaration is a nil global, not an error.
+-- Fallback wall skirt below the boundary, until the server says. Declared here:
+-- D.derbyState reads it, and a local used before its declaration is a nil global.
 local DERBY_WALL_SKIRT    = 1.5
 local DERBY_POLE_RADIUS   = 0.2
 
--- One table rather than a dozen file-scope locals, for the same reason the
--- tunables at the top of the file are one table: Lua caps a function at 200
--- locals, the top level of this file is a function, and going over does not warn
--- -- the file fails to compile and the mod is simply not there. This block was
--- the largest cohesive group left.
+-- One table, for the locals ceiling.
 D.derbyState = {
   phase     = 'idle',   -- idle | running | finished (mirrored from server)
-  -- The derby is decided and running out its cool-down. The cars are stood down
-  -- for it -- see derbyStandDown.
+  -- Decided, and running out its cool-down (see derbyStandDown).
   over      = false,
   boundary  = {},       -- ordered polygon vertices { x, y, z }
-  -- Which editor authored the polygon above, mirrored from the server. Gameplay
-  -- reads `boundary` in both cases and nothing else -- these only decide what
-  -- the ARENA IS DRAWN LIKE, and which controls the admin panel offers.
+  -- Which editor authored `boundary`. Gameplay reads `boundary` either way; this
+  -- only decides how the arena is drawn and which controls the panel offers.
   boundaryMode = 'polygon',  -- polygon | rect
   shape     = nil,      -- { cx, cy, cz, halfW, halfL, rot } while mode is 'rect'
   wallHeight = DERBY_POLE_HEIGHT,
   wallDepth  = DERBY_WALL_SKIRT,
-  -- True while an admin has the Derby Editor sub-tab open. The editor's arena
-  -- and a driver's arena are different drawings of the same boundary, exactly
-  -- the way an authoring checkpoint and a race one are (see drawGate).
+  -- The Derby Editor sub-tab is open (authoring view vs driving view).
   editorOpen = false,
   oobLimit  = 5,        -- seconds (mirrored from server config)
   demoLimit = 10,
@@ -134,57 +75,29 @@ D.derbyState = {
   visualize = true,     -- Hide/Show toggle for the boundary + grid visuals
   oobLeft   = nil,      -- active out-of-bounds countdown, nil = inside
   demoLeft  = nil,      -- active stopped countdown, nil = moving
-  -- THE SERVER SAYS WE ARE NOT IN THIS DERBY: eliminated, or never a
-  -- participant (joined after Start Derby). Authoritative, and only the server
-  -- broadcast sets it.
+  -- The server says we are not in this derby (eliminated, or joined late).
   out       = false,
-  -- WE HAVE REPORTED SOMETHING AND ARE WAITING FOR THE RULING. Stops the same
-  -- timer firing twice into the round trip, and nothing more.
-  --
-  -- These were ONE FLAG, and lives are what broke that. `out` was set the
-  -- moment a timer expired, on the reasoning that a timer expiring meant
-  -- elimination -- true until a driver could be sent back with a life instead.
-  -- Nothing cleared it for that case, so a driver who lost one life stopped
-  -- policing for the rest of the derby: no stopped timer, no out-of-bounds
-  -- timer, no further reports. And since a field that cannot report cannot be
-  -- eliminated, the derby then ran until an admin pressed End Derby.
+  -- We reported something and await the ruling: stops a timer firing twice.
+  -- Separate from `out` because a ruling can send a driver back with a life.
   pending   = false,
   runTime   = 0,        -- local seconds since this derby went running
   warnShown = false,    -- whether the UI currently shows a warning
 }
 
 
--- STAND THE CAR DOWN AT THE END OF A DERBY.
---
--- The result is settled and the arena stays up for a few seconds so it can be
--- seen; a wreck still being driven into people for those seconds is not a
--- cool-down, it is extra time nobody was given.
---
--- Freezing ALONE is not enough, and that is the whole of this function. The grid
--- hold uses the same freeze and gets away with it because a car on the grid is
--- stationary with nothing pressed. A derby ends with somebody's foot flat to the
--- floor, and a freeze applied over that captures the throttle: the engine sits
--- screaming against a locked car and lets go the instant the freeze lifts. So
--- the inputs are neutralised FIRST -- throttle off, brakes on -- and the freeze
--- goes over the top of a car that is already trying to stop.
---
--- Controls are deliberately left ENABLED. There is nothing left to win, the car
--- cannot move, and taking someone's steering away as a prize for having been in
--- a derby is worse than pointless. What IS taken away is the reset: a reset would
--- reload the vehicle out from under the freeze and hand them a driveable car in
--- the middle of a settled result.
+-- STAND THE CAR DOWN for the cool-down at the end of a derby. Neutralise the
+-- inputs FIRST (throttle off, brakes on): a freeze over a floored pedal holds
+-- the engine screaming and lets go when it lifts. Steering stays; the reset
+-- goes (see spectate.derbyStoodDown).
 
 local function derbyStandDown(down)
   if down == D.derbyState.stoodDown then return end
   D.derbyState.stoodDown = down
-  -- OUR car. These queue inputs into the vehicle's own Lua VM and then freeze
-  -- it, and the camera is regularly on somebody else at the end of a derby --
-  -- so the attached one would take a rival's throttle off and pin their body on
-  -- this client while BeamMP kept syncing their real position into it.
+  -- OUR car: on a rival this would fight BeamMP's sync.
   local veh = host.ownVehicle()
   if down then
     if veh then
-      -- Order matters: let go of the throttle before anything locks.
+      -- Throttle off before anything locks.
       pcall(function ()
         veh:queueLuaCommand('input.event("throttle", 0, 1)')
         veh:queueLuaCommand('input.event("brake", 1, 1)')
@@ -217,8 +130,7 @@ D.derbyClearWarnings = function ()
   if D.derbyState.warnShown then derbyPushWarning() end
 end
 
--- Standard ray-casting point-in-polygon test on the XY plane (the arena is a
--- 2D perimeter; height is ignored so jumps/ramps don't false-positive).
+-- Ray-casting point-in-polygon on XY (height ignored: jumps must not trip it).
 local function derbyPointInPolygon(px, py, poly)
   local inside = false
   local n = #poly
@@ -235,9 +147,7 @@ local function derbyPointInPolygon(px, py, poly)
   return inside
 end
 
--- Local pid, so we can tell whether the server already eliminated us. Read
--- through the host at the CALL, never captured: a value taken at load time is a
--- snapshot, and at load time the host does not exist yet.
+-- Read through the host at the call: at load the host does not exist.
 local function derbyLocalServerId() return host.localServerId() end
 
 D.derbyUpdate = function (dt)
@@ -246,9 +156,7 @@ D.derbyUpdate = function (dt)
     return
   end
   D.derbyState.runTime = D.derbyState.runTime + dt
-  -- OUR car, or a driver watching somebody else is policed on THAT car's
-  -- movement and position: they sit still and are never called stopped, or the
-  -- car they are watching leaves the arena and they are eliminated for it.
+  -- OUR car, not the watched one.
   local veh = host.ownVehicle()
   if not veh then
     D.derbyClearWarnings()
@@ -278,14 +186,8 @@ D.derbyUpdate = function (dt)
     end
   end
 
-  -- Stopped-vehicle ("demolished") check. Held off for the start grace
-  -- period so a grid of cars parked for the start isn't counting down
-  -- before anyone has had a chance to move.
-  --
-  -- TWO CLOCKS, NOT ONE. `stoppedFor` runs from the moment the car stops;
-  -- `demoLeft` only starts once that has passed DERBY_STOP_GRACE. Moving at any
-  -- point clears both, so the grace is granted again on the next stop rather
-  -- than being spent once per derby.
+  -- Stopped check, held off for the start grace. TWO CLOCKS: `stoppedFor` runs
+  -- from the stop, `demoLeft` only after DERBY_STOP_GRACE. Moving clears both.
   local vel = veh:getVelocity()
   local speed = math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z)
   if speed > DERBY_STOP_SPEED or D.derbyState.runTime < DERBY_START_GRACE then
@@ -293,9 +195,7 @@ D.derbyUpdate = function (dt)
     if D.derbyState.demoLeft then D.derbyState.demoLeft = nil; changed = true end
   else
     D.derbyState.stoppedFor = (D.derbyState.stoppedFor or 0) + dt
-    -- Still inside the grace: no countdown, and NOTHING PUSHED. The warning
-    -- panel is driven by demoLeft, so leaving it nil is what keeps the screen
-    -- quiet while a driver is simply turning around.
+    -- Inside the grace: no countdown and nothing pushed.
     if D.derbyState.stoppedFor < DERBY_STOP_GRACE then
       if D.derbyState.demoLeft then D.derbyState.demoLeft = nil; changed = true end
       if changed then derbyPushWarning() end
@@ -319,24 +219,10 @@ D.derbyUpdate = function (dt)
   if changed then derbyPushWarning() end
 end
 
--- Arena walls. The perimeter is drawn as a closed run of vertical panels -- one
--- quad per edge, standing from the boundary up to the wall height -- rather than
--- the poles and rope it used to be. The same builder serves both arena kinds,
--- because by the time it runs a rectangle is just a four-vertex polygon.
---
--- Two things about the geometry are worth knowing before changing it:
---
---   * A rectangle's corners all sit at the CENTER's z (see the server's
---     derbyShapeToBoundary), so on sloped ground the ring is a flat plane cut
---     through the hill. The walls therefore start BELOW the boundary z and run
---     up from there: dropping the base by a skirt means the panel intersects the
---     terrain on the uphill side instead of hovering over it, and the arena
---     still reads as enclosed. A hand-placed polygon takes its z from the car
---     that placed each marker, so it follows the ground already -- the skirt
---     costs it nothing.
---   * Every panel is emitted TWICE, with the winding reversed the second time.
---     Drivers stand inside this box looking out, which is the one view a
---     single-sided quad would be invisible from.
+-- Arena walls: one vertical panel per edge, for both arena kinds.
+--   * A rectangle's corners all sit at the CENTER's z, so on a slope the walls
+--     start a skirt BELOW the boundary and cut into the uphill terrain.
+--   * Each panel is drawn twice, winding reversed: drivers look out from inside.
 local function derbyBuildWalls(boundary, height, depth)
   local n = #boundary
   local walls = {}
@@ -344,8 +230,7 @@ local function derbyBuildWalls(boundary, height, depth)
   for i = 1, n do
     local a = boundary[i]
     local b = boundary[i % n + 1]
-    -- Two markers is a line, not a ring: draw the single panel once rather than
-    -- the same panel twice back to back.
+      -- Two markers is a line: one panel, not the same one twice.
     if not (n == 2 and i == 2) then
       local a0 = vec3(a.x, a.y, a.z - depth)
       local b0 = vec3(b.x, b.y, b.z - depth)
@@ -357,36 +242,18 @@ local function derbyBuildWalls(boundary, height, depth)
   return walls
 end
 
--- Boundary visualization. Mirrors the race editor's Hide/Show Gates rule:
--- unconditional while the derby runs (drivers must see the arena), the toggle
--- only applies outside of one.
+-- Unconditional while the derby runs; the Hide/Show toggle applies otherwise.
 D.derbyDrawBoundary = function ()
   if not debugDrawer then return end
   if D.derbyState.phase ~= 'running' and not D.derbyState.visualize then return end
 
-  -- Who is looking. An admin with the Derby Editor open is judging the arena and
-  -- needs its exact limits, its corners and its numbers; everyone else is
-  -- driving in it and needs to know where the edge is and nothing more. A derby
-  -- from form-up onward is always the driving view, even for that admin -- by
-  -- then cars are standing on the grid and the panel is not what anyone is
-  -- looking at.
+  -- Authoring view only for an admin with the Derby Editor open, before form-up.
   local authoring = D.derbyState.editorOpen and host.isAdmin()
     and D.derbyState.phase ~= 'running' and D.derbyState.phase ~= 'countdown'
     and D.derbyState.phase ~= 'forming'
 
-  -- Derby starting grid slots, numbered from slot 1. Authoring furniture: they
-  -- exist to lay the slots out and check spacing, so they belong to an admin
-  -- with the editor open -- the same rule drawStartPositions applies to the race
-  -- grid, which this used to be the exception to. Every driver on the server got
-  -- a field of numbered outlines whether or not a derby was anywhere near
-  -- starting, and they stayed up through form-up and the countdown.
-  --
-  -- The one case that is not authoring: a driver being PUT on a slot. While the
-  -- field forms up, your own slot is drawn for you and nobody else's is, so you
-  -- can see where you have been placed without the other nineteen outlines.
-  -- Once the derby runs, nothing here is drawn at all -- every car has left its
-  -- slot by then. The boundary below is NOT hidden: leaving it is what
-  -- eliminates you, so a driver has to be able to see it.
+  -- Start slots are editor furniture. While the field forms up a driver sees
+  -- only their own slot; once running, none. The boundary is never hidden.
   if D.derbyState.phase ~= 'running' then
     if authoring then
       for i, sp in ipairs(D.derbyState.starts) do
@@ -396,15 +263,8 @@ D.derbyDrawBoundary = function ()
       host.drawStartPosition(D.derbyState.starts[D.derbyState.slot], D.derbyState.slot, true)
     end
   end
-  -- THE POINT PLACE MODE HAS HOLD OF, drawn over everything else.
-  --
-  -- Marked separately rather than by recolouring the thing itself, because the
-  -- arena's geometry is cached on the boundary table's identity and a selection
-  -- that changed colour would rebuild the whole perimeter every time it moved.
-  -- This is one post a frame and touches no cache.
-  --
-  -- Drawn before the early return below, so the arena center is still marked on
-  -- a rectangle whose boundary has not been derived yet.
+  -- The point Place mode holds, drawn as its own post so the cached arena is not
+  -- rebuilt; before the early return, so a rectangle's center shows too.
   if authoring then
     local pick = host.nudgePick and host.nudgePick() or nil
     if pick and pick.x then
@@ -422,38 +282,22 @@ D.derbyDrawBoundary = function ()
   local n = #boundary
   if n == 0 then return end
 
-  -- Same story as the race gates: an arena perimeter is fixed geometry redrawn
-  -- every frame, and it was rebuilding all of it each time.
-  --
-  -- The cache lives on D.derbyState rather than in a new file-scope local, because
-  -- this file is close enough to Lua's 200-local ceiling that a new one there is
-  -- a cost of its own. It is keyed on the boundary table itself: D.onDerbyUpdate
-  -- keeps the existing table when the markers have not moved, so identity is
-  -- enough to say "nothing about this arena has changed". Wall height and the
-  -- authoring flag are part of the key too -- both change the geometry without
-  -- the boundary moving, and a cache that missed them would draw a resized
-  -- arena at its old height, or keep the editor's floor through a live derby.
+  -- Cached geometry, keyed on the boundary table's identity (onDerbyUpdate keeps
+  -- it when the markers have not moved), plus height, depth and the view.
   local height = D.derbyState.wallHeight or DERBY_POLE_HEIGHT
   local depth  = D.derbyState.wallDepth or DERBY_WALL_SKIRT
   local cache = D.derbyState.draw
-  -- Depth is part of the cache key for the same reason height is: it changes the
-  -- geometry without any marker moving, and a cache that missed it would keep
-  -- drawing the arena at its old skirt.
   if not cache or cache.src ~= boundary or cache.height ~= height
       or cache.depth ~= depth or cache.authoring ~= authoring then
     cache = { src = boundary, height = height, depth = depth, authoring = authoring }
     cache.walls = derbyBuildWalls(boundary, height, depth)
-    -- Corner posts, the full height of the wall. Both views draw them -- they
-    -- are what stops a translucent wall from disappearing against a bright sky
-    -- -- but the driving view draws them thinner, so they mark the corners
-    -- without becoming scenery.
+    -- Corner posts, so a translucent wall shows against a bright sky.
     cache.posts = {}
     for i, m in ipairs(boundary) do
       local base = vec3(m.x, m.y, m.z - depth)
       cache.posts[i] = { a = base, b = vec3(m.x, m.y, m.z + height) }
     end
-    -- A rail along the top of the wall, and one along the ground. The ground
-    -- rail is the line a driver actually judges the edge by at speed.
+    -- Top and ground rails; the ground rail is what a driver judges the edge by.
     cache.topRail, cache.baseRail = {}, {}
     if n > 1 then
       for i = 1, n do
@@ -467,16 +311,13 @@ D.derbyDrawBoundary = function ()
       end
     end
     if authoring then
-      -- Editor-only furniture, built once with everything else: a numbered label
-      -- over each corner, the arena's headline label, and -- for a rectangle --
-      -- the center crosshair and a readout of what the sliders currently say.
+      -- Editor furniture: labels, and for a rectangle its floor and center cross.
       local first = boundary[1]
       cache.labelAt = vec3(first.x, first.y, first.z + height + 0.8)
       local s = D.derbyState.shape
       if D.derbyState.boundaryMode == 'rect' and s then
         cache.label = string.format('DERBY ARENA: %.0f x %.0f m', s.halfW * 2, s.halfL * 2)
-        -- A rectangle is convex and has exactly four corners, so its floor is
-        -- one quad with no triangulation to get wrong.
+        -- Convex with four corners: one quad, no triangulation.
         if n == 4 then
           cache.floor = {}
           for i, m in ipairs(boundary) do
@@ -485,8 +326,7 @@ D.derbyDrawBoundary = function ()
         end
         cache.center = {
           at = vec3(s.cx, s.cy, s.cz),
-          -- A cross through the center, turned with the rectangle, so the
-          -- rotation slider has something to visibly turn.
+          -- A center cross, turned with the rectangle.
           armA = { a = vec3(s.cx - math.cos(s.rot) * 3, s.cy - math.sin(s.rot) * 3, s.cz + 0.1),
                    b = vec3(s.cx + math.cos(s.rot) * 3, s.cy + math.sin(s.rot) * 3, s.cz + 0.1) },
           armB = { a = vec3(s.cx + math.sin(s.rot) * 3, s.cy - math.cos(s.rot) * 3, s.cz + 0.1),
@@ -509,23 +349,15 @@ D.derbyDrawBoundary = function ()
   local edge = (D.derbyState.phase == 'running') and p.derbyLive or p.derbySetup
   local face = authoring and p.derbyWallEdit or p.derbyWallLive
 
-  -- The walls themselves. Twice each, winding reversed, so the panel is there
-  -- from inside the arena as well as outside it.
+  -- The walls, twice each (see derbyBuildWalls).
   for _, w in ipairs(cache.walls) do
     debugDrawer:drawQuadSolid(w.bl, w.br, w.tr, w.tl, face)
     debugDrawer:drawQuadSolid(w.tl, w.tr, w.br, w.bl, face)
   end
 
   if authoring then
-    -- The enclosed area, filled, so the extent is unmistakable. Editor-only: a
-    -- translucent floor over the whole playing surface is the last thing a
-    -- driver needs.
-    --
-    -- Rectangles only, and deliberately so. Filling an arbitrary polygon means
-    -- triangulating it, and the cheap way (a fan from vertex 1) paints OUTSIDE
-    -- the arena the moment the shape is concave -- which a hand-driven demo
-    -- arena very often is. A floor that lies about the limits is worse than no
-    -- floor, and the walls, posts and rails already state them exactly.
+    -- Floor for rectangles only: fanning a concave hand-driven polygon would
+    -- paint outside the arena.
     if cache.floor then
       debugDrawer:drawQuadSolid(cache.floor[1], cache.floor[2],
         cache.floor[3], cache.floor[4], p.derbyFloor)
@@ -551,8 +383,7 @@ D.derbyDrawBoundary = function ()
         p.text, true, false, p.derbyLabelBg)
     end
   else
-    -- Driving view: no labels, no corner numbers, no floor. Just enough edge to
-    -- read the wall against the sky and the ground.
+    -- Driving view: just enough edge to read the wall.
     for _, r in ipairs(cache.baseRail) do
       debugDrawer:drawCylinder(r.a, r.b, DERBY_POLE_RADIUS * 0.4, edge)
     end
@@ -583,10 +414,8 @@ function D.derbyClearBoundary()
 end
 
 -- --- Rectangle arena (the other boundary editor) ---------------------------
--- Switch between driving the perimeter marker by marker and pulling a rectangle
--- out from a center. Neither loses the other's work: see the server handler.
--- The vehicle position rides along as the center to use when there is no
--- existing arena to fit a rectangle around.
+-- Switch between marker-by-marker and a rectangle from a center; neither loses
+-- the other's work. The car's position is the center when there is no arena.
 function D.derbySetBoundaryMode(mode)
   if not host.inMultiplayer() then
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Demo Derby needs a BeamMP server' })
@@ -606,8 +435,7 @@ function D.derbySetBoundaryMode(mode)
   TriggerServerEvent('RM_DerbySetBoundaryMode', jsonEncode(payload))
 end
 
--- Re-center the rectangle on the car. The derby's "Move Here", and the same
--- gesture every other placement in this mod uses.
+-- Re-center the rectangle on the car.
 function D.derbySetShapeCenter()
   if not host.inMultiplayer() then
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Demo Derby needs a BeamMP server' })
@@ -623,10 +451,8 @@ function D.derbySetShapeCenter()
     jsonEncode({ cx = pos.x, cy = pos.y, cz = pos.z }))
 end
 
--- Size, turn and wall height, straight off the sliders. Every argument is
--- optional: the server keeps whatever this payload leaves out, so a slider only
--- ever sends the thing it moved. Width and length arrive as the FULL span an
--- admin reads off the panel; the server stores half-extents.
+-- Size, turn and wall height from the sliders; every argument is optional and
+-- the server keeps what is left out. Width and length are FULL spans.
 function D.derbySetShape(width, length, rotDeg, wallHeight, wallDepth)
   if not host.inMultiplayer() then return end
   local payload = {}
@@ -642,14 +468,9 @@ function D.derbySetShape(width, length, rotDeg, wallHeight, wallDepth)
   TriggerServerEvent('RM_DerbySetShape', jsonEncode(payload))
 end
 
--- The parameter is `resetLimit`, not `maxResets`: the latter is also the name of
--- the RACE allowance this file holds, and a parameter quietly shadowing it is
--- the kind of thing that reads correctly and means something else.
--- `lives` is optional so an older UI, which sends three arguments, still sets
--- the two timers and the reset allowance instead of failing on arity.
--- `mode` is last for the same reason `lives` was: an older UI sends four
--- arguments, and the server leaves the mode alone when it does not recognize
--- what it is given -- including nil.
+-- `resetLimit`, not `maxResets` (the race allowance's name). `lives` and `mode`
+-- are optional, so an older UI's shorter call still works; the server ignores
+-- a mode it does not recognise, nil included.
 function D.derbySetConfig(oobLimit, demoLimit, resetLimit, lives, mode)
   if host.inMultiplayer() then
     TriggerServerEvent('RM_DerbySetConfig', jsonEncode({
@@ -662,9 +483,7 @@ function D.derbySetConfig(oobLimit, demoLimit, resetLimit, lives, mode)
 end
 
 -- --- Derby starting grid (admin) -------------------------------------------
--- Same workflow as the race grid: drive to each slot, press the button, slot 1
--- first. The server owns the list and hands each participant a slot number at
--- Start Derby; this client puts its own car there.
+-- Same workflow as the race grid; the server owns the list and assigns slots.
 function D.derbyAddStartPosition()
   if not host.inMultiplayer() then
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Demo Derby needs a BeamMP server' })
@@ -683,12 +502,8 @@ function D.derbyClearStartPositions()
 end
 
 -- --- Derby marker / start slot editing -------------------------------------
--- The derby's answer to moveStartPosition / removeStartPosition / preview,
--- with one difference that decides the whole shape of these: the race grid is
--- this client's own list, while the SERVER owns the arena. So a move sends the
--- index plus the placement the car is standing on and waits for the broadcast
--- to come back; only the preview is answered locally, because standing your own
--- car somewhere is nobody else's business.
+-- The arena is the SERVER's, so a move sends the index and the car's placement
+-- and waits for the broadcast; only the preview is local.
 function D.derbyMoveMarker(index)
   index = math.floor(tonumber(index) or 0)
   if index < 1 then return end
@@ -738,9 +553,7 @@ function D.derbyRemoveStartPosition(index)
   end
 end
 
--- Preview, the race editor's "Go": stand the car on a placed entry so the
--- creator can see where it actually is. Purely local and never freezes -- this
--- is editor convenience, exactly like previewStartPosition.
+-- Preview: stand the car on a placed entry. Local, never frozen.
 function D.derbyPreviewStartPosition(index)
   index = math.floor(tonumber(index) or 0)
   local sp = D.derbyState.starts[index]
@@ -750,8 +563,7 @@ function D.derbyPreviewStartPosition(index)
   end
 end
 
--- A boundary marker is a position with no facing of its own, so the car keeps
--- the heading it already has rather than being spun to an arbitrary one.
+-- A boundary marker has no facing, so the car keeps its own heading.
 function D.derbyPreviewMarker(index)
   index = math.floor(tonumber(index) or 0)
   local m = D.derbyState.boundary[index]
@@ -769,34 +581,14 @@ end
 -- ===========================================================================
 -- PLACE MODE: the mouse editing the race editor already has, on the arena
 -- ===========================================================================
--- The extension owns the mouse, the raycast and the picking -- one
--- implementation, shared -- and calls in here for the two things it cannot
--- know: WHICH list a derby target means, and HOW a change to it reaches the
--- server.
---
--- That split is the whole reason this is four small functions rather than a
--- second copy of nudge. The race editor's lists are this client's own, so it
--- edits them in place and broadcasts the result; the arena belongs to the
--- SERVER, so every change here is a request, and the drawing does not move
--- until the broadcast agrees. The one exception is a drag in progress, which
--- moves the local copy every frame and sends once on release: sending per frame
--- would be a server broadcast to the whole lobby per frame, to describe a
--- marker being slid a few meters.
---
--- Every target is refused while a derby is live. The server refuses them too
--- (derbyActive() guards each handler) -- this half only stops the panel
--- offering an edit that would be thrown away.
+-- The extension owns the mouse and picking; this answers WHICH list a derby
+-- target means and HOW a change reaches the server (every change is a request;
+-- a drag moves the local copy and sends once on release). Refused while a derby
+-- is live, as the server refuses it too.
 
--- THE ARENA CENTER AS A ONE-ELEMENT LIST.
---
--- Place mode picks and drags entries out of a list, so the center is presented
--- as one. It is a PROXY rather than the shape itself: the shape carries the
--- extents and the rotation as well, and handing those to something that will
--- write x/y/z into them is how a drag would quietly resize the arena.
---
--- Rebuilt from the shape on every broadcast (see the sync in onDerbyUpdate),
--- and mutated in place by a drag in between. The table identity is kept so a
--- selection held across a broadcast still points at the same entry.
+-- The arena center as a one-element PROXY list for Place mode, so a drag can
+-- never write into the shape's extents. Synced from each broadcast, mutated by
+-- a drag in between; identity kept so a held selection survives.
 D.centreList = {}
 
 function D.syncCentreList()
@@ -805,19 +597,14 @@ function D.syncCentreList()
   local c = D.centreList[1]
   if not c then c = {}; D.centreList[1] = c end
   c.x, c.y, c.z = s.cx, s.cy, s.cz
-  -- A facing, so the center draws like every other placement rather than as a
-  -- bare point. It is the rectangle's own rotation, and nothing writes it back:
-  -- the Rotation slider owns that.
+  -- A facing for drawing; the Rotation slider owns it.
   c.hx, c.hy = math.sin(s.rot or 0), math.cos(s.rot or 0)
 end
 
--- Which list a Place-mode target means, or nil when the target is not ours.
--- nil is the answer that keeps the race editor's targets working unchanged.
+-- Which list a Place-mode target means, or nil (not ours: race targets).
 function D.editList(target)
   if target == 'derbyMarker' then
-    -- Rectangle corners are DERIVED from the shape and are rebuilt from it on
-    -- every change, so dragging one would be undone by the next broadcast. The
-    -- center is the handle in that mode, which is what derbyCenter is for.
+    -- Rectangle corners are derived from the shape: the center is the handle.
     if D.derbyState.boundaryMode == 'rect' then return nil end
     return D.derbyState.boundary
   end
@@ -829,14 +616,12 @@ function D.editList(target)
   return nil
 end
 
--- Can this target be edited at all right now? The panel greys out on the same
--- answer, so a refusal is visible before it is attempted rather than after.
+-- Can the arena be edited now? The panel greys out on the same answer.
 function D.editAllowed()
   return D.derbyState.phase ~= 'running' and host.inMultiplayer()
 end
 
--- Ctrl+click on open ground. The center has no "place": there is exactly one
--- of it and it already exists, so it is moved and never created.
+-- Ctrl+click. The center exists once and is only ever moved.
 function D.editPlace(target, place)
   if not (D.editAllowed() and place) then return false end
   if target == 'derbyMarker' then
@@ -854,8 +639,7 @@ function D.editPlace(target, place)
   return false
 end
 
--- A drag has ended, or a button moved the entry. `wp` is the local copy the
--- extension has already moved, so this only has to say where it now is.
+-- A drag ended or a button moved the entry; `wp` is already moved locally.
 function D.editMove(target, index, wp)
   if not (D.editAllowed() and wp) then return false end
   index = math.floor(tonumber(index) or 0)
@@ -873,9 +657,7 @@ function D.editMove(target, index, wp)
     return true
   end
   if target == 'derbyCenter' then
-    -- ONLY the center. RM_DerbySetShape takes any subset of the rectangle and
-    -- keeps what it is not sent, so naming just these three is what stops a
-    -- drag touching the extents or the rotation.
+    -- Only the center: RM_DerbySetShape keeps whatever it is not sent.
     TriggerServerEvent('RM_DerbySetShape',
       jsonEncode({ cx = wp.x, cy = wp.y, cz = wp.z }))
     return true
@@ -899,24 +681,19 @@ function D.editRemove(target, index)
   return false
 end
 
--- The Derby Editor sub-tab opening and closing. Client-local and purely a
--- render gate, exactly like setEditorOpen for the race checkpoints: it decides
--- whether this client draws the arena's authoring view or its driving view, and
--- touches no derby state the server owns.
+-- The Derby Editor sub-tab: a client-local render gate.
 function D.setDerbyEditorOpen(open)
   D.derbyState.editorOpen = open == true
 end
 
--- Hide/Show the derby boundary + start grid visuals (client-local, like the
--- race editor's gate toggle). Pushed to the UI so the button label follows.
+-- Hide/Show the derby visuals (client-local).
 function D.derbyToggleVisualize()
   D.derbyState.visualize = not D.derbyState.visualize
   guihooks.trigger('RaceManagerDerbyVisual', { visualize = D.derbyState.visualize })
 end
 
 
--- Form up: stand every participant on their slot and hold them there, ready
--- for the countdown. The derby equivalent of Generate Grid.
+-- Form up: every participant on their slot, held for the countdown.
 function D.derbyFormUp()
   if host.inMultiplayer() then TriggerServerEvent('RM_DerbyFormUp', '') end
 end
@@ -929,8 +706,7 @@ function D.derbyEnd()
   if host.inMultiplayer() then TriggerServerEvent('RM_DerbyEnd', '') end
 end
 
--- The ready check: put this car on its slot, or take it off again. Refused
--- here with no car, because the server would mark it ready with nothing to move.
+-- Ready check, refused with no car.
 function D.derbyReady(on)
   if not host.inMultiplayer() then return end
   if on ~= false and not host.ownVehicle() then
@@ -968,10 +744,7 @@ function D.derbyRequestState()
   end
 end
 
--- --- Derby arena layouts (server-side, persistent, per-map) ----------------
--- The same save/load workflow the race layouts use, kept inside the derby
--- module: an arena is its boundary polygon plus the two timers, stored on the
--- server under a name and broadcast to every client when loaded.
+-- --- Derby arena layouts (server-side, per map) -----------------------------
 function D.derbySaveLayout(name)
   name = tostring(name or ''):gsub('^%s+', ''):gsub('%s+$', '')
   if name == '' then
@@ -997,8 +770,7 @@ function D.derbySaveLayout(name)
     end
     markers[i] = { x = x, y = y, z = z }
   end
-  -- The derby starting grid travels with the arena, exactly the way the race
-  -- grid travels with a track layout.
+  -- The start grid travels with the arena.
   local starts = nil
   if #D.derbyState.starts > 0 then
     starts = {}
@@ -1006,9 +778,8 @@ function D.derbySaveLayout(name)
       starts[i] = { x = sp.x, y = sp.y, z = sp.z, hx = sp.hx, hy = sp.hy }
     end
   end
-  -- A rectangle is saved as its shape AND the polygon it produced, so the arena
-  -- comes back editable by slider rather than as four loose markers -- and stays
-  -- loadable by anything that only knows about the polygon.
+  -- A rectangle saves its shape AND its polygon, so it reloads editable and
+  -- loadable by polygon-only readers.
   TriggerServerEvent('RM_DerbySaveLayout', jsonEncode({
     name = name, boundary = markers,
     boundaryMode = D.derbyState.boundaryMode,
@@ -1050,13 +821,10 @@ D.onDerbyUpdate = function (rawData)
   if not host.fromCurrentServer(data) then return end
 
   local newPhase = data.derbyPhase or 'idle'
-  -- Decided and running out the cool-down. Stood down while that is true, and
-  -- released the moment the derby is no longer running -- so a car is never left
-  -- frozen by a derby that has ended, whatever order the broadcasts arrive in.
+  -- Decided, running out the cool-down (see the stand-down below).
   D.derbyState.over = data.derbyOver == true
   if newPhase == 'running' and D.derbyState.phase ~= 'running' then
-    -- Fresh derby: re-arm local detection from a clean slate. The derby reset
-    -- allowance is per-derby, so it starts over too.
+    -- Fresh derby: clean slate, resets included.
     D.derbyState.out = false
     D.derbyState.pending = false
     D.derbyState.runTime = 0
@@ -1067,8 +835,7 @@ D.onDerbyUpdate = function (rawData)
     if D.derbyState.phase == 'running' then D.derbyState.slot = nil end
     D.derbyClearWarnings()
   end
-  -- A derby that ends or is reset while cars are still held on the form-up grid
-  -- has to let them go. Only ever releases a hold this module imposed.
+  -- An ended derby releases a form-up hold (only its own).
   if newPhase == 'idle' or newPhase == 'finished' then
     host.releaseGridHold('derby')
   end
@@ -1095,16 +862,8 @@ D.onDerbyUpdate = function (rawData)
       if x and y and z then boundary[#boundary + 1] = { x = x, y = y, z = z } end
     end
   end
-  -- Keep the table we already have when the markers have not actually moved.
-  -- Every broadcast used to install a brand new one -- once a second while a
-  -- derby runs, and on every marker drop while an admin builds an arena -- which
-  -- is garbage on its own, and would also throw away the draw cache below on
-  -- every push for an arena that had not changed at all.
-  --
-  -- Swapping the table IS the invalidation, and deliberately the only one: the
-  -- cache is keyed on this table's identity, so a new arena can never be drawn
-  -- with an old one's geometry, and there is no second rule here to forget to
-  -- apply somewhere else.
+  -- Keep the existing table when the markers have not moved: swapping it IS
+  -- the draw cache's invalidation, and the only one.
   local same = #boundary == #D.derbyState.boundary
   if same then
     for i, m in ipairs(boundary) do
@@ -1114,9 +873,8 @@ D.onDerbyUpdate = function (rawData)
   end
   if not same then D.derbyState.boundary = boundary end
 
-  -- Which editor authored that polygon, and how tall to draw its walls. Both are
-  -- server-owned so every client draws the same arena; neither affects the
-  -- out-of-bounds test, which reads `boundary` and nothing else.
+  -- Server-owned, so every client draws the same arena; neither affects the
+  -- out-of-bounds test.
   D.derbyState.boundaryMode = (data.boundaryMode == 'rect') and 'rect' or 'polygon'
   if type(data.wallHeight) == 'number' then D.derbyState.wallHeight = data.wallHeight end
   if type(data.wallDepth) == 'number' then D.derbyState.wallDepth = data.wallDepth end
@@ -1133,9 +891,7 @@ D.onDerbyUpdate = function (rawData)
   else
     D.derbyState.shape = nil
   end
-  -- The center's one-element proxy list follows the shape. Rebuilt here rather
-  -- than per frame so a drag between broadcasts is not undone by its own
-  -- reader: see D.centreList.
+  -- Synced here, not per frame, so a drag between broadcasts is not undone.
   D.syncCentreList()
 
   -- Derby starting grid (a placement + a facing per slot, like the race grid).
@@ -1151,19 +907,16 @@ D.onDerbyUpdate = function (rawData)
   end
   D.derbyState.starts = starts
 
-  -- If the server already knows we're out (e.g. reconnect race), stop
-  -- policing. Same if we're not in the participant list at all: we joined
-  -- after Start Derby and are a spectator - a parked spectator must not get
-  -- OUT OF BOUNDS / VEHICLE STOPPED overlays for a derby they aren't in.
+  -- Stop policing if the server says we are out, or we are not a participant
+  -- (joined after Start Derby).
   local myId = derbyLocalServerId()
   if myId and type(data.players) == 'table' then
     local mine = nil
     for _, p in ipairs(data.players) do
       if tonumber(p.id) == myId then mine = p; break end
     end
-    -- The ready check. `you` marks our row for the panel's Ready button, and
-    -- the HUD says so the first time we are called: not after Not ready,
-    -- which the driver pressed themselves.
+    -- `you` marks our row for the Ready button; the HUD says when we are first
+    -- called, not after Not ready.
     local wasReady = D.derbyState.myReady
     D.derbyState.myReady = nil
     if mine and data.derbyPhase == 'forming' then D.derbyState.myReady = mine.ready end
@@ -1178,14 +931,9 @@ D.onDerbyUpdate = function (rawData)
         D.derbyState.out     = true
         D.derbyState.pending = false
       elseif D.derbyState.pending or D.derbyState.out then
-        -- ...and this is the other answer: still alive, so whatever we reported
-        -- was met with a life rather than an elimination. Policing resumes.
-        --
-        -- THE GRACE IS RE-ARMED HERE TOO, not only in onDerbyLifeLost. The two
-        -- messages are sent one after the other and nothing guarantees which
-        -- lands first; if this one wins the race, the car has not been moved
-        -- yet and is still sitting stopped exactly where the timer expired.
-        -- Resuming without re-arming would spend the next life within a frame.
+        -- Still alive: the report was met with a life. Policing resumes, with
+        -- the grace re-armed (this may arrive before onDerbyLifeLost moves the
+        -- car, which is still sitting stopped).
         D.derbyState.out     = false
         D.derbyState.pending = false
         D.derbyState.runTime = 0
@@ -1196,70 +944,34 @@ D.onDerbyUpdate = function (rawData)
     end
   end
 
-  -- THE STAND-DOWN, AND NOT FOR A WRECK.
-  --
-  -- Decided and running out the cool-down: hold still. It applies the handbrake
-  -- and freezes the car so a result that is already settled cannot be driven
-  -- into for the seconds the arena stays up, and it lets go the moment the derby
-  -- stops running, whatever order the broadcasts arrive in.
-  --
-  -- A DRIVER WHO IS ALREADY OUT IS EXEMPT, and that is the whole of this guard.
-  -- Their car was deliberately left as a free-rolling obstacle when they were
-  -- eliminated -- handbrake OFF, ignition cut, nothing frozen, see
-  -- spectate.releaseControls -- because the survivors are meant to be able to
-  -- shove it. Standing them down bolted it to the arena floor again a moment
-  -- later, which is exactly the handbrake that elimination had just released.
-  --
-  -- It bites on the LAST elimination above all, because that is the one that
-  -- decides the derby: the same broadcast says "you are out" and "the derby is
-  -- over", so the release and the re-application landed within a frame of each
-  -- other and the handbrake simply appeared to come back on its own.
-  --
-  -- CALLED HERE, BELOW the block above, and the move is the fix rather than a
-  -- tidy-up. It used to run at the top of this function, before `out` had been
-  -- read out of this same payload -- so on the one broadcast where it mattered
-  -- it was deciding against last tick's answer.
+  -- The stand-down, NOT for a driver already out: their wreck is a free-rolling
+  -- obstacle (spectate.releaseControls) and standing it down re-applied the
+  -- handbrake. Called AFTER `out` is read from this same payload, which matters
+  -- on the broadcast that eliminates the last driver and ends the derby.
   derbyStandDown(D.derbyState.over and newPhase == 'running'
     and not D.derbyState.out)
 
   guihooks.trigger('RaceManagerDerby', data)
 end
 
--- Start Derby handed this client a start slot: stand the car on it, facing
--- the placed heading. No freeze/hold - the derby's start grace period covers
--- the line-up, and the teleport is flagged so it never counts as a reset.
--- A LIFE SPENT, NOT A DERBY LOST. The stopped timer expired, the server took a
--- life off this driver and sent them back to the slot they started from.
---
--- Everything physical about it is the form-up path: the same placement queue,
--- which ghosts the car on the way in and hands its collisions back only once it
--- has settled AND the space around it is provably clear. That is what stops a
--- driver being dropped into the middle of a scrum and welded to whatever was
--- standing on their slot.
---
--- NOT held. A form-up holds cars for the countdown; this driver is rejoining a
--- derby that is already running, and holding them would be a second penalty on
--- top of the life they just lost.
+-- A LIFE SPENT, NOT A DERBY LOST: back to the start slot through the placement
+-- queue (ghosted, solid once clear). NOT held: holding would be a second
+-- penalty in a derby already running.
 D.onDerbyLifeLost = function (rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
   local lives = tonumber(data.lives) or 0
   local slot  = tonumber(data.slot)
 
-  -- The countdown that just expired has to go before the car moves, or the
-  -- driver lands on their slot with the overlay still counting and loses the
-  -- next life to the timer they already paid for.
+  -- Clear the expired countdown before the car moves.
   D.derbyState.demoLeft = nil
   D.derbyState.oobLeft  = nil
-  -- Back in, and policing again. This is the flag that used to be left set: the
-  -- timer that expired reported an elimination and got a life, and the client
-  -- went on believing it was out for the rest of the derby.
+  -- Back in, and policing again.
   D.derbyState.pending  = false
   D.derbyState.out      = false
   D.derbyClearWarnings()
   D.derbyState.stoppedFor = 0
-  D.derbyState.runTime  = 0     -- re-arms the start grace, so a car put down
-                                -- stationary is not immediately on the clock
+  D.derbyState.runTime  = 0     -- re-arms the start grace for a car put down
 
   if slot then
     D.derbyState.slot = math.floor(slot)
@@ -1281,7 +993,7 @@ end
 D.onDerbyGridAssign = function (rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
-  -- Not ready any more: off the slot, and the hold goes with it.
+  -- Not ready any more: off the slot, hold released.
   if data.release == true then
     D.derbyState.slot = nil
     host.releaseGridHold('derby')
@@ -1290,37 +1002,26 @@ D.onDerbyGridAssign = function (rawData)
   local slot = tonumber(data.slot)
   D.derbyState.slot = slot and math.floor(slot) or nil
 
-  -- Through the same placement queue the race grid uses. A derby form-up is a
-  -- whole field being teleported onto adjacent slots at once, which is the same
-  -- physical problem: ghosted, staggered by slot number, collisions back once
-  -- the field has settled. The derby assigns slots 1..N in order, so the slot
-  -- number IS this car's place in the sequence.
-  --
-  -- Form-up holds every participant until the countdown lets them go, whether
-  -- or not a slot was placed for them: a car with nowhere to line up still has
-  -- to wait for GO rather than getting a free run at everyone else. Tagged
-  -- 'derby' so a racing host.phase() change can never release it.
+  -- Through the placement queue, staggered by slot number. Form-up holds every
+  -- participant until GO, slot or not; tagged 'derby' so a race phase change
+  -- cannot release it.
   if D.derbyState.slot then
     host.queueFieldPlacement({
       slot  = D.derbyState.slot,
       slots = D.derbyState.starts,
       hold  = data.hold == true,
       holdSource = 'derby',
-      -- A lone ready-up arrives as 1 of 1 and lands at once; a whole field
-      -- is staggered by slot number.
+      -- A lone ready-up is 1 of 1 and lands at once.
       order = tonumber(data.order) or D.derbyState.slot,
       count = tonumber(data.count) or math.max(#D.derbyState.starts, D.derbyState.slot),
     })
   elseif data.hold == true then
-    -- No slot placed for this driver: hold them where they stand.
     host.requestHold('derby')
   end
 end
 
--- Derby countdown, on its own channel so the racing countdown and this one can
--- never release each other's cars. GO (0) or an abort (-1) ends the hold; the
--- overlay itself is the shared UI one, since a countdown looks the same either
--- way and there is nothing mode-specific about drawing 3, 2, 1.
+-- Derby countdown, on its own channel so neither countdown releases the other's
+-- cars. GO (0) or an abort (-1) ends the hold.
 D.onDerbyCountdown = function (rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then return end
@@ -1330,7 +1031,7 @@ D.onDerbyCountdown = function (rawData)
   if host.lightsCountdown then host.lightsCountdown(count) end
 end
 
--- Map-filtered arena list from the server.
+-- The map's arena list.
 D.onDerbyLayoutList = function (rawData)
   local ok, data = pcall(jsonDecode, rawData)
   if not ok or type(data) ~= 'table' then
