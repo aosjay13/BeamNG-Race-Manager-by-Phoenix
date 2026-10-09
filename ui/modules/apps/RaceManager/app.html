@@ -2068,6 +2068,12 @@
               title="Signage. A marker is placed like a checkpoint and does nothing at all: not armed, not timed, not counted. For telling drivers which way a long stage goes.">
         Marker ({{ markers.length }})
       </button>
+      <button class="rm-btn rm-btn-mini rm-route-tab-prop"
+              ng-class="{'rm-route-tab-prop-active': editorTarget === 'prop'}"
+              ng-click="setEditorTarget('prop')"
+              title="Cones, barriers and signs, saved with the layout. Real objects that cars hit.">
+        Props ({{ props.length }})
+      </button>
       <button class="rm-btn rm-btn-mini rm-route-tab-start"
               ng-class="{'rm-route-tab-start-active': editorTarget === 'start'}"
               ng-click="setEditorTarget('start')"
@@ -2131,13 +2137,37 @@
         place them where a stage turns, then set what each one says. The symbol
         repeats across the board, so a wider marker reads from further away.
       </span>
+      <!-- The custom menu, not a native <select>: CEF draws no OS popup. -->
+      <div class="rm-marker-kinds" ng-if="editorTarget === 'prop'">
+        <div class="rm-layout-dropdown rm-lane-picker"
+             ng-class="{'rm-layout-dropdown-open': laneMenuOpen('propKind')}">
+          <button type="button" class="rm-layout-trigger" ng-click="laneToggleMenu('propKind')"
+                  title="What the next placed prop is">
+            <span class="rm-layout-trigger-label">{{ propLabelOf(propKind) }}</span>
+            <span class="rm-layout-caret">▾</span>
+          </button>
+          <div class="rm-layout-menu" ng-if="laneMenuOpen('propKind')">
+            <div class="rm-layout-option" ng-repeat="k in propKinds track by k"
+                 ng-class="{'rm-layout-option-active': k === propKind}"
+                 ng-click="setPropKind(k)">{{ propLabelOf(k) }}</div>
+          </div>
+        </div>
+      </div>
+      <span class="rm-route-tab-note" ng-if="editorTarget === 'prop'">
+        Props are real objects, loaded for everyone with the layout. While this tab is
+        open they are ghosts you can drive through; leave it and they turn solid, except
+        any your car is still touching. A driven prop goes a few meters ahead of your car.
+        Set one to <b>Ghost</b> for a guide that never stops a car.
+      </span>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'branch'">
         Branch gates are drawn cyan. Both they and the main gate are armed together, so
         driving through <b>either</b> clears that checkpoint. They never add one.
       </span>
     </div>
     <div class="rm-editor-controls">
-      <button class="rm-btn rm-btn-grid"  ng-click="editorAdd()"
+      <button class="rm-btn rm-btn-grid" ng-if="editorTarget === 'prop'" ng-click="editorAdd()"
+              title="Place it a few meters in front of your car, facing the way you face">+ {{ propLabelOf(propKind) }} Ahead</button>
+      <button class="rm-btn rm-btn-grid"  ng-click="editorAdd()" ng-if="editorTarget !== 'prop'"
               ng-disabled="editorTarget === 'branch' && !waypoints.length">+ {{ editorTarget === 'joker' ? 'Joker Gate' : (editorTarget === 'start' ? 'Place Start Position' : (editorTarget === 'pit' ? 'Place Pit Stall' : (editorTarget === 'pitEntry' ? 'Place Pit Entry' : (editorTarget === 'pitExit' ? 'Place Pit Exit' : (editorTarget === 'branch' ? ('Branch Gate for CP ' + branchSlot) : (editorTarget === 'marker' ? ('Marker ' + markerGlyph(markerKind)) : 'Checkpoint')))))) }} Here</button>
       <button class="rm-btn"              ng-click="editorUndo()"  ng-disabled="!editorWaypoints().length">Undo</button>
       <button class="rm-btn rm-btn-end"   ng-click="editorClear()" ng-disabled="!editorWaypoints().length">Clear</button>
@@ -2294,7 +2324,7 @@
          circuit at once, retroactively, with nothing to undo it. A gate now
          takes its size when it is placed, inheriting from the gate before it,
          and keeps it. Size is edited on the gate itself, below. -->
-    <div class="rm-editor-hint" ng-if="!editingGrid() && editorWaypoints().length">
+    <div class="rm-editor-hint" ng-if="!editingGrid() && editorWaypoints().length && editorTarget !== 'prop'">
       Each gate keeps its own size and passes it on to the next one you place.
       Click a gate to change it: nothing else moves.
     </div>
@@ -2319,7 +2349,7 @@
           <!-- A branch gate is numbered by the CHECKPOINT it belongs to, not by
                its place in this list: it is not a checkpoint of its own, it is
                the other way of taking one that already exists. -->
-          <span class="rm-editor-idx" ng-class="{'rm-editor-finish': $last && editorTarget === 'main', 'rm-editor-joker': editorTarget === 'joker', 'rm-editor-branch': editorTarget === 'branch', 'rm-marker-idx': editorTarget === 'marker'}">{{ (editorTarget === 'branch') ? ('CP ' + wp.slot) : (($last && editorTarget === 'main') ? '🏁' : ($index + 1)) }}</span>
+          <span class="rm-editor-idx" ng-class="{'rm-editor-finish': $last && editorTarget === 'main', 'rm-editor-joker': editorTarget === 'joker', 'rm-editor-branch': editorTarget === 'branch', 'rm-marker-idx': editorTarget === 'marker', 'rm-prop-idx': editorTarget === 'prop'}">{{ (editorTarget === 'branch') ? ('CP ' + wp.slot) : (($last && editorTarget === 'main') ? '🏁' : ($index + 1)) }}</span>
           <span class="rm-editor-coords">{{ wp.x.toFixed(1) }}, {{ wp.y.toFixed(1) }}, {{ wp.z.toFixed(1) }}</span>
           <!-- How many other ways there are through this corner. -->
           <span class="rm-editor-lanes" ng-if="editorTarget === 'main' && slotBranchCount($index + 1)"
@@ -2360,7 +2390,29 @@
                     ng-click="$event.stopPropagation(); setMarkerKind(k, mIndex + 1)"
                     title="{{ markerLabelOf(k) }}">{{ markerGlyph(k) }}</button>
           </span>
-          <span class="rm-editor-dims" ng-if="editorTarget !== 'pit'">
+          <!-- A prop's kind, solidity and a half turn. mIndex, as above. -->
+          <div class="rm-marker-kinds rm-marker-kinds-row" ng-if="editorTarget === 'prop'"
+               ng-click="$event.stopPropagation()">
+            <div class="rm-layout-dropdown rm-lane-picker"
+                 ng-class="{'rm-layout-dropdown-open': laneMenuOpen('prop' + mIndex)}">
+              <button type="button" class="rm-layout-trigger" ng-click="laneToggleMenu('prop' + mIndex)"
+                      title="Swap this prop for another kind, in place">
+                <span class="rm-layout-trigger-label">{{ propLabelOf(wp.kind) }}</span>
+                <span class="rm-layout-caret">▾</span>
+              </button>
+              <div class="rm-layout-menu" ng-if="laneMenuOpen('prop' + mIndex)">
+                <div class="rm-layout-option" ng-repeat="k in propKinds track by k"
+                     ng-class="{'rm-layout-option-active': k === wp.kind}"
+                     ng-click="setPropKind(k, mIndex + 1)">{{ propLabelOf(k) }}</div>
+              </div>
+            </div>
+            <button class="rm-btn rm-btn-mini" ng-class="{'rm-p2p-on': wp.solid !== false}"
+                    ng-click="setPropSolid(mIndex + 1, wp.solid === false)"
+                    title="Solid: cars hit it. Ghost: drawn only, cars pass through.">{{ wp.solid === false ? 'Ghost' : 'Solid' }}</button>
+            <button class="rm-btn rm-btn-mini" ng-click="flipProp(mIndex + 1)"
+                    title="Turn it half way round">↻ 180°</button>
+          </div>
+          <span class="rm-editor-dims" ng-if="editorTarget !== 'pit' && editorTarget !== 'prop'">
             <span ng-class="{'rm-dim-set': wp.width != null}">W{{ cpDim(wp, 'width') }}</span>
             <span ng-class="{'rm-dim-set': wp.height != null}">↑{{ cpDim(wp, 'height') }}</span>
             <span ng-class="{'rm-dim-set': wp.depth != null}">↓{{ cpDim(wp, 'depth') }}</span>
@@ -2389,7 +2441,7 @@
                placed out of order, or one missing from the middle, meant undoing
                back to it and re-driving everything after. -->
           <button class="rm-btn rm-btn-mini"
-                  ng-if="editorTarget !== 'branch' && selectedCp === $index + 1"
+                  ng-if="editorTarget !== 'branch' && editorTarget !== 'prop' && selectedCp === $index + 1"
                   title="Place a new gate at your car, BEFORE this one"
                   ng-click="$event.stopPropagation(); insertCheckpoint($index + 1)">+ Before</button>
           <button class="rm-btn rm-btn-mini rm-btn-end"
@@ -2412,7 +2464,7 @@
           <button class="rm-btn rm-btn-mini" ng-click="resetPitSize()"
                   title="Back to the standard 3.5 x 6 m box. Only this stall changes.">Default</button>
         </div>
-        <div class="rm-cp-edit" ng-if="selectedCp === $index + 1 && editorTarget !== 'pit'">
+        <div class="rm-cp-edit" ng-if="selectedCp === $index + 1 && editorTarget !== 'pit' && editorTarget !== 'prop'">
           <!-- Same ranges and the same slider-plus-number pairing as the
                defaults above, so a gate dimension is adjusted the same way
                wherever it is being edited. Blank still means "inherit". -->
@@ -2475,6 +2527,11 @@
       and at its exit. Drivers must complete this route <b>exactly once per race</b> and
       <b>never on lap 1</b>; the server disqualifies anyone who misses it. The joker route is
       saved and loaded together with the layout.
+    </div>
+    <div class="rm-editor-hint" ng-if="!props.length && editorTarget === 'prop'">
+      Pick a prop above and press <b>+ Ahead</b>, or turn on <b>✋ Place</b> and
+      <b>ctrl+click</b> the ground. Clicked in a row, each one faces on from the last,
+      so a line of barriers follows the road. Every player gets them when the layout is loaded.
     </div>
 
     <!-- ===== Track layouts: persistent, per-map, server-side ===== -->
@@ -5105,6 +5162,13 @@
     color: #d6f6ff;
   }
   .rm-marker-idx { background: rgba(45, 220, 255, 0.2); color: #9fe9ff; }
+  .rm-route-tab-prop { border-color: rgba(215, 195, 140, 0.55); color: #e6d9b3; }
+  .rm-route-tab-prop-active {
+    background: rgba(215, 195, 140, 0.22);
+    border-color: rgba(215, 195, 140, 0.9);
+    color: #f6efd9;
+  }
+  .rm-prop-idx { background: rgba(215, 195, 140, 0.2); color: #e6d9b3; }
   .rm-marker-kinds { display: flex; gap: 3px; align-items: center; flex-wrap: wrap; }
   .rm-marker-kinds-row { flex: 1; min-width: 0; }
   .rm-marker-kind {

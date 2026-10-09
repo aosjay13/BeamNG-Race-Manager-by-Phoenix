@@ -121,7 +121,7 @@ angular.module('beamng.apps')
       // arena's: place mode is shared by both editors.
       var EDITOR_TARGETS = { main: true, joker: true, pit: true, start: true,
                              pitEntry: true, pitExit: true,
-                             branch: true, marker: true,
+                             branch: true, marker: true, prop: true,
                              derbyMarker: true, derbyStart: true,
                              derbyCenter: true };
       function editorTargetOf(value) {
@@ -139,6 +139,11 @@ angular.module('beamng.apps')
       $scope.markerKind = 'right'; // the symbol the next placed marker gets
       $scope.markerKinds = [];     // symbol keys, in the order the panel offers them
       $scope.markerLabels = {};    // key -> human label, both from the extension
+      // Props: static scenery saved with the layout; the kinds come from the extension.
+      $scope.props = [];           // [{ x, y, z, hx, hy, kind, solid }]
+      $scope.propKind = 'cone';    // what the next placed prop is
+      $scope.propKinds = [];
+      $scope.propLabels = {};
       $scope.branchSlot = 1;       // checkpoint the next placed branch gate belongs to
       $scope.gridOffLine = false;  // grid is away from the line, so an out lap is owed
       $scope.hasBranches = false;  // mirrored from the server: any branch gates on this track?
@@ -2294,6 +2299,10 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           if (data.markerKind) { $scope.markerKind = data.markerKind; }
           if (data.markerKinds) { $scope.markerKinds = toArray(data.markerKinds); }
           if (data.markerLabels) { $scope.markerLabels = data.markerLabels; }
+          $scope.props = toArray(data.props);
+          if (data.propKind) { $scope.propKind = data.propKind; }
+          if (data.propKinds) { $scope.propKinds = toArray(data.propKinds); }
+          if (data.propLabels) { $scope.propLabels = data.propLabels; }
           if (typeof data.branchSlot === 'number') { $scope.branchSlot = data.branchSlot; }
           $scope.gridOffLine = !!data.gridOffLine;
           // The spacing sliders are only offered while the generator owns a
@@ -2329,6 +2338,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         if ($scope.editorTarget === 'start') { return $scope.startPositions; }
         if ($scope.editorTarget === 'branch') { return $scope.branches; }
         if ($scope.editorTarget === 'marker') { return $scope.markers; }
+        if ($scope.editorTarget === 'prop') { return $scope.props; }
         // The arena's three, for the same reason.
         if ($scope.editorTarget === 'derbyMarker') { return $scope.derby.boundary; }
         if ($scope.editorTarget === 'derbyStart')  { return $scope.derby.startPositions; }
@@ -2475,12 +2485,28 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.markerLabelOf = function (kind) {
         return $scope.markerLabels[kind] || kind || '';
       };
+      // What the next prop is (no index), or swap a placed one.
+      $scope.setPropKind = function (kind, index) {
+        if (!kind) { return; }
+        $scope.laneUi.menu = null;
+        bngApi.engineLua('raceManager.setPropKind(' + luaStr(kind)
+          + (index === undefined || index === null ? '' : ', ' + index) + ')');
+      };
+      $scope.propLabelOf = function (kind) {
+        return $scope.propLabels[kind] || kind || '';
+      };
+      $scope.setPropSolid = function (index, on) {
+        bngApi.engineLua('raceManager.setPropSolid(' + index + ', ' + (on ? 'true' : 'false') + ')');
+      };
+      $scope.flipProp = function (index) {
+        bngApi.engineLua('raceManager.flipProp(' + index + ')');
+      };
       // The glyph the BUTTON shows. Deliberately not the same drawing as the
       // one on the board: this is a 12px label in a row of seven, and the
       // in-world symbol is line geometry sized to read at two hundred meters.
       $scope.markerGlyph = function (kind) {
         return ({ right: '→', left: '←', up: '↑', down: '↓',
-                  uturn: '↰', splitRight: '⤴', splitLeft: '⤳' })[kind] || '?';
+                  uturn: '↰', splitRight: '⤴', splitLeft: '⤳', pit: 'P' })[kind] || '?';
       };
 
       $scope.reorderCheckpoint = function (from, to) {

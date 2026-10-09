@@ -6,6 +6,25 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.19.0 - Props
+
+#### Added
+
+- **Props.** The editor's new Props tab places cones, barriers, signs, chevrons
+  and more, saved with the layout and loaded for every player. Solid props stop
+  cars; set one to Ghost for a guide that does not. They are ghosts while the
+  tab is open, so you can drive through them while building, and they never
+  turn solid during a session. See *Props* in the reference.
+
+#### Fixed
+
+- **A pit lane marker keeps its symbol.** The server did not know the Pit lane
+  symbol, so a saved one came back as a chevron, and its button in the editor
+  showed "?".
+- **Saving can no longer quietly drop a layout's direction markers.** Like the
+  joker route and the grid, a save that would remove every one is held for the
+  admin to confirm.
+
 ## 0.18.5 - Ghosted practice, glowing lights, a clearer radar
 
 #### Fixed

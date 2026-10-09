@@ -83,6 +83,8 @@ local function palette()
     markerLine   = ColorF(0.2, 0.95, 1, 0.95),
     markerFill   = ColorF(0.2, 0.85, 1, 0.13),
     markerSel    = ColorF(1, 1, 1, 1),
+    -- Props in the editor: sand, the Props tab's color.
+    prop         = ColorF(0.85, 0.78, 0.55, 0.95),
     -- PACKED INTEGERS, NOT ColorF: drawTriSolid takes the global color(r,g,b,a)
     -- (0..255), and a ColorF throws once per triangle per frame. nil without
     -- `color`: the faces are skipped and the rest of the marker draws.

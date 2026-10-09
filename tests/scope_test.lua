@@ -42,6 +42,7 @@ local FILES = {
   'lua/ge/extensions/raceManager/records.lua',
   'lua/ge/extensions/raceManager/lights.lua',
   'lua/ge/extensions/raceManager/radar.lua',
+  'lua/ge/extensions/raceManager/props.lua',
   'server/RaceManager/main.lua',
   'server/RaceManager/derby.lua',
   'server/RaceManager/maps.lua',
@@ -62,6 +63,7 @@ local HOSTS = {
       'lua/ge/extensions/raceManager/records.lua',
       'lua/ge/extensions/raceManager/lights.lua',
       'lua/ge/extensions/raceManager/radar.lua',
+      'lua/ge/extensions/raceManager/props.lua',
     } },
   { host = 'server/RaceManager/main.lua', modules = {
       'server/RaceManager/derby.lua',
