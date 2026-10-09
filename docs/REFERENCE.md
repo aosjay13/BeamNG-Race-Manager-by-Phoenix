@@ -32,9 +32,9 @@ and can be prepped days before an event:
   layouts saved for the level it is currently hosting.
 - Selecting a layout draws a top-down **2D track preview** (checkpoints,
   connecting lines, start/finish gate in green) scaled to fit the minimap.
-- **Load Layout** broadcasts the checkpoints to every connected client at
-  once; everyone's gates rebuild instantly. Loading is locked during a
-  countdown or an active race.
+- Clicking a layout in the **Layouts** menu broadcasts the checkpoints to
+  every connected client at once; everyone's gates rebuild instantly. Loading
+  is locked during a countdown or an active race.
 
 ## Tutorial: running a race night
 
@@ -351,13 +351,13 @@ panel) live on the server and persist across server restarts:
 1. Type a name in the **Layout name** field and press **Save Current
    Layout**. The server stores it tagged with the map it is hosting and
    announces it in chat.
-2. To race a prepped track later, pick it from the dropdown - the list only
-   ever shows layouts saved **for the current map** - and check the 2D
+2. To check a prepped track, pick it in the editor's layout picker - the list
+   only ever shows layouts saved **for the current map** - and look at the 2D
    preview: gate dots, the connecting track shape, and the start/finish line
    in green.
-3. Press **Load Layout**. Every connected player's gates rebuild instantly;
-   nobody has to load anything manually. (Loading is locked while a
-   countdown or race is running.)
+3. To race it, open **Layouts** in the menu bar and click it. Every connected
+   player's gates rebuild instantly; nobody has to load anything manually.
+   (Loading is locked while a countdown or race is running.)
 
 ### Step 4 - Who is actually in the race
 
@@ -1175,10 +1175,36 @@ are completely unaffected.
 
 ### Picking a track or an arena
 
-Both live **beside the session controls**, not in the editor. Pick a **Track** and
-press **Load Layout** for a race; pick an **Arena** and press **Load Arena** for a
-derby. Building either stays in the editor - opening it swaps the race visuals
-for the authoring ones, which is not what you want with a field waiting.
+Both are in the **Layouts ▾** menu, not in an editor. It lists everything saved
+for this map, in four groups:
+
+| Group | What is in it |
+|---|---|
+| **Race** | Circuits: lapped, start/finish line |
+| **P2P** | Point-to-point stages: driven once, first gate to last |
+| **Arenas** | Derby arenas |
+| **Drag Strip** | Point-to-point layouts saved with the type **Drag** |
+
+Each row says what the layout is (gates, grid, lanes, joker, pits, markers) and
+whether it is open for practice. The one the server is on is tagged **LOADED**;
+an arena loses the tag once its boundary, grid or wall is edited, because what is
+on screen is no longer the saved arena.
+
+**Click a row to load it for everyone.** The panel follows: a race or P2P layout
+puts it in race mode, a drag strip in drag mode, an arena in derby mode, so the
+right controls and board are there at once. An open admin panel closes first,
+because opening the Derby tab is what turns the derby editor on. Rows are greyed
+while a race, derby or drag ladder is running, and the tooltip says why.
+
+It is a dropdown, not a panel, on purpose: the board stays up and no editor
+opens. Opening an editor swaps the race visuals for the authoring ones, which is
+not what you want with a field waiting. Building stays in the editors, and
+loading from the menu selects the layout there too, so load, adjust, Overwrite
+needs no retyping.
+
+The type is set in the Track editor, beside the route tabs: **Circuit**, **P2P**
+or **Drag**. It is saved with the layout. A Drag layout is an ordinary
+point-to-point layout in every other way.
 
 ### Joining while a session is running
 
@@ -2607,6 +2633,7 @@ these were collapsed sections.
 | Item | Who | What it opens |
 |---|---|---|
 | **Race ▾** | admins | **Rules** (race length, resets, pace lap, joker), **Qualifying**, **Grid and heats** |
+| **Layouts ▾** | admins | Every saved track, strip and arena on this map; click one to load it (see [Picking a track or an arena](#picking-a-track-or-an-arena)) |
 | **Track** | admins | Saved layouts, the checkpoint editor, the starting-grid builder and practice approval |
 | **Garage** | everyone | Admins: the Garage List. Drivers: the cars they may run, with Take and + New |
 | **Cup** | everyone | Admins: scoring, bonuses and standings. Drivers: the standings, while a cup runs |
@@ -2621,13 +2648,13 @@ these were collapsed sections.
 **Never behind the menu:** the header (phase, clock, flag), the READY banner, a
 map vote in progress, and the banners for spectating, the pit box, ghosting and
 notices. The **session controls** (Start Quali, Generate Grid, Start Countdown,
-the flags, End Session, Reset) and the **Track** layout picker sit under the
-menu with the board, and come back the moment a panel closes.
+the flags, End Session, Reset) sit under the menu with the board, and come back
+the moment a panel closes.
 
 **Modes.** Opening **Derby** or **Drag** puts the panel in that mode: the session
 controls become that mode's controls and the board becomes that mode's board.
 The mode stays after its panel closes, and its menu item is underlined. Open any
-**Race** item to go back.
+**Race** item to go back. Loading from **Layouts** moves the mode too.
 
 **A session going live closes the open panel**, so the board is what an admin
 sees once the lights go out. **Keep open** on the panel's title row stops that,
@@ -2970,9 +2997,11 @@ already something the Track editor builds:
 - its **start positions are the lanes** - one per lane, in lane order.
 
 So: build a sprint stage in **Track** with a start line, a finish line and two
-to eight start positions, save it, load it, and it is a drag strip. Nothing
-about the layout is drag-specific; the same file can be raced as an ordinary
-sprint stage.
+to eight start positions, set its type to **Drag**, save it, and load it from
+**Layouts**. The type only files it under **Drag Strip** in that menu and puts
+the panel in drag mode when it loads; the ladder itself runs on any loaded
+point-to-point layout with lanes, and a Drag layout can still be raced as an
+ordinary sprint stage.
 
 The panel refuses to build a ladder until a layout is loaded and says which
 half is missing. Eight lanes on a four-lane strip is reduced to four rather
@@ -3332,9 +3361,10 @@ derby mode, and derby controls are not shown anywhere else - see
    polygon, both timers, the reset limit *and* the starting grid are stored on
    the server in
    `Resources/Server/RaceManager/derbyArenas.json`, tagged with the hosted map,
-   so a prepped arena survives a restart. **Load Arena** pushes it to every
-   connected client at once; **✕** deletes it. Loading is refused while a derby
-   is running - the arena cannot move under the drivers.
+   so a prepped arena survives a restart. **Load Arena** here, or a click on it
+   under **Arenas** in the **Layouts** menu, pushes it to every connected client
+   at once; **✕** deletes it. Loading is refused while a derby is running - the
+   arena cannot move under the drivers.
 
    A rectangle is stored as **both** its shape and the four corners it produced,
    so it loads back editable by slider - and stays readable by anything that only

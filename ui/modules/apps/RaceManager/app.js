@@ -497,6 +497,98 @@ angular.module('beamng.apps')
         $scope.menuClose();
       }
 
+      // ------------------------------------------------------------------
+      // The Layouts menu
+      // ------------------------------------------------------------------
+      // Every saved track, strip and arena on this map, by kind. A dropdown, not
+      // a panel: the board stays up and no editor opens, so loading never swaps
+      // in the authoring visuals. A row loads for everyone.
+      $scope.layoutKinds = [
+        { key: 'race',  label: 'Race' },
+        { key: 'p2p',   label: 'P2P' },
+        { key: 'arena', label: 'Arenas' },
+        { key: 'drag',  label: 'Drag Strip' }
+      ];
+      // Rebuilt when a list arrives, never per digest: ng-repeat over fresh rows
+      // every digest never settles.
+      $scope.layoutMenu = { race: [], p2p: [], arena: [], drag: [] };
+      // What the server is on, for the LOADED tag. '' is nothing.
+      $scope.loadedLayout = '';
+      $scope.loadedArena  = '';
+      var KIND_MODE = { race: 'race', p2p: 'race', drag: 'drag', arena: 'derby' };
+
+      function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+      function trackFacts(l, kind) {
+        var gates = toArray(l.checkpoints).length;
+        var grid  = toArray(l.startPositions).length;
+        var out = kind === 'drag' ? [plural(grid, 'lane'), plural(gates, 'gate')]
+                                  : [plural(gates, 'gate')];
+        if (kind !== 'drag' && grid) { out.push(grid + ' grid'); }
+        if (toArray(l.joker).length) { out.push('joker'); }
+        if (toArray(l.pits).length) { out.push('pits'); }
+        return out.join(', ');
+      }
+      function arenaFacts(a) {
+        var out = [a.boundaryMode === 'rect' ? 'rectangle'
+                                             : plural(toArray(a.boundary).length, 'marker')];
+        var slots = toArray(a.startPositions).length;
+        if (slots) { out.push(plural(slots, 'slot')); }
+        return out.join(', ');
+      }
+      function rebuildLayoutMenu() {
+        var m = { race: [], p2p: [], arena: [], drag: [] };
+        $scope.layouts.forEach(function (l) {
+          var kind = l.pointToPoint !== true ? 'race' : (l.drag === true ? 'drag' : 'p2p');
+          m[kind].push({ kind: kind, name: l.name, facts: trackFacts(l, kind),
+                         practice: l.practice === true });
+        });
+        $scope.derbyLayouts.forEach(function (a) {
+          m.arena.push({ kind: 'arena', name: a.name, facts: arenaFacts(a) });
+        });
+        $scope.layoutMenu = m;
+      }
+      $scope.layoutCount = function () {
+        return $scope.layouts.length + $scope.derbyLayouts.length;
+      };
+      $scope.isLoadedRow = function (r) {
+        var on = r.kind === 'arena' ? $scope.loadedArena : $scope.loadedLayout;
+        return !!on && on.toLowerCase() === r.name.toLowerCase();
+      };
+      // Why a row cannot load now, '' when it can. A live session of any kind
+      // refuses them all: the panel would change mode under it.
+      $scope.layoutsBlock = function (kind) {
+        if ($scope.derbyActive()) { return 'Not during a derby'; }
+        if ($scope.dragLive() && $scope.drag.phase !== 'complete') {
+          return 'Not while a drag ladder runs';
+        }
+        if (kind === 'arena' ? $scope.sessionRunning() : !$scope.canSetRules()) {
+          return 'Not during a session';
+        }
+        return '';
+      };
+      $scope.layoutsPick = function (r) {
+        if ($scope.layoutsBlock(r.kind)) { return; }
+        $scope.menu.group = null;
+        if (r.kind === 'arena') {
+          $scope.derbyUi.selected = r.name;
+          $scope.derbyLoadLayout();
+        } else {
+          // Selected in the editor too, so Track > Overwrite targets it.
+          $scope.layoutUi.selected = r.name;
+          $scope.loadLayout();
+          schedulePreview();
+        }
+        modeFollowsLoad(r.kind);
+      };
+      // The panel goes to the mode of what was loaded. An open admin panel closes
+      // first: opening the Derby tab is what turns the derby editor on.
+      function modeFollowsLoad(kind) {
+        var mode = KIND_MODE[kind];
+        if ($scope.mode === mode) { return; }
+        if ($scope.menu.open === 'tab') { $scope.menuClose(); }
+        $scope.selectAdminTab(mode === 'race' ? DEFAULT_TAB : mode);
+      }
+
       // Running a race, or configuring one. These replace fourteen hand-written
       // phase tests that all missed qualifying. The markup asks what may be done;
       // Lua (edit.canConfigure) enforces it.
@@ -1941,6 +2033,8 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           // the table renders - no scan, and no second sorted copy of the field.
           $scope.bestLapPid = (data.bestLapPid === undefined) ? null : data.bestLapPid;
           if (typeof data.pointToPoint === 'boolean') { $scope.pointToPoint = data.pointToPoint; }
+          if (typeof data.dragStrip === 'boolean') { $scope.dragStrip = data.dragStrip; }
+          if (typeof data.layoutName === 'string') { $scope.loadedLayout = data.layoutName; }
           $scope.drivers = data.drivers || [];
           // The broadcast board's buckets, cut once per broadcast.
           splitField($scope.drivers);
@@ -2100,12 +2194,20 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         });
       });
 
-      // Circuit or sprint stage. Owned by the loaded track, toggled in the
-      // editor, and mirrored from both the route push and the state broadcast.
+      // Circuit, sprint stage or drag strip. Owned by the loaded track, set in
+      // the editor, and mirrored from both the route push and the state
+      // broadcast. A strip is a sprint the Layouts menu files under Drag Strip.
       $scope.pointToPoint = false;
-      $scope.togglePointToPoint = function () {
-        $scope.pointToPoint = !$scope.pointToPoint;
-        bngApi.engineLua('raceManager.setPointToPoint(' + (!!$scope.pointToPoint) + ')');
+      $scope.dragStrip = false;
+      $scope.trackKind = function () {
+        if (!$scope.pointToPoint) { return 'race'; }
+        return $scope.dragStrip ? 'drag' : 'p2p';
+      };
+      $scope.setTrackKind = function (kind) {
+        $scope.pointToPoint = kind !== 'race';
+        $scope.dragStrip = kind === 'drag';
+        bngApi.engineLua('raceManager.setPointToPoint(' + $scope.pointToPoint
+          + ', ' + $scope.dragStrip + ')');
       };
 
       $scope.$on('RaceManagerRoute', function (event, data) {
@@ -2142,6 +2244,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.practiceLeft   = (typeof data.practiceLeft === 'number')
                                   ? data.practiceLeft : null;
           if (typeof data.pointToPoint === 'boolean') { $scope.pointToPoint = data.pointToPoint; }
+          if (typeof data.dragStrip === 'boolean') { $scope.dragStrip = data.dragStrip; }
           if (typeof data.clientBuild === 'string') { $scope.clientBuild = data.clientBuild; }
           // Admin session restored from the bridge: this directive is rebuilt on
           // every pause, which must not read as a logout.
@@ -2760,6 +2863,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           if (!stillThere) { $scope.layoutUi.selected = ''; }
           // Nothing to pick from -> make sure the menu isn't left hanging open.
           if (!$scope.layouts.length) { $scope.layoutDropdownOpen = false; }
+          rebuildLayoutMenu();
           schedulePreview();
         });
       });
@@ -2816,6 +2920,8 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           $scope.derby.entrants = data.entrants || 0;
           $scope.derby.time = data.derbyTime || 0;
           $scope.derby.winner = data.winner || null;
+          // Absent once the arena is edited: it is no saved arena then.
+          $scope.loadedArena = data.arena || '';
           $scope.derby.boundary = toArray(data.boundary);
           $scope.derby.startPositions = toArray(data.startPositions);
           $scope.derby.boundaryCount = $scope.derby.boundary.length;
@@ -3411,6 +3517,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           });
           if (!stillThere) { $scope.derbyUi.selected = ''; }
           if (!$scope.derbyLayouts.length) { $scope.derbyDropdownOpen = false; }
+          rebuildLayoutMenu();
         });
       });
 

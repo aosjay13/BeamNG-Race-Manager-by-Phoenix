@@ -213,6 +213,9 @@ local race = {
   gridSize     = 0,
   -- A point-to-point sprint stage: driven once, the last gate a finish.
   pointToPoint = false,
+  -- A point-to-point layout filed as a drag strip. Only the Layouts menu reads
+  -- it: any P2P with lanes still runs a ladder. Never true on a circuit.
+  dragStrip    = false,
   -- BRANCH GATES: another way through an existing slot, so cpCleared means the
   -- same whichever gates were taken. Held only to validate, persist and send:
   --   { { slot = 1, x, y, z, hx, hy, width?, height?, oneWay? }, ... }
@@ -1137,6 +1140,10 @@ local function broadcastState(targetPid)
     startSlots   = race.startSlots,
     readyCheck   = race.readyCheck,
     pointToPoint = race.pointToPoint,
+    dragStrip    = race.dragStrip,
+    -- The publicly loaded layout, '' for none: the Layouts menu's LOADED tag.
+    -- A private (forEditing) load never moves it.
+    layoutName   = type(race.layout) == 'table' and race.layout.name or '',
     -- Whether this track has branch gates (the gates ride RM_ApplyLayout).
     hasBranches  = #race.branches > 0,
     gridOffLine  = race.gridOffLine,
@@ -2768,6 +2775,7 @@ function RM_onSetPointToPoint(pid, rawData)
   local data = adminPayload(pid, rawData, true)
   if not data then return end
   race.pointToPoint = data.enabled == true or data.enabled == 1
+  race.dragStrip    = race.pointToPoint and data.drag == true
   -- A sprint turns the pace lap off, and says so (it would otherwise read
   -- ENABLED while doing nothing).
   if race.pointToPoint and race.paceLap then
@@ -2777,7 +2785,8 @@ function RM_onSetPointToPoint(pid, rawData)
     print('[RaceManager] Pace lap auto-disabled: the track is point-to-point')
   end
   broadcastState()
-  print('[RaceManager] Track mode: ' .. (race.pointToPoint and 'POINT TO POINT' or 'circuit')
+  print('[RaceManager] Track mode: '
+    .. (race.dragStrip and 'DRAG STRIP' or race.pointToPoint and 'POINT TO POINT' or 'circuit')
     .. ' (by ' .. (MP.GetPlayerName(pid) or pid) .. ')')
 end
 
@@ -5102,6 +5111,8 @@ function RM_onSaveLayout(pid, rawData)
     pitExit      = sanitizeCheckpoints(data.pitExit),
     markers      = sanitizeCheckpoints(data.markers),
     pointToPoint = data.pointToPoint == true,
+    -- Filed under Drag Strip in the Layouts menu. A circuit cannot be one.
+    drag         = data.pointToPoint == true and data.drag == true,
     -- Approved for practice? Opt-in, default false (a track mid-build must not go
     -- public), and carried through a re-save so editing never revokes it.
     practice     = (data.practice == true) or (existing ~= nil and existing.practice == true),
@@ -5252,7 +5263,10 @@ function RM_onDeleteLayout(pid, rawData)
         print('[RaceManager] Failed to write ' .. LAYOUTS_FILE .. ': ' .. tostring(werr))
         return
       end
-      if race.layout == l then
+      -- By name, not identity: a public load drops the cache (clearTrackState),
+      -- so race.layout is never this table and the loaded track stayed loaded.
+      if type(race.layout) == 'table' and race.layout.map == map
+         and tostring(race.layout.name):lower() == gone:lower() then
         race.layout = nil
         clearTrackState('deleted the loaded layout "' .. gone .. '"')
       end
@@ -5347,6 +5361,7 @@ function RM_onLoadLayout(pid, rawData)
       race.startSlots = (type(l.startPositions) == 'table') and #l.startPositions or 0
       race.startPositions = (type(l.startPositions) == 'table') and l.startPositions or {}
       race.pointToPoint = l.pointToPoint == true
+      race.dragStrip    = race.pointToPoint and l.drag == true
       -- Branch gates and the grid's relation to the line arrive with the track.
       race.branches    = (type(l.branches) == 'table') and l.branches or {}
       race.gridOffLine = l.gridOffLine == true

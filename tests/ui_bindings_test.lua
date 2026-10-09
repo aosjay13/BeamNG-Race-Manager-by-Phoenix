@@ -1052,15 +1052,29 @@ end
 -- ---------------------------------------------------------------------------
 -- 4. Race and Derby are separated by mode, not just by tab
 -- ---------------------------------------------------------------------------
--- The race session controls and the track layout picker sit ABOVE the tab bar,
--- deliberately -- they are what an admin reaches for under time pressure. That
--- put them over the Derby tab as well, offering a Load Layout button for a race
--- nobody was setting up. They are race controls, so they belong to race mode.
-for _, row in ipairs({ 'rm%-controls"', 'rm%-controls rm%-controls%-layout"' }) do
+-- The race session controls sit ABOVE the tab bar, deliberately -- they are what
+-- an admin reaches for under time pressure. That put them over the Derby tab as
+-- well, offering race buttons for a race nobody was setting up. They are race
+-- controls, so they belong to race mode.
+for _, row in ipairs({ 'rm%-controls"' }) do
   local cond = html:match('<div class="' .. row .. '%s+ng%-if="([^"]*)"')
   expect(cond ~= nil and cond:find("isMode('race')", 1, true) ~= nil,
     'the ' .. row:gsub('%%', '') .. ' row is not scoped to race mode')
 end
+
+-- THE LAYOUTS MENU IS THE OPPOSITE CASE: every kind in every mode, so loading
+-- is what moves the panel. An arena loaded from race mode left Form Up out of
+-- reach, and reaching it through the Derby tab opened the derby editor.
+local pick = js:match('%$scope%.layoutsPick = function %(r%)(.-)\n      };')
+expect(pick ~= nil and pick:find('modeFollowsLoad(', 1, true) ~= nil,
+  'loading from the Layouts menu does not move the panel to that mode')
+-- Selecting the Derby tab while a panel is open opens the derby editor, and
+-- the editor is what swaps the arena for its authoring visuals.
+local follow = js:match('function modeFollowsLoad%(kind%)(.-)\n      }')
+local closeAt = follow and follow:find('menuClose()', 1, true)
+local tabAt   = follow and follow:find('selectAdminTab(', 1, true)
+expect(closeAt and tabAt and closeAt < tabAt,
+  'modeFollowsLoad must close an open admin panel before it changes tab')
 
 -- THE TWO EDITORS ARE TOLD APART BY THEIR TAB NAME NOW.
 --
@@ -1223,15 +1237,21 @@ end
 -- looked for their gate poles during a race and found none, because choosing
 -- the track had left them in the editor.
 --
--- So: the Load control lives in the session controls, next to Generate Grid and
--- Start Countdown, and the editor keeps only the authoring half.
+-- So: loading lives in the Layouts menu, and the editor keeps only the
+-- authoring half. The menu is a DROPDOWN off the menu bar (menu.group), never a
+-- panel: a panel is what hides the board and turns an editor on.
 local editorStart = html:find('================= Checkpoint editor', 1, true)
-local loadAt = html:find('ng%-click="loadLayout%(%)"')
-expect(loadAt ~= nil, 'the template has a Load Layout control')
+local loadAt = html:find('ng%-click="layoutsPick%(r%)"')
+expect(loadAt ~= nil, 'the template has a Layouts menu that loads')
 expect(editorStart ~= nil, 'the template has a checkpoint editor section')
 expect(loadAt and editorStart and loadAt < editorStart,
-  'Load Layout sits ABOVE the editor section, so running a saved race never ' ..
-  'requires opening the editor')
+  'the Layouts menu sits ABOVE the editor section, so running a saved race ' ..
+  'never requires opening the editor')
+expect(html:find("ng-click=\"menuToggleGroup('layouts')\"", 1, true) ~= nil,
+  'the Layouts menu opens as a dropdown, not as a tab panel')
+expect(pick ~= nil and pick:find('loadLayout()', 1, true) ~= nil
+  and pick:find('derbyLoadLayout()', 1, true) ~= nil,
+  'a Layouts row loads tracks and arenas through the existing load calls')
 
 -- Saving stays in the editor: that IS authoring.
 local saveAt = html:find('ng%-click="saveLayout%(%)"')

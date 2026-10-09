@@ -389,6 +389,7 @@ check(lastArenas.map == 'gridmap_v2', 'arenas are listed for the hosted map')
 check(#lastArenas.layouts[1].boundary == 4, 'the boundary polygon is stored')
 check(lastArenas.layouts[1].oobLimit == 7 and lastArenas.layouts[1].demoLimit == 12,
   'both timers are stored with the arena')
+check(lastDerby.arena == 'Pit Arena', 'the arena on screen is named for the one just saved')
 
 -- Too few markers is not an arena.
 RM_onDerbySaveLayout(1, '{"name":"Sliver","boundary":[{"x":0,"y":0,"z":0},{"x":1,"y":0,"z":0}]}')
@@ -407,6 +408,23 @@ RM_onDerbyLoadLayout(1, '{"name":"Pit Arena"}')
 check(#lastDerby.boundary == 3, 'loading an arena restores its boundary')
 check(lastDerby.oobLimit == 3 and lastDerby.demoLimit == 4,
   'loading an arena restores its timers')
+
+-- THE LOADED TAG. The arena on screen is the saved one until it is edited;
+-- after that it is no saved arena, and the Layouts menu must not say it is.
+check(lastDerby.arena == 'pit arena', 'a loaded arena is named in the derby state')
+RM_onDerbyMoveMarker(1, '{"index":1,"x":1,"y":1,"z":10}')
+check(lastDerby.arena == nil, 'moving a marker clears the name')
+RM_onDerbyLoadLayout(1, '{"name":"Pit Arena"}')
+RM_onDerbyAddStart(1, '{"x":5,"y":5,"z":10}')
+check(lastDerby.arena == nil, 'a grid edit clears it too')
+RM_onDerbyLoadLayout(1, '{"name":"Pit Arena"}')
+RM_onDerbySetConfig(1, '{"oobLimit":5,"demoLimit":4}')
+check(lastDerby.arena == 'pit arena', 'a timer change is not an arena edit')
+RM_onDerbyClearBoundary(1)
+check(lastDerby.arena == nil, 'clearing the boundary clears it')
+RM_onDerbyLoadLayout(1, '{"name":"Pit Arena"}')
+check(#lastDerby.boundary == 3 and lastDerby.arena == 'pit arena',
+  'and loading it again names it again')
 
 -- Strict map filter, same as track layouts.
 hostedMap = '/levels/east_coast_usa/info.json'

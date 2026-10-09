@@ -630,6 +630,54 @@ RM_onLoadLayout(1, '{"name":"GP Circuit"}')
 check(lastLayouts ~= nil and #lastLayouts.layouts == 1,
   'the private-load block leaves the layout list as it found it')
 
+-- ---------------------------------------------------------------------------
+-- THE LAYOUTS MENU: the drag type, and the LOADED tag
+-- ---------------------------------------------------------------------------
+-- The menu files a layout by its saved type and marks the one the server is on.
+-- The tag follows PUBLIC loads only: a private load moves nobody, so the server
+-- is not on that layout.
+check(lastState.layoutName == 'gp circuit', 'the state names the publicly loaded layout')
+
+local stripJson = '[{"x":500,"y":0,"z":5,"hx":0,"hy":1},{"x":500,"y":400,"z":5,"hx":0,"hy":1}]'
+local lanesJson = '[{"x":495,"y":-10,"z":5,"hx":0,"hy":1},{"x":505,"y":-10,"z":5,"hx":0,"hy":1}]'
+RM_onSaveLayout(1, '{"name":"Quarter Mile","pointToPoint":true,"drag":true,"checkpoints":'
+  .. stripJson .. ',"startPositions":' .. lanesJson .. '}')
+RM_onSaveLayout(1, '{"name":"Not A Strip","drag":true,"checkpoints":' .. stripJson .. '}')
+do
+  local saved = {}
+  for _, l in ipairs(lastLayouts.layouts) do saved[l.name] = l end
+  check(saved['Quarter Mile'] and saved['Quarter Mile'].drag == true,
+    'a point-to-point layout saves as a drag strip')
+  check(saved['Not A Strip'] and saved['Not A Strip'].drag == false,
+    'a circuit cannot be saved as a drag strip')
+end
+
+RM_onLoadLayout(1, '{"name":"quarter mile"}')
+check(lastState.pointToPoint == true and lastState.dragStrip == true,
+  'loading a strip puts the server on a drag strip')
+check(lastState.layoutName == 'Quarter Mile', 'and the LOADED tag moves with a public load')
+
+RM_onLoadLayout(1, '{"name":"gp circuit","forEditing":true}')
+RM_onRequestState(1)
+check(lastState.layoutName == 'Quarter Mile', 'a private load does not move the LOADED tag')
+
+-- The editor's type: Circuit, P2P or Drag, and drag only on a sprint.
+RM_onSetPointToPoint(1, '{"enabled":true,"drag":false}')
+check(lastState.pointToPoint == true and lastState.dragStrip == false,
+  'the editor can make a strip a plain P2P')
+RM_onSetPointToPoint(1, '{"enabled":false,"drag":true}')
+check(lastState.pointToPoint == false and lastState.dragStrip == false,
+  'a circuit is never a drag strip')
+RM_onSetPointToPoint(1, '{"enabled":true,"drag":true}')
+check(lastState.dragStrip == true, 'the editor can set the drag type')
+
+RM_onDeleteLayout(1, '{"name":"Quarter Mile"}')
+check(lastState.layoutName == '', 'deleting the loaded layout clears the LOADED tag')
+RM_onDeleteLayout(1, '{"name":"Not A Strip"}')
+RM_onLoadLayout(1, '{"name":"GP Circuit"}')
+check(#lastLayouts.layouts == 1 and lastState.pointToPoint == false
+  and lastState.dragStrip == false, 'the Layouts block leaves the map as it found it')
+
 -- ===========================================================================
 -- FREE PRACTICE: approved layouts, and only approved layouts
 -- ===========================================================================

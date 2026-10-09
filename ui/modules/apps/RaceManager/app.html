@@ -765,45 +765,6 @@
     <button class="rm-btn rm-btn-reset" ng-click="resetLeaderboard()">Reset</button>
   </div>
 
-  <!-- ================= Track layout (admin only) =========================
-       Deliberately HERE and not in the editor. Running a saved race is not an
-       authoring job: an admin should pick a layout and start the race without
-       ever opening the editor, which used to be the only place this lived -
-       and opening the editor is what replaces the race checkpoint visuals with
-       the authoring ones. Building layouts stays in the editor; choosing one
-       to race belongs next to Generate Grid and Start Countdown. It is a RACE
-       layout, though, so it lives in race mode with the rest of them, and the
-       Derby tab puts the panel in derby mode - so this row is gone while a
-       derby is being set up, which is the mixing that mattered.
-
-       IT KEEPS ITS ROW in the main flow, deliberately, and it is the one place
-       the tab fold did not reclaim height. Behind the Track tab it would cost a
-       click on the critical path of every single race. -->
-  <div class="rm-controls rm-controls-layout" ng-if="isAdmin && isMode('race') && !setupHidden()">
-    <span class="rm-controls-label">Track<span ng-if="layoutMap">: {{ mapShown(layoutMap) }}</span></span>
-    <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': layoutDropdownOpen}">
-      <button type="button" class="rm-layout-trigger"
-              ng-class="{'rm-layout-trigger-empty': !layoutUi.selected}"
-              ng-click="toggleLayoutDropdown()">
-        <span class="rm-layout-trigger-label">{{ selectedLayoutLabel() }}</span>
-        <span class="rm-layout-caret">▾</span>
-      </button>
-      <div class="rm-layout-menu" ng-if="layoutDropdownOpen">
-        <div class="rm-layout-option"
-             ng-repeat="l in layouts track by l.name"
-             ng-class="{'rm-layout-option-active': l.name === layoutUi.selected}"
-             ng-click="selectLayoutOption(l)">
-          {{ l.name }} ({{ l.checkpoints.length }} gates)
-        </div>
-      </div>
-    </div>
-    <button class="rm-btn rm-btn-grid" ng-click="loadLayout()"
-            ng-disabled="!layoutUi.selected || !canSetRules()"
-            title="Put the whole server on this track: every connected player gets its checkpoints. To work on a layout without moving anyone, use Open in Editor.">
-      Load Layout
-    </button>
-  </div>
-
   <!-- ================= Derby controls (derby mode, admin only) ===========
        The derby's equivalent of the race session controls above, and here for
        the same reason: Form Up, Start and End are what an admin reaches for
@@ -843,38 +804,6 @@
     <span class="rm-derby-markers">{{ derby.entrants }} in</span>
   </div>
 
-  <!-- ================= Derby arena (admin only) ==========================
-       The derby's equivalent of the Track row above, and here for the same
-       reason it is: picking an arena to run is not an authoring job, and it was
-       reachable only from inside the Derby Editor -- so running a saved arena
-       meant opening the editor, which is also what replaces the arena visuals
-       with the authoring ones. Building arenas stays in the editor; choosing one
-       to run belongs beside Form Up and Start Derby. -->
-  <div class="rm-controls rm-controls-layout" ng-if="isAdmin && isMode('derby')">
-    <span class="rm-controls-label">Arena<span ng-if="derbyLayoutMap">: {{ mapShown(derbyLayoutMap) }}</span></span>
-    <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': derbyDropdownOpen}">
-      <button type="button" class="rm-layout-trigger"
-              ng-class="{'rm-layout-trigger-empty': !derbyUi.selected}"
-              ng-click="toggleDerbyDropdown()">
-        <span class="rm-layout-trigger-label">{{ selectedDerbyLabel() }}</span>
-        <span class="rm-layout-caret">▾</span>
-      </button>
-      <div class="rm-layout-menu" ng-if="derbyDropdownOpen">
-        <div class="rm-layout-option"
-             ng-repeat="l in derbyLayouts track by l.name"
-             ng-class="{'rm-layout-option-active': l.name === derbyUi.selected}"
-             ng-click="selectDerbyLayout(l)">
-          {{ l.name }} ({{ l.boundary.length }} markers)
-        </div>
-      </div>
-    </div>
-    <button class="rm-btn rm-btn-grid" ng-click="derbyLoadLayout()"
-            ng-disabled="!derbyUi.selected || derbyActive()"
-            title="Load this arena for everyone. No need to open the editor.">
-      Load Arena
-    </button>
-  </div>
-
   <!-- ================= Menu bar (outside the driver HUD) ==================
        ONE ROW for everything that is not the race in front of you. An item
        opens its panel in the space under this row and the board steps aside
@@ -901,6 +830,32 @@
              ng-click="menuTab('grid')">Grid and heats</div>
       </div>
     </span>
+    <!-- LAYOUTS: a dropdown, not a panel. A panel would hide the board and cost
+         a click on every race; this opens no editor, so a load never swaps the
+         race visuals for the authoring ones. A row loads for everyone and puts
+         the panel in that layout's mode. -->
+    <span class="rm-menu-group" ng-if="isAdmin">
+      <button class="rm-btn rm-btn-mini"
+              ng-class="{'rm-admin-tab-active': menu.group === 'layouts'}"
+              ng-click="menuToggleGroup('layouts')"
+              title="Saved tracks, strips and arenas on this map. Click one to load it for everyone.">Layouts <span class="rm-tab-count" ng-if="layoutCount()">{{ layoutCount() }}</span> &#9662;</button>
+      <div class="rm-menu-drop rm-lm" ng-if="menu.group === 'layouts'">
+        <div class="rm-lm-group" ng-repeat="k in layoutKinds track by k.key">
+          <div class="rm-lm-head">{{ k.label }}</div>
+          <div class="rm-lm-none" ng-if="!layoutMenu[k.key].length">None on this map</div>
+          <div class="rm-menu-option rm-lm-row"
+               ng-repeat="r in layoutMenu[k.key] track by r.name"
+               ng-class="{'rm-lm-off': layoutsBlock(r.kind), 'rm-lm-loaded': isLoadedRow(r)}"
+               ng-click="layoutsPick(r)"
+               title="{{ layoutsBlock(r.kind) || 'Load for everyone' }}">
+            <span class="rm-lm-name">{{ r.name }}</span>
+            <span class="rm-lm-facts">{{ r.facts }}</span>
+            <span class="rm-lm-tag" ng-if="r.practice">practice</span>
+            <span class="rm-lm-tag rm-lm-tag-loaded" ng-if="isLoadedRow(r)">LOADED</span>
+          </div>
+        </div>
+      </div>
+    </span>
     <button class="rm-btn rm-btn-mini" ng-if="isAdmin" ng-class="{'rm-admin-tab-active': menuIsTab('track')}"
             ng-click="menuTab('track')"
             title="Track layouts, the checkpoint editor, the starting grid and free practice">Track <span class="rm-tab-count" ng-if="routeWaypoints.length">{{ routeWaypoints.length }}</span></button>
@@ -923,7 +878,7 @@
     <button class="rm-btn rm-btn-mini" ng-if="isAdmin"
             ng-class="{'rm-admin-tab-active': menuIsTab('drag'), 'rm-menu-mode': isMode('drag')}"
             ng-click="menuTab('drag')"
-            title="Drag racing: the tournament ladder, the tree and the strip. The strip itself is a point-to-point layout built in Track.">Drag <span class="rm-tab-count" ng-if="drag.entrants.length">{{ drag.entrants.length }}</span></button>
+            title="Drag racing: the tournament ladder, the tree and the strip. The strip is a Drag layout built in Track.">Drag <span class="rm-tab-count" ng-if="drag.entrants.length">{{ drag.entrants.length }}</span></button>
     <button class="rm-btn rm-btn-mini" ng-if="canPractice() || practice || practiceComplete" ng-class="{'rm-admin-tab-active': menu.open === 'practice'}"
             ng-click="menuPanel('practice')"
             title="Run timed laps on your own on an approved track">Practice</button>
@@ -2122,14 +2077,23 @@
       <!-- Circuit or sprint. Setting a circuit to one lap times the same thing,
            which is why that was the workaround - but it reads as a one-lap
            circuit everywhere it is shown, and a driver on a sprint stage should
-           be told they are on one. Saved with the layout. -->
-      <button class="rm-btn rm-btn-mini rm-p2p-toggle" ng-if="editorTarget === 'main'"
-              ng-class="{'rm-p2p-on': pointToPoint}"
-              ng-click="togglePointToPoint()"
-              ng-disabled="!canEdit()"
-              title="Circuit: laps a start/finish line. Point to point: driven once, first gate to last.">
-        {{ pointToPoint ? '⇥ P2P' : '⟳ Circuit' }}
-      </button>
+           be told they are on one. Drag is a sprint filed under Drag Strip in
+           the Layouts menu. Saved with the layout. -->
+      <span class="rm-route-tab-group" ng-if="editorTarget === 'main'">
+        <span class="rm-route-tab-group-label">Type</span>
+        <button class="rm-btn rm-btn-mini rm-p2p-toggle"
+                ng-class="{'rm-p2p-on': trackKind() === 'race'}"
+                ng-click="setTrackKind('race')" ng-disabled="!canEdit()"
+                title="Laps a start/finish line.">⟳ Circuit</button>
+        <button class="rm-btn rm-btn-mini rm-p2p-toggle"
+                ng-class="{'rm-p2p-on': trackKind() === 'p2p'}"
+                ng-click="setTrackKind('p2p')" ng-disabled="!canEdit()"
+                title="Driven once, first gate to last.">⇥ P2P</button>
+        <button class="rm-btn rm-btn-mini rm-p2p-toggle"
+                ng-class="{'rm-p2p-on': trackKind() === 'drag'}"
+                ng-click="setTrackKind('drag')" ng-disabled="!canEdit()"
+                title="Point to point, filed as a drag strip. One start position per lane.">Drag</button>
+      </span>
       <span class="rm-route-tab-note" ng-if="editorTarget === 'joker'">
         Joker gates are drawn violet. Enable the joker lap in Race settings to enforce it.
       </span>
@@ -2526,16 +2490,32 @@
             Save As New
           </button>
         </div>
-        <!-- Overwrite and Delete work on the layout SELECTED in the Track picker
-             above, so neither needs a name typed to hit the one already open. -->
+        <!-- Open, Overwrite, Delete and Practice work on the layout SELECTED
+             here, so none needs a name typed. Loading from the Layouts menu
+             selects it too: load, adjust, Overwrite. -->
         <div class="rm-layouts-row">
-          <span class="rm-layouts-target" ng-class="{'rm-layouts-target-empty': !layoutUi.selected}">
-            {{ layoutUi.selected || 'no layout selected' }}
-          </span>
-          <!-- PRIVATE. The counterpart to Load Layout up in the race controls:
-               that one moves the whole server onto a track, this pulls a copy
-               down to work on and leaves everyone else where they are. It is
-               what lets two admins build on one map at the same time. -->
+          <div class="rm-layout-dropdown" ng-class="{'rm-layout-dropdown-open': layoutDropdownOpen}">
+            <button type="button" class="rm-layout-trigger"
+                    ng-class="{'rm-layout-trigger-empty': !layoutUi.selected}"
+                    ng-click="toggleLayoutDropdown()">
+              <span class="rm-layout-trigger-label">{{ selectedLayoutLabel() }}</span>
+              <span class="rm-layout-caret">▾</span>
+            </button>
+            <div class="rm-layout-menu" ng-if="layoutDropdownOpen">
+              <div class="rm-layout-option"
+                   ng-repeat="l in layouts track by l.name"
+                   ng-class="{'rm-layout-option-active': l.name === layoutUi.selected}"
+                   ng-click="selectLayoutOption(l)">
+                {{ l.name }} ({{ l.checkpoints.length }} gates)
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="rm-layouts-row">
+          <!-- PRIVATE. The counterpart to a row in the Layouts menu: that moves
+               the whole server onto a track, this pulls a copy down to work on
+               and leaves everyone else where they are. It is what lets two
+               admins build on one map at the same time. -->
           <button class="rm-btn rm-btn-grid" ng-click="editLayout()"
                   ng-disabled="!layoutUi.selected || !canEdit()"
                   title="Open the selected layout in YOUR editor only. Nobody else's track changes.">
@@ -2592,8 +2572,8 @@
         <div class="rm-layouts-hint">
           Layouts are stored on the server and only listed for the map currently hosted.
           A layout carries its checkpoints, the joker route, the pit lane, the branch
-          gates and the starting grid. <strong>Loading</strong> one to race is up in the
-          session controls, so running a saved race never means opening this editor.
+          gates and the starting grid. <strong>Loading</strong> one to race is in the
+          <strong>Layouts</strong> menu, so running a saved race never means opening this editor.
         </div>
       </div>
       <canvas class="rm-preview-canvas" width="200" height="130"></canvas>
@@ -3368,9 +3348,9 @@
     <!-- The strip has to exist before anything else can. Said plainly, with
          what to do about it, rather than leaving Build Ladder looking broken. -->
     <div class="rm-derby-hint" ng-if="!dragStripReady()">
-      No drag strip loaded. Build one in the <b>Track</b> tab: a
-      <b>point-to-point</b> layout with a start line and a finish line, and one
-      start position per lane. Then load it and come back.
+      No drag strip loaded. Build one in the <b>Track</b> tab: type
+      <b>Drag</b>, a start line and a finish line, and one start position per
+      lane. Then load it from <b>Layouts</b>.
     </div>
 
     <!-- ---------------- the rules ---------------- -->
@@ -4802,6 +4782,34 @@
   }
   .rm-menu-option { padding: 5px 10px; cursor: pointer; white-space: nowrap; }
   .rm-menu-option:hover { background: rgba(255, 102, 0, 0.18); }
+  /* The Layouts menu. Capped and scrolling: a map can hold dozens, and the app
+     has a hard bottom edge. */
+  .rm-lm { min-width: 260px; max-width: 380px; max-height: 300px; overflow-y: auto; }
+  .rm-lm-head {
+    padding: 5px 10px 2px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #ffb380;
+  }
+  .rm-lm-group + .rm-lm-group { border-top: 1px solid rgba(255, 255, 255, 0.08); }
+  .rm-lm-none { padding: 2px 10px 5px; font-size: 11px; font-style: italic; color: #6b7075; }
+  .rm-lm-row { display: flex; align-items: baseline; gap: 6px; padding-left: 16px; }
+  .rm-lm-name { overflow: hidden; text-overflow: ellipsis; }
+  .rm-lm-facts { flex: 1; font-size: 10px; color: var(--rm-muted, #9aa0a6); }
+  .rm-lm-tag {
+    padding: 0 4px;
+    border-radius: 3px;
+    font-size: 9px;
+    color: #7ee2a8;
+    border: 1px solid rgba(126, 226, 168, 0.45);
+  }
+  .rm-lm-tag-loaded { color: #ffb380; border-color: rgba(255, 102, 0, 0.6); }
+  .rm-lm-loaded { background: rgba(255, 102, 0, 0.1); }
+  /* Refused rows stay readable: the tooltip says why. */
+  .rm-lm-off { cursor: default; opacity: 0.45; }
+  .rm-lm-off:hover { background: none; }
   .rm-menu-right { margin-left: auto; display: flex; gap: 4px; }
   .rm-pop-head {
     display: flex;
@@ -5180,7 +5188,6 @@
      z-index so it stacks above the 2D preview canvas and stays clickable
      (pointer-events explicitly enabled: nothing here is a click-through). */
   /* The layout picker sits in the session controls, so it shares their look. */
-  .rm-controls-layout { align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); }
   .rm-controls-label {
     font-size: 11px;
     font-weight: 600;

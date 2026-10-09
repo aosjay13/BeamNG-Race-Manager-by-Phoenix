@@ -109,10 +109,10 @@ stays editable: **Go** to it, **Move Here**, or **✕** to delete.
 As New**. A layout lives on the *server*, survives restarts, and carries the
 gates, the joker route, the pit lane, the lanes and the starting grid together.
 
-Once it's saved, the **Track** picker at the top drives everything else:
-**Load Layout** rebuilds it on every connected client at once, and **Overwrite**
-and **Delete** act on whatever is selected, so putting an edited track back takes
-no retyping. Both ask first. A save can never quietly empty part of a stored
+Once it's saved, the **Layouts ▾** menu lists it with every other track, strip
+and arena on the map: click it and it rebuilds on every connected client at
+once. **Overwrite** and **Delete** in the editor act on whatever is selected,
+and loading selects it, so putting an edited track back takes no retyping. Both ask first. A save can never quietly empty part of a stored
 layout; if the client sending it isn't holding a section the saved copy has, the
 server refuses and says exactly what would have gone.
 
@@ -198,7 +198,7 @@ expect without touching any of it.
 | **[Map switching and votes](docs/REFERENCE.md#switching-maps)** | Change the server's map from the Admin tab, or let drivers vote for one: it passes only at a percentage of the whole lobby you choose, and a race director can lock voting. Map zips move between `custom_maps` and `Resources/Client`, and the server restarts itself onto the new map, under the BeamMP Server Management Tool or started by hand. |
 | **[Map display names](docs/REFERENCE.md#map-display-names)** | Show `bark_river_sc` as *Bark River International* in the map menus, the vote and the switch. Display only: no file is renamed. |
 | **[Lap records](docs/REFERENCE.md#lap-records)** | Each driver's fastest lap on every saved layout, per map, kept across restarts and open to everyone. Scored from qualifying and races. An admin can take a time off or clear a board in game, or edit the JSON on the server. |
-| **[Drag racing](docs/REFERENCE.md#drag-racing-parallel-game-mode)** | A tournament ladder down a drag strip: single or double elimination, or a points shootout. Two to eight cars a pass with any number going through, a christmas tree with real red lights, reaction times, elapsed times and trap speeds, and dial-in bracket racing. Scores into the cup on a table of its own. The strip is an ordinary point-to-point layout, so the track editor already builds one, and a practice pass lets one driver try it before a field turns up. |
+| **[Drag racing](docs/REFERENCE.md#drag-racing-parallel-game-mode)** | A tournament ladder down a drag strip: single or double elimination, or a points shootout. Two to eight cars a pass with any number going through, a christmas tree with real red lights, reaction times, elapsed times and trap speeds, and dial-in bracket racing. Scores into the cup on a table of its own. The strip is an ordinary point-to-point layout saved with the type Drag, so the track editor already builds one, and a practice pass lets one driver try it before a field turns up. |
 | **[Broadcast board](docs/REFERENCE.md#broadcast-board-spectators)** | A spectator's board for streaming: the whole field, the drivers who are out and why, cup standings, and click a name to put the camera on that car in orbit. |
 | **[Race Manager Lights](docs/REFERENCE.md#race-manager-lights)** | A second app with the start lights, the flags and the drag tree in a box you place anywhere on screen. GET READY flashes amber, never green. Start sounds for the countdown, GET READY, the green and the tree, mutable from the panel. |
 | **[Race Manager Radar](docs/REFERENCE.md#race-manager-radar)** | A third app: the cars around you out to 25 m, at their real size and angle, red under 2 m and amber under 6 m with the gap shown, side-by-side spotter bars, ghosts as outlines, and in a race each car's position with lapped cars in blue. Fades away when nobody is near. |

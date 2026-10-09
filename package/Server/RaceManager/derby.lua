@@ -132,6 +132,9 @@ local derby = {
   wallDepth  = 1.5,                 -- how far it drops below the boundary plane
   startPositions = {},  -- derby starting grid { x, y, z, hx, hy }, slot 1 first
   winner    = nil,      -- winner's name once decided
+  -- The saved arena on screen, for the Layouts menu's LOADED tag. Every edit to
+  -- the boundary, the grid or the wall clears it: it is no saved arena then.
+  arena     = nil,
 }
 local derbyPlayers = {} -- [pid] = { id, name, status, reason, elimTime, resets }
                         -- status: alive | eliminated | winner
@@ -305,6 +308,7 @@ local function broadcastDerbyState(targetPid)
     wallDepth  = derby.wallDepth,
     startPositions = derby.startPositions,
     winner     = derby.winner,
+    arena      = derby.arena,
     players    = derbyClassification(),
   }))
 end
@@ -516,6 +520,7 @@ function RM_onDerbyAddMarker(pid, rawData)
   local x, y, z = tonumber(data.x), tonumber(data.y), tonumber(data.z)
   if not (x and y and z) then return end
   derby.boundary[#derby.boundary + 1] = { x = x, y = y, z = z }
+  derby.arena = nil
   broadcastDerbyState()
   print(string.format('[RaceManager] Derby marker %d placed by %s at %.1f, %.1f',
     #derby.boundary, MP.GetPlayerName(pid) or pid, x, y))
@@ -528,6 +533,7 @@ function RM_onDerbyClearBoundary(pid)
   derby.boundary = {}
   derby.boundaryMode = 'polygon'
   derby.shape = nil
+  derby.arena = nil
   broadcastDerbyState()
   print('[RaceManager] Derby boundary cleared by ' .. (MP.GetPlayerName(pid) or pid))
 end
@@ -566,6 +572,7 @@ function RM_onDerbySetBoundaryMode(pid, rawData)
     derby.shape = shape
     derby.boundary = derbyShapeToBoundary(shape)
   end
+  derby.arena = nil
   broadcastDerbyState()
   print(string.format('[RaceManager] Derby boundary mode set to "%s" by %s',
     mode, MP.GetPlayerName(pid) or pid))
@@ -600,6 +607,7 @@ function RM_onDerbySetShape(pid, rawData)
   end
 
   if not changed then return end
+  derby.arena = nil
   broadcastDerbyState()
   if derby.shape then
     print(string.format(
@@ -627,6 +635,7 @@ function RM_onDerbyAddStart(pid, rawData)
     x = x, y = y, z = z,
     hx = tonumber(data.hx) or 0, hy = tonumber(data.hy) or 1,
   }
+  derby.arena = nil
   broadcastDerbyState()
   print(string.format('[RaceManager] Derby start position %d placed by %s at %.1f, %.1f',
     #derby.startPositions, MP.GetPlayerName(pid) or pid, x, y))
@@ -636,6 +645,7 @@ function RM_onDerbyClearStarts(pid)
   if not requireAuth(pid) then return end
   if derbyActive() then return end
   derby.startPositions = {}
+  derby.arena = nil
   broadcastDerbyState()
   print('[RaceManager] Derby start grid cleared by ' .. (MP.GetPlayerName(pid) or pid))
 end
@@ -663,6 +673,7 @@ function RM_onDerbyMoveMarker(pid, rawData)
   local x, y, z = tonumber(data.x), tonumber(data.y), tonumber(data.z)
   if not (x and y and z) then return end
   derby.boundary[index] = { x = x, y = y, z = z }
+  derby.arena = nil
   broadcastDerbyState()
   print(string.format('[RaceManager] Derby marker %d moved by %s to %.1f, %.1f',
     index, MP.GetPlayerName(pid) or pid, x, y))
@@ -677,6 +688,7 @@ function RM_onDerbyRemoveMarker(pid, rawData)
   local index = derbyEditRequest(rawData, derby.boundary)
   if not index then return end
   table.remove(derby.boundary, index)
+  derby.arena = nil
   broadcastDerbyState()
   print(string.format('[RaceManager] Derby marker %d deleted by %s (%d left)',
     index, MP.GetPlayerName(pid) or pid, #derby.boundary))
@@ -693,6 +705,7 @@ function RM_onDerbyMoveStart(pid, rawData)
     x = x, y = y, z = z,
     hx = tonumber(data.hx) or 0, hy = tonumber(data.hy) or 1,
   }
+  derby.arena = nil
   broadcastDerbyState()
   print(string.format('[RaceManager] Derby start position %d moved by %s to %.1f, %.1f',
     index, MP.GetPlayerName(pid) or pid, x, y))
@@ -704,6 +717,7 @@ function RM_onDerbyRemoveStart(pid, rawData)
   local index = derbyEditRequest(rawData, derby.startPositions)
   if not index then return end
   table.remove(derby.startPositions, index)
+  derby.arena = nil
   broadcastDerbyState()
   print(string.format('[RaceManager] Derby start position %d deleted by %s (%d left)',
     index, MP.GetPlayerName(pid) or pid, #derby.startPositions))
@@ -958,6 +972,9 @@ function RM_onDerbySaveLayout(pid, rawData)
   MP.SendChatMessage(-1, msg)
   print(msg)
   sendDerbyLayoutList(-1)
+  -- The arena on screen is the one just saved.
+  derby.arena = name
+  broadcastDerbyState()
 end
 
 -- Load a saved arena and push it to every client. Refused during a derby.
@@ -990,6 +1007,7 @@ function RM_onDerbyLoadLayout(pid, rawData)
       derby.demoLimit = derbyClampLimit(l.demoLimit, derby.demoLimit)
       if type(l.maxResets) == 'number' then derby.maxResets = math.floor(l.maxResets) end
       derby.startPositions = sanitizeCheckpoints(l.startPositions) or {}
+      derby.arena = l.name
       broadcastDerbyState()
       local msg = string.format('[RaceManager] Derby arena "%s" loaded on %s by %s (%d markers)',
         l.name, map, MP.GetPlayerName(pid) or pid, #l.boundary)

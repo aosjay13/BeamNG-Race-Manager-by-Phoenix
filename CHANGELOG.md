@@ -27,8 +27,19 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   everybody.
 - **The radar goes quiet while you spectate**, for example while stood down
   during a drag pass. The check meant to hide it could never be true.
+- **Deleting the loaded layout unloads it.** The server lost track of which
+  saved layout it was on after any load, so the deleted track stayed on every
+  driver's screen.
 
 #### Added
+
+- **A Layouts menu.** Every saved track, strip and arena on the map, grouped
+  as Race, P2P, Arenas and Drag Strip, with gates, grid, lanes, joker and pits
+  on each row and a LOADED tag on the one the server is on. Click a row to load
+  it for everyone; the panel switches to race, derby or drag mode to match.
+- **A layout type in the Track editor: Circuit, P2P or Drag.** It is saved with
+  the layout and decides where it is listed. Tag an existing strip by opening
+  it, choosing Drag and pressing Overwrite.
 
 - **Ghost: ON / off in the Practice panel.** Ghosted by default: you pass through
   other cars and they pass through you, faded on their screens and solid on
@@ -43,6 +54,9 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 #### Changed
 
+- **The Track and Arena rows are gone** from under the session controls. Loading
+  is in the Layouts menu, and the Track editor has its own layout picker for
+  Open in Editor, Overwrite, Delete and Practice.
 - **Race Manager Lights has no box behind it.** Each lamp has its own dark hood
   so it reads over any background, and a lit lamp is drawn as a bulb: a hot
   center, a highlight on the glass and a glow past the hood. The drag tree's

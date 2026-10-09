@@ -271,6 +271,9 @@ local track = {
   -- Circuit or sprint. A point-to-point stage is driven once and its last gate
   -- is a FINISH. Travels with the layout.
   pointToPoint = false,
+  -- A point-to-point layout filed as a drag strip. Saved with the layout; only
+  -- true while pointToPoint is.
+  dragStrip = false,
   -- Size given to newly placed gates, and the layout's stored default for any
   -- gate without an override of its own.
   checkpointWidth  = TUNE.DEFAULT_WIDTH,
@@ -1035,6 +1038,7 @@ local function pushRouteState()
     -- Starting grid
     startPositions = track.startPositions,
     pointToPoint   = track.pointToPoint,
+    dragStrip      = track.dragStrip,
     gridSlot       = session.gridSlot,
     gridFrozen     = session.gridFrozen,
     -- Admin session, so a freshly mounted app knows it is still logged in...
@@ -5643,15 +5647,20 @@ function M.setEditorOpen(open)
   if not edit.open then nudge.release() end
 end
 
--- Sprint or circuit. Told to the server, which owns the lap count.
-function M.setPointToPoint(on)
+-- Sprint or circuit, and whether the sprint is a drag strip. Told to the
+-- server, which owns the lap count.
+function M.setPointToPoint(on, drag)
   track.pointToPoint = on == true
+  track.dragStrip    = track.pointToPoint and drag == true
   render.invalidateLabels()      -- the gate labels say which mode this is
   if inMultiplayer() then
-    TriggerServerEvent('RM_SetPointToPoint', jsonEncode({ enabled = track.pointToPoint }))
+    TriggerServerEvent('RM_SetPointToPoint', jsonEncode({
+      enabled = track.pointToPoint, drag = track.dragStrip,
+    }))
   end
   pushRouteState()
-  log('I', 'raceManager', 'Track mode: ' .. (track.pointToPoint and 'POINT TO POINT' or 'circuit'))
+  log('I', 'raceManager', 'Track mode: ' .. (track.dragStrip and 'DRAG STRIP'
+    or track.pointToPoint and 'POINT TO POINT' or 'circuit'))
 end
 
 function M.setEditorTarget(target)
@@ -6886,6 +6895,7 @@ function M.saveLayout(name, confirmDrop)
     pitExit        = bundle(track.pitExit, 'pit exit') or {},
     markers        = bundle(marker.list, 'marker') or {},
     pointToPoint   = track.pointToPoint,
+    drag           = track.pointToPoint and track.dragStrip,
     confirmDrop    = confirmDrop == true,
   })
   print('[raceManager] saveLayout: sending RM_SaveLayout (' .. #payload .. ' bytes) to server')
@@ -7218,6 +7228,7 @@ local function onServerUpdate(rawData)
   end
   -- Race entry + qualifying rules.
   if type(data.pointToPoint) == 'boolean' then track.pointToPoint = data.pointToPoint end
+  if type(data.dragStrip) == 'boolean' then track.dragStrip = data.dragStrip end
   ghostQuali = data.ghostQuali == true
   qualiOutLap = data.qualiOutLap == true
   if type(data.qualiLapLimit)  == 'number' then qualiLapLimit  = data.qualiLapLimit  end
@@ -7743,12 +7754,14 @@ local function onApplyLayout(rawData)
     track.checkpointDepth  = clampDepth(data.depth or track.checkpointDepth)
   end
   track.pointToPoint     = data.pointToPoint == true
+  track.dragStrip        = track.pointToPoint and data.drag == true
   resetLapTracking()
   -- The baseline for drift, stamped AFTER the whole apply.
   edit.stamp   = edit.fingerprint()
   edit.refused = nil
   editorMsg('Loaded layout "' .. tostring(data.name) .. '" ('
-    .. (track.pointToPoint and 'point to point, ' or '') .. #track.route .. ' gates'
+    .. (track.dragStrip and 'drag strip, ' or track.pointToPoint and 'point to point, ' or '')
+    .. #track.route .. ' gates'
     .. (#track.jokerRoute > 0 and (' + ' .. #track.jokerRoute .. ' joker') or '')
     .. (#track.startPositions > 0 and (', ' .. #track.startPositions .. ' grid slots') or '') .. ')')
   log('I', 'raceManager', 'Applied server layout "' .. tostring(data.name)
