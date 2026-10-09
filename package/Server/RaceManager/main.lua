@@ -4823,12 +4823,12 @@ end
 -- same shape serves start positions.
 sanitizeCheckpoints = function (raw)
   if type(raw) ~= 'table' then return nil end
-  -- Marker symbols, mirroring marker.KINDS on the client (kept in step by hand;
-  -- an unknown one reverts to the default). Built inside the function for the
-  -- locals ceiling: this runs on save and load only.
+  -- Marker symbols, mirroring marker.KINDS on the client. A symbol missing here
+  -- is dropped on save and reloads as the default (marker_test compares the
+  -- two). Built inside the function for the locals ceiling: save and load only.
   local MARKER_KINDS = {
     right = true, left = true, up = true, down = true,
-    uturn = true, splitRight = true, splitLeft = true,
+    uturn = true, splitRight = true, splitLeft = true, pit = true,
   }
   local out = {}
   for i, cp in ipairs(raw) do
@@ -4849,6 +4849,46 @@ sanitizeCheckpoints = function (raw)
     -- client uses it as a lookup key (an unknown one draws nothing).
     if type(cp.kind) == 'string' and MARKER_KINDS[cp.kind] then
       out[i].kind = cp.kind
+    end
+  end
+  if #out == 0 then return nil end
+  return out
+end
+
+-- Props: static scenery each client spawns from the layout. Mirrors
+-- props.CATALOG on the client (prop_test compares the two). An unknown kind is
+-- DROPPED, never defaulted: a cone where a wall was saved is another track.
+-- Capped and rounded to the centimeter: a whole layout is one BeamMP event.
+function race.sanitizeProps(raw)
+  if type(raw) ~= 'table' then return nil end
+  local KINDS = {
+    cone = true, bollard = true, barrel = true, cushion = true,
+    jersey = true, jerseyEnd = true, roadBarrier = true, plastic = true,
+    plasticRed = true, block = true, crate = true, arrowBoard = true,
+    signLeft = true, signRight = true, chevron = true, chevron3 = true,
+    cornerLeft = true, cornerRight = true, tape = true,
+  }
+  local MAX = 200
+  local function cm(v) return math.floor(v * 100 + 0.5) / 100 end
+  local out = {}
+  for _, p in ipairs(raw) do
+    if #out >= MAX then
+      print('[RaceManager] Props over the cap of ' .. MAX .. ': the rest were dropped')
+      break
+    end
+    if type(p) == 'table' and type(p.kind) == 'string' and KINDS[p.kind] then
+      local x, y, z = tonumber(p.x), tonumber(p.y), tonumber(p.z)
+      local hx, hy = tonumber(p.hx) or 0, tonumber(p.hy) or 1
+      if x and y and z then
+        local len = math.sqrt(hx * hx + hy * hy)
+        if len < 1e-6 then hx, hy, len = 0, 1, 1 end
+        local e = { kind = p.kind, x = cm(x), y = cm(y), z = cm(z),
+                    hx = math.floor(hx / len * 10000 + 0.5) / 10000,
+                    hy = math.floor(hy / len * 10000 + 0.5) / 10000 }
+        -- Only when switched off: solid is the default.
+        if p.solid == false then e.solid = false end
+        out[#out + 1] = e
+      end
     end
   end
   if #out == 0 then return nil end
@@ -4899,10 +4939,21 @@ end
 local function layoutsVisibleTo(pid, list)
   -- isAuthenticated, not requireAuth (which would tell a driver their login
   -- lapsed).
-  if pid and isAuthenticated(pid) then return list end
+  local admin = pid and isAuthenticated(pid)
   local out = {}
   for _, l in ipairs(list) do
-    if l.practice == true then out[#out + 1] = l end
+    if admin or l.practice == true then
+      -- Props stay out of the list, which carries every layout to every player
+      -- in one event; they travel with RM_ApplyLayout. A copy, never the store.
+      if type(l.props) == 'table' then
+        local v = {}
+        for k, val in pairs(l) do v[k] = val end
+        v.props, v.propCount = nil, #l.props
+        out[#out + 1] = v
+      else
+        out[#out + 1] = l
+      end
+    end
   end
   return out
 end
@@ -5101,6 +5152,7 @@ function RM_onSaveLayout(pid, rawData)
     pitEntry     = sanitizeCheckpoints(data.pitEntry),
     pitExit      = sanitizeCheckpoints(data.pitExit),
     markers      = sanitizeCheckpoints(data.markers),
+    props        = race.sanitizeProps(data.props),
     pointToPoint = data.pointToPoint == true,
     -- Approved for practice? Opt-in, default false (a track mid-build must not go
     -- public), and carried through a re-save so editing never revokes it.
@@ -5132,6 +5184,9 @@ function RM_onSaveLayout(pid, rawData)
     checkSection('pitExit',        had(existing.pitExit),        entry.pitExit and #entry.pitExit or 0)
     checkSection('startPositions', had(existing.startPositions), starts and #starts or 0)
     checkSection('branches',       had(existing.branches),       entry.branches and #entry.branches or 0)
+    checkSection('markers',        had(existing.markers),        entry.markers and #entry.markers or 0)
+    -- A client from before props sends none at all.
+    checkSection('props',          had(existing.props),          entry.props and #entry.props or 0)
     if next(lost) then
       local parts = {}
       for k, n in pairs(lost) do parts[#parts + 1] = n .. ' ' .. k end
@@ -5162,10 +5217,11 @@ function RM_onSaveLayout(pid, rawData)
     print('[RaceManager] Failed to write ' .. LAYOUTS_FILE .. ': ' .. tostring(werr))
     return
   end
-  local msg = string.format('[RaceManager] Layout "%s" (%d gates%s%s, %s) %s by %s',
+  local msg = string.format('[RaceManager] Layout "%s" (%d gates%s%s%s, %s) %s by %s',
     name, #checkpoints,
     entry.joker and (' + ' .. #entry.joker .. ' joker gates') or '',
     starts and (' + ' .. #starts .. ' start positions') or '',
+    entry.props and (' + ' .. #entry.props .. ' props') or '',
     map, replaced and 'updated' or 'saved', MP.GetPlayerName(pid) or pid)
   MP.SendChatMessage(-1, msg)
   print(msg)

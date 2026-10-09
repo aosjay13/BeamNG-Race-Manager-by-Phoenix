@@ -347,5 +347,32 @@ list = routeState().markers
 check(list[1].kind == 'right' and list[2].kind == 'left' and list[3].kind == 'uturn',
   'and each one keeps whatever it was last set to')
 
+-- ---------------------------------------------------------------------------
+-- The server stores every symbol the client offers
+-- ---------------------------------------------------------------------------
+-- Two hand-kept lists. `pit` was on the client's and not the server's, so a
+-- saved pit sign came back as a chevron. Read from the source, since the
+-- server's list is a local inside sanitizeCheckpoints.
+do
+  local f = assert(io.open('server/RaceManager/main.lua', 'r'))
+  local src = f:read('*a')
+  f:close()
+  local block = src:match('local MARKER_KINDS = (%b{})')
+  check(block ~= nil, 'the server still has a MARKER_KINDS whitelist to compare')
+  local serverHas = {}
+  for k in (block or ''):gmatch('([%w_]+)%s*=%s*true') do serverHas[k] = true end
+  for _, k in ipairs(routeState().markerKinds or {}) do
+    check(serverHas[k], 'the server keeps the "' .. k .. '" symbol through a save')
+  end
+  -- And the panel draws a button for it: `pit` showed "?".
+  local j = assert(io.open('ui/modules/apps/RaceManager/app.js', 'r'))
+  local js = j:read('*a')
+  j:close()
+  local glyphs = js:match('%$scope%.markerGlyph = function %(kind%) {(.-)};') or ''
+  for _, k in ipairs(routeState().markerKinds or {}) do
+    check(glyphs:find('[{,%s]' .. k .. ':') ~= nil, 'the panel has a glyph for "' .. k .. '"')
+  end
+end
+
 print(string.format('marker_test: %d checks, %d failures', checks, fails))
 os.exit(fails == 0 and 0 or 1)

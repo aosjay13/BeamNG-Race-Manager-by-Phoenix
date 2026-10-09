@@ -16,8 +16,8 @@ and can be prepped days before an event:
 
 - **Save As New** bundles the currently placed gates (positions, headings,
   gate dimensions) - including the **joker route**, the **pit lane**, the
-  **branch gates** and the **starting grid**, if any are placed - under a typed
-  name,
+  **branch gates**, the **starting grid**, **direction markers** and **props**,
+  if any are placed - under a typed name,
   tagged with the level the server is hosting. A name that is already taken
   asks first.
 - **Overwrite** and **Delete** act on the layout selected in the **Track**
@@ -35,6 +35,38 @@ and can be prepped days before an event:
 - **Load Layout** broadcasts the checkpoints to every connected client at
   once; everyone's gates rebuild instantly. Loading is locked during a
   countdown or an active race.
+
+### Props
+
+The editor's **Props** tab places real objects in the world and saves them with
+the layout: cones, bollards, barrels, crash cushions, concrete and plastic
+barriers, blocks, crates, arrow boards, arrow signs, chevrons, rally corner signs
+and closure tape. They are the game's own models, so every map has them.
+
+- **Placing.** Pick a prop from the menu and press **+ ... Ahead**: it goes a few
+  meters in front of your car, facing the way you face. With **✋ Place** on,
+  **ctrl+click** the ground instead; clicked in a row, each one faces on from
+  the last, so a line of barriers follows the road. Drag, scroll to turn and
+  shift+scroll to raise or lower, as with gates. A dragged prop stays on the
+  ground.
+- **Each row** swaps the prop for another kind, switches it between **Solid**
+  and **Ghost**, and turns it **180°** (for a sign whose face came out on the far
+  side). **Go** stands your car behind it, facing it; **Move Here** puts it in
+  front of your car.
+- **Solid props stop cars like a wall.** They do not fall over. A **Ghost** prop
+  is drawn and never collides: a guide, not a barrier.
+- **While the Props tab is open every prop is a ghost**, so you can drive through
+  them while you work. Leave the tab or close the editor and they turn solid,
+  except any your car is still touching, which wait until you drive clear.
+- **Every player gets them** when the layout is loaded, including practice loads
+  and players who join later. Each PC spawns its own copy; BeamMP never sees
+  them, so they do not count as cars and the Garage List ignores them.
+- **Nothing turns solid during a session.** Making props solid rebuilds the
+  map's collision, which can stutter for a moment, so it only happens between
+  sessions.
+- Up to **200 props** a layout. Saving over a layout that has props, from a
+  client that sends none, is held for the admin to confirm, like the joker route
+  and the grid.
 
 ## Tutorial: running a race night
 

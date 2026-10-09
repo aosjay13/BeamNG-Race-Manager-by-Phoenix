@@ -896,6 +896,61 @@ RM_onSaveLayout(1, '{"name":"Brand New","width":20,"checkpoints":'
 check(lastHeld == nil, 'a first save under a fresh name is never held back')
 
 -- ---------------------------------------------------------------------------
+-- Props: saved, loaded, kept out of the list, and guarded like the rest
+-- ---------------------------------------------------------------------------
+local propGate = '[{"x":0,"y":100,"z":0,"hx":0,"hy":1}]'
+local propsJson = '{"name":"Prop Track","width":20,"checkpoints":' .. propGate
+  .. ',"props":[{"kind":"cone","x":1.23456,"y":2,"z":0,"hx":0,"hy":2}'
+  .. ',{"kind":"jersey","x":5,"y":6,"z":0,"hx":1,"hy":0,"solid":false}'
+  .. ',{"kind":"banana","x":9,"y":9,"z":0,"hx":0,"hy":1}'
+  .. ',{"kind":"tape","x":"nope","y":9,"z":0}]}'
+RM_onSaveLayout(1, propsJson)
+RM_onLoadLayout(1, '{"name":"Prop Track"}')
+local pl = lastApplied and lastApplied.props
+check(pl and #pl == 2, 'props save and load, unknown kinds and bad numbers dropped')
+check(pl and pl[1].x == 1.23 and pl[1].hy == 1,
+  'rounded to the centimeter, heading normalized')
+check(pl and pl[2].solid == false and pl[1].solid == nil, 'a ghost stays a ghost')
+local listed = storedLayout('Prop Track')
+check(listed and listed.props == nil and listed.propCount == 2,
+  'the layout list carries a count, not the props')
+RM_onLoadLayout(1, '{"name":"Prop Track"}')
+check(lastApplied and lastApplied.props and #lastApplied.props == 2,
+  'and leaving them out of the list did not touch the stored layout')
+
+-- A client from before props sends none: held, not silently stripped.
+lastHeld = nil
+RM_onSaveLayout(1, '{"name":"Prop Track","width":20,"checkpoints":' .. propGate .. '}')
+check(lastHeld and lastHeld.lost and lastHeld.lost.props == 2,
+  'a save that would drop every prop is held back')
+lastHeld = nil
+RM_onSaveLayout(1, '{"name":"Prop Track","width":20,"checkpoints":' .. propGate
+  .. ',"markers":[{"x":0,"y":50,"z":0,"hx":0,"hy":1,"kind":"pit"}]'
+  .. ',"props":[{"kind":"cone","x":1,"y":2,"z":0,"hx":0,"hy":1}]}')
+check(lastHeld == nil, 'keeping one prop is ordinary editing')
+RM_onLoadLayout(1, '{"name":"Prop Track"}')
+check(lastApplied and lastApplied.markers and lastApplied.markers[1].kind == 'pit',
+  'a pit lane marker keeps its symbol through a save')
+lastHeld = nil
+RM_onSaveLayout(1, '{"name":"Prop Track","width":20,"checkpoints":' .. propGate
+  .. ',"props":[{"kind":"cone","x":1,"y":2,"z":0,"hx":0,"hy":1}]}')
+check(lastHeld and lastHeld.lost and lastHeld.lost.markers == 1,
+  'markers are guarded too')
+
+-- Capped: a whole layout is one BeamMP event.
+local many = {}
+for i = 1, 250 do
+  many[i] = string.format('{"kind":"cone","x":%d,"y":0,"z":0,"hx":0,"hy":1}', i)
+end
+RM_onSaveLayout(1, '{"name":"Cone Sea","width":20,"checkpoints":' .. propGate
+  .. ',"props":[' .. table.concat(many, ',') .. ']}')
+RM_onLoadLayout(1, '{"name":"Cone Sea"}')
+check(lastApplied and lastApplied.props and #lastApplied.props == 200,
+  'props are capped at 200 a layout')
+RM_onDeleteLayout(1, '{"name":"Cone Sea"}')
+RM_onDeleteLayout(1, '{"name":"Prop Track"}')
+
+-- ---------------------------------------------------------------------------
 -- Deleting a layout
 -- ---------------------------------------------------------------------------
 RM_onDeleteLayout(1, '{"name":"brand new"}')   -- names match case-insensitively

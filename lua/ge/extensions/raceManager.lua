@@ -358,6 +358,11 @@ function marker.validKind(k)
   return nil
 end
 
+-- PROPS: static scenery saved with the layout (see props.lua). Required up here,
+-- not with the other modules: the purge, the save and the fingerprint below
+-- all read props.list. Initialised further down, once groundAt exists.
+local props = require('raceManager/props')
+
 -- BRANCHING ROUTES. Slot i is cleared by the main gate route[i] OR any branch
 -- gate authored against slot i. Nothing remembers which: armedWp stays an index
 -- bounded by #route, so laps, counts and the running order are unchanged. The
@@ -987,6 +992,7 @@ function edit.fingerprint()
   fold(track.pitRoute)
   fold(track.startPositions)
   fold(branch.list)
+  fold(props.list)
   return n
 end
 
@@ -1066,6 +1072,11 @@ local function pushRouteState()
     markerKind   = marker.kind,
     markerKinds  = marker.KINDS,
     markerLabels = marker.LABEL,
+    -- Props: static scenery.
+    props        = props.list,
+    propKind     = props.kind,
+    propKinds    = props.IDS,
+    propLabels   = props.LABEL,
     -- Branch gates (the other ways through a checkpoint)
     branches     = branch.list,
     branchSlot   = branch.editSlot,
@@ -1323,6 +1334,8 @@ local function clearTrackState(reason)
   lastGateBack = false
   -- Markers too: a stale sign is worse than none.
   marker.list   = {}
+  -- And props: the frame loop takes them out of the world.
+  props.list    = {}
   -- Branch gates too, or they arm gates from a track no longer loaded.
   branch.list   = {}
   branch.bySlot = {}
@@ -5552,6 +5565,28 @@ do
   M.radarForget = radar.forget
 end
 
+-- Props get their host here, once groundAt and the renderer exist.
+props.init({
+  groundAt = groundAt, ownVehicle = ownVehicle, palette = render.palette,
+  -- Ghosts while being edited, so the ground probes see the road.
+  editing = function ()
+    return edit.open and session.isAdmin and edit.target == 'prop'
+  end,
+  -- No collision rebuild (a hitch) while anybody is racing.
+  busy = function ()
+    local d = derby.derbyState.phase
+    local g = drag.dragState and drag.dragState.phase
+    return edit.running() or d == 'forming' or d == 'countdown' or d == 'running'
+      or g == 'staging' or g == 'tree' or g == 'running'
+  end,
+  overlay = function ()
+    return edit.open and session.isAdmin and edit.visualize and edit.target == 'prop'
+  end,
+  selected = function (i)
+    return nudge.on and nudge.sel == i and nudge.list == props.list
+  end,
+})
+
 -- After joining, ask for the live state once the socket is up.
 local function joinRequestUpdate(dt)
   if not joinRequestLeft then return end
@@ -5598,6 +5633,9 @@ function M.onUpdate(dt)
   drag.dragUpdate(dt)
   -- The Radar app: a scan four times a second alone, twenty with a car near.
   if M.radarUpdate then M.radarUpdate(dt) end
+  -- Props: the world follows props.list; the overlay only on the Props tab.
+  props.update(dt)
+  props.draw()
 end
 
 -- Checkpoint editor API (called by the UI app)
@@ -5658,7 +5696,7 @@ function M.setEditorTarget(target)
   target = tostring(target or 'main')
   if target ~= 'joker' and target ~= 'start' and target ~= 'pit'
      and target ~= 'pitEntry' and target ~= 'pitExit'
-     and target ~= 'branch' and target ~= 'marker'
+     and target ~= 'branch' and target ~= 'marker' and target ~= 'prop'
      and not DERBY_TARGETS[target] then target = 'main' end
   edit.target = target
   pushRouteState()
@@ -5677,6 +5715,7 @@ local function activeEditorRoute()
   if edit.target == 'start' then return track.startPositions end
   if edit.target == 'branch' then return branch.list end
   if edit.target == 'marker' then return marker.list end
+  if edit.target == 'prop' then return props.list end
   return track.route
 end
 
@@ -5924,12 +5963,12 @@ function M.nudgeLift(dir)
   if not (nudge.on and nudge.sel and nudge.list) then return end
   local wp = nudge.list[nudge.sel]
   if not wp then return end
+  -- A prop rests ON the ground; a gate clears it.
+  local clear = (edit.target == 'prop') and 0 or TUNE.GROUND_CLEAR
   if (tonumber(dir) or 1) >= 0 then
-    wp.z = liftAboveGround(wp.x, wp.y, wp.z + TUNE.NUDGE_LIFT_PER_PRESS,
-      TUNE.GROUND_CLEAR)
+    wp.z = liftAboveGround(wp.x, wp.y, wp.z + TUNE.NUDGE_LIFT_PER_PRESS, clear)
   else
-    wp.z = lowerToGround(wp.x, wp.y, wp.z, TUNE.NUDGE_LIFT_PER_PRESS,
-      TUNE.GROUND_CLEAR)
+    wp.z = lowerToGround(wp.x, wp.y, wp.z, TUNE.NUDGE_LIFT_PER_PRESS, clear)
   end
   if edit.target == 'branch' then branch.rebuild() end
   if DERBY_TARGETS[edit.target] then
@@ -6058,8 +6097,12 @@ function nudge.update()
       elseif d2 >= TUNE.NUDGE_DRAG_MIN * TUNE.NUDGE_DRAG_MIN then
         nudge.grabX, nudge.grabY = cx, cy
         wp.x, wp.y = wp.x + dx, wp.y + dy
-        -- Dragged into rising ground: lift only.
-        wp.z = liftAboveGround(wp.x, wp.y, wp.z, TUNE.GROUND_CLEAR)
+        -- Dragged into rising ground: lift only. A prop follows the ground.
+        if edit.target == 'prop' then
+          props.seat(wp)
+        else
+          wp.z = liftAboveGround(wp.x, wp.y, wp.z, TUNE.GROUND_CLEAR)
+        end
         if edit.target == 'branch' then branch.rebuild() end
         if edit.target == 'start' then branch.gridTool.generated = false end
         -- Noted, not sent: nudge.flush sends it on release.
@@ -6090,12 +6133,13 @@ function nudge.update()
   if wheel ~= 0 and not wantsUi then
     if shift then
       -- Floored at ground clearance; see lowerToGround for the two helpers.
+      local clear = (edit.target == 'prop') and 0 or TUNE.GROUND_CLEAR
       if wheel > 0 then
         wp.z = liftAboveGround(wp.x, wp.y,
-          wp.z + wheel * TUNE.NUDGE_LIFT_PER_STEP, TUNE.GROUND_CLEAR)
+          wp.z + wheel * TUNE.NUDGE_LIFT_PER_STEP, clear)
       else
         wp.z = lowerToGround(wp.x, wp.y, wp.z,
-          -wheel * TUNE.NUDGE_LIFT_PER_STEP, TUNE.GROUND_CLEAR)
+          -wheel * TUNE.NUDGE_LIFT_PER_STEP, clear)
       end
     else
       nudge.turn(wp, wheel * nudge.TURN_PER_STEP)
@@ -6165,12 +6209,19 @@ end
 -- the gate before it, never read live from a global (a slider once resized a
 -- whole circuit retroactively). Start positions get no dimensions.
 function M.editorAdd(place)
+  local driven = place == nil
   place = place or vehiclePlacement()
   if not place then
     log('W', 'raceManager', 'Editor: no player vehicle, cannot place')
     return
   end
   local target = activeEditorRoute()
+  -- A prop has no gate size; a driven one goes in front of the car.
+  if edit.target == 'prop' then
+    target[#target + 1] = props.fromPlace(place, driven)
+    pushRouteState()
+    return
+  end
   if edit.target ~= 'start' then
     local prev = target[#target]
     place.width  = clampWidth(prev and prev.width  or track.checkpointWidth)
@@ -6225,6 +6276,21 @@ function M.setMarkerKind(kind, index)
   pushRouteState()
 end
 
+-- `index` nil sets what the next prop is; a number swaps that placed prop.
+function M.setPropKind(kind, index)
+  if props.setKind(kind, index) then pushRouteState() end
+end
+
+-- A ghost prop is drawn and never collides: a guide, not a wall.
+function M.setPropSolid(index, on)
+  if props.setSolid(index, on) then pushRouteState() end
+end
+
+-- Half a turn, for a board whose face came out on the far side.
+function M.flipProp(index)
+  if props.flip(index) then pushRouteState() end
+end
+
 function M.editorUndo()
   local target = activeEditorRoute()
   if #target > 0 then
@@ -6254,6 +6320,12 @@ function M.editorClear()
     marker.list = {}
     pushRouteState()
     log('I', 'raceManager', 'Markers cleared')
+    return
+  end
+  if edit.target == 'prop' then
+    props.list = {}
+    pushRouteState()
+    log('I', 'raceManager', 'Props cleared')
     return
   end
   if edit.target == 'joker' then
@@ -6340,6 +6412,8 @@ function M.moveCheckpoint(index)
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
     return
   end
+  -- A prop goes in front of the car, as when placed, keeping its kind.
+  if edit.target == 'prop' then place = props.fromPlace(place, true, wp.kind) end
   wp.x, wp.y, wp.z = place.x, place.y, place.z
   wp.hx, wp.hy = place.hx, place.hy
   pushRouteState()
@@ -6353,6 +6427,8 @@ function M.previewCheckpoint(index)
   index = math.floor(tonumber(index) or 0)
   local wp = activeEditorRoute()[index]
   if not wp then return end
+  -- On a prop is inside it: stand back and face it instead.
+  if edit.target == 'prop' then wp = props.viewpoint(wp) end
   if not placeOnStartPosition(wp) then
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Could not move the vehicle' })
   end
@@ -6415,12 +6491,15 @@ function M.insertCheckpoint(index, place)
   local list = activeEditorRoute()
   if index < 1 then index = 1 end
   if index > #list + 1 then index = #list + 1 end
+  local driven = place == nil
   place = place or vehiclePlacement()
   if not place then
     guihooks.trigger('RaceManagerEditorMsg', { msg = 'Get in a vehicle first' })
     return
   end
-  if edit.target ~= 'start' then
+  if edit.target == 'prop' then
+    place = props.fromPlace(place, driven)
+  elseif edit.target ~= 'start' then
     local prev = list[index] or list[#list]
     place.width  = clampWidth(prev and prev.width  or track.checkpointWidth)
     place.height = clampHeight(prev and prev.height or track.checkpointHeight)
@@ -6885,6 +6964,8 @@ function M.saveLayout(name, confirmDrop)
     pitEntry       = bundle(track.pitEntry, 'pit entry') or {},
     pitExit        = bundle(track.pitExit, 'pit exit') or {},
     markers        = bundle(marker.list, 'marker') or {},
+    -- Empty, not nil, for the same reason as the pit gates.
+    props          = props.bundle(),
     pointToPoint   = track.pointToPoint,
     confirmDrop    = confirmDrop == true,
   })
@@ -7728,6 +7809,7 @@ local function onApplyLayout(rawData)
   -- A new track: not in its pit lane until we drive into it.
   pit.inLane = false
   marker.list = marks
+  props.list  = props.unbundle(data.props)
   track.startPositions = starts
   branch.list   = alts
   branch.bySlot = bySlot
@@ -7750,7 +7832,8 @@ local function onApplyLayout(rawData)
   editorMsg('Loaded layout "' .. tostring(data.name) .. '" ('
     .. (track.pointToPoint and 'point to point, ' or '') .. #track.route .. ' gates'
     .. (#track.jokerRoute > 0 and (' + ' .. #track.jokerRoute .. ' joker') or '')
-    .. (#track.startPositions > 0 and (', ' .. #track.startPositions .. ' grid slots') or '') .. ')')
+    .. (#track.startPositions > 0 and (', ' .. #track.startPositions .. ' grid slots') or '')
+    .. (#props.list > 0 and (', ' .. #props.list .. ' props') or '') .. ')')
   log('I', 'raceManager', 'Applied server layout "' .. tostring(data.name)
     .. '" with ' .. #track.route .. ' checkpoints, ' .. #track.jokerRoute .. ' joker gates and '
     .. #track.startPositions .. ' start positions')
@@ -7766,6 +7849,7 @@ local function onSaveHeld(rawData)
     joker = 'joker gates', pits = 'pit stalls',
     pitEntry = 'pit entry gates', pitExit = 'pit exit gates',
     startPositions = 'start positions', branches = 'branch gates',
+    markers = 'direction markers', props = 'props',
   }
   local parts = {}
   for key, n in pairs(lost) do
@@ -8526,6 +8610,14 @@ end
 function M.onExtensionUnloaded()
   -- Resident across sessions (manual unload), so purge explicitly.
   resetToIdle('extension unloaded')
+  -- No frame is coming to take the props out.
+  props.destroy()
+end
+
+-- The level's objects die with it; drop the ids so none is deleted by mistake
+-- once the next level reuses them.
+function M.onClientEndMission()
+  props.forget()
 end
 
 -- ---------------------------------------------------------------------------
