@@ -1,7 +1,7 @@
 {
   "name": "Race Manager Lights",
   "author": "Phoenix",
-  "version": "0.18.5",
+  "version": "0.19.0",
   "description": "Start lights, flags and the drag tree from Race Manager, in their own box you can place and size anywhere on screen. Needs the Race Manager app's mod on the server.",
   "directive": "raceManagerLights",
   "domElement": "<race-manager-lights></race-manager-lights>",
