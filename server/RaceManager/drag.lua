@@ -1196,7 +1196,7 @@ local function stagePass(index)
   print(string.format('[RaceManager] Drag pass staged: %s pass %d (%s)',
     r.label, index, table.concat(names, ', ')))
   if called then
-    MP.SendChatMessage(-1, '[RaceManager] Drag: press Ready in PRM - Main '
+    MP.SendChatMessage(-1, '[RaceManager] Drag: press Ready in Phoenix Race Manager (PRM) '
       .. 'to put your car on the strip.')
   end
   -- The tick runs through STAGING too under roll-up: something has to notice

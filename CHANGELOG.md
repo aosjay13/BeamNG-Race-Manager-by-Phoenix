@@ -23,8 +23,8 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 #### Changed
 
-- **The mod is now Phoenix Race Manager (PRM).** The HUD apps are renamed so
-  they sort together: **PRM - Main**, **PRM - Race Lights** and **PRM - Radar**.
+- **The mod is now Phoenix Race Manager (PRM).** The HUD apps are now
+  **Phoenix Race Manager (PRM)**, **Race Lights (PRM)** and **Radar (PRM)**.
   Each description says whether the app is required or optional. Search *PRM*
   in HUD Apps to find all three. The game keeps apps you already placed, so
   nobody has to re-add them.

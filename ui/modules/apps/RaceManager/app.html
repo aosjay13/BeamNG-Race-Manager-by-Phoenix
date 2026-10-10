@@ -162,7 +162,7 @@
          a control that could hide itself would leave the app unrecoverable
          without the game's app editor. -->
     <button class="rm-btn rm-btn-mini rm-btn-collapse" ng-click="toggleCollapsed()"
-            title="{{ hudCollapsed ? 'Expand PRM - Main' : 'Collapse PRM - Main to this bar' }}">{{ hudCollapsed ? '▼' : '▲' }}</button>
+            title="{{ hudCollapsed ? 'Expand the panel' : 'Collapse the panel to this bar' }}">{{ hudCollapsed ? '▼' : '▲' }}</button>
     </span>
 
     <!-- ================= Second row onward ================================
@@ -4545,7 +4545,7 @@
        leaderboard carries its own grip instead, so this one steps aside. -->
   <div class="rm-lb-grip rm-hud-grip" ng-if="!minimalMode()"
        ng-mousedown="startHudResize($event)"
-       title="Drag to resize PRM - Main"></div>
+       title="Drag to resize the panel"></div>
 
 <style>
   .rm-root {

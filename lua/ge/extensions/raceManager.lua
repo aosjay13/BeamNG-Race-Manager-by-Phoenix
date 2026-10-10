@@ -7449,7 +7449,7 @@ local function onServerUpdate(rawData)
   -- not after pressing Not ready.
   if session.myStatus == 'called' and wasStatus ~= 'called' and wasStatus ~= 'gridded' then
     pushNotice('grid', 'The grid is forming', {
-      sub = 'Press READY in PRM - Main to take '
+      sub = 'Press READY in Phoenix Race Manager (PRM) to take '
         .. (session.myGridPos and ('slot P' .. session.myGridPos) or 'your slot'),
     })
   end

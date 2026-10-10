@@ -70,7 +70,7 @@ and closure tape. They are the game's own models, so every map has them.
 
 ## Tutorial: running a race night
 
-Everything below happens inside the **PRM - Main** window in game. The
+Everything below happens inside the **Phoenix Race Manager (PRM)** window in game. The
 session flow is always the same:
 
 ```
@@ -87,7 +87,7 @@ because it starts from a standing grid (see [Step 5](#step-5--qualifying)).
 
 ### Step 1 - Open the app
 
-Join the BeamMP server, open the UI app menu, and add **PRM - Main** (it's required, and
+Join the BeamMP server, open the UI app menu, and add **Phoenix Race Manager (PRM)** (it's required, and
 listed under the *Racing* and *Info* categories). The header shows the
 current session phase (Waiting / Qualifying / Grid Locked / Countdown /
 Racing / Race Over), the race clock, and your checkpoint progress (`CP 2/5`)
@@ -616,7 +616,7 @@ the stragglers are taken where they stand and the session closes normally.
 4. Press **Start Countdown**: everyone gets a synchronized 3‑2‑1‑**GO!**
    shown as **start lights**. Three lamps go red one at a time as the count
    falls, then all three snap green together on GO, in the same colors as the
-   [Lights app](#prm---race-lights). The number stays under the lamps, because
+   [Lights app](#race-lights-prm). The number stays under the lamps, because
    it is the part that reads at a glance on a narrow panel.
    overlay, every car is released by that same broadcast, and the race clock
    starts.
@@ -2682,7 +2682,7 @@ these were collapsed sections.
 | **Records** | everyone | The lap records board for each layout on this map |
 | **Map** | drivers | Call a vote to switch maps, while voting is open |
 | **Admin** | admins | Master passwords, results housekeeping, the map switch, display names |
-| 🔊 | everyone | Start sounds on or off (see [PRM - Race Lights](#prm---race-lights)) |
+| 🔊 | everyone | Start sounds on or off (see [Race Lights (PRM)](#race-lights-prm)) |
 
 **Never behind the menu:** the header (phase, clock, flag), the READY banner, a
 map vote in progress, and the banners for spectating, the pit box, ghosting and
@@ -2729,11 +2729,11 @@ reported or saved: your laps are listed in the panel, the best in gold.
   and released, as in a race.
 - **End Practice** stops timing. The track stays drawn.
 
-## PRM - Race Lights
+## Race Lights (PRM)
 
 An optional second app in the same mod: the start lights, the flags and the drag tree in a
-box of their own, so a driver can put them where they already look. Add **PRM - Race
-Lights** from the game's HUD Apps list (UI Apps before v0.39), under
+box of their own, so a driver can put them where they already look. Add **Race Lights
+(PRM)** from the game's HUD Apps list (UI Apps before v0.39), under
 **Racing**, and place and size it like any other app. It is invisible until it
 has something to show, and shows itself for six seconds when it loads so you
 can see where it went.
@@ -2782,10 +2782,10 @@ remembered.
 light changes, a handful of times a race, and the app sets classes on its lamps.
 It adds nothing to the work the main panel does on each timing update.
 
-## PRM - Radar
+## Radar (PRM)
 
 An optional third app in the same mod: the cars around you and how close they are. Add
-**PRM - Radar** from the game's HUD Apps list (under **Racing**) and place
+**Radar (PRM)** from the game's HUD Apps list (under **Racing**) and place
 and size it like any other app. It fades away when nobody is within range and
 comes back the moment somebody is; it shows itself for six seconds when it loads
 so you can see where it went.

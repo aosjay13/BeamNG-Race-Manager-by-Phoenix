@@ -27,7 +27,7 @@ extensions = {
 ui_appSelector_general = { setSearchText = function (v) searchText = v end }
 
 -- Each frame: the text drawn, the buttons drawn, and which to "click".
-local frame, click, closeX, tick = nil, {}, false, nil
+local frame, click, closeX, tick, fontScale = nil, {}, false, nil, nil
 local function ptr(v) return { [0] = v } end
 ui_imgui = {
   WindowFlags_NoCollapse = 1, WindowFlags_NoResize = 2, WindowFlags_NoSavedSettings = 4,
@@ -46,6 +46,7 @@ ui_imgui = {
   Text = function (t) frame.text[#frame.text + 1] = t end,
   TextWrapped = function (t) frame.text[#frame.text + 1] = t end,
   TextColored = function (_, t) frame.text[#frame.text + 1] = t end,
+  SetWindowFontScale = function (s) fontScale = s end,
   Bullet = function () end, SameLine = function () end,
   Spacing = function () end, Separator = function () end,
   Checkbox = function (_, p) if tick ~= nil then p[0] = tick end; return false end,
@@ -80,9 +81,10 @@ run(1)
 check(frame == nil, 'nothing is drawn before the delay')
 run(3)
 check(frame ~= nil and frame.ended, 'opens after the delay, Begin paired with End')
-check(drew('PRM - Main') and drew('PRM - Race Lights') and drew('PRM - Radar'), 'names all three apps')
+check(drew('Phoenix Race Manager (PRM)') and drew('Race Lights (PRM)') and drew('Radar (PRM)'), 'names all three apps')
 check(not drew('phoenix'), 'the password is never printed')
 check(hasButton('Dismiss') and hasButton('Open HUD Apps'), 'both buttons drawn')
+check(fontScale and fontScale > 1, 'the text is drawn larger than the imgui default')
 check(drew('Running this server?') and drew('README'), 'the admin line points at the README')
 check(not drew('still'), 'and never says whether this server still has the default')
 

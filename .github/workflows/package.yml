@@ -185,8 +185,8 @@ jobs:
             echo
             echo "Extract the zip into the server's \`Resources/\` folder and restart the server."
             echo "Players get the client mod as they join. Each driver adds the apps once from"
-            echo "**HUD Apps** (search *PRM*): **PRM - Main** (required; Racing, Info), and the optional"
-            echo "**PRM - Race Lights** and **PRM - Radar** (Racing)."
+            echo "**HUD Apps** (search *PRM*): **Phoenix Race Manager (PRM)** (required; Racing, Info), and the optional"
+            echo "**Race Lights (PRM)** and **Radar (PRM)** (Racing)."
           } >> notes.md
           echo "title=$tag - ${head#*- }" >> "$GITHUB_OUTPUT"
           cat notes.md

@@ -12,6 +12,8 @@ local FILE = 'settings/raceManager/splash.json'
 local SEARCH = 'PRM'
 -- Seconds after the state reply, so the car has landed first.
 local DELAY = 3
+-- Text size against imgui's default, and the window sized to match.
+local SCALE = 1.4
 
 local welcome = {
   offered = false,     -- this join has had its chance
@@ -87,13 +89,14 @@ local function bullet(im, name, what)
 end
 
 local function body(im)
+  if type(im.SetWindowFontScale) == 'function' then im.SetWindowFontScale(SCALE) end
   colored(im, GOLD, 'This server runs Phoenix Race Manager.')
   im.TextWrapped('Qualifying, grids, race control, live timing and results all run '
     .. 'from its HUD apps. Add them to your screen to join in:')
   im.Spacing()
-  bullet(im, 'PRM - Main', '(required) timing, race entry and results.')
-  bullet(im, 'PRM - Race Lights', '(optional) start lights, flags and the drag tree.')
-  bullet(im, 'PRM - Radar', '(optional) the cars around you and how close they are.')
+  bullet(im, 'Phoenix Race Manager (PRM)', 'required: timing, race entry and results.')
+  bullet(im, 'Race Lights (PRM)', 'optional: start lights, flags and the drag tree.')
+  bullet(im, 'Radar (PRM)', 'optional: the cars around you and how close they are.')
   im.Spacing()
   colored(im, MUTED, 'HUD Apps > Edit layout > Add app. The search is filled in for you.')
   -- The same for every server: every racer reads this, so it must not say
@@ -101,12 +104,12 @@ local function body(im)
   im.Spacing()
   im.Separator()
   colored(im, GOLD, 'Running this server?')
-  im.TextWrapped('Log in from PRM - Main. The default admin password is in the README: '
+  im.TextWrapped('Log in from Phoenix Race Manager (PRM). The default admin password is in the README: '
     .. 'change it in the Admin password bar before your first public session.')
   im.Spacing()
   im.Separator()
   im.Checkbox("Don't show this again", welcome.hidePtr)
-  if im.Button('Open HUD Apps', im.ImVec2(200, 0)) then
+  if im.Button('Open HUD Apps', im.ImVec2(200 * SCALE, 0)) then
     close()
     openHudApps()
   end
@@ -119,7 +122,7 @@ local function draw(im)
   local vp = im.GetMainViewport()
   im.SetNextWindowPos(im.ImVec2(vp.Pos.x + vp.Size.x / 2, vp.Pos.y + vp.Size.y / 2),
     im.Cond_Appearing, im.ImVec2(0.5, 0.5))
-  im.SetNextWindowSize(im.ImVec2(460, 0), im.Cond_Always)
+  im.SetNextWindowSize(im.ImVec2(460 * SCALE, 0), im.Cond_Always)
   if not welcome.hidePtr then welcome.hidePtr = im.BoolPtr(false) end
   local openPtr = im.BoolPtr(true)
   local flags = im.WindowFlags_NoCollapse + im.WindowFlags_NoResize

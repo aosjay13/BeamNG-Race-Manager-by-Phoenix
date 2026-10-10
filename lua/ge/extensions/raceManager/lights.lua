@@ -1,6 +1,6 @@
 -- Race Manager: THE LIGHTS, client side.
 --
--- One light for the PRM - Race Lights app, decided here from the session, the
+-- One light for the Race Lights (PRM) app, decided here from the session, the
 -- countdown, this driver's own flag edges and the drag tree, and pushed on
 -- RaceManagerLights only when it changes: a handful of times a race, never per
 -- frame. The app draws what it is told and binds nothing, so it adds nothing to

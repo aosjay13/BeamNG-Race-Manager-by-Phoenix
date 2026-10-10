@@ -340,7 +340,7 @@ D.onDragUpdate = function (rawData)
   end
   if S.myReady == false and wasReady == nil then
     host.pushNotice('drag', 'Your drag pass is up',
-      { sub = 'Press READY in PRM - Main to put your car on the strip' })
+      { sub = 'Press READY in Phoenix Race Manager (PRM) to put your car on the strip' })
   end
   guihooks.trigger('RaceManagerDrag', data)
 end
