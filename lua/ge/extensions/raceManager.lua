@@ -5569,6 +5569,14 @@ do
   M.radarForget = radar.forget
 end
 
+-- The welcome splash, the same way. See splash.lua.
+do
+  local splash = require('raceManager/splash')
+  for _, name in ipairs({ 'splashOffer', 'splashReset', 'splashShow', 'splashUpdate' }) do
+    M[name] = splash[name]
+  end
+end
+
 -- Props get their host here, once groundAt and the renderer exist.
 props.init({
   groundAt = groundAt, ownVehicle = ownVehicle, palette = render.palette,
@@ -5637,6 +5645,7 @@ function M.onUpdate(dt)
   drag.dragUpdate(dt)
   -- The Radar app: a scan four times a second alone, twenty with a car near.
   if M.radarUpdate then M.radarUpdate(dt) end
+  M.splashUpdate(dt)        -- the welcome splash, only while it is up
   -- Props: the world follows props.list; the overlay only on the Props tab.
   props.update(dt)
   props.draw()
@@ -7267,6 +7276,8 @@ local function onServerUpdate(rawData)
     pushNotice('flag', 'RESTART - GREEN FLAG',
       { sub = 'Racing resumes', color = 'green' })
   end
+  -- youAreAdmin is only on a targeted reply, so this is a join or a panel open.
+  if type(data.youAreAdmin) == 'boolean' then M.splashOffer() end
   -- Admin status, only on a targeted reply (RM_RequestState). The server is the
   -- authority: a mismatch corrects the local flag.
   if type(data.youAreAdmin) == 'boolean' and data.youAreAdmin ~= session.isAdmin then
@@ -7368,7 +7379,7 @@ local function onServerUpdate(rawData)
   -- not after pressing Not ready.
   if session.myStatus == 'called' and wasStatus ~= 'called' and wasStatus ~= 'gridded' then
     pushNotice('grid', 'The grid is forming', {
-      sub = 'Press READY in Race Manager to take '
+      sub = 'Press READY in PRM - Main to take '
         .. (session.myGridPos and ('slot P' .. session.myGridPos) or 'your slot'),
     })
   end
@@ -8643,6 +8654,7 @@ end
 local function onSessionLeave()
   log('I', 'raceManager', 'BeamMP session ended: clearing local race state')
   nametag.clearAll()
+  M.splashReset()
   resetToIdle('BeamMP session ended')
 end
 

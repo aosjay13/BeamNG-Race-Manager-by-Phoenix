@@ -2498,7 +2498,7 @@ formGrid = function (kind, byName)
     -- Empty means nobody is here, or everybody pressed Spectate.
     MP.SendChatMessage(-1, connected > 0
       and string.format('[RaceManager] Everyone on the server is spectating '
-        .. '(%d connected). Press Race in the Race Manager panel to take part.', connected)
+        .. '(%d connected). Press Race in PRM - Main to take part.', connected)
       or '[RaceManager] Nobody is on the server to grid.')
     return false
   end
@@ -2573,8 +2573,8 @@ formGrid = function (kind, byName)
     ordered[1] and ordered[1].name or 'n/a'))
   if race.readyCheck then
     local ready, total = race.readyCounts()
-    MP.SendChatMessage(-1, string.format('[RaceManager] Grid called: press Ready in the '
-      .. 'Race Manager panel to take your slot (%d/%d ready).', ready, total))
+    MP.SendChatMessage(-1, string.format('[RaceManager] Grid called: press Ready in '
+      .. 'PRM - Main to take your slot (%d/%d ready).', ready, total))
     race.announceIfAllReady()
   end
   return true

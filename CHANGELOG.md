@@ -6,6 +6,26 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## Unreleased
+
+#### Added
+
+- **A welcome window on join.** Racers who have never added the apps are told
+  the server runs Phoenix Race Manager, which apps it has and which one is
+  required, and get an **Open HUD Apps** button that lands on the app screen
+  with the picker's search filled in. It points a new server owner at the
+  README for the default admin password, the same on every server, so no racer
+  can tell whether yours still uses it. Dismiss is always on screen; *Don't show
+  this again* is remembered.
+
+#### Changed
+
+- **The mod is now Phoenix Race Manager (PRM).** The HUD apps are renamed so
+  they sort together: **PRM - Main**, **PRM - Race Lights** and **PRM - Radar**.
+  Each description says whether the app is required or optional. Search *PRM*
+  in HUD Apps to find all three. The game keeps apps you already placed, so
+  nobody has to re-add them.
+
 ## 0.19.0 - Props
 
 #### Added

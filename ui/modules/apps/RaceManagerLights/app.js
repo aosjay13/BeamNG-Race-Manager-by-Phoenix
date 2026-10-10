@@ -1,7 +1,7 @@
 angular.module('beamng.apps')
 
 /**
- * Race Manager Lights: the start lights, the flags and the drag tree, in a box
+ * PRM - Race Lights: the start lights, the flags and the drag tree, in a box
  * of their own so a driver can put them where they are already looking.
  *
  * NO ANGULAR BINDINGS. The light arrives on RaceManagerLights (pushed by

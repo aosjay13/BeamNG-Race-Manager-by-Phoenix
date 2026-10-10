@@ -15,7 +15,7 @@
        would squeeze the board inside a box it never asked for. -->
   <!-- ================= Header (hidden in minimal driver mode) ============= -->
   <div class="rm-header" ng-if="!minimalMode()">
-    <span class="rm-title">RACE MANAGER</span>
+    <span class="rm-title" title="Phoenix Race Manager">PRM</span>
     <span class="rm-phase" ng-class="'rm-phase-' + phase">{{ phaseLabel() }}</span>
     <!-- WHAT IS LOCKED RIGHT NOW, for an admin. Half the editor controls gray
          out while a session runs, and without this the only thing saying why is
@@ -162,7 +162,7 @@
          a control that could hide itself would leave the app unrecoverable
          without the game's app editor. -->
     <button class="rm-btn rm-btn-mini rm-btn-collapse" ng-click="toggleCollapsed()"
-            title="{{ hudCollapsed ? 'Expand Race Manager' : 'Collapse Race Manager to this bar' }}">{{ hudCollapsed ? '▼' : '▲' }}</button>
+            title="{{ hudCollapsed ? 'Expand PRM - Main' : 'Collapse PRM - Main to this bar' }}">{{ hudCollapsed ? '▼' : '▲' }}</button>
     </span>
 
     <!-- ================= Second row onward ================================
@@ -3283,7 +3283,7 @@
         <button class="rm-btn rm-btn-mini rm-btn-toggle"
                 ng-class="{'rm-btn-toggle-on': nametags}"
                 ng-click="toggleNametags()"
-                title="Append each driver's display name to their BeamMP nametag. It is added after their guest name, not instead of it: BeamMP owns the nametag and this only adds text to it, leaving fade, color and everything else alone. Only players running Race Manager see it.">{{ nametags ? 'On' : 'Off' }}</button>
+                title="Append each driver's display name to their BeamMP nametag. It is added after their guest name, not instead of it: BeamMP owns the nametag and this only adds text to it, leaving fade, color and everything else alone. Only players running Phoenix Race Manager see it.">{{ nametags ? 'On' : 'Off' }}</button>
         <span class="rm-alias-real">Show display names on nametags</span>
         <span class="rm-alias-current" ng-if="nametags">guest1234 <b>(Name)</b></span>
       </div>
@@ -4545,7 +4545,7 @@
        leaderboard carries its own grip instead, so this one steps aside. -->
   <div class="rm-lb-grip rm-hud-grip" ng-if="!minimalMode()"
        ng-mousedown="startHudResize($event)"
-       title="Drag to resize the Race Manager panel"></div>
+       title="Drag to resize PRM - Main"></div>
 
 <style>
   .rm-root {

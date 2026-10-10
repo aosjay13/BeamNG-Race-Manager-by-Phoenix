@@ -1,7 +1,7 @@
 angular.module('beamng.apps')
 
 /**
- * Race Manager Radar: the cars around this driver's own car and how close they
+ * PRM - Radar: the cars around this driver's own car and how close they
  * are, heading up, our car in the middle.
  *
  * NO ANGULAR BINDINGS. lua/ge/extensions/raceManager/radar.lua pushes the cars
