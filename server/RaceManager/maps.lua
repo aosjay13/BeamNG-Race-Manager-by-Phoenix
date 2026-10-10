@@ -888,7 +888,7 @@ function M.voteStart(pid, raw)
     yes = { [pid] = true }, no = {}, left = M.VOTE_SECONDS }
   print(string.format('[RaceManager] Map vote for %s called by %s', target.name, by))
   host.notifyField('session', 'Map vote: ' .. target.label,
-    by .. ' wants to switch. Vote in the Race Manager app.')
+    by .. ' wants to switch. Vote in Phoenix Race Manager (PRM).')
   timerOn()
   checkVote()
 end

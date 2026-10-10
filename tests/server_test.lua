@@ -603,6 +603,11 @@ check(lastCleared ~= nil, 'private load still purges the asking client first')
 -- asking the server what track it is on must still be told GP Circuit, because
 -- race.layout was never touched.
 appliedLayouts = {}
+RM_onRequestState(2, '{"haveTrack":true}')
+check(appliedLayouts[2] == nil,
+  'a client that says it has a track is not sent one (a UI reload would replace it)')
+check(targetedState(2) ~= nil, 'but still gets the state')
+appliedLayouts = {}
 RM_onRequestState(2)
 check(appliedLayouts[2] ~= nil and appliedLayouts[2].width == 30,
   'the server is still on the publicly loaded track after a private load')

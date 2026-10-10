@@ -258,5 +258,45 @@ for _, k in ipairs(LISTS) do
     'a purge empties ' .. k .. ' (got ' .. purged['#' .. k] .. ')')
 end
 
+-- ---------------------------------------------------------------------------
+-- The same track re-sent mid-race keeps the lap in progress
+-- ---------------------------------------------------------------------------
+-- A UI reload (radial menu, HUD Apps) asks for state again and an older server
+-- re-sends the track. Re-applying it put the car back on checkpoint 1 mid-race:
+-- no lap was counted again and a reset faced checkpoint 1.
+local resend = { name = 'resend', width = 40, height = 10, depth = 2,
+  checkpoints = { { x = 0, y = 100, z = 0, hx = 0, hy = 1 },
+                  { x = 0, y = SF_Y, z = 0, hx = 0, hy = 1 } } }
+handlers['RM_ClearTrack']({ reason = 'resend audit' })
+handlers['RM_ApplyLayout'](resend)
+serverState({ phase = 'waiting', totalLaps = 3, maxResets = -1, drivers = {} })
+veh.x, veh.y = 0, 50
+serverState({ phase = 'racing', totalLaps = 3, maxResets = -1, drivers = {} })
+moveTo(90)
+moveTo(110)
+check(lastRoute().nextWp == 2, 'checkpoint 1 cleared, checkpoint 2 armed')
+handlers['RM_ApplyLayout'](resend)
+check(lastRoute().nextWp == 2, 'the same track re-sent mid-race leaves checkpoint 2 armed')
+
+-- The client says it has a track, so a current server keeps it to itself.
+local function requestPayload()
+  sent = {}
+  RM.requestState()
+  for _, e in ipairs(sent) do
+    if e.event == 'RM_RequestState' then return e.payload end
+  end
+end
+local req = requestPayload()
+check(type(req) == 'table' and req.haveTrack == true, 'a client with a track tells the server so')
+serverState({ phase = 'waiting', totalLaps = 3, maxResets = -1, drivers = {} })
+handlers['RM_ClearTrack']({ reason = 'resend audit' })
+check(requestPayload() == '', 'a client with no track asks for one')
+
+-- A different track still replaces it.
+handlers['RM_ApplyLayout'](resend)
+handlers['RM_ApplyLayout']({ name = 'other', width = 40, height = 10, depth = 2,
+  checkpoints = { { x = 0, y = 300, z = 0, hx = 0, hy = 1 } } })
+check(#lastRoute().waypoints == 1, 'a different track is applied as before')
+
 print(string.format('lifecycle_test: %d checks, %d failures', checks, fails))
 os.exit(fails == 0 and 0 or 1)

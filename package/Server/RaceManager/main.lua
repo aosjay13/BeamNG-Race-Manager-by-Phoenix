@@ -2498,7 +2498,7 @@ formGrid = function (kind, byName)
     -- Empty means nobody is here, or everybody pressed Spectate.
     MP.SendChatMessage(-1, connected > 0
       and string.format('[RaceManager] Everyone on the server is spectating '
-        .. '(%d connected). Press Race in the Race Manager panel to take part.', connected)
+        .. '(%d connected). Press Race in Phoenix Race Manager (PRM) to take part.', connected)
       or '[RaceManager] Nobody is on the server to grid.')
     return false
   end
@@ -2573,8 +2573,8 @@ formGrid = function (kind, byName)
     ordered[1] and ordered[1].name or 'n/a'))
   if race.readyCheck then
     local ready, total = race.readyCounts()
-    MP.SendChatMessage(-1, string.format('[RaceManager] Grid called: press Ready in the '
-      .. 'Race Manager panel to take your slot (%d/%d ready).', ready, total))
+    MP.SendChatMessage(-1, string.format('[RaceManager] Grid called: press Ready in '
+      .. 'Phoenix Race Manager (PRM) to take your slot (%d/%d ready).', ready, total))
     race.announceIfAllReady()
   end
   return true
@@ -4179,10 +4179,15 @@ function RM_onClearResults(pid)
 end
 
 -- A client asks for state (the app opened, or it just joined).
-function RM_onRequestState(pid)
+function RM_onRequestState(pid, rawData)
   broadcastState(pid)
-  -- ...and the track, so a late arrival gets the gates...
-  race.sendLayoutTo(pid)
+  -- ...and the track, so a late arrival gets the gates. Not to a client that
+  -- has one: a UI reload asks again, and the public track would replace its
+  -- practice or private editor track.
+  local ok, data = pcall(Util.JsonDecode, rawData or '')
+  if not (ok and type(data) == 'table' and data.haveTrack == true) then
+    race.sendLayoutTo(pid)
+  end
   -- ...and the Garage List (not on the state push).
   if race.garagePush then race.garagePush(pid) end
 end

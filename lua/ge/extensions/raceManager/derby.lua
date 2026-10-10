@@ -923,7 +923,7 @@ D.onDerbyUpdate = function (rawData)
     if mine then mine.you = true end
     if D.derbyState.myReady == false and wasReady == nil then
       host.pushNotice('derby', 'The derby is forming up',
-        { sub = 'Press READY in Race Manager to take your slot' })
+        { sub = 'Press READY in Phoenix Race Manager (PRM) to take your slot' })
     end
     if mine then
       if mine.status ~= 'alive' then

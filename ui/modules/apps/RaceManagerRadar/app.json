@@ -1,8 +1,8 @@
 {
-  "name": "Race Manager Radar",
+  "name": "Radar (PRM)",
   "author": "Phoenix",
   "version": "0.19.0",
-  "description": "The cars around you and how close they are, from Race Manager. Fades away when nobody is near. Needs the Race Manager mod on the server.",
+  "description": "Optional, for Phoenix Race Manager. The cars around you and how close they are. Fades away when nobody is near. Needs the mod on the server.",
   "directive": "raceManagerRadar",
   "domElement": "<race-manager-radar></race-manager-radar>",
   "css": {

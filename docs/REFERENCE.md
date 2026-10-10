@@ -1,4 +1,4 @@
-# Race Manager - full reference
+# Phoenix Race Manager (PRM) - full reference
 
 Every feature in detail: the complete race-night walkthrough, league
 regulations, the Demo Derby, drag racing, and how live positions are
@@ -70,7 +70,7 @@ and closure tape. They are the game's own models, so every map has them.
 
 ## Tutorial: running a race night
 
-Everything below happens inside the **Race Manager** window in game. The
+Everything below happens inside the **Phoenix Race Manager (PRM)** window in game. The
 session flow is always the same:
 
 ```
@@ -87,7 +87,7 @@ because it starts from a standing grid (see [Step 5](#step-5--qualifying)).
 
 ### Step 1 - Open the app
 
-Join the BeamMP server, open the UI app menu, and add **Race Manager** (it's
+Join the BeamMP server, open the UI app menu, and add **Phoenix Race Manager (PRM)** (it's required, and
 listed under the *Racing* and *Info* categories). The header shows the
 current session phase (Waiting / Qualifying / Grid Locked / Countdown /
 Racing / Race Over), the race clock, and your checkpoint progress (`CP 2/5`)
@@ -330,6 +330,8 @@ still rolling the panel says *"come to a stop inside the box"*; the moment you
 stop, the stop begins: the car is **held for 5 seconds, repaired in place, and
 released**. The repair lands part-way through, so the car is whole before the
 driver gets it back, and the same stall will not trigger again for 8 seconds.
+Stalls work the same in [free practice](#free-practice), where the stop is
+yours alone: it is not reported and adds no ghost.
 
 Run through a stall without stopping and you simply **miss it**. Nothing is
 seized, nothing is spent - no cooldown is started, so the stall is live again on
@@ -614,7 +616,7 @@ the stragglers are taken where they stand and the session closes normally.
 4. Press **Start Countdown**: everyone gets a synchronized 3‑2‑1‑**GO!**
    shown as **start lights**. Three lamps go red one at a time as the count
    falls, then all three snap green together on GO, in the same colors as the
-   [Lights app](#race-manager-lights). The number stays under the lamps, because
+   [Lights app](#race-lights-prm). The number stays under the lamps, because
    it is the part that reads at a glance on a narrow panel.
    overlay, every car is released by that same broadcast, and the race clock
    starts.
@@ -981,8 +983,13 @@ while racing:
 
 | Mode | Behavior |
 |------|-----------|
-| **In place** | BeamNG's normal repair-where-you-stand (the default) |
+| **In place** | BeamNG's normal repair-where-you-stand (the default), turned to face the checkpoint you need next |
 | **Last checkpoint** | The car is respawned at the last checkpoint it crossed, facing the direction of travel |
+
+**In place faces the next checkpoint, wherever you reset.** A car more than 45
+degrees off is turned where it stands. On a map with a road graph it faces along
+the road route to that gate, so a reset before a hairpin faces on round the
+road; off the road it points straight at the gate. Practice resets do the same.
 
 Last-checkpoint mode applies whether or not resets are limited; before the
 first checkpoint of a session it falls back to in-place. Like every
@@ -2675,7 +2682,7 @@ these were collapsed sections.
 | **Records** | everyone | The lap records board for each layout on this map |
 | **Map** | drivers | Call a vote to switch maps, while voting is open |
 | **Admin** | admins | Master passwords, results housekeeping, the map switch, display names |
-| 🔊 | everyone | Start sounds on or off (see [Race Manager Lights](#race-manager-lights)) |
+| 🔊 | everyone | Start sounds on or off (see [Race Lights (PRM)](#race-lights-prm)) |
 
 **Never behind the menu:** the header (phase, clock, flag), the READY banner, a
 map vote in progress, and the banners for spectating, the pit box, ghosting and
@@ -2718,13 +2725,15 @@ reported or saved: your laps are listed in the panel, the best in gold.
 - **A session starting ends practice**: a grid forming or a derby forming up,
   with a notice. Practice laps are never reported, so laps driven in practice
   mode would not count.
+- **Pit stalls work in practice**: stop in one and the car is held, repaired
+  and released, as in a race.
 - **End Practice** stops timing. The track stays drawn.
 
-## Race Manager Lights
+## Race Lights (PRM)
 
-A second app in the same mod: the start lights, the flags and the drag tree in a
-box of their own, so a driver can put them where they already look. Add **Race
-Manager Lights** from the game's HUD Apps list (UI Apps before v0.39), under
+An optional second app in the same mod: the start lights, the flags and the drag tree in a
+box of their own, so a driver can put them where they already look. Add **Race Lights
+(PRM)** from the game's HUD Apps list (UI Apps before v0.39), under
 **Racing**, and place and size it like any other app. It is invisible until it
 has something to show, and shows itself for six seconds when it loads so you
 can see where it went.
@@ -2773,10 +2782,10 @@ remembered.
 light changes, a handful of times a race, and the app sets classes on its lamps.
 It adds nothing to the work the main panel does on each timing update.
 
-## Race Manager Radar
+## Radar (PRM)
 
-A third app in the same mod: the cars around you and how close they are. Add
-**Race Manager Radar** from the game's HUD Apps list (under **Racing**) and place
+An optional third app in the same mod: the cars around you and how close they are. Add
+**Radar (PRM)** from the game's HUD Apps list (under **Racing**) and place
 and size it like any other app. It fades away when nobody is within range and
 comes back the moment somebody is; it shows itself for six seconds when it loads
 so you can see where it went.
