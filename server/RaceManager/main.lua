@@ -1017,7 +1017,7 @@ local RM_PROTOCOL = 2
 --   tools/deploy.py                      RELEASE_NAME
 --
 -- tests/wiring_test.lua fails if they disagree.
-local RM_BUILD = '0.19.0'
+local RM_BUILD = '0.19.1'
 
 -- The ghost roster on the wire: absolute END times on race.time, so a late
 -- client works out a shorter remainder, never a longer one.
