@@ -607,6 +607,18 @@ RM_onRequestState(2, '{"haveTrack":true}')
 check(appliedLayouts[2] == nil,
   'a client that says it has a track is not sent one (a UI reload would replace it)')
 check(targetedState(2) ~= nil, 'but still gets the state')
+-- The usual request is empty. On BeamMP Util.JsonDecode('') does not throw, it
+-- writes a LUA ERROR to the server console, so it must never be called on one.
+local emptyDecodes, realDecode = 0, Util.JsonDecode
+Util.JsonDecode = function (s)
+  if s == '' then emptyDecodes = emptyDecodes + 1 end
+  return realDecode(s)
+end
+appliedLayouts = {}
+RM_onRequestState(2, '')
+Util.JsonDecode = realDecode
+check(emptyDecodes == 0, 'an empty state request is not handed to JsonDecode')
+check(appliedLayouts[2] ~= nil, 'and still gets the track')
 appliedLayouts = {}
 RM_onRequestState(2)
 check(appliedLayouts[2] ~= nil and appliedLayouts[2].width == 30,

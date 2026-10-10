@@ -4184,10 +4184,14 @@ function RM_onRequestState(pid, rawData)
   -- ...and the track, so a late arrival gets the gates. Not to a client that
   -- has one: a UI reload asks again, and the public track would replace its
   -- practice or private editor track.
-  local ok, data = pcall(Util.JsonDecode, rawData or '')
-  if not (ok and type(data) == 'table' and data.haveTrack == true) then
-    race.sendLayoutTo(pid)
+  -- Empty is the usual case: Util.JsonDecode('') does not throw, it logs a
+  -- LUA ERROR, so it is never called on one.
+  local haveTrack = false
+  if type(rawData) == 'string' and rawData ~= '' then
+    local ok, data = pcall(Util.JsonDecode, rawData)
+    haveTrack = ok and type(data) == 'table' and data.haveTrack == true
   end
+  if not haveTrack then race.sendLayoutTo(pid) end
   -- ...and the Garage List (not on the state push).
   if race.garagePush then race.garagePush(pid) end
 end

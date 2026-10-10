@@ -42,6 +42,12 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   same track re-sent is now left alone, and the server no longer sends the track
   to a client that already has one, so a UI reload cannot swap a practice track
   for the public one either.
+- **No red "deprecated" popup when joining.** The mod's startup script called
+  `queueExtensionToLoad`, which BeamMP replaces with a version that shows every
+  joining player a red error toast. It now calls only `setExtensionUnloadMode`,
+  which is all that ever loaded the mod.
+- **No `LUA ERROR` in the server console when a player joins.** The state
+  request is usually empty, and the server tried to decode it as JSON.
 
 ## 0.19.0 - Props
 
