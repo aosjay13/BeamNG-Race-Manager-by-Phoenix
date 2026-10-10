@@ -110,6 +110,8 @@ local TUNE = {
   RESET_FACE_NEAR = 8,
   -- Meters off a mapped road's edge that still counts as being on it.
   RESET_ROAD_MARGIN = 3,
+  -- Meters along the road route to the next gate that a reset car is aimed at.
+  RESET_PATH_AHEAD = 15,
   PROGRESS_EVERY = 0.3,   -- seconds between live-position reports
   -- Meters before the S/F line the white flag shows: waved on the approach. Not
   -- off the progress report, which is 12 m between samples at 90 mph.
@@ -251,6 +253,8 @@ local session = {
 -- THE TRACK, AS ONE OBJECT. Its fields are rebound when a layout loads
 -- (route = cps); `track` never is, so anything handed it sees every change.
 local track = {
+  -- The RM_ApplyLayout payload last applied, so an identical re-send is a no-op.
+  appliedRaw = nil,
   -- Checkpoints: ordered { x, y, z, hx, hy }, where (hx, hy) is the normalized
   -- direction of travel captured at placement. The LAST one is the start/finish
   -- line. A gate may carry its own width/height/depth; absent, it inherits the
@@ -1316,6 +1320,7 @@ end
 -- Purge every route table and reset lap tracking. Gates are redrawn from the
 -- tables every frame, so emptying them removes them from the world.
 local function clearTrackState(reason)
+  track.appliedRaw   = nil
   track.route        = {}
   track.jokerRoute   = {}
   -- The pit lane too, or it rides into the next track and the next save.
@@ -3512,6 +3517,8 @@ function pit.setGhost(on)
   if on then
     if pit.ghostVeh then return end
     if not ghost.rules.onReset then return end   -- server has ghosting off
+    -- The server ignores a ghost outside a session: it would be ours alone.
+    if not sessionRunning() then return end
     local veh = ownVehicle()
     local vehId = veh and vehicleId(veh) or nil
     if not vehId then return end
@@ -3563,13 +3570,19 @@ function pit.release(reason)
   log('I', 'raceManager', 'Pit stop ended (' .. tostring(reason or 'complete') .. ')')
 end
 
+-- Stalls work in a session and in practice. Practice is local: no ghost, no report.
+function pit.live()
+  if session.spectatorLock then return false end
+  return sessionRunning() or practice.on
+end
+
 -- The pit stop: hold, repair in place, hand back. Never a respawn anchor.
 function pit.update(dt)
   if pit.cooldown > 0 then pit.cooldown = pit.cooldown - dt end
 
-  -- A stop cannot outlive its session.
-  if pit.active and not (sessionRunning() and not session.spectatorLock) then
-    pit.release('session ended')
+  -- A stop cannot outlive its session or its practice.
+  if pit.active and not pit.live() then
+    pit.release('session or practice ended')
     return
   end
 
@@ -3600,7 +3613,7 @@ function pit.update(dt)
   if pit.promptLeft > 0 then pit.promptLeft = pit.promptLeft - dt end
 
   if #track.pitRoute == 0 then return end
-  if not sessionRunning() or session.spectatorLock or session.gridFrozen then return end
+  if not pit.live() or session.gridFrozen then return end
   local veh, pos = sampledVehicle()
   if not veh or not pos then return end
 
@@ -3691,7 +3704,7 @@ function pit.update(dt)
   pushRouteState()
   log('I', 'raceManager', string.format(
     'Pit stop %d started in stall %d', pit.stops, inStall))
-  if inMultiplayer() then
+  if inMultiplayer() and sessionRunning() then
     TriggerServerEvent('RM_PitStop', jsonEncode({ stall = inStall }))
   end
 end
@@ -3820,11 +3833,82 @@ local function relocateToGate(wp)
   return ok
 end
 
--- The way the course runs at `pos`, as a unit (x, y), or nil with no route.
---
--- Signed by the gate this car is armed for, so a head-on layout answers each
--- direction for itself. Refined by BeamNG's road graph where the car is on a
--- mapped road: a straight line to a gate cuts across a bend, the road does not.
+-- Toward the gate along BeamNG's road route, as a unit (x, y), or nil: no road
+-- graph, off the road, or no route. A straight line to a gate past a hairpin
+-- points backwards; the route goes round it.
+function snapshot.pathDir(pos, wp)
+  if not (map and type(map.getPointToPointPath) == 'function' and type(map.getMap) == 'function') then
+    return nil
+  end
+  local dx, dy
+  pcall(function ()
+    local nodes = map.getMap().nodes
+    if type(map.findClosestRoad) == 'function' then
+      local n1, n2, dist = map.findClosestRoad(vec3(pos.x, pos.y, pos.z), 20)
+      local a, b = n1 and nodes[n1], n2 and nodes[n2]
+      if not (a and b and dist) then return end
+      if dist > math.max(a.radius or 0, b.radius or 0) + TUNE.RESET_ROAD_MARGIN then return end
+    end
+    local path = map.getPointToPointPath(vec3(pos.x, pos.y, pos.z), vec3(wp.x, wp.y, wp.z))
+    if type(path) ~= 'table' or #path < 2 then return end
+    -- The node nearest the car among the first few, then the first one past it
+    -- far enough to aim at. path[1] can be behind the car.
+    local near, nearD = 1, math.huge
+    for i = 1, math.min(#path, 4) do
+      local n = nodes[path[i]]
+      if n then
+        local ex, ey = n.pos.x - pos.x, n.pos.y - pos.y
+        local e = ex * ex + ey * ey
+        if e < nearD then near, nearD = i, e end
+      end
+    end
+    local ahead = TUNE.RESET_PATH_AHEAD * TUNE.RESET_PATH_AHEAD
+    for i = near + 1, #path do
+      local n = nodes[path[i]]
+      if n then
+        local ex, ey = n.pos.x - pos.x, n.pos.y - pos.y
+        if ex * ex + ey * ey >= ahead then dx, dy = ex, ey; break end
+      end
+    end
+  end)
+  if not dx then return nil end
+  local d = math.sqrt(dx * dx + dy * dy)
+  if d < 1e-6 then return nil end
+  return dx / d, dy / d
+end
+
+-- KEPT, OFF: the 0.18.5 aim, the road under the car signed by the straight line
+-- to the gate (cx, cy). Called from nowhere: on a hairpin the sign flips it
+-- backwards. courseDir would call it in place of pathDir if a build loses
+-- map.getPointToPointPath but keeps findClosestRoad.
+function snapshot.roadTangentDir(pos, cx, cy)
+  if not (map and type(map.findClosestRoad) == 'function' and type(map.getMap) == 'function') then
+    return nil
+  end
+  local tx, ty
+  pcall(function ()
+    local n1, n2, dist = map.findClosestRoad(vec3(pos.x, pos.y, pos.z), 20)
+    if not n1 or not n2 or not dist then return end
+    local nodes = map.getMap().nodes
+    local a, b = nodes[n1], nodes[n2]
+    if not a or not b then return end
+    if dist > math.max(a.radius or 0, b.radius or 0) + TUNE.RESET_ROAD_MARGIN then return end
+    local x, y = b.pos.x - a.pos.x, b.pos.y - a.pos.y
+    local l = math.sqrt(x * x + y * y)
+    if l < 1e-6 then return end
+    x, y = x / l, y / l
+    local dot = x * cx + y * cy
+    if math.abs(dot) < 0.5 then return end
+    if dot < 0 then x, y = -x, -y end
+    tx, ty = x, y
+  end)
+  return tx, ty
+end
+
+-- The way to the checkpoint this car must clear next, as a unit (x, y), or nil
+-- with no route. Wherever the car is, it points at THAT gate: along the road
+-- route where the map has one, else straight at it. Never a road direction
+-- flipped to match, which turned cars round on a hairpin.
 -- A table field rather than a local: see the locals ceiling note on `block`.
 function snapshot.courseDir(pos)
   if #track.route == 0 then return nil end
@@ -3838,40 +3922,22 @@ function snapshot.courseDir(pos)
     local from = lastGate ~= wp and lastGate or nil
     if from and cx * (wp.x - from.x) + cy * (wp.y - from.y) < 0 then cx, cy = -cx, -cy end
     d = math.sqrt(cx * cx + cy * cy)
+    if d < 1e-6 then return nil end
+    return cx / d, cy / d
   end
-  if d < 1e-6 then return nil end
-  cx, cy = cx / d, cy / d
-
-  if map and type(map.findClosestRoad) == 'function' and type(map.getMap) == 'function' then
-    pcall(function ()
-      local n1, n2, dist = map.findClosestRoad(vec3(pos.x, pos.y, pos.z), 20)
-      if not n1 or not n2 or not dist then return end
-      local nodes = map.getMap().nodes
-      local a, b = nodes[n1], nodes[n2]
-      if not a or not b then return end
-      if dist > math.max(a.radius or 0, b.radius or 0) + TUNE.RESET_ROAD_MARGIN then return end
-      local tx, ty = b.pos.x - a.pos.x, b.pos.y - a.pos.y
-      local tl = math.sqrt(tx * tx + ty * ty)
-      if tl < 1e-6 then return end
-      tx, ty = tx / tl, ty / tl
-      local dot = tx * cx + ty * cy
-      -- A road at right angles to the course is a side street or the far leg
-      -- of a hairpin, not the one being raced on.
-      if math.abs(dot) < 0.5 then return end
-      if dot < 0 then tx, ty = -tx, -ty end
-      cx, cy = tx, ty
-    end)
-  end
-  return cx, cy
+  local px, py = snapshot.pathDir(pos, wp)
+  if px then return px, py end
+  return cx / d, cy / d
 end
 
 -- Turn the car where it stands to face the course, after an in-place reset.
--- Left alone inside TUNE.RESET_FACE_TOLERANCE. Position is untouched.
-function snapshot.faceCourse(veh)
+-- Left alone inside TUNE.RESET_FACE_TOLERANCE. Position is untouched. `at` is
+-- where a teleport this frame just put it, which getPosition may not show yet.
+function snapshot.faceCourse(veh, at)
   if not veh then return false end
   local pos, fwd, up
   pcall(function ()
-    pos = veh:getPosition()
+    pos = at or veh:getPosition()
     fwd = veh:getDirectionVector()
   end)
   if not pos or not fwd then return false end
@@ -4011,7 +4077,7 @@ function M.onVehicleResetted(vehId)
     -- caches the pre-teleport position this frame), and on ownVehicle().
     local was = session.prevPos
     local veh = ownVehicle()
-    local pos = nil
+    local pos, undone = nil, nil
     if veh then pcall(function () pos = veh:getPosition() end) end
     if pos and was then
       local dx, dy, dz = pos.x - was.x, pos.y - was.y, pos.z - was.z
@@ -4021,12 +4087,16 @@ function M.onVehicleResetted(vehId)
           local rot = veh:getRotation()
           veh:setPositionRotation(was.x, was.y, was.z, rot.x, rot.y, rot.z, rot.w)
         end)
+        undone = vec3(was.x, was.y, was.z)
         pushNotice('reset', 'Recovered in place: a race reset does not move you off the track')
         log('I', 'raceManager', 'Undid a recovery teleport during a session')
       end
     end
     -- And facing the course: both keys keep a heading that can be backwards.
-    snapshot.faceCourse(veh)
+    snapshot.faceCourse(veh, undone)
+  elseif practice.on and not session.gridFrozen then
+    -- Practice resets are free and may go anywhere; they still face the next gate.
+    snapshot.faceCourse(ownVehicle())
   end
 
   -- EVERY legal reset makes the new position the good one, unlimited resets
@@ -7715,6 +7785,13 @@ local function onApplyLayout(rawData)
     log('E', 'raceManager', 'RM_ApplyLayout: undecodable payload: ' .. tostring(rawData):sub(1, 120))
     return
   end
+  -- THE SAME TRACK AGAIN IS A NO-OP. Re-applying resets lap tracking, and a UI
+  -- reload (radial menu, HUD Apps) re-requests state: mid-race that sent the
+  -- driver back to checkpoint 1 and lost the lap.
+  if rawData == track.appliedRaw and #track.route > 0 and edit.fingerprint() == edit.stamp then
+    log('I', 'raceManager', 'Layout "' .. tostring(data.name) .. '" re-sent unchanged: kept as is')
+    return
+  end
   local function unbundle(src, what)
     local out = {}
     for i, cp in ipairs(src) do
@@ -7849,6 +7926,7 @@ local function onApplyLayout(rawData)
   track.pointToPoint     = data.pointToPoint == true
   track.dragStrip        = track.pointToPoint and data.drag == true
   resetLapTracking()
+  track.appliedRaw = rawData
   -- The baseline for drift, stamped AFTER the whole apply.
   edit.stamp   = edit.fingerprint()
   edit.refused = nil
@@ -8429,7 +8507,10 @@ end
 function M.requestState()
   pushRouteState()
   if inMultiplayer() then
-    TriggerServerEvent('RM_RequestState', '')
+    -- haveTrack: the server keeps the track to itself, or a UI reload would swap
+    -- a practice or private editor track for the public one.
+    TriggerServerEvent('RM_RequestState',
+      #track.route > 0 and jsonEncode({ haveTrack = true }) or '')
     TriggerServerEvent('RM_RequestLayouts', '')
     TriggerServerEvent('RM_CupRequestState', '')
   else

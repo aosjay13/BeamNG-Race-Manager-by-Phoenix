@@ -1109,8 +1109,8 @@ function RM_onDerbyFormUp(pid)
     end
   end
   MP.SendChatMessage(-1, called
-    and string.format('[RaceManager] Demo derby forming up: press Ready in the '
-      .. 'Race Manager panel to take your slot (%d driver%s).', count, count == 1 and '' or 's')
+    and string.format('[RaceManager] Demo derby forming up: press Ready in '
+      .. 'PRM - Main to take your slot (%d driver%s).', count, count == 1 and '' or 's')
     or string.format('[RaceManager] Demo derby forming up: %d driver%s held for the start.',
       count, count == 1 and '' or 's'))
   print('[RaceManager] Derby formed up by ' .. (MP.GetPlayerName(pid) or pid)

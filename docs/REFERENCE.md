@@ -330,6 +330,8 @@ still rolling the panel says *"come to a stop inside the box"*; the moment you
 stop, the stop begins: the car is **held for 5 seconds, repaired in place, and
 released**. The repair lands part-way through, so the car is whole before the
 driver gets it back, and the same stall will not trigger again for 8 seconds.
+Stalls work the same in [free practice](#free-practice), where the stop is
+yours alone: it is not reported and adds no ghost.
 
 Run through a stall without stopping and you simply **miss it**. Nothing is
 seized, nothing is spent - no cooldown is started, so the stall is live again on
@@ -981,8 +983,13 @@ while racing:
 
 | Mode | Behavior |
 |------|-----------|
-| **In place** | BeamNG's normal repair-where-you-stand (the default) |
+| **In place** | BeamNG's normal repair-where-you-stand (the default), turned to face the checkpoint you need next |
 | **Last checkpoint** | The car is respawned at the last checkpoint it crossed, facing the direction of travel |
+
+**In place faces the next checkpoint, wherever you reset.** A car more than 45
+degrees off is turned where it stands. On a map with a road graph it faces along
+the road route to that gate, so a reset before a hairpin faces on round the
+road; off the road it points straight at the gate. Practice resets do the same.
 
 Last-checkpoint mode applies whether or not resets are limited; before the
 first checkpoint of a session it falls back to in-place. Like every
@@ -2718,6 +2725,8 @@ reported or saved: your laps are listed in the panel, the best in gold.
 - **A session starting ends practice**: a grid forming or a derby forming up,
   with a notice. Practice laps are never reported, so laps driven in practice
   mode would not count.
+- **Pit stalls work in practice**: stop in one and the car is held, repaired
+  and released, as in a race.
 - **End Practice** stops timing. The track stays drawn.
 
 ## PRM - Race Lights

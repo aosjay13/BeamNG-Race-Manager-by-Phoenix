@@ -540,5 +540,37 @@ racing()
 RM.setPitStallSize(1, 4, 5)
 check(stall(1).width == 6 and stall(1).length == 8, 'a stall cannot be resized mid-session')
 
+-- ===========================================================================
+-- Practice: a stall works, locally
+-- ===========================================================================
+-- Practice is not a session, and the stall check asked for one: a driver could
+-- stop in the box and nothing happened. Stall 1 is the loaded layout's, at (-50, 100).
+serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+frames(0.3)
+handlers['RM_Practice']({ on = true, layout = 'oval' })
+clearLog()
+veh.speed = 0
+veh.x, veh.y = 0, 0
+frames(9.0)                          -- out of the stall long enough to re-arm
+local practiceRepairs = repairs
+veh.x, veh.y = -50, 100
+frames(0.3)
+check(frozen == true, 'in practice, stopping in a stall holds the car')
+check(repairs == practiceRepairs + 1, 'and repairs it')
+check(lastRoute().pitActive == true, 'and the driver is told they are in the pits')
+check(countSent('RM_PitStop') == 0, 'practice reports no stop to the server')
+check(countSent('RM_GhostStart') == 0, 'and asks for no ghost the server would ignore')
+frames(TUNE_PIT_HOLD + 0.5)
+check(frozen == false, 'the practice stop ends and lets the car go')
+
+veh.x, veh.y = 0, 0
+frames(9.0)
+veh.x, veh.y = -50, 100
+frames(0.3)
+check(frozen == true, 'a second practice stop starts')
+handlers['RM_Practice']({ on = false })
+frames(0.3)
+check(frozen == false, 'ending practice releases a car held in a stall')
+
 print(string.format('pit_test: %d checks, %d failures', checks, fails))
 if fails > 0 then os.exit(1) end

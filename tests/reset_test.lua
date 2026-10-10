@@ -518,25 +518,93 @@ driverPressedReset(0, 101, 0)
 resetHook()
 check(#teleports == 0, 'a car already facing the course is left alone')
 
--- On a mapped road the road's own direction wins over the line to the gate.
-map = {
-  findClosestRoad = function () return 'a', 'b', 1 end,
-  getMap = function ()
-    return { nodes = {
-      a = { pos = { x = -10, y = 90 },  radius = 5 },
-      b = { pos = { x = 10,  y = 110 }, radius = 5 },
-    } }
-  end,
-}
+-- headingRot's quaternion for a unit heading, to compare a turn against.
+local function facing(t, hx, hy)
+  local half = (math.atan2(hx, hy) + math.pi) * 0.5
+  return t and math.abs(t.qz - math.sin(half)) < 1e-6 and math.abs(t.qw - math.cos(half)) < 1e-6
+end
+-- A road graph: `path` is what getPointToPointPath answers, `dist` how far the
+-- car is from the road.
+local function roadMap(nodes, path, dist)
+  map = {
+    findClosestRoad = function () return path[1], path[2], dist or 1 end,
+    getMap = function () return { nodes = nodes } end,
+    getPointToPointPath = function () return path end,
+  }
+end
+
+-- On a mapped road the car is aimed along the road route, not the straight line.
+roadMap({
+  n1 = { pos = { x = 0,  y = 95 },  radius = 5 },
+  n2 = { pos = { x = 0,  y = 105 }, radius = 5 },
+  n3 = { pos = { x = 15, y = 115 }, radius = 5 },
+}, { 'n1', 'n2', 'n3' })
 inPlaceTrack()
+frames(0.5)                          -- past the last case's echo window
 veh.hx, veh.hy = 0, -1
 driverPressedReset(0, 101, 0)
 resetHook()
-local half = (math.pi / 4 + math.pi) / 2
-check(#teleports == 1 and math.abs(teleports[1].qz - math.sin(half)) < 1e-6
-  and math.abs(teleports[1].qw - math.cos(half)) < 1e-6,
-  'on a mapped road the car faces along the road, signed by the course')
+local d = math.sqrt(15 * 15 + 14 * 14)
+check(#teleports == 1 and facing(teleports[1], 15 / d, 14 / d),
+  'on a mapped road the car faces along the route to the gate')
+
+-- THE HAIRPIN: the gate is behind the car as the crow flies, the road goes on
+-- round. The old aim signed the road by the straight line and turned it back.
+serverState({ phase = 'waiting', maxResets = -1, resetMode = 'inplace',
+  totalLaps = 3, drivers = {} })
+RM.setFinishLine(0, 60, 0, 0, -1)    -- on the return leg, facing back down
+serverState({ phase = 'racing', maxResets = -1, resetMode = 'inplace',
+  totalLaps = 3, drivers = {} })
+veh.x, veh.y, veh.z = 0, 100, 0
+frames(1.1)                          -- past the last case's echo window
+clearLog()
+roadMap({
+  n1 = { pos = { x = 0,  y = 100 }, radius = 5 },
+  n2 = { pos = { x = 0,  y = 120 }, radius = 5 },
+  n3 = { pos = { x = 20, y = 130 }, radius = 5 },
+  n4 = { pos = { x = 20, y = 60 },  radius = 5 },
+}, { 'n1', 'n2', 'n3', 'n4' })
+veh.hx, veh.hy = 0, -1               -- pointing straight at the gate, the wrong way
+driverPressedReset(0, 101, 0)
+resetHook()
+check(#teleports == 1 and facing(teleports[1], 0, 1),
+  'before a hairpin the car faces on round the road, not straight back at the gate')
+
+-- Off the road: straight at the gate, whatever the graph says.
+roadMap({
+  n1 = { pos = { x = 0,  y = 100 }, radius = 5 },
+  n2 = { pos = { x = 30, y = 100 }, radius = 5 },
+}, { 'n1', 'n2' }, 50)
+inPlaceTrack()
+frames(0.5)                          -- past the last case's echo window
+veh.hx, veh.hy = 0, -1
+driverPressedReset(0, 101, 0)
+resetHook()
+check(#teleports == 1 and facing(teleports[1], 0, 1), 'off the road the car faces straight at the gate')
+
+-- A graph with no route: straight at the gate.
+roadMap({ n1 = { pos = { x = 0, y = 100 }, radius = 5 } }, {})
+inPlaceTrack()
+frames(0.5)                          -- past the last case's echo window
+veh.hx, veh.hy = 0, -1
+driverPressedReset(0, 101, 0)
+resetHook()
+check(#teleports == 1 and facing(teleports[1], 0, 1), 'no road route: straight at the gate')
 map = nil
+
+-- PRACTICE: not a session, and the turn used to ask for one.
+serverState({ phase = 'waiting', maxResets = -1, resetMode = 'inplace',
+  totalLaps = 3, drivers = {} })
+RM.setFinishLine(0, 500, 0, 0, 1)
+handlers['RM_Practice']({ on = true, layout = 'oval' })
+veh.x, veh.y, veh.z = 0, 100, 0
+frames(1.1)                          -- past the last case's echo window
+clearLog()
+veh.hx, veh.hy = 0, -1
+driverPressedReset(0, 101, 0)
+resetHook()
+check(#teleports == 1 and facing(teleports[1], 0, 1), 'a practice reset faces the next gate too')
+handlers['RM_Practice']({ on = false })
 veh.hx, veh.hy = 0, 1
 
 -- ===========================================================================

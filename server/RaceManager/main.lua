@@ -4179,10 +4179,15 @@ function RM_onClearResults(pid)
 end
 
 -- A client asks for state (the app opened, or it just joined).
-function RM_onRequestState(pid)
+function RM_onRequestState(pid, rawData)
   broadcastState(pid)
-  -- ...and the track, so a late arrival gets the gates...
-  race.sendLayoutTo(pid)
+  -- ...and the track, so a late arrival gets the gates. Not to a client that
+  -- has one: a UI reload asks again, and the public track would replace its
+  -- practice or private editor track.
+  local ok, data = pcall(Util.JsonDecode, rawData or '')
+  if not (ok and type(data) == 'table' and data.haveTrack == true) then
+    race.sendLayoutTo(pid)
+  end
   -- ...and the Garage List (not on the state push).
   if race.garagePush then race.garagePush(pid) end
 end

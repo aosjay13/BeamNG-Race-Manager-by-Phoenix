@@ -17,6 +17,9 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   README for the default admin password, the same on every server, so no racer
   can tell whether yours still uses it. Dismiss is always on screen; *Don't show
   this again* is remembered.
+- **Pit stalls work in practice.** Stop in a stall while practising and the car
+  is held, repaired and released as in a race. Practice is local, so the stop is
+  not reported and adds no ghost.
 
 #### Changed
 
@@ -25,6 +28,20 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   Each description says whether the app is required or optional. Search *PRM*
   in HUD Apps to find all three. The game keeps apps you already placed, so
   nobody has to re-add them.
+- **A reset faces the checkpoint you need next, wherever you are.** It follows
+  BeamNG's road route to that gate where the map has one, so a reset before a
+  hairpin faces on round the road; off the road it points straight at the gate.
+  Practice resets do this too.
+
+#### Fixed
+
+- **Opening a menu mid-race no longer loses your lap.** Closing the radial menu
+  or opening HUD Apps reloads the UI, which asked the server for the track
+  again, and re-applying it put the driver back on checkpoint 1: no lap counted
+  until they came round, and a reset faced checkpoint 1, often backwards. The
+  same track re-sent is now left alone, and the server no longer sends the track
+  to a client that already has one, so a UI reload cannot swap a practice track
+  for the public one either.
 
 ## 0.19.0 - Props
 
