@@ -10,6 +10,9 @@
 -- whether or not the Lights app is on screen.
 
 local D = { soundOn = true }
+-- KEPT, OFF: GET READY used to beep, the countdown's own beep, and drivers
+-- went on it. true brings it back.
+D.READY_BEEP = false
 local host
 
 -- What was last pushed, the countdown number showing (3..1), and the drag
@@ -32,7 +35,7 @@ local HOLD = { go = 3, green = 4, white = 4, checkered = 6, blue = 4 }
 -- The standing lights a race is HELD under. Leaving one for plain racing is the
 -- green flag, whichever way it happened: pace lap, restart, red lifted.
 local HELD = {
-  pace = true, ready = true, restart = true, caution = true,
+  pace = true, ready = true, readyRestart = true, restart = true, caution = true,
   cautionBack = true, yellow = true, red = true,
 }
 
@@ -53,6 +56,8 @@ end
 
 -- The standing light. ORDER IS PRIORITY: red stops everything, a countdown
 -- beats the flags, and GET READY beats the caution or pace lap it is ending.
+-- GET READY is two lights, one per yellow it ends, so the app can keep that
+-- yellow's lamps and change only the words: nothing moves before the green.
 local function standing()
   local s = host.session
   if treeLit then return 'tree' end
@@ -61,7 +66,8 @@ local function standing()
   if not running() then
     return (s.phase == 'grid' or s.phase == 'countdown') and 'grid' or 'off'
   end
-  if s.greenReady and (s.pacing or s.restartPending) then return 'ready' end
+  if s.greenReady and s.pacing then return 'ready' end
+  if s.greenReady and s.restartPending then return 'readyRestart' end
   if s.restartPending then return 'restart' end
   if s.cautionPending then return 'cautionBack' end
   if s.caution then return 'caution' end
@@ -84,7 +90,7 @@ local function settle(moment)
   if light == was and not moment then return end
   lightShown = light
   if light ~= was then
-    if light == 'ready' then
+    if (light == 'ready' or light == 'readyRestart') and D.READY_BEEP then
       play('beep')
     elseif light == 'red' then
       play('stop')

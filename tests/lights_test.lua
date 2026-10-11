@@ -152,7 +152,8 @@ serverState({ phase = 'racing', flag = 'yellow', paceLap = true, pacing = true }
 reset()
 serverState({ phase = 'racing', flag = 'yellow', paceLap = true, pacing = true, greenReady = true })
 check(lastLight() and lastLight().light == 'ready', 'GET READY is its own light')
-check(lastSound() == 'event:UI_Countdown1', 'and it beeps: eyes stay on the road')
+-- SILENT: it used to beep the countdown's beep, and drivers went on it.
+check(#sounds == 0, 'and it makes no sound: the start tone belongs to the green')
 
 reset()
 serverState({ phase = 'racing', flag = 'green', paceLap = true })
@@ -174,7 +175,9 @@ check(lastLight() and lastLight().light == 'restart', 'then the restart this lap
 reset()
 serverState({ phase = 'racing', flag = 'yellow', caution = true, restartPending = true,
   greenReady = true })
-check(lastLight() and lastLight().light == 'ready', 'GET READY on the run in beats the caution')
+check(lastLight() and lastLight().light == 'readyRestart',
+  'GET READY on the run in beats the caution, keeping the restart lamps')
+check(#sounds == 0, 'and is silent here too')
 reset()
 serverState({ phase = 'racing', flag = 'green' })
 check(lastLight() and lastLight().moment == 'green', 'and the restart is a green flag')

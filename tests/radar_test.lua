@@ -3,7 +3,7 @@
 -- The Radar app draws the cars around this driver's own car and is told them on
 -- RaceManagerRadar. What is pinned here: alone, nothing is sent; with a car in
 -- range, each car arrives in OUR car's frame with its outline-to-outline gap;
--- the last car leaving sends one empty push and then silence; and the race
+-- the last car leaving sends empty pushes for a while and then silence; and the race
 -- information (position, a lap up or down) appears only in a race.
 --
 -- Run from the repo root: lua5.3 tests/radar_test.lua
@@ -25,7 +25,8 @@ local function car(id, x, y, hx, hy, opts)
   opts = opts or {}
   local v = { id = id, x = x, y = y, z = 0, hx = hx or 0, hy = hy or 1,
               len = opts.len or 4.5, wid = opts.wid or 1.9,
-              model = opts.model or 'etk800', hidden = opts.hidden }
+              model = opts.model or 'etk800', hidden = opts.hidden,
+              inactive = opts.inactive }
   function v:getID() return self.id end
   function v:getPosition() return { x = self.x, y = self.y, z = self.z } end
   function v:getRotation() return { x = 0, y = 0, z = 0, w = 1 } end
@@ -37,6 +38,7 @@ local function car(id, x, y, hx, hy, opts)
   function v:getInitialWidth() return self.wid end
   function v:getInitialHeight() return 1.4 end
   function v:isHidden() return self.hidden == true end
+  function v:getActive() return self.inactive ~= true end
   function v:setPositionRotation(px, py, pz) self.x, self.y, self.z = px, py, pz end
   function v:queueLuaCommand() end
   function v:setMeshAlpha() end
@@ -150,13 +152,21 @@ check(c and near(c.a, -90), 'and facing north it points to our left, -90 degrees
 me.hx, me.hy = 0, 1
 
 -- ---------------------------------------------------------------------------
--- The last car leaving: one empty push, then silence
+-- The last car leaving: the all-clear, repeated, then silence
 -- ---------------------------------------------------------------------------
+-- Sent once, a single lost push left the last car drawn for good.
+local function allEmpty()
+  for _, p in ipairs(pushes()) do if #p.cars > 0 then return false end end
+  return #pushes() > 0
+end
 other.x, other.y = 0, 40
 reset()
 frames(10)
-check(#pushes() == 1 and #last().cars == 0, 'the last car leaving sends one empty push (got '
-  .. #pushes() .. ')')
+check(allEmpty(), 'the last car leaving sends an empty push')
+frames(40)
+check(allEmpty() and #pushes() >= 4,
+  'and repeats it for a while, so one lost push cannot freeze the picture (got '
+    .. #pushes() .. ')')
 reset()
 frames(40)
 check(#pushes() == 0, 'and then nothing')
@@ -170,13 +180,15 @@ check(carIn(last()) ~= nil, 'a car just past 25 m is sent so the app can fade it
 -- What is not a car
 -- ---------------------------------------------------------------------------
 other.x, other.y = 0, 40
-frames(10)                      -- the all-clear push for the car that left
+frames(50)                      -- the all-clear for the car that left
 local walker = car(9, 2, 2, 0, 1, { model = 'unicycle' })
 local hiddenCar = car(10, -2, 2, 0, 1, { hidden = true })
+-- Pooled by the game: invisible, and left wherever it was parked.
+local pooled = car(11, 2, -2, 0, 1, { inactive = true })
 reset()
 frames(20)
-check(#pushes() == 0, 'a walking character and a hidden car are not on the radar')
-remove(walker); remove(hiddenCar)
+check(#pushes() == 0, 'a walking character, a hidden car and a pooled car are not on the radar')
+remove(walker); remove(hiddenCar); remove(pooled)
 
 -- ---------------------------------------------------------------------------
 -- A ghost is marked
@@ -240,8 +252,7 @@ handlers['RM_Update']({ rmProtocol = 2, phase = 'racing', sessionKind = 'race', 
 handlers['RM_ForceSpectate']({ reason = 'test', source = 'race' })
 reset()
 frames(20)
-check(#pushes() <= 1 and (#pushes() == 0 or #last().cars == 0),
-  'a driver put out to spectate gets an empty radar')
+check(#pushes() == 0 or allEmpty(), 'a driver put out to spectate gets an empty radar')
 handlers['RM_ReleaseSpectate']({ source = 'race' })
 
 -- ---------------------------------------------------------------------------

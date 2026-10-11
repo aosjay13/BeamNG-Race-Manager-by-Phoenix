@@ -13,12 +13,13 @@
 --                lap. Completing THAT lap ends a driver's race -- not their
 --                next crossing, which is qualifying's rule and would flag off a
 --                car two seconds behind the leader a full lap early.
---   finalLap     the winner is home. NOW every crossing is terminal, which is
---                what classifies the cars that are a lap or more down.
+--   flagOut      the winner is home. Nobody else is flagged off by it: a
+--                lapped car races on to the distance, and the finish countdown
+--                closes the race, classifying whoever is still out on laps.
 --
 -- WHAT THIS FILE IS REALLY GUARDING is the middle one. Collapsing it into
--- `finalLap` is the obvious implementation, it passes any test with one car in
--- it, and it robs second place of a lap.
+-- "every crossing is terminal" is the obvious implementation, it passes any
+-- test with one car in it, and it robs second place of a lap.
 --
 -- Run from the repo root: lua5.3 tests/timed_race_test.lua
 
@@ -203,24 +204,34 @@ check(driver(2).currentLap == 4, 'and is on the final lap too')
 -- ---------------------------------------------------------------------------
 lap(1)
 check(driver(1).status == 'finished', 'the leader completes the final lap and is classified')
-check(lastState.finalLap == true, 'which puts the checkered flag out')
+check(lastState.flagOut == true, 'which puts the checkered flag out')
 check(chatHas('CHECKERED FLAG'), 'and announces the winner')
+check(lastState.finalLap ~= true, 'but flags nobody else off at their next crossing')
+check(lastState.closeLeft ~= nil and lastState.closeLeft > 59,
+  'the first car home starts the finish countdown (got ' .. tostring(lastState.closeLeft) .. ')')
+
+-- THE LAPPED CAR CROSSES BEFORE SECOND PLACE DOES, and is a lap down. Before,
+-- that crossing was terminal and it was classified ahead of second place.
+check(driver(3).currentLap < 4, 'the lapped car never reached the final lap number')
+lap(3)
+check(driver(3).status == 'racing', 'a lapped car races on after the flag')
+check(driver(2).position < driver(3).position,
+  'and it never outranks a car that has completed more laps')
 
 lap(2)
 check(driver(2).status == 'finished', 'second place finishes on the same lap')
+check(driver(2).position == 2 and driver(3).position == 3,
+  'the classification is by laps completed, not by the order the line was crossed')
 
--- A LAPPED CAR IS CLASSIFIED WHERE IT GOT TO. It is on lap 3 and will never
--- reach lap 4; with the flag out its next crossing is its last, which is what
--- the real checkered flag does to a car a lap down.
-check(driver(3).currentLap < 4, 'the lapped car never reached the final lap number')
-lap(3)
-check(driver(3).status == 'finished',
-  'and is classified on its next crossing once the flag is out')
+-- THE COUNTDOWN RUNS OUT before the lapped car completes the distance: it is
+-- classified on the laps it completed, not retired.
+seconds(61)
+check(lastState.phase ~= 'racing', 'the countdown closes the race')
+check(driver(3).status == 'finished', 'the lapped car is classified where it stood')
 
 -- THE RESULTS SAY HOW FAR A TIMED RACE WENT. The lap box said 25 and is inert,
 -- so the header names the clock and the laps the winner ran, and every row
 -- carries its own count: the lapped car ran one fewer.
-seconds(6)                            -- past the end-of-race hold
 do
   local text = resultsText()
   check(text:find('Race distance: 10 min + 1 lap, 4 laps run', 1, true) ~= nil,
@@ -233,6 +244,7 @@ do
   check(lapsCell(text, 'Second') == 4, 'second place ran the same 4')
   check(lapsCell(text, 'Lapped') == 3, 'the lapped car ran 3 (got '
     .. tostring(lapsCell(text, 'Lapped')) .. ')')
+  check(text:find('Lapped[^\n]-%+1 lap') ~= nil, 'and its Race Time cell says +1 lap')
 end
 
 -- ---------------------------------------------------------------------------
@@ -253,8 +265,9 @@ check(driver(1).status == 'racing', 'one lap of two done')
 lap(1)
 check(driver(1).status == 'finished', 'and the lap count still ends the race')
 
--- LAPS BEFORE A DNF. Ending the session retires the two cars still out, and
--- each keeps the laps it completed: one for Second, none for Lapped.
+-- LAPS WHEN THE RACE IS CLOSED. A car is home, so End Race cuts the finish
+-- countdown short: the two cars still out are classified on the laps they
+-- completed, one for Second and none for Lapped.
 lap(2)
 RM_onEndRace(0)
 do
@@ -262,10 +275,70 @@ do
   check(text:find('Race distance: 2 laps | Drivers', 1, true) ~= nil,
     'a lap race run to distance does not repeat it as laps run')
   check(lapsCell(text, 'Leader') == 2, 'the finisher ran 2 laps')
-  check(lapsCell(text, 'Second') == 1, 'a DNF keeps the lap it completed (got '
+  check(lapsCell(text, 'Second') == 1, 'a car still out keeps the lap it completed (got '
     .. tostring(lapsCell(text, 'Second')) .. ')')
   check(lapsCell(text, 'Lapped') == 0, 'and one that completed none shows 0')
+  check(text:find('DNF', 1, true) == nil, 'and neither is a DNF: a car was home')
 end
+
+-- ---------------------------------------------------------------------------
+-- End Race before anybody is home is still an abandoned race
+-- ---------------------------------------------------------------------------
+RM_onSetRaceLimits(0, '{"laps":2,"seconds":0,"mode":"laps"}')
+RM_onGenerateGrid(0)
+RM_onStartCountdown(0)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+lap(1); lap(2)
+RM_onEndRace(0)
+check(driver(1).status == 'dnf' and driver(2).status == 'dnf',
+  'with nobody home, End Race retires the field as before')
+
+-- ---------------------------------------------------------------------------
+-- The finish countdown rule
+-- ---------------------------------------------------------------------------
+RM_onSetFinishRule(0, '{"after":2,"seconds":30}')
+check(lastState.finishAfter == 2 and lastState.finishTimer == 30, 'the rule can be set')
+RM_onSetFinishRule(3, '{"after":1,"seconds":5}')
+check(lastState.finishAfter == 2, 'but not without logging in')
+RM_onSetFinishRule(0, '{"after":0,"seconds":-5}')
+check(lastState.finishAfter == 1 and lastState.finishTimer == 0, 'and is clamped')
+RM_onSetFinishRule(0, '{"after":2,"seconds":30}')
+
+RM_onSetRaceLimits(0, '{"laps":2,"seconds":0,"mode":"laps"}')
+RM_onGenerateGrid(0)
+RM_onStartCountdown(0)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+RM_onSetFinishRule(0, '{"after":1,"seconds":5}')
+check(lastState.finishAfter == 2, 'the rule is locked while a race runs')
+lap(1); lap(2); lap(3)
+lap(1)
+check(lastState.flagOut == true and lastState.closeLeft == nil,
+  'one car home of the two the rule asks for: no countdown yet')
+seconds(120)
+check(lastState.phase == 'racing', 'so the race waits')
+lap(2)
+check(lastState.closeLeft ~= nil and lastState.closeLeft <= 30,
+  'the second car home starts it')
+seconds(31)
+check(lastState.phase ~= 'racing', 'and it closes the race on time')
+check(driver(3).status == 'finished' and driver(3).position == 3,
+  'the car still out is classified behind both')
+
+-- 0 SECONDS WAITS FOR EVERY CAR, the way a lap race always used to.
+RM_onSetFinishRule(0, '{"after":1,"seconds":0}')
+RM_onGenerateGrid(0)
+RM_onStartCountdown(0)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+lap(1); lap(2); lap(3)
+lap(1); lap(2)
+check(lastState.closeLeft == nil, 'with the countdown off, nothing counts down')
+seconds(600)
+check(driver(3).status == 'racing', 'and the last car is never cut off')
+lap(3)
+check(driver(3).status == 'finished', 'it finishes in its own time')
+seconds(6)                            -- past the end-of-race hold
+RM_onSetFinishRule(0, '{"after":1,"seconds":60}')
+check(lastState.finishTimer == 60, 'the rule unlocks once the race is over')
 
 -- ---------------------------------------------------------------------------
 -- ENDURANCE: both limits live, whichever comes first
@@ -288,15 +361,14 @@ for _ = 1, 2 do lap(1); lap(2); lap(3) end
 check(driver(1).status == 'racing', 'two of three laps done, nobody home')
 lap(1)
 check(driver(1).status == 'finished', 'completing the distance ends the leader race')
-check(lastState.finalLap == true,
-  'and puts the flag out for everyone: an endurance race is over when it is won')
+check(lastState.flagOut == true and lastState.closeLeft ~= nil,
+  'and puts the flag out: the finish countdown is running')
 check(lastState.raceExpired ~= true, 'the clock never came into it')
 
--- A car still short of the distance is classified as it comes past, rather than
--- being made to run laps after the race has been won.
+-- A car still short of the distance finishes when it completes it.
 check(driver(3).status == 'racing', 'the third car is still short of the distance')
 lap(3)
-check(driver(3).status == 'finished', 'and is classified on its next crossing')
+check(driver(3).status == 'finished', 'and finishes as it completes it')
 
 -- THE CLOCK ARRIVES FIRST. Fifty laps nobody will reach, sixty seconds they
 -- will: the "+1 lap" ending has to work with a lap target still armed.
@@ -315,6 +387,24 @@ check(driver(1).status == 'racing', 'without flagging the leader off')
 lap(1)
 check(driver(1).status == 'finished', 'and the race ends on the clock, not on 50 laps')
 check(driver(1).currentLap < 50, 'nowhere near the lap target that was also set')
+
+-- ---------------------------------------------------------------------------
+-- A driver who sits the next race out takes no result into it
+-- ---------------------------------------------------------------------------
+-- The winner kept their finish time, so in the next race they were ranked P1
+-- on the live board and every gap was measured from them.
+seconds(61)                           -- the finish countdown closes this one
+RM_onSetSpectating(1, '{"spectating":true}')
+RM_onSetRaceLimits(0, '{"laps":5,"seconds":0,"mode":"laps"}')
+RM_onGenerateGrid(0)
+RM_onStartCountdown(0)
+RM_CountdownTick(); RM_CountdownTick(); RM_CountdownTick()
+lap(2)
+check(driver(1).finishTime == nil and driver(1).position > driver(2).position,
+  'last race\'s winner, sitting this one out, is not ranked in it (got P'
+    .. tostring(driver(1).position) .. ')')
+check(driver(3).down == 0, 'and nobody is measured against them')
+RM_onSetSpectating(1, '{"spectating":false}')
 
 if fails == 0 then
   print(string.format('timed_race_test: %d checks, 0 failures', checks))

@@ -353,7 +353,10 @@ end
 -- test they would quietly be paid for whatever position that put them in.
 -- ---------------------------------------------------------------------------
 runRace(1, { 0, 1 })   -- Nomad and Falcon never take the flag
-RM_onEndRace(ADMIN)    -- ends the race, making them DNF
+-- They retire. Ending the race instead would classify them on their laps: a
+-- car is home, so End Race only cuts the finish countdown short.
+RM_onRetire(2); RM_onRetire(3)
+RM_onEndRace(ADMIN)
 check(readCup().round == 2, 'the second race banks a second round')
 check(totalFor('Phoenix') == 27 + 30, 'the winner of race two adds a win')
 local nomadRound2 = cupEntry('Nomad').rounds[2]

@@ -71,18 +71,18 @@
   .rmr-bar { fill: rgba(255, 255, 255, 0.12); stroke: rgba(0, 0, 0, 0.4); stroke-width: 0.2; }
   .rmr-me-body { fill: #f1f3f4; stroke: rgba(0, 0, 0, 0.65); stroke-width: 0.14; }
   .rmr-me-glass { fill: #1f2933; }
-  /* Closeness is the color: red under 2 m, amber under 6 m. Blue is a car a lap
-     or more up or down on you, and wins only when it is not close. A dark
-     outline on all of them, for a bright road. Gray, not white, for a car that
-     is not close: white is ours. */
-  .rmr-car { stroke-width: 0.14; }
-  .rmr-red    { fill: #ff2b1c; stroke: rgba(0, 0, 0, 0.65); }
-  .rmr-amber  { fill: #ff8a00; stroke: rgba(0, 0, 0, 0.65); }
-  .rmr-far    { fill: rgba(176, 182, 190, 0.85); stroke: rgba(0, 0, 0, 0.55); }
-  .rmr-blue   { fill: rgba(47, 125, 255, 0.85); stroke: rgba(0, 0, 0, 0.65); }
+  /* Closeness is the color, like a traffic light: green, amber under 6 m, red
+     under 2 m. Blue is a car a lap or more up or down on you, and wins only when
+     it is not close. A dark outline on all of them, for a bright road. Green,
+     not gray, for a car that is not close: gray vanished over tarmac. */
+  .rmr-car { stroke-width: 0.2; }
+  .rmr-red    { fill: #ff2b1c; stroke: rgba(0, 0, 0, 0.75); }
+  .rmr-amber  { fill: #ff8a00; stroke: rgba(0, 0, 0, 0.75); }
+  .rmr-far    { fill: #2fe36a; stroke: rgba(0, 0, 0, 0.75); }
+  .rmr-blue   { fill: #2f7dff; stroke: rgba(0, 0, 0, 0.75); }
   .rmr-lapped { stroke: #8ab4f8; stroke-width: 0.4; }
   /* A ghost cannot hit you: an outline, whatever its gap. */
-  .rmr-ghost  { fill: none; stroke: #8ab4f8; stroke-width: 0.25; stroke-dasharray: 0.6 0.5; }
+  .rmr-ghost  { fill: none; stroke: #8ab4f8; stroke-width: 0.35; stroke-dasharray: 0.6 0.5; }
   .rmr-glass  { fill: rgba(0, 0, 0, 0.55); }
   .rmr-seg-red   { fill: #ff2b1c; }
   .rmr-seg-amber { fill: #ff8a00; }

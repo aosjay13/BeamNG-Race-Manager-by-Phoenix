@@ -2,8 +2,8 @@
 --
 -- The cars within range of this driver's own car, in that car's frame (x to the
 -- right, y forward, meters), pushed on RaceManagerRadar while any are in range
--- and once more as the last one leaves. Alone, nothing is sent at all, and the
--- scan itself slows down.
+-- and for CLEAR_FOR seconds after the last one leaves. Then nothing is sent at
+-- all, and the scan itself slows down.
 --
 -- Each car carries its gap: the distance between the two cars' outlines on the
 -- ground, not between their centers. Alongside, that is the number a driver
@@ -16,12 +16,15 @@ local RANGE      = 25      -- meters to the other car's center; the app fades pa
 local EDGE       = 6       -- scanned beyond RANGE so a car fades in rather than pops
 local NEAR_EVERY = 0.05    -- seconds between pushes while a car is in range
 local IDLE_EVERY = 0.25    -- between scans while nobody is
+-- The all-clear is REPEATED for this long at the idle rate. Sent once, a single
+-- missed push left the last car on screen until another came near.
+local CLEAR_FOR  = 2
 local OWNERS_EVERY = 2     -- seconds between refreshes of the vehicle-to-player map
 local LEN, WID   = 4.5, 1.9  -- a car's size when the engine will not say
 
 local wait = 0
 local clock = 0
-local sentCars = false
+local clearLeft = 0                     -- seconds of all-clear still to send
 local dims = {}                         -- [vehId] = { model, hl, hw }
 local owners = { at = -1, map = {} }    -- [gameVehId] = BeamMP player id
 local rowsSeen, rowByPid = nil, {}
@@ -195,6 +198,8 @@ local function scan()
     local dx, dy = cx - mx, cy - my
     if dx * dx + dy * dy > reach2 then return end
     if call(function () return veh:isHidden() end) then return end
+    -- A pooled (deactivated) car is invisible and can sit where it was parked.
+    if call(function () return veh:getActive() end) == false then return end
     local model = modelOf(veh)
     if model == 'unicycle' then return end
     if host.isTowed(veh) then return end
@@ -235,9 +240,15 @@ function D.radarUpdate(dt)
   -- Added to what is left rather than reset, so the rate holds at any frame
   -- rate; never below zero, so a stall does not queue up a burst.
   wait = math.max(wait + (near and NEAR_EVERY or IDLE_EVERY), 0)
-  -- One empty push as the last car leaves, so the app can fade; then silence.
-  if not near and not sentCars then return end
-  sentCars = near
+  -- Empty pushes for CLEAR_FOR seconds once the last car leaves, so the app
+  -- fades even if one is lost; then silence.
+  if near then
+    clearLeft = CLEAR_FOR
+  elseif clearLeft > 0 then
+    clearLeft = clearLeft - IDLE_EVERY
+  else
+    return
+  end
   guihooks.trigger('RaceManagerRadar', { range = RANGE, edge = EDGE, me = me, cars = cars })
 end
 

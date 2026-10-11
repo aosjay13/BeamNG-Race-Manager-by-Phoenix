@@ -8,6 +8,10 @@ angular.module('beamng.apps')
  * in range on RaceManagerRadar, about twenty times a second while any are near
  * and never while none are. Each push moves a fixed pool of SVG shapes; nothing
  * here is watched, so the app adds nothing to the digest the main panel runs.
+ *
+ * A PICTURE WITH NO FEED IS CLEARED. Cars on screen and no push for STALE_MS
+ * means the feed stopped (a UI reload, a script error, a lost all-clear): the
+ * last frame used to stay up for good, showing a car that was not there.
  */
 .directive('raceManagerRadar', [function () {
   return {
@@ -27,6 +31,7 @@ angular.module('beamng.apps')
       var BAR_HALF = 6.5;      // the bars run this far ahead of and behind our center
       var SIDE_REACH = 4;      // a car this far off our side, or closer, is alongside
       var HOLD_MS = 1500;      // stay up this long after the last car leaves
+      var STALE_MS = 1000;     // cars drawn and no push for this long: clear them
       var PREVIEW_MS = 6000;
 
       var built = false;
@@ -38,6 +43,7 @@ angular.module('beamng.apps')
       var caption = null;
       var preview = true;
       var hideTimer = null;
+      var staleTimer = null;
 
       function make(tag, cls, parent) {
         var el = document.createElementNS(NS, tag);
@@ -248,6 +254,13 @@ angular.module('beamng.apps')
           caption.style.display = 'none';
         }
         render(data);
+        if (staleTimer) { clearTimeout(staleTimer); staleTimer = null; }
+        if (data && data.cars && data.cars.length) {
+          staleTimer = setTimeout(function () {
+            staleTimer = null;
+            render({ cars: [] });
+          }, STALE_MS);
+        }
       });
 
       // SHOWN FOR A FEW SECONDS WHEN IT LOADS, so a driver who has just added
@@ -264,6 +277,7 @@ angular.module('beamng.apps')
       $scope.$on('$destroy', function () {
         clearTimeout(previewTimer);
         if (hideTimer) { clearTimeout(hideTimer); }
+        if (staleTimer) { clearTimeout(staleTimer); }
       });
     }]
   };

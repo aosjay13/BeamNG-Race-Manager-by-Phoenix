@@ -233,6 +233,44 @@ wired('setLuckyDog',        'toggleLuckyDog',     'Free pass')
 wired('setHeats',           'applyHeats',         'Heat program')
 wired('drawHeats',          'drawHeats',          'Draw heats')
 wired('setHeatCurrent',     'setHeatCurrent',     'Which heat is next')
+wired('setFinishRule',      'applyFinishRule',    'Race end')
+
+-- RETIRE ONLY WHILE CIRCULATING. It stayed on screen after a retirement or a
+-- finish, and pressing it did nothing (the server refuses anyone off track).
+do
+  local n = 0
+  for cond in html:gmatch('<span class="[%w%- ]+" ng%-if="([^"]*retireUi%.confirm[^"]*)"') do
+    n = n + 1
+    expect(cond:find('canRetire()', 1, true) ~= nil,
+      'a Retire control shows on "' .. cond .. '" rather than canRetire()')
+  end
+  expect(n == 4, 'found both Retire controls and their confirmations (got ' .. n .. ')')
+  local fn = js:match('%$scope%.canRetire = function %(%)(.-)\n      };')
+  expect(fn ~= nil and fn:find('carTaken', 1, true) ~= nil and fn:find('myStatus', 1, true) ~= nil,
+    'canRetire asks whether the car was taken and what this driver is doing')
+end
+
+-- THE DRIVER BAR IS THE WHOLE HUD FOR A RACER, so every countdown the header
+-- shows has to be on it too. It had no qualifying clock and no race-end state:
+-- racers reported they could not see the time left.
+do
+  local bar = html:match('<div class="rm%-driverbar".-<!%-%- =+ Broadcast board')
+  expect(bar ~= nil, 'found the driver bar')
+  expect(bar ~= nil and bar:find('qualiClock()', 1, true) ~= nil,
+    'the driver bar shows the qualifying clock')
+  expect(bar ~= nil and bar:find('raceEndState()', 1, true) ~= nil,
+    'the driver bar shows how the race ends (final lap, flag out, the finish countdown)')
+  expect(bar ~= nil and bar:find('barFont(1)', 1, true) ~= nil
+    and bar:find('barFont(-1)', 1, true) ~= nil, 'the driver bar has A- and A+')
+  -- The countdown colors were violet and pale blue, unreadable over the road
+  -- once the HUD is faded.
+  for _, sel in ipairs({ 'rm%-quali%-clock', 'rm%-clock%-down' }) do
+    local rule = html:match(NL .. '  %.' .. sel .. '%s*{(.-)}')
+    expect(rule ~= nil and rule:find('#ffffff', 1, true) ~= nil,
+      '.' .. sel:gsub('%%', '') .. ' is white, not a color that vanishes over the road')
+  end
+  expect(js:find("savePref('barScale'", 1, true) ~= nil, 'the text size is remembered')
+end
 
 -- RACE CONTROL IS ONE CONTROL IN FOUR STATES, never two on screen at once.
 --
@@ -1457,8 +1495,33 @@ end
 -- THE COLOR HAS TO REACH THE FLASH. Every flag is kind 'flag', so a panel that
 -- takes the color from the kind paints them all one gray, which is how GET
 -- READY and GREEN FLAG looked identical for months.
-expect(js:find("data.sub, data.color)", 1, true) ~= nil,
+expect(js:find("data.sub, data.color", 1, true) ~= nil,
   'the notice handler passes the color the client chose')
+
+-- NOTHING MOVES BEFORE THE GREEN. GET READY flashed the panel, blinked amber in
+-- Race Lights, beeped, and wore a green badge, and drivers jumped the start on
+-- it. It is a statement now, everywhere, and the green flag is the first thing
+-- that flashes.
+do
+  local client = readFile('lua/ge/extensions/raceManager.lua')
+  local call = client:match("pushNotice%('flag', 'GET READY[^" .. NL .. "]*" .. NL .. "[^" .. NL .. "]*")
+  expect(call ~= nil and call:find('still = true', 1, true) ~= nil,
+    'GET READY is pushed as a still statement, not the flag flash')
+  expect(js:find('flash: st.flash && !still', 1, true) ~= nil,
+    'and the panel honours it')
+  for badge in html:gmatch('<span class="([%w%-]+)" ng%-if="greenReady') do
+    expect(badge == 'rm-ready-badge', 'the GET READY badge is ' .. badge .. ', not the yellow statement')
+  end
+  local rule = html:match(NL .. '  %.rm%-ready%-badge {(.-)}')
+  expect(rule ~= nil and rule:find('animation', 1, true) == nil
+    and rule:find('7ee2a8', 1, true) == nil, 'the GET READY badge is steady and not green')
+  local lightsJs = readFile('ui/modules/apps/RaceManagerLights/app.js')
+  for name in ('ready readyRestart'):gmatch('%S+') do
+    local def = lightsJs:match(name .. ':%s*({[^}]*})')
+    expect(def ~= nil and def:find('blink', 1, true) == nil and def:find("'a", 1, true) == nil,
+      'Race Lights ' .. name .. ' neither blinks nor lights amber')
+  end
+end
 expect(js:find("color: color || st.color", 1, true) ~= nil,
   'and the queued notice wears it')
 expect(js:find("flag:%s*{[^}]*replace: true") ~= nil,

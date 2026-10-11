@@ -144,6 +144,9 @@ Random, Points, Points rev or Custom), then **Generate Grid**. Every driver is p
 and **held** there, so nobody can jump the start. **Start Countdown** gives
 everyone a synchronised 3‑2‑1‑**GO!** and releases the whole field on the same
 broadcast. The table re-sorts leader-first in real time as places change.
+When the winner is home, lapped cars keep racing. Once the number of cars set
+in **Race end** have finished, a countdown (60 seconds by default) closes the
+race, and anyone still out is classified on the laps they completed.
 
 Once the race is running, **Caution** throws a full-course yellow and the field
 **races back to the line**. The leader's crossing makes the caution official and
@@ -205,7 +208,7 @@ expect without touching any of it.
 | **[Lap records](docs/REFERENCE.md#lap-records)** | Each driver's fastest lap on every saved layout, per map, kept across restarts and open to everyone. Scored from qualifying and races. An admin can take a time off or clear a board in game, or edit the JSON on the server. |
 | **[Drag racing](docs/REFERENCE.md#drag-racing-parallel-game-mode)** | A tournament ladder down a drag strip: single or double elimination, or a points shootout. Two to eight cars a pass with any number going through, a christmas tree with real red lights, reaction times, elapsed times and trap speeds, and dial-in bracket racing. Scores into the cup on a table of its own. The strip is an ordinary point-to-point layout saved with the type Drag, so the track editor already builds one, and a practice pass lets one driver try it before a field turns up. |
 | **[Broadcast board](docs/REFERENCE.md#broadcast-board-spectators)** | A spectator's board for streaming: the whole field, the drivers who are out and why, cup standings, and click a name to put the camera on that car in orbit. |
-| **[Race Lights (PRM)](docs/REFERENCE.md#race-lights-prm)** | An optional second app with the start lights, the flags and the drag tree in a box you place anywhere on screen. GET READY flashes amber, never green. Start sounds for the countdown, GET READY, the green and the tree, mutable from the panel. |
+| **[Race Lights (PRM)](docs/REFERENCE.md#race-lights-prm)** | An optional second app with the start lights, the flags and the drag tree in a box you place anywhere on screen. GET READY is a steady caption, so the green is the first thing that changes. Start sounds for the countdown, the green and the tree, mutable from the panel. |
 | **[Radar (PRM)](docs/REFERENCE.md#radar-prm)** | An optional third app: the cars around you out to 25 m, at their real size and angle, red under 2 m and amber under 6 m with the gap shown, side-by-side spotter bars, ghosts as outlines, and in a race each car's position with lapped cars in blue. Fades away when nobody is near. |
 | **[Menu bar](docs/REFERENCE.md#the-menu-bar)** | Practice, records, the garage, the cup and every admin panel open from one row under the title and step out of the way when closed, so the board keeps the room. |
 | **[Driver UI](docs/REFERENCE.md#driver-ui-non-admins)** | Non-admins see just the leaderboard. Resizable, fades so it doesn't block the view, and collapses to a single status line. Alerts still get through. |

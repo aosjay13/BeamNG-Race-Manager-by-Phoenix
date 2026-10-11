@@ -152,7 +152,8 @@ live timing is already there.
 Race Entry row asks first, then treats it exactly like taking the flag: the car
 is ghosted where it stands and you go to spectate in it. It is a **classified** retirement,
 not a disappearance. You hold a position, you are in the results file, and you
-score cup points like any other DNF.
+score cup points like any other DNF. The button is there only while you are
+circulating: once you have retired, finished or been taken off the track it goes.
 
 Where you place is **behind every car that can still finish**. Retiring from
 second of a running field does not keep second, because everyone still going
@@ -541,18 +542,34 @@ the stragglers are taken where they stand and the session closes normally.
 
    Set a distance *and* a clock. Whichever arrives first ends the race:
 
-   - **The distance first** - the flag falls on the car that completes it, and
-     everyone still out is classified as they come past. A car a lap down is not
-     made to keep circulating after the race has been won.
+   - **The distance first** - the car that completes it takes the checkered
+     flag, and the race ends as in every mode (below).
    - **The clock first** - the "+1 lap" ending below, with the lap target still
      armed underneath it. A 50-lap-or-60-minute race that runs out of time at
      lap 31 ends on lap 32.
 
-   The flag-falls-on-the-winner rule is **endurance only**. A plain **Laps** race
-   is unchanged: every driver runs the full distance, and a lapped car goes on
-   circulating until it has. That is long-standing behavior a league's results
-   are built on, and changing it is a decision about how races are scored rather
-   than a detail of this mode.
+   #### When the race ends: the finish countdown
+
+   The same in every mode. **Lapped cars keep racing after the winner** is home:
+   nobody is flagged off at their next crossing. Each car finishes when it
+   completes the distance. Once **Race end: After N home** cars have finished,
+   a countdown of **close in S seconds** starts, and when it reaches zero the
+   race closes: every car still out is classified where it stands, **on the laps
+   it has completed**. The header and the driver bar show it as `ENDS 0:45`.
+
+   - **The order is laps completed first**, always. A lapped car that crosses
+     the line ahead of a car on the lead lap never outranks it. Cars on the same
+     lap that took the flag are in the order they took it; cars on the same lap
+     still out are in the order they were running.
+   - **A car a lap or more down** shows `+1 lap`, `+2 laps` in the results'
+     Race Time column instead of a time it did not race the winner's distance in.
+   - **End Race** after a car is home cuts the countdown short, with the same
+     classification. Before anyone is home it is still an abandoned race and the
+     field is retired.
+   - **0 seconds** turns the countdown off: the race waits for every car, or for
+     End Race. If fewer cars than **After** can still finish, the race also waits.
+   - The rule is locked while a race runs, like the race length. The defaults
+     (1 car, 60 seconds) are `finishAfter` and `finishTimer` in `config.json`.
 
    #### Timed races: "10 minutes + 1 lap"
 
@@ -562,19 +579,18 @@ the stragglers are taken where they stand and the session closes normally.
 
    | State | Header | What it means |
    |---|---|---|
-   | Clock running | `4:12` | Time **remaining** - the race clock counts down in a timed or endurance race, and is tinted while it does. |
+   | Clock running | `LEFT 4:12` | Time **remaining** - the race clock counts down in a timed or endurance race. |
    | Expired | `+1 LAP` | Time is up. The final lap starts when **the leader** next takes the line. Nothing is terminal yet. |
    | Leader past | `FINAL LAP` | The lap everyone still running finishes on. |
-   | Winner home | `FLAG OUT` | The checkered flag. Your next crossing is your last. |
+   | Winner home | `FLAG OUT` / `ENDS 0:45` | The checkered flag, then the finish countdown. Complete the final lap to finish. |
 
    **Everyone still running gets the whole final lap**, not "your next
    crossing". A car two seconds behind the leader has not reached the line when
    the leader starts the last lap; flagging it off there would end its race a lap
    early while the leader ran a full one.
 
-   **A lapped car is classified where it got to.** It will never reach the final
-   lap number, so once the winner is home its next crossing is its last - which
-   is what a real checkered flag does to a car a lap down.
+   **A lapped car races on** to the final lap number, like everybody else, until
+   the finish countdown closes the race; then it is classified on its laps.
 
    **The leader is the car that reaches a lap number first**, not the first car
    past the line after expiry. Those differ exactly when a lapped car comes
@@ -636,8 +652,11 @@ the stragglers are taken where they stand and the session closes normally.
    leader-first in real time as places change (see *Live position tracking*
    below). Finish order is decided by the server's single clock, so it's fair
    for every client.
-6. The race ends when everyone has finished (or you press **End Session**,
-   which DNFs anyone still out). Disconnecting mid-race is an automatic DNF.
+6. The race ends when everyone has finished, retired or disconnected, when
+   the finish countdown runs out, or when you press **End Session** (before
+   anyone is home that DNFs anyone still out; after, it classifies them on
+   laps). Disconnecting mid-race is an automatic DNF. The last car out
+   retiring ends the race too: it used to stay RUNNING with nobody left.
    At the flag **every** participant gets their car back - ghosted and
    staggered, the same as a grid forming - and each driver's camera is put
    explicitly back on their *own* car rather than on whichever vehicle the
@@ -651,7 +670,7 @@ When the race closes, the server automatically writes a results file
 ready for league standings or a broadcast overlay.
 
 The race table records **Pos, Start, Driver, Best Lap, Laps Led, Laps, Race
-Time** (plus Joker and Resets columns when those regulations are armed). `Start`
+Time** (a formation lap is never a lap led) (plus Joker and Resets columns when those regulations are armed). `Start`
 is the grid slot the driver lined up on, which is what makes a finishing position
 readable: P2 means something very different from eighth on the grid than it does
 from pole.
@@ -662,7 +681,30 @@ the finish time from the green; for a retirement it holds the reason instead.
 
 The header gives the distance. A timed race has none until it is driven, so it
 reads `10 min + 1 lap, 12 laps run`, the laps being the winner's. A lap race
-adds `laps run` only when it was stopped short of its distance.
+adds `laps run` only when it was stopped short of its distance. An `Ended:` line
+says how the session closed (`all drivers finished`, `ended by <admin>`, `the
+finish countdown ran out`, `Restarted from the grid by <admin>`).
+
+**Every race that was run gets a file.** Reset during a race ends and saves it
+first, and a cup that fails to score cannot stop the file being written.
+
+#### Restart from grid
+
+**Restart from grid** (beside End Session, admin only, asks first) stops a race
+and runs it again without losing qualifying:
+
+- The stopped race is **saved**, its header saying it was restarted. It banks no
+  cup round: it is being run again.
+- The field goes straight back to the **same grid**, slot for slot, and
+  qualifying times are kept. Start Countdown when everyone is ready.
+- The rerun's results are **added to the same file** under a `RESTART` banner,
+  so the two read as one event and nothing goes missing between them.
+- In the countdown, before anything has been raced, it just goes back to the
+  grid and saves nothing.
+
+Form the grid any other way after it (Generate Grid, Start Quali, Reset) and the
+next race is a race of its own with its own file. **Reset** is not a restart: it
+clears qualifying too.
 
 Underneath it, two awards:
 
@@ -702,7 +744,8 @@ just banked - see [Cup points in the results file](#cup-points-in-the-results-fi
 
 Housekeeping:
 
-- **Reset** wipes the session back to Waiting with fresh driver records.
+- **Reset** wipes the session back to Waiting with fresh driver records,
+  qualifying included. A race under way is ended and saved first.
 - **Clear Results Cache** deletes all saved result `.txt` files on the
   server (chat confirms how many were removed). It asks first: the button is
   replaced by *Delete every saved results file on the server?* with **Yes,
@@ -783,7 +826,10 @@ subtract correctly. A gap built from distance would have them minutes apart.
   server deliberately sends no clock gap for a qualifying session at all.
 - **A driver who is lapped** reads `+1 LAP`, not a number of seconds. The split
   subtraction across a lap boundary is a real figure that means nothing, and it
-  is the one reading on these boards that would actively mislead.
+  is the one reading on these boards that would actively mislead. **Lapped means
+  the leader is past you on the road**, not that its lap counter is ahead: the
+  leader taking the line does not put the whole field a lap down until each car
+  crosses it too.
 - **A retirement or a disqualification** has no gap. They are classified by a
   ruling rather than by where they got to.
 
@@ -983,13 +1029,23 @@ while racing:
 
 | Mode | Behavior |
 |------|-----------|
-| **In place** | BeamNG's normal repair-where-you-stand (the default), turned to face the checkpoint you need next |
+| **In place** | BeamNG's normal repair-where-you-stand (the default), turned to face the way you were driving |
 | **Last checkpoint** | The car is respawned at the last checkpoint it crossed, facing the direction of travel |
 
-**In place faces the next checkpoint, wherever you reset.** A car more than 45
-degrees off is turned where it stands. On a map with a road graph it faces along
-the road route to that gate, so a reset before a hairpin faces on round the
-road; off the road it points straight at the gate. Practice resets do the same.
+**In place faces the way you were driving.** The mod keeps the direction the car
+was last driven in, sampled only while it was moving forward at speed with its
+nose along its path, so a spin, a slide or reversing never counts. A car more
+than 45 degrees off that is turned where it stands. Before the car has been
+driven (or far from where it last was) the next checkpoint decides: along the
+road route where the map has one, else straight at the gate.
+
+The turn is made a moment **after** the reset, and checked again for about a
+second: BeamNG's recovery (Insert) places the car over several frames and could
+put the spun heading back after an immediate turn. It is never applied to a car
+that is already moving off, and R and Insert behave the same during a session.
+
+**Only during a race or qualifying session.** Outside one, including practice,
+a reset is entirely BeamNG's own: R repairs in place, Insert rewinds.
 
 Last-checkpoint mode applies whether or not resets are limited; before the
 first checkpoint of a session it falls back to in-place. Like every
@@ -1155,6 +1211,14 @@ driver gets a countdown of their own in the app.
 
 It is on by default and applies during a race **and** during qualifying
 resetting into somebody is the same physical problem in both.
+
+**Every ghost survives a reset.** A reset reloads the car's physics, which
+drops the game's ghost switch on that car, on every client. Each client puts it
+back the moment it sees any ghosted car reset, its own or a rival's, and checks
+every ghosted car again every two seconds. Before this a rival who reset during
+ghost qualifying (or while finished, or a bystander) became solid on other
+drivers' screens for the rest of the session, while every display still said
+ghost.
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -1777,8 +1841,11 @@ Press it and:
    `PACE LAP 50 MPH OR 80 KMH` badge for as long as it lasts.
 2. The field runs a **formation lap**.
 3. **GET READY** is called as the **car that started P1** comes within
-   **50 m** of the line: an amber notice, a beep, and the badge and on-screen
-   instruction change to say the green is coming. No distance is shown.
+   **50 m** of the line. It is a **statement, not a signal**: the notice and the
+   badge change to say *GET READY: hold position until the green flag falls*,
+   in the yellow the field is still under. Nothing flashes, blinks or beeps, and
+   the Race Lights keep their pace lap lamps: drivers took the old amber flash
+   for the green and jumped the start. No distance is shown.
 4. The **green flag falls automatically** at a **random point between 5 and
    15 m** before the line, drawn fresh for every pace lap so the field cannot
    learn the spot and jump it. The point is never sent to any client.
@@ -2324,6 +2391,10 @@ instead - visible, and a shade under the gate actually being aimed at.
 
   The driver bar also shows live joker/reset status and keeps a 🔒 button so
   the login prompt is always reachable.
+- **A− / A+ size the bar's text.** Beside the ◑ slider on the driver bar, and in
+  the admin header, where it sizes the timing run (the clocks, checkpoint, lap
+  time). Remembered like the opacity. The countdowns (`LEFT`, `Q`, `ENDS`) are
+  white and outlined so they read over the road at any fade.
 - **The status bars have a fixed layout in all three panels.** The first row is
   the live status run - phase, checkpoint, distance, clocks - and the flag and the
   two window controls (the size reset and the collapse) are **pinned to its
@@ -2749,7 +2820,7 @@ drag tree, flag and status lights use the same colors.
 | Red, filling in | 3, 2, 1 | The countdown |
 | Green | GO | The start. Not shown for a start behind the pace car |
 | Yellow, 1st, 3rd and 5th | PACE LAP | The formation lap |
-| Amber, flashing | GET READY | The leader is on the run to the green |
+| Unchanged (the pace lap or restart lamps), steady | GET READY · HOLD | The leader is on the run to the green. Nothing moves until it falls |
 | Green | GREEN FLAG | The green falls: end of the pace lap, a restart, a red lifted |
 | Yellow, flashing | CAUTION · RACE BACK | A caution is called |
 | Yellow | CAUTION | The caution is official, positions frozen |
@@ -2773,7 +2844,7 @@ they stand up: the race lights become a column and the tree stands as it does
 at a strip. It switches as you resize it in the HUD editor.
 
 **Sounds** play whether or not the Lights app is on screen: a beep for each
-count, for GET READY and for each amber on the drag tree; the start tone for GO,
+count and for each amber on the drag tree (GET READY is silent); the start tone for GO,
 the green and the drag green; a stop tone for a red flag. They are the game's own
 race sounds. 🔊 on the menu bar or the driver bar mutes them, and the setting is
 remembered.
@@ -2796,8 +2867,8 @@ so you can see where it went.
   are drawn in the same car shape at their real size and angle out to **25 m**,
   and fade in from just beyond that rather than popping up.
 - **Color is closeness**, measured between the cars' outlines rather than their
-  centers: **red** under 2 m, **amber** under 6 m, gray beyond. Cars within 6 m
-  carry the gap in meters.
+  centers: **red** under 2 m, **amber** under 6 m, **green** beyond. Cars within
+  6 m carry the gap in meters.
 - **The spotter bars** at the left and right edges light where a car overlaps you
   side by side, red or amber like the car itself. They span your car and 4 m
   either end of it.
@@ -2807,8 +2878,10 @@ so you can see where it went.
   down on you is **blue** unless it is close. Qualifying shows neither: its order
   is best laps, not who you are racing.
 
-Walking characters, trailers and props are left off, and so is anything around a
-car that has been taken off you or parked as a finished ghost.
+Walking characters, trailers, props and cars the game has pooled away are left
+off, and so is anything around a car that has been taken off you or parked as a
+finished ghost. If the app stops hearing from the game for a second while it is
+drawing cars, it clears them rather than leaving the last picture up.
 
 **Cost.** Alone, nothing is sent to the UI at all and the client checks for cars
 four times a second. With a car in range it sends a short list of the nearby

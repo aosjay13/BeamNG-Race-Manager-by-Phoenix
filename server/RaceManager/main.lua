@@ -45,6 +45,11 @@ local CFG = {
   nametags      = false,
   countdownFrom = 3,         -- 3, 2, 1, GO!
   endDelay      = 5,         -- seconds the results are held after the last car home
+  -- THE FINISH COUNTDOWN: once finishAfter cars have completed the race, the
+  -- race closes finishTimer seconds later. Lapped cars race on until then and
+  -- are classified by laps completed. 0 seconds waits for every car.
+  finishAfter   = 1,
+  finishTimer   = 60,
 
   -- THE PACE LAP: released under yellow, green as the leader returns to the line
   -- (paceLapArmed, RM_onStartRace).
@@ -235,6 +240,26 @@ local race = {
   endsAt       = nil,
   endReason    = nil,
   endDelay     = 5,
+  -- THE FINISH COUNTDOWN (CFG.finishAfter / finishTimer): `closeAt` is the
+  -- race.time the race closes at, nil until enough cars are home. Races only.
+  finishAfter  = CFG.finishAfter,
+  finishTimer  = CFG.finishTimer,
+  closeAt      = nil,
+  -- A car has taken the checkered flag at the line: a timed race's clock is
+  -- moot from here, and End Race classifies the cars still out.
+  flagOut      = false,
+  -- Counts every classification, so finishes on one tick keep arrival order.
+  finishSeq    = 0,
+  -- RESTART FROM THE GRID (RM_onRestartFromGrid). `voided` says why the race
+  -- being closed does not count (no cup round); `lastResults` is the file the
+  -- last session wrote; `appendTo` is where the rerun's results go, so the
+  -- stopped race and its rerun are one file. `regrid` lines the grid up as the
+  -- stopped race did. `closedHow` is the results header's Ended line.
+  voided       = nil,
+  lastResults  = nil,
+  appendTo     = nil,
+  regrid       = false,
+  closedHow    = nil,
   -- Where the start positions are, { x, y, z, hx, hy } per slot: reported by a
   -- client or set from a loaded layout. Policing the hold needs coordinates.
   startPositions = {},
@@ -271,12 +296,13 @@ local race = {
   --   raceExpired  the clock is out; the leader has to reach the line first
   --   lastLapNum   the leader crossed; completing THIS lap ends a driver's race,
   --                so a car just behind still gets a full lap
-  --   finalLap     the leader finished; the NEXT crossing is terminal for all
+  --   finalLap     the NEXT crossing is terminal for all: qualifying's expired
+  --                clock, and a timed race whose leader never came back. A race
+  --                won normally never sets it (the finish countdown ends those)
   -- raceMode names which limits are live (endurance has both):
   --   'laps'       a fixed distance; raceTimeLimit is 0
   --   'timed'      a clock plus one lap; totalLaps is inert
-  --   'endurance'  whichever comes first; reaching the distance ends the race
-  --                for everybody (see RM_onLap)
+  --   'endurance'  whichever comes first
   raceMode       = 'laps',
   raceTimeLimit  = CFG.raceTimeLimit,
   raceExpired    = false,    -- clock out, waiting on the leader
@@ -424,6 +450,13 @@ local function newRecord(pid)
     currentLap = 0,          -- lap the driver is currently on (1-based once racing)
     lapsLed    = 0,          -- laps this driver crossed the line first on
     finishTime = nil,        -- server race clock at final-lap completion
+    -- Laps completed when classified, and whether that was at the line (false:
+    -- taken where it stood when the race closed). Set by retireDriver.
+    lapsDone   = nil,
+    atLine     = nil,
+    -- Laps behind the leader and behind the car ahead, by track position.
+    down       = nil,
+    idown      = nil,
     resets     = 0,          -- vehicle resets consumed this session
     resetsBlocked = 0,       -- resets refused after the allowance ran out
     ghosts     = 0,          -- reset ghosts armed this session (audit trail)
@@ -495,6 +528,37 @@ local progress = {}
 function progress.clear(rec)
   rec.cpCleared = 0
   rec.distNext  = nil
+end
+
+-- Laps completed. A running car's currentLap is the lap it is ON; a classified
+-- car carries the count it was classified on.
+function progress.lapsDone(rec)
+  if rec.lapsDone then return rec.lapsDone end
+  local n = rec.currentLap or 0
+  if rec.finishTime then return n end
+  return n > 0 and n - 1 or 0
+end
+
+-- Is `a` further round its lap than `b` is round its own? A car that took the
+-- flag is AT the line, the least way round. No distance reported sorts behind.
+function progress.furtherRound(a, b)
+  local ca = a.atLine and 0 or (a.cpCleared or 0)
+  local cb = b.atLine and 0 or (b.cpCleared or 0)
+  if ca ~= cb then return ca > cb end
+  local da = (not a.atLine and a.distNext) or math.huge
+  local db = (not b.atLine and b.distNext) or math.huge
+  return da < db
+end
+
+-- Whole laps `rec` is behind `ahead` on the road. One more lap on the counter
+-- is not a lap down: the leader crossing the line puts nobody a lap down until
+-- it is strictly past them.
+function progress.lapsBehind(ahead, rec)
+  if not ahead or ahead == rec then return 0 end
+  local d = progress.lapsDone(ahead) - progress.lapsDone(rec)
+  if d <= 0 then return 0 end
+  if not progress.furtherRound(ahead, rec) then d = d - 1 end
+  return d
 end
 
 -- ---------------------------------------------------------------------------
@@ -780,9 +844,29 @@ end
 
 local function raceOrderLess(a, b)
   local ra, rb = classRank(a), classRank(b)
+  -- LAPS FIRST ONCE A CAR IS HOME. A lapped car crossing the line after the
+  -- winner, or one classified where it stood, must never outrank a car that
+  -- completed more laps; the order it was flagged in comes second. Not under a
+  -- caution: the frozen order can disagree with the lap counts, and mixing the
+  -- two rules makes the sort inconsistent (finishers then simply lead).
+  if not race.caution and ra <= 1 and rb <= 1 and (ra == 0 or rb == 0) then
+    local la, lb = progress.lapsDone(a), progress.lapsDone(b)
+    if la ~= lb then return la > lb end
+    if (a.atLine == true) ~= (b.atLine == true) then return a.atLine == true end
+    if a.atLine then
+      if a.finishTime ~= b.finishTime then return a.finishTime < b.finishTime end
+      -- Home on the same tick: the order the crossings reached the server.
+      return (a.finishSeq or 0) < (b.finishSeq or 0)
+    end
+    if ra ~= rb then return ra < rb end
+    -- Neither took the flag: where each stood.
+    if progress.furtherRound(a, b) then return true end
+    if progress.furtherRound(b, a) then return false end
+    return (a.gridPos or math.huge) < (b.gridPos or math.huge)
+  end
   if ra ~= rb then return ra < rb end
-  -- Finishers (and drivers excluded after finishing) are ordered by the flag.
-  if (ra == 0 or ra == 2) and a.finishTime and b.finishTime and a.finishTime ~= b.finishTime then
+  -- Drivers excluded after finishing are ordered by the flag.
+  if ra == 2 and a.finishTime and b.finishTime and a.finishTime ~= b.finishTime then
     return a.finishTime < b.finishTime
   end
   -- THE CAUTION ORDER, first for cars still circulating, so closing up under
@@ -898,6 +982,11 @@ local function assignPositions(list)
       rec.classPos = seen[rec.class]
     end
     rec.gap, rec.intv = nil, nil
+    rec.down, rec.idown = nil, nil
+    if not quali and i > 1 and rec.status ~= 'dnf' and rec.status ~= 'dsq' then
+      rec.down  = progress.lapsBehind(leader, rec)
+      rec.idown = progress.lapsBehind(list[i - 1], rec)
+    end
     -- Cleared every pass so a flag never outlives what earned it; the old value
     -- is kept for the hysteresis.
     rec.blueWas = rec.blue
@@ -937,8 +1026,8 @@ local DRIVER_WIRE_FIELDS = {
   'heat', 'heatPos', 'transferred',
   -- Class and class place, nil unless a class is in use.
   'class', 'classPos',
-  -- Gap and interval.
-  'gap', 'intv',
+  -- Gap and interval, and laps down to the leader and to the car ahead.
+  'gap', 'intv', 'down', 'idown',
   -- Garage List verdict, three-valued (see newRecord).
   'carOk',
 }
@@ -1214,6 +1303,12 @@ local function broadcastState(targetPid)
       and (race.phase == 'racing' or race.phase == 'qualifying') or nil,
     raceExpired    = race.raceExpired,
     lastLapNum     = race.lastLapNum,
+    -- The finish countdown: the rule, whether a car is home, and the seconds
+    -- left once it runs.
+    finishAfter    = race.finishAfter,
+    finishTimer    = race.finishTimer,
+    flagOut        = race.flagOut or nil,
+    closeLeft      = race.closeAt and math.max(race.closeAt - race.time, 0) or nil,
     -- Approved vehicle list (Module 4), mode ('parts' | 'strict') and set names.
     garage        = garageInfo.list,
     garageEnforce = garageInfo.enforce,
@@ -1642,7 +1737,10 @@ local function sessionAwards(final)
   -- Half-distance leader: first to complete lap ceil(n/2) (lapFirsts). None in
   -- a one-lap race.
   awards.halfWayLap = math.ceil(race.totalLaps / 2)
-  awards.halfWayPid = (race.totalLaps >= 2) and lapFirsts[awards.halfWayLap] or nil
+  -- lapFirsts is keyed by crossing: behind the pace car the formation lap is the
+  -- first, so racing lap n is crossing n + 1.
+  local pace = race.racePaceLapRun and 1 or 0
+  awards.halfWayPid = (race.totalLaps >= 2) and lapFirsts[awards.halfWayLap + pace] or nil
 
   -- Hard charger: most places gained from grid to finish, classified finishers
   -- only, gain above zero; ties to the higher finisher.
@@ -1682,17 +1780,24 @@ local function buildResultsText(cupRound)
   local lines = {}
   local function add(s) lines[#lines + 1] = s end
 
-  -- Laps run per driver: currentLap counts crossings (a finisher's stops on the
-  -- finishing lap; a pace lap is a crossing, not a lap).
+  -- Laps run per driver: laps completed, less the pace lap (a crossing, not a
+  -- lap). A car classified where it stood ran the laps it had completed.
   local pace = race.racePaceLapRun and 1 or 0
   local function lapsRun(rec)
-    local n = (rec.currentLap or 0) - (rec.finishTime and 0 or 1) - pace
+    local n = progress.lapsDone(rec) - pace
     return n > 0 and n or 0
   end
   local leaderLaps = 0
   for _, rec in ipairs(final) do
     local n = lapsRun(rec)
     if n > leaderLaps then leaderLaps = n end
+  end
+  -- A classified car's Race Time cell: its time, or the laps it was down on
+  -- the winner (a car home a lap down did not race the winner's distance).
+  local function finishCell(rec)
+    local down = leaderLaps - lapsRun(rec)
+    if down > 0 then return '+' .. down .. (down == 1 and ' lap' or ' laps') end
+    return fmtLap(rec.finishTime)
   end
   local distance = raceDistance()
   -- A timed race's distance is the laps it ran; a lap race says so if cut short.
@@ -1715,6 +1820,7 @@ local function buildResultsText(cupRound)
     race.maxResets < 0 and 'unlimited'
       or (race.maxResets == 0 and 'not allowed' or tostring(race.maxResets) .. ' per driver'),
     race.jokerEnabled and 'required exactly once' or 'disabled'))
+  if race.closedHow then add(' Ended: ' .. race.closedHow) end
   add('==================================================')
   add('')
   add('--- QUALIFYING RESULTS ---')
@@ -1756,7 +1862,7 @@ local function buildResultsText(cupRound)
     if excluded then
       pos, finish = 'DSQ', rec.outReason or 'Disqualified'
     elseif classified then
-      pos, finish = 'P' .. i, fmtLap(rec.finishTime)
+      pos, finish = 'P' .. i, finishCell(rec)
     else
       -- A DNF keeps the place it was running in, in the reason text (the Pos
       -- column is fixed width). Finishers stay above every retirement.
@@ -1807,7 +1913,7 @@ local function buildResultsText(cupRound)
           if rec.status == 'dsq' then
             finish = rec.outReason or 'Disqualified'
           elseif rec.finishTime then
-            finish = fmtLap(rec.finishTime)
+            finish = finishCell(rec)
           else
             finish = (rec.outReason or 'DNF')
               .. (rec.classPos and (' (was P' .. rec.classPos .. ' in class)') or '')
@@ -1872,16 +1978,36 @@ end
 
 local function writeResults(cupRound)
   ensureResultsDir()
-  local path = uniqueResultsPath('results')
   local text = buildResultsText(cupRound)
-  local f, err = io.open(path, 'w')
+  -- A RERUN GOES UNDER THE RACE IT REPLACES, so a restart can never leave one
+  -- of the two unaccounted for. A file that has gone falls back to a new one.
+  local path, appended = race.appendTo, false
+  race.appendTo = nil
+  if path then
+    local probe = io.open(path, 'r')
+    if probe then probe:close(); appended = true else path = nil end
+  end
+  if appended then
+    text = '\n##################################################\n'
+      .. ' RESTART: the race above was stopped and run again. This is the rerun.\n'
+      .. '##################################################\n\n' .. text
+  else
+    path = uniqueResultsPath('results')
+  end
+  local f, err = io.open(path, appended and 'a' or 'w')
   if not f then return false, tostring(err) end
   f:write(text)
   f:close()
+  race.lastResults = path
+  -- Admins get the whole file, so their copy holds both races.
+  if appended then
+    local r = io.open(path, 'r')
+    if r then text = r:read('*a'); r:close() end
+  end
   -- Basename only; the separator built from a char code.
   local base = path:gsub(string.char(92), '/'):match('([^/]+)$') or 'results.txt'
   sendResultsToAdmins(base, text)
-  return true, path
+  return true, path, appended
 end
 
 -- ---------------------------------------------------------------------------
@@ -1980,22 +2106,59 @@ local function driversOnTrack()
 end
 
 -- Take one driver off the track as finished: THE single path (lap target,
--- expired-clock final lap, grace timeout).
-local function retireDriver(rec, reason)
+-- expired-clock final lap, grace timeout, the finish countdown). `atLine` false
+-- is a car taken where it stood: classified on the laps it had completed.
+local function retireDriver(rec, reason, atLine)
   if not onTrack(rec) then return false end
   rec.status = 'finished'
   -- RACE time, from the green: the pace lap is nobody's race.
   rec.finishTime = race.time - race.greenAt
+  -- A crossing does not advance currentLap, so at the line it IS the count.
+  local n = rec.currentLap or 0
+  rec.atLine   = atLine == true
+  rec.lapsDone = rec.atLine and n or math.max(n - 1, 0)
+  race.finishSeq = race.finishSeq + 1
+  rec.finishSeq  = race.finishSeq
   -- The RESET ghost ends here. The finished ghost is derived from status by
   -- finishedRoster, not an event.
   clearGhost(rec.id, 'driver finished')
-  -- Their place, counted at the crossing (they are already 'finished').
+  -- Their place: in a race, where the classification puts them (laps first,
+  -- so not simply how many are home); in qualifying, the count home.
   local place = 0
-  for _, r in pairs(players) do
-    if r.status == 'finished' then place = place + 1 end
+  if race.sessionKind == 'race' then
+    for i, r in ipairs(raceClassification()) do
+      if r == rec then place = i break end
+    end
+  else
+    for _, r in pairs(players) do
+      if r.status == 'finished' then place = place + 1 end
+    end
   end
   forceSpectate(rec.id, reason, 'race', place)
   return true
+end
+
+-- A race car home at the line. The first puts the checkered flag out; the
+-- finishAfter-th starts the finish countdown. Nobody else is flagged off by
+-- it: lapped cars race on until they finish or the countdown runs out.
+race.noteFinisher = function (rec)
+  if not race.flagOut then
+    race.flagOut = true
+    MP.SendChatMessage(-1, '[RaceManager] CHECKERED FLAG: ' .. displayName(rec) .. ' wins.')
+  end
+  if race.closeAt or race.finishTimer <= 0 or driversOnTrack() == 0 then return end
+  local home = 0
+  for _, r in pairs(players) do
+    if r.status == 'finished' and r.atLine then home = home + 1 end
+  end
+  if home < race.finishAfter then return end
+  race.closeAt = race.time + race.finishTimer
+  notifyField('flag', 'RACE ENDS IN ' .. race.finishTimer .. 's',
+    'Complete the distance to finish. Then laps completed decide the order.', 'checkered')
+  MP.SendChatMessage(-1, string.format('[RaceManager] %d car%s home: the race closes in %d seconds.',
+    home, home == 1 and '' or 's', race.finishTimer))
+  print(string.format('[RaceManager] Finish countdown: %ds after %d car(s) home, %d still out',
+    race.finishTimer, home, driversOnTrack()))
 end
 
 -- Retire without a finish: THE one way a record becomes a DNF. Classified
@@ -2083,6 +2246,7 @@ local function finishSession(reason)
   race.raceExpired  = false
   race.raceExpiredAt = nil
   race.lastLapNum   = nil
+  race.closeAt, race.flagOut = nil, false
   -- No reset ghost outlives the session; the respawn has its own placement ghost.
   clearAllGhosts('session ended: ' .. tostring(reason))
   if isQualiSession() then
@@ -2093,7 +2257,10 @@ local function finishSession(reason)
       if onTrack(rec) then rec.status = 'waiting' end
     end
     -- Qualifying points are held for the race's round (no-op without a cup).
-    if cupOnSessionComplete then cupOnSessionComplete('quali') end
+    if cupOnSessionComplete then
+      local done, err = pcall(cupOnSessionComplete, 'quali')
+      if not done then print('[RaceManager] Cup scoring failed: ' .. tostring(err)) end
+    end
     if race.recordsSession then race.recordsSession('quali') end
     respawnAll('race')
     broadcastState()
@@ -2131,7 +2298,14 @@ local function finishSession(reason)
   -- The cup is scored AFTER the joker ruling, and the round it banks is carried
   -- to the results file (a cup at its cap scores nothing, and "the current
   -- round" would then print the previous race's points).
-  local cupRound = cupOnSessionComplete and cupOnSessionComplete('race') or nil
+  -- PROTECTED, and skipped for a race stopped to be restarted: the cup must
+  -- never cost the results file, and a race run again is not a round.
+  local cupRound = nil
+  if cupOnSessionComplete and not race.voided then
+    local done, round = pcall(cupOnSessionComplete, 'race')
+    if done then cupRound = round
+    else print('[RaceManager] Cup scoring failed: ' .. tostring(round)) end
+  end
   -- After the joker ruling too: a disqualified lap sets no record.
   if race.recordsSession then race.recordsSession('race') end
   respawnAll('race')
@@ -2142,13 +2316,38 @@ local function finishSession(reason)
       excluded, excluded == 1 and '' or 's'))
   end
   print('[RaceManager] Race over: ' .. reason)
-  local ok, wrote, pathOrErr = pcall(writeResults, cupRound)
+  race.closedHow = race.voided
+    and (race.voided .. '. Not scored in the cup; the rerun is added below.') or reason
+  race.lastResults = nil
+  local ok, wrote, pathOrErr, appended = pcall(writeResults, cupRound)
+  race.closedHow = nil
   if ok and wrote then
-    MP.SendChatMessage(-1, '[RaceManager] Session complete! Results saved on the server: ' .. pathOrErr)
+    MP.SendChatMessage(-1, '[RaceManager] Session complete! Results saved on the server: ' .. pathOrErr
+      .. (appended and ' (added below the race it restarted)' or ''))
     print('[RaceManager] Results written to ' .. pathOrErr)
   else
     print('[RaceManager] Failed to write results: ' .. tostring(ok and pathOrErr or wrote))
   end
+end
+
+-- Close a race with a car home: everyone still out is classified where they
+-- stand, on laps completed. The countdown's end, and End Race after the flag.
+-- Retired in running order, so each is told the place it keeps.
+race.closeField = function (reason)
+  race.closeAt = nil
+  local out = {}
+  for _, rec in pairs(players) do
+    if onTrack(rec) then out[#out + 1] = rec end
+  end
+  table.sort(out, raceOrderLess)
+  for _, rec in ipairs(out) do
+    retireDriver(rec, 'Race over: classified on the laps you completed', false)
+  end
+  if #out > 0 then
+    MP.SendChatMessage(-1, string.format('[RaceManager] Race closed (%s): %d car%s classified '
+      .. 'on laps completed.', reason, #out, #out == 1 and '' or 's'))
+  end
+  finishSession(reason)
 end
 
 -- ---------------------------------------------------------------------------
@@ -2161,6 +2360,7 @@ end
 function RM_onStartQualifying(pid)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
+  race.appendTo = nil
   MP.CancelEventTimer('RM_CountdownTick')
   wipe(players)
   wipe(lapFirsts)
@@ -2199,6 +2399,12 @@ function RM_onRetire(pid)
     rec.name, rec.dnfPos or 0))
   print(string.format('[RaceManager] %s retired, classified P%s',
     rec.name, tostring(rec.dnfPos)))
+  -- The last car out: the session is over, as when it disconnects. It stayed
+  -- RUNNING with nobody left to end it.
+  if sessionRunning() and driversOnTrack() == 0 then
+    finishSession('every driver is home or out')
+    return
+  end
   broadcastState()
 end
 
@@ -2458,6 +2664,7 @@ formGrid = function (kind, byName)
   race.raceExpired  = false
   race.raceExpiredAt = nil
   race.lastLapNum   = nil
+  race.closeAt, race.flagOut = nil, false
   wipe(lapFirsts)
   race.bestLapTime, race.bestLapPid = nil, nil
 
@@ -2480,6 +2687,15 @@ formGrid = function (kind, byName)
       skipped[#skipped + 1] = rec.name
       rec.gridPos = nil
       rec.status  = 'waiting'
+      -- ...and no result from the last race. A finish time kept a driver who
+      -- sat this one out (another heat's, or a spectator) ranked P1 on the
+      -- live board, the leader every gap was measured from, and in this
+      -- race's classification and cup round. Results are already written.
+      rec.finishTime, rec.lapsDone, rec.atLine = nil, nil, nil
+      rec.currentLap, rec.lapsLed = 0, 0
+      rec.dnfPos, rec.heldPos, rec.outReason = nil, nil, nil
+      rec.splits, rec.splitLap, rec.splitCp = nil, nil, nil
+      progress.clear(rec)
       -- ...and a ghost both ways (finishedRoster covers the other way). A heat
       -- draw puts drivers here without anybody pressing anything.
       rec.bystander = true
@@ -2503,7 +2719,18 @@ formGrid = function (kind, byName)
     return false
   end
 
-  orderForGrid(ordered)
+  if race.regrid then
+    -- A restart lines up as the stopped race did: its slots, then anyone new.
+    table.sort(ordered, function (a, b)
+      local ga, gb = a.gridPos or math.huge, b.gridPos or math.huge
+      if ga ~= gb then return ga < gb end
+      return a.id < b.id
+    end)
+  else
+    orderForGrid(ordered)
+    -- Any other grid is a new race, not the rerun.
+    race.appendTo = nil
+  end
   -- Locks come off BEFORE the slots go out (a client with no car would drop
   -- the slot); the client coalesces the two into one ghosted operation.
   releaseSpectators('race')
@@ -2516,6 +2743,7 @@ formGrid = function (kind, byName)
     rec.currentLap = 0
     rec.lapsLed    = 0
     rec.finishTime = nil
+    rec.lapsDone, rec.atLine = nil, nil
     -- A new session: allowances and joker credit start over.
     rec.resets     = 0
     rec.resetsBlocked = 0
@@ -2962,6 +3190,22 @@ function RM_onSetRaceLimits(pid, rawData)
     MP.GetPlayerName(pid) or pid, raceLengthLabel()))
 end
 
+-- The finish countdown: how many cars home start it, and how long it runs (0
+-- waits for every car). Refused mid-session, like the race length.
+function RM_onSetFinishRule(pid, rawData)
+  local data = adminPayload(pid, rawData, true)
+  if not data then return end
+  local after = tonumber(data.after)
+  local secs  = tonumber(data.seconds)
+  if after then race.finishAfter = math.min(math.max(math.floor(after), 1), 99) end
+  if secs then race.finishTimer = math.min(math.max(math.floor(secs), 0), 3600) end
+  broadcastState()
+  print(string.format('[RaceManager] Finish countdown set by %s: %s',
+    MP.GetPlayerName(pid) or pid, race.finishTimer > 0
+      and string.format('%ds after %d car(s) home', race.finishTimer, race.finishAfter)
+      or 'off, waits for every car'))
+end
+
 function RM_onSetTotalLaps(pid, rawData)
   if not requireAuth(pid) then return end
   if sessionUnderWay() then return end
@@ -3242,6 +3486,7 @@ local function releaseField(pacing)
   race.raceExpired  = false
   race.raceExpiredAt = nil
   race.lastLapNum   = nil
+  race.closeAt, race.flagOut = nil, false
   wipe(lapFirsts)
   race.bestLapTime, race.bestLapPid = nil, nil
   for _, rec in pairs(players) do
@@ -3251,6 +3496,7 @@ local function releaseField(pacing)
       rec.raceBest   = nil
       rec.lapsLed    = 0
       rec.finishTime = nil
+      rec.lapsDone, rec.atLine = nil, nil
       rec.resets     = 0
       rec.jokerTaken = 0
       rec.jokerLap   = nil
@@ -3855,6 +4101,12 @@ function RM_onEndRace(pid)
     finishSession('ended by ' .. (MP.GetPlayerName(pid) or pid))
     return
   end
+  -- A car is home: this is the finish countdown cut short, so the cars still
+  -- out are classified on their laps, not retired.
+  if race.flagOut then
+    race.closeField('ended by ' .. (MP.GetPlayerName(pid) or pid))
+    return
+  end
   for _, rec in pairs(players) do
     if onTrack(rec) or rec.status == 'gridded' then
       retireAsDnf(rec, 'DNF - Session ended')
@@ -3863,8 +4115,39 @@ function RM_onEndRace(pid)
   finishSession('ended by ' .. (MP.GetPlayerName(pid) or pid))
 end
 
+-- RESTART FROM THE GRID: stop the race, save it (marked restarted, no cup
+-- round), and line the same field up on the same grid. Qualifying is kept, and
+-- the rerun's results are added to the stopped race's file. In the countdown
+-- nothing has been raced, so nothing is saved.
+function RM_onRestartFromGrid(pid)
+  if not requireAuth(pid) then return end
+  if isQualiSession() or (race.phase ~= 'racing' and race.phase ~= 'countdown') then return end
+  local who = MP.GetPlayerName(pid) or tostring(pid)
+  if race.phase == 'racing' then
+    race.voided = 'Restarted from the grid by ' .. who
+    RM_onEndRace(pid)
+    race.voided = nil
+    race.appendTo = race.lastResults
+  else
+    MP.CancelEventTimer('RM_CountdownTick')
+    broadcastCountdown(-1)
+  end
+  race.regrid = true
+  local formed = formGrid('race', who)
+  race.regrid = false
+  if not formed then race.appendTo = nil return end
+  MP.SendChatMessage(-1, '[RaceManager] RACE RESTART: the field is back on the same grid. '
+    .. 'Start Countdown when everyone is ready.')
+  print('[RaceManager] Race restarted from the grid by ' .. who
+    .. (race.appendTo and (', rerun goes into ' .. race.appendTo) or ''))
+end
+
 function RM_onResetLeaderboard(pid)
   if not requireAuth(pid) then return end
+  -- A RACE UNDER WAY IS SAVED FIRST. Reset threw it away, with no file, and
+  -- took qualifying with it; Restart from grid is the way to run it again.
+  if race.phase == 'racing' and not isQualiSession() then RM_onEndRace(pid) end
+  race.appendTo = nil
   MP.CancelEventTimer('RM_CountdownTick')
   broadcastCountdown(-1)
   -- Nothing stays ghosted through a session reset: no client is left to report
@@ -3907,6 +4190,7 @@ function RM_onResetLeaderboard(pid)
   race.raceExpired  = false
   race.raceExpiredAt = nil
   race.lastLapNum   = nil
+  race.closeAt, race.flagOut = nil, false
   -- Display names survive in the identity registry.
   clearEntries()
   for id in pairs(onlinePlayers()) do
@@ -4029,11 +4313,12 @@ function RM_onLap(pid, rawData)
 
   local completed = rec.currentLap
   -- Did this crossing lead the lap? First to reach this lap number, which a
-  -- lapped car coming past cannot claim.
+  -- lapped car coming past cannot claim. NOT THE FORMATION LAP: nobody leads a
+  -- pace lap, and counting it gave the pole-sitter a lap led before racing.
   local ledThisLap = false
   if quali then
     rec.qualiLaps = (rec.qualiLaps or 0) + 1
-  elseif not lapFirsts[completed] then
+  elseif not (paced and untimedFirstLap) and not lapFirsts[completed] then
     lapFirsts[completed] = pid
     rec.lapsLed = rec.lapsLed + 1
     ledThisLap = true
@@ -4073,38 +4358,24 @@ function RM_onLap(pid, rawData)
   -- New lap: the old lap's telemetry must not rank this driver.
   progress.clear(rec)
 
-  -- Is this crossing the driver's last? The lap target; the expired clock (once
-  -- finalLap is armed, ANY crossing, settled by arrival order at the server); or
-  -- a timed race's final lap NUMBER (everyone gets that whole lap). The lap still
-  -- COUNTS: its time can improve a position.
+  -- Is this crossing the driver's last? The lap target; a timed race's final lap
+  -- NUMBER (everyone gets that whole lap); or, once finalLap is armed (qualifying's
+  -- clock, a timed race's stuck-field valve), ANY crossing. A race won normally
+  -- never arms finalLap: lapped cars race on to the distance and the finish
+  -- countdown closes the race. The lap still COUNTS: its time can improve a
+  -- position.
   local target = sessionLapTarget()
   local lastLap = (target and completed >= target) or race.finalLap
     or (race.lastLapNum ~= nil and completed >= race.lastLapNum)
 
   -- The leader's crossing after the clock ran out starts the final lap, decided
   -- after lastLap so they run the lap they just began.
-  if not lastLap and ledThisLap and race.raceExpired and not race.lastLapNum then
+  if not lastLap and ledThisLap and race.raceExpired and not race.lastLapNum
+      and not race.flagOut then
     armRaceFinalLap(completed + 1)
   end
 
   if lastLap then
-    -- First car home on a timed race's final lap: the checkered flag is out and
-    -- every crossing is terminal (which classifies lapped cars).
-    if race.lastLapNum and completed >= race.lastLapNum and not race.finalLap then
-      race.finalLap     = true
-      race.finalLapLeft = CFG.finalLapGrace
-      MP.SendChatMessage(-1, '[RaceManager] CHECKERED FLAG: '
-        .. displayName(rec) .. ' wins. Everyone still out is classified as they cross.')
-    end
-    -- Endurance reaching the DISTANCE: the flag falls on the first car home. Not
-    -- for a Laps race, where everyone runs the full distance.
-    if race.raceMode == 'endurance' and target and completed >= target
-        and not race.finalLap then
-      race.finalLap     = true
-      race.finalLapLeft = CFG.finalLapGrace
-      MP.SendChatMessage(-1, '[RaceManager] CHECKERED FLAG: ' .. displayName(rec)
-        .. ' completed the distance. Everyone still out is classified as they cross.')
-    end
     local why
     if quali and race.finalLap and not (target and completed >= target) then
       why = 'Qualifying over: you took the flag on the final lap'
@@ -4114,7 +4385,7 @@ function RM_onLap(pid, rawData)
       why = 'You finished the race: spectating until the flag'
     end
     -- A finished car leaves the race (ghosted; back at the flag).
-    retireDriver(rec, why)
+    retireDriver(rec, why, true)
     print(string.format('[RaceManager] %s completed %d lap(s) at %.3fs (led %d)%s',
       rec.name, completed, race.time, rec.lapsLed, race.finalLap and ' [final lap]' or ''))
     if quali and target and completed >= target then
@@ -4126,6 +4397,7 @@ function RM_onLap(pid, rawData)
       MP.SendChatMessage(-1, string.format('[RaceManager] %s has taken the flag (%d still out).',
         displayName(rec), driversOnTrack()))
     end
+    if not quali then race.noteFinisher(rec) end
     -- Everyone done (finished or dnf)? Close the session.
     if driversOnTrack() > 0 then
       broadcastState()
@@ -4482,6 +4754,8 @@ local function applyConfigTable(data)
   bool('nametags')
   num('countdownFrom', 1, 60)
   num('endDelay', 0, 120)
+  num('finishAfter', 1, 99)
+  num('finishTimer', 0, 3600)
   bool('paceLap')
   -- paceGreenAt is bounded below paceArmAt (see the ordering checks below).
   num('paceGreenAt', 1, 100)
@@ -4553,6 +4827,8 @@ local function configFileText()
     nametags       = CFG.nametags,
     countdownFrom  = CFG.countdownFrom,
     endDelay       = CFG.endDelay,
+    finishAfter    = CFG.finishAfter,
+    finishTimer    = CFG.finishTimer,
     paceLap        = CFG.paceLap,
     paceGreenAt    = CFG.paceGreenAt,
     paceReadyAt    = CFG.paceReadyAt,
@@ -4599,6 +4875,8 @@ local function applyConfigToRace()
   race.resetMode      = CFG.resetMode
   race.nametags       = CFG.nametags
   race.endDelay       = CFG.endDelay
+  race.finishAfter    = math.floor(CFG.finishAfter)
+  race.finishTimer    = math.floor(CFG.finishTimer)
   race.paceLap        = CFG.paceLap
   race.luckyDog       = CFG.luckyDog
   race.heatLaps       = CFG.heatLaps
@@ -8056,11 +8334,18 @@ function RM_Tick()
   if race.flag == 'red' then
     race.greenAt = race.greenAt + dt
     if race.raceExpiredAt then race.raceExpiredAt = race.raceExpiredAt + dt end
+    if race.closeAt then race.closeAt = race.closeAt + dt end
     tickCounter = tickCounter + 1
     if tickCounter >= CFG.pushEveryTicks then
       tickCounter = 0
       broadcastState()
     end
+    return
+  end
+  -- THE FINISH COUNTDOWN ran out: the cars still out are classified where they
+  -- stand.
+  if race.closeAt and race.time >= race.closeAt then
+    race.closeField('the finish countdown ran out')
     return
   end
   -- THE GRACE, for both session kinds: once the flag is out, a driver with no
@@ -8072,6 +8357,8 @@ function RM_Tick()
       for _, rec in pairs(players) do
         if onTrack(rec) then stranded[#stranded + 1] = rec end
       end
+      -- In running order, so each is told the place it keeps.
+      table.sort(stranded, raceOrderLess)
       -- Snapshot first: retireDriver sends a client event per driver.
       for _, rec in ipairs(stranded) do
         retireDriver(rec, isQualiSession()
@@ -8092,7 +8379,9 @@ function RM_Tick()
       beginFinalLap()
       -- No return: the broadcast below carries the final-lap flag.
     end
-  elseif race.phase == 'racing' and race.raceTimeLimit > 0 and not race.pacing then
+  elseif race.phase == 'racing' and race.raceTimeLimit > 0 and not race.pacing
+      and not race.flagOut then
+    -- Not once a car is home: an endurance race won on distance has no clock.
     if not race.raceExpired then
       -- Time up only arms the wait: the leader's next crossing starts the final
       -- lap. Measured from the GREEN (a pace lap is not race time).
@@ -8232,6 +8521,8 @@ function onInit()
   MP.RegisterEvent('RM_SetReadyCheck',    'RM_onSetReadyCheck')
   MP.RegisterEvent('RM_SetTotalLaps',     'RM_onSetTotalLaps')
   MP.RegisterEvent('RM_SetRaceLimits',    'RM_onSetRaceLimits')
+  MP.RegisterEvent('RM_SetFinishRule',    'RM_onSetFinishRule')
+  MP.RegisterEvent('RM_RestartFromGrid',  'RM_onRestartFromGrid')
   MP.RegisterEvent('RM_SetAlias',         'RM_onSetAlias')
   MP.RegisterEvent('RM_SetNametags',      'RM_onSetNametags')
   -- Race entry (opt-in) + starting grid

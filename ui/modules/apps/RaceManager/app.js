@@ -57,7 +57,9 @@ angular.module('beamng.apps')
         raceMins: 0,           // race time limit in minutes (0 = run to laps)
         heats: 0,              // heats the night is split into (0 = no program)
         transfer: 0,           // drivers transferring out of each heat
-        heatLaps: 0            // laps a heat runs (0 = the race distance)
+        heatLaps: 0,           // laps a heat runs (0 = the race distance)
+        finishAfter: 1,        // cars home before the finish countdown starts
+        finishSecs: 60         // the finish countdown, seconds (0 = off)
       };
 
       // ----------------------------------------------------------------
@@ -73,6 +75,10 @@ angular.module('beamng.apps')
       $scope.clockStopped = false; // a red flag is holding the race clock
       $scope.raceExpired = false; // clock out, waiting on the leader's crossing
       $scope.lastLapNum = null;   // the lap everyone still running finishes on
+      $scope.flagOut = false;     // a car has taken the checkered flag
+      $scope.closeLeft = null;    // seconds until the finish countdown closes the race
+      $scope.finishAfter = 1;     // cars home that start the finish countdown
+      $scope.finishTimer = 60;    // its length in seconds, 0 = wait for every car
       $scope.maxResets = -1;      // authoritative value mirrored from the server
       $scope.resetsUsed = 0;      // what THIS client has spent
       // What a legal reset does: repair in place, or respawn at the last
@@ -1864,6 +1870,13 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // is between best laps. A lapped car shows laps, not seconds.
       $scope.lapsDown = function (row) {
         if (!row) { return 0; }
+        // The server's count, by where the cars are on the road: the leader
+        // taking the line puts nobody a lap down until it is past them.
+        if (typeof row.down === 'number') {
+          return (row.status === 'dnf' || row.status === 'dsq') ? 0 : row.down;
+        }
+        // An older server: the lap counters, which read +1 LAP for the whole
+        // field from the leader's crossing until each car crossed.
         // The classification leader, which is drivers[0] on every board: the
         // server sorts the array leader-first and every table renders it as it
         // arrived.
@@ -1899,6 +1912,11 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.intervalLabel = function (row) {
         if (!row || row.status === 'dnf' || row.status === 'dsq') { return ''; }
         if (row.position === 1) { return ''; }
+        if (typeof row.idown === 'number') {
+          if (row.idown > 0) { return '+' + row.idown + ' LAP' + (row.idown > 1 ? 'S' : ''); }
+          return formatBehind(row.intv);
+        }
+        // An older server, by the counters (see lapsDown).
         // drivers[position - 1] is this row, so the car ahead is one before it.
         var ahead = $scope.drivers[row.position - 2];
         if (ahead && ahead.currentLap && row.currentLap
@@ -2148,6 +2166,18 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
           if (typeof data.raceMode === 'string') { $scope.raceMode = data.raceMode; }
           $scope.raceExpired = data.raceExpired === true;
           $scope.lastLapNum = (typeof data.lastLapNum === 'number') ? data.lastLapNum : null;
+          // The finish countdown: a car is home, and the seconds left once the
+          // countdown runs. The rule re-seeds its boxes the way the laps box does.
+          $scope.flagOut = data.flagOut === true;
+          $scope.closeLeft = (typeof data.closeLeft === 'number') ? data.closeLeft : null;
+          if (typeof data.finishAfter === 'number' && $scope.finishAfter !== data.finishAfter) {
+            $scope.finishAfter = data.finishAfter;
+            $scope.settingsUi.finishAfter = data.finishAfter;
+          }
+          if (typeof data.finishTimer === 'number' && $scope.finishTimer !== data.finishTimer) {
+            $scope.finishTimer = data.finishTimer;
+            $scope.settingsUi.finishSecs = data.finishTimer;
+          }
           if (typeof data.raceTimeLimit === 'number'
               && $scope.raceTimeLimit !== data.raceTimeLimit) {
             $scope.raceTimeLimit = data.raceTimeLimit;
@@ -2662,10 +2692,12 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
 
       // `color` is the notice's own, which a flag needs: every flag is kind
       // 'flag', and dropping this painted all of them the same gray.
-      function noticePush(kind, msg, sub, color) {
+      // `still`: shown as the strip even for a kind that flashes (GET READY,
+      // which must not flash before the green does).
+      function noticePush(kind, msg, sub, color, still) {
         var st = noticeStyle(kind);
         var item = { kind: kind, msg: msg, sub: sub || null, rank: st.rank,
-                     flash: st.flash, ms: st.ms, color: color || st.color };
+                     flash: st.flash && !still, ms: st.ms, color: color || st.color };
         // A kind that replaces: drop anything of its kind still waiting, and if
         // one is up, take its place now rather than after it.
         if (st.replace) {
@@ -2701,7 +2733,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.$on('RaceManagerNotice', function (event, data) {
         if (!data || !data.msg) { return; }
         $scope.$evalAsync(function () {
-          noticePush(data.kind || 'info', data.msg, data.sub, data.color);
+          noticePush(data.kind || 'info', data.msg, data.sub, data.color, data.still === true);
         });
       });
 
@@ -3960,6 +3992,14 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       $scope.retire = function () {
         bngApi.engineLua('raceManager.retire()');
       };
+      // Only a driver still circulating can retire; the server ignores anyone
+      // else. Retired, finished, taken off track or still on the grid: no button.
+      $scope.canRetire = function () {
+        if (!$scope.sessionUnderWay() || $scope.spectating || $scope.carTaken) { return false; }
+        // An older bridge sends no status of our own: the session decides.
+        if (!$scope.myStatus) { return true; }
+        return $scope.myStatus === 'racing' || $scope.myStatus === 'qualifying';
+      };
 
       $scope.setSpectating = function (on) {
         bngApi.engineLua('raceManager.setSpectating(' + (on ? 'true' : 'false') + ')');
@@ -3975,6 +4015,17 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       };
       $scope.resetLeaderboard = function () {
         bngApi.engineLua('raceManager.resetLeaderboard()');
+      };
+      // Restart from grid, two presses: it stops a live race. Through an object
+      // for the ng-if child scopes.
+      $scope.regridUi = { confirm: false };
+      $scope.restartFromGrid = function () {
+        $scope.regridUi.confirm = false;
+        bngApi.engineLua('raceManager.restartFromGrid()');
+      };
+      $scope.canRestartFromGrid = function () {
+        return $scope.sessionKind !== 'quali'
+          && ($scope.phase === 'racing' || $scope.phase === 'countdown');
       };
       // Clear Results Cache, two presses: no undo, and a results file is a
       // league's only record of a night.
@@ -4562,6 +4613,20 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         }
         return 'race: ' + $scope.totalLaps + ' laps';
       };
+      // The finish countdown: both boxes go together. An empty box is skipped
+      // (still typing).
+      $scope.applyFinishRule = function () {
+        var a = parseInt($scope.settingsUi.finishAfter, 10);
+        var t = parseInt($scope.settingsUi.finishSecs, 10);
+        if (isNaN(a) || isNaN(t)) { return; }
+        bngApi.engineLua('raceManager.setFinishRule(' + Math.max(a, 1) + ', ' + Math.max(t, 0) + ')');
+      };
+      // The server's rule, in words.
+      $scope.finishRuleLabel = function () {
+        if (!($scope.finishTimer > 0)) { return 'waits for every car'; }
+        return 'closes ' + $scope.finishTimer + 's after ' + $scope.finishAfter
+          + ($scope.finishAfter === 1 ? ' car is' : ' cars are') + ' home';
+      };
       // The session clock: a lap race counts UP, a timed race DOWN while racing;
       // a finished race shows elapsed. Elapsed is from the green (a pace lap reads
       // 0:00, a red flag holds it); raceTime is an older server's fallback.
@@ -4581,14 +4646,26 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         return $scope.phase === 'racing'
           && $scope.raceLeft !== null && $scope.raceLeft !== undefined;
       };
-      // What the header says once the clock is out. Three states, three
-      // sentences: waiting on the leader, the final lap running, the flag out.
+      // What the header says as the race ends: waiting on the leader, the final
+      // lap running, the winner home, and the finish countdown once it runs.
       $scope.raceEndState = function () {
         if ($scope.phase !== 'racing') { return null; }
-        if ($scope.finalLap) { return 'FLAG OUT'; }
+        if ($scope.closeLeft !== null) { return 'ENDS ' + $scope.formatRaceTime(Math.ceil($scope.closeLeft)); }
+        if ($scope.flagOut || $scope.finalLap) { return 'FLAG OUT'; }
         if ($scope.lastLapNum) { return 'FINAL LAP'; }
         if ($scope.raceExpired) { return '+1 LAP'; }
         return null;
+      };
+      $scope.raceEndTitle = function () {
+        var s = $scope.raceEndState();
+        if (s === '+1 LAP') { return 'Time is up: the final lap starts when the leader takes the line'; }
+        if (s === 'FINAL LAP') { return 'Finish this lap to take the flag'; }
+        if ($scope.closeLeft !== null) {
+          return 'The race closes when this reaches zero. Complete the distance before then to finish; '
+            + 'anyone still out is classified on the laps they completed.';
+        }
+        if ($scope.finalLap) { return 'The flag is out: your race ends as you cross the line'; }
+        return 'The winner is home: complete the distance to finish';
       };
 
       // Remaining qualifying time for the header readout.
@@ -5130,6 +5207,31 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
 
       // One opacity for the whole app, on an object (ng-if child scopes).
       $scope.lbUi = { opacity: loadPref('opacity', 0.85) };   // 0 (invisible) .. 1 (solid)
+
+      // THE BAR'S TEXT SIZE, A- and A+: the driver bar and the header's timing
+      // run scale together through --rm-bar-scale. Steps, not a slider: a
+      // driver reaches for it mid-session. Remembered per player.
+      var BAR_SCALES = [0.9, 1, 1.15, 1.3, 1.5, 1.75, 2];
+      $scope.lbUi.barScale = BAR_SCALES.indexOf(loadPref('barScale', 1)) >= 0
+        ? loadPref('barScale', 1) : 1;
+      function applyBarScale() {
+        $element[0].style.setProperty('--rm-bar-scale', String($scope.lbUi.barScale));
+      }
+      function barScaleIndex() {
+        var i = BAR_SCALES.indexOf($scope.lbUi.barScale);
+        return i < 0 ? 1 : i;
+      }
+      $scope.barFontCan = function (step) {
+        var i = barScaleIndex() + step;
+        return i >= 0 && i < BAR_SCALES.length;
+      };
+      $scope.barFont = function (step) {
+        if (!$scope.barFontCan(step)) { return; }
+        $scope.lbUi.barScale = BAR_SCALES[barScaleIndex() + step];
+        savePref('barScale', $scope.lbUi.barScale);
+        applyBarScale();
+      };
+      applyBarScale();
 
       // START SOUNDS, played by lights.lua: beeps for the countdown, GET READY
       // and the drag tree, a tone for GO and the green. Remembered here.

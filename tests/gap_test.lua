@@ -274,6 +274,28 @@ do
     'the gap on the wire is rounded to the millisecond')
 end
 
+-- ---------------------------------------------------------------------------
+-- Laps down is where the cars are on the road, not the lap counter
+-- ---------------------------------------------------------------------------
+-- The leader taking the line puts their counter a lap ahead of everybody
+-- behind them. That made the whole field read "+1 LAP" until each car crossed
+-- the line in turn. A car is a lap down once the leader is past it.
+progress(3, 1, 1, 80.0)
+progress(4, 1, 1, 90.0)
+lap(1)
+progress(2, 1, 3, 20.0)
+push()
+check(driver('Alice').currentLap == 2, 'the leader is on lap 2')
+check(driver('Bob').down == 0 and driver('Cara').down == 0 and driver('Dan').down == 0,
+  'and that alone puts nobody a lap down')
+progress(1, 2, 2, 30.0)
+push()
+check(driver('Cara').down == 1 and driver('Dan').down == 1,
+  'a car the leader has passed on the road is a lap down')
+check(driver('Bob').down == 0, 'one still ahead of the leader on the road is not')
+check(driver('Cara').idown == 0, 'and nobody is a lap down on a car on its own lap')
+check(driver('Alice').down == nil, 'the leader has no laps down')
+
 if package.config:sub(1, 1) == '\\' then
   os.execute('rmdir /s /q "Resources" 2>nul')
 else

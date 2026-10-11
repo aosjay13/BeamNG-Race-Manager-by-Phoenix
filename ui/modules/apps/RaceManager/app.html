@@ -55,7 +55,23 @@
     <span class="rm-timing" ng-if="showTiming()">
     <span class="rm-clock" ng-if="phase === 'racing' || phase === 'finished'"
           ng-class="{'rm-clock-down': sessionClockDown(), 'rm-clock-stopped': clockStopped}"
-          title="{{ clockStopped ? 'Race clock stopped: red flag' : (sessionClockDown() ? 'Race time remaining' : 'Race time elapsed') }}">{{ sessionClock() }}</span>
+          title="{{ clockStopped ? 'Race clock stopped: red flag' : (sessionClockDown() ? 'Race time remaining' : 'Race time elapsed') }}">{{ sessionClockDown() ? 'LEFT ' : '' }}{{ sessionClock() }}</span>
+    <!-- How the race ends, said as it happens:
+           +1 LAP     a timed race's clock is out and the leader has not been
+                      past yet, so there are two laps to go, not one;
+           FINAL LAP  the leader has been past. Finish this lap;
+           FLAG OUT   the winner is home: complete the distance to finish;
+           ENDS m:ss  the finish countdown: the race closes at zero. -->
+    <span class="rm-clock rm-final-lap" ng-if="raceEndState()" title="{{ raceEndTitle() }}">
+      {{ raceEndState() }}
+    </span>
+    <!-- Qualifying countdown when the session has a time limit -->
+    <span class="rm-clock rm-quali-clock" ng-if="phase === 'qualifying' && qualiLeft !== null && !finalLap"
+          title="Qualifying time remaining">Q {{ qualiClock() }}</span>
+    <!-- Time is up, but the session is not: everyone still out finishes the lap
+         they are on, and their session ends as they cross the line. -->
+    <span class="rm-clock rm-final-lap" ng-if="phase === 'qualifying' && finalLap"
+          title="The qualifying clock has expired: the lap you are on is your last">FINAL LAP</span>
     <span class="rm-wp-progress" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">CP {{ nextWp }}/{{ routeWaypoints.length }}</span>
     <!-- Live distance to your own next checkpoint (the third position metric) -->
     <span class="rm-dist" ng-if="phase === 'racing' && progress && progress.dist != null">{{ formatDistance(progress.dist) }}</span>
@@ -113,27 +129,6 @@
         LAP {{ formatLapLive(lapElapsed()) }}
       </span>
     </span>
-    <!-- Timed race: the clock, then what replaces it. Three states after it
-         runs out, because they are three different things to a driver:
-           +1 LAP     the clock is out and the leader has not been past yet, so
-                      there are two laps to go, not one;
-           FINAL LAP  the leader has been past. Finish this lap;
-           FLAG OUT   the winner is home and the next line you cross is yours. -->
-    <span class="rm-clock rm-final-lap" ng-if="raceEndState()"
-          title="{{ raceEndState() === '+1 LAP'
-                   ? 'Time is up: the final lap starts when the leader takes the line'
-                   : (raceEndState() === 'FINAL LAP'
-                      ? 'Finish this lap to take the flag'
-                      : 'The winner is home: your race ends as you cross the line') }}">
-      {{ raceEndState() }}
-    </span>
-    <!-- Qualifying countdown when the session has a time limit -->
-    <span class="rm-clock rm-quali-clock" ng-if="phase === 'qualifying' && qualiLeft !== null && !finalLap"
-          title="Qualifying time remaining">Q {{ qualiClock() }}</span>
-    <!-- Time is up, but the session is not: everyone still out finishes the lap
-         they are on, and their session ends as they cross the line. -->
-    <span class="rm-clock rm-final-lap" ng-if="phase === 'qualifying' && finalLap"
-          title="The qualifying clock has expired: the lap you are on is your last">FINAL LAP</span>
     </span>
     </span>
     <!-- ================= End of the first row =============================
@@ -242,8 +237,8 @@
          driver forming up has no time to read three. -->
     <span class="rm-pace-badge" ng-if="pacing &amp;&amp; !greenReady"
           title="Pace lap: hold position, no overtaking, 50 MPH or 80 KMH. It is not timed and is not one of the race laps. GET READY comes as the P1 starter nears the line, then the green at a random point before it.">PACE LAP &middot; HOLD &middot; 50 MPH OR 80 KMH &middot; NOT SCORED</span>
-    <span class="rm-restart-badge" ng-if="greenReady &amp;&amp; (pacing || restartPending)"
-          title="The run to the line has begun: the green flag falls at a random point before it. Hold position until it does.">GET READY &middot; GREEN FLAG COMING</span>
+    <span class="rm-ready-badge" ng-if="greenReady &amp;&amp; (pacing || restartPending)"
+          title="The run to the line has begun: the green flag falls at a random point before it. Hold position until it does.">GET READY &middot; HOLD UNTIL THE GREEN FLAG</span>
     <span class="rm-p2p-badge" ng-if="pointToPoint"
           title="This track is a point-to-point stage: driven once, first gate to last. Laps do not apply.">POINT TO POINT</span>
     <span class="rm-derby-badge" ng-if="derby.phase === 'running'">DERBY LIVE {{ formatDerbyTime(derby.time) }}</span>
@@ -267,6 +262,12 @@
     <!-- Fade the HUD out of the way. Its pair, the size reset, is up in the
          corner with the collapse: those two are about the WINDOW, this is about
          what is in it, and it sits with the rest of the admin row. -->
+    <span class="rm-bar-font" ng-if="!hudCollapsed">
+      <button class="rm-driverbar-btn" ng-click="barFont(-1)" ng-disabled="!barFontCan(-1)"
+              title="Smaller race clock and timing">A&minus;</button>
+      <button class="rm-driverbar-btn" ng-click="barFont(1)" ng-disabled="!barFontCan(1)"
+              title="Larger race clock and timing">A+</button>
+    </span>
     <label class="rm-driverbar-op rm-hud-op" title="HUD background opacity" ng-if="!hudCollapsed">
       <span>◑</span>
       <input type="range" min="0" max="1" step="0.05" ng-model="lbUi.opacity" ng-change="applyOpacity()">
@@ -373,7 +374,7 @@
       </button>
     </span>
 
-    <span class="rm-entry-state" ng-if="sessionUnderWay() && !spectating && !retireUi.confirm">
+    <span class="rm-entry-state" ng-if="canRetire() && !retireUi.confirm">
       <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="retireUi.confirm = true"
               title="Pull out of this session. You keep a classified position and score like any other retirement.">
         Retire
@@ -381,7 +382,7 @@
     </span>
     <!-- Asked for, because it cannot be undone: there is no rejoining a session
          you have retired from. -->
-    <span class="rm-entry-state" ng-if="sessionUnderWay() && retireUi.confirm">
+    <span class="rm-entry-state" ng-if="canRetire() && retireUi.confirm">
       Retire from this session?
       <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="retire(); retireUi.confirm = false">Yes, retire</button>
       <button class="rm-btn rm-btn-mini" ng-click="retireUi.confirm = false">Cancel</button>
@@ -762,7 +763,18 @@
             ng-if="cautionAvailable() &amp;&amp; caution &amp;&amp; restartPending"
             title="Wave the restart off. The race stays under caution and the board stays frozen.">Cancel restart</button>
     <button class="rm-btn rm-btn-end"   ng-click="endRace()"         ng-if="phase === 'racing' || phase === 'countdown' || phase === 'qualifying'">End Session</button>
-    <button class="rm-btn rm-btn-reset" ng-click="resetLeaderboard()">Reset</button>
+    <!-- RUN IT AGAIN WITHOUT LOSING QUALIFYING. Reset wiped the qualifying times
+         along with the race, which is why it was the wrong tool for a restart. -->
+    <button class="rm-btn rm-btn-end" ng-click="regridUi.confirm = true"
+            ng-if="canRestartFromGrid() &amp;&amp; !regridUi.confirm"
+            title="Stop this race and line the field up again on the same grid, qualifying kept. The stopped race is saved, marked restarted and not scored in the cup; the rerun is added to the same results file.">Restart from grid</button>
+    <span class="rm-race-pending" ng-if="canRestartFromGrid() &amp;&amp; regridUi.confirm">
+      Stop and restart from the grid?
+      <button class="rm-btn rm-btn-mini rm-btn-end" ng-click="restartFromGrid()">Yes, restart</button>
+      <button class="rm-btn rm-btn-mini" ng-click="regridUi.confirm = false">Cancel</button>
+    </span>
+    <button class="rm-btn rm-btn-reset" ng-click="resetLeaderboard()"
+            title="Clear the session for the next one, qualifying included. A race under way is ended and saved first. To run a race again on the same grid, use Restart from grid.">Reset</button>
   </div>
 
   <!-- ================= Derby controls (derby mode, admin only) ===========
@@ -961,6 +973,27 @@
                ng-disabled="pointToPoint || !canSetRules()">
       </span>
       <span class="rm-setting-val">{{ raceLimitLabel() }}</span>
+    </span>
+    <!-- THE FINISH COUNTDOWN. Lapped cars race on after the winner; once this
+         many cars are home the race closes this many seconds later, and anyone
+         still out is classified on the laps they completed. -->
+    <span class="rm-setting" title="When the race ends after the winner. Lapped cars keep racing until then, and are classified by laps completed.">
+      <label>Race end</label>
+      <span class="rm-setting-sub" title="Cars that must complete the distance before the countdown starts.">
+        <label>After</label>
+        <input type="number" class="rm-width-num" min="1" max="99" step="1" ng-model="settingsUi.finishAfter"
+               ng-model-options="{ debounce: { default: 500, blur: 0 } }"
+               ng-change="applyFinishRule()"
+               ng-disabled="!canSetRules()">
+        <label>home, close in</label>
+        <input type="number" class="rm-width-num" min="0" max="3600" step="5" ng-model="settingsUi.finishSecs"
+               ng-model-options="{ debounce: { default: 500, blur: 0 } }"
+               ng-change="applyFinishRule()"
+               ng-disabled="!canSetRules()"
+               title="Seconds. 0 waits for every car.">
+        <label>s</label>
+      </span>
+      <span class="rm-setting-val">{{ finishRuleLabel() }}</span>
     </span>
     <!-- Module 1: vehicle reset ruleset -->
     <span class="rm-setting" title="Resets per driver. 0 = none, -1 = unlimited. Past the allowance the car is put back where it was, no penalty.">
@@ -3781,9 +3814,19 @@
          move a number. -->
     <span class="rm-timing" ng-if="showTiming()">
     <span class="rm-driverbar-label" ng-if="phase === 'racing' || phase === 'finished'">
-      RACE <b ng-class="{'rm-clock-down': sessionClockDown(), 'rm-clock-stopped': clockStopped}"
+      {{ sessionClockDown() ? 'LEFT' : 'RACE' }} <b ng-class="{'rm-clock-down': sessionClockDown(), 'rm-clock-stopped': clockStopped}"
               title="{{ clockStopped ? 'Race clock stopped: red flag' : (sessionClockDown() ? 'Time remaining' : 'Time elapsed') }}">{{ sessionClock() }}</b>
     </span>
+    <!-- QUALIFYING'S CLOCK, which this bar never had: a driver qualifying
+         could not see how long the session had left. -->
+    <span class="rm-driverbar-label" ng-if="phase === 'qualifying' && qualiLeft !== null && !finalLap"
+          title="Qualifying time remaining">
+      Q <b class="rm-quali-clock">{{ qualiClock() }}</b>
+    </span>
+    <span class="rm-driverbar-label rm-final-lap" ng-if="phase === 'qualifying' && finalLap"
+          title="The qualifying clock has expired: the lap you are on is your last">FINAL LAP</span>
+    <!-- How the race ends, as in the header: FINAL LAP, FLAG OUT, ENDS m:ss. -->
+    <span class="rm-driverbar-label rm-final-lap" ng-if="raceEndState()" title="{{ raceEndTitle() }}">{{ raceEndState() }}</span>
     <span class="rm-driverbar-label" ng-if="(phase === 'racing' || phase === 'qualifying') && routeWaypoints.length">
       CP <b>{{ nextWp }}/{{ routeWaypoints.length }}</b>
     </span>
@@ -3895,8 +3938,8 @@
          driver forming up has no time to read three. -->
     <span class="rm-pace-badge" ng-if="pacing &amp;&amp; !greenReady"
           title="Pace lap: hold position, no overtaking, 50 MPH or 80 KMH. It is not timed and is not one of the race laps. GET READY comes as the P1 starter nears the line, then the green at a random point before it.">PACE LAP &middot; HOLD &middot; 50 MPH OR 80 KMH &middot; NOT SCORED</span>
-    <span class="rm-restart-badge" ng-if="greenReady &amp;&amp; (pacing || restartPending)"
-          title="The run to the line has begun: the green flag falls at a random point before it. Hold position until it does.">GET READY &middot; GREEN FLAG COMING</span>
+    <span class="rm-ready-badge" ng-if="greenReady &amp;&amp; (pacing || restartPending)"
+          title="The run to the line has begun: the green flag falls at a random point before it. Hold position until it does.">GET READY &middot; HOLD UNTIL THE GREEN FLAG</span>
     <span class="rm-driverbar-label" ng-if="jokerEnabled">
       JOKER <b ng-class="{'rm-joker-done': jokerTaken}">{{ jokerTaken ? 'DONE (lap ' + jokerLap + ')' : 'PENDING' }}</b>
     </span>
@@ -3920,11 +3963,11 @@
          Both of these used to live in the Race Entry row, which is hidden for a
          non-admin for exactly as long as a session is live -- so a driver could
          not retire from a race, which is the one moment retiring is for. -->
-    <span class="rm-driverbar-act" ng-if="sessionUnderWay() && !spectating && !retireUi.confirm">
+    <span class="rm-driverbar-act" ng-if="canRetire() && !retireUi.confirm">
       <button class="rm-driverbar-btn rm-driverbar-retire" ng-click="retireUi.confirm = true"
               title="Pull out of this session. You keep a classified position and score like any other retirement.">Retire</button>
     </span>
-    <span class="rm-driverbar-act" ng-if="sessionUnderWay() && retireUi.confirm">
+    <span class="rm-driverbar-act" ng-if="canRetire() && retireUi.confirm">
       Retire?
       <button class="rm-driverbar-btn rm-driverbar-retire" ng-click="retire(); retireUi.confirm = false">Yes</button>
       <button class="rm-driverbar-btn" ng-click="retireUi.confirm = false">No</button>
@@ -3945,6 +3988,13 @@
             title="{{ soundOn ? 'Start sounds on. Click to mute.' : 'Start sounds muted. Click to turn them on.' }}">{{ soundOn ? '&#x1F50A;' : '&#x1F507;' }}</button>
     <button class="rm-driverbar-btn" ng-click="openLogin()" ng-if="!hudCollapsed"
             title="Admin login">🔒</button>
+    <!-- Text size of this bar, for a driver who cannot read the clock. -->
+    <span class="rm-bar-font" ng-if="!hudCollapsed">
+      <button class="rm-driverbar-btn" ng-click="barFont(-1)" ng-disabled="!barFontCan(-1)"
+              title="Smaller text on this bar">A&minus;</button>
+      <button class="rm-driverbar-btn" ng-click="barFont(1)" ng-disabled="!barFontCan(1)"
+              title="Larger text on this bar">A+</button>
+    </span>
     <label class="rm-driverbar-op" title="Leaderboard background opacity" ng-if="!hudCollapsed">
       <span>◑</span>
       <input type="range" min="0" max="1" step="0.05" ng-model="lbUi.opacity" ng-change="applyOpacity()">
@@ -3977,6 +4027,7 @@
       <span class="rm-phase rm-bc-phase rm-phase-racing" ng-if="derbyActive()">{{ derbyPhaseLabel() }}</span>
       <span class="rm-bc-stat" ng-if="broadcastLap()">LAP <b>{{ broadcastLap() }}</b></span>
       <span class="rm-bc-stat" ng-if="!derbyActive() && (phase === 'racing' || phase === 'finished')">
+        {{ sessionClockDown() ? 'LEFT' : '' }}
         <b ng-class="{'rm-clock-down': sessionClockDown(), 'rm-clock-stopped': clockStopped}"
            title="{{ clockStopped ? 'Race clock stopped: red flag' : (sessionClockDown() ? 'Time remaining' : 'Time elapsed') }}">{{ sessionClock() }}</b>
       </span>
@@ -5295,6 +5346,18 @@
     background: rgba(52, 168, 83, 0.22);
     color: #7ee2a8;
   }
+  /* GET READY: YELLOW, STEADY, WORDS. It is still the yellow flag, and green
+     here (as it was) read as the start: drivers jumped it. */
+  .rm-ready-badge {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    background: rgba(251, 188, 5, 0.2);
+    color: #fdd663;
+    border: 1px solid rgba(251, 188, 5, 0.6);
+  }
   /* The pit group: stalls, in and out are one feature, boxed so they do not
      read as three peers of Branch and Marker. */
   .rm-route-tab-group {
@@ -5467,11 +5530,11 @@
   .rm-row-out td { opacity: 0.5; }
 
   /* Header badges for the new session state */
-  .rm-quali-clock { color: #ce93d8; }
-  /* The session clock running DOWN rather than up: a timed race. Colored so
-     the direction is visible at a glance instead of having to be inferred from
-     two readings a second apart. */
-  .rm-clock-down  { color: #8ab4f8; }
+  /* COUNTDOWNS ARE WHITE AND BOLD. They were violet (qualifying) and pale blue
+     (a timed race), which vanish over sky and tarmac once the HUD is faded. The
+     direction is said in words now (LEFT, Q), not by color. */
+  .rm-quali-clock { color: #ffffff; font-weight: 700; }
+  .rm-clock-down  { color: #ffffff; font-weight: 700; }
   .rm-clock-stopped { color: #ff5252; }
   /* Time is up but the session is still running: read as urgent, not as over. */
   .rm-final-lap { color: #ffd54f; font-weight: 700; letter-spacing: 0.06em; }
@@ -6538,6 +6601,8 @@
   .rm-notice-spectate { background: rgba(234, 67, 53, 0.18);  color: #f28b82; }
   .rm-notice-vehicle  { background: rgba(234, 67, 53, 0.18);  color: #f28b82; }
   .rm-notice-fastest  { background: rgba(255, 196, 0, 0.16);  color: #ffd54a; }
+  /* A flag said as a statement (GET READY): the yellow it is still under. */
+  .rm-notice-flag     { background: rgba(251, 188, 5, 0.18);  color: #fdd663; }
 
   /* Fastest lap of the session. Gold, and slightly heavier than the other lap
      times so it reads at a glance on a moving leaderboard. */
@@ -6614,6 +6679,9 @@
   .rm-minimal .rm-driverbar {
     width: var(--rm-lb-width, auto);
     max-width: 100%;
+    /* The board's width INCLUDING the corner's reserved padding, or the bar ran
+       that much past the board and the HUD window clipped the corner buttons. */
+    box-sizing: border-box;
     flex-wrap: wrap;
     row-gap: 2px;
   }
@@ -6723,10 +6791,10 @@
        rule it lost to whichever `padding:` came later in the sheet, which
        is what silently reset the board's to 8px and put the fastest-lap
        name under the close button. Measured (the group is 74px wide), plus clearance. */
-    padding: 2px 78px 2px 6px;
+    padding: 2px calc(78px * var(--rm-bar-scale, 1)) 2px 6px;
     margin-bottom: 3px;
     border-radius: 4px;
-    font-size: 10px;
+    font-size: calc(10px * var(--rm-bar-scale, 1));
     color: var(--rm-soft, #bdc1c6);
   }
   /* ---------------------------------------------------------------------
@@ -6833,6 +6901,36 @@
     cursor: pointer;
   }
   .rm-driverbar-btn:hover { background: rgba(255, 255, 255, 0.15); }
+  .rm-bar-font { display: inline-flex; gap: 2px; }
+  .rm-bar-font .rm-driverbar-btn[disabled] { opacity: 0.35; cursor: default; }
+  /* THE BAR'S TEXT SIZE (A- / A+). Every size inside the driver bar, and in the
+     header's timing run, is a multiple of --rm-bar-scale. Something new on the
+     bar with its own font-size needs a line here, or it stays put while the
+     rest grows. */
+  .rm-driverbar .rm-driverbar-phase,
+  .rm-driverbar .rm-reset-out { font-size: calc(9px * var(--rm-bar-scale, 1)); }
+  .rm-driverbar .rm-pace-badge,
+  .rm-driverbar .rm-restart-badge,
+  .rm-driverbar .rm-ready-badge,
+  .rm-driverbar .rm-waiting,
+  .rm-driverbar .rm-driverbar-act,
+  .rm-driverbar .rm-driverbar-btn,
+  .rm-timing .rm-wp-progress,
+  .rm-timing .rm-dist { font-size: calc(10px * var(--rm-bar-scale, 1)); }
+  .rm-timing .rm-laptime-live,
+  .rm-timing .rm-laptime-hold,
+  .rm-timing .rm-laptime-out,
+  .rm-timing .rm-sector-hold { font-size: calc(11px * var(--rm-bar-scale, 1)); }
+  .rm-header .rm-timing { font-size: calc(12px * var(--rm-bar-scale, 1)); }
+  .rm-driverbar .rm-flag { font-size: calc(14px * var(--rm-bar-scale, 1)); }
+  .rm-timing > .rm-clock,
+  .rm-timing > .rm-driverbar-label:first-child { min-width: calc(62px * var(--rm-bar-scale, 1)); }
+  /* The clocks get the see-through outline at every fade: they are what a
+     driver is reading, often over a bright sky. */
+  .rm-clock,
+  .rm-final-lap,
+  .rm-driverbar-label b,
+  .rm-bc-stat b { text-shadow: 0 0 2px rgba(0, 0, 0, 0.95), 0 1px 2px rgba(0, 0, 0, 0.9); }
 
   /* ============ Module 5: the broadcast board ============================
      ONE RULE FOLDS THE APP AWAY, exactly like the collapse above and for the

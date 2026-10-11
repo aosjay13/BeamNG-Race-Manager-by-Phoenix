@@ -6,6 +6,78 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## Unreleased
+
+#### Added
+
+- **A finish countdown.** Once a set number of cars have completed the race
+  (1 by default), the race closes a set number of seconds later (60 by
+  default), shown as `ENDS 0:45` on the header and the driver bar. Lapped cars
+  race on until then instead of being flagged off at their next crossing, and
+  anyone still out is classified on the laps they completed. Set it under
+  **Race end** in Race settings; 0 seconds waits for every car. End Race after a
+  car is home cuts the countdown short with the same classification.
+- **Restart from grid.** Stops a race and lines the same field up on the same
+  grid with qualifying kept. The stopped race is saved, marked restarted and not
+  scored in the cup, and the rerun is added to the same results file under a
+  `RESTART` banner. Reset was the only way to run a race again, and it saved
+  nothing and wiped qualifying.
+- **Results files say how the session ended** (`Ended: ...` in the header).
+- **A− / A+ on the driver bar** to size its text, and in the admin header for the
+  timing run. Remembered per player.
+- **The driver bar shows the qualifying clock** and the race-end states
+  (`FINAL LAP`, `FLAG OUT`, `ENDS`). Racers could not see the time left.
+
+#### Changed
+
+- **Countdown clocks are white and outlined**, with `LEFT` or `Q` in front. The
+  timed race clock was pale blue and the qualifying clock violet, both hard to
+  read over the road with the HUD faded.
+- **An In Place reset faces the way you were driving**, sampled only while the
+  car was moving forward at speed, so a spin or a slide never counts. The next
+  checkpoint decides only before the car has been driven. The turn now lands
+  just after BeamNG finishes its own reset and is checked again, because
+  Insert's recovery could put the spun heading back after it.
+- **Resets outside a race are BeamNG's own.** Practice resets are no longer
+  turned, so R and Insert behave as they do anywhere else.
+- **Radar cars that are not close are green**, not gray, with a stronger outline.
+- **GET READY is a statement, not a signal.** It flashed the panel amber,
+  blinked five amber lamps in Race Lights, beeped the countdown beep and wore a
+  green badge, and drivers took it for the green and jumped the start. It is now
+  a steady yellow notice and badge, *GET READY: hold position until the green
+  flag falls*; Race Lights keep the pace lap or restart lamps and change only
+  the caption; no sound. The green flag is the first thing that flashes.
+
+#### Fixed
+
+- **Lapped cars no longer outrank the cars that lapped them.** After the winner
+  was home, a lapped car crossing the line was classified by when it crossed.
+  The leaderboard and results now sort by laps completed first, and a car a lap
+  down shows `+1 lap` in the results.
+- **A rival who resets stays a ghost.** A reset reloads the car's physics and
+  drops the ghost, and only practice ghosts were put back; in ghost qualifying
+  (and for finished cars and bystanders) a rival who had reset was solid on
+  other drivers' screens for the rest of the session. Every ghosted car is now
+  restored on any reset and re-checked every two seconds.
+- **The pace lap is not a lap led.** The formation lap counted, so the
+  pole-sitter showed LED 1 on lap 1 and the half-way leader was decided a lap
+  early behind a pace car.
+- **Retire is gone once you are out.** It stayed on screen after retiring or
+  finishing, and pressing it did nothing.
+- **The last car out retiring ends the race.** It stayed RUNNING with nobody
+  left on track until an admin pressed End Session; a disconnect already ended it.
+- **Reset during a race saves it first.** It cleared the field without writing a
+  results file. A cup that fails to score can no longer stop the file either.
+- **No more `+1 LAP` for the whole field** each time the leader takes the line.
+  A car is shown a lap down once the leader is past it on the road.
+- **A driver who sits a race out takes no result into it.** The last race's
+  winner, spectating the next, was ranked P1 on its live board and every gap
+  was measured from them; in a heat night, heat 1's finishers did the same to
+  heat 2, including its results and cup round.
+- **The radar no longer sticks on screen** or shows a car that is not there. The
+  all-clear is repeated rather than sent once, the app clears a picture it has
+  stopped hearing about, and cars the game has pooled away are left off.
+
 ## 0.19.1 - A welcome window, the PRM names, pit stops in practice
 
 #### Added

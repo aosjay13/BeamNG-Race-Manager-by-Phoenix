@@ -513,6 +513,9 @@ for lap = 1, 2 do
   end
   auditPhase('racing (lap ' .. lap .. ')')
 end
+-- Some of the cars that never lapped retire: with a car home, End Race
+-- classifies whoever is still out on laps rather than retiring them.
+for pid = 13, 15 do RM_onRetire(pid) end
 RM_onEndRace(ADMIN)
 auditPhase('finished (finishers, DSQ and DNF mixed)')
 

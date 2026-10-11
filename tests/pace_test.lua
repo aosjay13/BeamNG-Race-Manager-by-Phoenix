@@ -278,6 +278,9 @@ check(chatHas('Pace lap complete'),
     .. 'yellow needs to hear that the lap they are STARTING is lap 1')
 check(lastState.bestLapTime == nil,
   'and the formation lap sets no fastest lap: it was not raced')
+check(driver(1).lapsLed == 0,
+  'nor a lap led: the board read LED 1 on lap 1 behind the pace car (got '
+    .. tostring(driver(1).lapsLed) .. ')')
 
 lap(2); lap(3)
 check(driver(1).status == 'racing', 'nobody has finished after one crossing')
@@ -290,6 +293,8 @@ lap(1)
 check(driver(1).status == 'finished',
   'the fourth crossing is the finish -- three racing laps behind a pace lap')
 check(driver(1).currentLap == 4, 'having completed four crossings for a three lap race')
+check(driver(1).lapsLed == 3, 'leading all three racing laps, and only those (got '
+  .. tostring(driver(1).lapsLed) .. ')')
 lap(2); lap(3)
 
 -- ---------------------------------------------------------------------------
@@ -316,6 +321,9 @@ check(resultsText:find('not counted in Laps', 1, true) ~= nil,
 -- Four crossings, three laps: the formation lap is not one of them.
 local winnerLaps = resultsText:match('%-%-%- RACE RESULTS %-%-%-.-\nP1%s+%S+%s+%S+%s+%S+%s+%d+%s+(%d+)')
 check(winnerLaps == '3', 'the winner is credited 3 laps, not 4 (got ' .. tostring(winnerLaps) .. ')')
+-- Half distance of three is racing lap 2, the THIRD crossing behind a pace car.
+check(resultsText:find('led at lap 2 of 3', 1, true) ~= nil,
+  'the half-way leader is decided on racing lap 2, not one lap early')
 
 -- ---------------------------------------------------------------------------
 -- A red flag holds the green

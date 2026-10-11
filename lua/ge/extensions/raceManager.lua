@@ -112,6 +112,21 @@ local TUNE = {
   RESET_ROAD_MARGIN = 3,
   -- Meters along the road route to the next gate that a reset car is aimed at.
   RESET_PATH_AHEAD = 15,
+  -- A reset car faces the way it was last DRIVEN: sampled above this speed
+  -- (m/s) with the nose within acos(ALIGN) of the velocity, so a spin, a slide
+  -- or reversing samples nothing. Good within RANGE meters of where it was
+  -- taken; past that, or with none, the next gate decides.
+  RESET_TRAVEL_SPEED = 8,
+  RESET_TRAVEL_ALIGN = 0.85,
+  RESET_TRAVEL_RANGE = 150,
+  -- The turn waits DELAY seconds for the reset to settle, then is re-checked
+  -- for WINDOW seconds: BeamNG's recovery places the car over several frames
+  -- and can put the old heading back after us. Never once the car is moving
+  -- faster than STILL m/s, and at most TURNS times.
+  RESET_FACE_DELAY  = 0.15,
+  RESET_FACE_WINDOW = 1.2,
+  RESET_FACE_STILL  = 3.0,
+  RESET_FACE_TURNS  = 3,
   PROGRESS_EVERY = 0.3,   -- seconds between live-position reports
   -- Meters before the S/F line the white flag shows: waved on the approach. Not
   -- off the progress report, which is 12 m between samples at 90 mph.
@@ -629,6 +644,14 @@ local snapshot = {
   EVERY = 0.25,   -- seconds between "last good position" samples
   -- Where the car crossed `wp` (lastGate): a height known to be on the track.
   crossed = { wp = nil, x = 0, y = 0, z = 0 },
+  -- The way the car was last driven, { x, y, px, py } (unit heading, where):
+  -- what an in-place reset turns it to face. See TUNE.RESET_TRAVEL_*.
+  travel = nil,
+  -- A turn waiting for the reset to settle: { left, window, turns }.
+  face = nil,
+  -- KEPT, OFF: practice resets turned to face the next gate (0.19.1). A reset
+  -- outside a race is BeamNG's own; true brings the turn back for practice.
+  PRACTICE_FACE = false,
 }
 
 -- What a LEGAL reset does while racing (mirrored from the server):
@@ -1142,6 +1165,8 @@ local function pushNotice(kind, msg, extra)
   if type(extra) == 'table' then
     payload.sub    = extra.sub
     payload.color = extra.color
+    -- A statement, never the flash, whatever its kind (GET READY).
+    payload.still = extra.still == true or nil
   end
   guihooks.trigger('RaceManagerNotice', payload)
   -- One funnel: the HUD copy is decided here by kind, not at each call site.
@@ -1243,7 +1268,7 @@ local sticky = {
 local function stickyMessage()
   if not sessionRunning() or session.spectatorLock then return nil end
   if session.greenReady then
-    return 'ready', 'GET READY - green flag coming. Hold position until it falls.'
+    return 'ready', 'GET READY: hold position until the green flag falls.'
   end
   if session.pacing then
     return 'pace', 'PACE LAP - hold position, 50 MPH or 80 KMH. GET READY comes before the green.'
@@ -3430,8 +3455,29 @@ local function snapshotUpdate(dt)
     local rot = veh:getRotation()
     snapshot.pos = vec3(pos.x, pos.y, pos.z)
     snapshot.rot = quat(rot.x, rot.y, rot.z, rot.w)
+    snapshot.sampleTravel(veh, pos)
   end)
   if not ok then snapshot.pos, snapshot.rot = nil, nil end
+end
+
+-- Record the way the car is being driven, when it is plainly being driven:
+-- fast, and nose first.
+function snapshot.sampleTravel(veh, pos)
+  local v, f = veh:getVelocity(), veh:getDirectionVector()
+  local sp = math.sqrt(v.x * v.x + v.y * v.y)
+  local fl = math.sqrt(f.x * f.x + f.y * f.y)
+  if sp < TUNE.RESET_TRAVEL_SPEED or fl < 1e-6 then return end
+  if (v.x * f.x + v.y * f.y) / (sp * fl) < TUNE.RESET_TRAVEL_ALIGN then return end
+  snapshot.travel = { x = v.x / sp, y = v.y / sp, px = pos.x, py = pos.y }
+end
+
+-- That heading, if it was taken near `pos`; else nil.
+function snapshot.travelDir(pos)
+  local t = snapshot.travel
+  if not t then return nil end
+  local dx, dy = pos.x - t.px, pos.y - t.py
+  if dx * dx + dy * dy > TUNE.RESET_TRAVEL_RANGE * TUNE.RESET_TRAVEL_RANGE then return nil end
+  return t.x, t.y
 end
 
 -- Remember a teleport this mod just performed, so the vehicle-reset hook it
@@ -3930,9 +3976,10 @@ function snapshot.courseDir(pos)
   return cx / d, cy / d
 end
 
--- Turn the car where it stands to face the course, after an in-place reset.
--- Left alone inside TUNE.RESET_FACE_TOLERANCE. Position is untouched. `at` is
--- where a teleport this frame just put it, which getPosition may not show yet.
+-- Turn the car where it stands to face the course, after an in-place reset:
+-- the way it was last driven, else the next gate. Left alone inside
+-- TUNE.RESET_FACE_TOLERANCE. Position is untouched. `at` is where a teleport
+-- this frame just put it, which getPosition may not show yet.
 function snapshot.faceCourse(veh, at)
   if not veh then return false end
   local pos, fwd, up
@@ -3941,7 +3988,8 @@ function snapshot.faceCourse(veh, at)
     fwd = veh:getDirectionVector()
   end)
   if not pos or not fwd then return false end
-  local cx, cy = snapshot.courseDir(pos)
+  local cx, cy = snapshot.travelDir(pos)
+  if not cx then cx, cy = snapshot.courseDir(pos) end
   if not cx then return false end
   local fl = math.sqrt(fwd.x * fwd.x + fwd.y * fwd.y)
   if fl > 1e-6
@@ -3977,6 +4025,36 @@ function snapshot.faceCourse(veh, at)
   return ok
 end
 
+-- Turn the car once the reset has settled, not inside the reset hook: BeamNG's
+-- recovery places the car after the hook fires and put the spun heading back.
+function snapshot.faceSoon()
+  snapshot.face = { left = TUNE.RESET_FACE_DELAY, window = TUNE.RESET_FACE_WINDOW, turns = 0 }
+end
+
+-- Every frame: apply the waiting turn, and apply it again if something turns
+-- the car back inside the window. Dropped the moment the driver moves off.
+function snapshot.faceUpdate(dt)
+  local f = snapshot.face
+  if not f then return end
+  f.left, f.window = f.left - dt, f.window - dt
+  if f.window <= 0 or f.turns >= TUNE.RESET_FACE_TURNS or not sessionRunning()
+      or session.spectatorLock or session.gridFrozen then
+    snapshot.face = nil
+    return
+  end
+  if f.left > 0 then return end
+  f.left = TUNE.RESET_FACE_DELAY
+  local veh = ownVehicle()
+  if not veh then snapshot.face = nil return end
+  local moving = false
+  pcall(function ()
+    local v = veh:getVelocity()
+    moving = (v.x * v.x + v.y * v.y) > TUNE.RESET_FACE_STILL * TUNE.RESET_FACE_STILL
+  end)
+  if moving then snapshot.face = nil return end
+  if snapshot.faceCourse(veh) then f.turns = f.turns + 1 end
+end
+
 -- Undo a reset the driver was not entitled to: put the car back where it was.
 local function restoreLastGoodPosition()
   local veh = ownVehicle()      -- a teleport: see relocateToGate
@@ -3994,14 +4072,10 @@ end
 
 -- BeamNG hook, for every vehicle: filter to our own first.
 function M.onVehicleResetted(vehId)
-  -- A reset reloads the VM a practice ghost lives in: put it back at once.
-  if vehId ~= nil and vehId == ghost.practiceOwn then
-    ghost.practiceCar(vehId, true)
-  else
-    for _, id in pairs(ghost.practiceRemote) do
-      if id == vehId then ghost.practiceCar(vehId, true) break end
-    end
-  end
+  -- A RESET RELOADS THE CAR'S VM, which drops setGhostEnabled while the
+  -- bookkeeping still says ghosted. Any car: a rival's copy when they reset,
+  -- ours, and our own teleports (they report as resets). Put it back at once.
+  ghost.reassert(vehId)
   -- Ours only: the attached car may be a rival's.
   if not isOwnVehicle(vehId) then return end
   local veh = ownVehicle()
@@ -4077,7 +4151,7 @@ function M.onVehicleResetted(vehId)
     -- caches the pre-teleport position this frame), and on ownVehicle().
     local was = session.prevPos
     local veh = ownVehicle()
-    local pos, undone = nil, nil
+    local pos = nil
     if veh then pcall(function () pos = veh:getPosition() end) end
     if pos and was then
       local dx, dy, dz = pos.x - was.x, pos.y - was.y, pos.z - was.z
@@ -4087,15 +4161,14 @@ function M.onVehicleResetted(vehId)
           local rot = veh:getRotation()
           veh:setPositionRotation(was.x, was.y, was.z, rot.x, rot.y, rot.z, rot.w)
         end)
-        undone = vec3(was.x, was.y, was.z)
         pushNotice('reset', 'Recovered in place: a race reset does not move you off the track')
         log('I', 'raceManager', 'Undid a recovery teleport during a session')
       end
     end
     -- And facing the course: both keys keep a heading that can be backwards.
-    snapshot.faceCourse(veh, undone)
-  elseif practice.on and not session.gridFrozen then
-    -- Practice resets are free and may go anywhere; they still face the next gate.
+    snapshot.faceSoon()
+  elseif practice.on and not session.gridFrozen and snapshot.PRACTICE_FACE then
+    -- KEPT, OFF (see PRACTICE_FACE): outside a race a reset is left to BeamNG.
     snapshot.faceCourse(ownVehicle())
   end
 
@@ -4498,9 +4571,16 @@ local function placeOnAssignedSlot()
     hold.corrections = 0
   end
   if field.hold then requestHold(field.holdSource or 'race') end
-  -- The slot is also where a blocked reset restores to, facing down the track.
+  -- The slot is also where a blocked reset restores to, facing down the track,
+  -- and the way a reset faces until the car has been driven: the last
+  -- session's sample is from another race.
   snapshot.pos = vec3(sp.x, sp.y, sp.z)
   snapshot.rot = headingRot(sp.hx, sp.hy)
+  snapshot.travel = nil
+  local hl = math.sqrt((sp.hx or 0) ^ 2 + (sp.hy or 0) ^ 2)
+  if hl > 1e-6 then
+    snapshot.travel = { x = sp.hx / hl, y = sp.hy / hl, px = sp.x, py = sp.y }
+  end
   pushNotice('grid', 'You start from P' .. slot .. ': hold for the countdown')
   log('I', 'raceManager', 'Placed on start slot ' .. slot
     .. ' (' .. tostring(field.holdSource or 'race') .. ')')
@@ -4758,6 +4838,19 @@ function ghost.fade(vehId, veh, alpha)
   ghost.alpha[vehId] = alpha
   -- Closure, for vehicleId's reason.
   pcall(function () veh:setMeshAlpha(alpha, '', false) end)
+end
+
+-- A car that should be a ghost, made one again whatever `applied` says: after
+-- a reset its VM no longer is. Fade too (the cache would skip it).
+function ghost.reassert(vehId, veh)
+  if vehId == nil or not ghost.veh[vehId] then return end
+  if not veh then
+    local got, found = pcall(getObjectByID, vehId)
+    veh = got and found or nil
+  end
+  if not veh then return end
+  ghost.alpha[vehId] = nil
+  ghost.apply(vehId, veh, true, ghost.alphaFor(vehId))
 end
 
 -- Apply or lift the ghost on one car: collision, then the fade. On TRANSITIONS
@@ -5400,6 +5493,10 @@ local function ghostUpdate(dt)
   for reason in pairs(ghost.field) do setGhostReason(reason, true) end
   for pid, endsAt in pairs(ghost.remote) do ghost.applyRemote(pid, endsAt) end
   ghost.practiceSync()
+  -- EVERY GHOSTED CAR, re-issued: a reload we never heard about (a reset hook
+  -- that did not fire for a rival's copy) left a car solid for the rest of the
+  -- session, because `applied` said it was done. Costs one call per ghost.
+  for vehId in pairs(ghost.veh) do ghost.reassert(vehId) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -5697,6 +5794,7 @@ function M.onUpdate(dt)
   holdUpdate(dt)            -- grid hold: verify it is holding, report position
   pit.update(dt)            -- pit stalls: hold, repair in place, release
   snapshotUpdate(dt)        -- Module 1: rolling "last good position"
+  snapshot.faceUpdate(dt)   -- Module 1: turn a reset car once the reset settles
   resetGuardUpdate(dt)      -- Module 1: teleport-echo window + notice throttle
   resetInputBlockUpdate()   -- Module 1: dead reset keys once the allowance is gone
   spectatorUpdate(dt)       -- Module 1: follow the spectate target when it goes
@@ -7321,10 +7419,11 @@ local function onServerUpdate(rawData)
     pushNotice('flag', 'PACE LAP',
       { sub = 'Hold position - 50 MPH or 80 KMH', color = 'yellow' })
   end
-  -- AMBER, never green: green means go.
+  -- A STATEMENT, NOT A FLASH. Drivers took a flash here for the green and
+  -- jumped the start: nothing may flash before the green flag does.
   if session.greenReady and not wasReady then
-    pushNotice('flag', 'GET READY',
-      { sub = 'Green flag coming - hold position until it falls', color = 'amber' })
+    pushNotice('flag', 'GET READY: hold position until the green flag falls',
+      { still = true, color = 'yellow' })
   end
   -- Three edges, three instructions, in the order a driver meets them.
   if session.cautionPending and not wasPending then
@@ -7371,10 +7470,11 @@ local function onServerUpdate(rawData)
   local wasFinalLap = finalLap
   finalLap = data.finalLap == true
   if finalLap and not wasFinalLap then
-    -- Qualifying: the clock expired. A race: the winner is home.
+    -- Qualifying: the clock expired. A race: a timed race whose leader never
+    -- came back (a race won normally runs the finish countdown instead).
     pushNotice('session', session.phase == 'qualifying'
       and 'TIME EXPIRED: FINAL LAP. Your session ends as you cross the line.'
-      or  'CHECKERED FLAG: the winner is home. Your race ends as you cross the line.')
+      or  'CHECKERED FLAG: your race ends as you cross the line.')
   end
 
   -- Timed race, both edges, from the broadcast for the same reason.
@@ -7481,6 +7581,10 @@ local function onServerUpdate(rawData)
     session.phase = newPhase
     -- Any session change re-arms lap detection from a clean slate.
     resetLapTracking()
+    -- The way this car was driven belongs to the session that is ending.
+    if newPhase == 'waiting' or newPhase == 'finished' then
+      snapshot.travel, snapshot.face = nil, nil
+    end
     -- Practice ends, or every lap would take the practice branch.
     if newPhase ~= 'waiting' then practice.stop('session') end
     -- Qualifying's out lap is announced as the lights go out.
@@ -8201,6 +8305,15 @@ function M.setRaceLimits(laps, seconds, mode)
   end
 end
 
+-- The finish countdown: `after` cars home start it, `seconds` long (0 is off).
+function M.setFinishRule(after, seconds)
+  after   = math.max(math.floor(tonumber(after) or 1), 1)
+  seconds = math.max(math.floor(tonumber(seconds) or 0), 0)
+  if inMultiplayer() then
+    TriggerServerEvent('RM_SetFinishRule', jsonEncode({ after = after, seconds = seconds }))
+  end
+end
+
 function M.setQualiLimits(laps, seconds)
   laps    = math.max(math.floor(tonumber(laps) or 0), 0)
   seconds = math.max(math.floor(tonumber(seconds) or 0), 0)
@@ -8309,6 +8422,11 @@ end
 
 function M.resetLeaderboard()
   if inMultiplayer() then TriggerServerEvent('RM_ResetLeaderboard', '') end
+end
+
+-- Stop the race and run it again from the same grid, qualifying kept.
+function M.restartFromGrid()
+  if inMultiplayer() then TriggerServerEvent('RM_RestartFromGrid', '') end
 end
 
 -- Delete the server's saved result files.

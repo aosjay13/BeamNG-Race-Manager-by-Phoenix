@@ -19,8 +19,9 @@ angular.module('beamng.apps')
       var root = $element[0];
 
       // Five lamps for a race. '-' is unlit; the letters are the color
-      // classes in app.html. GET READY is amber and blinks, which is the whole
-      // point of this app: it must never be mistaken for the green.
+      // classes in app.html. GET READY KEEPS THE LAMPS OF THE YELLOW IT ENDS and
+      // changes only the words: blinking amber there was taken for the green,
+      // and drivers jumped the start. The green is the first thing that moves.
       var RACE = {
         idle:        { lamps: '-----', cap: 'RACE LIGHTS' },
         grid:        { lamps: '-----', cap: 'ON THE GRID' },
@@ -29,7 +30,8 @@ angular.module('beamng.apps')
         count1:      { lamps: 'rrrrr', cap: '1' },
         go:          { lamps: 'ggggg', cap: 'GO' },
         pace:        { lamps: 'y-y-y', cap: 'PACE LAP' },
-        ready:       { lamps: 'aaaaa', cap: 'GET READY', blink: true },
+        ready:        { lamps: 'y-y-y', cap: 'GET READY · HOLD' },
+        readyRestart: { lamps: 'yy-yy', cap: 'GET READY · HOLD' },
         green:       { lamps: 'ggggg', cap: 'GREEN FLAG' },
         cautionBack: { lamps: 'yyyyy', cap: 'CAUTION · RACE BACK', blink: true },
         caution:     { lamps: 'yyyyy', cap: 'CAUTION' },

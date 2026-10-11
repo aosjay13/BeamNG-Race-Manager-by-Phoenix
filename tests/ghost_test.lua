@@ -1176,5 +1176,44 @@ check(#spectateNotices() == 1, 'and it is said once, not every frame')
 serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
 frames(0.5)
 
+-- ===========================================================================
+-- A RIVAL WHO RESETS IS STILL A GHOST
+-- ===========================================================================
+-- Reported from a ghost qualifying session: most cars passed through each
+-- other, one pair collided. A reset reloads the car's VM, which drops
+-- setGhostEnabled, and our copy of a rival's car is reset when they reset. The
+-- bookkeeping still said "ghosted", so nothing ever put it back: that rival was
+-- solid in our physics for the rest of the session.
+clearLog()
+own.x, own.y = 0, 0
+rival.x, rival.y = 700, 0
+world[THIRD_ID].x, world[THIRD_ID].y = 900, 0
+-- In the field again (the section above left us a bystander, which ghosts
+-- every other car on its own account).
+local inField = { { id = OWN_PID, name = 'Me', status = 'qualifying' } }
+serverState({ phase = 'qualifying', ghostQuali = false, maxResets = -1,
+              totalLaps = 3, drivers = inField })
+frames(0.5)
+check(rival.ghosted == false, 'the rival starts solid')
+serverState({ phase = 'qualifying', ghostQuali = true, maxResets = -1,
+              totalLaps = 3, drivers = inField })
+frames(0.3)
+check(rival.ghosted == true, 'ghost qualifying ghosts the rival')
+rival.ghosted = false              -- they reset: our copy's VM reloads, solid
+RM.onVehicleResetted(RIVAL_ID)     -- and the game tells us so
+check(rival.ghosted == true, 'a rival\'s reset is answered at once: still a ghost')
+
+-- No reset hook at all (a reload we never hear about): the sweep catches it.
+rival.ghosted = false
+frames(2.5)
+check(rival.ghosted == true,
+  'and a ghost lost without a word is back within the two second sweep')
+serverState({ phase = 'racing', ghostQuali = false, maxResets = -1,
+              totalLaps = 3, drivers = { { id = OWN_PID, name = 'Me', status = 'racing' } } })
+frames(2.5)
+check(rival.ghosted == false, 'the sweep re-applies only what is still wanted')
+serverState({ phase = 'waiting', maxResets = -1, totalLaps = 3, drivers = {} })
+frames(0.5)
+
 print(string.format('ghost_test: %d checks, %d failures', checks, fails))
 if fails > 0 then os.exit(1) end

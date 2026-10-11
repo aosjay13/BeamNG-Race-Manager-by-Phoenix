@@ -42,6 +42,12 @@ function veh:getVelocity() return { x = self.vx, y = self.vy, z = self.vz } end
 function veh:getJBeamFilename() return 'etk800' end
 function veh:setPositionRotation(x, y, z, qx, qy, qz, qw)
   self.x, self.y, self.z = x, y, z
+  -- A yaw (headingRot's form) turns the heading the getter reports. Identity is
+  -- this stub's getRotation answer, which means "unchanged".
+  if qx == 0 and qy == 0 and qz and qw and not (qz == 0 and qw == 1) then
+    local a = 2 * math.atan2(qz, qw) - math.pi
+    self.hx, self.hy = math.sin(a), math.cos(a)
+  end
   teleports[#teleports + 1] = { x = x, y = y, z = z, qx = qx, qy = qy, qz = qz, qw = qw }
 end
 -- EVERY queued command, not just the last one. `frozen` kept only the most
@@ -136,6 +142,10 @@ RM.onExtensionLoaded()
 local function serverState(t) t.rmProtocol = 2; handlers['RM_Update'](t) end
 local function derbyState(t) t.rmProtocol = 2; handlers['RM_DerbyUpdate'](t) end
 local function resetHook() RM.onVehicleResetted(veh.id) end
+-- An in-place turn waits for the reset to settle (TUNE.RESET_FACE_DELAY), so
+-- it lands a few frames after the hook. Short steps: the echo window must not
+-- burn away in the harness.
+local function settle() for _ = 1, 6 do RM.onUpdate(0.05) end end
 local function frames(seconds, step)
   step = step or 0.1
   for _ = 1, math.floor(seconds / step + 0.5) do RM.onUpdate(step) end
@@ -374,6 +384,7 @@ frames(1.2)
 clearLog()
 driverPressedReset(1, 1, 0)
 resetHook()
+settle()
 -- The car still faces +X from the grid section, so the in-place path turns it
 -- to the course; what must not happen is a move.
 check(#teleports <= 1 and veh.x == 1 and veh.y == 1,
@@ -503,12 +514,37 @@ inPlaceTrack()
 veh.hx, veh.hy = 0, -1                 -- spun round, nose back down the track
 driverPressedReset(0, 101, 0)
 resetHook()
+check(#teleports == 0, 'the turn waits for the reset to settle')
+settle()
 check(#teleports == 1 and teleports[1].x == 0 and teleports[1].y == 101,
   'a backwards in-place reset stays where it stood')
 check(teleports[1] and math.abs(teleports[1].qz - 1) < 1e-6 and math.abs(teleports[1].qw) < 1e-6,
   'and is turned to face the course (+Y)')
 resetHook()
+settle()
 check(#teleports == 1, 'the turn is not heard back as a fresh reset')
+
+-- BeamNG'S RECOVERY PUTS THE SPUN HEADING BACK after the hook (its safe
+-- teleport finishes later). The turn is checked again and re-applied.
+inPlaceTrack()
+veh.hx, veh.hy = 0, -1
+driverPressedReset(0, 101, 0)
+resetHook()
+settle()
+check(#teleports == 1 and veh.hy > 0.99, 'turned once')
+veh.hx, veh.hy = 0, -1                 -- the game's placement lands after ours
+settle()
+check(#teleports == 2 and veh.hy > 0.99, 'and turned again when the game turns it back')
+
+-- A driver already pulling away is left with the heading they chose.
+inPlaceTrack()
+veh.hx, veh.hy = 0, -1
+driverPressedReset(0, 101, 0)
+resetHook()
+veh.vx, veh.vy = 0, -5
+settle()
+check(#teleports == 0, 'a car moving off before the turn lands is not turned')
+veh.vx, veh.vy = 0, 0
 
 -- Roughly the right way already: the driver's heading follows a bend better
 -- than a line to the next gate, so it is kept.
@@ -516,7 +552,43 @@ inPlaceTrack()
 veh.hx, veh.hy = math.sin(math.rad(30)), math.cos(math.rad(30))
 driverPressedReset(0, 101, 0)
 resetHook()
+settle()
 check(#teleports == 0, 'a car already facing the course is left alone')
+
+-- THE WAY IT WAS DRIVEN beats the line to the next gate. Driven along +X (a
+-- bend the gate up +Y knows nothing about), spun, reset: it faces +X.
+inPlaceTrack()
+veh.hx, veh.hy, veh.vx, veh.vy = 1, 0, 20, 0
+frames(0.6)
+veh.vx = 0
+veh.hx, veh.hy = -1, 0
+driverPressedReset(0, 101, 0)
+resetHook()
+settle()
+check(#teleports == 1 and math.abs(veh.hx - 1) < 1e-6,
+  'an in-place reset faces the way the car was being driven')
+
+-- A slide or a spin is not a heading: travelling +X with the nose up -Y
+-- samples nothing, so the gate decides.
+inPlaceTrack()
+veh.hx, veh.hy, veh.vx, veh.vy = 0, -1, 20, 0
+frames(0.6)
+veh.vx = 0
+driverPressedReset(0, 101, 0)
+resetHook()
+settle()
+check(#teleports == 1 and veh.hy > 0.99, 'a car sliding sideways sets no heading to face')
+
+-- Nor does reversing.
+inPlaceTrack()
+veh.hx, veh.hy, veh.vx, veh.vy = 0, 1, 0, -10
+frames(0.6)
+veh.vy = 0
+veh.hx, veh.hy = 0, -1
+driverPressedReset(0, 101, 0)
+resetHook()
+settle()
+check(#teleports == 1 and veh.hy > 0.99, 'reversing sets no heading to face either')
 
 -- headingRot's quaternion for a unit heading, to compare a turn against.
 local function facing(t, hx, hy)
@@ -544,6 +616,7 @@ frames(0.5)                          -- past the last case's echo window
 veh.hx, veh.hy = 0, -1
 driverPressedReset(0, 101, 0)
 resetHook()
+settle()
 local d = math.sqrt(15 * 15 + 14 * 14)
 check(#teleports == 1 and facing(teleports[1], 15 / d, 14 / d),
   'on a mapped road the car faces along the route to the gate')
@@ -567,6 +640,7 @@ roadMap({
 veh.hx, veh.hy = 0, -1               -- pointing straight at the gate, the wrong way
 driverPressedReset(0, 101, 0)
 resetHook()
+settle()
 check(#teleports == 1 and facing(teleports[1], 0, 1),
   'before a hairpin the car faces on round the road, not straight back at the gate')
 
@@ -580,6 +654,7 @@ frames(0.5)                          -- past the last case's echo window
 veh.hx, veh.hy = 0, -1
 driverPressedReset(0, 101, 0)
 resetHook()
+settle()
 check(#teleports == 1 and facing(teleports[1], 0, 1), 'off the road the car faces straight at the gate')
 
 -- A graph with no route: straight at the gate.
@@ -589,10 +664,11 @@ frames(0.5)                          -- past the last case's echo window
 veh.hx, veh.hy = 0, -1
 driverPressedReset(0, 101, 0)
 resetHook()
+settle()
 check(#teleports == 1 and facing(teleports[1], 0, 1), 'no road route: straight at the gate')
 map = nil
 
--- PRACTICE: not a session, and the turn used to ask for one.
+-- PRACTICE IS NOT A RACE: a reset there is BeamNG's own, R and Insert alike.
 serverState({ phase = 'waiting', maxResets = -1, resetMode = 'inplace',
   totalLaps = 3, drivers = {} })
 RM.setFinishLine(0, 500, 0, 0, 1)
@@ -603,7 +679,8 @@ clearLog()
 veh.hx, veh.hy = 0, -1
 driverPressedReset(0, 101, 0)
 resetHook()
-check(#teleports == 1 and facing(teleports[1], 0, 1), 'a practice reset faces the next gate too')
+settle()
+check(#teleports == 0, 'a practice reset is left alone: only a race turns the car')
 handlers['RM_Practice']({ on = false })
 veh.hx, veh.hy = 0, 1
 
