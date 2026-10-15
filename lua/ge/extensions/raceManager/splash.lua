@@ -14,6 +14,10 @@ local SEARCH = 'PRM'
 local DELAY = 3
 -- Text size against imgui's default, and the window sized to match.
 local SCALE = 1.4
+-- The PRM logo across the top. Capped at this share of the screen height: the
+-- window never scrolls, and a full-width logo puts Dismiss off a laptop screen.
+local LOGO = '/ui/modules/apps/RaceManager/splash.png'
+local LOGO_MAX_H = 0.3
 
 local welcome = {
   offered = false,     -- this join has had its chance
@@ -21,6 +25,7 @@ local welcome = {
   wait = nil,          -- countdown to opening
   hidden = nil,        -- the saved flag, read once
   hidePtr = nil,       -- imgui checkbox
+  logo = nil,          -- { tex, id, w, h }, or false once it has failed to load
 }
 
 function D.init() end
@@ -88,8 +93,37 @@ local function bullet(im, name, what)
   im.TextWrapped(what)
 end
 
+-- Loaded once. A missing file or a moved texture API costs the logo, never the
+-- text under it. The handler is kept: the id is only good while it lives.
+local function logoTexture(im)
+  if welcome.logo == nil then
+    welcome.logo = false
+    pcall(function ()
+      if not (FS and FS:fileExists(LOGO)) then return end
+      local tex = im.ImTextureHandler(LOGO)
+      local size = tex:getSize()
+      if size.x > 0 and size.y > 0 then
+        welcome.logo = { tex = tex, id = tex:getID(), w = size.x, h = size.y }
+      end
+    end)
+  end
+  return welcome.logo or nil
+end
+
+local function logo(im)
+  local t = logoTexture(im)
+  if not t then return end
+  local avail = im.GetContentRegionAvail().x
+  local h = math.min(avail * t.h / t.w, im.GetMainViewport().Size.y * LOGO_MAX_H)
+  local w = h * t.w / t.h
+  im.SetCursorPosX(im.GetCursorPosX() + (avail - w) / 2)
+  im.Image(t.id, im.ImVec2(w, h))
+  im.Spacing()
+end
+
 local function body(im)
   if type(im.SetWindowFontScale) == 'function' then im.SetWindowFontScale(SCALE) end
+  if not pcall(logo, im) then welcome.logo = false end
   colored(im, GOLD, 'This server runs Phoenix Race Manager.')
   im.TextWrapped('Qualifying, grids, race control, live timing and results all run '
     .. 'from its HUD apps. Add them to your screen to join in:')
