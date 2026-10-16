@@ -6,6 +6,17 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## 0.20.1 - The PRM logo
+
+#### Changed
+
+- **The welcome window shows the Phoenix Race Manager logo** above its text,
+  sized so Dismiss stays on screen.
+- **New previews in HUD Apps.** The app picker shows each preview at 2:1 and
+  crops it to fill, so the old square images were cut to a stripe. All three
+  are redrawn at that shape: the PRM logo for the main app, and the radar and
+  race lights as they look today.
+
 ## 0.20.0 - A finish countdown, restarts from the grid, a readable HUD
 
 #### Added
