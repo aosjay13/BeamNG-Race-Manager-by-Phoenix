@@ -26,6 +26,12 @@ extensions = {
 }
 ui_appSelector_general = { setSearchText = function (v) searchText = v end }
 
+-- The logo: which files exist, and a texture handler like the game's.
+local LOGO = '/ui/modules/apps/RaceManager/splash.png'
+local exists = { [LOGO] = true }
+FS = { fileExists = function (_, p) return exists[p] == true end }
+local texLoads = 0
+
 -- Each frame: the text drawn, the buttons drawn, and which to "click".
 local frame, click, closeX, tick, fontScale = nil, {}, false, nil, nil
 local function ptr(v) return { [0] = v } end
@@ -37,8 +43,21 @@ ui_imgui = {
   BoolPtr = ptr,
   GetMainViewport = function () return { Pos = { x = 0, y = 0 }, Size = { x = 1920, y = 1080 } } end,
   SetNextWindowPos = function () end, SetNextWindowSize = function () end,
+  ImTextureHandler = function (p)
+    texLoads = texLoads + 1
+    return {
+      getSize = function () return { x = 640, y = 478 } end,
+      getID = function () return 'tex:' .. p end,
+    }
+  end,
+  GetContentRegionAvail = function () return { x = 628, y = 0 } end,
+  GetCursorPosX = function () return 8 end,
+  SetCursorPosX = function (x) frame.cursorX = x end,
+  Image = function (id, size)
+    frame.images[#frame.images + 1] = { id = id, w = size.x, h = size.y, after = #frame.text }
+  end,
   Begin = function (_, open)
-    frame = { text = {}, buttons = {}, ended = false }
+    frame = { text = {}, buttons = {}, images = {}, ended = false }
     if closeX then open[0] = false end
     return true
   end,
@@ -87,6 +106,16 @@ check(hasButton('Dismiss') and hasButton('Open HUD Apps'), 'both buttons drawn')
 check(fontScale and fontScale > 1, 'the text is drawn larger than the imgui default')
 check(drew('Running this server?') and drew('README'), 'the admin line points at the README')
 check(not drew('still'), 'and never says whether this server still has the default')
+
+-- The logo: above the text, centered, aspect kept, short enough for Dismiss.
+local img = frame.images[1]
+check(#frame.images == 1 and img.id == 'tex:' .. LOGO, 'the logo is drawn from the shipped file')
+check(img and img.after == 0, 'the logo is drawn above the text')
+check(img and img.h <= 1080 * 0.3 + 0.01, 'the logo is no taller than 30% of the screen')
+check(img and math.abs(img.w / img.h - 640 / 478) < 0.01, 'the logo keeps its aspect')
+check(img and math.abs(frame.cursorX - (8 + (628 - img.w) / 2)) < 0.01, 'the logo is centered')
+run(1)
+check(texLoads == 1, 'the texture is loaded once, not every frame')
 
 -- ---------------------------------------------------------------------------
 -- Dismiss closes, and does not save unless ticked
@@ -151,6 +180,28 @@ click = { ['Open HUD Apps'] = true }
 run(1)
 click = {}
 check(#hooks == 1 and hooks[1].payload == 'appedit', 'no selector: still opens HUD Apps')
+
+-- A missing file costs the logo, never the text. Fresh copies: the texture is
+-- cached for the life of the module.
+exists[LOGO] = nil
+local S2 = dofile('lua/ge/extensions/raceManager/splash.lua')
+S2.splashShow()
+frame = nil
+S2.splashUpdate(0.5)
+check(frame and frame.ended and #frame.images == 0, 'no file: no logo, window still drawn')
+check(drew('This server runs Phoenix Race Manager.') and hasButton('Dismiss'), 'no file: the text and buttons still drawn')
+exists[LOGO] = true
+
+-- A texture API that throws: the same.
+local realTex = ui_imgui.ImTextureHandler
+ui_imgui.ImTextureHandler = function () error('moved') end
+local S3 = dofile('lua/ge/extensions/raceManager/splash.lua')
+S3.splashShow()
+frame = nil
+S3.splashUpdate(0.5)
+check(frame and frame.ended and #frame.images == 0, 'texture API throws: no logo')
+check(drew('This server runs Phoenix Race Manager.') and hasButton('Dismiss'), 'texture API throws: the text still drawn')
+ui_imgui.ImTextureHandler = realTex
 
 -- A throw inside the window still ends it, and the splash shuts.
 S.splashShow()

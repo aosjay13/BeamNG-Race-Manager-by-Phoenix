@@ -2885,6 +2885,20 @@ do
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- THE PRM LOGO
+-- ---------------------------------------------------------------------------
+-- The splash names its image by path. A renamed or missing file is no error in
+-- game: the logo is just absent. The path it names must ship.
+do
+  local path = 'lua/ge/extensions/raceManager/splash.lua'
+  local img = readFile(path):match("'/(ui/modules/apps/[%w/]+%.png)'")
+  expect(img ~= nil, 'the splash draws the logo')
+  local h = img and io.open(img, 'rb')
+  expect(h, path .. ' names ' .. tostring(img) .. ', which ships')
+  if h then h:close() end
+end
+
 if fails == 0 then
   print('ui_bindings_test: ' .. checks .. ' checks, 0 failures ('
     .. #models .. ' ng-model bindings)')
