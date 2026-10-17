@@ -910,7 +910,8 @@ local function dragClassification()
   local list = finishOrderList()
   for _, e in ipairs(list) do
     local owner = e.id and players[e.id] or nil
-    if owner then e.alias = owner.alias end
+    -- The account too: it finds an unnamed driver's own cup entry.
+    if owner then e.alias, e.account = owner.alias, owner.account end
   end
   return list
 end

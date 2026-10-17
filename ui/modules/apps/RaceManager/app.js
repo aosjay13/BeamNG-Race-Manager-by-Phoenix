@@ -726,11 +726,11 @@ angular.module('beamng.apps')
         // What a DNF is worth: 'none' | 'classified' | 'held'.
         dnfScoring: 'none',
         pendingQuali: 0,       // drivers holding quali points for the next race
-        // The saved drivers, and who is connected right now. The panel pairs
-        // them up by hand because nothing else can: a guest name is reissued at
-        // random on every join, so it identifies nobody.
-        roster: [],            // [{ id, name, guest, provisional, boundPid }]
-        connected: [],         // [{ pid, guest, alias, entryId }]
+        // The saved drivers, and who is connected right now. A guest is paired
+        // up by hand (a guest name is random per join); a logged-in player once
+        // paired is recognized on join by their BeamMP account (`linked`).
+        roster: [],            // [{ id, name, guest, provisional, boundPid, linked }]
+        connected: [],         // [{ pid, guest, alias, entryId, isGuest }]
         standings: []          // [{ pos, name, rounds, racePts, ..., total }]
       };
       // Dot rule (ng-if). `points` and `quali` are edit buffers, re-seeded only
@@ -1147,7 +1147,7 @@ angular.module('beamng.apps')
       };
       // --- Driver identity -------------------------------------------------
       // Assigning a connection to a saved driver: an admin decision, since guest
-      // names are random per join.
+      // names are random per join. A logged-in player's account is remembered.
       $scope.cupToggleDrivers = function () {
         $scope.cupUi.showDrivers = !$scope.cupUi.showDrivers;
       };
@@ -1478,9 +1478,12 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
         return row.alias || row.name || '';
       };
       // Real name, shown to admins beside the alias so a renamed driver can
-      // still be tied back to the guest session that set the lap times.
+      // still be tied back to the session that set the lap times. Not when it
+      // is the same name (a logged-in player named for their account).
       $scope.realName = function (row) {
-        return (row && row.alias) ? row.name : '';
+        if (!row || !row.alias) { return ''; }
+        var name = String(row.name || '');
+        return String(row.alias).toLowerCase() === name.toLowerCase() ? '' : name;
       };
       // Admin-only alias editor inputs, keyed by driver id. Bound through an
       // object for the same ng-if child-scope reason every other input is.
