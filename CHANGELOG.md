@@ -42,6 +42,12 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
   the race they left scored into a new placeholder, and could be refused their
   own name because their old record still held it. For a logged-in player both
   now follow the account.
+- **The driver leaderboard and the broadcast board snapped back to an old size**
+  when the ◑ opacity slider moved, and lost their size on a rejoin. Their corner
+  belonged to the browser's own resizer, which beat the app's grip to the press
+  and changed the size without saving it; it also could not make the board
+  taller than the last saved height. The app's grip is now the only resizer, so
+  a drag is saved, stays inside the HUD window, and survives the slider.
 
 ## 0.20.1 - The PRM logo
 
