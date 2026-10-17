@@ -6,6 +6,17 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## Unreleased
+
+#### Fixed
+
+- **The driver leaderboard and the broadcast board snapped back to an old size**
+  when the ◑ opacity slider moved, and lost their size on a rejoin. Their corner
+  belonged to the browser's own resizer, which beat the app's grip to the press
+  and changed the size without saving it; it also could not make the board
+  taller than the last saved height. The app's grip is now the only resizer, so
+  a drag is saved, stays inside the HUD window, and survives the slider.
+
 ## 0.20.1 - The PRM logo
 
 #### Changed

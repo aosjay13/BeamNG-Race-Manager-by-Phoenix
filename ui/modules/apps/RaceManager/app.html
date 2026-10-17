@@ -6743,9 +6743,10 @@
     box-sizing: border-box;
     border: 1px solid rgba(255, 255, 255, 0.18);
     border-radius: 4px;
-    /* Native corner grip as well as the JS one, for mouse-driven resizing in
-       any CEF build that honors it. */
-    resize: both;
+    /* NO NATIVE `resize: both`. Chromium's resizer owns the corner and takes the
+       press before .rm-lb-grip, then writes an inline size the app never
+       stores: the next opacity change or rejoin snapped the board back, and the
+       stored max-height capped its height. The JS grip is the only resizer. */
   }
   .rm-minimal .rm-table th { background: transparent; }
   .rm-minimal .rm-table td { border-bottom-color: rgba(255, 255, 255, 0.1); }
@@ -6973,7 +6974,7 @@
     padding-bottom: 12px;
     border: 1px solid rgba(255, 255, 255, 0.18);
     border-radius: 4px;
-    resize: both;
+    /* No native `resize: both`, for the reason on .rm-minimal .rm-table-wrap. */
   }
   .rm-bc-bar {
     /* Positioning context for .rm-bar-corner. Without it the group pins
