@@ -1495,7 +1495,7 @@ var rectSeen = { width: null, length: null, rot: null, wall: null, wallDepth: nu
       // Three separately deployed pieces, and BeamNG caches UI files: a stale
       // app.js just ignores a call, silently. Bump with main.lua, raceManager.lua
       // and app.json's "version" (wiring_test).
-      var APP_BUILD = '0.20.1';
+      var APP_BUILD = '0.20.2';
       $scope.appBuild    = APP_BUILD;
       $scope.clientBuild = null;   // from the client bridge (RaceManagerRoute)
       $scope.serverBuild = null;   // from the server broadcast (RaceManagerUpdate)
