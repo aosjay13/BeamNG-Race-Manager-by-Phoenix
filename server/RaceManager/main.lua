@@ -631,11 +631,12 @@ local function sanitizeAlias(raw)
   return s
 end
 
--- Taken as somebody's alias OR real name?
-local function aliasInUse(candidate, exceptPid)
+-- Taken as somebody's alias OR real name? exceptAccount skips that BeamMP
+-- account's own records: one left offline by a reconnect still holds the name.
+local function aliasInUse(candidate, exceptPid, exceptAccount)
   local lower = candidate:lower()
   for pid, rec in pairs(players) do
-    if pid ~= exceptPid then
+    if pid ~= exceptPid and not (exceptAccount and rec.account == exceptAccount) then
       if rec.alias and rec.alias:lower() == lower then return true, rec end
       if rec.name  and rec.name:lower()  == lower then return true, rec end
     end
@@ -706,6 +707,8 @@ local function rememberIdentity(rec)
     transferred = rec.transferred,
     -- The car's name, for lap records: a client only declares it on a change.
     car         = rec.carLabel,
+    -- BeamMP account (nil for a guest), read once at join.
+    account     = rec.account,
   }
 end
 
@@ -735,6 +738,7 @@ local function ensurePlayer(pid)
       rec.class       = ident.class
       rec.transferred = ident.transferred
       rec.carLabel    = ident.car
+      rec.account     = ident.account
     end
     players[pid] = rec
     rememberIdentity(rec)
@@ -756,12 +760,15 @@ race.dragUnderWay    = function () return false end
 race.dragEntryChanged = function () end
 race.dragWarm        = function () end
 race.dragSetCupHooks = function () end
+-- Reads the joining connection's BeamMP account and reattaches its roster entry.
+-- Inert until the roster installs, on `race` for the locals ceiling.
+race.rosterOnJoin    = function () end
 
 -- Forward declarations for the roster and cup at the bottom of the file (they
 -- need the JSON codec and layout directory defined below):
 --   rosterRemember / rosterUnbind / rosterEntryFor   bind, unbind, look up
--- There is NO automatic recognition: guest names prove nothing, so binding a
--- connection to a roster entry is an admin's decision only.
+-- Guest names prove nothing, so a guest is bound by an admin only. A BeamMP
+-- account an admin has bound once is recognized on join (race.rosterOnJoin).
 --   cupOnSessionComplete / cupOnDragComplete / cupOnDerbyComplete   score a
 --     finished session; each hands over a classification, never module state
 --   cupResultsLines   the banked round as results-file lines (nil with no cup)
@@ -1675,9 +1682,11 @@ local function clearResultsCache()
 end
 
 -- Results are a SNAPSHOT under the name raced, so an alias also carries the
--- real guest name: the only thread back to the session.
+-- real BeamMP name: the only thread back to the session. Not when they are the
+-- same name (a logged-in player named for their account).
 local function aliasNote(rec)
-  if not aliasOf(rec) then return '' end
+  local alias = aliasOf(rec)
+  if not alias or alias:lower() == tostring(rec.name):lower() then return '' end
   return '  [' .. rec.name .. ']'
 end
 
@@ -2673,7 +2682,11 @@ formGrid = function (kind, byName)
   -- onlinePlayers(): mismatched keys once purged a whole grid.
   local online = onlinePlayers()
   for id in pairs(players) do
-    if online[id] == nil then players[id] = nil end
+    if online[id] == nil then
+      players[id] = nil
+      -- Or the next connection given this id inherits the driver.
+      if rosterUnbind then rosterUnbind(id) end
+    end
   end
   -- Every connected player gets a record, identity restored by ensurePlayer.
   for id in pairs(online) do ensurePlayer(id) end
@@ -3105,14 +3118,15 @@ local function applyAlias(rec, raw)
     local was = rec.alias
     rec.alias = nil
     rememberIdentity(rec)
-    -- The roster entry is not deleted: its points wait to be bound again.
-    if rosterUnbind then rosterUnbind(rec.id) end
+    -- The roster entry is not deleted: its points wait to be bound again. Its
+    -- account link goes, or the next join would put the name straight back.
+    if rosterUnbind then rosterUnbind(rec.id, true) end
     return true, 'Display name cleared for ' .. rec.name .. ' (was "' .. was .. '").'
   end
 
   local clean, why = sanitizeAlias(raw)
   if not clean then return false, 'Name rejected: ' .. why .. '.' end
-  if aliasInUse(clean, rec.id) then
+  if aliasInUse(clean, rec.id, rec.account) then
     return false, 'Name rejected: "' .. clean .. '" is already in use.'
   end
 
@@ -6746,13 +6760,14 @@ end)()
 -- ===========================================================================
 -- DRIVER ROSTER (persistent display names)
 -- ===========================================================================
--- A cup needs points to follow a driver across races and restarts, but guests
--- have no stable identity. The anchor is an admin's decision written down: a
--- roster entry is a name an admin gave somebody (with the guest name they had).
--- A driver is reattached automatically when the guest name still matches, or
--- by an admin typing the name again (applyAlias lands here). Touches no race
--- state. Roster and cup live in one installer function, called below, so their
--- locals do not count against this chunk; only forward-declared names escape.
+-- A cup needs points to follow a driver across races and restarts. The anchor
+-- is an admin's decision written down: a roster entry is a name an admin gave
+-- somebody. A guest is reattached only by an admin (assigning, or typing the
+-- name again: applyAlias lands here). A logged-in player's entry also keeps
+-- their BeamMP account id, which BeamMP auth issues and a guest never has, so
+-- that account is reattached on join. Touches no race state. Roster and cup
+-- live in one installer function, called below, so their locals do not count
+-- against this chunk; only forward-declared names escape.
 local function installRosterAndCup()
 
 -- Assigned by the cup: binding a connection to a real driver hands over the
@@ -6765,7 +6780,10 @@ local MAX_ROSTER_ENTRIES = 200
 -- Declared ahead of rosterRemember, which merges through it.
 local rosterAbsorb
 
-local roster       = nil   -- lazy-loaded array of { id, name, guest, provisional }
+-- lazy-loaded array of { id, name, guest, provisional, account }. `guest` is
+-- the name last seen on the entry, for the admin; `account` the BeamMP account
+-- id it is recognized by (nil for a guest).
+local roster       = nil
 local rosterNextId = 1     -- persisted, so an id is never reused after a restart
 -- [pid] = entry id. Runtime only: a binding is about a LIVE connection, and a
 -- restored one would hand a name to whoever inherited the id.
@@ -6792,6 +6810,8 @@ local function loadRosterFromDisk()
         guest = (type(e.guest) == 'string' and e.guest ~= '') and e.guest or nil,
         -- Kept: rosterAbsorb only merges a provisional entry.
         provisional = e.provisional == true,
+        account = (e.account ~= nil and tostring(e.account) ~= '')
+          and tostring(e.account) or nil,
       }
       if id > highest then highest = math.floor(id) end
     end
@@ -6828,14 +6848,81 @@ local function rosterById(id)
   return nil
 end
 
--- Case-insensitive: a retyped name need not match the capitalisation.
+-- Case-insensitive: a retyped name need not match the capitalisation. A named
+-- entry wins over a placeholder: a placeholder is named after the player's
+-- BeamMP name, which can be the same as the league name an admin typed.
 local function rosterByName(name)
   if type(name) ~= 'string' then return nil end
   local lower = name:lower()
+  local placeholder = nil
   for _, e in ipairs(getRoster()) do
-    if e.name:lower() == lower then return e end
+    if e.name:lower() == lower then
+      if not e.provisional then return e end
+      placeholder = placeholder or e
+    end
+  end
+  return placeholder
+end
+
+local function rosterByAccount(account)
+  if not account then return nil end
+  for _, e in ipairs(getRoster()) do
+    if e.account == account then return e end
   end
   return nil
+end
+
+-- Does whoever holds this record's id right now own it? A departed driver is
+-- still scored, and a recycled id belongs to somebody else.
+local function isLive(rec)
+  return rec ~= nil and rec.id ~= nil and MP.GetPlayerName(rec.id) == rec.name
+end
+
+-- The BeamMP account id of a connection, or nil for a guest. Both calls are
+-- guarded: a server build without them behaves as if everyone were a guest.
+local function accountOf(pid)
+  if type(MP.IsPlayerGuest) == 'function' then
+    local ok, guest = pcall(MP.IsPlayerGuest, pid)
+    if ok and guest == true then return nil end
+  end
+  if type(MP.GetPlayerIdentifiers) ~= 'function' then return nil end
+  local ok, ids = pcall(MP.GetPlayerIdentifiers, pid)
+  if not ok or type(ids) ~= 'table' or ids.beammp == nil then return nil end
+  local id = tostring(ids.beammp)
+  return id ~= '' and id or nil
+end
+
+-- A record's account: read at join, else from BeamMP while the record is live.
+local function accountFor(rec)
+  if not rec then return nil end
+  if rec.account then return rec.account end
+  if not isLive(rec) then return nil end
+  rec.account = accountOf(rec.id)
+  return rec.account
+end
+
+-- Tie an entry to this connection's account. One entry per account: a
+-- placeholder already holding it is merged in, a named one lets go (an admin
+-- just said otherwise).
+local function rosterLinkAccount(entry, rec)
+  local account = accountFor(rec)
+  if not entry or not account or entry.account == account then return end
+  local holders = {}
+  for _, e in ipairs(getRoster()) do
+    if e.account == account and e.id ~= entry.id then holders[#holders + 1] = e end
+  end
+  for _, e in ipairs(holders) do
+    if not rosterAbsorb(e, entry) then
+      e.account = nil
+      print(string.format('[RaceManager] Roster: account of %s moved from "%s" to "%s"',
+        rec.name, e.name, entry.name))
+    end
+  end
+  if entry.account then
+    print(string.format('[RaceManager] Roster: "%s" is now recognized by the account of %s',
+      entry.name, rec.name))
+  end
+  entry.account = account
 end
 
 -- Is this entry already claimed by somebody else who is connected right now?
@@ -6851,9 +6938,29 @@ rosterEntryFor = function (rec)
   return rosterById(rosterBound[rec.id])
 end
 
-rosterUnbind = function (pid)
+-- rosterClaimedBy, except a claim by the same BeamMP account: a driver who
+-- dropped and rejoined on a new id is still that driver.
+local function rosterHeldAgainst(entryId, rec)
+  local pid = rosterClaimedBy(entryId, rec.id)
+  if pid == nil then return nil end
+  local account, other = accountFor(rec), players[pid]
+  if account and other and other.account == account then return nil end
+  return pid
+end
+
+-- disown: an admin said this connection is not that driver, so its account
+-- stops being recognized too. A disconnect is not that.
+rosterUnbind = function (pid, disown)
   if pid == nil then return end
+  local entry = disown and rosterById(rosterBound[pid]) or nil
   rosterBound[pid] = nil
+  local rec = players[pid]
+  if entry and entry.account and rec and entry.account == accountFor(rec) then
+    entry.account = nil
+    saveRosterToDisk()
+    print(string.format('[RaceManager] Roster: "%s" no longer recognizes %s',
+      entry.name, rec.name))
+  end
 end
 
 -- A driver was given a display name:
@@ -6895,6 +7002,7 @@ rosterRemember = function (rec)
   entry.provisional = nil
   -- For the admin's eyes only, never matched on (see rosterEnsure).
   entry.guest = rec.name
+  rosterLinkAccount(entry, rec)
   rosterBound[rec.id] = entry.id
   saveRosterToDisk()
   return entry
@@ -6931,7 +7039,7 @@ rosterBindTo = function (rec, entryId)
       .. (other and other.name or ('player ' .. tostring(heldBy)))
       .. ': unassign them first.'
   end
-  if aliasInUse(entry.name, rec.id) then
+  if aliasInUse(entry.name, rec.id, accountFor(rec)) then
     return false, 'The name "' .. entry.name .. '" is in use by somebody else on the server.'
   end
   local previous = rosterById(rosterBound[rec.id])
@@ -6940,6 +7048,7 @@ rosterBindTo = function (rec, entryId)
   end
   rec.alias = entry.name
   entry.guest = rec.name
+  rosterLinkAccount(entry, rec)
   rosterBound[rec.id] = entry.id
   rememberIdentity(rec)
   saveRosterToDisk()
@@ -6976,6 +7085,8 @@ rosterList = function ()
       id = e.id, name = e.name, guest = e.guest,
       provisional = e.provisional == true,
       boundPid = rosterClaimedBy(e.id, nil),
+      -- Recognized on join. The id itself stays on the server.
+      linked = e.account ~= nil,
     }
   end
   table.sort(out, function (a, b)
@@ -6994,11 +7105,18 @@ local function rosterEnsure(rec)
   if entry then return entry end
   local list = getRoster()
 
-  -- Only the DISPLAY NAME may find an existing entry (a disconnected driver is
-  -- unbound but still named when scored). The GUEST name is never matched: it is
-  -- random per join and would merge strangers' seasons.
+  -- Only the DISPLAY NAME or the BeamMP ACCOUNT may find an existing entry (a
+  -- disconnected driver is unbound but still named when scored). The player's
+  -- own name is never matched: a guest's is random per join and would merge
+  -- strangers' seasons.
   entry = rec.alias and rosterByName(rec.alias) or nil
-  if entry and rosterClaimedBy(entry.id, rec.id) then entry = nil end
+  if entry and rosterHeldAgainst(entry.id, rec) then entry = nil end
+  -- An unnamed logged-in driver keeps ONE placeholder, not one per join.
+  local account = accountFor(rec)
+  if not entry and account then
+    entry = rosterByAccount(account)
+    if entry and rosterHeldAgainst(entry.id, rec) then entry = nil end
+  end
 
   if not entry then
     -- A provisional entry of their own: a place to keep points, not a claim.
@@ -7008,6 +7126,8 @@ local function rosterEnsure(rec)
       return nil
     end
     entry = { id = rosterNextId, name = rec.name, provisional = true }
+    -- Not taken from an entry somebody else holds: only an admin moves it.
+    if account and not rosterByAccount(account) then entry.account = account end
     rosterNextId = rosterNextId + 1
     list[#list + 1] = entry
     print(string.format(
@@ -7016,9 +7136,52 @@ local function rosterEnsure(rec)
       entry.id, entry.name))
   end
   entry.guest = rec.name
-  rosterBound[rec.id] = entry.id
+  -- A departed driver is scored but not bound: the binding would pass to the
+  -- next connection given their id.
+  if isLive(rec) then rosterBound[rec.id] = entry.id end
   saveRosterToDisk()
   return entry
+end
+
+-- A logged-in player whose account an admin bound before gets that driver back:
+-- name, points, binding. Never a guest (no account), never an entry somebody
+-- connected holds. The account is re-read: the id may be recycled.
+race.rosterOnJoin = function (rec)
+  if not rec then return end
+  rec.account = isLive(rec) and accountOf(rec.id) or nil
+  -- Into the registry too: Start Quali and Reset rebuild every record from it.
+  rememberIdentity(rec)
+  -- The id's registry hands a name back on the same id and name, which an
+  -- account repeats on every reconnect. It yields to whoever holds it now.
+  if rec.alias and aliasInUse(rec.alias, rec.id, rec.account) then
+    print(string.format('[RaceManager] Roster: %s rejoined without "%s": somebody else has it',
+      rec.name, rec.alias))
+    rec.alias = nil
+    rememberIdentity(rec)
+  end
+  local entry = rosterByAccount(rec.account)
+  if not entry or rosterBound[rec.id] == entry.id then return end
+  local heldBy = rosterHeldAgainst(entry.id, rec)
+  if heldBy then
+    print(string.format('[RaceManager] Roster: %s not reattached to "%s": held by %s',
+      rec.name, entry.name, tostring(players[heldBy] and players[heldBy].name or heldBy)))
+    return
+  end
+  -- A placeholder is named after them already: no display name to set.
+  if not entry.provisional then
+    if aliasInUse(entry.name, rec.id, rec.account) then
+      print(string.format('[RaceManager] Roster: %s reattached to "%s" without the name: '
+        .. 'somebody else on the server is using it', rec.name, entry.name))
+    else
+      rec.alias = entry.name
+    end
+  end
+  entry.guest = rec.name
+  rosterBound[rec.id] = entry.id
+  rememberIdentity(rec)
+  saveRosterToDisk()
+  print(string.format('[RaceManager] Roster: %s recognized as "%s" by BeamMP account',
+    rec.name, entry.name))
 end
 
 -- ===========================================================================
@@ -7462,6 +7625,8 @@ broadcastCupState = function (targetPid)
         out[#out + 1] = {
           pid = rec.id, guest = rec.name, alias = rec.alias,
           entryId = rosterEntryFor and (rosterEntryFor(rec) or {}).id or nil,
+          -- No BeamMP account: never recognized on join.
+          isGuest = accountFor(rec) == nil,
         }
       end
       table.sort(out, function (a, b) return a.pid < b.pid end)
@@ -8115,7 +8280,8 @@ end
 -- Driver identity (admin-controlled)
 -- ---------------------------------------------------------------------------
 -- Assign a connected player to a roster entry: how a driver gets their name and
--- points back. An admin action, because BeamMP's guest names are random.
+-- points back. An admin action, because BeamMP's guest names are random. For a
+-- logged-in player it also teaches the roster their account (rosterOnJoin).
 function RM_onCupBindDriver(pid, rawData)
   local data = adminPayload(pid, rawData)
   if not data then return end
@@ -8129,9 +8295,10 @@ function RM_onCupBindDriver(pid, rawData)
     return
   end
 
-  -- entryId 0 or absent unassigns: the entry and its points stay.
+  -- entryId 0 or absent unassigns: the entry and its points stay, the account
+  -- link does not (or the next join would assign them straight back).
   if not entryId or entryId <= 0 then
-    rosterUnbind(rec.id)
+    rosterUnbind(rec.id, true)
     rec.alias = nil
     rememberIdentity(rec)
     broadcastState()
@@ -8184,7 +8351,9 @@ function RM_onRosterAdd(pid, rawData)
   end
   local list = getRoster()
   local existing = rosterByName(clean)
-  if existing then
+  -- A placeholder does not block it: it carries a player's BeamMP name, which
+  -- may be the league name, and only a connected player can rename it.
+  if existing and not existing.provisional then
     MP.TriggerClientEvent(pid, 'RM_AliasResult', Util.JsonEncode({
       success = false,
       message = '"' .. existing.name .. '" is already on the roster.' }))
@@ -8441,6 +8610,9 @@ function RM_onPlayerJoin(pid)
   end
   local rec = ensurePlayer(pid)
   if not rec then return end
+  -- Guarded: a roster fault must not cost the player their join.
+  local okRoster, rosterErr = pcall(race.rosterOnJoin, rec)
+  if not okRoster then print('[RaceManager] Roster on join failed: ' .. tostring(rosterErr)) end
   -- A fresh connection is not practising, whatever a recycled id carried.
   rec.practicing, rec.practiceGhost = nil, nil
   -- Connecting is not entering: opt-in makes a new arrival a spectator, 'all'

@@ -6,6 +6,43 @@ tag, the packaged zip, and the build stamp the app shows - see the note in
 
 [← Back to the README](README.md)
 
+## Unreleased
+
+#### Added
+
+- **Logged-in players are recognized on join.** Once an admin names or assigns
+  a player who is logged in to BeamMP, their saved driver remembers the account,
+  and from then on they get their name, driver and cup points back as soon as
+  they join, after a reconnect or a restart. Only the account id is matched,
+  never a name. Guests work exactly as before: an admin assigns them.
+- The Cup tab's **Drivers** panel marks guest connections **(guest)** and saved
+  drivers tied to an account **· auto**.
+
+#### Changed
+
+- **Unassigning a driver, or clearing their display name, also stops their
+  account being recognized**, so the next join does not undo it.
+- **No more `Ryder (Ryder)`.** When a display name is the player's own BeamMP
+  name, the nametag gets no suffix and the results file leaves out the bracketed
+  name.
+- **Add to Roster accepts a name a placeholder already has.** A logged-in
+  player's placeholder is named after their account, which is often the league
+  name too.
+
+#### Fixed
+
+- **An unnamed logged-in driver kept getting new placeholders**, one per join,
+  all with the same name and the points split between them. They now keep one.
+- **A new connection could inherit a departed driver.** Scoring a driver who had
+  already left bound their old session id to their saved driver, and nothing
+  cleared it, so whoever BeamMP gave that id to next raced as them and scored
+  into their points. Scoring no longer binds a departed driver, and Generate
+  Grid clears what the purge leaves.
+- **A driver who dropped mid-race and was assigned again before it ended** had
+  the race they left scored into a new placeholder, and could be refused their
+  own name because their old record still held it. For a logged-in player both
+  now follow the account.
+
 ## 0.20.1 - The PRM logo
 
 #### Changed

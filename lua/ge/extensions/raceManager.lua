@@ -525,7 +525,7 @@ function nametag.clearAll()
   nametag.sig = nil
 end
 
--- Apply the aliases from the latest broadcast: `name` is the guest name the
+-- Apply the aliases from the latest broadcast: `name` is the BeamMP name the
 -- setter matches on, `alias` what an admin typed. Skipped when unchanged: the
 -- setter searches BeamMP's player list per call, three broadcasts a second.
 function nametag.apply(drivers)
@@ -550,7 +550,9 @@ function nametag.apply(drivers)
   local wanted = {}
   for i = 1, #drivers do
     local row = drivers[i]
-    if type(row) == 'table' and type(row.name) == 'string' and row.alias then
+    -- No suffix repeating the tag: a player named for their own account.
+    if type(row) == 'table' and type(row.name) == 'string' and row.alias
+        and tostring(row.alias):lower() ~= row.name:lower() then
       wanted[row.name] = ' (' .. tostring(row.alias) .. ')'
     end
   end

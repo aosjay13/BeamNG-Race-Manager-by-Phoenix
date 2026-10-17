@@ -273,6 +273,9 @@ local function derbyClassification()
     -- name stays, or the cup would score them against nobody.
     local owner = players[rec.id]
     if owner then rec.alias = owner.alias end
+    -- The BeamMP account, which finds an unnamed driver's own cup entry. Only
+    -- from the same connection: the id may have been handed on.
+    if owner and owner.name == rec.name then rec.account = owner.account end
     list[#list + 1] = rec
   end
   table.sort(list, function (a, b)

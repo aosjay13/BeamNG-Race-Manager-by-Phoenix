@@ -872,28 +872,43 @@ all key on the BeamMP player id exactly as before - an alias is never used as a
 lookup, so renaming somebody mid-session moves nothing but the text on screen.
 
 **Names are saved on the server.** Every name an admin sets is written to
-`Resources/Server/RaceManager/roster.json` as a **saved driver** - an id, the
-name, and the guest name that connection was using at the time. They live
-through Start Quali, Generate Grid, a whole race, **Reset**, a second race after
-that, and the server going down and coming back up.
+`Resources/Server/RaceManager/Data/roster.json` as a **saved driver** - an id,
+the name, the BeamMP name that connection was using at the time and, for a
+player logged in to BeamMP, their account id. They live through Start Quali,
+Generate Grid, a whole race, **Reset**, a second race after that, and the server
+going down and coming back up.
 
 The roster is also what cup points hang off, so a saved driver is an identity
 for a whole season, not just an evening.
 
-### Who is who: an admin decides
+### Who is who
 
-**Nothing is ever assigned automatically.** BeamMP gives every connection a
-fresh random guest name - a different one each time the same person joins - so
-a guest name identifies nobody. The server cannot tell a returning regular from
-a stranger, and it does not try:
+**A guest is never assigned automatically.** BeamMP gives a guest a fresh random
+name - a different one each time the same person joins - so a guest name
+identifies nobody. The server cannot tell a returning guest from a stranger, and
+it does not try:
 
 > Matching on a guest name would miss a returning driver almost every time, and
 > on the occasion two people were ever issued the same one it would hand a
 > stranger somebody else's name **and their championship points**. Losing points
 > is recoverable; giving them to the wrong person quietly is not.
 
-So after a restart or a reconnect, drivers arrive **unassigned** and an admin
-puts them back. Two ways, both admin actions:
+**A logged-in player is recognized once an admin has assigned them.** Logging in
+to BeamMP gives a player an account id that is the same on every join and that
+only their account can present. The first time an admin names or assigns a
+logged-in player, their saved driver remembers that account. From then on they
+get their name, their driver and their cup points back the moment they join,
+after a reconnect or a server restart, with nobody touching the panel. Only the
+account id is matched, never a name, so somebody else using the same name gets
+nothing.
+
+A logged-in player is **not** reattached when somebody connected already holds
+their driver (an admin gave it to someone else); they arrive unassigned and the
+server console says why.
+
+So after a restart or a reconnect, guests (and logged-in players nobody has
+assigned yet) arrive **unassigned** and an admin puts them back. Two ways, both
+admin actions:
 
 - **Set their display name again** (Admin tab). A name already in the roster is
   matched rather than duplicated, so typing "Ryder" reattaches that connection
@@ -903,7 +918,9 @@ puts them back. Two ways, both admin actions:
   you cannot remember the exact spelling, or when a driver has no name yet.
 
 The Drivers panel also warns how many connections are **not yet identified**, so
-a full grid does not quietly race an entire round as strangers.
+a full grid does not quietly race an entire round as strangers. It marks each
+guest connection **(guest)**, and each saved driver tied to an account
+**· auto**.
 
 ### Display names on the BeamMP nametag
 
@@ -928,17 +945,19 @@ a guest number is.
 
 The switch is **server-owned and off by default**, so every client agrees on it
 and a league that has assigned no names gets nothing it did not ask for. Turning
-it off takes every suffix back off, and so does leaving the server.
+it off takes every suffix back off, and so does leaving the server. A display
+name that is the player's own BeamMP name gets no suffix, so `Ryder (Ryder)`
+never appears.
 
 **Only players running Race Manager see it.** A nametag is drawn on each machine
 from that machine's own player list, so this is a client-side presentation rule.
 Everyone connected to a server running the mod has it - BeamMP pushes the client
 zip on join - but nothing outside the session is affected.
 
-**Chat, the player list and the server console still show the guest name.** Only
-the floating tag changes. That is the same trade the leaderboard already makes:
-an admin sees the real name beside the alias precisely so a tag can be tied back
-to the guest session that set the lap times.
+**Chat, the player list and the server console still show the BeamMP name.**
+Only the floating tag changes. That is the same trade the leaderboard already
+makes: an admin sees the real name beside the alias precisely so a tag can be
+tied back to the session that set the lap times.
 
 **If your server already runs a nametag mod** (BeamJoy, CEI), leave this off. The
 suffix is filed under its own tag source so it will not overwrite theirs, but a
@@ -947,12 +966,19 @@ mod that replaces BeamMP's rendering entirely will not show it at all.
 ### Placeholders
 
 A driver who races without being assigned is not dropped - their points go to a
-**placeholder** entry named after their guest name and marked as such. It is
+**placeholder** entry named after their BeamMP name and marked as such. It is
 somewhere to keep points, not a claim about who they are.
 
 When you assign that connection to a real driver, **the placeholder's points
 move with them** and the placeholder is retired. So an admin who only notices
 halfway through the evening loses nothing by being late.
+
+A logged-in player keeps **one** placeholder: it remembers their account, so an
+unnamed regular who rejoins or comes back next week scores into the same one
+rather than leaving a trail of them. Because it carries the player's own name,
+it can share a name with a driver you added for the league; **Add to Roster**
+allows that, and assigning the player to the named driver merges the
+placeholder in.
 
 Placeholders left behind by drivers who never came back can be deleted with
 **✕** in the Saved drivers list. That removes the driver and every cup point
@@ -962,32 +988,34 @@ they hold, and is only offered while nobody is connected to them.
 
 **Unassign** detaches a connection from a driver. The driver, and every point
 on them, stays exactly where it is - it just stops being shown against that
-connection. Clearing a display name does the same thing.
+connection. Clearing a display name does the same thing. Either one also stops
+a logged-in player's account being recognized, or their next join would put
+them straight back; assign them again to undo it. A disconnect changes nothing.
 
 **Ending a cup does not clear the roster.** Names are not cup property.
 
-> The account id BeamMP exposes for a *logged-in* player would let the server do
-> all of this unaided. It is where this goes when the guest-accounts restriction
-> lifts; until then, a person deciding is the only trustworthy anchor.
-
-- **Fallback** - a driver with no name set simply shows their guest name. It can
-  never render blank.
+- **Fallback** - a driver with no name set simply shows their BeamMP name. It
+  can never render blank.
 - **Validation** - 3–20 characters, letters, digits, spaces and `- _ .` only.
   ASCII only, because the results file lays out fixed-width columns and Lua pads
   by bytes, so one accented character would shear every row below it.
 - **Collisions and impersonation** - a name already in use, as an alias *or* as
-  someone's real guest name, is refused; so are `admin`, `server`, `host`,
-  `console` and anything starting with `guest`.
+  someone's BeamMP name, is refused; so are `admin`, `server`, `host`,
+  `console` and anything starting with `guest`. A BeamMP name cannot be
+  refused, though: a player whose account name matches a display name already
+  given to somebody else still joins under it, and the two read the same until
+  an admin renames one.
 - **Every attempt gets an answer** - the name applies, or a notice says why not.
-- **A recycled session id never inherits a name.** BeamMP hands ids out again
-  after a disconnect; if a different player turns up on one, the display name is
-  dropped rather than passed on - and nothing reassigns it without an admin.
+- **A recycled session id never inherits a name or a driver.** BeamMP hands ids
+  out again after a disconnect; if a different player turns up on one, the
+  display name and the saved driver are dropped rather than passed on.
 - **Race and derby** - names show on the race leaderboard, the derby standings
   and the derby winner announcement.
 - **Results files** - both the race and derby exports record the name the driver
-  raced under, with their real guest name in brackets beside it, so a file is
-  readable *and* still traceable back to the session that set the times. Results
-  are a snapshot: renaming somebody later never rewrites a file already written.
+  raced under, with their BeamMP name in brackets beside it (left out when the
+  two are the same), so a file is readable *and* still traceable back to the
+  session that set the times. Results are a snapshot: renaming somebody later
+  never rewrites a file already written.
 
 ## League regulations
 
@@ -2504,9 +2532,10 @@ behave exactly as they do without the feature. Everything below lives on the
 
 1. Give every driver a **display name** first (Admin tab). Points attach to the
    saved driver, not to a connection - see [Display names](#display-names).
-2. **After any reconnect or server restart, assign them again.** BeamMP reissues
-   guest names at random, so nobody is recognized automatically and the Cup
-   tab's **Drivers** panel warns you how many are unidentified. A driver who
+2. **After any reconnect or server restart, assign the guests again.** BeamMP
+   reissues guest names at random, so a guest is never recognized; a player
+   logged in to BeamMP is, once assigned (see [Who is who](#who-is-who)). The
+   Cup tab's **Drivers** panel warns you how many are unidentified. A driver who
    races unassigned still scores, into a placeholder; assigning them afterwards
    moves those points onto them, so being late costs nothing.
 3. Press **Start New Cup**, optionally naming it.
@@ -3050,7 +3079,7 @@ faster lap replaces it; a slower one is ignored. One row per driver.
   and never reach the server.
 - **Reset sets nothing.** It throws the session away; End Session keeps it.
 - **Rows are matched by display name**, so give drivers their names before the
-  session. A guest name is new on every join.
+  session. A guest name is new on every join; a logged-in player's is not.
 
 A new outright record is announced in chat. Everyone else who improved is told
 their new time and place, privately.

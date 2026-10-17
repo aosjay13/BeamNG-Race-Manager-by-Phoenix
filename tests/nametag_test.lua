@@ -184,6 +184,21 @@ serverState({ phase = 'racing', nametags = true, drivers = {
 local b = lastSuffixFor('Guest_2222')
 check(b ~= nil and b.text == ' (RedFive)', 'a newly named driver is picked up')
 
+-- A logged-in player named for their own account: "Ryder (Ryder)" says
+-- nothing, so there is no suffix, and one already there comes off.
+local function withRyder(alias)
+  serverState({ phase = 'racing', nametags = true, drivers = {
+    { id = 1, name = 'Guest_1111', alias = 'Kestrel' },
+    { id = 2, name = 'Guest_2222', alias = 'RedFive' },
+    CARA, { id = 4, name = 'Ryder', alias = alias } } })
+end
+withRyder('Ryder Racing')
+check(lastSuffixFor('Ryder') and lastSuffixFor('Ryder').text == ' (Ryder Racing)',
+  'a different display name is suffixed as usual')
+withRyder('ryder')
+check(lastSuffixFor('Ryder') and lastSuffixFor('Ryder').text == '',
+  'the same name as the BeamMP name, in any case, takes the suffix off')
+
 -- ---------------------------------------------------------------------------
 -- CLEARING PASSES AN EMPTY STRING, NEVER nil
 -- ---------------------------------------------------------------------------
